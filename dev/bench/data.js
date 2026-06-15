@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781538249958,
+  "lastUpdate": 1781538252101,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -30067,6 +30067,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/3ac0fb6a64048fac66ad01c78601d5a468b892d1"
         },
         "date": 1781536912270,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "71cc01bdd9c548ff4d32ef7648de814ea65b2e62",
+          "message": "docs: adopt matlatl doc-graph gate + committed llms.txt\n\nWire mecatl into matlatl's docs link-graph tooling and make the docs\nnavigable, gated, and agent-readable.\n\nCorpus config:\n- .matlatlignore: drop transient .scratch/ notes, e2e/ fixtures, and the\n  isolated .claude/agents/ definitions (no links to check) so the corpus is\n  real docs only and `check --strict` is clean.\n- .matlatl.yml: emitExclude .claude/skills/ (link-checked, hidden from the\n  navigation surface).\n\nNavigation wiring (was: README the sole hub, design/ a flat dead-end pile,\nharnesses an unlinked numbered series; compactness 0.005):\n- docs/design/README.md grows a subsystem-grouped index; every design doc\n  gets a back-link footer + topical Related links.\n- harnesses 01-09 get a prev/next + index spine; stale file counts fixed.\n- perf docs cross-linked; the two real orphans (ADR 0001, perf survey) wired.\n- low-scent bare-filename link text rewritten to descriptive phrases.\n- fix two stray unterminated code fences (SYSTEM-PROMPT-RESEARCH,\n  UX-DISCOVERABILITY) that swallowed trailing content — surfaced by matlatl.\nCompactness 0.005 -> 0.35; 0 broken links/anchors, orphans, or unreachable.\n\nEnforcement:\n- commit generated llms.txt (matlatl importance-ordered nav surface), marked\n  linguist-generated.\n- CI `docs` job: strict gate via the matlatl composite action (pinned\n  stacklok/matlatl@v0.0.5) + an llms.txt freshness diff.\n- Taskfile: docs:llms / docs:check / docs targets; docs:llms folded into\n  `task generate`.\n- CLAUDE.md: always run `task generate` / `task docs` before committing doc\n  changes so llms.txt never drifts.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-15T18:38:48+03:00",
+          "tree_id": "ad1406eea834d063f0de5415791013f498f4df27",
+          "url": "https://github.com/stacklok/mecatl/commit/71cc01bdd9c548ff4d32ef7648de814ea65b2e62"
+        },
+        "date": 1781538251274,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
