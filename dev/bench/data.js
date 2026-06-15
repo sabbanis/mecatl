@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781517026019,
+  "lastUpdate": 1781517028370,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -22523,6 +22523,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/d418cc754fb3136e3e81ecfda55a08f46eea0225"
         },
         "date": 1781501538630,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "6f13e0c9b6ed5d08d8d790b5f86b0c9fc9cbccc3",
+          "message": "feat(perm): graduated operator posture ladder + truly-yolo\n\nIntroduce a server-wide operator POSTURE ladder set at process start:\nstrict < trusted < auto < yolo. Posture is a composition-layer front-end\nthat folds onto Config once in Build and resolves to existing knobs\n(allow-all rule, main/child substitution loosening, project trust) — it\ncomposes rules + evaluator options and always flows through Evaluate,\nnever a bypass (the rejected ModeYolo discipline).\n\n  strict  (default): full defenses, untrusted workspace\n  trusted: project trust honored, gate still asks\n  auto:    mutate-ask floor + MAIN $()/heredoc waived; CHILD $()/heredoc\n           still prompts (prompt-injection defense ON); trust honored\n  yolo:    everything waived INCLUDING child $()/heredoc substitution\n           (child prompt-injection defense OFF); trust honored\n\n--yolo is now an alias for posture yolo (truly waives child substitution\ntoo — a behavior change for existing --yolo users, called out in the\nstartup WARN + release notes); --trust-project aliases trusted. Set via\n--posture, the aliases, or the operator-global settings.yaml `posture:`\nkey. Posture is OPERATOR-TIER ONLY and fail-closed: the enum zero value\nis strict, unknown/empty resolves to strict, and a PROJECT-tier `posture:`\nis ignored with a WARN (a malicious repo cannot raise posture).\n\nThe root/no-sandbox refusal keys off the AUTHORITATIVE composed posture\n(including operator-YAML) via a Build-time backstop, so a YAML-only tier\ncannot escape it. Invariants stay locked at every tier incl. yolo:\nplan-mode hard-deny, deny-dominance, no-stdio-MCP, secret/header\nredaction, gauntlet-#7.\n\nDisclosure (the chosen mitigation since the sandbox gate was waived):\nper-tier startup WARN (yolo names child-injection-OFF + isolated-only),\n`mecated --print-posture`, a `/posture` TUI builtin, a warning-styled\nheader badge for auto/yolo (separate from the session mode segment), and\nthe tier echoed to clients via ServerCapabilities.posture.\n\nStructural guards: TestPostureResolutionTable (tier->knob table),\nTestChildSubstitutionLooseningIsTierDependent, TestPostureIotaOrderingIsContract,\nTestProjectPostureIgnoredWithWarn (fail-closed core), the Build-seam test,\nand an offline model-facing e2e proving a child heredoc auto-runs under\nyolo and prompts/auto-denies under auto/strict (incl. an adversarial\nforged-approval case).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-15T12:40:15+03:00",
+          "tree_id": "d0a568205a1fe4ea24dd8f1069c84e45283e6fa9",
+          "url": "https://github.com/stacklok/mecatl/commit/6f13e0c9b6ed5d08d8d790b5f86b0c9fc9cbccc3"
+        },
+        "date": 1781517027563,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
