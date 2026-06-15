@@ -1,0 +1,168 @@
+goos: linux
+goarch: amd64
+pkg: github.com/stacklok/mecatl/engine/prompt
+cpu: AMD EPYC 9V74 80-Core Processor                
+BenchmarkBuild-2               	  545364	      2028 ns/op	    6224 B/op	      21 allocs/op
+BenchmarkBuild-2               	  562140	      2055 ns/op	    6224 B/op	      21 allocs/op
+BenchmarkBuild-2               	  618883	      2020 ns/op	    6224 B/op	      21 allocs/op
+BenchmarkBuild-2               	  591177	      2013 ns/op	    6224 B/op	      21 allocs/op
+BenchmarkBuild-2               	  531058	      2074 ns/op	    6224 B/op	      21 allocs/op
+BenchmarkBuild-2               	  582475	      2053 ns/op	    6224 B/op	      21 allocs/op
+BenchmarkBuild-2               	  581518	      2327 ns/op	    6224 B/op	      21 allocs/op
+BenchmarkBuild-2               	  578176	      2103 ns/op	    6224 B/op	      21 allocs/op
+BenchmarkBuild-2               	  586240	      2144 ns/op	    6224 B/op	      21 allocs/op
+BenchmarkBuild-2               	  598596	      2058 ns/op	    6224 B/op	      21 allocs/op
+BenchmarkBuildLargeCatalog-2   	  117754	      9618 ns/op	   28536 B/op	      32 allocs/op
+BenchmarkBuildLargeCatalog-2   	  115758	      9728 ns/op	   28536 B/op	      32 allocs/op
+BenchmarkBuildLargeCatalog-2   	  139689	      9138 ns/op	   28536 B/op	      32 allocs/op
+BenchmarkBuildLargeCatalog-2   	  119426	      8932 ns/op	   28536 B/op	      32 allocs/op
+BenchmarkBuildLargeCatalog-2   	  143738	      8491 ns/op	   28536 B/op	      32 allocs/op
+BenchmarkBuildLargeCatalog-2   	  135896	      8836 ns/op	   28536 B/op	      32 allocs/op
+BenchmarkBuildLargeCatalog-2   	  123217	      9219 ns/op	   28536 B/op	      32 allocs/op
+BenchmarkBuildLargeCatalog-2   	  136671	      8995 ns/op	   28536 B/op	      32 allocs/op
+BenchmarkBuildLargeCatalog-2   	  137566	      9211 ns/op	   28536 B/op	      32 allocs/op
+BenchmarkBuildLargeCatalog-2   	  131854	      9496 ns/op	   28536 B/op	      32 allocs/op
+PASS
+ok  	github.com/stacklok/mecatl/engine/prompt	23.994s
+goos: linux
+goarch: amd64
+pkg: github.com/stacklok/mecatl/engine/governance
+cpu: AMD EPYC 9V74 80-Core Processor                
+BenchmarkSplitCommands-2          	 1448890	       823.2 ns/op	     584 B/op	      13 allocs/op
+BenchmarkSplitCommands-2          	 1473964	       811.7 ns/op	     584 B/op	      13 allocs/op
+BenchmarkSplitCommands-2          	 1462483	       871.8 ns/op	     584 B/op	      13 allocs/op
+BenchmarkSplitCommands-2          	 1333875	       854.3 ns/op	     584 B/op	      13 allocs/op
+BenchmarkSplitCommands-2          	 1447473	       825.7 ns/op	     584 B/op	      13 allocs/op
+BenchmarkSplitCommands-2          	 1469218	       813.0 ns/op	     584 B/op	      13 allocs/op
+BenchmarkSplitCommands-2          	 1460712	       819.2 ns/op	     584 B/op	      13 allocs/op
+BenchmarkSplitCommands-2          	 1460871	       821.3 ns/op	     584 B/op	      13 allocs/op
+BenchmarkSplitCommands-2          	 1459880	       821.5 ns/op	     584 B/op	      13 allocs/op
+BenchmarkSplitCommands-2          	 1465958	       815.4 ns/op	     584 B/op	      13 allocs/op
+BenchmarkReadOnlyBash-2           	  623394	      1721 ns/op	     816 B/op	      19 allocs/op
+BenchmarkReadOnlyBash-2           	  657657	      1705 ns/op	     816 B/op	      19 allocs/op
+BenchmarkReadOnlyBash-2           	  646846	      1715 ns/op	     816 B/op	      19 allocs/op
+BenchmarkReadOnlyBash-2           	  642919	      1699 ns/op	     816 B/op	      19 allocs/op
+BenchmarkReadOnlyBash-2           	  648778	      1688 ns/op	     816 B/op	      19 allocs/op
+BenchmarkReadOnlyBash-2           	  688831	      1681 ns/op	     816 B/op	      19 allocs/op
+BenchmarkReadOnlyBash-2           	  700677	      1762 ns/op	     816 B/op	      19 allocs/op
+BenchmarkReadOnlyBash-2           	  718758	      1681 ns/op	     816 B/op	      19 allocs/op
+BenchmarkReadOnlyBash-2           	  707523	      1689 ns/op	     816 B/op	      19 allocs/op
+BenchmarkReadOnlyBash-2           	  689475	      1667 ns/op	     816 B/op	      19 allocs/op
+BenchmarkSubstitutionReadOnly-2   	  633988	      1843 ns/op	     408 B/op	      14 allocs/op
+BenchmarkSubstitutionReadOnly-2   	  609871	      1803 ns/op	     408 B/op	      14 allocs/op
+BenchmarkSubstitutionReadOnly-2   	  633158	      1805 ns/op	     408 B/op	      14 allocs/op
+BenchmarkSubstitutionReadOnly-2   	  616152	      1803 ns/op	     408 B/op	      14 allocs/op
+BenchmarkSubstitutionReadOnly-2   	  608422	      1817 ns/op	     408 B/op	      14 allocs/op
+BenchmarkSubstitutionReadOnly-2   	  629527	      1803 ns/op	     408 B/op	      14 allocs/op
+BenchmarkSubstitutionReadOnly-2   	  652441	      1806 ns/op	     408 B/op	      14 allocs/op
+BenchmarkSubstitutionReadOnly-2   	  603038	      1804 ns/op	     408 B/op	      14 allocs/op
+BenchmarkSubstitutionReadOnly-2   	  656394	      1802 ns/op	     408 B/op	      14 allocs/op
+BenchmarkSubstitutionReadOnly-2   	  640903	      1800 ns/op	     408 B/op	      14 allocs/op
+BenchmarkIsolationApprovable-2    	  415034	      2745 ns/op	    1272 B/op	      32 allocs/op
+BenchmarkIsolationApprovable-2    	  408042	      2746 ns/op	    1272 B/op	      32 allocs/op
+BenchmarkIsolationApprovable-2    	  422168	      2739 ns/op	    1272 B/op	      32 allocs/op
+BenchmarkIsolationApprovable-2    	  431061	      2722 ns/op	    1272 B/op	      32 allocs/op
+BenchmarkIsolationApprovable-2    	  425742	      2723 ns/op	    1272 B/op	      32 allocs/op
+BenchmarkIsolationApprovable-2    	  433293	      2732 ns/op	    1272 B/op	      32 allocs/op
+BenchmarkIsolationApprovable-2    	  405626	      2744 ns/op	    1272 B/op	      32 allocs/op
+BenchmarkIsolationApprovable-2    	  436503	      2732 ns/op	    1272 B/op	      32 allocs/op
+BenchmarkIsolationApprovable-2    	  418953	      2762 ns/op	    1272 B/op	      32 allocs/op
+BenchmarkIsolationApprovable-2    	  424261	      2736 ns/op	    1272 B/op	      32 allocs/op
+BenchmarkEvaluatorEvaluate/simple-tool-2         	  900117	      1334 ns/op	     856 B/op	      13 allocs/op
+BenchmarkEvaluatorEvaluate/simple-tool-2         	  871437	      1336 ns/op	     856 B/op	      13 allocs/op
+BenchmarkEvaluatorEvaluate/simple-tool-2         	  900806	      1331 ns/op	     856 B/op	      13 allocs/op
+BenchmarkEvaluatorEvaluate/simple-tool-2         	  898972	      1334 ns/op	     856 B/op	      13 allocs/op
+BenchmarkEvaluatorEvaluate/simple-tool-2         	  904828	      1330 ns/op	     856 B/op	      13 allocs/op
+BenchmarkEvaluatorEvaluate/simple-tool-2         	  854671	      1330 ns/op	     856 B/op	      13 allocs/op
+BenchmarkEvaluatorEvaluate/simple-tool-2         	  852982	      1335 ns/op	     856 B/op	      13 allocs/op
+BenchmarkEvaluatorEvaluate/simple-tool-2         	  783298	      1370 ns/op	     856 B/op	      13 allocs/op
+BenchmarkEvaluatorEvaluate/simple-tool-2         	  907315	      1332 ns/op	     856 B/op	      13 allocs/op
+BenchmarkEvaluatorEvaluate/simple-tool-2         	  876142	      1332 ns/op	     856 B/op	      13 allocs/op
+BenchmarkEvaluatorEvaluate/plain-bash-2          	  578545	      2079 ns/op	     920 B/op	      18 allocs/op
+BenchmarkEvaluatorEvaluate/plain-bash-2          	  557805	      2078 ns/op	     920 B/op	      18 allocs/op
+BenchmarkEvaluatorEvaluate/plain-bash-2          	  547392	      2071 ns/op	     920 B/op	      18 allocs/op
+BenchmarkEvaluatorEvaluate/plain-bash-2          	  576436	      2074 ns/op	     920 B/op	      18 allocs/op
+BenchmarkEvaluatorEvaluate/plain-bash-2          	  563100	      2086 ns/op	     920 B/op	      18 allocs/op
+BenchmarkEvaluatorEvaluate/plain-bash-2          	  505512	      2105 ns/op	     920 B/op	      18 allocs/op
+BenchmarkEvaluatorEvaluate/plain-bash-2          	  572406	      2087 ns/op	     920 B/op	      18 allocs/op
+BenchmarkEvaluatorEvaluate/plain-bash-2          	  521773	      2087 ns/op	     920 B/op	      18 allocs/op
+BenchmarkEvaluatorEvaluate/plain-bash-2          	  551169	      2083 ns/op	     920 B/op	      18 allocs/op
+BenchmarkEvaluatorEvaluate/plain-bash-2          	  584146	      2092 ns/op	     920 B/op	      18 allocs/op
+BenchmarkEvaluatorEvaluate/compound-bash-2       	  280753	      4034 ns/op	    1544 B/op	      29 allocs/op
+BenchmarkEvaluatorEvaluate/compound-bash-2       	  276013	      4061 ns/op	    1544 B/op	      29 allocs/op
+BenchmarkEvaluatorEvaluate/compound-bash-2       	  301870	      4046 ns/op	    1544 B/op	      29 allocs/op
+BenchmarkEvaluatorEvaluate/compound-bash-2       	  295108	      4057 ns/op	    1544 B/op	      29 allocs/op
+BenchmarkEvaluatorEvaluate/compound-bash-2       	  284382	      4070 ns/op	    1544 B/op	      29 allocs/op
+BenchmarkEvaluatorEvaluate/compound-bash-2       	  293691	      4076 ns/op	    1544 B/op	      29 allocs/op
+BenchmarkEvaluatorEvaluate/compound-bash-2       	  286240	      4038 ns/op	    1544 B/op	      29 allocs/op
+BenchmarkEvaluatorEvaluate/compound-bash-2       	  282530	      4051 ns/op	    1544 B/op	      29 allocs/op
+BenchmarkEvaluatorEvaluate/compound-bash-2       	  298286	      4036 ns/op	    1544 B/op	      29 allocs/op
+BenchmarkEvaluatorEvaluate/compound-bash-2       	  283569	      4072 ns/op	    1544 B/op	      29 allocs/op
+PASS
+ok  	github.com/stacklok/mecatl/engine/governance	81.362s
+goos: linux
+goarch: amd64
+pkg: github.com/stacklok/mecatl/engine/agent
+cpu: AMD EPYC 9V74 80-Core Processor                
+BenchmarkBuildRequest-2          	  215598	      5461 ns/op	   12464 B/op	      59 allocs/op
+BenchmarkBuildRequest-2          	  227689	      5350 ns/op	   12463 B/op	      58 allocs/op
+BenchmarkBuildRequest-2          	  161227	      6628 ns/op	   12464 B/op	      59 allocs/op
+BenchmarkBuildRequest-2          	  224690	      5525 ns/op	   12463 B/op	      58 allocs/op
+BenchmarkBuildRequest-2          	  210712	      5430 ns/op	   12463 B/op	      58 allocs/op
+BenchmarkBuildRequest-2          	  224995	      5492 ns/op	   12463 B/op	      58 allocs/op
+BenchmarkBuildRequest-2          	  222520	      5563 ns/op	   12464 B/op	      58 allocs/op
+BenchmarkBuildRequest-2          	  225417	      5736 ns/op	   12464 B/op	      58 allocs/op
+BenchmarkBuildRequest-2          	  221967	      5528 ns/op	   12464 B/op	      59 allocs/op
+BenchmarkBuildRequest-2          	  225561	      5375 ns/op	   12464 B/op	      58 allocs/op
+BenchmarkHeuristicCompact-2      	   48292	     24712 ns/op	   15436 B/op	     199 allocs/op
+BenchmarkHeuristicCompact-2      	   44944	     26357 ns/op	   15436 B/op	     199 allocs/op
+BenchmarkHeuristicCompact-2      	   48198	     24791 ns/op	   15435 B/op	     199 allocs/op
+BenchmarkHeuristicCompact-2      	   47727	     24870 ns/op	   15436 B/op	     199 allocs/op
+BenchmarkHeuristicCompact-2      	   48438	     24689 ns/op	   15436 B/op	     199 allocs/op
+BenchmarkHeuristicCompact-2      	   48668	     24760 ns/op	   15435 B/op	     199 allocs/op
+BenchmarkHeuristicCompact-2      	   48153	     24679 ns/op	   15435 B/op	     199 allocs/op
+BenchmarkHeuristicCompact-2      	   48522	     24765 ns/op	   15435 B/op	     199 allocs/op
+BenchmarkHeuristicCompact-2      	   49003	     24571 ns/op	   15436 B/op	     199 allocs/op
+BenchmarkHeuristicCompact-2      	   45075	     25206 ns/op	   15435 B/op	     199 allocs/op
+BenchmarkCascadeCompact-2        	   35670	     34019 ns/op	   29534 B/op	     249 allocs/op
+BenchmarkCascadeCompact-2        	   36260	     33138 ns/op	   29534 B/op	     249 allocs/op
+BenchmarkCascadeCompact-2        	   35740	     33546 ns/op	   29534 B/op	     249 allocs/op
+BenchmarkCascadeCompact-2        	   35600	     33578 ns/op	   29534 B/op	     249 allocs/op
+BenchmarkCascadeCompact-2        	   35631	     33367 ns/op	   29534 B/op	     249 allocs/op
+BenchmarkCascadeCompact-2        	   35694	     33598 ns/op	   29534 B/op	     249 allocs/op
+BenchmarkCascadeCompact-2        	   35782	     33446 ns/op	   29534 B/op	     249 allocs/op
+BenchmarkCascadeCompact-2        	   35415	     33951 ns/op	   29534 B/op	     249 allocs/op
+BenchmarkCascadeCompact-2        	   35908	     34293 ns/op	   29534 B/op	     249 allocs/op
+BenchmarkCascadeCompact-2        	   34933	     33878 ns/op	   29534 B/op	     249 allocs/op
+BenchmarkRunReadOnlyTurn-2       	   39680	     29836 ns/op	   32675 B/op	     158 allocs/op
+BenchmarkRunReadOnlyTurn-2       	   40513	     29696 ns/op	   32675 B/op	     158 allocs/op
+BenchmarkRunReadOnlyTurn-2       	   39349	     30068 ns/op	   32675 B/op	     158 allocs/op
+BenchmarkRunReadOnlyTurn-2       	   40575	     29585 ns/op	   32675 B/op	     158 allocs/op
+BenchmarkRunReadOnlyTurn-2       	   39786	     30151 ns/op	   32675 B/op	     158 allocs/op
+BenchmarkRunReadOnlyTurn-2       	   39523	     29915 ns/op	   32675 B/op	     158 allocs/op
+BenchmarkRunReadOnlyTurn-2       	   40176	     29844 ns/op	   32675 B/op	     158 allocs/op
+BenchmarkRunReadOnlyTurn-2       	   39292	     29818 ns/op	   32675 B/op	     158 allocs/op
+BenchmarkRunReadOnlyTurn-2       	   41456	     29794 ns/op	   32675 B/op	     158 allocs/op
+BenchmarkRunReadOnlyTurn-2       	   41199	     29639 ns/op	   32675 B/op	     158 allocs/op
+BenchmarkRunReadParallelTurn-2   	   27357	     43431 ns/op	   38563 B/op	     222 allocs/op
+BenchmarkRunReadParallelTurn-2   	   26713	     43982 ns/op	   38563 B/op	     222 allocs/op
+BenchmarkRunReadParallelTurn-2   	   28062	     43084 ns/op	   38563 B/op	     222 allocs/op
+BenchmarkRunReadParallelTurn-2   	   28087	     42688 ns/op	   38563 B/op	     222 allocs/op
+BenchmarkRunReadParallelTurn-2   	   27844	     48204 ns/op	   38563 B/op	     222 allocs/op
+BenchmarkRunReadParallelTurn-2   	   27590	     43254 ns/op	   38563 B/op	     222 allocs/op
+BenchmarkRunReadParallelTurn-2   	   28356	     43359 ns/op	   38563 B/op	     222 allocs/op
+BenchmarkRunReadParallelTurn-2   	   27915	     42439 ns/op	   38563 B/op	     222 allocs/op
+BenchmarkRunReadParallelTurn-2   	   28140	     43152 ns/op	   38563 B/op	     222 allocs/op
+BenchmarkRunReadParallelTurn-2   	   28122	     43112 ns/op	   38563 B/op	     222 allocs/op
+BenchmarkRunMutatingTurn-2       	   44067	     26780 ns/op	   31802 B/op	     153 allocs/op
+BenchmarkRunMutatingTurn-2       	   43633	     27053 ns/op	   31802 B/op	     153 allocs/op
+BenchmarkRunMutatingTurn-2       	   45409	     26429 ns/op	   31803 B/op	     153 allocs/op
+BenchmarkRunMutatingTurn-2       	   45454	     26528 ns/op	   31803 B/op	     153 allocs/op
+BenchmarkRunMutatingTurn-2       	   43687	     27110 ns/op	   31802 B/op	     153 allocs/op
+BenchmarkRunMutatingTurn-2       	   46176	     26259 ns/op	   31803 B/op	     153 allocs/op
+BenchmarkRunMutatingTurn-2       	   45681	     26754 ns/op	   31802 B/op	     153 allocs/op
+BenchmarkRunMutatingTurn-2       	   42096	     27235 ns/op	   31803 B/op	     153 allocs/op
+BenchmarkRunMutatingTurn-2       	   44276	     26944 ns/op	   31803 B/op	     153 allocs/op
+BenchmarkRunMutatingTurn-2       	   45570	     26784 ns/op	   31803 B/op	     153 allocs/op
+PASS
+ok  	github.com/stacklok/mecatl/engine/agent	72.084s
