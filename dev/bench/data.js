@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781536910646,
+  "lastUpdate": 1781536913282,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -26295,6 +26295,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/6f13e0c9b6ed5d08d8d790b5f86b0c9fc9cbccc3"
         },
         "date": 1781517027563,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "3ac0fb6a64048fac66ad01c78601d5a468b892d1",
+          "message": "fix(context-window): echo a provisional 0 until the live refresh settles, so the footer self-heals\n\nThe unification (3c8f918) made the engine resolve-at-use, but the mecatui\nfooter stayed pinned to the 128K floor for a fresh OpenRouter openai/gpt-5.5\nselector session. Root cause: windowResolver floors to 128000 and NEVER\nreturns 0, so the server echo was 128000 (not 0) before the async live\nmodel-list landed — and the client self-heal gate fires only on\nContextWindow==0, so it never fired. The footer was stuck at the create-time\nfloor (create raced the sub-second swap). The offline test had used echo=0,\na value the server never produced, so it passed while reality failed.\n\nSplit the resolver so the echo can honestly say \"not resolved yet\":\n- windowResolver (ENGINE) unchanged — always floors to 128k, never 0\n  (compaction needs a number every turn).\n- echoWindowResolver (ECHO, used only by the DefaultResolvedModel seed and\n  Config.ResolveContextWindow) returns 0 (provisional) when the model isn't\n  known at a real value AND the live refresh hasn't completed; otherwise the\n  real value (incl. the 128k floor once settled). Both share resolveWindowCore\n  so override/live/catalog precedence can't drift; they differ only in the\n  terminal unknown branch.\n- A new completed atomic.Bool on liveMetaStore (markRefreshCompleted) is set\n  in every SETTLE path — sync swap, async success, async fetch-fail/empty\n  fallback, and the no-lister no-op — and NOT on shutdown-cancel. So the echo\n  can never stick at 0: a no-network/offline deployment floors to 128k once\n  the refresh settles, and a genuinely-catalogued model is known-at-real-value\n  from t=0 (never provisional).\n\nThe client gate (==0) is now correct- and bounded-by-construction: it fires\nwhile provisional and stops once the echo goes non-zero (the one-shot refresh\nsettles in seconds). Footer degrades to bare \"ctx N\" (no bar) only while the\nwindow is genuinely unknown, then the bar fills in — strictly better than the\nold permanently-wrong 128K bar.\n\nNo proto change (0 maps through as before). Provisional 0 lives only on the\necho; the engine never sees it.\n\nLive-verified on the SELECTOR path (real OpenRouter, MECATL_LIVE_MODEL_REFRESH_DELAY\nforcing the race): create-echo 0 → GetSession 0/0/0 at t=1/2/3 → 1050000 at\nt=5; and a model absent from catalog+live floors 0 → 128000 once settled\n(never stuck at 0).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-15T18:12:09+03:00",
+          "tree_id": "ba10df09b6414127ec723a80a79ae2a1fa508721",
+          "url": "https://github.com/stacklok/mecatl/commit/3ac0fb6a64048fac66ad01c78601d5a468b892d1"
+        },
+        "date": 1781536912270,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
