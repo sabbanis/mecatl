@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781500262182,
+  "lastUpdate": 1781500264356,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -3740,6 +3740,42 @@ window.BENCHMARK_DATA = {
             "name": "tui_scrollback_view_steady/goroutine_delta",
             "value": 0,
             "unit": "goroutines"
+          }
+        ]
+      }
+    ],
+    "mecatl scenarios (bigger-is-better)": [
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "769966850abfbb437ec70eda7ce4c911ec12e289",
+          "message": "docs(skills): cross-reference PGO in the perf-optimization skill\n\nAdd a brief \"Complementary: PGO\" section + a PGO trigger keyword to the description,\nso the skill covers the profile-guided-optimization lever (task pgo:collect, the\ncmd/mecated/default.pgo auto-pickup, the don't-commit-an-offline-profile rule) and a\n\"how do I PGO mecatl\" question routes here. Detail is not duplicated — it points to\nperf-tracking.md Phase 4 for the full rationale + production refresh process.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-06-15T07:46:19+03:00",
+          "tree_id": "63d17d732ffd7b3db70262ef63d3d75c94ea0328",
+          "url": "https://github.com/stacklok/mecatl/commit/769966850abfbb437ec70eda7ce4c911ec12e289"
+        },
+        "date": 1781500263469,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
           }
         ]
       }
