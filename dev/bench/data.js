@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781501537392,
+  "lastUpdate": 1781501539345,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -15013,6 +15013,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/d1f6d53bfd753ddd06b95aa556f960548ad47992"
         },
         "date": 1781500593079,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "d418cc754fb3136e3e81ecfda55a08f46eea0225",
+          "message": "docs(perf): record the live trend-dashboard URL + correct the private-Pages note\n\nThe org is on GHE/internal Pages, so the dashboard IS live (earlier note wrongly said\nit needed a paid feature). Document the access-controlled URL in perf-tracking.md\n(Phase 3) and the workflows README so it's findable:\nhttps://potential-barnacle-mvm429e.pages.github.io/dev/bench/ — random slug is GitHub's\nprivate-Pages hostname (stable; bookmark it), chart under /dev/bench/, bare root 404s.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-06-15T08:26:37+03:00",
+          "tree_id": "fa7dcd2d7a5169e57de20be5b143abe3d14ae91a",
+          "url": "https://github.com/stacklok/mecatl/commit/d418cc754fb3136e3e81ecfda55a08f46eea0225"
+        },
+        "date": 1781501538630,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
