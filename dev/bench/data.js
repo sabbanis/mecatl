@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781506334912,
+  "lastUpdate": 1781506336873,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -18567,6 +18567,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 87,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "690ec1764e72841700c1ef49d10aa4f3a46484da",
+          "message": "test(e2e): live compaction-survival spec + --context-window-override flag\n\nAdds the first LIVE end-to-end guard that a real model survives a real\nconversation compaction — the highest-fidelity regression test for the\nrole-blind-tail bug fixed in fff9992 (the offline back-snap unit tests and the\nphase-3 archive gate are its deterministic twins).\n\nThe trigger only fires at 80% of the model's context window, which the catalog\nreports as ~200k for the haiku lane — far past the suite's cost budget. So\npromote the existing unexported test-only `contextWindowOverride` field to a\ndocumented operator flag `--context-window-override` (cmd/mecated): it forces a\nsmall, cheap compaction window for the spec, and doubles as an operator\nworkaround for a model that under-reports its window or sits behind a proxy.\nDefault 0 leaves the live/catalogued/128k resolution byte-identical.\n\nThe spec spawns its own mecated with a 2000-token window, then drives a reused\nsession: framing turn, a distinctive task (\"on GO, Write PINEAPPLE to\nresult.txt\") given as a NON-first user turn (so only the back-snap protects it),\nthen sized-fixture Reads that deterministically grow history past the trigger so\ncompaction fires at turn 3 — two turns before GO. Three anti-vacuity guards: it\nfails loudly if no EvCompaction was observed, asserts a compaction landed before\nthe GO run, and asserts result.txt is empty before GO (so an early write can't\npass the survival check vacuously). Verified live on the haiku lane (compaction\nfired before GO; the task survived).\n\nAlso closes a child-engine dual-path drift: the legacy literal childEngineDeps\n(buildUserModelReviewEngine / buildParallelJudgeEngine) hardcoded the 128k\ndefault and ignored the override; childContextWindow now resolves it the same\nway engineDepsForProvider does, so both child builders agree (default 0 stays\nbyte-identical).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-15T09:44:03+03:00",
+          "tree_id": "f22ff13f4c954da6896e1d076160929a78a8f8e8",
+          "url": "https://github.com/stacklok/mecatl/commit/690ec1764e72841700c1ef49d10aa4f3a46484da"
+        },
+        "date": 1781506336147,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1466,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35130,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7125,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 96,
             "unit": "allocs/op"
           },
           {
