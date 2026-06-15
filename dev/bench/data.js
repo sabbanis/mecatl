@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781538247481,
+  "lastUpdate": 1781538249958,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -29781,6 +29781,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 86.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "71cc01bdd9c548ff4d32ef7648de814ea65b2e62",
+          "message": "docs: adopt matlatl doc-graph gate + committed llms.txt\n\nWire mecatl into matlatl's docs link-graph tooling and make the docs\nnavigable, gated, and agent-readable.\n\nCorpus config:\n- .matlatlignore: drop transient .scratch/ notes, e2e/ fixtures, and the\n  isolated .claude/agents/ definitions (no links to check) so the corpus is\n  real docs only and `check --strict` is clean.\n- .matlatl.yml: emitExclude .claude/skills/ (link-checked, hidden from the\n  navigation surface).\n\nNavigation wiring (was: README the sole hub, design/ a flat dead-end pile,\nharnesses an unlinked numbered series; compactness 0.005):\n- docs/design/README.md grows a subsystem-grouped index; every design doc\n  gets a back-link footer + topical Related links.\n- harnesses 01-09 get a prev/next + index spine; stale file counts fixed.\n- perf docs cross-linked; the two real orphans (ADR 0001, perf survey) wired.\n- low-scent bare-filename link text rewritten to descriptive phrases.\n- fix two stray unterminated code fences (SYSTEM-PROMPT-RESEARCH,\n  UX-DISCOVERABILITY) that swallowed trailing content — surfaced by matlatl.\nCompactness 0.005 -> 0.35; 0 broken links/anchors, orphans, or unreachable.\n\nEnforcement:\n- commit generated llms.txt (matlatl importance-ordered nav surface), marked\n  linguist-generated.\n- CI `docs` job: strict gate via the matlatl composite action (pinned\n  stacklok/matlatl@v0.0.5) + an llms.txt freshness diff.\n- Taskfile: docs:llms / docs:check / docs targets; docs:llms folded into\n  `task generate`.\n- CLAUDE.md: always run `task generate` / `task docs` before committing doc\n  changes so llms.txt never drifts.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-15T18:38:48+03:00",
+          "tree_id": "ad1406eea834d063f0de5415791013f498f4df27",
+          "url": "https://github.com/stacklok/mecatl/commit/71cc01bdd9c548ff4d32ef7648de814ea65b2e62"
+        },
+        "date": 1781538249239,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1465.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35126,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7059.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 81,
             "unit": "allocs/op"
           },
           {
