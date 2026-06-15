@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781500591869,
+  "lastUpdate": 1781500593604,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -7503,6 +7503,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/769966850abfbb437ec70eda7ce4c911ec12e289"
         },
         "date": 1781500263469,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "d1f6d53bfd753ddd06b95aa556f960548ad47992",
+          "message": "ci(perf): fetch the allocs baseline via authenticated gh api (private-repo safe)\n\nThe first perf-main run failed: github-action-benchmark's auto-push fetches the\ngh-pages branch before it can create it, and the branch didn't exist\n(`fatal: couldn't find remote ref gh-pages`). Bootstrapped gh-pages as an empty\norphan branch (one-time) so the action can fetch+push it.\n\nSeparately, the allocs-gate baseline was fetched via `curl raw.githubusercontent.com`,\nwhich is UNAUTHENTICATED and 404s on a private repo (this repo is private) — silently\nsinking the micro allocs gate into its skip path on every PR. Switch both fetch sites\n(perf-pr + perf-main) to authenticated `gh api ...contents...?ref=gh-pages` with the\nGITHUB_TOKEN; a failed fetch still leaves NO file so allocsgate takes its absent→skip\npath (not present-but-empty→fail-loud). The trend store + the github-action-benchmark\nscenario gates were already private-safe (authenticated git via GITHUB_TOKEN); only\nthe raw-URL micro-baseline fetch was broken. Documented the private-repo posture +\nthe gh-pages bootstrap requirement in perf-tracking.md.\n\nCo-Authored-By: Claude Fable 5 <noreply@anthropic.com>",
+          "timestamp": "2026-06-15T08:09:38+03:00",
+          "tree_id": "9bee2bf24954b44412d9a1680f7af13b9fd71adb",
+          "url": "https://github.com/stacklok/mecatl/commit/d1f6d53bfd753ddd06b95aa556f960548ad47992"
+        },
+        "date": 1781500593079,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
