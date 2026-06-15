@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781517023531,
+  "lastUpdate": 1781517026019,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -22305,6 +22305,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 96,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "6f13e0c9b6ed5d08d8d790b5f86b0c9fc9cbccc3",
+          "message": "feat(perm): graduated operator posture ladder + truly-yolo\n\nIntroduce a server-wide operator POSTURE ladder set at process start:\nstrict < trusted < auto < yolo. Posture is a composition-layer front-end\nthat folds onto Config once in Build and resolves to existing knobs\n(allow-all rule, main/child substitution loosening, project trust) — it\ncomposes rules + evaluator options and always flows through Evaluate,\nnever a bypass (the rejected ModeYolo discipline).\n\n  strict  (default): full defenses, untrusted workspace\n  trusted: project trust honored, gate still asks\n  auto:    mutate-ask floor + MAIN $()/heredoc waived; CHILD $()/heredoc\n           still prompts (prompt-injection defense ON); trust honored\n  yolo:    everything waived INCLUDING child $()/heredoc substitution\n           (child prompt-injection defense OFF); trust honored\n\n--yolo is now an alias for posture yolo (truly waives child substitution\ntoo — a behavior change for existing --yolo users, called out in the\nstartup WARN + release notes); --trust-project aliases trusted. Set via\n--posture, the aliases, or the operator-global settings.yaml `posture:`\nkey. Posture is OPERATOR-TIER ONLY and fail-closed: the enum zero value\nis strict, unknown/empty resolves to strict, and a PROJECT-tier `posture:`\nis ignored with a WARN (a malicious repo cannot raise posture).\n\nThe root/no-sandbox refusal keys off the AUTHORITATIVE composed posture\n(including operator-YAML) via a Build-time backstop, so a YAML-only tier\ncannot escape it. Invariants stay locked at every tier incl. yolo:\nplan-mode hard-deny, deny-dominance, no-stdio-MCP, secret/header\nredaction, gauntlet-#7.\n\nDisclosure (the chosen mitigation since the sandbox gate was waived):\nper-tier startup WARN (yolo names child-injection-OFF + isolated-only),\n`mecated --print-posture`, a `/posture` TUI builtin, a warning-styled\nheader badge for auto/yolo (separate from the session mode segment), and\nthe tier echoed to clients via ServerCapabilities.posture.\n\nStructural guards: TestPostureResolutionTable (tier->knob table),\nTestChildSubstitutionLooseningIsTierDependent, TestPostureIotaOrderingIsContract,\nTestProjectPostureIgnoredWithWarn (fail-closed core), the Build-seam test,\nand an offline model-facing e2e proving a child heredoc auto-runs under\nyolo and prompts/auto-denies under auto/strict (incl. an adversarial\nforged-approval case).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-15T12:40:15+03:00",
+          "tree_id": "d0a568205a1fe4ea24dd8f1069c84e45283e6fa9",
+          "url": "https://github.com/stacklok/mecatl/commit/6f13e0c9b6ed5d08d8d790b5f86b0c9fc9cbccc3"
+        },
+        "date": 1781517025155,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4476,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35129,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7038,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 86.5,
             "unit": "allocs/op"
           },
           {
