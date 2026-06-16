@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781599886213,
+  "lastUpdate": 1781599888499,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -75229,6 +75229,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/c7a54e1ebaebdb9b5c274624757e11e289c41802"
         },
         "date": 1781598663602,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "169f3b921566bc61cd72ec7fe9d9dca2a83e9323",
+          "message": "docs(mecatequi): sync architecture / user / operator / README + fix docs gate\n\nBring the mecatequi docs up to date across every perspective after the feature\nevolved across many commits:\n\n- Architecture: add mecatequi as the 4th cmd composition root in\n  docs/architecture.md (CMD subgraph + a full paragraph) and the\n  docs/design/ARCHITECTURE.md cmd/ tree (mecatui was also missing); reconcile\n  docs/design/MECATEQUI.md to as-built (the internal/cliconfig shared\n  credentials, and the gitDiffPatch untracked-file inclusion mechanism that\n  wasn't documented). CLAUDE.md: sharpen the cmd/mecatequi line to pin the\n  two invariants a future edit could violate and tests don't enforce — the\n  binary is FORGE-AGNOSTIC (GitHub glue lives only in .github/ + shell, never\n  the binary or engine/) and the split-privilege token boundary.\n- User + operator: verified docs/usage.md §10 is current and complete (the\n  trigger walkthrough, the create-the-label-first footgun, the\n  passthrough-vs-catalogued model guidance, the templating + placeholders, the\n  Finding-B residual) — no change needed.\n- README: add a concise mecatequi feature bullet + binary + project-layout rows\n  + the MECATEQUI.md design-doc link.\n\nAlso: add .github/mecatequi/ to .matlatlignore. The dogfood template\n(.github/mecatequi/pr-body.md, commit c7a54e1) has a {{run_url}} placeholder\nmatlatl read as a broken link + flagged the template as an orphan, which was\nfailing `matlatl check --strict` (the CI docs job was red on main since that\ncommit). The template is scaffolding, not docs — same ignore pattern as\ne2e/fixtures/ and .claude/agents/.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T11:46:02+03:00",
+          "tree_id": "9bb4aef16e8ad1698079c75c928edd226a5812a7",
+          "url": "https://github.com/stacklok/mecatl/commit/169f3b921566bc61cd72ec7fe9d9dca2a83e9323"
+        },
+        "date": 1781599887655,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
