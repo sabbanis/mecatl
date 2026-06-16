@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781610884914,
+  "lastUpdate": 1781610887255,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -101531,6 +101531,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/2ef8d118ba5e1b5c26dc7d45a3a7c9f5a828eef4"
         },
         "date": 1781609041409,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "f8d5cfdd2b7b58797e5b451188893c110ccc5398",
+          "message": "fix(mecatequi): empty ${{ }} in extract-prompt action description broke the reusable workflow (#70)\n\nThe mecatequi-extract-prompt composite action's `description:` contained a\nliteral empty GitHub-expression placeholder in its injection-safety prose.\nGitHub's object-templating engine evaluates expressions inside parsed\naction.yml scalars (name/description/defaults/output values), and an EMPTY\none is a hard parse error (\"An expression was expected\") — so the action\nfailed to LOAD and every v0.0.2 reusable-workflow run aborted in `implement`\nbefore the agent started. Ironically the prose explaining the rule tripped\nthe parser with its own example.\n\n- Reword the description to drop the empty placeholder (no behaviour change).\n- Add `check-action-templates.sh` + `task lint:action-templates` (chained into\n  lint:actions and the CI Actions step): rejects a live empty placeholder in any\n  parsed field of a workflow/action manifest, excluding YAML comment lines and\n  valid non-empty expressions. Mutation-proven (red on the unfixed line, green\n  after). This is the regression guard the issue asked for — actionlint does not\n  load composite actions, so it never caught this.\n- Bump the reusable workflow's three sibling-action pins + check-reusable-pins\n  default + the doc/example caller refs v0.0.2 -> v0.0.3.\n\nSecondary (issue #70): root-caused from the real consumer run\n(a downstream-consumer issue #416) why publish exited red without the honest failure comment\nwhen implement died at action-load. publish.sh's empty-EXIT_CLASS -> setup-failure\nbranch was correct, but the `gh issue comment` itself threw (the minted App token\ncould not resolve the issue — likely missing issues:write) and `set -euo pipefail`\naborted before `exit 0`. Guard every early comment site with a `post_issue_comment`\nhelper that emits a loud ::error:: on a failed post and lets the clean/no-change\nbranches still reach `exit 0` (the privileged push/PR tail was already guarded).\nMutation-proven offline test added.\n\nAlso reword two Taskfile `desc:` blocks that contained literal `{{ }}` (go-task\nevaluates Go templates in desc and was erroring).\n\nCloses #70\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T14:49:26+03:00",
+          "tree_id": "ba04604c504835e33a838431153ec4637581b7ff",
+          "url": "https://github.com/stacklok/mecatl/commit/f8d5cfdd2b7b58797e5b451188893c110ccc5398"
+        },
+        "date": 1781610886547,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
