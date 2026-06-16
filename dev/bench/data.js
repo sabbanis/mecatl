@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781597107566,
+  "lastUpdate": 1781597109554,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -63423,6 +63423,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 87,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "d46a486225249ed68c5c84fc66fb11b36b06ab93",
+          "message": "fix(mecatequi): seed the lease ref before force-with-lease push (re-run idempotency)\n\nOn a re-run for the same issue the deterministic branch already exists remotely,\nbut the shallow checkout never fetched it, so `git push --force-with-lease` was\nrejected with \"stale info\" (no remote-tracking ref to lease against). Fetch the\nbranch into its tracking ref first (no-op on the first run); the lease is then\nvalid and the force-update overwrites the prior attempt as intended. First-run\nPR creation was already fine.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T10:58:01+03:00",
+          "tree_id": "e5554fd7c7f383bd73441b4efffdeee9c88799f7",
+          "url": "https://github.com/stacklok/mecatl/commit/d46a486225249ed68c5c84fc66fb11b36b06ab93"
+        },
+        "date": 1781597108933,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35130,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7043,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 88.5,
             "unit": "allocs/op"
           },
           {
