@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781586888679,
+  "lastUpdate": 1781586890582,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -33839,6 +33839,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/71cc01bdd9c548ff4d32ef7648de814ea65b2e62"
         },
         "date": 1781538251274,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "c94a8795922b512a2f3f0308afebab5bcd1eb2cc",
+          "message": "refactor(cli): share provider-credential env+flags across mecated/mecatui/mecatequi\n\nThe provider-credential env reads (OPENAI_API_KEY / ANTHROPIC_API_KEY /\nOPENROUTER_API_KEY) and the three `--*-base-url` flags were copy-pasted across all\nthree `cmd/` mains — which is exactly why mecatequi had drifted to reading only\nOPENAI_API_KEY and exposing only `--openai-base-url` (it ran OpenRouter only by\naccident, via the registry's env fallback).\n\n- New `internal/cliconfig` package (cmd-side composition): `RegisterProviderFlags`\n  (the three base-URL flags, per-main help text passthrough), `(*ProviderFlags).Apply`\n  (env keys + base URLs onto `app.Config`, nil-safe for direct-built configs), and\n  `ReadProviderKeys` (the single definition of the env-var names, shared by the\n  wiring path and mecatui's presence guard so they can't diverge). Never logs key\n  values. No os.Getenv-direct reads added to `internal/app` (its envDetector seam\n  is preserved).\n- mecated and mecatui are pure extractions — same flag names, same help text, same\n  env reads, same Config fields, same UseOpenAI semantics; their existing tests stay\n  green as the regression guard.\n- mecatequi GAINS `--openrouter-base-url` + `--anthropic-base-url` and the\n  OPENROUTER_API_KEY + ANTHROPIC_API_KEY reads, so it can run Anthropic and\n  OpenRouter explicitly like its siblings.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T08:09:20+03:00",
+          "tree_id": "1628e4b99431fe98e3b192d0facdb888f67eb1c9",
+          "url": "https://github.com/stacklok/mecatl/commit/c94a8795922b512a2f3f0308afebab5bcd1eb2cc"
+        },
+        "date": 1781586889928,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
