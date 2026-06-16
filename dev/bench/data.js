@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781610882701,
+  "lastUpdate": 1781610884914,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -100803,6 +100803,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 96,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "f8d5cfdd2b7b58797e5b451188893c110ccc5398",
+          "message": "fix(mecatequi): empty ${{ }} in extract-prompt action description broke the reusable workflow (#70)\n\nThe mecatequi-extract-prompt composite action's `description:` contained a\nliteral empty GitHub-expression placeholder in its injection-safety prose.\nGitHub's object-templating engine evaluates expressions inside parsed\naction.yml scalars (name/description/defaults/output values), and an EMPTY\none is a hard parse error (\"An expression was expected\") — so the action\nfailed to LOAD and every v0.0.2 reusable-workflow run aborted in `implement`\nbefore the agent started. Ironically the prose explaining the rule tripped\nthe parser with its own example.\n\n- Reword the description to drop the empty placeholder (no behaviour change).\n- Add `check-action-templates.sh` + `task lint:action-templates` (chained into\n  lint:actions and the CI Actions step): rejects a live empty placeholder in any\n  parsed field of a workflow/action manifest, excluding YAML comment lines and\n  valid non-empty expressions. Mutation-proven (red on the unfixed line, green\n  after). This is the regression guard the issue asked for — actionlint does not\n  load composite actions, so it never caught this.\n- Bump the reusable workflow's three sibling-action pins + check-reusable-pins\n  default + the doc/example caller refs v0.0.2 -> v0.0.3.\n\nSecondary (issue #70): root-caused from the real consumer run\n(a downstream-consumer issue #416) why publish exited red without the honest failure comment\nwhen implement died at action-load. publish.sh's empty-EXIT_CLASS -> setup-failure\nbranch was correct, but the `gh issue comment` itself threw (the minted App token\ncould not resolve the issue — likely missing issues:write) and `set -euo pipefail`\naborted before `exit 0`. Guard every early comment site with a `post_issue_comment`\nhelper that emits a loud ::error:: on a failed post and lets the clean/no-change\nbranches still reach `exit 0` (the privileged push/PR tail was already guarded).\nMutation-proven offline test added.\n\nAlso reword two Taskfile `desc:` blocks that contained literal `{{ }}` (go-task\nevaluates Go templates in desc and was erroring).\n\nCloses #70\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T14:49:26+03:00",
+          "tree_id": "ba04604c504835e33a838431153ec4637581b7ff",
+          "url": "https://github.com/stacklok/mecatl/commit/f8d5cfdd2b7b58797e5b451188893c110ccc5398"
+        },
+        "date": 1781610884230,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4474.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35123,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 6807,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 74.5,
             "unit": "allocs/op"
           },
           {
