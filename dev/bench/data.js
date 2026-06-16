@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781609039742,
+  "lastUpdate": 1781609042698,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -94021,6 +94021,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/054e2312c180310e33711b9e0f3e714461cc869f"
         },
         "date": 1781602250985,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "2ef8d118ba5e1b5c26dc7d45a3a7c9f5a828eef4",
+          "message": "feat(mecatequi): ship a reusable workflow_call workflow (zero-vendoring adoption)\n\nA consumer can now adopt mecatequi with a ~15-line caller workflow\n(`uses: stacklok/mecatl/.github/workflows/mecatequi-reusable.yml@v0.0.2`)\ninstead of vendoring the whole split-privilege job graph plus the glue\nscripts. The composite action was already reusable; the workflow around it\nwas not — every consumer copied ~540 lines of publish.sh + extract-prompt.sh\nthat would drift from mecatl over time.\n\nThe reusable-workflow wrinkle: a `workflow_call` workflow's `run:` scripts\nexecute against the CALLER's checkout, and a local `uses: ./...` ref resolves\nto the caller too — so the glue scripts are wrapped as composite actions and\nreferenced by FULL path `stacklok/mecatl/.github/actions/X@v0.0.2` (auto-fetched,\nno consumer checkout). Expressions are illegal in `uses:`, so the sibling refs\nare hardcoded literal tags; `check-reusable-pins.sh` (wired into ci.yml + the\nrelease job with EXPECTED_TAG=the-release-tag) mechanically blocks version skew.\n\n- New `.github/workflows/mecatequi-reusable.yml` (on: workflow_call): the\n  3-job acknowledge/implement/publish graph, preserving the token-boundary\n  invariant (implement holds only the LLM keys + contents:read; publish holds\n  the write token + runs no agent code; publish-token secrets are interpolated\n  only in publish).\n- Glue scripts moved (git mv, single home, no drift) into two new composite\n  actions: `mecatequi-extract-prompt` and `mecatequi-publish`. The live + example\n  workflows now call them via `uses:`.\n- The publish token supports both forms: GitHub App credentials (a JIT\n  installation token minted in the publish job) or a pre-minted token, with a\n  standing-GITHUB_TOKEN fallback that emits a ::warning::. Three named provider\n  secrets (openrouter-key/openai-key/anthropic-key); openai-base-url and\n  guardrails-model exposed as passthrough inputs.\n- Security: the publish.sh protected-paths gate now uses `git apply --numstat -z`\n  (NUL-delimited, unquoted paths) so a patch creating a special-byte-named file\n  under .github/ can no longer slip past the regex via git's C-quoting and get\n  written by the later `git apply --3way`. Renames into protected dirs are\n  blocked too. Mutation-proven offline tests cover the gate, the template\n  confinement, the injection-safety, and the action.yml env-mapping wrappers.\n- mecatequi-example.yml stays as the escape hatch for consumers that need to\n  customise the job graph (a custom author-gate, an extra approval stage).\n- Docs: MECATEQUI.md §5.1 (reusable workflow + publish-token interface), a\n  usage.md adoption walkthrough (App-token setup, the default-provider/key rule,\n  the org-access requirement, the caller-owns-the-triggers note), README + llms.txt.\n\nCloses #69\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T14:18:10+03:00",
+          "tree_id": "b497b25e88916e0605716bf5db020a30a08c2489",
+          "url": "https://github.com/stacklok/mecatl/commit/2ef8d118ba5e1b5c26dc7d45a3a7c9f5a828eef4"
+        },
+        "date": 1781609041409,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
