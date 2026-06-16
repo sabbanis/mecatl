@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781587253879,
+  "lastUpdate": 1781587256328,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -37611,6 +37611,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/c94a8795922b512a2f3f0308afebab5bcd1eb2cc"
         },
         "date": 1781586889928,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "0294ffcdd5c76e7e98e82ec2d818c1d43445e7a6",
+          "message": "feat(mecatequi): live workflow for this repo + fix composite key delivery (job-level env)\n\nAdd `.github/workflows/mecatequi.yml` — the LIVE (non-template) workflow for mecatl\nitself: label an issue `mecatequi` (or comment `@mecatequi`) and the agent runs over\nthe repo and opens a PR. Wired to this repo's `OPENROUTER_API_KEY` secret with\n`--default-provider openrouter --default-model anthropic/claude-3.5-haiku`. Same\nsplit-privilege shape as the template: `implement` runs the agent with `contents:read`\nand ONLY the LLM key (no write token); `publish` holds the write token and runs no\nagent code (and publish.sh already refuses any patch touching `.github/`, so a hijacked\nagent can't rewrite this pipeline). Author-gated, issue-only, SHA-pinned.\n\nAlso fixes a latent bug in the shipped example + composite: the LLM key was delivered\nvia STEP-LEVEL `env:` on the `uses:` composite step, which does NOT propagate into a\ncomposite action's internal steps (only job/workflow-level env does). The key is now\ndelivered at JOB level in both the example and the live workflow, and the action.yml\nheader + docs/usage.md wording are corrected to say job-level.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T08:15:43+03:00",
+          "tree_id": "53a864ee9ec6e2d3b703de78dd80c90213f02484",
+          "url": "https://github.com/stacklok/mecatl/commit/0294ffcdd5c76e7e98e82ec2d818c1d43445e7a6"
+        },
+        "date": 1781587255316,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
