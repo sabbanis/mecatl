@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781588344751,
+  "lastUpdate": 1781588346444,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -48859,6 +48859,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/0294ffcdd5c76e7e98e82ec2d818c1d43445e7a6"
         },
         "date": 1781587255316,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "b6c419a1654b51c980a6c09e1acf267a83d70d06",
+          "message": "fix(mecatequi): gate the live workflow on the trigger, not author_association (+ drop debug job)\n\nThe labeled run skipped because GitHub's webhook author_association reports an\norg MEMBER as CONTRIBUTOR, so the OWNER/MEMBER/COLLABORATOR gate excluded a\nlegitimate maintainer (it was also checking the issue author, not the actor).\nOn this PRIVATE repo, label application already requires triage/write access and\ncomment access is team-only, so the trigger itself is the gate; the brittle\nauthor_association check (if: + the author-gate.sh step) is removed. A public\ndeployment should use a dedicated permission-check gate job instead. Also removes\nthe temporary debug job.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T08:32:18+03:00",
+          "tree_id": "a3a591fa64a0249e9b503a48cf2b51bc00d7d367",
+          "url": "https://github.com/stacklok/mecatl/commit/b6c419a1654b51c980a6c09e1acf267a83d70d06"
+        },
+        "date": 1781588345953,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
