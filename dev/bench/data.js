@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781596772857,
+  "lastUpdate": 1781596775524,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -60175,6 +60175,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/c934a233b59541e8b02a73deee533f42b8629f34"
         },
         "date": 1781595825612,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "ec9a193fc69e3ffe122a0210b8d550d746f89cbd",
+          "message": "fix(mecatequi): UX hardening from the usability evaluation (issue feedback, footguns, docs)\n\nAddress the findings from a usability evaluation grounded in 4 live runs (3 of\nwhich failed in ways the issue author never saw).\n\nC1 (headline) — guarantee an issue-side signal for every triggered run. New\n`acknowledge` job (issues:write only, no agent code, no LLM key) runs FIRST on\nthe same gate and posts an early \"🤖 working on this — <run link>\" comment, so\nthe author always has a durable trace + progress, even if everything downstream\nfails. `publish` now runs on implement success OR failure (download-artifact is\nnon-fatal; an empty exit-class → honest setup-failure comment), and publish.sh\nposts its failure comment BEFORE any abort in the privileged push/PR tail\n(push_failure_comment) — no more silent red runs. Token boundary preserved:\nonly acknowledge + publish hold write tokens; implement stays contents:read +\nthe LLM key.\n\nC2 — model-catalogue footgun. The uncatalogued --default-model rejection now\nnames the remedy (\"...or pass it as the per-session passthrough --model\"). The\naction `default-model`/`model` input help, the flags.go help, and the docs all\nexplain: prefer `model` for newer/passthrough models; `default-model` is\ncatalog-validated and rejects ids absent from the embedded snapshot.\n\nC3 — docs reconciled to the live trigger-based gate (they described the removed\nauthor_association/author-gate.sh gate, which would re-introduce the silent-skip\nbug); added the \"create the `mecatequi` label FIRST — the labeled trigger never\nfires without it\" callout; noted author-gate.sh is example-template-only.\n\nS1 — the issue comment maps each exit class to a plain-language cause + next\naction instead of bare \"setup-failure\" jargon.\nS2 — the PR body carries a prominent \"⚠️ Agent-authored from the issue text —\nreview carefully before merging\" caveat (Closes #N kept: merge = approval).\nS3 — the no-change comment splits no_progress / structured_output out of the\nbudget message (more budget won't help an empty-turn loop or a schema failure).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T10:53:57+03:00",
+          "tree_id": "a33ceb1d4845429e9f8305337fb8bb2e4a7ac060",
+          "url": "https://github.com/stacklok/mecatl/commit/ec9a193fc69e3ffe122a0210b8d550d746f89cbd"
+        },
+        "date": 1781596774328,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
