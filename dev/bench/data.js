@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781599883890,
+  "lastUpdate": 1781599886213,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -74637,6 +74637,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 91,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "169f3b921566bc61cd72ec7fe9d9dca2a83e9323",
+          "message": "docs(mecatequi): sync architecture / user / operator / README + fix docs gate\n\nBring the mecatequi docs up to date across every perspective after the feature\nevolved across many commits:\n\n- Architecture: add mecatequi as the 4th cmd composition root in\n  docs/architecture.md (CMD subgraph + a full paragraph) and the\n  docs/design/ARCHITECTURE.md cmd/ tree (mecatui was also missing); reconcile\n  docs/design/MECATEQUI.md to as-built (the internal/cliconfig shared\n  credentials, and the gitDiffPatch untracked-file inclusion mechanism that\n  wasn't documented). CLAUDE.md: sharpen the cmd/mecatequi line to pin the\n  two invariants a future edit could violate and tests don't enforce — the\n  binary is FORGE-AGNOSTIC (GitHub glue lives only in .github/ + shell, never\n  the binary or engine/) and the split-privilege token boundary.\n- User + operator: verified docs/usage.md §10 is current and complete (the\n  trigger walkthrough, the create-the-label-first footgun, the\n  passthrough-vs-catalogued model guidance, the templating + placeholders, the\n  Finding-B residual) — no change needed.\n- README: add a concise mecatequi feature bullet + binary + project-layout rows\n  + the MECATEQUI.md design-doc link.\n\nAlso: add .github/mecatequi/ to .matlatlignore. The dogfood template\n(.github/mecatequi/pr-body.md, commit c7a54e1) has a {{run_url}} placeholder\nmatlatl read as a broken link + flagged the template as an orphan, which was\nfailing `matlatl check --strict` (the CI docs job was red on main since that\ncommit). The template is scaffolding, not docs — same ignore pattern as\ne2e/fixtures/ and .claude/agents/.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T11:46:02+03:00",
+          "tree_id": "9bb4aef16e8ad1698079c75c928edd226a5812a7",
+          "url": "https://github.com/stacklok/mecatl/commit/169f3b921566bc61cd72ec7fe9d9dca2a83e9323"
+        },
+        "date": 1781599885446,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35126,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7040.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 83,
             "unit": "allocs/op"
           },
           {
