@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781632552688,
+  "lastUpdate": 1781632554965,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -115755,6 +115755,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 96,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "625353d91cc0f0fc37b4f5a71bb152ed56d775a4",
+          "message": "ci(perf): fix the PR perf gate's gh-pages non-fast-forward failure (#74)\n\nThe perf-pr job (\"Perf gate (PR)\") failed on every pull_request run — confirmed\nacross PR #73 and an unrelated PR — at the second of its two\ngithub-action-benchmark invocations:\n\n  git fetch origin gh-pages:gh-pages\n   ! [rejected] gh-pages -> gh-pages (non-fast-forward)\n\nRoot cause: github-action-benchmark advances the LOCAL gh-pages ref with a commit\non every run even when auto-push:false / save-data-file:false (those suppress the\npush and the data-file write, not the local commit). The first (smaller) step\nfetches gh-pages and commits locally; the second (bigger) step then re-runs\n`git fetch gh-pages:gh-pages`, which is rejected non-fast-forward because the local\nref is now ahead of the remote. perf-main avoids this because auto-push:true pushes\nafter each step, keeping local and remote in sync so each fetch stays a fast-forward.\n\nFix: set `skip-fetch-gh-pages: true` on the SECOND (bigger) PR step only. It reuses\nthe gh-pages baseline the first (smaller) step already fetched, so the fail-on-alert\nregression comparison is fully preserved — putting skip-fetch on BOTH steps would\nstrip the baseline and make the gate toothless. perf-main is untouched. Added an\nORDERING INVARIANT comment on the smaller step so a future edit can't reorder them\nor add skip-fetch there and silently disable the gate.\n\nNo security/posture change: perf-pr stays contents:read, same action SHA pin, no\nnew secret.\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T20:50:17+03:00",
+          "tree_id": "b2383c84765c82d7d7c5fd18fb592f1809cd1a43",
+          "url": "https://github.com/stacklok/mecatl/commit/625353d91cc0f0fc37b4f5a71bb152ed56d775a4"
+        },
+        "date": 1781632554292,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35129.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7043,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 88,
             "unit": "allocs/op"
           },
           {
