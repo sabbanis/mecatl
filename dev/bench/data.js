@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781602987364,
+  "lastUpdate": 1781602989484,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -89589,6 +89589,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 87.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "7e5a79ffefca37b3d54d3bcfae4e6b7e9e5e0470",
+          "message": "docs(mecatequi): usage.md — Finding B is FIXED, not a pending caveat\n\nThe audit found two stale passages in docs/usage.md §10 still describing the\nagent-Bash secret-exfil as a pending follow-up / 'honest caveat' (a hijacked\nagent could echo $OPENROUTER_API_KEY) — contradicting the shipped fix. The\nFinding-B pass updated MECATEQUI.md §6 + CLAUDE.md but missed these. Rewrite to\n'defense in depth: every agent-facing Bash shell runs with a secret-scrubbed env\n(internal/adapter/envscrub)', keeping the no-write-token blast-radius point.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\nEOF",
+          "timestamp": "2026-06-16T12:37:33+03:00",
+          "tree_id": "1cd69f3ca6c47275d1ccb097247cbd8501c66ce5",
+          "url": "https://github.com/stacklok/mecatl/commit/7e5a79ffefca37b3d54d3bcfae4e6b7e9e5e0470"
+        },
+        "date": 1781602988853,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1466.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35127,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7125,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 96,
             "unit": "allocs/op"
           },
           {
