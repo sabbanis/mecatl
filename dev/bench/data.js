@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781612336624,
+  "lastUpdate": 1781612338721,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -109041,6 +109041,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/f8d5cfdd2b7b58797e5b451188893c110ccc5398"
         },
         "date": 1781610886547,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "bf50c64f1fc9af780fc501fada62a8ccc1e2796b",
+          "message": "feat(memory): adopt declarative-not-imperative memory-write guidance (Hermes #2 follow-on)\n\nThe Remember/RememberUser tool descriptions told the model WHAT to save (durable\nfacts, not transient state / negative capability claims) but not HOW to PHRASE it.\nHermes's MEMORY_GUIDANCE steers declarative facts over imperative notes (\"project\nuses pytest\" not \"run tests with pytest -n 4\") plus a stale-artifact rule (no PR\nnumbers, commit SHAs, \"Phase N done\"). Adopt both as a short \"Phrasing\" block:\n\n- project memory (rememberDescription): declarative-vs-imperative + stale-artifact list\n- user model (rememberUserDescription): facts-not-directives, reinforcing the\n  existing rules-vs-facts boundary (directives belong to the soul/persona)\n\nText-only; no logic, no test pins the literals. build/test/lint green.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T15:08:56+03:00",
+          "tree_id": "f130ed0cadd9ad0a8711af4201e791f7f520444b",
+          "url": "https://github.com/stacklok/mecatl/commit/bf50c64f1fc9af780fc501fada62a8ccc1e2796b"
+        },
+        "date": 1781612338102,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
