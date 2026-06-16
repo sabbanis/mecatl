@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781586886771,
+  "lastUpdate": 1781586888679,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -33504,6 +33504,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view/allocs_per_op",
             "value": 7059.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 81,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "c94a8795922b512a2f3f0308afebab5bcd1eb2cc",
+          "message": "refactor(cli): share provider-credential env+flags across mecated/mecatui/mecatequi\n\nThe provider-credential env reads (OPENAI_API_KEY / ANTHROPIC_API_KEY /\nOPENROUTER_API_KEY) and the three `--*-base-url` flags were copy-pasted across all\nthree `cmd/` mains — which is exactly why mecatequi had drifted to reading only\nOPENAI_API_KEY and exposing only `--openai-base-url` (it ran OpenRouter only by\naccident, via the registry's env fallback).\n\n- New `internal/cliconfig` package (cmd-side composition): `RegisterProviderFlags`\n  (the three base-URL flags, per-main help text passthrough), `(*ProviderFlags).Apply`\n  (env keys + base URLs onto `app.Config`, nil-safe for direct-built configs), and\n  `ReadProviderKeys` (the single definition of the env-var names, shared by the\n  wiring path and mecatui's presence guard so they can't diverge). Never logs key\n  values. No os.Getenv-direct reads added to `internal/app` (its envDetector seam\n  is preserved).\n- mecated and mecatui are pure extractions — same flag names, same help text, same\n  env reads, same Config fields, same UseOpenAI semantics; their existing tests stay\n  green as the regression guard.\n- mecatequi GAINS `--openrouter-base-url` + `--anthropic-base-url` and the\n  OPENROUTER_API_KEY + ANTHROPIC_API_KEY reads, so it can run Anthropic and\n  OpenRouter explicitly like its siblings.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T08:09:20+03:00",
+          "tree_id": "1628e4b99431fe98e3b192d0facdb888f67eb1c9",
+          "url": "https://github.com/stacklok/mecatl/commit/c94a8795922b512a2f3f0308afebab5bcd1eb2cc"
+        },
+        "date": 1781586888038,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1466,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35126,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7002,
             "unit": "allocs/op"
           },
           {
