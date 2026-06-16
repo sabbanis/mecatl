@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781611999857,
+  "lastUpdate": 1781612002048,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -104541,6 +104541,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 74.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "1036406f455f22cf7239d81fb76e90a1c4aaff97",
+          "message": "docs(mecatequi): sync docs to the reusable-workflow + v0.0.3 reality\n\nA docs audit after #69/#70 found stale framing and two stale version pins.\n\n- README.md: the mecatequi bullet now names the reusable `workflow_call`\n  workflow (the ~15-line caller) as the recommended adoption path, with the\n  hand-rolled split-privilege workflow as the escape hatch; the layout table\n  now lists the three composite actions (build+run, extract-prompt, publish)\n  + the reusable workflow, not a single \"reusable composite action\".\n- MECATEQUI.md / usage.md: the by-tag cross-repo examples pinned `@v0.0.1`\n  with a \"SHA-pin in real workflows\" comment that contradicted §5.1's\n  first-party-tag-pin ruling — bumped to `@v0.0.3` with an accurate comment.\n- MECATEQUI.md §5.1: document issue #70 — the empty-`${{ }}` placeholder in an\n  action `description:` that failed GitHub's template parser and broke v0.0.2,\n  and the `check-action-templates.sh` / `task lint:action-templates` regression\n  guard (actionlint doesn't load composite manifests, so it never caught it),\n  plus the publish.sh comment-posting hardening.\n- usage.md: added the `subagent-ask-reviewer` / `-max-denies` rows to the\n  composite-action input table (escape-hatch-only; not surfaced by the\n  reusable workflow).\n- .github/workflows/README.md: lint-job row now mentions the action-templates\n  sub-check.\n\nDocs-only; link gate + CheckCitations clean. No code/workflow/action change.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T15:07:51+03:00",
+          "tree_id": "c4b5c9d1c84286738090f3f05fc34bc6ac6cb86b",
+          "url": "https://github.com/stacklok/mecatl/commit/1036406f455f22cf7239d81fb76e90a1c4aaff97"
+        },
+        "date": 1781612001402,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1466,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35128,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7121,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 96,
             "unit": "allocs/op"
           },
           {
