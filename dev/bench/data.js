@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781615001717,
+  "lastUpdate": 1781615004026,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -112813,6 +112813,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/bf50c64f1fc9af780fc501fada62a8ccc1e2796b"
         },
         "date": 1781612338102,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "4d188a186f67da63473975f5068f28c5a7e5de5b",
+          "message": "docs: add mecatl domain model (modelith) + CI gate\n\nAdd a modelith domain model of mecatl as docs/mecatl.modelith.yaml plus\nits rendered docs/mecatl.modelith.md: 27 entities across the agent loop,\ntooling, governance, providers, delegation, and the cloud-native\nrehydrate/lease surface, with invariants and scenarios. Linked from the\narchitecture guide as the system's ubiquitous-language reference.\n\nWire the stacklok/modelith composite action into CI (new domain-model\njob) to lint the model and fail on yaml<->md drift via render --check,\nfollowing the same org-action pattern as the matlatl docs gate.\nRegenerate llms.txt to include the new doc.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T15:57:36+03:00",
+          "tree_id": "85b871d508aaf818b5a73f367205914547370486",
+          "url": "https://github.com/stacklok/mecatl/commit/4d188a186f67da63473975f5068f28c5a7e5de5b"
+        },
+        "date": 1781615003347,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
