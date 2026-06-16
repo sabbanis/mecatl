@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781633165680,
+  "lastUpdate": 1781633168133,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -119493,6 +119493,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 88,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d36a26e32ac5e9a942d5f956f886b8e0fe1c3e61",
+          "message": "feat(mecatequi): issue-title PR titles, PR-shaped descriptions, agent self-verification (#73)\n\n* feat(mecatequi): issue-title PR titles, PR-shaped descriptions, agent self-verification\n\nDiagnosed on the downstream consumer#426 (a mecatequi-opened PR that failed CI on a single\ngolangci-lint gocyclo finding): the agent shipped a lint violation it never\nchecked for; the PR title was the static \"mecatequi: changes for issue #N\";\nand the PR body reused the model's conversational final_text (\"All green.\nHere's what changed and why:\") instead of a real description.\n\nThree fixes (mostly .github/ glue + one small additive Go flag):\n\n1. PR title from the issue title. publish.sh fetches the issue title READ-only\n   via `gh issue view` (guarded/flattened/trimmed), adds an {{issue_title}}\n   placeholder (literal `jq --arg` delivery, same untrusted-safe path as\n   final_text), and defaults the title to \"<issue title> (#<n>)\" with the prior\n   static string as fallback when the title can't be resolved.\n\n2/3a. New additive --instructions flag on the mecatequi binary carrying TRUSTED\n   operator framing emitted OUTSIDE the untrusted fence (symmetric to\n   untrustedPromptInstruction); buildPrompt gains an instructions arg and is\n   byte-identical to prior output when it is empty. The mecatequi action bakes in\n   a default (write the final message as a PR description + run lint/test before\n   finishing) so all consumers get it with zero config; the reusable workflow does\n   not expose it as an input (inherits the default).\n\n3b. mecatl's live workflow installs golangci-lint + task so the agent can\n   self-verify; example/reusable workflows get a doc-comment telling consumers to\n   install their own toolchain.\n\nChose Option A (additive trusted-instruction channel) over the glue-only\nalternative, which would have trapped behaviour-changing framing inside the\nuntrusted fence (self-defeating). The \"frozen Pipeline 1\" guidance is honoured as\na conscious additive exception, recorded in MECATEQUI.md.\n\nWIP / draft: panel review done; iteration-1 findings not yet applied (see PR body).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* refactor(mecatequi): drop dead PR-framing constants from the forge-agnostic binary\n\nIteration-1 review findings (PR #73, items 1 + 5).\n\n- Remove prDescriptionInstruction / verifyBeforeFinishInstruction from\n  cmd/mecatequi/prompt.go. They were referenced only by tests and encoded\n  GitHub-PR-shaped framing into the forge-agnostic binary — a drift hazard,\n  since the real --instructions default lives in the mecatequi GitHub Action\n  (.github/actions/mecatequi/action.yml). buildPrompt only places whatever\n  instructions string it is handed OUTSIDE the untrusted fence; it ascribes\n  no meaning to the contents. A NOTE comment records where the default lives.\n- Replace the two test uses with short inline literals (the tests assert\n  placement/fencing, not the exact operator copy).\n- Note in the --instructions flag help that the mecatequi GitHub Action sets\n  a non-empty default (see its instructions input), so a --help reader knows\n  CI injects framing even though the binary default is empty.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* test(actions): pin the --instructions wiring and pr-title-template precedence\n\nIteration-1 review findings (PR #73, items 2 + 6) — close two untested seams\nthat would let a feature ship inert while every unit test stays green.\n\n- action-wrappers_test.sh: cover the main mecatequi/action.yml (previously only\n  the publish + extract actions were checked). Two has-style assertions pin the\n  MQ_INSTRUCTIONS: ${{ inputs.instructions }} env mapping AND the\n  args+=( --instructions \"${MQ_INSTRUCTIONS}\" ) conditional that wires it to the\n  binary. Dropping the wire goes RED (mutation-verified by the panel).\n- publish_test.sh: add test_pr_title_template_precedence — with both a present\n  issue title and an MQ_PR_TITLE_TEMPLATE set, assert the rendered template wins\n  over the issue-title default. Reversing the branch order in publish.sh flips\n  the test RED.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* ci(mecatequi): harden the implement-job toolchain (token boundary + deterministic Go)\n\nIteration-1 review findings (PR #73, items 3 + 4) on the headless agent job,\nwhich must hold NO GitHub write token (split-privilege boundary — its only\nsecret is the LLM key).\n\n- Security (CWE-668): drop repo-token: ${{ secrets.GITHUB_TOKEN }} from the\n  go-task/setup-task step and pin an exact task version (3.51.1, was 3.x). An\n  exact version short-circuits setup-task's GitHub API version resolution — the\n  only reason repo-token existed — so the token is no longer needed and the\n  \"only secret is the LLM key\" invariant holds literally.\n- DevOps: add actions/setup-go (go-version-file: go.mod, cache) BEFORE the\n  linter install, which previously ran `go env GOPATH` with no setup-go in the\n  job (working only by incidental agreement with the runner's preinstalled Go).\n- Switch the golangci-lint install from a curl … install.sh | sh pipe to\n  `go install …/golangci-lint/v2/cmd/golangci-lint@v2.12.2`: no remotely-fetched\n  script execution, Go module-proxy + checksum-db integrity, version matched to\n  ci.yml. The GOPATH/bin PATH export is kept so `task lint` finds the binary.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* docs(mecatequi): correct the pr-title-template input default description\n\nPre-merge panel (architect) caught a self-introduced contradiction: this PR\nchanged the empty-pr-title-template default to the triggering issue's own\ntitle (\"<issue title> (#<n>)\", literal fallback), but the mecatequi action's\npr-title-template input still documented the old static \"mecatequi: changes\nfor issue #<n>\" default. Update the description to match the as-built behaviour.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T21:00:23+03:00",
+          "tree_id": "550ca2b816044272e37328e1fa70d5ef5b60fbc9",
+          "url": "https://github.com/stacklok/mecatl/commit/d36a26e32ac5e9a942d5f956f886b8e0fe1c3e61"
+        },
+        "date": 1781633167346,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1468,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35129,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7058.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 87,
             "unit": "allocs/op"
           },
           {
