@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781597109554,
+  "lastUpdate": 1781597111522,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -63947,6 +63947,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/ec9a193fc69e3ffe122a0210b8d550d746f89cbd"
         },
         "date": 1781596774328,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "d46a486225249ed68c5c84fc66fb11b36b06ab93",
+          "message": "fix(mecatequi): seed the lease ref before force-with-lease push (re-run idempotency)\n\nOn a re-run for the same issue the deterministic branch already exists remotely,\nbut the shallow checkout never fetched it, so `git push --force-with-lease` was\nrejected with \"stale info\" (no remote-tracking ref to lease against). Fetch the\nbranch into its tracking ref first (no-op on the first run); the lease is then\nvalid and the force-update overwrites the prior attempt as intended. First-run\nPR creation was already fine.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T10:58:01+03:00",
+          "tree_id": "e5554fd7c7f383bd73441b4efffdeee9c88799f7",
+          "url": "https://github.com/stacklok/mecatl/commit/d46a486225249ed68c5c84fc66fb11b36b06ab93"
+        },
+        "date": 1781597110916,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
