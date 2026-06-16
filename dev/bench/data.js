@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781612334357,
+  "lastUpdate": 1781612336624,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -108264,6 +108264,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view/allocs_per_op",
             "value": 7121,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 96,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "bf50c64f1fc9af780fc501fada62a8ccc1e2796b",
+          "message": "feat(memory): adopt declarative-not-imperative memory-write guidance (Hermes #2 follow-on)\n\nThe Remember/RememberUser tool descriptions told the model WHAT to save (durable\nfacts, not transient state / negative capability claims) but not HOW to PHRASE it.\nHermes's MEMORY_GUIDANCE steers declarative facts over imperative notes (\"project\nuses pytest\" not \"run tests with pytest -n 4\") plus a stale-artifact rule (no PR\nnumbers, commit SHAs, \"Phase N done\"). Adopt both as a short \"Phrasing\" block:\n\n- project memory (rememberDescription): declarative-vs-imperative + stale-artifact list\n- user model (rememberUserDescription): facts-not-directives, reinforcing the\n  existing rules-vs-facts boundary (directives belong to the soul/persona)\n\nText-only; no logic, no test pins the literals. build/test/lint green.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T15:08:56+03:00",
+          "tree_id": "f130ed0cadd9ad0a8711af4201e791f7f520444b",
+          "url": "https://github.com/stacklok/mecatl/commit/bf50c64f1fc9af780fc501fada62a8ccc1e2796b"
+        },
+        "date": 1781612335980,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35129.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7123.5,
             "unit": "allocs/op"
           },
           {
