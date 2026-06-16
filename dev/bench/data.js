@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781601332836,
+  "lastUpdate": 1781601335447,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -82739,6 +82739,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/169f3b921566bc61cd72ec7fe9d9dca2a83e9323"
         },
         "date": 1781599887655,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "0d336e963e37ceadd9402f66097447b1a1e67e18",
+          "message": "fix(security): scrub provider/auth secrets from agent-facing command runners (Finding B)\n\nCloses Finding B: the agent's Bash runner inherited the process environment\nunscrubbed, so under posture auto/yolo the model could `echo $OPENROUTER_API_KEY`\n(or read /proc/self/environ) and exfiltrate provider/auth secrets via a tool\nresult or a committed file. (The osfs Read tool was already workspace-confined;\nBash was the hole.)\n\n- New stdlib-only leaf `internal/adapter/envscrub` (`Scrub`/`IsSecretName`): a\n  precise denylist — the exact harness-injected creds (OPENAI/OPENROUTER/\n  ANTHROPIC_API_KEY, WEBSEARCH/BRAVE/EXA_API_KEY, MECATL_AUTH_TOKEN,\n  MECATL_DRIVER_AUTH_TOKEN, GH_TOKEN, GITHUB_TOKEN) plus secret-shaped patterns\n  (*_API_KEY/_TOKEN/_SECRET/_PASSWORD/_PASSWD, AWS_*/AZURE_*,\n  GOOGLE_APPLICATION_CREDENTIALS). Denylist over allowlist so the toolchain\n  (PATH/HOME/GOPATH/GOCACHE/…) is never broken.\n- Wired via the existing WithCommandEnvList seam into EVERY agent-facing runner:\n  the main Bash runner (envscrub.Scrub), the hardened subagent/member/\n  force-copy/parallel runners + gitSnapshot + forker fork-time git\n  (gitenv.Scrub(envscrub.Scrub(...))). The post-run cmd/mecatequi git calls are\n  NOT agent-facing (output never re-enters the model) so they stay gitenv-only.\n- Tests + mutation-verified: the child process's `env` is inspected; reverting\n  the scrub makes the test fail with the secret visible. Security-reviewed: hole\n  closed for every agent-facing shell, no bypass.\n- Docs: MECATEQUI.md §6 flipped from residual to FIXED; usage.md posture note;\n  one lean CLAUDE.md invariant.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T12:09:56+03:00",
+          "tree_id": "78fbb82b748906b1221b4f8f2752ad23cc7e3549",
+          "url": "https://github.com/stacklok/mecatl/commit/0d336e963e37ceadd9402f66097447b1a1e67e18"
+        },
+        "date": 1781601334451,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
