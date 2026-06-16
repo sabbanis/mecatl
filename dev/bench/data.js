@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781595824223,
+  "lastUpdate": 1781595826406,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -56403,6 +56403,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/3196db45ec28ee5dc84fe1f3d6244c3f2864f7c4"
         },
         "date": 1781595486222,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "c934a233b59541e8b02a73deee533f42b8629f34",
+          "message": "fix(mecatequi): authenticate git push in publish.sh via gh auth setup-git\n\nThe publish job checks out with persist-credentials:false (token off disk), so a\nplain `git push` had no HTTPS credentials (\"could not read Username\"). Run\n`gh auth setup-git` so git uses GH_TOKEN for the push. Fixes both the live\nworkflow and the example template (shared script).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T10:35:42+03:00",
+          "tree_id": "999a4d4184caa4f4805dfb987b67bd1a8457f17b",
+          "url": "https://github.com/stacklok/mecatl/commit/c934a233b59541e8b02a73deee533f42b8629f34"
+        },
+        "date": 1781595825612,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
