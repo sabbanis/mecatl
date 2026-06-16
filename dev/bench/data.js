@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781595484928,
+  "lastUpdate": 1781595486755,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -52631,6 +52631,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/b6c419a1654b51c980a6c09e1acf267a83d70d06"
         },
         "date": 1781588345953,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "3196db45ec28ee5dc84fe1f3d6244c3f2864f7c4",
+          "message": "fix(mecatequi): use passthrough --model for the live workflow (sonnet-4.6 not catalogued)\n\nA deployment-wide --default-model is validated against the embedded models.dev\ncatalog at startup; claude-sonnet-4.6 is newer than that snapshot, so the run\nexited rc=2 (\"not catalogued\"). Switch to the per-session passthrough `model`\ninput (--model), which runs any model the provider account can reach. Verified\nlocally against OpenRouter (sonnet-4.6, end_turn, non-empty patch).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T10:32:39+03:00",
+          "tree_id": "283017c85c81843dec145f91473702c55a1be49a",
+          "url": "https://github.com/stacklok/mecatl/commit/3196db45ec28ee5dc84fe1f3d6244c3f2864f7c4"
+        },
+        "date": 1781595486222,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
