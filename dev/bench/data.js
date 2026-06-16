@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781602249575,
+  "lastUpdate": 1781602251553,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -86511,6 +86511,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/0d336e963e37ceadd9402f66097447b1a1e67e18"
         },
         "date": 1781601334451,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "054e2312c180310e33711b9e0f3e714461cc869f",
+          "message": "feat(mecatequi): adopt matlatl's cross-repo action distribution (build from $GITHUB_ACTION_PATH)\n\nThe composite built `go build ./cmd/mecatequi` from the consumer's checkout —\nmecatl-self-only (another repo's checkout has no ./cmd/mecatequi). Adopt\nmatlatl's pattern: build the binary from the ACTION's own source tree via\n$GITHUB_ACTION_PATH. When a consumer does\n`uses: stacklok/mecatl/.github/actions/mecatequi@<tag>`, GitHub checks the whole\nmecatl repo out at that tag into $GITHUB_ACTION_PATH; the build uses that tree.\n\n- Single acquire step: `go build -C \"${GITHUB_ACTION_PATH}/../../..\" ./cmd/mecatequi`\n  (the action lives at .github/actions/mecatequi/, so ../../.. is the repo root with\n  go.mod + cmd/mecatequi). Works uniformly for SELF (`uses: ./…`, $GITHUB_ACTION_PATH\n  = local workspace) and CROSS-REPO (tagged subdir action). setup-go reads the\n  action's own go.mod, mirroring matlatl.\n- NO token, NO GOPRIVATE, NO version input: the `uses: …@<tag>` ref IS the version,\n  and the only requirement is the org setting allowing Actions to use a private\n  repo's actions (matlatl's exact posture). Dropped the mecatl-token / GOPRIVATE /\n  go-install / mecatequi-version surface entirely.\n- Versioning: ALPHA v0.0.x (tags cut separately). Consumers pin `@v0.0.x` or a SHA.\n- Docs: MECATEQUI.md §5 rewritten to the build-from-action-checkout pattern;\n  usage.md gains an \"Adopting mecatequi in another repo\" guide + the configurable\n  label/mention operator doc (MECATEQUI_LABEL / MECATEQUI_MENTION repo vars).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T12:25:06+03:00",
+          "tree_id": "3567e72b7c7de57ee995dbd2711f815e81365039",
+          "url": "https://github.com/stacklok/mecatl/commit/054e2312c180310e33711b9e0f3e714461cc869f"
+        },
+        "date": 1781602250985,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
