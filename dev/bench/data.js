@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781587251603,
+  "lastUpdate": 1781587253879,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -37257,6 +37257,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 81,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "0294ffcdd5c76e7e98e82ec2d818c1d43445e7a6",
+          "message": "feat(mecatequi): live workflow for this repo + fix composite key delivery (job-level env)\n\nAdd `.github/workflows/mecatequi.yml` — the LIVE (non-template) workflow for mecatl\nitself: label an issue `mecatequi` (or comment `@mecatequi`) and the agent runs over\nthe repo and opens a PR. Wired to this repo's `OPENROUTER_API_KEY` secret with\n`--default-provider openrouter --default-model anthropic/claude-3.5-haiku`. Same\nsplit-privilege shape as the template: `implement` runs the agent with `contents:read`\nand ONLY the LLM key (no write token); `publish` holds the write token and runs no\nagent code (and publish.sh already refuses any patch touching `.github/`, so a hijacked\nagent can't rewrite this pipeline). Author-gated, issue-only, SHA-pinned.\n\nAlso fixes a latent bug in the shipped example + composite: the LLM key was delivered\nvia STEP-LEVEL `env:` on the `uses:` composite step, which does NOT propagate into a\ncomposite action's internal steps (only job/workflow-level env does). The key is now\ndelivered at JOB level in both the example and the live workflow, and the action.yml\nheader + docs/usage.md wording are corrected to say job-level.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T08:15:43+03:00",
+          "tree_id": "53a864ee9ec6e2d3b703de78dd80c90213f02484",
+          "url": "https://github.com/stacklok/mecatl/commit/0294ffcdd5c76e7e98e82ec2d818c1d43445e7a6"
+        },
+        "date": 1781587252957,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4474.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35123,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2414,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 6769,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 74.5,
             "unit": "allocs/op"
           },
           {
