@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781598661884,
+  "lastUpdate": 1781598664386,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -71457,6 +71457,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/d46a486225249ed68c5c84fc66fb11b36b06ab93"
         },
         "date": 1781597110916,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "c7a54e1ebaebdb9b5c274624757e11e289c41802",
+          "message": "chore(mecatequi): dogfood a custom PR-body template on mecatl\n\nActivate the convention-path template (.github/mecatequi/pr-body.md) on mecatl\nitself: a Summary / Files changed / collapsible run-details layout. Verifies the\ntemplating end-to-end on the runner; revert to drop back to the built-in body.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-16T11:25:18+03:00",
+          "tree_id": "7eaacef9e4bacdf35704598d420432ff8130fd30",
+          "url": "https://github.com/stacklok/mecatl/commit/c7a54e1ebaebdb9b5c274624757e11e289c41802"
+        },
+        "date": 1781598663602,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
