@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781686154829,
+  "lastUpdate": 1781686157023,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -146659,6 +146659,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/29cf475a15375dc5a4c9eaf817847f7bd69809a4"
         },
         "date": 1781677207699,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "662bbf15f8891c58e42bf52158b2d044193f9d48",
+          "message": "chore(release): bump reusable-workflow pins v0.0.3 -> v0.0.4\n\nCut v0.0.4. The reusable mecatequi workflow references its three first-party\nsibling composite actions by a HARDCODED literal tag (an expression is illegal\nin `uses:`), so the release process must bump those pins in the same tagged\ncommit or the tag ships pins pointing at the previous release (version skew the\n`lint:reusable-pins` gate fails the release on).\n\n- Bump the three sibling-action pins in mecatequi-reusable.yml + their\n  explanatory comments v0.0.3 -> v0.0.4.\n- Bump the EXPECTED_TAG default in check-reusable-pins.sh in lockstep.\n- Bump the illustrative caller refs in docs/usage.md and the workflows README.\n\nThe frozen ADR 0028 keeps its historical/illustrative @v0.0.3 (ADRs are never\nedited in place). No Go code changed; llms.txt is a title/link index and is\nunaffected by these body-text version bumps.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-17T08:30:29Z",
+          "tree_id": "c650be4bda4d2f291967b37d09d580ff36f87187",
+          "url": "https://github.com/stacklok/mecatl/commit/662bbf15f8891c58e42bf52158b2d044193f9d48"
+        },
+        "date": 1781686156367,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
