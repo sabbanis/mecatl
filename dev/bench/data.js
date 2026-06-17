@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781674842034,
+  "lastUpdate": 1781674844239,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -134445,6 +134445,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 87,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "87d67db6289d74ae75fa7fe809bf6957438f8cf4",
+          "message": "docs: make AGENTS.md the canonical agent contract; CLAUDE.md a symlink\n\nAligns with the now-standard AGENTS.md convention (Linux Foundation / Agentic AI\nFoundation; read natively by 30+ agent tools — Codex, Cursor, Copilot, Gemini,\nAider, Zed, …). Previously this repo inverted it: AGENTS.md was a research-corpus\nindex and CLAUDE.md held the contract, so any non-Claude tool loaded AGENTS.md and\nsilently missed the entire harness contract (build, layering, invariants, workflow).\n\nChange:\n- The harness contract (formerly CLAUDE.md) is now AGENTS.md — the canonical,\n  tool-neutral source. CLAUDE.md is a symlink to it, so Claude Code (which reads\n  CLAUDE.md, not AGENTS.md) and AGENTS.md-aware tools share one contract, zero drift.\n- The old AGENTS.md corpus-orientation content moves into docs/harnesses/ (its\n  \"contributing to the corpus\" rule becomes a section in docs/harnesses/README.md;\n  the routing was already covered by the harnesses README + INDEX).\n- All doc links that pointed to CLAUDE.md now point to AGENTS.md (the real file);\n  matlatl skips symlinks, so a link to the CLAUDE.md symlink would read as broken.\n  CLAUDE.md is added to .matlatlignore to suppress the skipped-symlink notice.\n\nCode comments that mention \"CLAUDE.md\" by name are left as-is — the symlink keeps\nthat name valid and resolving to the same content. Windows checkouts need\ncore.symlinks=true / Developer Mode for the symlink (the standard caveat).\n\nGates green: matlatl check --strict (0 broken/orphan/unreachable), docs/lint,\nmodelith render --check; llms.txt regenerated (lists AGENTS.md, not the symlink).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-17T05:35:20Z",
+          "tree_id": "c5fc1388e9ec71feb703beee42a157b2b9e8deaf",
+          "url": "https://github.com/stacklok/mecatl/commit/87d67db6289d74ae75fa7fe809bf6957438f8cf4"
+        },
+        "date": 1781674843561,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1466,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35128,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7123.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 96,
             "unit": "allocs/op"
           },
           {
