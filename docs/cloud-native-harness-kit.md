@@ -122,6 +122,11 @@ These are unresolved and shape the scope of everything above:
    model.
 2. **Off-the-shelf adoption criteria** — what concretely would make us switch harnesses,
    so the reversibility shim (§4) stays a real option and not a comforting story.
+3. **What using the kit looks like** — the consumer-side shape a level down from this doc:
+   what "main" is, how a consumer wires and configures the kit (a dependency-injection
+   composition root?), and whether there's room for a desktop kit runner that dynamically
+   configures and launches subsystems (à la ToolHive). Out of scope for this definition,
+   but it's the test of whether the kit idea is real.
 
 *Out of band (governance, not definitional):* the open-source posture — whether the kit
 (or parts of it) is open-sourced, under what license and governance, and when.
