@@ -74,22 +74,34 @@ type Config struct {
 	// keeps the CLI/default). The composition layer parses the string; permconfig only
 	// reads the scalar.
 	Posture string `yaml:"posture"`
-	// Models holds the OPERATOR-TIER per-slot model config (ADR 0030): the
-	// `models.slots` / `models.aliases` maps. Like Guardrails/Posture it is honoured
-	// ONLY from the user-global + CLI tiers; a project-tier file's models: block is
-	// IGNORED with a WARN (re-pointing a slot from a project repo is deferred to the
-	// allowlist-capped Layer-3 work). The TOP `models:` mapping is parsed STRICTLY
-	// (an unknown key like `slotz:` errors), the inner slots/aliases maps stay
-	// free-form (composition validates the slot keys fail-soft). A nil Models means
-	// the key was absent. The composition layer reads the maps; permconfig only
-	// carries them.
+	// Models holds the per-slot model config (ADR 0030): the `models.slots` /
+	// `models.aliases` maps, the session `default`, and the operator-tier `allowlist`
+	// cap. At the OPERATOR tier (user-global + CLI) all fields are honoured. At the
+	// PROJECT tier (Phase 4) a models: block is honoured WITHIN the operator allowlist
+	// on a TRUSTED workspace (slots/aliases/default only); with no operator allowlist
+	// it stays WARN-ignored (the opt-in — byte-identical to pre-Phase-4), and a
+	// project-tier allowlist: key is always ignored with a WARN (non-wideable cap).
+	// The TOP `models:` mapping is parsed STRICTLY (an unknown key like `slotz:`
+	// errors), the inner slots/aliases maps stay free-form (composition validates the
+	// slot keys fail-soft). A nil Models means the key was absent. The composition
+	// layer reads the maps; permconfig only carries them.
 	Models *ModelsSection `yaml:"models"`
 }
 
-// ModelsSection is the operator-tier `models:` YAML subtree (ADR 0030): a per-slot
-// model-binding map and an alias map. The TOP mapping is parsed STRICTLY (unknown
-// keys error); the inner Slots/Aliases maps are free-form name→selector (composition
-// validates the slot names fail-soft via knownSlotNames).
+// ModelsSection is the `models:` YAML subtree (ADR 0030): a per-slot model-binding
+// map, an alias map, a session-default binding, and the operator-tier allowlist cap.
+// The TOP mapping is parsed STRICTLY (unknown keys error); the inner Slots/Aliases
+// maps are free-form name→selector (composition validates the slot names fail-soft
+// via knownSlotNames).
+//
+// The block appears at BOTH tiers but the tiers differ in what they may carry
+// (Phase 4):
+//   - OPERATOR tier (user-global + CLI): all four fields. The Allowlist is the
+//     non-wideable cap on what a PROJECT may bind; Slots/Aliases/Default are the
+//     operator's own bindings (never capped — the operator is authoritative).
+//   - PROJECT tier (.mecatl/settings.yaml): Slots/Aliases/Default ONLY, honoured
+//     only within the operator Allowlist and only on a TRUSTED workspace. A project
+//     Allowlist: key is IGNORED with a WARN (a project cannot widen its own cap).
 type ModelsSection struct {
 	// Slots binds a slot name (a call-slot "compaction"/"ask-reviewer"/"guardrail" or
 	// a tier "cheap"/"fast"/"reasoning") to a model selector (alias or concrete id).
@@ -97,6 +109,17 @@ type ModelsSection struct {
 	// Aliases binds a short alias to a concrete model id (merged onto the CLI
 	// --model-alias map, CLI winning per key).
 	Aliases map[string]string `yaml:"aliases"`
+	// Default is the session-default model selector (alias or concrete id). It is the
+	// project-overridable session default (ADR 0030 Phase 4) — within the operator
+	// allowlist; the operator's own Default is uncapped. Empty = absent.
+	Default string `yaml:"default"`
+	// Allowlist is the OPERATOR-TIER, non-wideable cap (ADR 0030 Phase 4): the set of
+	// model selectors (alias names and/or concrete ids) a PROJECT-tier models: block
+	// may bind to. An empty/absent allowlist means project models stay WARN-ignored
+	// (the opt-in: no cap ⇒ no project override, byte-identical to pre-Phase-4). It is
+	// honoured ONLY from the operator tiers; a project-tier allowlist: key is ignored
+	// with a WARN (a project cannot widen its own cap).
+	Allowlist []string `yaml:"allowlist"`
 }
 
 // UnmarshalYAML decodes the models: mapping STRICTLY (ADR 0030): an unknown key
@@ -104,8 +127,10 @@ type ModelsSection struct {
 // must not silently drop a whole binding map. Same rationale as GuardrailsSection.
 func (m *ModelsSection) UnmarshalYAML(node *yaml.Node) error {
 	return decodeStrictMapping(node, "models", map[string]any{
-		"slots":   &m.Slots,
-		"aliases": &m.Aliases,
+		"slots":     &m.Slots,
+		"aliases":   &m.Aliases,
+		"default":   &m.Default,
+		"allowlist": &m.Allowlist,
 	})
 }
 

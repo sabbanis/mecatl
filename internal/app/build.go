@@ -851,10 +851,25 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	cfg = foldOperatorGuardrails(cfg)
 
 	// Per-slot models (ADR 0030, Phase 1+2): fold the operator-tier `models:` YAML
-	// subtree (user-global + CLI only — a project file's models: block is ignored with
-	// a WARN, like guardrails/posture) onto cfg.ModelSlots/cfg.ModelAliases, CLI
-	// flags (--model-slot/--model-alias) winning per key. Runs after the resolver is
-	// built; the three routed call sites read the resolved slot models lazily.
+	// subtree (user-global + CLI only — a project file's models: block is handled by
+	// the Phase-4 fold below) onto cfg.ModelSlots/cfg.ModelAliases, CLI flags
+	// (--model-slot/--model-alias) winning per key. Runs after the resolver is built;
+	// the three routed call sites read the resolved slot models lazily.
+	//
+	// Phase 4 precedence (CLI > project-YAML > operator-YAML > built-in): snapshot the
+	// CLI-set model-binding keys BEFORE this operator-YAML fold runs, so the later
+	// foldOperatorModelDefault / foldProjectModelBindings can layer the YAML rungs UNDER
+	// the CLI ones (a CLI-set key/--model is SKIPPED by both YAML folds).
+	//
+	// ORDERING INVARIANT (load-bearing — do NOT move this capture below foldOperatorModelSlots):
+	// the snapshot is only a faithful CLI-vs-YAML discriminator BECAUSE at THIS point cfg
+	// holds ONLY the CLI bindings (foldOperatorModelSlots has not merged operator-YAML in
+	// yet) and cfg.Model is the bare CLI --model (the registry default + operator-YAML
+	// default are applied LATER). Capturing after either fold would record YAML-set keys as
+	// "CLI-set" and silently invert the precedence (project/operator-YAML would stop
+	// overriding). Pinned by TestPrecedenceCombinedTiersSameSlotCLIWins +
+	// TestPrecedenceCombinedTiersOperatorYAMLAndProject (the all-three-tiers seam guards).
+	cliModelKeys := captureCLIModelKeys(cfg)
 	cfg = foldOperatorModelSlots(cfg)
 
 	// Start-of-session git snapshot, computed ONCE here (FIX 2): gitSnapshot runs git
@@ -890,6 +905,25 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	if cfg.Model == "" {
 		cfg.Model = reg.ResolvedDefaultModel()
 	}
+	// Operator-YAML models.default (ADR 0030 Phase 4): an operator's settings.yaml
+	// `models.default:` re-binds the session default OVER the registry default, but UNDER
+	// a CLI --model. The operator's OWN default is UNCAPPED (the allowlist caps PROJECT
+	// bindings only — the operator is authoritative). It is the operator-YAML rung of the
+	// default precedence: CLI --model > project-YAML default (capped) > operator-YAML
+	// default > registry default. Runs after the registry default so it overrides it, and
+	// before foldProjectModelBindings so a capped project default can override it in turn.
+	// No-op (byte-identical) when no operator models.default is configured.
+	cfg = foldOperatorModelDefault(cfg, cliModelKeys)
+	// Project-overridable model bindings within the operator allowlist (ADR 0030
+	// Phase 4): a TRUSTED project's .mecatl/settings.yaml models: block may re-bind
+	// default/slots/aliases, but ONLY to allowlisted entries (resolve-then-check). Runs
+	// AFTER foldOperatorModelSlots (so it overrides the operator-YAML layer) and AFTER
+	// cfg.Model was resolved to the registry default (so a project `default` can re-bind
+	// it and the cap resolves through the operator-merged alias map), and BEFORE
+	// modeNeedsEngine/logSlotConfigFacts below (so the plan slot, the predicate, and the
+	// narration all see the final merged maps). No-op (byte-identical) when there is no
+	// operator allowlist, an untrusted workspace, or no project models block.
+	cfg = foldProjectModelBindings(cfg, cliModelKeys)
 	// SubagentModel (issue #35): validate + resolve the alias ONCE here — FAIL-FAST
 	// on a value that doesn't resolve to a usable model id (the --agent-source-url
 	// loud-misconfig posture; warn-and-inert would silently run the whole child

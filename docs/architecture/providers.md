@@ -201,11 +201,11 @@ flags stay the **on/off gate** (a slot alone never enables them).
 Posture is **fail-soft** and the default is **byte-identical**: with no slot configured
 every routed call keeps the session model; a typo'd slot key or an alias meaning inherit
 WARNs and degrades to the session model — a broken housekeeping slot never wedges the
-call. `models.slots` / `models.aliases` are **operator-tier only** (user-global
-`settings.yaml` + `--model-slot` / `--model-alias`); a project-tier `models:` block is
-ignored with a WARN (`permconfig.Resolver.OperatorModelSlots()`). Team synthesis is
-**deferred** (it runs on the lead member's whole engine); the subagent router is a later
-ADR-0030 layer, not in this slice.
+call. `models.slots` / `models.aliases` come from the operator tier (user-global
+`settings.yaml` + `--model-slot` / `--model-alias`); a project tier may also bind them
+**within an operator allowlist** (see below). Team synthesis is **deferred** (it runs on
+the lead member's whole engine); the subagent router is a later ADR-0030 layer, not in
+this slice.
 
 **Mode→model: the `plan` slot (Phase 3, the opusplan pattern).** A fourth slot, `plan`,
 is wired on the **mode axis** rather than the internal-call axis. It does **not** route a
@@ -230,6 +230,47 @@ guard) — is **promoted** to a per-session engine (CASE 2). Both go through the
 next `GetSession`/turn echo after the rebuild (a `SetMode` response still carries the
 pre-rebuild model — the model is fixed per turn). With no plan slot, a mode flip changes
 nothing. See [ADR 0030](../adr/0030-model-selection-heuristics.md) Layer 3.
+
+**Project-overridable model config, capped by an operator allowlist (Phase 4).** A
+**trusted** project's `.mecatl/settings.yaml` may re-bind `models.default` / `models.slots`
+/ `models.aliases` — but only to entries the operator vetted. The whole layering chain is:
+
+```text
+CLI (operator flags) > project-YAML (capped) > operator-YAML (settings.yaml) > built-in
+```
+
+The operator's `models.allowlist` (a list of alias names and/or concrete ids) is the
+**non-wideable cap**. It is the **opt-in**: with no operator allowlist, a project `models:`
+block stays WARN-ignored — byte-identical to before Phase 4. A project-tier
+`models.allowlist:` key is always ignored with a WARN (a project cannot widen its own cap).
+
+Two halves enforce it:
+
+- **`permconfig`** (`OperatorModelPolicy()` / `ProjectModelBindings(ws)`) captures the
+  project bindings within the **trust gate** (the SAME `TrustProject` gate as project allow
+  rules — an untrusted repo's `models:` is dropped) and the opt-in (an operator allowlist
+  must exist). The allowlist: key is stripped at capture; the membership cap is left to
+  composition (it needs the operator-merged alias map to canonicalize).
+- **Composition** (`foldProjectModelBindings`, `internal/app/slots.go`) canonicalizes the
+  allowlist to a concrete-id **set** (each entry resolved through the operator-merged alias
+  map), then for each project binding does **resolve-then-check**: resolve the value to a
+  concrete id, test membership, **accept** (merge) or **drop** (keep the operator/default
+  value) with one build-once WARN. Slot bindings are also validated against the known slot
+  names. The allowlist applies to **every** config-file binding consumer — the session
+  `default`, all slots (including the Phase-3 `plan` slot), and aliases.
+
+Precedence within the cap: a project binding **overrides** the operator-YAML value for the
+same key but **skips** any key the operator set on the **CLI** (the CLI flag is a deliberate
+per-run override that still wins). The mechanism is a snapshot of the CLI-set keys taken in
+`Build` **before** the operator-YAML fold runs (`captureCLIModelKeys`); the project fold
+overrides operator-YAML keys yet skips the snapshotted CLI keys. The allowlist and its
+canonicalization are always operator-only.
+
+**Out of scope (this slice):** the allowlist caps **config-file** bindings only — a per-def
+`AgentDef.Model` literal and the per-session API selector
+(`CreateSessionRequest.model_id`) are not capped here. The operator's OWN bindings are
+never capped (the operator is authoritative). See
+[ADR 0030](../adr/0030-model-selection-heuristics.md).
 
 ## Related
 

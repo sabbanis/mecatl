@@ -262,7 +262,7 @@ mailbox). See the delegation-capabilities note below.
 | `--agents-dir` | `""` | directory of named **agent definitions** (`<name>.md` + YAML frontmatter — `name`/`description`/`tools`/`model`/`provider`/`permissionMode`/`maxTurns`/`maxToolCalls`/`color`/`skills`/`mcpServers`/`hooks`/`memory`; full reference in `docs/adr/0013-agent-definitions.md`), reusable as a `Subagent(agent=<name>)` delegate and as a team-member role (repeatable; highest precedence). **TRUST BOUNDARY:** a def body steers the model like `AGENTS.md`/`CLAUDE.md`. A `memory: user\|project` field (issue #33) injects a per-agent `MEMORY.md` head into the def's prompt at startup (READ-ONLY in v1); the **project** tier is **`--trust-project`-gated** (it points into the attacker-controllable workspace). |
 | `--agents-conventional` | `true` | also discover agent defs from the conventional locations (`<workspace>/.mecatl/agents`, `<workspace>/.claude/agents`, `$XDG_CONFIG_HOME/mecatl/agents`, `~/.claude/agents`; lower precedence than `--agents-dir`). ON and **inert** until such a dir exists. Project-tier defs are **trust-gated** (`--trust-project`). |
 | `--model-alias` | `""` | model alias mapping `name=model-id` (repeatable), resolved only in composition — an agent def's `model: <alias>`, a `--model-slot` selector, and `--subagent-model` all resolve through this map (then the built-in sonnet/opus/haiku aliases). |
-| `--model-slot` | `""` | **PER-SLOT MODELS** ([ADR 0030](adr/0030-model-selection-heuristics.md)): bind an internal lightweight LLM call to its own model as `slot=selector` (**repeatable**), e.g. `--model-slot compaction=cheap --model-alias cheap=gpt-4o-mini`. The routed slots are `compaction` (the compaction summary call), `ask-reviewer` (the headless child-ask reviewer), `guardrail` (the content checker), and `plan` (plan-mode → model re-resolution, the opusplan pattern, [ADR 0030](adr/0030-model-selection-heuristics.md) Layer 3); a **tier** key (`cheap`/`fast`/`reasoning`) gives a default a slot falls through to (the three internal-call slots default to `cheap`, but **`plan` defaults to `reasoning`**). The selector is a `--model-alias` or a concrete id, resolved on the **session's provider**. Empty (no `--model-slot`) keeps every call on the **session model** (**byte-identical default**). **Fail-soft**: a typo'd slot or an alias meaning *inherit* WARNs and keeps the session model — it never wedges the call. For `ask-reviewer`/`guardrail` the slot **supersedes the model** of `--subagent-ask-reviewer`/`--guardrails-model` but does **not** enable them (those flags stay the on/off gate). **Operator-tier only**; the YAML twin is the user-global `settings.yaml` `models.slots:` subtree (a project-tier `models:` block is ignored with a WARN). `mecatui` accepts the same flag (and `--model-alias`) for its embedded server. |
+| `--model-slot` | `""` | **PER-SLOT MODELS** ([ADR 0030](adr/0030-model-selection-heuristics.md)): bind an internal lightweight LLM call to its own model as `slot=selector` (**repeatable**), e.g. `--model-slot compaction=cheap --model-alias cheap=gpt-4o-mini`. The routed slots are `compaction` (the compaction summary call), `ask-reviewer` (the headless child-ask reviewer), `guardrail` (the content checker), and `plan` (plan-mode → model re-resolution, the opusplan pattern, [ADR 0030](adr/0030-model-selection-heuristics.md) Layer 3); a **tier** key (`cheap`/`fast`/`reasoning`) gives a default a slot falls through to (the three internal-call slots default to `cheap`, but **`plan` defaults to `reasoning`**). The selector is a `--model-alias` or a concrete id, resolved on the **session's provider**. Empty (no `--model-slot`) keeps every call on the **session model** (**byte-identical default**). **Fail-soft**: a typo'd slot or an alias meaning *inherit* WARNs and keeps the session model — it never wedges the call. For `ask-reviewer`/`guardrail` the slot **supersedes the model** of `--subagent-ask-reviewer`/`--guardrails-model` but does **not** enable them (those flags stay the on/off gate). The YAML twin is the `settings.yaml` `models.slots:` subtree: operator-tier by default, and project-overridable **within an operator `models.allowlist`** on a trusted repo (ADR 0030 Phase 4 — see the per-slot models section); with no allowlist a project `models:` block is ignored with a WARN. `mecatui` accepts the same flag (and `--model-alias`) for its embedded server. |
 | `--guardrails-model` | `""` | **GUARDRAILS** (issue #27): model id / `--model-alias` of a tool-less checker that inspects **outbound** tool-call args (`PreToolUse`, exfil) and **inbound** tool results (`PostToolUse`, prompt injection) and enforces a verdict. Empty (default) **disables** guardrails; an unusable model id **fails startup**. Configuring a model is the **opt-in to spend** — with **no rule list** it takes the **default advisory rule set** (WebSearch/WebFetch/mcp__\*, observe-only). The optional **rule list** + cost knobs live in the **user-global** `settings.yaml` `guardrails:` subtree (operator-tier **only** — a project repo cannot configure or weaken a checker; a project-tier block is ignored with a WARN); an explicit rule list replaces the defaults. `--guardrails-model` overrides the YAML model; a configured `guardrail` **model slot** (`--model-slot guardrail=…`) **supersedes** the checker model (this flag stays the on/off gate). Fires on the main loop regardless of `--headless`. **See the guardrails section below + `docs/adr/0021-guardrails.md`.** |
 | `--guardrails` | `""` | guardrails master switch: pass `--guardrails=off` to force the checker **off** regardless of `--guardrails-model` / the `guardrails:` YAML (the kill-switch). Leave it unset to keep guardrails governed by the model + rule config. **Only `off` is accepted** — any other value (e.g. `--guardrails=on`, which does NOT enable: set `--guardrails-model` for that) **fails startup** rather than silently doing nothing. |
 
@@ -1044,12 +1044,67 @@ models:
   gate** (a slot alone never enables them).
 - **Fail-soft**: a typo'd slot key or an alias that means *inherit* WARNs and degrades
   to the session model — a broken housekeeping slot never wedges the call.
-- **Operator-tier ONLY** (the same inversion as `guardrails:`/`posture:`): read from the
-  user-global `settings.yaml` + the CLI, **never** the project-tier file (a project
-  `models:` block is **ignored with a WARN**). The `models:` mapping is parsed
-  **strictly** (an unknown top key like `slotz:` errors). `--model-slot`/`--model-alias`
-  out-rank the YAML per key. Team synthesis and the subagent router are later ADR-0030
+- **Operator-tier by default, project-overridable within an allowlist (Phase 4).** The
+  `models:` mapping is parsed **strictly** (an unknown top key like `slotz:` errors).
+  `--model-slot`/`--model-alias` out-rank the YAML per key. By default a project-tier
+  `models:` block is **ignored with a WARN** — UNLESS the operator opts in with an
+  allowlist (next subsection). Team synthesis and the subagent router are later ADR-0030
   layers, not yet wired.
+
+#### Project-overridable model config, capped by an operator allowlist (Phase 4)
+
+A **trusted** project's `.mecatl/settings.yaml` may re-bind `models.default` /
+`models.slots` / `models.aliases` — but only to entries the operator **allowlisted**. The
+operator declares the cap in the **user-global** `settings.yaml`:
+
+```yaml
+# ~/.config/mecatl/settings.yaml  (operator-tier — the cap and the operator's own bindings)
+models:
+  allowlist:                 # the NON-WIDEABLE cap: alias names and/or concrete ids
+    - reasoning
+    - anthropic/claude-opus-4.5
+  aliases:
+    reasoning: gpt-5
+  default: gpt-5             # the operator's session default (uncapped — operator is authoritative)
+```
+
+```yaml
+# <repo>/.mecatl/settings.yaml  (project-tier — honoured ONLY within the allowlist, on a trusted repo)
+models:
+  default: anthropic/claude-opus-4.5   # accepted (allowlisted)
+  slots:
+    plan: reasoning                    # accepted (alias resolves to gpt-5, allowlisted)
+    compaction: some-unvetted-model    # DROPPED with a WARN (not in the allowlist)
+```
+
+- **Opt-in by allowlist.** With **no** operator `models.allowlist`, a project `models:`
+  block stays WARN-ignored — **byte-identical** to before Phase 4.
+- **The allowlist is operator-tier and non-wideable.** A project-tier `models.allowlist:`
+  key is always **ignored with a WARN** (a project cannot widen its own cap).
+- **Trust-gated.** An **untrusted** workspace's project `models:` block is ignored (the
+  same `--trust-project` / `trustedWorkspaces:` gate as a project's allow rules).
+- **Resolve-then-check.** Each project binding's value is resolved to a concrete id and
+  tested for membership in the (alias-resolved) allowlist set; an allowed binding is
+  applied, an out-of-cap one is dropped with a build-once WARN (keeping the
+  operator/default value). The cap applies to **every** config-file binding — the session
+  `default`, all slots (including `plan`), and aliases.
+- **Precedence:** `CLI (--model/--model-slot/--model-alias) > project-YAML (capped) >
+  operator-YAML (settings.yaml) > built-in`. A project binding overrides the operator-YAML
+  value for the same key, but an explicit operator **CLI flag** for a key still wins (a
+  deliberate per-run override). This holds for the session `default` too: an operator
+  `models.default:` re-binds the session default over the registry default (the operator's
+  own default is **uncapped** — the allowlist caps project bindings only), a capped project
+  `default:` can override it, and a CLI `--model` beats both.
+- **The allowlist is a flat set, not per-slot.** A model you allowlist may be bound by a
+  trusted project to **any** slot — including the `guardrail` and `ask-reviewer` **safety
+  checkers**, not just a cheap session default. This stays within the trust you declared
+  (the operator approved the model), but it is coarser than "approved models" might
+  suggest: **do not allowlist a model you would be unwilling to see used as a safety
+  checker.** Per-slot allowlist scoping is a deliberate future follow-up, not a current
+  knob.
+- **Out of scope (this slice):** the allowlist caps **config-file** bindings only — an
+  agent-def `model:` literal and the per-session API `model_id` selector are not capped
+  here.
 
 ### Declarative workspace trust (`trustedWorkspaces:`, WORKSPACE-TRUST Phase 1)
 

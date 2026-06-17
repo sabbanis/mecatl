@@ -383,8 +383,9 @@ model). A typo'd slot key, an unknown alias, or an alias meaning inherit WARNs a
 session model — a broken housekeeping slot NEVER wedges the call (no fail-fast normalize, unlike
 `--subagent-model`). `foldOperatorModelSlots` merges the OPERATOR-TIER `models.slots`+`models.aliases`
 YAML (user-global + CLI only, CLI winning per key) onto `cfg`; a project-tier `models:` block is
-ignored with a WARN (`permconfig.Resolver.OperatorModelSlots()`, the
-`captureModels`/strict-`ModelsSection.UnmarshalYAML` pair mirroring guardrails/posture).
+ignored with a WARN by default (`permconfig.Resolver.OperatorModelSlots()`, the
+`captureModels`/strict-`ModelsSection.UnmarshalYAML` pair mirroring guardrails/posture) — Phase 4
+below makes it project-overridable WITHIN an operator allowlist.
 `logSlotConfigFacts` narrates each routed slot ONCE in `Build` (the build-once-facts discipline —
 never per-engine; the loop's THREE-lines invariant holds). NO `port.LLMRequest` widening (the slot
 is a composition model-string choice). Team synthesis is DEFERRED (no clean seam — the lead
@@ -441,6 +442,83 @@ the server-adapter factory signature (`mode` param + `BuiltForMode` field). Guar
 + `TestModeFlipEndToEndModelObserved` + `TestModeRebuildReEmitsCapabilities`, and the live `e2e`
 `mode model (plan slot)` spec (slot-wiring half; the flip is the offline end-to-end's authoritative job
 until the harness driver gains a SetMode verb).
+
+**Project-overridable model config, capped by an operator allowlist (ADR 0030 Phase 4).** A TRUSTED
+project's `.mecatl/settings.yaml` may re-bind `models.default`/`models.slots`/`models.aliases`, but
+ONLY within a non-wideable operator allowlist. The layering is
+`CLI(operator flags) > project-YAML(capped) > operator-YAML(settings.yaml) > built-in`.
+
+`ModelsSection` gains `Default string` and `Allowlist []string` (both added to the strict
+`decodeStrictMapping` key map so a typo like `allowlistt:` still errors). The `permconfig` half:
+`OperatorModelPolicy() *ModelsSection` mirrors `OperatorModelSlots()` (the SAME `operatorModels`
+backing field — allowlist+default ride the same operator `models:` block, captured once via
+`captureModels` from `loadUserRules`; NO second capture path). `loadProjectRules` REPLACES the
+unconditional WARN-ignore with `captureProjectModels`: it strips a project `allowlist:` key (+WARN —
+a project cannot widen its own cap), then honours the rest ONLY when an operator allowlist EXISTS (the
+opt-in) AND the workspace is trusted (`r.opts.TrustProject` — the SAME gate as project allow rules),
+distinguishing the not-honoured reason (no operator allowlist vs untrusted). The sanitized block
+(slots/aliases/default; allowlist always stripped) rides a new `cacheEntry.projectModels` field so it
+invalidates with the project rules on the SAME mtime/size fingerprint; `ProjectModelBindings(ws)` is a
+pure resolve-if-cold read of it.
+
+The COMPOSITION half is `foldProjectModelBindings(cfg, cliKeys)` (`internal/app/slots.go`), run in
+`Build` ONCE: AFTER `foldOperatorModelSlots` (so it overrides the operator-YAML layer), AFTER
+`cfg.Model = reg.ResolvedDefaultModel()` (so a project `default` can re-bind `cfg.Model` and the cap
+resolves through the operator-merged alias map), and BEFORE `modeNeedsEngine(cfg)`/`logSlotConfigFacts(cfg)`
+(so the plan slot, the predicate, and the narration see the final maps). No-op fast paths keep it
+byte-identical: nil `permResolver`; empty operator allowlist (the opt-in); `!cfg.TrustProject`; nil
+project block. It canonicalizes the allowlist to a concrete-id SET (`canonicalAllowlist` — each entry
+`lookupModelAlias`'d against the operator-merged alias map; an unresolvable entry contributes nothing,
+fail-closed), then for each project binding does **resolve-then-check** (`capResolve`): resolve the
+value to a concrete id, test membership, accept (merge) or DROP (keep the operator/default value) with
+ONE build-once WARN per dropped binding (emitted INSIDE the fold — it runs once in `Build`, NOT
+per-engine; `resolveSlotModel` stays silent by contract). Slots are also validated against
+`knownSlotNames`. `default` re-binds `cfg.Model`; slots/aliases re-bind their keys (the two maps share
+`capMergeProjectBindings`).
+
+**The session `default` precedence (`CLI --model > project-YAML default (capped) > operator-YAML
+default > registry default`).** The operator-YAML rung is `foldOperatorModelDefault(cfg, cliKeys)`,
+run in `Build` AFTER the `cfg.Model = reg.ResolvedDefaultModel()` assignment (so it overrides the
+registry default) and BEFORE `foldProjectModelBindings` (so a capped project `default` overrides it in
+turn). It is UNCAPPED — the operator's OWN default resolves through `lookupModelAlias` with NO allowlist
+membership test (the allowlist caps PROJECT bindings only; the operator is authoritative) — and gated by
+`cliKeys.modelSet` (a CLI `--model` SKIPS it). Fail-soft: an unknown/inherit selector keeps the registry
+default. Without this rung an operator's `models.default:` was dead config (only the project default
+ever reached `cfg.Model`) — the review must-fix that closed the chain.
+
+**Per-slot scoping (deliberate non-goal this slice).** The allowlist is a FLAT set with no per-slot
+dimension: a model allowlisted as a cheap default may also be bound by a trusted project to the
+`guardrail`/`ask-reviewer` safety-checker slots. Acceptable (the operator approved the model) but
+coarser than "approved models" implies — documented in usage.md + ADR 0030 as an operator caveat;
+per-slot scoping is a future follow-up.
+
+**CLI-key survival (the precedence mechanism).** `captureCLIModelKeys(cfg)` snapshots which model keys
+the operator set on the CLI, taken in `Build` IMMEDIATELY BEFORE `foldOperatorModelSlots` — at that
+point `cfg.ModelSlots`/`cfg.ModelAliases` hold ONLY the CLI bindings (the operator-YAML fold has not
+run) and `cfg.Model` is the bare CLI `--model` (the registry default is applied LATER), so the
+snapshot cleanly distinguishes CLI from YAML. `foldProjectModelBindings` overrides operator-YAML-set
+keys but SKIPS any key in the snapshot, so an operator's explicit `--model-slot`/`--model-alias`/`--model`
+wins over a project override. The allowlist + its canonicalization are ALWAYS operator-only.
+
+OUT OF SCOPE (this slice, capped only when added later): an `AgentDef.Model` literal and the
+per-session API `CreateSessionRequest.model_id`. The operator's OWN bindings are never capped. No
+`port.LLMRequest` widening; composition + permconfig only. Guards:
+`permconfig.TestProjectModelsHonouredWithinAllowlist` + `TestProjectModelsByteIdenticalNoAllowlist` +
+`TestProjectModelsIgnoredUntrusted` + `TestProjectAllowlistKeyStripped` +
+`TestModelsStrictParseRejectsTypoWithNewKeys`; `app.TestFoldProjectModelBindingsWithinCap` +
+`TestFoldProjectModelBindingsDroppedOutsideCap` + `TestFoldProjectDefaultRebindAndDrop` +
+`TestFoldProjectPlanSlotEnablesModeNeedsEngine` + `TestFoldProjectModelBindingsByteIdenticalNoAllowlist` +
+`TestPrecedenceProjectOverridesOperatorYAML` + `TestPrecedenceCLIBeatsProject` +
+`TestPrecedenceCLIModelBeatsProjectDefault` + `TestProjectModelBindingsE2E` +
+`TestProjectModelBindingsE2EByteIdenticalNoAllowlist`; the operator-default rung
+`TestOperatorYAMLDefaultApplied` + `TestOperatorYAMLDefaultUncapped` +
+`TestProjectDefaultOverridesOperatorYAMLDefaultWithinCap` +
+`TestProjectDefaultOutsideCapKeepsOperatorYAMLDefault` + `TestCLIModelBeatsOperatorYAMLDefault` +
+`TestOperatorYAMLDefaultByteIdenticalWhenAbsent`; the alias-laundering guard
+`TestProjectAliasLaunderingDropped`; the all-three-tiers seam guards
+`TestPrecedenceCombinedTiersSameSlotCLIWins` + `TestPrecedenceCombinedTiersOperatorYAMLAndProject`;
+the composition trust-gate + multi-accept `TestFoldProjectModelBindingsTrustGateIndependent` +
+`TestFoldProjectModelBindingsMultiAccept`; and the fail-closed cap `TestCanonicalAllowlistFailClosedEntry`.
 
 **Subagent structured output (`output_schema` + `SubmitResult` + bounded validation-retry).** When
 `subagentArgs.OutputSchema` (a model-authored JSON schema) is present, the child is given a synthetic
