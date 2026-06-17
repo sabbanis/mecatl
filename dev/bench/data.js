@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781690577207,
+  "lastUpdate": 1781690579706,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -150431,6 +150431,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/662bbf15f8891c58e42bf52158b2d044193f9d48"
         },
         "date": 1781686156367,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "db063db6eda5502040835956618900f9f9bb67b6",
+          "message": "Merge pull request #75 from stacklok/mecatequi-toolchain-hook\n\nfeat(mecatequi): provision task + golangci-lint, add setup-script hook",
+          "timestamp": "2026-06-17T12:57:08+03:00",
+          "tree_id": "eeb5c3c912c548948aff0908dfca460f9e0983f6",
+          "url": "https://github.com/stacklok/mecatl/commit/db063db6eda5502040835956618900f9f9bb67b6"
+        },
+        "date": 1781690578873,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
