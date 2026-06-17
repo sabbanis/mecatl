@@ -2388,6 +2388,22 @@ func (m Model) onScrollKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // split/measure of the full content; trimming that is a follow-up, out of scope here.
 func (m *Model) refreshView() {
 	m.viewDirty = false
+	// FAST PATH: the line-slice handoff. When no selection is active AND the
+	// changed-files footer is not in play (it renders only under the global expand
+	// toggle), feed vp.SetContentLines directly with the incrementally-joined line
+	// slice — reusing the cached prefix of settled blocks and only building the
+	// changed suffix. This skips the O(scrollback) Builder copy + strings.Split that
+	// the string SetContent path forces on every streaming frame (the live tail
+	// re-renders every token, so the whole-join memo never helps streaming). The
+	// selection and footer paths both post-process the JOINED STRING, so they fall
+	// back to the byte-identical string path below.
+	if !m.sel.active && !m.expandTools {
+		m.vp.SetContentLines(m.rend.renderConversationLines(&m.conv, m.expandTools))
+		if m.stuck {
+			m.vp.GotoBottom()
+		}
+		return
+	}
 	content := m.rend.renderConversation(&m.conv, m.expandTools)
 	// When the global details toggle is on, fold the session's changed-files list
 	// in beneath the scrollback so the muted "Δ N files" header indicator has a
