@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781709017936,
+  "lastUpdate": 1781709021030,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -172989,6 +172989,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/826d7f014acf34a198234a6dbd5983053ed96cf9"
         },
         "date": 1781708043604,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "7f7db7d95f51fe7a67a9f77dad6b802bb29c444e",
+          "message": "chore(release): bump reusable-workflow pins v0.0.4 -> v0.0.5\n\nCut v0.0.5. The reusable mecatequi workflow references its three first-party\nsibling composite actions by a HARDCODED literal tag (an expression is illegal\nin `uses:`), so the release process must bump those pins in the same tagged\ncommit or the tag ships pins pointing at the previous release (the version skew\nthe `lint:reusable-pins` gate fails the release on).\n\n- Bump the three sibling-action pins in mecatequi-reusable.yml v0.0.4 -> v0.0.5.\n- Bump the EXPECTED_TAG default in check-reusable-pins.sh in lockstep.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-17T18:04:08+03:00",
+          "tree_id": "fc4ee181c2ae87ea2fee65d7c06b5235a1cf27b2",
+          "url": "https://github.com/stacklok/mecatl/commit/7f7db7d95f51fe7a67a9f77dad6b802bb29c444e"
+        },
+        "date": 1781709019841,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
