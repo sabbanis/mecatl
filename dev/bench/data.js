@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781691429424,
+  "lastUpdate": 1781691432248,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -154203,6 +154203,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/db063db6eda5502040835956618900f9f9bb67b6"
         },
         "date": 1781690578873,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "83897cc74b18ca5b6f00883f9ec6fbc0accb33fc",
+          "message": "Merge pull request #76 from stacklok/mecatequi-max-turns-flag\n\nfeat(mecatequi): add --max-turns flag; raise default turn/tool budgets",
+          "timestamp": "2026-06-17T13:11:55+03:00",
+          "tree_id": "d92682b933a1b3597f94fc8b553e26e147fbcb32",
+          "url": "https://github.com/stacklok/mecatl/commit/83897cc74b18ca5b6f00883f9ec6fbc0accb33fc"
+        },
+        "date": 1781691431054,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
