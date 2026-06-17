@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781698653974,
+  "lastUpdate": 1781698656287,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -161748,6 +161748,42 @@ window.BENCHMARK_DATA = {
             "name": "team_fanout/cache_hit_rate",
             "value": 0.75,
             "unit": "ratio"
+          }
+        ]
+      }
+    ],
+    "mecatl scenarios (render allocs, advisory)": [
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a40977ed494d6273f48d767a09d2e0b554a680b",
+          "message": "perf: stop the flaky perf gate false-failing on noisy TUI render allocs (#84)\n\nThe github-action-benchmark \"scenarios (smaller-is-better)\" gate compared\none PR run's allocs/op against the single previous-main value at a flat 2%\nthreshold with fail-on-alert. Two TUI render metrics were never actually\ndeterministic: gh-pages history showed tui_scrollback_view swinging ~4.6%\nand tui_scrollback_view_steady ~30% across commits that touched zero TUI\ncode. PR #83 (docs+CI only, no Go) false-failed because the previous-main\ncommit happened to be a low outlier. perf.yml's own comment anticipated\nthis and prescribed the escalation taken here.\n\nTwo independent root causes, both fixed:\n\nA. Benchmark determinism. AllocsPerOp = total_allocs / b.N, and b.N is\n   chosen from timing (runner-speed-dependent). BenchmarkScrollbackView\n   called appendAssistant(\".\") every op, growing the live block\n   unboundedly -> total allocs superlinear in b.N -> allocs/op rose with\n   runner speed. New reviseAssistant() reducer replaces the live block\n   with a fixed-SIZE, byte-different body each op through the\n   currentAssistant() rev-bump gateway: the render+join caches still MISS\n   every op (worst-case streaming floor preserved) but the block does not\n   grow, so allocs/op is now b.N-independent. Guarded by\n   TestScrollbackReviseAllocsIndependentOfN (mutation-verified: the old\n   growth bug fails it at delta=456970 vs +/-1 tolerance) and\n   TestScrollbackReviseBustsCacheEveryOp (asserts the join still all-misses\n   so the bench keeps measuring the hotspot).\n\nB. Gate restructure. perfconvert now emits a THIRD dedicated advisory\n   suite (-render) carrying only the two noisy render-alloc points;\n   perf.yml runs it with fail-on-alert:false in both jobs. Every\n   deterministic gate stays hard: the render benches' tokens_total and\n   goroutine_delta remain in the smaller suite, non-TUI scenario allocs\n   stay hard, the bigger cache-hit suite is unchanged, and the\n   allocsgate-over-task-bench gate is untouched. SHA-pins preserved;\n   gh-pages fetch ordering across the now-three steps preserved (smaller\n   fetches first; bigger and render use skip-fetch-gh-pages in perf-pr).\n\nReviewed via the panel (spec/standards/devops/QA): clean, no must-fix.\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-17T15:11:56+03:00",
+          "tree_id": "e3468f780a6506971cffe5976e97fcab6d9259b6",
+          "url": "https://github.com/stacklok/mecatl/commit/6a40977ed494d6273f48d767a09d2e0b554a680b"
+        },
+        "date": 1781698655533,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3580,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 96,
+            "unit": "allocs/op"
           }
         ]
       }
