@@ -8,6 +8,23 @@ sits **above** `adr/0027-cloud-native.md`, which is the mecatl-internal engineer
 makes a harness **cloud-native**, and where the kit's responsibility ends and a downstream
 consumer's begins.
 
+## Why a kit?
+
+We call this a **kit** because we want a set of core components that hold up across more
+than one context. Today we are designing for a knowledge worker running in Atrium, but the
+same project already does coding tasks on the desktop. Components that compose give us a
+starting point for harnesses we have not built yet, in contexts we have not targeted yet.
+
+**The test is reuse.** As we move from interactive chat toward something long-running and
+self-triggering, how much of what we have carries over? The more the core stays intact
+across that shift, the more the kit is earning its name. And if we open source it, that
+same property decides whether anyone builds on top: the more places it works while still
+adding value, the more likely others are to pick it up.
+
+A good test for a platform is whether people can use it to do things you didn't imagine
+when you built it. We need to leave room for people to put the kit parts together in
+unexpected ways.
+
 ## 1. Definition
 
 An **agentic coding harness** is the system around a model that lets it finish a software
