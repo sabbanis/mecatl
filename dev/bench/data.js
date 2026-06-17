@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781671742445,
+  "lastUpdate": 1781671744525,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -123231,6 +123231,120 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 87,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "1c53e5ac0c52729925951f2494597e5e1d28fafa",
+          "message": "docs: lifecycle convention, architecture split, audit fixes\n\nA continuous documentation overhaul in four phases. All gates green:\ncitations + a new lifecycle gate (docs/lint), matlatl check --strict\n(76 docs, 0 broken/orphan/unreachable), and modelith render --check.\n\n1. Audit-driven correctness. Re-verified README/architecture/usage against\n   the code: fixed the stale mecademo demo output, added WebSearch + the team\n   hook phases, documented the missing --event-log-url flag, filled the\n   posture-ladder / guardrails / durable-EventLog gaps, and added perf/ + e2e/\n   layout rows and navigation links.\n\n2. Documentation-lifecycle convention (ADR 0002). Separate lifecycles, one\n   source of truth per fact: living truth in architecture.md, the single\n   status tracker in PRODUCTION-READINESS.md, frozen design records for the\n   \"why\". Reframed every design doc with a standard lifecycle banner, removed\n   the rotting per-doc Status: headers, and added a docs/lint gate that fails\n   the build if a design doc carries a Status: line or lacks a banner. Added a\n   docs/adr/ home + template for new decisions.\n\n3. Architecture split. docs/architecture.md (1723 lines) -> a slim index plus\n   13 per-subsystem files under docs/architecture/ (content moved verbatim).\n   Brought docs/architecture/ under the citation gate and fixed ~15 abbreviated\n   code citations it had never protected.\n\n4. Modelith domain model. Moved to docs/architecture/ (co-located with the\n   docs it formalizes); updated the CI domain-model gate path, added a\n   `task docs:model` target to render+lint locally, and linked prose<->formal.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-17T04:43:36Z",
+          "tree_id": "907ffa6d30ff1938c85ac673041c5669ed7d538c",
+          "url": "https://github.com/stacklok/mecatl/commit/1c53e5ac0c52729925951f2494597e5e1d28fafa"
+        },
+        "date": 1781671743968,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1466,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35127,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 7117.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 96,
             "unit": "allocs/op"
           },
           {
