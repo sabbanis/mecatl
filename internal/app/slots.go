@@ -67,6 +67,12 @@ const (
 	// default tier is `reasoning`, not `cheap` (slotDefaultTier) — a plan model is a
 	// strong-reasoning model.
 	slotPlan = "plan"
+	// slotRouter routes the CLASSIFIER call of the OPT-IN semantic Subagent model router
+	// (ADR 0031, Phase 5). Like the three internal call-slots it routes a lightweight
+	// housekeeping call (one tiny classification turn), defaulting to the `cheap` tier —
+	// the classifier is housekeeping, NOT the routed work. The router's per-CATEGORY
+	// target models are a SEPARATE operator taxonomy (cfg.RouterCategories), not slots.
+	slotRouter = "router"
 )
 
 // Semantic TIER names — the alias spine (Layer 1). A slot with no explicit binding
@@ -93,6 +99,7 @@ var knownSlotNames = map[string]struct{}{
 	slotGuardrail:   {},
 	slotSynthesis:   {},
 	slotPlan:        {},
+	slotRouter:      {},
 	slotCheap:       {},
 	slotFast:        {},
 	slotReasoning:   {},
@@ -111,6 +118,7 @@ var slotDefaultTier = map[string]string{
 	slotGuardrail:   slotCheap,
 	slotSynthesis:   slotCheap,
 	slotPlan:        slotReasoning,
+	slotRouter:      slotCheap,
 }
 
 // resolveSlotModel resolves a slot name to a concrete provider model id, in the
@@ -475,6 +483,67 @@ func capResolve(cfg Config, sel string, allowed map[string]struct{}) (string, bo
 	return id, true
 }
 
+// foldOperatorModelRouter folds the OPERATOR-TIER `models.router:` taxonomy (ADR 0031,
+// Phase 5) onto cfg: the routing categories, the default category, and the classifier
+// slot. It is OPERATOR-TIER ONLY (read from OperatorModelPolicy(), which is the
+// user-global + CLI tiers; a project-tier router: was already stripped with a WARN in
+// captureProjectModels). It is FAIL-SOFT: a category with an empty name OR an empty
+// description OR an empty model selector is WARN-dropped (a category the classifier
+// cannot name/describe, or that maps to nothing, is useless) — the rest still load.
+// cfg.SubagentModelRouter (the --subagent-model-router enable FLAG) is untouched here:
+// this fold only supplies the taxonomy; the flag gates ON/OFF. A no-taxonomy operator
+// (no router: block) leaves cfg byte-identical. cfg is taken/returned by value.
+func foldOperatorModelRouter(cfg Config) Config {
+	res, ok := cfg.permResolver.(*permconfig.Resolver)
+	if !ok || res == nil {
+		return cfg
+	}
+	policy := res.OperatorModelPolicy()
+	if policy == nil || policy.Router == nil {
+		return cfg
+	}
+	router := policy.Router
+	cfg.RouterClassifierSlot = strings.TrimSpace(router.ClassifierSlot)
+	cfg.RouterDefaultCategory = strings.TrimSpace(router.DefaultCategory)
+	cfg.RouterCategories = nil
+	for _, c := range router.Categories {
+		name := strings.TrimSpace(c.Name)
+		desc := strings.TrimSpace(c.Description)
+		model := strings.TrimSpace(c.Model)
+		if name == "" || desc == "" || model == "" {
+			cfg.diag().Log(context.Background(), port.LevelWarn,
+				"models.router: DROPPING a malformed category (name, description, and model are all required)",
+				"name", name)
+			continue
+		}
+		cfg.RouterCategories = append(cfg.RouterCategories, permconfig.RouterCategory{
+			Name: name, Description: desc, Model: model,
+		})
+	}
+	return cfg
+}
+
+// resolveRouterClassifierModel resolves the model the model-router CLASSIFIER runs on
+// (ADR 0031), the SINGLE source both buildModelRouterTask (the live closure, keyed on the
+// session's parentModel) and logModelRouterFacts (the build-once narration, keyed on
+// cfg.Model) call — so the logged classifier model is exactly the one a session of that
+// parentModel classifies on. Precedence: an operator `classifier-slot` wins; else the
+// `router` slot (default cheap tier); else parentModel (fail-soft — the classifier is
+// housekeeping and must never wedge a delegation by failing to resolve). It is silent
+// (no diagnostics); the build-once narration is logModelRouterFacts' job.
+func resolveRouterClassifierModel(cfg Config, parentModel string) string {
+	if cfg.RouterClassifierSlot != "" {
+		if m, ok := resolveSlotModel(cfg, cfg.RouterClassifierSlot, parentModel); ok {
+			return m
+		}
+		return parentModel
+	}
+	if m, ok := resolveSlotModel(cfg, slotRouter, parentModel); ok {
+		return m
+	}
+	return parentModel
+}
+
 // knownSlotNamesList renders the known slot/tier keys in a stable sorted order for
 // the unknown-key WARN, so an operator who typo'd a slot sees exactly what is accepted.
 func knownSlotNamesList() string {
@@ -501,7 +570,7 @@ func logSlotConfigFacts(cfg Config) {
 	if len(cfg.ModelSlots) == 0 {
 		return
 	}
-	for _, slot := range []string{slotCompaction, slotAskReviewer, slotGuardrail, slotPlan} {
+	for _, slot := range []string{slotCompaction, slotAskReviewer, slotGuardrail, slotPlan, slotRouter} {
 		model, ok := resolveSlotModel(cfg, slot, cfg.Model)
 		// The three internal call-slots route a lightweight housekeeping call; the
 		// plan slot (ADR 0030 Layer 3) instead re-resolves the SESSION model in plan
@@ -521,6 +590,34 @@ func logSlotConfigFacts(cfg Config) {
 				"slot", slot, "selector", selectorForSlot(cfg, slot))
 		}
 	}
+}
+
+// logModelRouterFacts emits the build-once Subagent-model-router fact (ADR 0031)
+// EXACTLY ONCE through cfg.diag(): an INFO "model router ACTIVE" when the enable flag is
+// set AND a taxonomy exists, or a one-time WARN when the flag is set but NO taxonomy was
+// configured (a flag without categories cannot route — it stays OFF). When the flag is
+// OFF it logs nothing (byte-identical to pre-feature). Build-once ONLY (never per-engine
+// — the no-per-derivation-duplication rule; the "loop emits exactly THREE lines"
+// invariant holds, this is a Build fact not a loop line).
+func logModelRouterFacts(cfg Config) {
+	if !cfg.SubagentModelRouter {
+		return // OFF: byte-identical, silent.
+	}
+	if len(cfg.RouterCategories) == 0 {
+		cfg.diag().Log(context.Background(), port.LevelWarn,
+			"--subagent-model-router was set but no models.router categories are configured; the router is OFF (set models.router in your user-global settings.yaml)")
+		return
+	}
+	// Resolve the classifier model the SAME way buildModelRouterTask does (shared
+	// resolveRouterClassifierModel), keyed on cfg.Model — at Build time cfg.Model IS the
+	// shared-engine/parent model the build-once fact narrates, so the logged classifier
+	// matches what a default session classifies on (a per-session engine on a non-default
+	// model re-derives the closure on ITS parentModel; the build-once fact is the
+	// shared-engine narration, like logSlotConfigFacts).
+	classifier := resolveRouterClassifierModel(cfg, cfg.Model)
+	cfg.diag().Log(context.Background(), port.LevelInfo,
+		"subagent model router ACTIVE: a tiny classifier picks the child model per delegation from the operator taxonomy",
+		"categories", len(cfg.RouterCategories), "classifier", classifier, "default_category", cfg.RouterDefaultCategory)
 }
 
 // modeNeedsEngine returns the composition predicate wired into

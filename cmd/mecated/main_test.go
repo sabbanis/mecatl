@@ -86,6 +86,25 @@ func TestRunSkillsPromote(t *testing.T) {
 }
 
 // sanity: the skills-draft-dir flag parses and the threshold default is wired.
+// TestParseFlagsSubagentModelRouter asserts the ADR 0031 enable gate parses (default
+// OFF; --subagent-model-router sets it).
+func TestParseFlagsSubagentModelRouter(t *testing.T) {
+	def, err := parseFlags(nil)
+	if err != nil {
+		t.Fatalf("parseFlags(nil): %v", err)
+	}
+	if def.subagentModelRouter {
+		t.Error("subagentModelRouter default = true, want false (OFF, byte-identical)")
+	}
+	on, err := parseFlags([]string{"--subagent-model-router"})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if !on.subagentModelRouter {
+		t.Error("--subagent-model-router must set subagentModelRouter true")
+	}
+}
+
 func TestParseFlagsSkillsDraft(t *testing.T) {
 	cfg, err := parseFlags([]string{"--skills-draft-dir", "/tmp/q"})
 	if err != nil {

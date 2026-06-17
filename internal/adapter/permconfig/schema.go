@@ -120,6 +120,67 @@ type ModelsSection struct {
 	// honoured ONLY from the operator tiers; a project-tier allowlist: key is ignored
 	// with a WARN (a project cannot widen its own cap).
 	Allowlist []string `yaml:"allowlist"`
+	// Router is the OPERATOR-TIER semantic Subagent model-router taxonomy (ADR 0031,
+	// Phase 5): a classifier slot, the routing categories, and the default category. It
+	// is operator-tier ONLY — a project-tier router: sub-block is STRIPPED with a WARN
+	// (the taxonomy is an autonomous-spend/capability decision the operator owns, like
+	// the allowlist). nil/absent = no taxonomy (the --subagent-model-router flag then
+	// WARNs once and stays OFF). The flag is the ENABLE gate; this is the taxonomy.
+	Router *RouterSection `yaml:"router"`
+}
+
+// RouterSection is the `models.router:` operator-tier subtree (ADR 0031): the semantic
+// Subagent model-router taxonomy. The classifier reads the category descriptions to
+// choose which category a delegated task belongs to; composition maps the chosen
+// category's Model selector through the alias/slot machinery to a concrete model id.
+type RouterSection struct {
+	// ClassifierSlot names the model slot the CLASSIFIER itself runs on (the tiny,
+	// cheap one-turn classification call). Empty falls through to the `router` slot's
+	// default tier (cheap) — the classifier is housekeeping, not the routed work.
+	ClassifierSlot string `yaml:"classifier-slot"`
+	// Categories are the routing choices. Each carries a Name (the classifier's verdict
+	// key), a Description (the classifier's only signal — make them distinct), and a
+	// Model selector (an alias / slot / concrete id, resolved through the operator-
+	// merged alias map; operator taxonomy targets are UNCAPPED).
+	Categories []RouterCategory `yaml:"categories"`
+	// DefaultCategory is the category the classifier is told to choose when none clearly
+	// fits (advisory to the classifier; the real safety net is the fail-soft inherit).
+	DefaultCategory string `yaml:"default-category"`
+}
+
+// RouterCategory is one routing category in the operator taxonomy (ADR 0031): a name,
+// a one-line description the classifier reads, and the model selector the category maps
+// to. A category with an empty Name or Description is WARN-dropped fail-soft in
+// composition (foldOperatorModelRouter) — a category the classifier cannot describe or
+// name is useless.
+type RouterCategory struct {
+	// Name is the routing key the classifier echoes back as its verdict and the key
+	// composition maps to Model.
+	Name string `yaml:"name"`
+	// Description is the one-line summary the classifier reads to choose this category.
+	Description string `yaml:"description"`
+	// Model is the model selector (alias / slot / concrete id) a task classified into
+	// this category is minted on, resolved through the operator-merged alias map.
+	Model string `yaml:"model"`
+}
+
+// UnmarshalYAML decodes the models.router: mapping STRICTLY (ADR 0031): an unknown key
+// inside the router subtree is a parse error (same rationale as ModelsSection).
+func (r *RouterSection) UnmarshalYAML(node *yaml.Node) error {
+	return decodeStrictMapping(node, "models.router", map[string]any{
+		"classifier-slot":  &r.ClassifierSlot,
+		"categories":       &r.Categories,
+		"default-category": &r.DefaultCategory,
+	})
+}
+
+// UnmarshalYAML decodes a router category mapping STRICTLY.
+func (c *RouterCategory) UnmarshalYAML(node *yaml.Node) error {
+	return decodeStrictMapping(node, "models.router.categories[]", map[string]any{
+		"name":        &c.Name,
+		"description": &c.Description,
+		"model":       &c.Model,
+	})
 }
 
 // UnmarshalYAML decodes the models: mapping STRICTLY (ADR 0030): an unknown key
@@ -131,6 +192,7 @@ func (m *ModelsSection) UnmarshalYAML(node *yaml.Node) error {
 		"aliases":   &m.Aliases,
 		"default":   &m.Default,
 		"allowlist": &m.Allowlist,
+		"router":    &m.Router,
 	})
 }
 

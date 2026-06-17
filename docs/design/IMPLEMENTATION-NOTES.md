@@ -520,6 +520,69 @@ per-session API `CreateSessionRequest.model_id`. The operator's OWN bindings are
 the composition trust-gate + multi-accept `TestFoldProjectModelBindingsTrustGateIndependent` +
 `TestFoldProjectModelBindingsMultiAccept`; and the fail-closed cap `TestCanonicalAllowlistFailClosedEntry`.
 
+**The semantic subagent model router (ADR 0031, Phase 5).** The OPT-IN router picks a `Subagent`
+delegation's model PER task from an operator category taxonomy. It is a sibling of the headless
+ask reviewer — the same composition-built one-turn-engine pattern.
+
+ENGINE half (`engine/agent/modelrouter.go`): `RunModelRouter(ctx, engine, ModelRouteRequest)
+(category, ok)` drives a tool-less ONE-turn classifier (role `model-router`, `modelRouterLimits`
+= 1 turn / 1 tool / 1 failure, 30s timeout, no-progress nudge disabled) over `buildModelRoutePrompt`
+(category names+descriptions in the clear; the untrusted task prompt inside `WriteUntrustedBlock`;
+the `category:`/`categories:`/`task to classify:` headers added to `framingHeader`). `parseRouterVerdict`
+is the issue-#31 hardened parse — the WHOLE trimmed output (after `StripLoneCodeFence`) must BE a
+single `{"category":"<name>"}` object, and the category is VALIDATED against the offered list (a
+hallucinated category is a miss). The engine stays MODEL-STRING-ONLY: it returns a category NAME;
+composition owns the mapping. FAIL-SOFT: a `StopError`/`StopCancelled`, an unparseable verdict, or a
+degenerate input (nil engine / no categories / blank prompt) → `("", false)`.
+
+The per-RUN breaker `modelRouterBreaker` (default `defaultModelRouterMaxMisses`=3) mirrors
+`askReviewBreaker` exactly: its mutex serialises classifications within a run AND guards the
+consecutive-miss count; armed in `RunContentWith` iff `Deps.SubagentModelRouter != nil` (the new
+`Deps` field + `Run.router`). The closure lives in `Engine.parentCaps` (next to `adjudicate`): it
+holds the mutex across the whole classification, skips on an open breaker or a fired `hardAbort`,
+notes misses (one-time breaker-opened INFO via `r.diag`), resets on a success, and emits the
+per-classification INFO — all at the child diagnostic chokepoint, never a fourth loop line.
+
+The RUN() HOOK (`maybeRouteModel`, `engine/agent/subagent.go`): for a PLAIN default delegation
+(gated — returns empty unless `!resuming && !args.Fork && args.Model=="" && args.Agent=="" &&
+caps.routeTask != nil`), it calls `caps.routeTask(args.Prompt)` BETWEEN `validateFork` and
+`resolveEngineAndLimits`, threading the routed model into `selectChildEngine` via the EXISTING
+per-call `model` factory path (`t.engineFactory(routedModel)` — decide-once, contamination-safe,
+same-provider). PRECEDENCE by gating: per-call `model` > agent-def `Model` > fork/resume > router >
+inherited default. Both foreground and background route (the decision is threaded into
+`backgroundChild`). `EvSubagentStart` carries `RoutedCategory`/`RoutedModel` (session-struct +
+diagnostics only this slice; proto/client wire is a follow-up — no `buf`/`task generate` needed).
+
+COMPOSITION half: `buildModelRouterTask` (`internal/app/build.go`, sibling of `buildAskAdjudicator`)
+returns the `Deps.SubagentModelRouter` closure — nil when OFF (`!cfg.SubagentModelRouter ||
+len(cfg.RouterCategories)==0`, byte-identical). It resolves the classifier model via the SHARED
+`resolveRouterClassifierModel(cfg, parentModel)` (classifier-slot wins; else the `router` slot,
+default cheap; else parentModel) — the SAME helper `logModelRouterFacts` calls so the logged
+classifier matches what a session classifies on. ENGINE LIFETIME deviation from the ask-adjudicator:
+the reviewer engine is stashed once per session, but the classifier engine is rebuilt PER
+CLASSIFICATION CALL inside the closure (cheap, tool-less, one turn) via the `askAdjudicatorDeps`
+recipe (`childEngineDepsForProvider` + `MaxNoProgressNudges=-1`) — DELIBERATELY not cached: a stashed
+engine would pin one provider+model and reintroduce the clone-and-swap / provider-fixed hazard. It
+calls `RunModelRouter`, then maps the category's `Model` selector through `lookupModelAlias`
+(operator targets UNCAPPED). Wired at BOTH main-engine sites (`buildEngine` + `sessionEngineFactory`)
+like `attachAskAdjudicator`;
+`childEngineDepsForProvider` forces `Deps.SubagentModelRouter` nil (no nesting — the classifier is
+built through that path). `foldOperatorModelRouter` (`internal/app/slots.go`) folds the operator-tier
+`models.router:` (categories/default/classifier-slot) onto cfg, WARN-dropping a malformed category;
+the `slotRouter` slot is added to `knownSlotNames`/`slotDefaultTier`(cheap)/`logSlotConfigFacts`;
+`logModelRouterFacts` is the Build-once ACTIVE/inert narration. CONFIG: `permconfig.ModelsSection`
+gains `Router *RouterSection` (strict-parsed; `RouterSection`/`RouterCategory` strict too); a
+PROJECT-tier `router:` is stripped with a WARN in `captureProjectModels` (operator-tier only). The
+`--subagent-model-router` FLAG (both mains) is the enable gate, deliberately NOT a permconfig key.
+Guards: `engine/agent` `TestRunModelRouter*` + `TestRun(RouteTask|ExplicitModel|Fork|NilRouteTask)*`
++ `TestRunNamedAgentBeatsRouter` + `TestRunResumeDoesNotRoute` (the precedence-gate guards) +
+`TestRouterBreaker*` (incl. `TestRouterBreakerSerializesConcurrentCalls` under -race); `app`
+`TestBuildModelRouterTask*` + `TestFoldOperatorModelRouterDropsMalformed` + `TestLogModelRouterFacts`
++ `TestRouterClassifierRunsOnSlotModel` + `TestRouterRoutesChildToClassifiedModelE2E` (asserts the
+parent→classifier→child→parent request POSITIONS) + `TestRouterOffIsByteIdenticalE2E`; `permconfig`
+`TestOperatorRouterParsed` + `TestProjectRouterStrippedWithWarn` + `TestRouterStrictUnknownKeyRejected`;
+flag parse `TestParseFlagsSubagentModelRouter` (mecated) + the mecatequi router subtest.
+
 **Subagent structured output (`output_schema` + `SubmitResult` + bounded validation-retry).** When
 `subagentArgs.OutputSchema` (a model-authored JSON schema) is present, the child is given a synthetic
 `SubmitResult` tool (`engine/agent/structuredoutput.go`) whose PARAMETERS ARE that schema,

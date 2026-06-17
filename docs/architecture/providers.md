@@ -204,8 +204,7 @@ WARNs and degrades to the session model — a broken housekeeping slot never wed
 call. `models.slots` / `models.aliases` come from the operator tier (user-global
 `settings.yaml` + `--model-slot` / `--model-alias`); a project tier may also bind them
 **within an operator allowlist** (see below). Team synthesis is **deferred** (it runs on
-the lead member's whole engine); the subagent router is a later ADR-0030 layer, not in
-this slice.
+the lead member's whole engine); the subagent router shipped in Phase 5 (see below).
 
 **Mode→model: the `plan` slot (Phase 3, the opusplan pattern).** A fourth slot, `plan`,
 is wired on the **mode axis** rather than the internal-call axis. It does **not** route a
@@ -271,6 +270,54 @@ canonicalization are always operator-only.
 (`CreateSessionRequest.model_id`) are not capped here. The operator's OWN bindings are
 never capped (the operator is authoritative). See
 [ADR 0030](../adr/0030-model-selection-heuristics.md).
+
+## The semantic subagent model router (Phase 5)
+
+The **OPT-IN semantic model router** ([ADR 0031](../adr/0031-subagent-model-router.md))
+picks which model a `Subagent` delegation runs on, **per task**, from an operator-defined
+menu. It is the Phase-5 realisation of ADR 0030's deferred "Layer 3b" — built as a sibling
+of the headless ask reviewer and the guardrail checker, not as new architecture.
+
+**Taxonomy + enable gate.** The operator defines categories in the user-global
+`settings.yaml` `models.router:` subtree — each a `name`, a one-line `description` the
+classifier reads, and a `model` selector (alias / slot / concrete id). A
+`--subagent-model-router` **flag** is the enable gate (deliberately NOT a permconfig key —
+autonomous per-delegation model selection is an operator deployment decision, the same
+posture as `--subagent-ask-reviewer`). A project-tier `models.router:` is **stripped with a
+WARN** (operator-tier only). The classifier itself runs on the `router` model slot
+(default `cheap` tier; an operator `classifier-slot` overrides) — a tiny one-turn call.
+
+**How it fires.** For a **plain** default delegation only (no per-call `model`, no `agent`,
+no `fork`, no `resume` — those already pin the engine), the `Subagent` `run()` hook calls a
+composition-built classifier (`RunModelRouter`, role `model-router`, tool-less, one turn,
+no-progress nudge disabled). The classifier reads the category descriptions in the clear
+and the (untrusted) task prompt inside the `UntrustedFence`, and returns a category by the
+**whole-output-single-JSON-object** parse (the hardened parse the ask reviewer uses); a
+hallucinated category is a miss. Composition maps the chosen category to its model selector
+through the alias machinery (operator targets are **uncapped**) and mints the child via the
+**existing per-call engine factory** — **decide-once, commit-for-child-lifetime,
+same-provider** (the engine layer stays model-string-only; the chosen model is never a
+`port.LLMRequest` field). Both the foreground and background paths route.
+
+**Precedence** (by gating): explicit per-call `model` > agent-def `Model` > fork/resume >
+**router** > inherited default. The router fills the gap; it never overrides pinned intent.
+
+**Fail-soft + breaker.** The router is **never load-bearing**. Any classifier failure,
+cancellation, unparseable verdict, unknown category, or unresolvable target → the
+delegation inherits the default explorer model. A per-run circuit breaker (default 3
+consecutive misses, mirroring the ask-reviewer breaker) opens after repeated misses and
+skips the classifier for the rest of the run; a success resets it. Its mutex serialises
+classifications within a run, so a Subagent fan-out cannot multiply classifier spend.
+**OFF (no flag / no taxonomy) is byte-identical** — no classifier call, the inherited
+model. **No nesting:** a child has no `Subagent` tool, and `childEngineDepsForProvider`
+forces `Deps.SubagentModelRouter` nil. It runs in **both** interactive and headless
+deployments (it is orthogonal to the ask-review path).
+
+**Observability.** `EvSubagentStart` carries `RoutedCategory`/`RoutedModel` (bare metadata,
+gauntlet-#7 safe) when routed; a per-classification INFO rides the existing child
+diagnostic chokepoint and a Build-once "router ACTIVE" fact narrates the config. This slice
+scopes the routed fields to the session struct + diagnostics; the proto/client wire is a
+follow-up.
 
 ## Related
 

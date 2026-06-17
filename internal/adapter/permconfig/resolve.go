@@ -442,6 +442,17 @@ func (r *Resolver) captureProjectModels(ws tool.WorkspaceReader, file string, bl
 			"file", file, "root", ws.Root())
 	}
 
+	// (1b) A project-tier router: is OPERATOR-TIER ONLY (ADR 0031) — strip + WARN, but
+	// keep the rest. The semantic model-router taxonomy is an autonomous-spend/capability
+	// decision the operator owns (like the allowlist); a project must not define which
+	// models its delegated tasks route to. captureProjectModels never copies Router onto
+	// acc, so the strip is the WARN — the field is structurally dropped.
+	if block.Router != nil {
+		r.diag.Log(context.Background(), port.LevelWarn,
+			"models: IGNORING project-tier models.router (operator-tier only — the semantic model-router taxonomy is an operator decision; set it in your user-global settings.yaml)",
+			"file", file, "root", ws.Root())
+	}
+
 	// (2) Opt-in by operator allowlist, then trust-gated.
 	op := r.operatorModels
 	if op == nil || len(op.Allowlist) == 0 {

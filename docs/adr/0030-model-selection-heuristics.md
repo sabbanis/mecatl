@@ -92,8 +92,10 @@ Resolution stays in the one resolver `resolveProviderModel`, extended (not forke
   this slice.) OUT OF SCOPE this slice (capped only when added): an `AgentDef.Model` literal
   and the per-session API `model_id` selector.
 - **DEFERRED (not this slice):** team **synthesis** routing (it lacks a clean seam — the
-  lead synthesis runs on the lead member's whole engine, not a one-shot call); and **Layer 3b**
-  (the operator-gated subagent router). These remain as designed above.
+  lead synthesis runs on the lead member's whole engine, not a one-shot call). **Layer 3b
+  (the operator-gated subagent router) was SUBSEQUENTLY IMPLEMENTED in Phase 5** — see
+  [ADR 0031](./0031-subagent-model-router.md), which records the one deviation from the
+  sketch above (a named CATEGORY taxonomy rather than a bare slot label).
 
 ## Consequences
 
@@ -106,6 +108,6 @@ Resolution stays in the one resolver `resolveProviderModel`, extended (not forke
 ## See also
 
 - Issue #86 (this work); related #77 (in-TUI mode switching), #78 (modelith `PermissionMode`), #20 (cross-provider switch — the same provider-fixed wall).
-- [ADR 0016](./0016-multi-provider.md) (provider/model neutrality), [ADR 0021](./0021-guardrails.md) and the `ChildAskReviewer` 4-step model in AGENTS.md (the gated-checker pattern mirrored here), [ADR 0027](./0027-cloud-native.md) (rehydration seam + List 1/List 2 inventory).
+- [ADR 0016](./0016-multi-provider.md) (provider/model neutrality), [ADR 0021](./0021-guardrails.md) and the `ChildAskReviewer` 4-step model in AGENTS.md (the gated-checker pattern mirrored here), [ADR 0027](./0027-cloud-native.md) (rehydration seam + List 1/List 2 inventory), [ADR 0031](./0031-subagent-model-router.md) (the Phase 5 realisation of Layer 3b).
 - Living docs (Phases 1–4): the alias spine + `models.slots` + the routed calls + the `plan` slot + the project-overridable-within-an-operator-allowlist config layering are documented in [`docs/architecture/providers.md`](../architecture/providers.md) (model resolution + the allowlist precedence chain), [`docs/usage.md`](../usage.md) (`--model-slot`/`--model-alias` + the operator `models.allowlist:`/`default:` + the trust requirement), and [`docs/design/IMPLEMENTATION-NOTES.md`](../design/IMPLEMENTATION-NOTES.md) (per-slot mechanics, the O5 finding, `foldProjectModelBindings` + the CLI-key-survival precedence). The remaining deferred layer (the subagent router) adds the router mechanics and the `0027` List 1 + List 2 inventory rows when it lands.
 - Lifecycle convention: [ADR 0002](./0002-documentation-lifecycle.md).

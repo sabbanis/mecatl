@@ -259,10 +259,11 @@ mailbox). See the delegation-capabilities note below.
 | `--subagent-ask-reviewer` | `""` | **OPT-IN headless ask reviewer**: model id or `--model-alias` of a tool-less ONE-TURN reviewer that adjudicates a **headless** subagent/member/branch permission ask the 4-step model would otherwise blanket auto-deny. **Requires `--headless`** (on an interactive server — including the `mecatui` embedded server — it is inert: asks surface to the client/modal instead). An allow approves **this call only** (never learned); a deny — or any reviewer error/timeout/ambiguity — keeps the call denied (**fail-safe**); each adjudication is **one extra LLM call** on the reviewer model. Configured `deny`/`ask` rules always win. The gRPC `RunTeam`-direct path is **excluded** (it runs zero-caps — no reviewer). Resolved on the **session's provider** (same-provider only). Empty (default) disables it; an unusable model id **fails startup** (validated even when inert). Deliberately a **server flag, not a permission-config key** — see the permissions section. A configured `ask-reviewer` **model slot** (`--model-slot ask-reviewer=…`) **supersedes** this flag's model, but the flag stays the on/off gate. `mecatui` accepts the same flag for its embedded server but it is inert there (the embedded server is interactive). |
 | `--subagent-ask-reviewer-max-denies` | `3` | circuit breaker for the reviewer: after this many **consecutive** non-allow reviewer outcomes (denies/failures/timeouts) within one run, further asks skip the reviewer and fall through to the plain auto-deny; an allow resets the count. |
 | `--subagent-ask-reviewer-policy` | `""` | path to a **TRUSTED** policy rubric file; its content replaces the built-in rubric the reviewer applies. The built-in rubric (allow only clearly read-only or standard build/vet/test commands; deny anything that mutates shared state, touches the network/credentials, or whose effect is unclear) lives in `defaultAskReviewPolicy` (`engine/agent/askadjudicator.go`); a custom file is **plain prose** in the same style. Read once at startup; an unreadable file **fails startup**. |
+| `--subagent-model-router` | `false` | **OPT-IN semantic model router** ([ADR 0031](adr/0031-subagent-model-router.md)): when set, a tiny one-turn classifier (on the `router` model slot) reads each **plain** `Subagent` delegation's task prompt and the operator's category taxonomy and picks which model the child runs on. The taxonomy (categories + per-category model + a default) lives in the **operator-tier** `settings.yaml` `models.router:` subtree (a project-tier `router:` is stripped with a WARN); this flag is **only the enable gate**. It fires **before** the child is minted (decide-once, commit-for-lifetime, same-provider) and **only** for a plain delegation — an explicit per-call `model`/`agent`, a `fork`, or a `resume` already pins the engine (precedence: per-call `model` > agent-def `Model` > fork/resume > router > inherited default). **Fail-soft**: any classifier failure, an unknown category, an unresolvable target, or a per-run circuit breaker (3 consecutive misses) → the inherited default model. Runs in **both** interactive and headless deployments. Empty/false (default) = **OFF, byte-identical** to no router. Deliberately a **server flag, not a permission-config key** — autonomous per-delegation model selection is an operator deployment decision. `mecatui` accepts the same flag for its embedded server. |
 | `--agents-dir` | `""` | directory of named **agent definitions** (`<name>.md` + YAML frontmatter — `name`/`description`/`tools`/`model`/`provider`/`permissionMode`/`maxTurns`/`maxToolCalls`/`color`/`skills`/`mcpServers`/`hooks`/`memory`; full reference in `docs/adr/0013-agent-definitions.md`), reusable as a `Subagent(agent=<name>)` delegate and as a team-member role (repeatable; highest precedence). **TRUST BOUNDARY:** a def body steers the model like `AGENTS.md`/`CLAUDE.md`. A `memory: user\|project` field (issue #33) injects a per-agent `MEMORY.md` head into the def's prompt at startup (READ-ONLY in v1); the **project** tier is **`--trust-project`-gated** (it points into the attacker-controllable workspace). |
 | `--agents-conventional` | `true` | also discover agent defs from the conventional locations (`<workspace>/.mecatl/agents`, `<workspace>/.claude/agents`, `$XDG_CONFIG_HOME/mecatl/agents`, `~/.claude/agents`; lower precedence than `--agents-dir`). ON and **inert** until such a dir exists. Project-tier defs are **trust-gated** (`--trust-project`). |
 | `--model-alias` | `""` | model alias mapping `name=model-id` (repeatable), resolved only in composition — an agent def's `model: <alias>`, a `--model-slot` selector, and `--subagent-model` all resolve through this map (then the built-in sonnet/opus/haiku aliases). |
-| `--model-slot` | `""` | **PER-SLOT MODELS** ([ADR 0030](adr/0030-model-selection-heuristics.md)): bind an internal lightweight LLM call to its own model as `slot=selector` (**repeatable**), e.g. `--model-slot compaction=cheap --model-alias cheap=gpt-4o-mini`. The routed slots are `compaction` (the compaction summary call), `ask-reviewer` (the headless child-ask reviewer), `guardrail` (the content checker), and `plan` (plan-mode → model re-resolution, the opusplan pattern, [ADR 0030](adr/0030-model-selection-heuristics.md) Layer 3); a **tier** key (`cheap`/`fast`/`reasoning`) gives a default a slot falls through to (the three internal-call slots default to `cheap`, but **`plan` defaults to `reasoning`**). The selector is a `--model-alias` or a concrete id, resolved on the **session's provider**. Empty (no `--model-slot`) keeps every call on the **session model** (**byte-identical default**). **Fail-soft**: a typo'd slot or an alias meaning *inherit* WARNs and keeps the session model — it never wedges the call. For `ask-reviewer`/`guardrail` the slot **supersedes the model** of `--subagent-ask-reviewer`/`--guardrails-model` but does **not** enable them (those flags stay the on/off gate). The YAML twin is the `settings.yaml` `models.slots:` subtree: operator-tier by default, and project-overridable **within an operator `models.allowlist`** on a trusted repo (ADR 0030 Phase 4 — see the per-slot models section); with no allowlist a project `models:` block is ignored with a WARN. `mecatui` accepts the same flag (and `--model-alias`) for its embedded server. |
+| `--model-slot` | `""` | **PER-SLOT MODELS** ([ADR 0030](adr/0030-model-selection-heuristics.md)): bind an internal lightweight LLM call to its own model as `slot=selector` (**repeatable**), e.g. `--model-slot compaction=cheap --model-alias cheap=gpt-4o-mini`. The routed slots are `compaction` (the compaction summary call), `ask-reviewer` (the headless child-ask reviewer), `guardrail` (the content checker), `plan` (plan-mode → model re-resolution, the opusplan pattern, [ADR 0030](adr/0030-model-selection-heuristics.md) Layer 3), and `router` (the subagent model-router classifier, [ADR 0031](adr/0031-subagent-model-router.md)); a **tier** key (`cheap`/`fast`/`reasoning`) gives a default a slot falls through to (the four internal-call slots — including `router` — default to `cheap`, but **`plan` defaults to `reasoning`**). The selector is a `--model-alias` or a concrete id, resolved on the **session's provider**. Empty (no `--model-slot`) keeps every call on the **session model** (**byte-identical default**). **Fail-soft**: a typo'd slot or an alias meaning *inherit* WARNs and keeps the session model — it never wedges the call. For `ask-reviewer`/`guardrail` the slot **supersedes the model** of `--subagent-ask-reviewer`/`--guardrails-model` but does **not** enable them (those flags stay the on/off gate). The YAML twin is the `settings.yaml` `models.slots:` subtree: operator-tier by default, and project-overridable **within an operator `models.allowlist`** on a trusted repo (ADR 0030 Phase 4 — see the per-slot models section); with no allowlist a project `models:` block is ignored with a WARN. `mecatui` accepts the same flag (and `--model-alias`) for its embedded server. |
 | `--guardrails-model` | `""` | **GUARDRAILS** (issue #27): model id / `--model-alias` of a tool-less checker that inspects **outbound** tool-call args (`PreToolUse`, exfil) and **inbound** tool results (`PostToolUse`, prompt injection) and enforces a verdict. Empty (default) **disables** guardrails; an unusable model id **fails startup**. Configuring a model is the **opt-in to spend** — with **no rule list** it takes the **default advisory rule set** (WebSearch/WebFetch/mcp__\*, observe-only). The optional **rule list** + cost knobs live in the **user-global** `settings.yaml` `guardrails:` subtree (operator-tier **only** — a project repo cannot configure or weaken a checker; a project-tier block is ignored with a WARN); an explicit rule list replaces the defaults. `--guardrails-model` overrides the YAML model; a configured `guardrail` **model slot** (`--model-slot guardrail=…`) **supersedes** the checker model (this flag stays the on/off gate). Fires on the main loop regardless of `--headless`. **See the guardrails section below + `docs/adr/0021-guardrails.md`.** |
 | `--guardrails` | `""` | guardrails master switch: pass `--guardrails=off` to force the checker **off** regardless of `--guardrails-model` / the `guardrails:` YAML (the kill-switch). Leave it unset to keep guardrails governed by the model + rule config. **Only `off` is accepted** — any other value (e.g. `--guardrails=on`, which does NOT enable: set `--guardrails-model` for that) **fails startup** rather than silently doing nothing. |
 
@@ -1018,13 +1019,14 @@ models:
     ask-reviewer: cheap      # the headless child-ask reviewer (issue #31)
     guardrail: cheap         # the LLM content checker (issue #27)
     plan: reasoning          # plan-mode turns run on the reasoning model (opusplan)
+    router: cheap            # the subagent model-router classifier (ADR 0031)
     # cheap: gpt-4o-mini     # a TIER key gives a default a slot falls through to
 ```
 
-- **Slots** route four calls: the three internal-call slots `compaction`,
-  `ask-reviewer`, `guardrail`, **plus** `plan` (the mode axis, below). A **tier** key
+- **Slots** route the internal-call slots `compaction`, `ask-reviewer`, `guardrail`,
+  `router`, **plus** `plan` (the mode axis, below). A **tier** key
   (`cheap`/`fast`/`reasoning`) is the default a slot with no explicit binding falls
-  through to — the three internal-call slots default to `cheap`, while **`plan` defaults
+  through to — the internal-call slots default to `cheap`, while **`plan` defaults
   to `reasoning`** (a plan model is a strong-reasoning model, not a cheap one).
 - **The `plan` slot (the opusplan workflow).** Bind `plan` to a strong-reasoning model
   and a session **automatically swaps to it while in plan mode** and back to the session
@@ -1048,8 +1050,60 @@ models:
   `models:` mapping is parsed **strictly** (an unknown top key like `slotz:` errors).
   `--model-slot`/`--model-alias` out-rank the YAML per key. By default a project-tier
   `models:` block is **ignored with a WARN** — UNLESS the operator opts in with an
-  allowlist (next subsection). Team synthesis and the subagent router are later ADR-0030
-  layers, not yet wired.
+  allowlist (next subsection). Team synthesis is a later ADR-0030 layer, not yet wired;
+  the subagent **router** shipped in Phase 5 (below).
+
+#### The subagent model router (`models.router:`, ADR 0031)
+
+The **OPT-IN semantic model router** picks which model a `Subagent` delegation runs on,
+**per task**, from a category menu you define. Turn it on with the
+`--subagent-model-router` flag (the enable gate); define the taxonomy in the
+**operator-tier** `models.router:` subtree:
+
+```yaml
+# ~/.config/mecatl/settings.yaml  (operator-tier ONLY — a project-tier router: is stripped with a WARN)
+models:
+  aliases:
+    cheap: gpt-4o-mini
+    big: anthropic/claude-opus-4.5
+  slots:
+    router: cheap            # the CLASSIFIER itself runs on this slot (default: cheap tier)
+  router:
+    classifier-slot: cheap   # optional; overrides the `router` slot for the classifier model
+    default-category: small  # what the classifier picks when none clearly fits
+    categories:
+      - name: small
+        description: trivial, mechanical, single-file edits; quick lookups; renames
+        model: cheap
+      - name: large
+        description: deep multi-step reasoning, architecture, subtle concurrency bugs
+        model: big
+```
+
+- **Give categories CLEAR, DISTINCT descriptions** — the description is the classifier's
+  ONLY signal. Vague or overlapping descriptions make routing unreliable (and it
+  fail-softs to the default model on a miss, so the win is simply lost).
+- **The classifier** is a tiny one-turn call on the `router` slot (or `classifier-slot`),
+  reusing the hardened single-JSON-verdict parse; the task prompt is fenced as untrusted.
+- **Precedence** (the router fills the gap, never overrides): an explicit per-call
+  `model`, a named `agent`, a `fork`, or a `resume` already pins the engine → the router
+  does NOT fire. Otherwise: per-call `model` > agent-def `Model` > fork/resume > **router**
+  > inherited default.
+- **Per-category `model`** is an alias / slot / concrete id, resolved through the same
+  alias map (operator targets are **uncapped** — the operator is authoritative).
+- **Fail-soft + breaker**: any classifier failure, an unknown/hallucinated category, or
+  an unresolvable target → the inherited default model; a per-run breaker (3 consecutive
+  misses) skips the classifier for the rest of the run. **OFF (no flag / no taxonomy) is
+  byte-identical** to no router.
+- It runs in **both** interactive and headless deployments, and the gRPC `RunTeam`-direct
+  path is excluded (zero-caps). See [ADR 0031](adr/0031-subagent-model-router.md).
+- **Cost note (CWE-770):** an untrusted/peer-injected task prompt can **steer** the
+  classifier toward your most-expensive category (the breaker only counts *misses*, not
+  steered-but-valid classifications). It is **bounded** — the router can only pick from
+  *your* taxonomy, the provider is fixed, and **`--max-run-tokens`** (plus
+  `--max-team-tokens` and the per-call `max_run_tokens`) is the actual spend ceiling that
+  caps a routed child regardless of the chosen model. Keep the category cost range modest
+  and rely on the token budget as the hard ceiling.
 
 #### Project-overridable model config, capped by an operator allowlist (Phase 4)
 
