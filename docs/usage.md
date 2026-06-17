@@ -510,6 +510,20 @@ It prints (note: **no `Authorization` header** — the surface is loopback/no-au
 > 127.0.0.1:9099` — or simply hardcode the `http://127.0.0.1:9099/mcp` URL, since
 > the port is now predictable across restarts.
 
+The perf server's `query_metric` tool and `perf://metrics/summary` resource expose
+a **curated** counter/gauge/histogram set (not the full `/metrics` scrape). Beside
+the per-run `runs_total{stop}`, the turn-semantics counters (issue #81)
+`turns_total` (one per COMPLETED turn — the per-turn denominator, unlabelled by
+stop) and `turn_empty_total` (the EMPTY SUBSET of those turns — no tool call, no
+text) are curated too, each with the bounded per-role breakdown in the summary.
+The two are not disjoint: an empty turn bumps **both** (`turns_total` via its
+`EvTurnEnd`, then `turn_empty_total` via `EvNoProgress`), so
+`turn_empty_total / turns_total` is the empty-turn **share** (empty turns ⊂ all
+completed turns). `turn_empty_total` counts `EvNoProgress` emissions (one per
+advisory nudge plus the give-up, up to `MaxNoProgressNudges+1` per stuck
+sequence), not distinct sequences. A high share is the signature of a model going
+silent mid-run.
+
 A companion **interpretation skill** ships at
 `.claude/skills/perf-mcp-interpretation/` — it teaches an agent to read this
 server's reduced output (tool routing/cost, pprof rankings, the leak/contention/GC
