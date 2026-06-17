@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781673550464,
+  "lastUpdate": 1781673552758,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -131639,6 +131639,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/83d44d74d52b39005210e8a778f9962291826759"
         },
         "date": 1781672269269,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "91656a4d999b02d5855a1c17eeff1fc1417ad65c",
+          "message": "docs: adopt matlatl structure gate + lateral nav + descriptive link text\n\nActs on the matlatl deep-dive. Two adopted optimizations:\n\n1. Lateral architecture cross-links + enforced structure gate. Each of the 13\n   architecture spokes gains a \"Related\" section linking genuinely-related\n   siblings (loop↔subagents↔providers, ports↔everything, …), so the hub-and-spoke\n   guide is navigable laterally, not just via the index — which also shrinks the\n   single-points-of-failure in the doc graph. With connectivity real, enable\n   `structureFindingsSeverity: warning` + `inboundThreshold: 1` in .matlatl.yml:\n   under-linked (a doc nothing links) and dead-ends now FAIL `matlatl check\n   --strict`, not just report. Threshold 1 is the honest gate floor (every\n   linked-out doc reachable, no dead-ends) — the default 3 is a discoverability\n   heuristic that would force link-spam on legit leaves. Cleared the existing\n   dead-ends with real links (modelith via its .yaml description, the ADR\n   template's See-also, perf-skill reference back-links) rather than\n   orphan-intentional markers (which only exempt orphan/unreachable, not the gate).\n\n2. Descriptive link text (matlatl low-scent-anchor, ADR 0016). Rewrote 86\n   bare-filename link anchors (`[GUARDRAILS.md](…)` → `[Guardrails — …](…)`) to\n   the destination's title across the design + architecture docs, so a reader/agent\n   previews where a link leads. Left the design-doc index + tracker as a deliberate\n   filename catalog.\n\nAlso: AGENTS.md gains an inbound link from the harnesses INDEX. All gates green —\ndocs/lint (citations + lifecycle), matlatl check --strict (now enforcing\nstructure), modelith render --check; llms.txt regenerated.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-17T05:13:42Z",
+          "tree_id": "3cfff16a2a5744f71ea109666eb24c12a84ff78e",
+          "url": "https://github.com/stacklok/mecatl/commit/91656a4d999b02d5855a1c17eeff1fc1417ad65c"
+        },
+        "date": 1781673551958,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
