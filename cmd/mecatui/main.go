@@ -337,7 +337,7 @@ func embeddedConfig(cfg config, diag port.Diagnostics) app.Config {
 		Compaction:                   "heuristic",
 		Tokenizer:                    "heuristic",
 		LLMMaxAttempts:               3,
-		LLMPerAttemptTimeout:         30 * time.Second,
+		LLMPerAttemptTimeout:         60 * time.Second,
 		LLMStreamIdleTimeout:         120 * time.Second,
 		LLMBreakerThreshold:          5,
 		LLMBreakerCooldown:           30 * time.Second,

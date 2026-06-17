@@ -608,7 +608,12 @@ with ANSI stripped). These bands are a visual fill gauge, **not** a compaction c
 the harness automatically compacts older history at ~80% full (the default trigger), so
 in practice it keeps the window from running out before the `⚠` band is reached — the
 `▓` warn band at ~60% is the earlier "filling up" cue, and the `⚠` may not appear at all
-on a session that compacts first.
+on a session that compacts first. One subtlety (issue #82): when a turn produces no
+usage frame at all — a stalled or usage-less turn — the meter's input figure for that
+turn is a conversation-size **estimate** (a heuristic token count over the live history),
+not a provider-reported count, so the ctx meter stays meaningful instead of snapping to
+zero. The estimate is display-only: it never feeds the session-cumulative facets or any
+token budget, which stay on the provider's actual reported usage.
 
 ### Watching subagents, parallel runs, and teams — the fleet footer + the unified `ctrl+a` overlay
 

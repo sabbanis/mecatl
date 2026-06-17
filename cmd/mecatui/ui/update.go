@@ -469,7 +469,17 @@ func (m Model) updateStreamEvent(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// affordance, then append a muted stat line unless the turn was trivial.
 		// The turn's prompt size is the CURRENT context occupancy (latest turn,
 		// assigned not summed — mirroring the team lane meter's turn.end handling).
-		m.contextTokens = msg.Usage.InputTokens
+		// Keep it STICKY: a turn that reports zero input tokens (a stalled/usage-less
+		// turn) must not erase a known occupancy (mirroring the sticky window at
+		// conversation.go endReasoningStream/turn.end and ContextWindow above). The
+		// engine's DISPLAY-ONLY zero-usage fallback (issue #82) fills turn_end with a
+		// conversation-size estimate so this is normally non-zero already (the estimate
+		// feeds only this meter, never the cumulative ↑/↓/⊕ totals or any token budget,
+		// which stay on provider truth) — this guard is belt-and-braces for the edge
+		// where even the estimate is zero.
+		if msg.Usage.InputTokens > 0 {
+			m.contextTokens = msg.Usage.InputTokens
+		}
 		m.conv.endReasoningStream()
 		if !trivialTurn(msg) {
 			m.conv.addTurnStat(turnStatLine(msg))

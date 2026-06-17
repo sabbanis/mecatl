@@ -131,10 +131,32 @@ type ExhaustedError struct {
 	Attempts int
 	// Err is the final underlying error.
 	Err error
+	// PerAttempt is the per-attempt establishment budget that was in force, used to
+	// name the timeout duration in the operator-facing message. 0 when unset.
+	PerAttempt time.Duration
 }
 
+// Error renders an OPERATOR-FACING message (issue #82): it surfaces verbatim to the
+// TUI footer / transcript, so it avoids the internal package prefix and the raw inner
+// sentinel, says in plain language what went wrong, and names the next action. The
+// first-chunk timeout (the model connected but never started responding within the
+// per-attempt budget — errFirstChunkTimeout) gets a tailored message; any other
+// exhausted cause falls back to a generic but still prefix-free, action-bearing line.
 func (e *ExhaustedError) Error() string {
-	return fmt.Sprintf("llmresilience: stream not established after %d attempt(s): %v", e.Attempts, e.Err)
+	if errors.Is(e.Err, errFirstChunkTimeout) {
+		within := "the per-attempt timeout"
+		if e.PerAttempt > 0 {
+			within = fmt.Sprintf("%s (%s)", within, e.PerAttempt)
+		}
+		return fmt.Sprintf(
+			"the model did not start responding within %s, across %d attempt(s). "+
+				"Try resending, switching to a faster model, or raising --llm-per-attempt-timeout.",
+			within, e.Attempts)
+	}
+	return fmt.Sprintf(
+		"the model stream could not be established after %d attempt(s): %v. "+
+			"Try resending or raising --llm-per-attempt-timeout.",
+		e.Attempts, e.Err)
 }
 
 // Unwrap exposes the final underlying error to errors.Is/As.
@@ -159,6 +181,15 @@ func (e *StreamIdleError) Error() string {
 // Unwrap returns context.DeadlineExceeded so errors.Is(err, context.DeadlineExceeded)
 // holds, classifying the stall as a deadline (not a caller cancel).
 func (*StreamIdleError) Unwrap() error { return context.DeadlineExceeded }
+
+// errFirstChunkTimeout is the synthesized inner error for an establishment
+// attempt that connected but produced no first chunk before the per-attempt
+// deadline fired (the adapter swallowed the ctx error and yielded nothing).
+// attemptError wraps it as `DeadlineExceeded: errFirstChunkTimeout`, so it is
+// retryable per DefaultClassifier and transient per isTransientForBreaker (both
+// key off context.DeadlineExceeded), and it surfaces a diagnosable message
+// instead of a phantom empty-success completion. See establish's empty branch.
+var errFirstChunkTimeout = errors.New("llmresilience: per-attempt timeout before first chunk")
 
 // breakerState is the closed/open/half-open state machine, guarded by mu.
 type breakerState struct {
@@ -370,7 +401,7 @@ func (p *resilientProvider) Stream(ctx context.Context, req port.LLMRequest) (it
 	}
 	p.diag().Log(ctx, port.LevelInfo, "llm stream not established after all attempts",
 		"attempts", p.cfg.MaxAttempts)
-	return nil, &ExhaustedError{Attempts: p.cfg.MaxAttempts, Err: lastErr}
+	return nil, &ExhaustedError{Attempts: p.cfg.MaxAttempts, Err: lastErr, PerAttempt: p.cfg.PerAttemptTimeout}
 }
 
 // establish performs a single attempt: it applies the per-attempt timeout,
@@ -412,11 +443,26 @@ func (p *resilientProvider) establish(ctx context.Context, req port.LLMRequest) 
 	next, stop := iter.Pull2(seq)
 	chunk, cerr, ok := next()
 	if !ok {
-		// Empty stream: not a failure — treat as a successful (empty) stream.
+		// next() returned ok=false: either a genuinely empty stream (the inner
+		// yielded zero chunks and finished) OR the per-attempt deadline fired
+		// during the first-chunk read and the adapter swallowed the ctx error
+		// (it yields nothing on cancel). Disambiguate by the per-attempt cause,
+		// captured BEFORE cleanup cancel() runs (same discipline as attemptError):
+		// a DeadlineExceeded that is NOT a caller cancel is a retryable
+		// establishment timeout — surface it as a real failure so the retry/
+		// breaker path engages and an exhausted attempt becomes a *ExhaustedError
+		// (→ StopError), NOT a phantom clean-done empty completion. A genuinely
+		// empty stream (cause == nil) stays the empty-success path unchanged.
+		// We are still PRE-first-chunk here, so no-replay-after-first-chunk holds.
+		cause := attemptCtx.Err()
 		stop()
 		if cancel != nil {
 			cancel()
 		}
+		if errors.Is(cause, context.DeadlineExceeded) && ctx.Err() == nil {
+			return nil, attemptError(cause, errFirstChunkTimeout)
+		}
+		// Empty stream: not a failure — treat as a successful (empty) stream.
 		return &firstChunk{empty: true}, nil
 	}
 	if cerr != nil {
