@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781708044883,
+  "lastUpdate": 1781708048288,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -169341,6 +169341,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 86.5,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "826d7f014acf34a198234a6dbd5983053ed96cf9",
+          "message": "fix(agent): salvage budget-stopped subagents + discourage self-capping\n\nTwo related subagent budget-UX fixes after a live session where a\ndelegated explorer burned 242K tokens planning an issue and returned\n\"(subagent produced no summary)\".\n\n1. Salvage on StopBudget. salvageEmptyLimitStop (issue #48) recovered a\n   partial summary for turn/tool-call limit stops but DELIBERATELY skipped\n   StopBudget (\"another turn would violate the budget\"). That wasted all the\n   spend. Widen the guard to StopBudget and, on that path only, call\n   child.ResetUsage() after Reopen so the one tool-less wrap-up turn can run\n   (session.Usage survives Reopen per cloud-native Phase 1, so without the\n   reset the budget re-trips at the salvage turn's first boundary). Same\n   mechanism Supervisor.synthesise already uses for a budget-stopped lead.\n   Extra guard: skip salvage when per-run usage is 0 (a resumed child that\n   trips budget at turn 0 must not be granted a free turn). The original\n   StopBudget reason and the \"reached its token budget\" note are preserved;\n   the salvage turn's usage is still summed into the reported total.\n\n2. Discourage the model from self-capping. The harness default budget is\n   unlimited; GPT-5.5 was voluntarily setting max_run_tokens on its own\n   subagent spawns and then exhausting them. Reframe the max_run_tokens /\n   max_tokens descriptions (schema + struct docs) to \"OMIT in almost all\n   cases — set a budget only to cap cost\"; drop the \"typical 50k-500k\"\n   phrasing that invited setting one.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-17T17:42:12+03:00",
+          "tree_id": "7c585ba04b2feb71ac23c52d0bdcc35b4e54092d",
+          "url": "https://github.com/stacklok/mecatl/commit/826d7f014acf34a198234a6dbd5983053ed96cf9"
+        },
+        "date": 1781708047011,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3524,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 88,
             "unit": "allocs/op"
           }
         ]
