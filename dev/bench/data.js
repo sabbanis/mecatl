@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781723843795,
+  "lastUpdate": 1781723847224,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -176751,6 +176751,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/7f7db7d95f51fe7a67a9f77dad6b802bb29c444e"
         },
         "date": 1781709019841,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "b974676114aa84e5fa04a38dfd09a0e38d3e64ed",
+          "message": "feat(mecatui): color permission mode indicators\n\nCo-Authored-By: mecatl <mecatl@stacklok.com>",
+          "timestamp": "2026-06-17T22:10:46+03:00",
+          "tree_id": "4783eaa86308587b9d9f6bdaf0af727586dc0762",
+          "url": "https://github.com/stacklok/mecatl/commit/b974676114aa84e5fa04a38dfd09a0e38d3e64ed"
+        },
+        "date": 1781723846314,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
