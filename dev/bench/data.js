@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781677205803,
+  "lastUpdate": 1781677208874,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -139149,6 +139149,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/91656a4d999b02d5855a1c17eeff1fc1417ad65c"
         },
         "date": 1781673551958,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "29cf475a15375dc5a4c9eaf817847f7bd69809a4",
+          "message": "docs: consolidate design records into the ADR scheme (ADR 0003)\n\nPer ADR 0003, the parallel \"design records vs ADRs\" split from ADR 0002 is\nunified: every decision/design record is now a numbered ADR under docs/adr/.\n\n- Moved the 26 docs/design/*.md records → docs/adr/0004-0029-<slug>.md (git\n  renames; content preserved). Each gained an ADR header (Status + Date + Scope\n  + a short Context/Decision/Consequences) via a 5-agent fan-out; the original\n  body is kept verbatim as the detailed rationale.\n- Rewrote EVERY reference: doc links (resolved per-file relative paths),\n  repo-root citations, and ~40 files of code comments + flag-help strings, from\n  docs/design/<NAME> to docs/adr/<NNNN-slug>. Zero residual design-record refs.\n- docs/adr/README.md is the new ADR index; docs/adr/0003 records the decision\n  (amends ADR 0002); docs/adr/template.md unchanged.\n- docs/design/ keeps only the non-records: PRODUCTION-READINESS.md (the single\n  status tracker), IMPLEMENTATION-NOTES.md (living reference), and README.md\n  (the documentation/citation conventions, now pointing at the ADR index).\n- Lint: citation gate extended to docs/adr/*.md; the old design-record lifecycle\n  gate (banner + no-Status) is replaced by an ADR-shape gate — every ADR must\n  carry a `- Status:` and `- Date:` header (docs/lint/lifecycle.go).\n\nAll gates green: go build, docs/lint (citations + ADR-shape), golangci-lint,\nmatlatl check --strict (77 docs, 0 broken/orphan/unreachable); llms.txt regenerated.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-17T06:14:21Z",
+          "tree_id": "a0865d8b7609f40edb141b9b154a5bc33e6d2bbc",
+          "url": "https://github.com/stacklok/mecatl/commit/29cf475a15375dc5a4c9eaf817847f7bd69809a4"
+        },
+        "date": 1781677207699,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
