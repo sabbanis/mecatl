@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781672267383,
+  "lastUpdate": 1781672269888,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -127867,6 +127867,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/d36a26e32ac5e9a942d5f956f886b8e0fe1c3e61"
         },
         "date": 1781633169760,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "83d44d74d52b39005210e8a778f9962291826759",
+          "message": "docs(lint): fix revive exported-comment lint on lifecycle consts\n\ngolangci-lint v2 (revive) requires an exported const's doc comment to read\n\"Name ...\" not \"Name: ...\". gofmt + go vet missed it; the CI Lint job caught it\n(run #178). Reword the MissingBanner / StatusInDesignDoc comments.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-17T04:52:20Z",
+          "tree_id": "cf4d88df7eeedb69af62c26531f4ebe536b98569",
+          "url": "https://github.com/stacklok/mecatl/commit/83d44d74d52b39005210e8a778f9962291826759"
+        },
+        "date": 1781672269269,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
