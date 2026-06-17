@@ -256,13 +256,14 @@ mailbox). See the delegation-capabilities note below.
 | `--enable-teams` | `true` | register the experimental **agent-teams** capability (`CreateTeam`/`SpawnTeammate`/`RunTeam` + the in-loop `Team` tool). On by default and **inert** until a client drives a team; `=false` disables it. |
 | `--subagent-model` | `""` | global default model for every Subagent / Parallel-branch / team-member child that does not pin its own model (via an agent definition `model:` or a per-call override) — the analogue of `CLAUDE_CODE_SUBAGENT_MODEL`. The Parallel judge stays on the session model. A concrete id or a `--model-alias`; same provider as the session. Empty inherits the parent `--model`; a non-empty value that does not resolve to a usable model id (unknown alias, or an alias meaning *inherit* — the built-in `sonnet`/`opus`/`haiku` unless overridden) **fails startup**. `mecatui` accepts the same flag for its embedded server. |
 | `--headless` | `false` | run **non-interactive**: declare that clients drive sessions but never answer permission prompts (autonomous / CI). A **child** (subagent/member/branch) unresolved permission ask is then **not surfaced** to the client (nobody would answer it — it would park until run-end) but resolved by the auto-deny path / the opt-in `--subagent-ask-reviewer`. **Caveat — this gates only CHILD asks: a MAIN-session ask still surfaces and, headless, parks unanswered forever.** Pair `--headless` with permission `allow` rules (or `--yolo`) covering the main agent's tool use, or those asks will hang. Default off: a normal mecated serving an interactive client (mecatui, an IDE) surfaces asks for a human. **`--subagent-ask-reviewer` only engages under `--headless`** — setting it on an interactive server is inert (a startup WARNING says so). |
-| `--subagent-ask-reviewer` | `""` | **OPT-IN headless ask reviewer**: model id or `--model-alias` of a tool-less ONE-TURN reviewer that adjudicates a **headless** subagent/member/branch permission ask the 4-step model would otherwise blanket auto-deny. **Requires `--headless`** (on an interactive server — including the `mecatui` embedded server — it is inert: asks surface to the client/modal instead). An allow approves **this call only** (never learned); a deny — or any reviewer error/timeout/ambiguity — keeps the call denied (**fail-safe**); each adjudication is **one extra LLM call** on the reviewer model. Configured `deny`/`ask` rules always win. The gRPC `RunTeam`-direct path is **excluded** (it runs zero-caps — no reviewer). Resolved on the **session's provider** (same-provider only). Empty (default) disables it; an unusable model id **fails startup** (validated even when inert). Deliberately a **server flag, not a permission-config key** — see the permissions section. `mecatui` accepts the same flag for its embedded server but it is inert there (the embedded server is interactive). |
+| `--subagent-ask-reviewer` | `""` | **OPT-IN headless ask reviewer**: model id or `--model-alias` of a tool-less ONE-TURN reviewer that adjudicates a **headless** subagent/member/branch permission ask the 4-step model would otherwise blanket auto-deny. **Requires `--headless`** (on an interactive server — including the `mecatui` embedded server — it is inert: asks surface to the client/modal instead). An allow approves **this call only** (never learned); a deny — or any reviewer error/timeout/ambiguity — keeps the call denied (**fail-safe**); each adjudication is **one extra LLM call** on the reviewer model. Configured `deny`/`ask` rules always win. The gRPC `RunTeam`-direct path is **excluded** (it runs zero-caps — no reviewer). Resolved on the **session's provider** (same-provider only). Empty (default) disables it; an unusable model id **fails startup** (validated even when inert). Deliberately a **server flag, not a permission-config key** — see the permissions section. A configured `ask-reviewer` **model slot** (`--model-slot ask-reviewer=…`) **supersedes** this flag's model, but the flag stays the on/off gate. `mecatui` accepts the same flag for its embedded server but it is inert there (the embedded server is interactive). |
 | `--subagent-ask-reviewer-max-denies` | `3` | circuit breaker for the reviewer: after this many **consecutive** non-allow reviewer outcomes (denies/failures/timeouts) within one run, further asks skip the reviewer and fall through to the plain auto-deny; an allow resets the count. |
 | `--subagent-ask-reviewer-policy` | `""` | path to a **TRUSTED** policy rubric file; its content replaces the built-in rubric the reviewer applies. The built-in rubric (allow only clearly read-only or standard build/vet/test commands; deny anything that mutates shared state, touches the network/credentials, or whose effect is unclear) lives in `defaultAskReviewPolicy` (`engine/agent/askadjudicator.go`); a custom file is **plain prose** in the same style. Read once at startup; an unreadable file **fails startup**. |
 | `--agents-dir` | `""` | directory of named **agent definitions** (`<name>.md` + YAML frontmatter — `name`/`description`/`tools`/`model`/`provider`/`permissionMode`/`maxTurns`/`maxToolCalls`/`color`/`skills`/`mcpServers`/`hooks`/`memory`; full reference in `docs/adr/0013-agent-definitions.md`), reusable as a `Subagent(agent=<name>)` delegate and as a team-member role (repeatable; highest precedence). **TRUST BOUNDARY:** a def body steers the model like `AGENTS.md`/`CLAUDE.md`. A `memory: user\|project` field (issue #33) injects a per-agent `MEMORY.md` head into the def's prompt at startup (READ-ONLY in v1); the **project** tier is **`--trust-project`-gated** (it points into the attacker-controllable workspace). |
 | `--agents-conventional` | `true` | also discover agent defs from the conventional locations (`<workspace>/.mecatl/agents`, `<workspace>/.claude/agents`, `$XDG_CONFIG_HOME/mecatl/agents`, `~/.claude/agents`; lower precedence than `--agents-dir`). ON and **inert** until such a dir exists. Project-tier defs are **trust-gated** (`--trust-project`). |
-| `--model-alias` | `""` | model alias mapping `name=model-id` (repeatable), resolved only in composition — an agent def's `model: <alias>` resolves through this map (then the built-in sonnet/opus/haiku aliases). |
-| `--guardrails-model` | `""` | **GUARDRAILS** (issue #27): model id / `--model-alias` of a tool-less checker that inspects **outbound** tool-call args (`PreToolUse`, exfil) and **inbound** tool results (`PostToolUse`, prompt injection) and enforces a verdict. Empty (default) **disables** guardrails; an unusable model id **fails startup**. Configuring a model is the **opt-in to spend** — with **no rule list** it takes the **default advisory rule set** (WebSearch/WebFetch/mcp__\*, observe-only). The optional **rule list** + cost knobs live in the **user-global** `settings.yaml` `guardrails:` subtree (operator-tier **only** — a project repo cannot configure or weaken a checker; a project-tier block is ignored with a WARN); an explicit rule list replaces the defaults. `--guardrails-model` overrides the YAML model. Fires on the main loop regardless of `--headless`. **See the guardrails section below + `docs/adr/0021-guardrails.md`.** |
+| `--model-alias` | `""` | model alias mapping `name=model-id` (repeatable), resolved only in composition — an agent def's `model: <alias>`, a `--model-slot` selector, and `--subagent-model` all resolve through this map (then the built-in sonnet/opus/haiku aliases). |
+| `--model-slot` | `""` | **PER-SLOT MODELS** ([ADR 0030](adr/0030-model-selection-heuristics.md)): bind an internal lightweight LLM call to its own model as `slot=selector` (**repeatable**), e.g. `--model-slot compaction=cheap --model-alias cheap=gpt-4o-mini`. The routed slots are `compaction` (the compaction summary call), `ask-reviewer` (the headless child-ask reviewer), and `guardrail` (the content checker); a **tier** key (`cheap`/`fast`/`reasoning`) gives a default a slot falls through to (each routed slot defaults to `cheap`). The selector is a `--model-alias` or a concrete id, resolved on the **session's provider**. Empty (no `--model-slot`) keeps every call on the **session model** (**byte-identical default**). **Fail-soft**: a typo'd slot or an alias meaning *inherit* WARNs and keeps the session model — it never wedges the call. For `ask-reviewer`/`guardrail` the slot **supersedes the model** of `--subagent-ask-reviewer`/`--guardrails-model` but does **not** enable them (those flags stay the on/off gate). **Operator-tier only**; the YAML twin is the user-global `settings.yaml` `models.slots:` subtree (a project-tier `models:` block is ignored with a WARN). `mecatui` accepts the same flag (and `--model-alias`) for its embedded server. |
+| `--guardrails-model` | `""` | **GUARDRAILS** (issue #27): model id / `--model-alias` of a tool-less checker that inspects **outbound** tool-call args (`PreToolUse`, exfil) and **inbound** tool results (`PostToolUse`, prompt injection) and enforces a verdict. Empty (default) **disables** guardrails; an unusable model id **fails startup**. Configuring a model is the **opt-in to spend** — with **no rule list** it takes the **default advisory rule set** (WebSearch/WebFetch/mcp__\*, observe-only). The optional **rule list** + cost knobs live in the **user-global** `settings.yaml` `guardrails:` subtree (operator-tier **only** — a project repo cannot configure or weaken a checker; a project-tier block is ignored with a WARN); an explicit rule list replaces the defaults. `--guardrails-model` overrides the YAML model; a configured `guardrail` **model slot** (`--model-slot guardrail=…`) **supersedes** the checker model (this flag stays the on/off gate). Fires on the main loop regardless of `--headless`. **See the guardrails section below + `docs/adr/0021-guardrails.md`.** |
 | `--guardrails` | `""` | guardrails master switch: pass `--guardrails=off` to force the checker **off** regardless of `--guardrails-model` / the `guardrails:` YAML (the kill-switch). Leave it unset to keep guardrails governed by the model + rule config. **Only `off` is accepted** — any other value (e.g. `--guardrails=on`, which does NOT enable: set `--guardrails-model` for that) **fails startup** rather than silently doing nothing. |
 
 > **Delegation capabilities (Subagent / Parallel / Team).** Beyond the shared
@@ -996,6 +997,49 @@ repo dropping `.mecatl/settings.yaml` with `posture: yolo` must never be honoure
 a **project-tier `posture:` is ignored with a WARN** (security-critical fail-closed).
 A `--posture` flag (or its `--yolo`/`--trust-project` aliases) **out-ranks** the YAML
 value; an unknown value fails closed to `strict` with a WARN.
+
+### Per-slot models (`models:`, ADR 0030)
+
+The internal **lightweight** LLM calls — the compaction summary, the headless
+ask-reviewer, and the guardrail checker — can run on a **cheaper model** than the
+session via a **model slot** (the `--model-slot` flag, above, or the user-global
+`settings.yaml` `models:` subtree). A slot binds a named call to a model **selector**
+(an alias or a concrete id), resolved through the alias map. The byte-identical
+default holds: with no slot configured every call keeps the session model.
+
+```yaml
+# ~/.config/mecatl/settings.yaml  (user-global only — NOT a checked-in project file)
+models:
+  aliases:                   # the alias spine (same map as --model-alias; CLI wins per key)
+    cheap: gpt-4o-mini
+    reasoning: gpt-5
+  slots:                     # bind a slot (or a tier) to a selector
+    compaction: cheap        # the compaction tier-4 summary call
+    ask-reviewer: cheap      # the headless child-ask reviewer (issue #31)
+    guardrail: cheap         # the LLM content checker (issue #27)
+    # cheap: gpt-4o-mini     # a TIER key gives a default a slot falls through to
+```
+
+- **Slots** route exactly three calls this slice: `compaction`, `ask-reviewer`,
+  `guardrail`. A **tier** key (`cheap`/`fast`/`reasoning`) is the default a slot with
+  no explicit binding falls through to — all three routed slots default to `cheap`, so
+  binding `cheap` once routes them all.
+- **Resolution choke point** is `resolveSlotModel`: explicit slot binding > the slot's
+  default tier > the session model. The selector is resolved through the **same alias
+  machinery** as `--model-alias` / an agent def's `model:`.
+- For the **compaction** slot, ONLY the summary LLM call's model changes — the
+  session's own model, token counter, prompt, and context window stay put. For
+  **ask-reviewer** / **guardrail** the slot **supersedes the model** of
+  `--subagent-ask-reviewer` / `--guardrails-model`, but those flags stay the **on/off
+  gate** (a slot alone never enables them).
+- **Fail-soft**: a typo'd slot key or an alias that means *inherit* WARNs and degrades
+  to the session model — a broken housekeeping slot never wedges the call.
+- **Operator-tier ONLY** (the same inversion as `guardrails:`/`posture:`): read from the
+  user-global `settings.yaml` + the CLI, **never** the project-tier file (a project
+  `models:` block is **ignored with a WARN**). The `models:` mapping is parsed
+  **strictly** (an unknown top key like `slotz:` errors). `--model-slot`/`--model-alias`
+  out-rank the YAML per key. Team synthesis, mode→model, and the subagent router are
+  later ADR-0030 layers, not in this slice.
 
 ### Declarative workspace trust (`trustedWorkspaces:`, WORKSPACE-TRUST Phase 1)
 

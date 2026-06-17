@@ -164,6 +164,49 @@ neutrality, selection primitive, per-session engine, capability intersection,
 disclosure posture + per-client key custody, per-sub-agent provider, and the P0→P3
 phasing).
 
+## Model resolution — aliases + per-slot models
+
+Model selection layers **on top of** the provider routing above, all in composition
+(the domain/agent only ever sees a concrete model string).
+
+**Aliases are the spine ([ADR 0030](../adr/0030-model-selection-heuristics.md)).** A
+short semantic name (`cheap`/`fast`/`reasoning`, or the Claude-Code-style
+`sonnet`/`opus`/`haiku`) maps to a concrete provider model id through the operator's
+`ModelAliases` map (`--model-alias name=id`, or the `models.aliases` YAML map), then the
+built-in aliases. The ONE grammar is `lookupModelAlias` in
+`internal/app/agentdefs.go` — shared by the forgiving agent-def `model:` path
+(`resolveAlias`) and the fail-fast flag path (`normalizeSubagentModel`), so they never
+drift.
+
+**Per-slot models (`models.slots`, Phase 1+2).** A **slot** is a named internal
+lightweight LLM call. Three are routed to a slot so housekeeping can run on a cheaper
+model than the session:
+
+| Slot | Routed call | Resolution choke point |
+|------|-------------|------------------------|
+| `compaction` | the `CascadeCompactor` tier-4 summary call | `engineDepsForProvider` → `buildCompactor` |
+| `ask-reviewer` | the headless child-ask reviewer (issue #31) | `askAdjudicatorDeps` |
+| `guardrail` | the LLM content checker (issue #27) | `buildGuardrailsChecker` |
+
+The single choke point is **`resolveSlotModel`** (`internal/app/slots.go`): an explicit
+`models.slots[<slot>]` binding wins, else the slot's default **tier** (`compaction`,
+`ask-reviewer`, and `guardrail` all default to `cheap`), else `("", false)`. A resolved
+selector is mapped THROUGH `lookupModelAlias`, so a slot value is itself an alias or a
+literal id. For the compaction slot, ONLY the summary LLM call's model (and its
+token-counter) is swapped — the engine's own Model / TokenCounter / PromptConfig /
+ContextWindow stay on the session model. For `ask-reviewer` and `guardrail` the slot
+**supersedes the model** of `--subagent-ask-reviewer` / `--guardrails-model`, but those
+flags stay the **on/off gate** (a slot alone never enables them).
+
+Posture is **fail-soft** and the default is **byte-identical**: with no slot configured
+every routed call keeps the session model; a typo'd slot key or an alias meaning inherit
+WARNs and degrades to the session model — a broken housekeeping slot never wedges the
+call. `models.slots` / `models.aliases` are **operator-tier only** (user-global
+`settings.yaml` + `--model-slot` / `--model-alias`); a project-tier `models:` block is
+ignored with a WARN (`permconfig.Resolver.OperatorModelSlots()`). Team synthesis is
+**deferred** (it runs on the lead member's whole engine); mode→model and the subagent
+router are later ADR-0030 layers, not in this slice.
+
 ## Related
 
 - [The ports — the LLMProvider seam](ports.md)

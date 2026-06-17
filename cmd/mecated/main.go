@@ -227,6 +227,11 @@ type config struct {
 	agentsConventional bool
 	subagentModel      string
 	modelAliases       keyValueList
+	// modelSlots binds a named internal lightweight call (compaction/ask-reviewer/
+	// guardrail) — or a tier (cheap/fast/reasoning) a slot falls through to — to a
+	// model selector (an alias or a concrete id), via the repeatable --model-slot
+	// flag. Resolved THROUGH modelAliases in the composition layer (ADR 0030).
+	modelSlots keyValueList
 
 	// Headless ask reviewer (issue #31): subagentAskReviewer names the model (or
 	// --model-alias) of the OPT-IN one-turn reviewer that adjudicates a HEADLESS
@@ -812,6 +817,7 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		GuardrailsModel:         cfg.guardrailsModel,
 		GuardrailsDisabled:      cfg.guardrailsOff,
 		ModelAliases:            cfg.modelAliases,
+		ModelSlots:              cfg.modelSlots,
 		CommandsDir:             cfg.commandsDir,
 		EnableCommands:          cfg.enableCommands,
 		EnableParallel:          cfg.enableParallel,
@@ -1046,6 +1052,7 @@ func parseFlags(argv []string) (config, error) {
 	fs.StringVar(&cfg.agentSourceURL, "agent-source-url", "", "host:port of a remote agent-definition gRPC driver (mecatl.driver.v1.AgentSourceService); the definition set is SNAPSHOTTED at startup (fatal if unreachable). Mutually exclusive with --agents-dir; the default-on conventional discovery is SUPERSEDED (not an error) — the driver becomes the only definition source. TRUST BOUNDARY: stronger than model steering — a def's hooks execute as UNGATED shell on the harness host (hookexec, every lifecycle phase, no permission ask); a compromised agent-source driver executes arbitrary shell on the harness host via def hooks, so treat it as harness-equivalent infrastructure. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 	fs.StringVar(&cfg.subagentModel, "subagent-model", "", "global default model for every Subagent / Parallel-branch / team-member child that does not pin its own model (via an agent definition or a per-call override) — the analogue of CLAUDE_CODE_SUBAGENT_MODEL; the Parallel judge stays on the session model. May be a concrete id or an alias from --model-alias; resolved on the session's provider (same-provider only). Empty inherits the parent --model; a non-empty value that does not resolve to a usable model id (unknown alias, or an alias meaning inherit) FAILS STARTUP")
 	fs.Var(&cfg.modelAliases, "model-alias", "model alias mapping as name=model-id (repeatable), e.g. --model-alias fast=gpt-4o-mini. Aliases are resolved only in the composition layer; an agent def's `model: <alias>` resolves through this map (then the built-in sonnet/opus/haiku aliases)")
+	fs.Var(&cfg.modelSlots, "model-slot", "per-slot model binding as slot=selector (repeatable), e.g. --model-slot compaction=cheap --model-slot cheap=gpt-4o-mini (ADR 0030). A SLOT routes an internal lightweight LLM call to its own model: the wired slots are `compaction` (the compaction summary call), `ask-reviewer` (the headless child-ask reviewer), and `guardrail` (the content checker); a TIER key (`cheap`/`fast`/`reasoning`) gives a default a slot falls through to (each routed slot defaults to `cheap`). The selector is an alias (resolved through --model-alias / the built-ins) or a concrete id. Empty (no --model-slot) keeps every call on the session model (byte-identical default). FAIL-SOFT: a typo'd slot or an alias meaning inherit WARNs and keeps the session model. For ask-reviewer/guardrail the slot supersedes the model of --subagent-ask-reviewer/--guardrails-model but does NOT enable them (those flags stay the on/off gate). Operator-tier only; the YAML twin is the user-global settings.yaml `models.slots:` subtree")
 	fs.StringVar(&cfg.subagentAskReviewer, "subagent-ask-reviewer", "", "OPT-IN headless ask reviewer (issue #31): model id or --model-alias of a tool-less ONE-TURN reviewer that adjudicates a HEADLESS subagent/member/branch permission ask the 4-step model would otherwise blanket auto-deny. Allow = this call only (never learned); deny/error keeps the call denied (fail-safe). Configured Deny/Ask rules and an interactive approver always win; resolved on the session's provider (same-provider only). Empty (default) disables it; a value that does not resolve to a usable model id FAILS STARTUP. Deliberately a server flag, NOT a permission-config key: it grants an autonomous approval capability, an operator deployment decision")
 	fs.IntVar(&cfg.subagentAskReviewerMaxDenies, "subagent-ask-reviewer-max-denies", 3, "circuit breaker for --subagent-ask-reviewer: after this many CONSECUTIVE non-allow reviewer outcomes (denies/errors/timeouts) in one run, further asks skip the reviewer and fall through to the plain auto-deny; an allow resets the count. <=0 uses the default (3)")
 	fs.StringVar(&cfg.subagentAskReviewerPolicyFile, "subagent-ask-reviewer-policy", "", "path to a TRUSTED policy rubric file for --subagent-ask-reviewer; its CONTENT replaces the built-in read-only/verification rubric the reviewer applies. Empty keeps the built-in rubric. Read once at startup; an unreadable file FAILS STARTUP")

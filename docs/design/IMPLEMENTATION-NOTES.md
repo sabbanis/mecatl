@@ -352,6 +352,50 @@ case (c) — the same-provider window rule), `app.TestNormalizeSubagentModelUnre
 `app.TestSubagentModelRoutesChildToCheapModel` (mutation-verified: reverting the explorer wiring
 fails the deps test, the prompt test, AND the e2e).
 
+**Per-slot models (`models.slots`, ADR 0030 Phase 1+2).** Three internal LIGHTWEIGHT LLM calls
+route to a named **slot** model so housekeeping runs on a cheaper model than the session, all in
+composition (`internal/app/slots.go`). The ONE choke point is **`resolveSlotModel(cfg, slot,
+parentModel) (model, configured)`**: an explicit `cfg.ModelSlots[slot]` binding wins, else the
+slot's default TIER (`slotDefaultTier` — `compaction`/`ask-reviewer`/`guardrail` all default to
+`cheap`) when THAT tier is bound, else `("", false)`. A chosen selector is resolved THROUGH the
+existing `lookupModelAlias` grammar (the alias SPINE — a slot value is itself an alias or a literal
+id, the same resolution `resolveAlias`/`normalizeSubagentModel` use), so the two never drift. The
+three routed call sites:
+- **compaction** — `engineDepsForProvider` resolves the slot and, when set, builds the
+  `CascadeCompactor` (`buildCompactor`) over a slot-model `compactorCfg`+`compactorCounter` while
+  the engine's own `Model`/`TokenCounter`/`PromptConfig`/`ContextWindow` stay on the session model.
+  **O5 (validated against `engine/agent/cascade.go`):** the `CascadeCompactor` uses `Counter` only
+  to SIZE history between tiers against `BudgetTokens`, and `BudgetTokens` is WINDOW-derived
+  (`defaultContextWindowTokens × ratio` in `buildCompactor`), NOT keyed to the live conversation —
+  so keying the compactor's `Counter` to the compaction model cannot break the cascade budget math;
+  the load-bearing swap is the tier-4 summary call's `Model`. The `HeuristicCompactor` has no
+  `Model`/`Counter`, so it is unaffected.
+- **ask-reviewer** — `askAdjudicatorDeps`: the `--subagent-ask-reviewer` flag STAYS the enable gate
+  (empty ⇒ reviewer off); when enabled, a configured `ask-reviewer` slot SUPERSEDES the flag's
+  model (a slot alone does NOT enable the reviewer).
+- **guardrail** — `buildGuardrailsChecker` (its parent-model arg is now NAMED `parentModel`):
+  `GuardrailsModel` STAYS the enable gate; a configured `guardrail` slot supersedes the checker
+  model.
+
+**Byte-identical default + fail-soft.** With no slot configured `resolveSlotModel` returns
+`("", false)` for every slot and each site keeps its EXACT pre-feature behaviour (the session
+model). A typo'd slot key, an unknown alias, or an alias meaning inherit WARNs and degrades to the
+session model — a broken housekeeping slot NEVER wedges the call (no fail-fast normalize, unlike
+`--subagent-model`). `foldOperatorModelSlots` merges the OPERATOR-TIER `models.slots`+`models.aliases`
+YAML (user-global + CLI only, CLI winning per key) onto `cfg`; a project-tier `models:` block is
+ignored with a WARN (`permconfig.Resolver.OperatorModelSlots()`, the
+`captureModels`/strict-`ModelsSection.UnmarshalYAML` pair mirroring guardrails/posture).
+`logSlotConfigFacts` narrates each routed slot ONCE in `Build` (the build-once-facts discipline —
+never per-engine; the loop's THREE-lines invariant holds). NO `port.LLMRequest` widening (the slot
+is a composition model-string choice). Team synthesis is DEFERRED (no clean seam — the lead
+synthesis runs on the lead member's whole engine); mode→model and the subagent router are later
+ADR-0030 layers. Guards: `app.TestSlotsByteIdenticalDefault` (G1), `app.TestResolveSlotModelTable`
++ `TestCompactionSlotRoutesSummaryOnly` + `TestAskReviewerSlotSupersedesFlag` +
+`TestGuardrailSlotRoutesChecker` (G2), `app.TestCompactionSlotE2ESummaryModel` +
+`TestGuardrailSlotE2ECheckerModel` (G4, mock-observer per-request `Model` capture),
+`permconfig.TestOperatorModelsFromCLIHonoured` + `TestProjectModelsIgnoredWithWarn` +
+`TestModelsStrictUnknownKeyRejected`, and the live `e2e` `model slots` spec.
+
 **Subagent structured output (`output_schema` + `SubmitResult` + bounded validation-retry).** When
 `subagentArgs.OutputSchema` (a model-authored JSON schema) is present, the child is given a synthetic
 `SubmitResult` tool (`engine/agent/structuredoutput.go`) whose PARAMETERS ARE that schema,

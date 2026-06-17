@@ -127,6 +127,7 @@ var _ = ginkgo.Describe("mecatl live e2e", ginkgo.Ordered, ginkgo.Serial, ginkgo
 	metricsSpecs()
 	memorySpecs()
 	compactionSpecs()
+	modelSlotSpecs()
 	webSearchSpecs()
 	soulSpecs()
 	approveAfterKillSpecs()

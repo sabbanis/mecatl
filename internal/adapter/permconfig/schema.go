@@ -74,6 +74,39 @@ type Config struct {
 	// keeps the CLI/default). The composition layer parses the string; permconfig only
 	// reads the scalar.
 	Posture string `yaml:"posture"`
+	// Models holds the OPERATOR-TIER per-slot model config (ADR 0030): the
+	// `models.slots` / `models.aliases` maps. Like Guardrails/Posture it is honoured
+	// ONLY from the user-global + CLI tiers; a project-tier file's models: block is
+	// IGNORED with a WARN (re-pointing a slot from a project repo is deferred to the
+	// allowlist-capped Layer-3 work). The TOP `models:` mapping is parsed STRICTLY
+	// (an unknown key like `slotz:` errors), the inner slots/aliases maps stay
+	// free-form (composition validates the slot keys fail-soft). A nil Models means
+	// the key was absent. The composition layer reads the maps; permconfig only
+	// carries them.
+	Models *ModelsSection `yaml:"models"`
+}
+
+// ModelsSection is the operator-tier `models:` YAML subtree (ADR 0030): a per-slot
+// model-binding map and an alias map. The TOP mapping is parsed STRICTLY (unknown
+// keys error); the inner Slots/Aliases maps are free-form name→selector (composition
+// validates the slot names fail-soft via knownSlotNames).
+type ModelsSection struct {
+	// Slots binds a slot name (a call-slot "compaction"/"ask-reviewer"/"guardrail" or
+	// a tier "cheap"/"fast"/"reasoning") to a model selector (alias or concrete id).
+	Slots map[string]string `yaml:"slots"`
+	// Aliases binds a short alias to a concrete model id (merged onto the CLI
+	// --model-alias map, CLI winning per key).
+	Aliases map[string]string `yaml:"aliases"`
+}
+
+// UnmarshalYAML decodes the models: mapping STRICTLY (ADR 0030): an unknown key
+// inside the models subtree is a parse error — a typo like `slotz:` or `aliasez:`
+// must not silently drop a whole binding map. Same rationale as GuardrailsSection.
+func (m *ModelsSection) UnmarshalYAML(node *yaml.Node) error {
+	return decodeStrictMapping(node, "models", map[string]any{
+		"slots":   &m.Slots,
+		"aliases": &m.Aliases,
+	})
 }
 
 // GuardrailsSection is the operator-tier `guardrails:` YAML subtree (issue #27): a

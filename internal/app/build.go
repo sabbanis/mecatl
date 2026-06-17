@@ -372,7 +372,10 @@ type Config struct {
 	// engines force it nil (no nesting). It is deliberately a server FLAG, not a
 	// permconfig key: it grants an autonomous approval capability, which must be an
 	// operator deployment decision — never something a (project-tier) settings file
-	// can switch on. Configured Deny/Ask rules always win over the reviewer.
+	// can switch on. Configured Deny/Ask rules always win over the reviewer. A
+	// configured `ask-reviewer` model slot (ModelSlots / ADR 0030) SUPERSEDES this
+	// field's model when the reviewer is enabled — but the FLAG stays the enable gate
+	// (a slot alone does NOT turn the reviewer on).
 	SubagentAskReviewerModel string
 	// SubagentAskReviewerMaxDenies is the per-run adjudication circuit-breaker
 	// threshold (agent.Deps.ChildAskReviewMaxDenies): after this many CONSECUTIVE
@@ -420,6 +423,23 @@ type Config struct {
 	// concrete provider model id. Resolved only here; the domain/agent always
 	// receives a concrete model string.
 	ModelAliases map[string]string
+
+	// ModelSlots binds a named internal lightweight LLM call (a "slot") to a model
+	// selector — an alias or a concrete id (ADR 0030, Phase 1+2). The wired slots
+	// this slice routes are "compaction", "ask-reviewer", and "guardrail"; semantic
+	// TIER keys ("cheap"/"fast"/"reasoning") give a default a slot falls through to
+	// (each routed slot defaults to "cheap"). It is COMPOSITION-ONLY: every value is
+	// resolved THROUGH lookupModelAlias (the same alias machinery the agent-def
+	// `model:` path uses), so the domain/agent never sees a slot. EMPTY/ABSENT ⇒
+	// byte-identical default (the call keeps the session model — resolveSlotModel
+	// returns ("", false) and every routed site keeps its pre-feature behaviour). It
+	// is OPERATOR-TIER ONLY this slice: read from --model-slot + the user-global
+	// settings.yaml `models.slots:` subtree (folded by foldOperatorModelSlots), never
+	// a project-tier file (a project re-pointing a slot is deferred to the
+	// allowlist-capped Layer-3 work). Resolution is FAIL-SOFT: a typo'd slot key or an
+	// alias meaning inherit WARNs and degrades to the session model — a broken
+	// housekeeping slot never wedges a compaction / ask-review / guardrail call.
+	ModelSlots map[string]string
 
 	// Slash commands: directory of <name>.md templates; EnableCommands turns on the
 	// default directories when CommandsDir is empty.
@@ -830,6 +850,13 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// built and before the provider/model fail-fast normalization below.
 	cfg = foldOperatorGuardrails(cfg)
 
+	// Per-slot models (ADR 0030, Phase 1+2): fold the operator-tier `models:` YAML
+	// subtree (user-global + CLI only — a project file's models: block is ignored with
+	// a WARN, like guardrails/posture) onto cfg.ModelSlots/cfg.ModelAliases, CLI
+	// flags (--model-slot/--model-alias) winning per key. Runs after the resolver is
+	// built; the three routed call sites read the resolved slot models lazily.
+	cfg = foldOperatorModelSlots(cfg)
+
 	// Start-of-session git snapshot, computed ONCE here (FIX 2): gitSnapshot runs git
 	// against cfg.Workspace through a HARDENED/scrubbed env and only for a TRUSTED
 	// workspace (FIX 1). The single value is carried on cfg.gitStatus so every
@@ -898,6 +925,11 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// see each fact once instead of N times. Other slog sites in this file are not
 	// yet relocated (iteration 2).
 	logBuildConfigFacts(cfg)
+	// Per-slot model facts (ADR 0030): narrate each ROUTED slot's resolved model
+	// ONCE here (never per-engine — the no-per-derivation-duplication rule). Slots are
+	// FAIL-SOFT (no fail-fast normalize): a broken slot already WARNed in
+	// resolveSlotModel and degrades to the session model. No-op when no slot configured.
+	logSlotConfigFacts(cfg)
 
 	// Slash-command driver source (Phase C2): ONE dial + Probe at build time
 	// (fatal on a fault — loud-misconfig posture), then the probed client is
@@ -1861,6 +1893,22 @@ func engineDepsForProvider(
 	modelCfg := cfg
 	modelCfg.Model = model
 	counter := buildTokenCounter(modelCfg)
+	// COMPACTION SLOT (ADR 0030, Phase 2): route ONLY the compactor's tier-4 summary
+	// LLM call to the `compaction` slot model when one is configured — the engine's
+	// own Model/TokenCounter/PromptConfig/ContextWindow stay on the session model.
+	// When no slot resolves (the byte-identical default) the compactor is built on the
+	// session model+counter exactly as before. O5: keying the compactor's Counter to
+	// the compaction model is sound — the CascadeCompactor's BudgetTokens is
+	// window-derived (defaultContextWindowTokens × ratio in buildCompactor), NOT
+	// keyed to the live conversation, so swapping the counter's tokenizer cannot break
+	// the cascade budget math; only the summary LLM call's Model is the load-bearing
+	// swap (the heuristic compactor has no Model/Counter at all, so it is unaffected).
+	compactorCfg, compactorCounter := modelCfg, counter
+	if cm, ok := resolveSlotModel(cfg, slotCompaction, model); ok {
+		compactorCfg = modelCfg
+		compactorCfg.Model = cm
+		compactorCounter = buildTokenCounter(compactorCfg)
+	}
 	return agent.Deps{
 		LLM:          provider,
 		Policy:       policy,
@@ -1884,7 +1932,7 @@ func engineDepsForProvider(
 		ContextWindow:   windowFn,
 		CompactionRatio: defaultCompactionRatio,
 		TokenCounter:    counter,
-		Compactor:       buildCompactor(modelCfg, provider, counter),
+		Compactor:       buildCompactor(compactorCfg, provider, compactorCounter),
 		CommandExpander: buildCommandExpander(cfg, mcpProvider),
 		// No-progress nudge budget: operator-tunable (cfg), inherited by children
 		// (childEngineDepsForProvider keeps this field). Zero → NewEngine applies the
@@ -3658,9 +3706,20 @@ func buildAskAdjudicator(cfg Config, provReg *providerRegistry, provider port.LL
 func askAdjudicatorDeps(cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string) (agent.Deps, bool) {
 	sel := strings.TrimSpace(cfg.SubagentAskReviewerModel)
 	if sel == "" {
+		// The --subagent-ask-reviewer flag STAYS the enable gate: a slot alone does
+		// NOT turn the reviewer on (a slot only chooses the model for a reviewer the
+		// operator already enabled). Empty flag ⇒ reviewer off, byte-identical.
 		return agent.Deps{}, false
 	}
-	model, _ := lookupModelAlias(cfg, sel)
+	// ASK-REVIEWER SLOT (ADR 0030, Phase 2): a configured `ask-reviewer` slot
+	// SUPERSEDES the flag's model (the flag still gates ON/OFF). Otherwise resolve the
+	// flag's value through the alias machinery exactly as before.
+	var model string
+	if sm, ok := resolveSlotModel(cfg, slotAskReviewer, parentModel); ok {
+		model = sm
+	} else {
+		model, _ = lookupModelAlias(cfg, sel)
+	}
 	if model == "" {
 		// Defensive only: Build's normalizeAskReviewerModel already rejected an
 		// unknown/inherit value fail-fast (and UseMock passes the literal through).

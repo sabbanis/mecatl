@@ -128,6 +128,14 @@ type Resolver struct {
 	// files) out-ranks user-global (first-non-empty keeps CLI).
 	operatorPosture string
 
+	// operatorModels is the OPERATOR-TIER models: subtree (ADR 0030), read ONCE at
+	// construction from the user-global + CLI tiers ONLY. A project-tier file's
+	// models: block is deliberately IGNORED (re-pointing a slot from a project repo
+	// is deferred to the allowlist-capped Layer-3 work) — loadProjectRules WARNs when
+	// it sees one. nil when no operator-tier file carried a models: section. CLI
+	// (explicit files) out-ranks user-global (first-non-nil keeps CLI).
+	operatorModels *ModelsSection
+
 	mu    sync.RWMutex
 	cache map[string]*cacheEntry // keyed by ws.Root()
 }
@@ -152,6 +160,18 @@ func (r *Resolver) OperatorPosture() string {
 		return ""
 	}
 	return r.operatorPosture
+}
+
+// OperatorModelSlots returns the operator-tier models: subtree (user-global + CLI
+// only), or nil when none was configured. It is the SOLE accessor the composition
+// layer uses to read per-slot model config from disk — by construction it never
+// returns a project-tier block (a project models: is ignored with a WARN in
+// loadProjectRules). nil-safe.
+func (r *Resolver) OperatorModelSlots() *ModelsSection {
+	if r == nil {
+		return nil
+	}
+	return r.operatorModels
 }
 
 // New constructs a Resolver from opts, reading the user-global + explicit (CLI)
@@ -328,6 +348,15 @@ func (r *Resolver) loadProjectRules(ws tool.WorkspaceReader) []governance.Rule {
 				"posture: IGNORING a project-tier posture: scalar (operator-tier only — a project repo cannot raise the automation posture; set posture in your user-global settings.yaml or via --posture)",
 				"file", src.path, "root", ws.Root(), "ignored_value", strings.TrimSpace(cfg.Posture))
 		}
+		// models: is OPERATOR-TIER ONLY (ADR 0030): a project file's models: block is
+		// IGNORED with a loud WARN. Honouring it would let a project repo re-point a
+		// slot at an unvetted model — deferred to the allowlist-capped Layer-3 work, so
+		// for this slice the project tier cannot configure slots at all.
+		if cfg.Models != nil {
+			r.diag.Log(context.Background(), port.LevelWarn,
+				"models: IGNORING a project-tier models: block (operator-tier only — a project repo cannot bind per-slot models; set models in your user-global settings.yaml or via --model-slot/--model-alias)",
+				"file", src.path, "root", ws.Root())
+		}
 		rules = append(rules, rulesFromConfig(cfg, src.scope, &report)...)
 	}
 
@@ -389,6 +418,8 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 		r.captureGuardrails(cfg.Guardrails)
 		// Operator-tier posture: same first-non-empty-keeps-CLI discipline as guardrails.
 		r.capturePosture(cfg.Posture)
+		// Operator-tier models: same first-non-nil-keeps-CLI discipline (ADR 0030).
+		r.captureModels(cfg.Models)
 	}
 
 	if !r.opts.Conventional {
@@ -410,6 +441,8 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 				r.captureGuardrails(cfg.Guardrails)
 				// User-global posture: captured only if no higher CLI file already did.
 				r.capturePosture(cfg.Posture)
+				// User-global models: captured only if no higher CLI file already did.
+				r.captureModels(cfg.Models)
 			}
 		}
 	}
@@ -457,6 +490,18 @@ func (r *Resolver) capturePosture(p string) {
 		return
 	}
 	r.operatorPosture = strings.TrimSpace(p)
+}
+
+// captureModels records the FIRST operator-tier models: block seen during
+// construction (CLI files are parsed before user-global, so CLI wins on
+// first-non-nil). It is called only from loadUserRules — the operator (user-global
+// + CLI) tiers — never from loadProjectRules, so a project file can never supply a
+// models: block (ADR 0030: operator-tier-only this slice).
+func (r *Resolver) captureModels(m *ModelsSection) {
+	if m == nil || r.operatorModels != nil {
+		return
+	}
+	r.operatorModels = m
 }
 
 // specOf reconstructs a human-readable "Tool(pattern)" spec from a rule, for the
