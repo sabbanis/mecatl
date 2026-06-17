@@ -388,13 +388,59 @@ ignored with a WARN (`permconfig.Resolver.OperatorModelSlots()`, the
 `logSlotConfigFacts` narrates each routed slot ONCE in `Build` (the build-once-facts discipline —
 never per-engine; the loop's THREE-lines invariant holds). NO `port.LLMRequest` widening (the slot
 is a composition model-string choice). Team synthesis is DEFERRED (no clean seam — the lead
-synthesis runs on the lead member's whole engine); mode→model and the subagent router are later
-ADR-0030 layers. Guards: `app.TestSlotsByteIdenticalDefault` (G1), `app.TestResolveSlotModelTable`
+synthesis runs on the lead member's whole engine); the subagent router is a later ADR-0030 layer.
+Guards: `app.TestSlotsByteIdenticalDefault` (G1), `app.TestResolveSlotModelTable`
 + `TestCompactionSlotRoutesSummaryOnly` + `TestAskReviewerSlotSupersedesFlag` +
 `TestGuardrailSlotRoutesChecker` (G2), `app.TestCompactionSlotE2ESummaryModel` +
 `TestGuardrailSlotE2ECheckerModel` (G4, mock-observer per-request `Model` capture),
 `permconfig.TestOperatorModelsFromCLIHonoured` + `TestProjectModelsIgnoredWithWarn` +
 `TestModelsStrictUnknownKeyRejected`, and the live `e2e` `model slots` spec.
+
+**Mode→model: the `plan` slot (ADR 0030 Phase 3 / Layer 3, the opusplan pattern).** A fourth slot,
+`plan` (`slotPlan`), reuses `resolveSlotModel` UNCHANGED but is wired on the MODE axis, not the
+internal-call axis. Two divergences from the call-slots: `slotDefaultTier[slotPlan] = slotReasoning`
+(a plan model is a strong-reasoning model, NOT cheap — the one default-tier divergence); and its
+consumer is the per-session engine FACTORY (`sessionEngineFactory` in `internal/app/build.go`), not a
+per-call deps builder. After `resolvedProvider, resolvedModel` are resolved and BEFORE
+`windowFn`/`sessionCaps`/`engineDepsForProvider`, the factory does: `if mode == session.ModePlan { if
+planModel, configured := resolveSlotModel(cfg, slotPlan, resolvedModel); configured && planModel !=
+"" { resolvedModel = planModel } }` — within the SAME provider (the provider is NEVER switched;
+"provider FIXED per session" holds). Everything downstream already keys on `resolvedModel`, so the
+swap is total. The factory echoes back the mode as `SessionEngineResult.BuiltForMode`.
+
+The **run-entry trigger** lives in the server (`internal/adapter/server/service.go`). The
+`sessionEngine` struct gains `builtForMode session.PermissionMode`, stamped from
+`SessionEngineResult.BuiltForMode` at EVERY construction site (create, `LoadSessionWithMCP`,
+rehydrate, mode-rebuild). `engineAndWorkspaceFor` (the SINGLE engine/workspace resolution point, shared
+by `StartRunContent` and `resumeFromAwaiting`) gains two cases, both routed through the ONE shared
+`buildAndRegisterSessionEngine(ctx, sess, sel, profile, mode, replace)` helper extracted from
+`rehydrateSession`:
+- **CASE 1** — `hasEngine && se.builtForMode != "" && se.builtForMode != sess.Mode`: the registered
+  per-session engine was built for a different mode; rebuild it (`replace=true` tears the prior engine
+  down). Guarded by a no-live-run assertion (SetMode is rejected mid-turn, so this only ever fires at a
+  turn boundary). The `!= ""` skip treats a zero `builtForMode` (a test/legacy factory) as "no pin".
+- **CASE 2** — `!hasEngine && !needsRehydration(sess) && cfg.ModeNeedsEngine != nil &&
+  cfg.ModeNeedsEngine(sess.Mode)`: a DEFAULT-FS session that would ride the shared engine, but its mode
+  resolves a different model; PROMOTE it to a per-session factory engine (`replace=false`).
+
+`server.Config.ModeNeedsEngine func(mode session.PermissionMode) bool` is the composition-injected
+predicate (`internal/app/slots.go` `modeNeedsEngine`): NIL unless a plan slot resolves to a model
+differing from the shared-engine model (`cfg.Model`) — so a deployment with no plan slot is
+**BYTE-IDENTICAL** to pre-Phase-3 (no promotion, a mode flip changes nothing). `rehydrateSession` and
+`LoadSessionWithMCP` pass `sess.Mode` (the PERSISTED mode), so a restart-into-plan rehydrates on the
+plan model. `ResolvedModel`/`SessionCapabilities` re-emit automatically after the rebuild swaps the
+registered engine (no recompute — they read `se`); the ORDERING is deliberate: a `SetMode` response
+echoes the pre-rebuild model (fixed per turn), the new model appears on `GetSession`/the next turn.
+`resumeFromAwaiting` is a CASE 1 no-op (SetMode is rejected from `StateAwaiting`, so
+`se.builtForMode == sess.Mode` always holds). NO proto/port/domain change beyond the modelith doc and
+the server-adapter factory signature (`mode` param + `BuiltForMode` field). Guards:
+`app.TestPlanSlotDefaultTierIsReasoning` + `TestPlanSlotResolves` + `TestPlanSlotByteIdenticalWhenUnconfigured`
++ `TestModeNeedsEngine` + `TestSessionEngineFactoryPlanVsExecute` + `TestSessionEngineFactoryNoPlanSlotByteIdentical`,
+`server.TestModeFlipRebuildsOnPlanSlot` + `TestModeFlipRebuildsBackToExecute` +
+`TestModeFlipByteIdenticalWithoutPlanSlot` + `TestSetModeRejectedMidTurn` + `TestPlanModeSessionRehydratesOnPlanModel`
++ `TestModeFlipEndToEndModelObserved` + `TestModeRebuildReEmitsCapabilities`, and the live `e2e`
+`mode model (plan slot)` spec (slot-wiring half; the flip is the offline end-to-end's authoritative job
+until the harness driver gains a SetMode verb).
 
 **Subagent structured output (`output_schema` + `SubmitResult` + bounded validation-retry).** When
 `subagentArgs.OutputSchema` (a model-authored JSON schema) is present, the child is given a synthetic

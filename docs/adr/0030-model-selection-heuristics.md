@@ -45,11 +45,25 @@ Resolution stays in the one resolver `resolveProviderModel`, extended (not forke
   slice (`--model-slot` / the user-global `models:` YAML subtree; a project-tier block
   is ignored with a WARN) — the project-merge-within-cap (`OperatorModelPolicy()` with
   an allowlist) is **not yet built**.
+- **Phase 3 (Layer 3 — mode→model) — IMPLEMENTED.** A fourth slot, **`plan`**, reuses
+  `resolveSlotModel` UNCHANGED but is wired on the **mode axis**: the per-session engine
+  factory (`sessionEngineFactory`) re-resolves the session model to the plan model when
+  the session's `PermissionMode` is plan, within the SAME provider (the provider stays
+  fixed per session). Its default tier is **`reasoning`**, not `cheap` (a plan model is a
+  strong-reasoning model). The model is **fixed per turn, re-resolved between turns** at
+  the run-entry seam: the server (`engineAndWorkspaceFor`) compares a session's `Mode`
+  against the engine's `builtForMode` and rebuilds a stale per-session engine (CASE 1) or
+  promotes a default-FS session (CASE 2, gated by the composition predicate
+  `server.Config.ModeNeedsEngine`, nil unless a plan slot is active — the byte-identical
+  guard), both through the ONE shared `buildAndRegisterSessionEngine` helper (factored out
+  of `rehydrateSession`). `resolved_model` re-emits on the next `GetSession`/turn after the
+  rebuild (a `SetMode` response still carries the pre-rebuild model). Restart-into-plan
+  rehydrates on the plan model (the persisted `Mode` is read back). Config remains
+  **operator-tier only** this slice.
 - **DEFERRED (not this slice):** team **synthesis** routing (it lacks a clean seam — the
-  lead synthesis runs on the lead member's whole engine, not a one-shot call); **Layer 3**
-  (mode→model re-resolution at the run-entry seam); **Layer 3b** (the operator-gated
-  subagent router); and the project-overridable-within-an-operator-cap config layering.
-  These remain as designed above.
+  lead synthesis runs on the lead member's whole engine, not a one-shot call); **Layer 3b**
+  (the operator-gated subagent router); and the project-overridable-within-an-operator-cap
+  config layering. These remain as designed above.
 
 ## Consequences
 

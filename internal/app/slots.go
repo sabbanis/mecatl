@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/stacklok/mecatl/engine/port"
+	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
 )
 
@@ -30,8 +31,18 @@ import (
 // This slice routes exactly THREE internal lightweight calls to a slot: compaction
 // (the tier-4 summary LLM call), ask-reviewer, and guardrail. Team synthesis is
 // DEFERRED (it lacks a clean seam — the lead synthesis runs on the lead member's
-// whole engine), and mode→model / the project-tier override / the subagent router
-// (ADR 0030 Layer 3/3b and the project-merge-within-cap) are out of this slice.
+// whole engine), and the project-tier override / the subagent router (ADR 0030
+// Layer 3b and the project-merge-within-cap) are out of this slice.
+//
+// Phase 3 (ADR 0030 Layer 3) adds the `plan` slot — wired on the MODE axis, NOT the
+// internal-call axis. Unlike the three call-slots above, `plan` does NOT route a
+// lightweight housekeeping call: it re-resolves the SESSION model when the session's
+// PermissionMode is ModePlan, re-resolved BETWEEN turns at the run-entry seam (the
+// opusplan pattern). It reuses resolveSlotModel UNCHANGED — the resolution grammar is
+// identical; only the consumer differs (the per-session engine factory in build.go,
+// keyed on the session's mode, instead of a per-call deps builder). And it defaults to
+// the `reasoning` tier, NOT `cheap`: a plan model is a STRONG-reasoning model, the one
+// place a slot's default tier diverges from cheap.
 
 // Slot names — the three routed internal lightweight calls (Layer 2). Each is the
 // stable key an operator writes under `models.slots:` (or --model-slot).
@@ -46,6 +57,14 @@ const (
 	// natural fourth consumer) but is deliberately NOT wired this slice — the lead
 	// synthesis runs on the lead member's whole engine and lacks a clean seam.
 	slotSynthesis = "synthesis"
+	// slotPlan routes the SESSION model when the session's PermissionMode is ModePlan
+	// (ADR 0030 Layer 3, the opusplan pattern). It is the ONE slot wired on the MODE
+	// axis rather than the internal-call axis: it is consumed by the per-session engine
+	// factory (sessionEngineFactory in build.go), re-resolved between turns at the
+	// run-entry seam when Session.Mode changes — NOT by a per-call deps builder. Its
+	// default tier is `reasoning`, not `cheap` (slotDefaultTier) — a plan model is a
+	// strong-reasoning model.
+	slotPlan = "plan"
 )
 
 // Semantic TIER names — the alias spine (Layer 1). A slot with no explicit binding
@@ -71,21 +90,25 @@ var knownSlotNames = map[string]struct{}{
 	slotAskReviewer: {},
 	slotGuardrail:   {},
 	slotSynthesis:   {},
+	slotPlan:        {},
 	slotCheap:       {},
 	slotFast:        {},
 	slotReasoning:   {},
 }
 
-// slotDefaultTier maps a call-slot to the semantic tier it falls through to when it
-// has no explicit binding. All three routed calls default to `cheap` (housekeeping
-// runs on the cheapest model unless the operator says otherwise — the ADR's
-// immediate token-savings win). A slot absent here has no default tier (an explicit
-// binding is the only way to route it).
+// slotDefaultTier maps a slot to the semantic tier it falls through to when it has no
+// explicit binding. The three internal-call slots default to `cheap` (housekeeping
+// runs on the cheapest model unless the operator says otherwise — the ADR's immediate
+// token-savings win). The `plan` slot is the DELIBERATE divergence: it defaults to the
+// `reasoning` tier, because a plan-mode model is a STRONG-reasoning model, not a cheap
+// one (ADR 0030 Layer 3). A slot absent here has no default tier (an explicit binding
+// is the only way to route it).
 var slotDefaultTier = map[string]string{
 	slotCompaction:  slotCheap,
 	slotAskReviewer: slotCheap,
 	slotGuardrail:   slotCheap,
 	slotSynthesis:   slotCheap,
+	slotPlan:        slotReasoning,
 }
 
 // resolveSlotModel resolves a slot name to a concrete provider model id, in the
@@ -224,13 +247,18 @@ func logSlotConfigFacts(cfg Config) {
 	if len(cfg.ModelSlots) == 0 {
 		return
 	}
-	for _, slot := range []string{slotCompaction, slotAskReviewer, slotGuardrail} {
+	for _, slot := range []string{slotCompaction, slotAskReviewer, slotGuardrail, slotPlan} {
 		model, ok := resolveSlotModel(cfg, slot, cfg.Model)
+		// The three internal call-slots route a lightweight housekeeping call; the
+		// plan slot (ADR 0030 Layer 3) instead re-resolves the SESSION model in plan
+		// mode (the opusplan pattern) — narrate it distinctly so the INFO is honest.
+		active := "model slot ACTIVE: this internal lightweight call runs on the slot model instead of the session model"
+		if slot == slotPlan {
+			active = "model slot ACTIVE: plan-mode turns run on the plan model instead of the session model (opusplan), re-resolved between turns on a mode change"
+		}
 		switch {
 		case ok:
-			cfg.diag().Log(context.Background(), port.LevelInfo,
-				"model slot ACTIVE: this internal lightweight call runs on the slot model instead of the session model",
-				"slot", slot, "model", model)
+			cfg.diag().Log(context.Background(), port.LevelInfo, active, "slot", slot, "model", model)
 		case selectorForSlot(cfg, slot) != "":
 			// Configured (a selector exists) but unresolvable: WARN ONCE here so the
 			// operator sees the typo at Build, while the runtime stays fail-soft.
@@ -238,5 +266,33 @@ func logSlotConfigFacts(cfg Config) {
 				"model slot points at an unknown alias or one meaning inherit; the slot is IGNORED and this call keeps the session model",
 				"slot", slot, "selector", selectorForSlot(cfg, slot))
 		}
+	}
+}
+
+// modeNeedsEngine returns the composition predicate wired into
+// server.Config.ModeNeedsEngine (ADR 0030 Layer 3): for a given session
+// PermissionMode, does that mode resolve a model DIFFERING from the shared engine's
+// model (cfg.Model)? It is true ONLY for ModePlan when the `plan` slot resolves to a
+// concrete id that differs from cfg.Model — the only case where promoting a DEFAULT-FS
+// session to a per-session factory engine actually changes anything.
+//
+// It returns NIL when no plan slot is configured (or it resolves to cfg.Model), so the
+// Service never promotes a default-FS session and a mode flip is BYTE-IDENTICAL to
+// pre-Phase-3 (the regression guard). The predicate is evaluated against the BUILD-TIME
+// plan resolution — operator-tier config is fixed at Build, so this is sound and
+// cheap (no per-call re-resolution). ModeDefault/ModeAccept always answer false (they
+// keep the session model). The predicate intentionally compares against cfg.Model (the
+// shared-engine model), because promotion only matters for a session that would
+// otherwise ride the shared engine.
+func modeNeedsEngine(cfg Config) func(mode session.PermissionMode) bool {
+	planModel, configured := resolveSlotModel(cfg, slotPlan, cfg.Model)
+	if !configured || planModel == "" || planModel == cfg.Model {
+		// No active plan slot (or it resolves to the shared-engine model): a mode flip
+		// never changes the model, so never promote — nil keeps the default-FS path
+		// byte-identical.
+		return nil
+	}
+	return func(mode session.PermissionMode) bool {
+		return mode == session.ModePlan
 	}
 }

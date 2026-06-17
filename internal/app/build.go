@@ -1080,6 +1080,15 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		// over the client's streaming-HTTP servers, mounted for that session only. Built
 		// in buildEngine so it shares the main engine's exact collaborators.
 		SessionEngine: sessFactory,
+		// ModeNeedsEngine (ADR 0030 Layer 3): tells the Service whether a session's
+		// PermissionMode would resolve a model DIFFERING from the shared engine's model
+		// (cfg.Model) — i.e. whether a plan slot is configured AND it resolves to a
+		// different id. It lets a DEFAULT-FS session (normally on the shared engine) be
+		// PROMOTED to a per-session factory engine on a plan-mode switch. It is wired to
+		// nil (no promotion, BYTE-IDENTICAL to pre-Phase-3) unless the predicate could
+		// ever return true, so a deployment with no plan slot pays zero cost and a mode
+		// flip changes nothing.
+		ModeNeedsEngine: modeNeedsEngine(cfg),
 		// Evict a session's LEARNED permission rules when the session is closed
 		// (issue #3): the rules are per-session and non-durable, so they must not
 		// outlive the session that learned them.
@@ -1288,7 +1297,7 @@ func sessionEngineFactory(
 	instructions prompt.InstructionAssembler,
 	assets catalogAssets,
 ) server.SessionEngineFactory {
-	return func(ctx context.Context, sel server.ProviderSelector, specs []mcp.ServerConfig, profile server.SessionProfile, workspace string) (server.SessionEngineResult, error) {
+	return func(ctx context.Context, sel server.ProviderSelector, specs []mcp.ServerConfig, profile server.SessionProfile, workspace string, mode session.PermissionMode) (server.SessionEngineResult, error) {
 		// Pin the CHILD permission resolver to THIS session's base root (issue
 		// #32): a per-session engine's subagents/members/branches must resolve
 		// project permission rules from the SESSION's pre-fork root — the
@@ -1323,6 +1332,23 @@ func sessionEngineFactory(
 			// "" => provider/adapter default; a non-empty unknown model => verbatim
 			// passthrough (the catalog is NOT consulted to GATE the model string).
 			resolvedModel = sel.ModelID
+		}
+		// MODE→MODEL RE-RESOLUTION (ADR 0030 Layer 3, the opusplan pattern). When the
+		// session's PermissionMode is ModePlan and a `plan` slot resolves, the engine's
+		// model is RE-RESOLVED to the plan model — within the SAME session provider
+		// (resolveSlotModel returns a concrete id that flows verbatim to the provider; we
+		// NEVER switch resolvedProvider/resolvedProviderID, so "provider FIXED per
+		// session" holds). Everything downstream (windowFn, modelCapability,
+		// engineDepsForProvider) already keys on resolvedModel, so the swap is total with
+		// no further change here. ModeDefault/ModeAccept leave resolvedModel untouched
+		// (the session-selected model; acceptEdits shares the session model, no own slot)
+		// — byte-identical when no plan slot is configured (resolveSlotModel returns
+		// configured=false). This path is SILENT (no diagnostics): the build-once narration
+		// lives in logSlotConfigFacts, and re-firing here would duplicate per session/rebuild.
+		if mode == session.ModePlan {
+			if planModel, configured := resolveSlotModel(cfg, slotPlan, resolvedModel); configured && planModel != "" {
+				resolvedModel = planModel
+			}
 		}
 		// The compaction window is the LIVE-FIRST resolver over the resolved
 		// (provider, model) — the SAME reg.windowResolver the shared and child engines
@@ -1411,7 +1437,11 @@ func sessionEngineFactory(
 			// (resolve-at-use), so the echo and the running engine never diverge.
 			ProviderID: resolvedProviderID,
 			ModelID:    resolvedModel,
-			Close:      closeFn,
+			// Echo the mode this engine resolved its model for (ADR 0030 Layer 3), so the
+			// Service stamps sessionEngine.builtForMode from this one source and detects a
+			// later mode→model staleness — the SAME single-source discipline as the ids.
+			BuiltForMode: mode,
+			Close:        closeFn,
 		}, nil
 	}
 }

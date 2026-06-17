@@ -204,8 +204,32 @@ WARNs and degrades to the session model — a broken housekeeping slot never wed
 call. `models.slots` / `models.aliases` are **operator-tier only** (user-global
 `settings.yaml` + `--model-slot` / `--model-alias`); a project-tier `models:` block is
 ignored with a WARN (`permconfig.Resolver.OperatorModelSlots()`). Team synthesis is
-**deferred** (it runs on the lead member's whole engine); mode→model and the subagent
-router are later ADR-0030 layers, not in this slice.
+**deferred** (it runs on the lead member's whole engine); the subagent router is a later
+ADR-0030 layer, not in this slice.
+
+**Mode→model: the `plan` slot (Phase 3, the opusplan pattern).** A fourth slot, `plan`,
+is wired on the **mode axis** rather than the internal-call axis. It does **not** route a
+housekeeping call — it re-resolves the **session** model when the session's
+`PermissionMode` is plan, so a planning turn runs on a strong-reasoning model and an
+executing turn on the session model. Two divergences from the call-slots: its default
+**tier** is `reasoning`, not `cheap` (a plan model is a strong-reasoning model); and its
+consumer is the **per-session engine factory** (`sessionEngineFactory`), not a per-call
+deps builder. It reuses `resolveSlotModel` unchanged — same grammar, different consumer.
+
+The re-resolution is **fixed per turn, re-resolved between turns**: the model is fixed
+for the duration of a turn; a mode switch (`SetMode`, rejected mid-turn) takes effect at
+the next **run-entry seam** — the SAME seam `rehydrateSession` already rebuilds a
+per-session engine on. The provider stays **fixed per session**: the plan slot only
+swaps the **model** within the session provider, never the provider. Two rebuild triggers
+live in the server (`engineAndWorkspaceFor`): a registered per-session engine whose
+`builtForMode` no longer matches the session's `Mode` is **rebuilt** (CASE 1), and a
+default-FS session whose mode would change the model — gated by the composition predicate
+`server.Config.ModeNeedsEngine` (nil unless a plan slot is active, the **byte-identical**
+guard) — is **promoted** to a per-session engine (CASE 2). Both go through the one shared
+`buildAndRegisterSessionEngine` helper. `resolved_model` re-emits the new model on the
+next `GetSession`/turn echo after the rebuild (a `SetMode` response still carries the
+pre-rebuild model — the model is fixed per turn). With no plan slot, a mode flip changes
+nothing. See [ADR 0030](../adr/0030-model-selection-heuristics.md) Layer 3.
 
 ## Related
 
