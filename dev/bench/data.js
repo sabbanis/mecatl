@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781723847224,
+  "lastUpdate": 1781723850663,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -176933,6 +176933,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 96,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "b974676114aa84e5fa04a38dfd09a0e38d3e64ed",
+          "message": "feat(mecatui): color permission mode indicators\n\nCo-Authored-By: mecatl <mecatl@stacklok.com>",
+          "timestamp": "2026-06-17T22:10:46+03:00",
+          "tree_id": "4783eaa86308587b9d9f6bdaf0af727586dc0762",
+          "url": "https://github.com/stacklok/mecatl/commit/b974676114aa84e5fa04a38dfd09a0e38d3e64ed"
+        },
+        "date": 1781723849927,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3534,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 97,
             "unit": "allocs/op"
           }
         ]
