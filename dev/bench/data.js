@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781780099202,
+  "lastUpdate": 1781780101601,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -203505,6 +203505,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 98,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "6e7ea976c22a6e2e6227f4fd27fcf212685ff1f9",
+          "message": "docs(usage): add model-selection quickstart, verification, and authoring guide\n\nThe per-slot-models section described each mechanism (aliases, slots,\nthe plan slot, the router, the allowlist) in isolation but never showed\nhow to compose them into a working setup, so an operator could not\nconfigure the feature from the docs alone.\n\nAdd four things at the top of the section and one at the end:\n\n- A decision table mapping a goal (cheaper housekeeping, opusplan,\n  per-task routing, project override) to the mechanism that serves it.\n- A complete end-to-end settings.yaml on one provider (OpenRouter),\n  showing aliases + default + all five slots + a 3-category router\n  taxonomy together — the composed example the docs were missing.\n- A 'Verifying it's wired' note pointing at the build-once\n  'model slot ACTIVE' / 'subagent model router ACTIVE' log facts,\n  so an operator has a documented check short of watching their bill.\n- An 'Authoring skills & agent definitions for model selection'\n  subsection covering the two paths (let the router pick vs pin via an\n  alias), the capability-vs-slug phrasing, and the fact that mecatl\n  does not inject the alias map into the prompt.\n\nRegenerate llms.txt; matlatl strict link gate clean (0 broken).\n\nCo-Authored-By: mecatl <mecatl@stacklok.dev>",
+          "timestamp": "2026-06-18T13:19:08+03:00",
+          "tree_id": "c0d87af9f942c38b0887a1564532750859a11fe1",
+          "url": "https://github.com/stacklok/mecatl/commit/6e7ea976c22a6e2e6227f4fd27fcf212685ff1f9"
+        },
+        "date": 1781780100816,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3533,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 96.5,
             "unit": "allocs/op"
           }
         ]
