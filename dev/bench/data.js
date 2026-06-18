@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781785552914,
+  "lastUpdate": 1781785555394,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -211087,6 +211087,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/faa4b660f2c1ab642eeab29a628f310dd1b12e9c"
         },
         "date": 1781783812564,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3522,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 87,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bbc09314435fa7500060123f61e74ea3a9a43c1f",
+          "message": "feat(docs): run-bounds index + drift guards; double per-run caps (#104)\n\nIssue #90: the run-bound knobs (turn/tool-call/round caps, token budgets,\nno-progress nudges, structured-output retries, concurrency gates, the\nper-call tighten-only overrides) were scattered across 6 files in 3\npackages with no navigable index.\n\n- Add a \"Run-bound knobs — index\" table to docs/design/IMPLEMENTATION-NOTES.md\n  (knob/default/file/scope/override-path + a precedence walkthrough), with\n  an explicit scope boundary excluding compaction-algorithm internals.\n- Add two structural drift guards (same posture as the per-session-catalog\n  and DAG-layering tests): engine/agent/runbounds_drift_test.go value-pins\n  by identifier; internal/app/runbounds_drift_test.go value-pins AND\n  AST-scans for un-inventoried default* consts.\n- Naming pass: tier-prefix the three deployment caps that collided with the\n  child caps and the domain field — defaultMaxTurns→deploymentMaxTurns,\n  defaultMaxToolCalls→deploymentMaxToolCalls,\n  defaultMaxConsecutiveFailures→deploymentMaxConsecutiveFailures. Export\n  DefaultAskReviewMaxDenies so the cmd/ flags reference one named const.\n\nAlso double the per-run stop caps so runs stop hitting them so often:\ndeployment MaxTurns 1000→2000, MaxToolCalls 4000→8000; child limits\n50/200→100/400; team MaxRounds 24→48, MemberTurnBudget 100→200. Concurrency\ngates, ratios, the token floor, and breakers are unchanged. Behavioural\nsubagent tests adjusted to keep proving the default-cap / tighten-only\ncontracts; a pre-existing stale usage.md default-limits table corrected.\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T15:20:17+03:00",
+          "tree_id": "659a436c85225dedd1ae83d5ddef011bba9f62a1",
+          "url": "https://github.com/stacklok/mecatl/commit/bbc09314435fa7500060123f61e74ea3a9a43c1f"
+        },
+        "date": 1781785554643,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
