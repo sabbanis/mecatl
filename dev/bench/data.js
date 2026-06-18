@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781768781705,
+  "lastUpdate": 1781768784107,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -186672,6 +186672,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 35129,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5cc0d29f2f5040deca8a779278941b5753834556",
+          "message": "Layered model-selection heuristics (#86) (#87)\n\n* feat(models): add per-slot model heuristics — alias spine + models.slots (#86)\n\nPhase 1+2 of ADR 0030. Introduces the semantic-alias spine and a\n`models.slots` map (operator-tier) that binds named pipeline functions\nto model aliases, resolved in composition via the single `resolveSlotModel`\nchoke point (reusing the existing `lookupModelAlias`; the one resolver is\nextended, not forked). Three internal lightweight LLM calls — the cascade\ntier-4 compaction summary, the ask-reviewer, and the guardrail checker —\nnow resolve their model from a slot through the existing\n`engineDepsForProvider` seam (re-derive, never clone-and-swap).\n\nConfig is operator-tier only this slice: a `--model-slot` flag plus a\nuser-global `models:` YAML subtree (strict-parsed); a project-tier\n`models:` block is ignored with a WARN, mirroring OperatorGuardrails /\nOperatorPosture (downgrade prevention). The ask-reviewer and guardrail\nenable gates are unchanged — a slot only overrides the model, never\nenables or disables the capability.\n\nDefaults are byte-identical when no slot is configured: every call runs\non the session/child model exactly as today. Slot resolution is fail-soft\n(an unknown/inherit alias degrades to inherit), and the one-time misconfig\nWARN lives in the build-once `logSlotConfigFacts` — never in the per-engine\ndeps builders (the N× duplication trap).\n\nDeferred (designed in ADR 0030, not built): team-synthesis routing,\nmode->model re-resolution, the operator-gated subagent router, and the\nproject-overridable-within-an-operator-cap config layering.\n\nComposition-only; no engine/domain change, no port.LLMRequest widening.\n\nTests: byte-identical-default guarantee (asserts the wired model on the\nproduced deps, not just the helper), per-call slot routing through the\nmock provider's request observer, the operator-tier fold (CLI-wins-over-YAML\n+ fail-soft typo-drop), logSlotConfigFacts (ACTIVE/WARN), the --model-slot\nflag, a compaction budget/counter-independence tripwire, and a live-e2e\n(task e2e) slot-routing case. Docs: providers.md, usage.md,\nIMPLEMENTATION-NOTES.md, ADR 0030 (Accepted), llms.txt regenerated.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* feat(models): mode→model re-resolution — the plan slot / opusplan (#86)\n\nPhase 3 of ADR 0030 (Layer 3). A session in plan mode resolves a `plan`\nmodel slot (a strong-reasoning model); execute modes (default/acceptEdits)\nuse the session's selected model. The model is fixed per turn, re-resolved\nBETWEEN turns at the run-entry seam when Session.Mode changed since the\nper-session engine was built — never mid-stream. Delivers the opusplan\nworkflow: plan on Opus, switch to execute and drive the loop on Sonnet.\n\nMechanics (composition + server-adapter only; no port.LLMRequest widening,\nno engine/domain change):\n- `plan` joins the slot vocabulary, defaulting to the `reasoning` tier (not\n  cheap — a plan model is a strong reasoner). Resolved through the same\n  resolveSlotModel/lookupModelAlias spine; same-provider only.\n- The per-session engine records `builtForMode`; engineAndWorkspaceFor\n  rebuilds it (CASE 1) when the mode no longer matches, or PROMOTES a\n  default-FS session to a per-session engine (CASE 2) when an injected\n  composition predicate (Config.ModeNeedsEngine, nil unless a plan slot is\n  active) reports the mode would change the model. Both funnel through one\n  shared buildAndRegisterSessionEngine helper — reusing the rehydration seam,\n  so persisted Mode rebuilds correctly on restart too.\n- Byte-identical when no plan slot: ModeNeedsEngine is nil ⇒ no promotion,\n  empty builtForMode ⇒ never rebuild, shared engine unchanged.\n- resolved_model echo: comment-only proto change (FIXED per session →\n  per turn, re-emitted on a mode→model change); ResolvedModel/SessionCapabilities\n  read the swapped engine, so the echo self-corrects after the rebuild.\n  SetModeResponse still echoes the pre-rebuild model (fixed per turn).\n\nConcurrency: a per-session runEntryMu serializes the run-entry critical\nsection (engineAndWorkspaceFor→RunContent→register) and buildAndRegisterSessionEngine\nre-checks s.runs[id] under s.mu before closing a displaced engine, closing the\nuse-after-close window the rebuild introduces (lock order resumeMu→runEntryMu).\n\nModelith (issue #78): PermissionMode is now a domain value-object with the\nmid-turn-switch-rejected, mode-model-same-provider, and mode-model-fixed-per-turn\ninvariants.\n\nTests: byte-identical-no-plan-slot (factory never re-invoked), plan-vs-execute\non the produced deps, CASE-1 rebuild, CASE-2 promotion (incl. under-cap →\nErrTooManySessionEngines), restart-into-plan rehydration, end-to-end mockllm\nasserting the model on the wire across a SetMode flip, mid-turn SetMode\ndeferral, matching-mode no-op, no-fs-profile-preserved-through-rebuild, the\nempty-builtForMode skip, and a -race rebuild stress. Docs: providers.md,\napi-surface.md, usage.md, IMPLEMENTATION-NOTES.md, ADR 0030 (Layer 3 shipped),\nADR 0027 List 1/2, modelith re-rendered, llms.txt.\n\nNote: harness.pb.go is a comment-only regen hand-synced (buf absent locally);\nCI's `task generate` is the witness.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* feat(models): project-overridable model config, capped by an operator allowlist (#86)\n\nPhase 4 of ADR 0030 (config layering). A TRUSTED project's .mecatl/settings.yaml\nmay now re-bind models.default / models.slots / models.aliases — but ONLY within\na non-wideable operator allowlist. Mirrors Claude Code's availableModels: the\noperator approves the SET, the project picks within it. Delivers the \"set a model\nper mode/slot, either globally OR per project\" requirement, safely.\n\nMechanics (composition + permconfig only; no port.LLMRequest widening, no engine\nor domain change):\n- models.allowlist (operator-tier, non-wideable) + models.default added to\n  ModelsSection. A project-tier allowlist: key is stripped with a WARN — a project\n  cannot widen its own cap.\n- Opt-in: with NO operator allowlist, a project models: block stays WARN-ignored\n  (byte-identical to before). The operator opts in by defining an allowlist.\n- Trust-gated: an untrusted-workspace project models: block is ignored, reusing\n  the SAME TrustProject gate the project permission rules use.\n- resolve-then-check cap: the allowlist is canonicalized to concrete ids through\n  the OPERATOR alias map, frozen BEFORE any project alias is merged; each project\n  binding is honored iff it resolves to an allowlisted id; accepted bindings are\n  stored as the resolved id — closing alias-laundering in both directions.\n- Precedence: CLI(operator) > project-YAML(capped) > operator-YAML > built-in.\n  A captureCLIModelKeys snapshot (taken before the operator-YAML fold, when cfg\n  holds only CLI bindings) lets a project override operator-YAML while an explicit\n  CLI --model/--model-slot still wins. The operator's own bindings are uncapped\n  (operator is authoritative); operator-YAML models.default now applies too\n  (was dead config).\n- Applies to the session default, all slots (incl. the Phase-3 plan slot), and\n  aliases. Per-dropped-binding WARN fires once at Build (not per-engine).\n\nSecurity: the allowlist is a downgrade-prevention boundary. NOTE (documented):\nthe allowlist is a flat set with no per-slot scoping, so an allowlisted model may\nbe bound by a trusted project to ANY slot incl. the guardrail/ask-reviewer safety\ncheckers — operators must not allowlist a model they would not accept as a safety\nchecker. Per-slot scoping is a future follow-up.\n\nTests: byte-identical-no-allowlist, honored-within-cap, dropped-outside-cap (one\nWARN), the non-wideable project allowlist key, the trust gate (permconfig + the\ncomposition guard independently), alias-laundering dropped, all four precedence\nedges (project>operator-YAML, CLI>project, CLI>operator-YAML-default,\nproject-default-within/outside-cap), multi-accept fidelity, canonical-allowlist\nfail-closed entry, strict-parse with the new keys, and two app.Build e2e cases.\nDocs: providers.md, usage.md, IMPLEMENTATION-NOTES.md, ADR 0030 (config layering\nshipped), llms.txt.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* feat(models): operator-gated semantic subagent model router (#86)\n\nPhase 5 of ADR 0030 (Layer 3b); design recorded in the new ADR 0031. When a\nSubagent call pins no model and uses no specialist agent, an operator-gated\ntool-less ONE-TURN classifier inspects the task prompt and picks the model from\nan operator-configured category taxonomy — delivering the headline use case:\nroute engineering tasks by size (large→GPT-5.5, medium→Sonnet, small→Haiku) or\nany operator-defined categories (e.g. ux→a UX-tuned model). Composes with the\nmode→model plan slot (Phase 3) and the allowlist (Phase 4) for the full\nworkflow: plan on Opus, drive the loop on Sonnet, route subagents by category.\n\nBuilt as a sibling of ChildAskReviewer / the guardrail modelhook — model-string\nonly, no port.LLMRequest widening, no engine/domain change:\n- agent.RunModelRouter: a tool-less one-turn classifier (role \"model-router\") on\n  a configurable `router` model slot (default cheap/tiny). The task prompt rides\n  inside the untrusted fence; the verdict parse requires the WHOLE output to be a\n  single JSON object AND the category to be a member of the operator taxonomy —\n  two independent layers against verdict-forging via the prompt. Reuses the\n  exported fence helpers + adds the router prompt headers to framingHeader.\n- The Subagent run() hook (maybeRouteModel) fires ONLY for a plain default\n  delegation. Precedence: per-call model > agent-def Model > fork/resume > router\n  > inherited default (the router fills the gap, never overrides pinned intent).\n  Decide-once; the chosen model rides the EXISTING per-call factory (same-provider,\n  commit-for-child-lifetime). Foreground + background both route; resume/fork\n  never route; team members + Parallel branches are unchanged (out of scope).\n- Fail-soft to the floor: any classifier error / unknown category / unresolvable\n  target / open breaker → the inherited default explorer model; the router is\n  never load-bearing for correctness or safety. A per-run breaker (default 3\n  consecutive misses) opens and skips routing; its mutex serializes a fan-out so\n  the classifier can't be multiplied in parallel.\n- No nesting: a routed child has no Subagent tool, and childEngineDepsForProvider\n  defensively nils the router closure (the classifier engine builds through that\n  path). gRPC RunTeam stays zero-caps.\n\nConfig (operator-tier): a models.router block (categories: [{name, description,\nmodel}], default-category, classifier-slot) + the --subagent-model-router enable\nflag (empty = OFF, byte-identical; deliberately a flag, NOT a permission-config\nkey — an autonomous spend/capability decision). A project-tier router: block is\nstripped with a WARN (the taxonomy is operator-tier this slice). Operator taxonomy\ntargets are uncapped (operator authoritative); a project re-pointing a referenced\nalias is still capped by the Phase 4 allowlist.\n\nObservability: RoutedCategory/RoutedModel on SubagentPayload + EvSubagentStart\n(bare metadata — label + model id, gauntlet #7 safe), a per-classification INFO\nat the child diagnostic chokepoint, and a build-once \"router ACTIVE\" fact. The\nproto/client wire for the two metadata fields is a documented follow-up (buf\nabsent; session-struct + diagnostics this slice). The \"exactly THREE loop lines\"\ninvariant holds. Inventoried in ADR 0027 List 1 (rows 23/24) + List 2 (row 18).\n\nCost note (documented, accepted): an untrusted task prompt can steer the\nclassifier toward the priciest category; bounded within the operator taxonomy and\nthe fixed provider, with --max-run-tokens / --max-team-tokens as the hard ceiling.\n\nTests (offline): RunModelRouter happy/garbage/hallucinated/empty/cancelled/\nfence-injection; precedence (explicit model, agent, fork, resume all skip the\nrouter; router fills the gap); fail-soft inherit; the breaker open+reset +\nconcurrent-serialization under -race; no-nesting; classifier-on-the-router-slot;\nthe malformed-category drop; logModelRouterFacts; byte-identical-when-OFF (exactly\n3 requests, no classifier turn); two app.Build e2e with request-position asserts;\nCLI flag parse on both mains; a live e2e. New ADR 0031; ADR 0030 Layer 3b shipped;\nproviders.md, usage.md, IMPLEMENTATION-NOTES.md, llms.txt.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* test(e2e): raise compaction/model-slots run-token rail 100k→150k (live haiku drift)\n\nThe compaction spec (and the model-slots e2e that shares its env default) spawn a\nserver with --context-window-override 2000 + a --max-run-tokens rail. That rail is\na SAFETY RAIL, not the test's cost/length control — the small window + fixed turn\ncount bound the cost; the rail only has to sit above the scenario's natural usage\nor it false-trips StopBudget before the run completes.\n\nLive haiku drifted verbose enough that the ~110k 6-turn reused session crossed the\nold 100k rail at the final GO turn (stop=budget, failing both FlakeAttempts in the\ne2e-live run on PR #87). Raising the rail to 150k clears the ~110k natural usage\nwith comfortable margin. It does NOT increase the test's cost or runtime — the\nscenario bills the same ~$0.33 either way; the rail just stops aborting it early.\n\nNot a model-selection change: compaction_test.go and the compaction code path\n(cascade.go/compact.go) are otherwise untouched by the #86 arc; this is a\npre-existing live-provider-headroom drift the non-blocking live suite caught.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* test(e2e): raise default --max-run-tokens rail 20k→50k (live haiku verbosity drift)\n\nCompanion to the compaction-spec bump. The harness default --max-run-tokens\n(20000, used by every spec that doesn't set its own) is now too tight for the\ncurrent live haiku: multi-turn and cross-restart scenarios intermittently trip\nstop=budget. In the e2e-live run on PR #87 the approve-after-kill spec (which\naccumulates usage ACROSS the SIGKILL+restart, and where the live model burned a\nwasted no-progress turn) crossed 20k and failed its end_turn assertion — a\nDIFFERENT spec than the compaction one that tripped the prior run, the signature\nof a marginal-budget rail against a nondeterministic live model.\n\nRaising the default to 50k (~8-9 full-catalog turns) keeps a meaningful runaway\nbrake while clearing the drifted multi-turn usage. Safe: the budget-TESTING specs\n(snapshot_fidelity, verdict_replay) and the heavy ones (compaction/model_slots\n150k, mecatequi 90k) all set their OWN --max-run-tokens, so none depend on the\n20k default tripping. The value is a safety rail, not a cost control — scenarios\nare bounded by turn count, so raising it bills nothing extra.\n\nPre-existing live-suite headroom drift, not a #86 regression: the affected specs\n(approve_after_kill_test.go, compaction_test.go) and their code paths are\nuntouched by this branch. This also fixes the same intermittent failures on\nmain's nightly e2e-live.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* docs(readme): add layered model selection to the feature overview (#86)\n\nA \"Layered model selection\" bullet in the Provider & context features: the alias\nspine, per-function slots, the plan slot (opusplan), project-overridable bindings\nunder an operator allowlist, and the opt-in semantic subagent router — linking\nADR 0030 + 0031. Closes the README feature-overview gap for the #86 arc.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T10:40:58+03:00",
+          "tree_id": "4c0b35d7af766173dfab45c3c7cad69679c7d7b4",
+          "url": "https://github.com/stacklok/mecatl/commit/5cc0d29f2f5040deca8a779278941b5753834556"
+        },
+        "date": 1781768783493,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1465.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35128.5,
             "unit": "allocs/op"
           },
           {
