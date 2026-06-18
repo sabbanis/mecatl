@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781785555394,
+  "lastUpdate": 1781803242681,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -202944,6 +202944,3630 @@ window.BENCHMARK_DATA = {
             "value": 153,
             "unit": "allocs/op",
             "extra": "35426 times\n2 procs"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ca9da1213e7ad4c50606d19bc7d064c62ecaa135",
+          "message": "fix(forker): dirty-aware read-only fork so subagents see uncommitted work (#105)\n\n* feat(forker): dirty-aware read-only fork so subagents see uncommitted work\n\nRead-only Subagent children and read-only team members that carry a Bash\nshell fork into a git worktree via `git worktree add --detach HEAD` — a\nclean committed-HEAD checkout. Their entire workspace (Read/Grep/Glob AND\nBash) is rooted there, so a read-only child asked to \"review the diff\"\nsaw a clean tree and empty `git status`/`git diff` and could not review\nthe operator's uncommitted/unstaged/untracked work. The force-copy path\n(mutating branches/members) already carried the dirty tree via copyTree —\nonly the cheap worktree path lost it.\n\nAdd an opt-in `forker.WithDirtyOverlay()` wired at the two read-only fork\nsites. When the parent tree is dirty, overlay its uncommitted state into\nthe fresh worktree: `git diff --binary HEAD` applied into the child, plus\nuntracked-non-ignored files copied in (`.gitignore`-respecting,\nsymlink-skipping). A clean tree keeps the zero-copy worktree (cheap-path\nshort-circuit). Force-copy and Parallel branches are unchanged.\n\nBest-effort and fail-soft: an overlay failure resets the worktree to a\npristine HEAD rather than breaking the fork — and surfaces a degraded-fork\nadvisory through the `WorkspaceForker.Fork` seam, which the Subagent\nprepends to the child's prompt so a child reviewing committed HEAD is told\nso (no longer indistinguishable from a genuinely clean tree).\n\nEvery new git invocation runs with the same `gitenv.Scrub(envscrub.Scrub(\nos.Environ()))` env as the existing forker calls (neutralises\npager/hooks/fsmonitor/external-diff, drops harness secrets); `git apply`\nkeeps its default path confinement (no --unsafe-paths). Read-parallel\nsafety is preserved — each child still gets its own isolated worktree.\n\nTests: tracked/staged/untracked/deleted/binary overlay visibility,\n.gitignore + symlink exclusion, isolation (child writes never touch the\nparent), scrubbed-env adversarial sentinels, fail-soft + advisory,\nclean-tree short-circuit (counted), force-copy+overlay inertness,\nconcurrent forks, a model-facing e2e (real read-only Subagent over a\ndirty repo through the real engine), and the advisory reaching the child\nprompt. Docs: ADR 0033 + IMPLEMENTATION-NOTES/parallelism/production-\nreadiness; llms.txt regenerated.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01158vELbaXZQqa3bxJH1UfS\n\n* test(e2e): live proof a read-only Subagent sees uncommitted work (ADR 0033)\n\nAdd a live e2e spec that drives a real model through the real harness over a\ndeliberately DIRTY git workspace: it seeds a tracked modification and an\nuntracked file (each with a distinctive sentinel) into the trusted,\ngit-initialised harness workspace, dispatches a single read-only Subagent\nwhose goal runs `git status --short` + `cat` over its isolated worktree, and\nasserts the Subagent RESULT text carries BOTH sentinels.\n\nThis is the regression proof for the dirty-overlay (forker.WithDirtyOverlay):\nbefore the fix the child's worktree was a clean `git worktree add HEAD`\ncheckout, so neither sentinel could appear (the untracked file would not\nexist; FRUIT.txt would hold its committed content) — exactly the \"git diff\nshows clean\" failure seen in the wild. The untracked-file sentinel is the\nunambiguous discriminator (an untracked file is absent from any HEAD\ncheckout). Asserting on the Subagent result — the only model-visible channel\nfor a child's findings (subagent.* events are metadata-only, gauntlet #7) —\nmatches the surface the operator actually saw fail.\n\nRuns in the existing live e2e lane (task e2e → ./e2e/...); verified green\nagainst OpenRouter (both sentinels observed in the child's reported output).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01158vELbaXZQqa3bxJH1UfS\n\n---------\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T20:15:12+03:00",
+          "tree_id": "b0bf39822beb98c95c5f9a36236928c2a2c5890a",
+          "url": "https://github.com/stacklok/mecatl/commit/ca9da1213e7ad4c50606d19bc7d064c62ecaa135"
+        },
+        "date": 1781803238809,
+        "tool": "go",
+        "benches": [
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 2083,
+            "unit": "ns/op\t    6224 B/op\t      21 allocs/op",
+            "extra": "510325 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 2083,
+            "unit": "ns/op",
+            "extra": "510325 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 6224,
+            "unit": "B/op",
+            "extra": "510325 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "510325 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 2089,
+            "unit": "ns/op\t    6224 B/op\t      21 allocs/op",
+            "extra": "548554 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 2089,
+            "unit": "ns/op",
+            "extra": "548554 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 6224,
+            "unit": "B/op",
+            "extra": "548554 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "548554 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 2073,
+            "unit": "ns/op\t    6224 B/op\t      21 allocs/op",
+            "extra": "553514 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 2073,
+            "unit": "ns/op",
+            "extra": "553514 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 6224,
+            "unit": "B/op",
+            "extra": "553514 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "553514 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 2060,
+            "unit": "ns/op\t    6224 B/op\t      21 allocs/op",
+            "extra": "561740 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 2060,
+            "unit": "ns/op",
+            "extra": "561740 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 6224,
+            "unit": "B/op",
+            "extra": "561740 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "561740 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 2117,
+            "unit": "ns/op\t    6224 B/op\t      21 allocs/op",
+            "extra": "565940 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 2117,
+            "unit": "ns/op",
+            "extra": "565940 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 6224,
+            "unit": "B/op",
+            "extra": "565940 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "565940 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 2114,
+            "unit": "ns/op\t    6224 B/op\t      21 allocs/op",
+            "extra": "574510 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 2114,
+            "unit": "ns/op",
+            "extra": "574510 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 6224,
+            "unit": "B/op",
+            "extra": "574510 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "574510 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 2432,
+            "unit": "ns/op\t    6224 B/op\t      21 allocs/op",
+            "extra": "547862 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 2432,
+            "unit": "ns/op",
+            "extra": "547862 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 6224,
+            "unit": "B/op",
+            "extra": "547862 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "547862 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 2135,
+            "unit": "ns/op\t    6224 B/op\t      21 allocs/op",
+            "extra": "608620 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 2135,
+            "unit": "ns/op",
+            "extra": "608620 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 6224,
+            "unit": "B/op",
+            "extra": "608620 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "608620 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 2099,
+            "unit": "ns/op\t    6224 B/op\t      21 allocs/op",
+            "extra": "536929 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 2099,
+            "unit": "ns/op",
+            "extra": "536929 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 6224,
+            "unit": "B/op",
+            "extra": "536929 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "536929 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 2123,
+            "unit": "ns/op\t    6224 B/op\t      21 allocs/op",
+            "extra": "494156 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 2123,
+            "unit": "ns/op",
+            "extra": "494156 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 6224,
+            "unit": "B/op",
+            "extra": "494156 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuild (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 21,
+            "unit": "allocs/op",
+            "extra": "494156 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 9099,
+            "unit": "ns/op\t   28536 B/op\t      32 allocs/op",
+            "extra": "138530 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 9099,
+            "unit": "ns/op",
+            "extra": "138530 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 28536,
+            "unit": "B/op",
+            "extra": "138530 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "138530 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 9112,
+            "unit": "ns/op\t   28536 B/op\t      32 allocs/op",
+            "extra": "135453 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 9112,
+            "unit": "ns/op",
+            "extra": "135453 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 28536,
+            "unit": "B/op",
+            "extra": "135453 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "135453 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 8988,
+            "unit": "ns/op\t   28536 B/op\t      32 allocs/op",
+            "extra": "141367 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 8988,
+            "unit": "ns/op",
+            "extra": "141367 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 28536,
+            "unit": "B/op",
+            "extra": "141367 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "141367 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 8844,
+            "unit": "ns/op\t   28536 B/op\t      32 allocs/op",
+            "extra": "128737 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 8844,
+            "unit": "ns/op",
+            "extra": "128737 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 28536,
+            "unit": "B/op",
+            "extra": "128737 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "128737 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 8844,
+            "unit": "ns/op\t   28536 B/op\t      32 allocs/op",
+            "extra": "142490 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 8844,
+            "unit": "ns/op",
+            "extra": "142490 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 28536,
+            "unit": "B/op",
+            "extra": "142490 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "142490 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 9572,
+            "unit": "ns/op\t   28536 B/op\t      32 allocs/op",
+            "extra": "140991 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 9572,
+            "unit": "ns/op",
+            "extra": "140991 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 28536,
+            "unit": "B/op",
+            "extra": "140991 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "140991 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 8781,
+            "unit": "ns/op\t   28536 B/op\t      32 allocs/op",
+            "extra": "128137 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 8781,
+            "unit": "ns/op",
+            "extra": "128137 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 28536,
+            "unit": "B/op",
+            "extra": "128137 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "128137 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 8929,
+            "unit": "ns/op\t   28536 B/op\t      32 allocs/op",
+            "extra": "125302 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 8929,
+            "unit": "ns/op",
+            "extra": "125302 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 28536,
+            "unit": "B/op",
+            "extra": "125302 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "125302 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 8966,
+            "unit": "ns/op\t   28536 B/op\t      32 allocs/op",
+            "extra": "134230 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 8966,
+            "unit": "ns/op",
+            "extra": "134230 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 28536,
+            "unit": "B/op",
+            "extra": "134230 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "134230 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt)",
+            "value": 8762,
+            "unit": "ns/op\t   28536 B/op\t      32 allocs/op",
+            "extra": "135859 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - ns/op",
+            "value": 8762,
+            "unit": "ns/op",
+            "extra": "135859 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - B/op",
+            "value": 28536,
+            "unit": "B/op",
+            "extra": "135859 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildLargeCatalog (github.com/stacklok/mecatl/engine/prompt) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "135859 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance)",
+            "value": 811,
+            "unit": "ns/op\t     584 B/op\t      13 allocs/op",
+            "extra": "1477317 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 811,
+            "unit": "ns/op",
+            "extra": "1477317 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 584,
+            "unit": "B/op",
+            "extra": "1477317 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "1477317 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance)",
+            "value": 802.6,
+            "unit": "ns/op\t     584 B/op\t      13 allocs/op",
+            "extra": "1496254 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 802.6,
+            "unit": "ns/op",
+            "extra": "1496254 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 584,
+            "unit": "B/op",
+            "extra": "1496254 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "1496254 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance)",
+            "value": 900,
+            "unit": "ns/op\t     584 B/op\t      13 allocs/op",
+            "extra": "1488604 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 900,
+            "unit": "ns/op",
+            "extra": "1488604 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 584,
+            "unit": "B/op",
+            "extra": "1488604 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "1488604 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance)",
+            "value": 806.9,
+            "unit": "ns/op\t     584 B/op\t      13 allocs/op",
+            "extra": "1484985 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 806.9,
+            "unit": "ns/op",
+            "extra": "1484985 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 584,
+            "unit": "B/op",
+            "extra": "1484985 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "1484985 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance)",
+            "value": 808.3,
+            "unit": "ns/op\t     584 B/op\t      13 allocs/op",
+            "extra": "1486758 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 808.3,
+            "unit": "ns/op",
+            "extra": "1486758 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 584,
+            "unit": "B/op",
+            "extra": "1486758 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "1486758 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance)",
+            "value": 806,
+            "unit": "ns/op\t     584 B/op\t      13 allocs/op",
+            "extra": "1486315 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 806,
+            "unit": "ns/op",
+            "extra": "1486315 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 584,
+            "unit": "B/op",
+            "extra": "1486315 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "1486315 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance)",
+            "value": 806.4,
+            "unit": "ns/op\t     584 B/op\t      13 allocs/op",
+            "extra": "1483405 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 806.4,
+            "unit": "ns/op",
+            "extra": "1483405 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 584,
+            "unit": "B/op",
+            "extra": "1483405 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "1483405 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance)",
+            "value": 816.9,
+            "unit": "ns/op\t     584 B/op\t      13 allocs/op",
+            "extra": "1457929 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 816.9,
+            "unit": "ns/op",
+            "extra": "1457929 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 584,
+            "unit": "B/op",
+            "extra": "1457929 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "1457929 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance)",
+            "value": 814,
+            "unit": "ns/op\t     584 B/op\t      13 allocs/op",
+            "extra": "1468542 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 814,
+            "unit": "ns/op",
+            "extra": "1468542 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 584,
+            "unit": "B/op",
+            "extra": "1468542 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "1468542 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance)",
+            "value": 814.7,
+            "unit": "ns/op\t     584 B/op\t      13 allocs/op",
+            "extra": "1461740 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 814.7,
+            "unit": "ns/op",
+            "extra": "1461740 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 584,
+            "unit": "B/op",
+            "extra": "1461740 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSplitCommands (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "1461740 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1718,
+            "unit": "ns/op\t     816 B/op\t      19 allocs/op",
+            "extra": "684369 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1718,
+            "unit": "ns/op",
+            "extra": "684369 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 816,
+            "unit": "B/op",
+            "extra": "684369 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "684369 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1684,
+            "unit": "ns/op\t     816 B/op\t      19 allocs/op",
+            "extra": "653252 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1684,
+            "unit": "ns/op",
+            "extra": "653252 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 816,
+            "unit": "B/op",
+            "extra": "653252 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "653252 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1677,
+            "unit": "ns/op\t     816 B/op\t      19 allocs/op",
+            "extra": "698755 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1677,
+            "unit": "ns/op",
+            "extra": "698755 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 816,
+            "unit": "B/op",
+            "extra": "698755 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "698755 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1664,
+            "unit": "ns/op\t     816 B/op\t      19 allocs/op",
+            "extra": "691959 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1664,
+            "unit": "ns/op",
+            "extra": "691959 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 816,
+            "unit": "B/op",
+            "extra": "691959 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "691959 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1675,
+            "unit": "ns/op\t     816 B/op\t      19 allocs/op",
+            "extra": "636438 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1675,
+            "unit": "ns/op",
+            "extra": "636438 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 816,
+            "unit": "B/op",
+            "extra": "636438 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "636438 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1671,
+            "unit": "ns/op\t     816 B/op\t      19 allocs/op",
+            "extra": "646191 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1671,
+            "unit": "ns/op",
+            "extra": "646191 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 816,
+            "unit": "B/op",
+            "extra": "646191 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "646191 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1668,
+            "unit": "ns/op\t     816 B/op\t      19 allocs/op",
+            "extra": "694525 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1668,
+            "unit": "ns/op",
+            "extra": "694525 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 816,
+            "unit": "B/op",
+            "extra": "694525 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "694525 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1677,
+            "unit": "ns/op\t     816 B/op\t      19 allocs/op",
+            "extra": "675991 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1677,
+            "unit": "ns/op",
+            "extra": "675991 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 816,
+            "unit": "B/op",
+            "extra": "675991 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "675991 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1666,
+            "unit": "ns/op\t     816 B/op\t      19 allocs/op",
+            "extra": "652162 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1666,
+            "unit": "ns/op",
+            "extra": "652162 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 816,
+            "unit": "B/op",
+            "extra": "652162 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "652162 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1671,
+            "unit": "ns/op\t     816 B/op\t      19 allocs/op",
+            "extra": "650931 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1671,
+            "unit": "ns/op",
+            "extra": "650931 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 816,
+            "unit": "B/op",
+            "extra": "650931 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkReadOnlyBash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 19,
+            "unit": "allocs/op",
+            "extra": "650931 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1807,
+            "unit": "ns/op\t     408 B/op\t      14 allocs/op",
+            "extra": "613016 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1807,
+            "unit": "ns/op",
+            "extra": "613016 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 408,
+            "unit": "B/op",
+            "extra": "613016 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 14,
+            "unit": "allocs/op",
+            "extra": "613016 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1809,
+            "unit": "ns/op\t     408 B/op\t      14 allocs/op",
+            "extra": "676870 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1809,
+            "unit": "ns/op",
+            "extra": "676870 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 408,
+            "unit": "B/op",
+            "extra": "676870 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 14,
+            "unit": "allocs/op",
+            "extra": "676870 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1798,
+            "unit": "ns/op\t     408 B/op\t      14 allocs/op",
+            "extra": "638456 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1798,
+            "unit": "ns/op",
+            "extra": "638456 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 408,
+            "unit": "B/op",
+            "extra": "638456 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 14,
+            "unit": "allocs/op",
+            "extra": "638456 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1797,
+            "unit": "ns/op\t     408 B/op\t      14 allocs/op",
+            "extra": "652664 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1797,
+            "unit": "ns/op",
+            "extra": "652664 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 408,
+            "unit": "B/op",
+            "extra": "652664 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 14,
+            "unit": "allocs/op",
+            "extra": "652664 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1792,
+            "unit": "ns/op\t     408 B/op\t      14 allocs/op",
+            "extra": "615094 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1792,
+            "unit": "ns/op",
+            "extra": "615094 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 408,
+            "unit": "B/op",
+            "extra": "615094 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 14,
+            "unit": "allocs/op",
+            "extra": "615094 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1839,
+            "unit": "ns/op\t     408 B/op\t      14 allocs/op",
+            "extra": "659604 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1839,
+            "unit": "ns/op",
+            "extra": "659604 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 408,
+            "unit": "B/op",
+            "extra": "659604 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 14,
+            "unit": "allocs/op",
+            "extra": "659604 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1810,
+            "unit": "ns/op\t     408 B/op\t      14 allocs/op",
+            "extra": "641340 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1810,
+            "unit": "ns/op",
+            "extra": "641340 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 408,
+            "unit": "B/op",
+            "extra": "641340 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 14,
+            "unit": "allocs/op",
+            "extra": "641340 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1794,
+            "unit": "ns/op\t     408 B/op\t      14 allocs/op",
+            "extra": "619192 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1794,
+            "unit": "ns/op",
+            "extra": "619192 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 408,
+            "unit": "B/op",
+            "extra": "619192 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 14,
+            "unit": "allocs/op",
+            "extra": "619192 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1805,
+            "unit": "ns/op\t     408 B/op\t      14 allocs/op",
+            "extra": "615874 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1805,
+            "unit": "ns/op",
+            "extra": "615874 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 408,
+            "unit": "B/op",
+            "extra": "615874 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 14,
+            "unit": "allocs/op",
+            "extra": "615874 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1801,
+            "unit": "ns/op\t     408 B/op\t      14 allocs/op",
+            "extra": "618142 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1801,
+            "unit": "ns/op",
+            "extra": "618142 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 408,
+            "unit": "B/op",
+            "extra": "618142 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkSubstitutionReadOnly (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 14,
+            "unit": "allocs/op",
+            "extra": "618142 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2704,
+            "unit": "ns/op\t    1272 B/op\t      32 allocs/op",
+            "extra": "442705 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2704,
+            "unit": "ns/op",
+            "extra": "442705 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1272,
+            "unit": "B/op",
+            "extra": "442705 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "442705 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2695,
+            "unit": "ns/op\t    1272 B/op\t      32 allocs/op",
+            "extra": "420258 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2695,
+            "unit": "ns/op",
+            "extra": "420258 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1272,
+            "unit": "B/op",
+            "extra": "420258 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "420258 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2703,
+            "unit": "ns/op\t    1272 B/op\t      32 allocs/op",
+            "extra": "437532 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2703,
+            "unit": "ns/op",
+            "extra": "437532 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1272,
+            "unit": "B/op",
+            "extra": "437532 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "437532 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2699,
+            "unit": "ns/op\t    1272 B/op\t      32 allocs/op",
+            "extra": "444957 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2699,
+            "unit": "ns/op",
+            "extra": "444957 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1272,
+            "unit": "B/op",
+            "extra": "444957 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "444957 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2703,
+            "unit": "ns/op\t    1272 B/op\t      32 allocs/op",
+            "extra": "410888 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2703,
+            "unit": "ns/op",
+            "extra": "410888 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1272,
+            "unit": "B/op",
+            "extra": "410888 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "410888 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2703,
+            "unit": "ns/op\t    1272 B/op\t      32 allocs/op",
+            "extra": "437589 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2703,
+            "unit": "ns/op",
+            "extra": "437589 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1272,
+            "unit": "B/op",
+            "extra": "437589 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "437589 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2710,
+            "unit": "ns/op\t    1272 B/op\t      32 allocs/op",
+            "extra": "436642 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2710,
+            "unit": "ns/op",
+            "extra": "436642 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1272,
+            "unit": "B/op",
+            "extra": "436642 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "436642 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2702,
+            "unit": "ns/op\t    1272 B/op\t      32 allocs/op",
+            "extra": "435828 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2702,
+            "unit": "ns/op",
+            "extra": "435828 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1272,
+            "unit": "B/op",
+            "extra": "435828 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "435828 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2692,
+            "unit": "ns/op\t    1272 B/op\t      32 allocs/op",
+            "extra": "413152 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2692,
+            "unit": "ns/op",
+            "extra": "413152 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1272,
+            "unit": "B/op",
+            "extra": "413152 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "413152 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2696,
+            "unit": "ns/op\t    1272 B/op\t      32 allocs/op",
+            "extra": "421869 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2696,
+            "unit": "ns/op",
+            "extra": "421869 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1272,
+            "unit": "B/op",
+            "extra": "421869 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkIsolationApprovable (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 32,
+            "unit": "allocs/op",
+            "extra": "421869 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1326,
+            "unit": "ns/op\t     856 B/op\t      13 allocs/op",
+            "extra": "907484 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1326,
+            "unit": "ns/op",
+            "extra": "907484 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 856,
+            "unit": "B/op",
+            "extra": "907484 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "907484 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1325,
+            "unit": "ns/op\t     856 B/op\t      13 allocs/op",
+            "extra": "871540 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1325,
+            "unit": "ns/op",
+            "extra": "871540 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 856,
+            "unit": "B/op",
+            "extra": "871540 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "871540 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1327,
+            "unit": "ns/op\t     856 B/op\t      13 allocs/op",
+            "extra": "888495 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1327,
+            "unit": "ns/op",
+            "extra": "888495 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 856,
+            "unit": "B/op",
+            "extra": "888495 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "888495 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1322,
+            "unit": "ns/op\t     856 B/op\t      13 allocs/op",
+            "extra": "893368 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1322,
+            "unit": "ns/op",
+            "extra": "893368 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 856,
+            "unit": "B/op",
+            "extra": "893368 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "893368 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1320,
+            "unit": "ns/op\t     856 B/op\t      13 allocs/op",
+            "extra": "856058 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1320,
+            "unit": "ns/op",
+            "extra": "856058 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 856,
+            "unit": "B/op",
+            "extra": "856058 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "856058 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1328,
+            "unit": "ns/op\t     856 B/op\t      13 allocs/op",
+            "extra": "773656 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1328,
+            "unit": "ns/op",
+            "extra": "773656 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 856,
+            "unit": "B/op",
+            "extra": "773656 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "773656 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1331,
+            "unit": "ns/op\t     856 B/op\t      13 allocs/op",
+            "extra": "772287 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1331,
+            "unit": "ns/op",
+            "extra": "772287 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 856,
+            "unit": "B/op",
+            "extra": "772287 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "772287 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1345,
+            "unit": "ns/op\t     856 B/op\t      13 allocs/op",
+            "extra": "785890 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1345,
+            "unit": "ns/op",
+            "extra": "785890 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 856,
+            "unit": "B/op",
+            "extra": "785890 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "785890 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1326,
+            "unit": "ns/op\t     856 B/op\t      13 allocs/op",
+            "extra": "905642 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1326,
+            "unit": "ns/op",
+            "extra": "905642 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 856,
+            "unit": "B/op",
+            "extra": "905642 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "905642 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance)",
+            "value": 1324,
+            "unit": "ns/op\t     856 B/op\t      13 allocs/op",
+            "extra": "918812 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 1324,
+            "unit": "ns/op",
+            "extra": "918812 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 856,
+            "unit": "B/op",
+            "extra": "918812 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/simple-tool (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 13,
+            "unit": "allocs/op",
+            "extra": "918812 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2060,
+            "unit": "ns/op\t     920 B/op\t      18 allocs/op",
+            "extra": "583542 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2060,
+            "unit": "ns/op",
+            "extra": "583542 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 920,
+            "unit": "B/op",
+            "extra": "583542 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 18,
+            "unit": "allocs/op",
+            "extra": "583542 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2061,
+            "unit": "ns/op\t     920 B/op\t      18 allocs/op",
+            "extra": "580126 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2061,
+            "unit": "ns/op",
+            "extra": "580126 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 920,
+            "unit": "B/op",
+            "extra": "580126 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 18,
+            "unit": "allocs/op",
+            "extra": "580126 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2073,
+            "unit": "ns/op\t     920 B/op\t      18 allocs/op",
+            "extra": "513961 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2073,
+            "unit": "ns/op",
+            "extra": "513961 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 920,
+            "unit": "B/op",
+            "extra": "513961 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 18,
+            "unit": "allocs/op",
+            "extra": "513961 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2062,
+            "unit": "ns/op\t     920 B/op\t      18 allocs/op",
+            "extra": "574861 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2062,
+            "unit": "ns/op",
+            "extra": "574861 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 920,
+            "unit": "B/op",
+            "extra": "574861 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 18,
+            "unit": "allocs/op",
+            "extra": "574861 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2074,
+            "unit": "ns/op\t     920 B/op\t      18 allocs/op",
+            "extra": "524208 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2074,
+            "unit": "ns/op",
+            "extra": "524208 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 920,
+            "unit": "B/op",
+            "extra": "524208 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 18,
+            "unit": "allocs/op",
+            "extra": "524208 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2067,
+            "unit": "ns/op\t     920 B/op\t      18 allocs/op",
+            "extra": "564312 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2067,
+            "unit": "ns/op",
+            "extra": "564312 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 920,
+            "unit": "B/op",
+            "extra": "564312 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 18,
+            "unit": "allocs/op",
+            "extra": "564312 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2061,
+            "unit": "ns/op\t     920 B/op\t      18 allocs/op",
+            "extra": "563372 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2061,
+            "unit": "ns/op",
+            "extra": "563372 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 920,
+            "unit": "B/op",
+            "extra": "563372 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 18,
+            "unit": "allocs/op",
+            "extra": "563372 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2064,
+            "unit": "ns/op\t     920 B/op\t      18 allocs/op",
+            "extra": "566557 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2064,
+            "unit": "ns/op",
+            "extra": "566557 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 920,
+            "unit": "B/op",
+            "extra": "566557 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 18,
+            "unit": "allocs/op",
+            "extra": "566557 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2071,
+            "unit": "ns/op\t     920 B/op\t      18 allocs/op",
+            "extra": "510394 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2071,
+            "unit": "ns/op",
+            "extra": "510394 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 920,
+            "unit": "B/op",
+            "extra": "510394 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 18,
+            "unit": "allocs/op",
+            "extra": "510394 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 2067,
+            "unit": "ns/op\t     920 B/op\t      18 allocs/op",
+            "extra": "518965 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 2067,
+            "unit": "ns/op",
+            "extra": "518965 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 920,
+            "unit": "B/op",
+            "extra": "518965 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/plain-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 18,
+            "unit": "allocs/op",
+            "extra": "518965 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 4055,
+            "unit": "ns/op\t    1544 B/op\t      29 allocs/op",
+            "extra": "292090 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 4055,
+            "unit": "ns/op",
+            "extra": "292090 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1544,
+            "unit": "B/op",
+            "extra": "292090 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 29,
+            "unit": "allocs/op",
+            "extra": "292090 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 4043,
+            "unit": "ns/op\t    1544 B/op\t      29 allocs/op",
+            "extra": "304258 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 4043,
+            "unit": "ns/op",
+            "extra": "304258 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1544,
+            "unit": "B/op",
+            "extra": "304258 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 29,
+            "unit": "allocs/op",
+            "extra": "304258 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 4050,
+            "unit": "ns/op\t    1544 B/op\t      29 allocs/op",
+            "extra": "278894 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 4050,
+            "unit": "ns/op",
+            "extra": "278894 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1544,
+            "unit": "B/op",
+            "extra": "278894 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 29,
+            "unit": "allocs/op",
+            "extra": "278894 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 4053,
+            "unit": "ns/op\t    1544 B/op\t      29 allocs/op",
+            "extra": "288232 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 4053,
+            "unit": "ns/op",
+            "extra": "288232 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1544,
+            "unit": "B/op",
+            "extra": "288232 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 29,
+            "unit": "allocs/op",
+            "extra": "288232 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 4054,
+            "unit": "ns/op\t    1544 B/op\t      29 allocs/op",
+            "extra": "286734 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 4054,
+            "unit": "ns/op",
+            "extra": "286734 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1544,
+            "unit": "B/op",
+            "extra": "286734 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 29,
+            "unit": "allocs/op",
+            "extra": "286734 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 4047,
+            "unit": "ns/op\t    1544 B/op\t      29 allocs/op",
+            "extra": "289320 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 4047,
+            "unit": "ns/op",
+            "extra": "289320 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1544,
+            "unit": "B/op",
+            "extra": "289320 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 29,
+            "unit": "allocs/op",
+            "extra": "289320 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 4054,
+            "unit": "ns/op\t    1544 B/op\t      29 allocs/op",
+            "extra": "292317 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 4054,
+            "unit": "ns/op",
+            "extra": "292317 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1544,
+            "unit": "B/op",
+            "extra": "292317 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 29,
+            "unit": "allocs/op",
+            "extra": "292317 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 4036,
+            "unit": "ns/op\t    1544 B/op\t      29 allocs/op",
+            "extra": "300903 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 4036,
+            "unit": "ns/op",
+            "extra": "300903 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1544,
+            "unit": "B/op",
+            "extra": "300903 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 29,
+            "unit": "allocs/op",
+            "extra": "300903 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 4046,
+            "unit": "ns/op\t    1544 B/op\t      29 allocs/op",
+            "extra": "295918 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 4046,
+            "unit": "ns/op",
+            "extra": "295918 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1544,
+            "unit": "B/op",
+            "extra": "295918 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 29,
+            "unit": "allocs/op",
+            "extra": "295918 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance)",
+            "value": 4048,
+            "unit": "ns/op\t    1544 B/op\t      29 allocs/op",
+            "extra": "289222 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - ns/op",
+            "value": 4048,
+            "unit": "ns/op",
+            "extra": "289222 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - B/op",
+            "value": 1544,
+            "unit": "B/op",
+            "extra": "289222 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkEvaluatorEvaluate/compound-bash (github.com/stacklok/mecatl/engine/governance) - allocs/op",
+            "value": 29,
+            "unit": "allocs/op",
+            "extra": "289222 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent)",
+            "value": 5549,
+            "unit": "ns/op\t   12464 B/op\t      59 allocs/op",
+            "extra": "214848 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 5549,
+            "unit": "ns/op",
+            "extra": "214848 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 12464,
+            "unit": "B/op",
+            "extra": "214848 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 59,
+            "unit": "allocs/op",
+            "extra": "214848 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent)",
+            "value": 5426,
+            "unit": "ns/op\t   12463 B/op\t      58 allocs/op",
+            "extra": "210304 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 5426,
+            "unit": "ns/op",
+            "extra": "210304 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 12463,
+            "unit": "B/op",
+            "extra": "210304 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 58,
+            "unit": "allocs/op",
+            "extra": "210304 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent)",
+            "value": 6612,
+            "unit": "ns/op\t   12463 B/op\t      58 allocs/op",
+            "extra": "206300 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 6612,
+            "unit": "ns/op",
+            "extra": "206300 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 12463,
+            "unit": "B/op",
+            "extra": "206300 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 58,
+            "unit": "allocs/op",
+            "extra": "206300 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent)",
+            "value": 5439,
+            "unit": "ns/op\t   12464 B/op\t      59 allocs/op",
+            "extra": "219282 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 5439,
+            "unit": "ns/op",
+            "extra": "219282 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 12464,
+            "unit": "B/op",
+            "extra": "219282 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 59,
+            "unit": "allocs/op",
+            "extra": "219282 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent)",
+            "value": 5433,
+            "unit": "ns/op\t   12464 B/op\t      59 allocs/op",
+            "extra": "197413 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 5433,
+            "unit": "ns/op",
+            "extra": "197413 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 12464,
+            "unit": "B/op",
+            "extra": "197413 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 59,
+            "unit": "allocs/op",
+            "extra": "197413 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent)",
+            "value": 5319,
+            "unit": "ns/op\t   12463 B/op\t      58 allocs/op",
+            "extra": "226296 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 5319,
+            "unit": "ns/op",
+            "extra": "226296 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 12463,
+            "unit": "B/op",
+            "extra": "226296 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 58,
+            "unit": "allocs/op",
+            "extra": "226296 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent)",
+            "value": 5321,
+            "unit": "ns/op\t   12464 B/op\t      58 allocs/op",
+            "extra": "234872 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 5321,
+            "unit": "ns/op",
+            "extra": "234872 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 12464,
+            "unit": "B/op",
+            "extra": "234872 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 58,
+            "unit": "allocs/op",
+            "extra": "234872 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent)",
+            "value": 5475,
+            "unit": "ns/op\t   12464 B/op\t      59 allocs/op",
+            "extra": "207560 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 5475,
+            "unit": "ns/op",
+            "extra": "207560 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 12464,
+            "unit": "B/op",
+            "extra": "207560 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 59,
+            "unit": "allocs/op",
+            "extra": "207560 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent)",
+            "value": 5409,
+            "unit": "ns/op\t   12464 B/op\t      59 allocs/op",
+            "extra": "221623 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 5409,
+            "unit": "ns/op",
+            "extra": "221623 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 12464,
+            "unit": "B/op",
+            "extra": "221623 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 59,
+            "unit": "allocs/op",
+            "extra": "221623 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent)",
+            "value": 5509,
+            "unit": "ns/op\t   12464 B/op\t      59 allocs/op",
+            "extra": "221559 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 5509,
+            "unit": "ns/op",
+            "extra": "221559 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 12464,
+            "unit": "B/op",
+            "extra": "221559 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkBuildRequest (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 59,
+            "unit": "allocs/op",
+            "extra": "221559 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 24791,
+            "unit": "ns/op\t   16588 B/op\t     200 allocs/op",
+            "extra": "48049 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 24791,
+            "unit": "ns/op",
+            "extra": "48049 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 16588,
+            "unit": "B/op",
+            "extra": "48049 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "48049 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 24764,
+            "unit": "ns/op\t   16587 B/op\t     200 allocs/op",
+            "extra": "48433 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 24764,
+            "unit": "ns/op",
+            "extra": "48433 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 16587,
+            "unit": "B/op",
+            "extra": "48433 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "48433 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 24707,
+            "unit": "ns/op\t   16588 B/op\t     200 allocs/op",
+            "extra": "48042 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 24707,
+            "unit": "ns/op",
+            "extra": "48042 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 16588,
+            "unit": "B/op",
+            "extra": "48042 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "48042 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 24723,
+            "unit": "ns/op\t   16588 B/op\t     200 allocs/op",
+            "extra": "48823 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 24723,
+            "unit": "ns/op",
+            "extra": "48823 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 16588,
+            "unit": "B/op",
+            "extra": "48823 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "48823 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 24715,
+            "unit": "ns/op\t   16588 B/op\t     200 allocs/op",
+            "extra": "48738 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 24715,
+            "unit": "ns/op",
+            "extra": "48738 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 16588,
+            "unit": "B/op",
+            "extra": "48738 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "48738 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 24834,
+            "unit": "ns/op\t   16588 B/op\t     200 allocs/op",
+            "extra": "48444 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 24834,
+            "unit": "ns/op",
+            "extra": "48444 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 16588,
+            "unit": "B/op",
+            "extra": "48444 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "48444 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 24660,
+            "unit": "ns/op\t   16587 B/op\t     200 allocs/op",
+            "extra": "48534 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 24660,
+            "unit": "ns/op",
+            "extra": "48534 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 16587,
+            "unit": "B/op",
+            "extra": "48534 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "48534 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 24737,
+            "unit": "ns/op\t   16588 B/op\t     200 allocs/op",
+            "extra": "48538 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 24737,
+            "unit": "ns/op",
+            "extra": "48538 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 16588,
+            "unit": "B/op",
+            "extra": "48538 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "48538 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 24887,
+            "unit": "ns/op\t   16587 B/op\t     200 allocs/op",
+            "extra": "47972 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 24887,
+            "unit": "ns/op",
+            "extra": "47972 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 16587,
+            "unit": "B/op",
+            "extra": "47972 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "47972 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 24692,
+            "unit": "ns/op\t   16588 B/op\t     200 allocs/op",
+            "extra": "47980 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 24692,
+            "unit": "ns/op",
+            "extra": "47980 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 16588,
+            "unit": "B/op",
+            "extra": "47980 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkHeuristicCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 200,
+            "unit": "allocs/op",
+            "extra": "47980 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 33228,
+            "unit": "ns/op\t   30799 B/op\t     250 allocs/op",
+            "extra": "35947 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 33228,
+            "unit": "ns/op",
+            "extra": "35947 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 30799,
+            "unit": "B/op",
+            "extra": "35947 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 250,
+            "unit": "allocs/op",
+            "extra": "35947 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 33143,
+            "unit": "ns/op\t   30799 B/op\t     250 allocs/op",
+            "extra": "36334 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 33143,
+            "unit": "ns/op",
+            "extra": "36334 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 30799,
+            "unit": "B/op",
+            "extra": "36334 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 250,
+            "unit": "allocs/op",
+            "extra": "36334 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 33536,
+            "unit": "ns/op\t   30798 B/op\t     250 allocs/op",
+            "extra": "35748 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 33536,
+            "unit": "ns/op",
+            "extra": "35748 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 30798,
+            "unit": "B/op",
+            "extra": "35748 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 250,
+            "unit": "allocs/op",
+            "extra": "35748 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 33575,
+            "unit": "ns/op\t   30795 B/op\t     250 allocs/op",
+            "extra": "35754 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 33575,
+            "unit": "ns/op",
+            "extra": "35754 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 30795,
+            "unit": "B/op",
+            "extra": "35754 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 250,
+            "unit": "allocs/op",
+            "extra": "35754 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 34170,
+            "unit": "ns/op\t   30796 B/op\t     250 allocs/op",
+            "extra": "35298 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 34170,
+            "unit": "ns/op",
+            "extra": "35298 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 30796,
+            "unit": "B/op",
+            "extra": "35298 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 250,
+            "unit": "allocs/op",
+            "extra": "35298 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 34324,
+            "unit": "ns/op\t   30796 B/op\t     250 allocs/op",
+            "extra": "34467 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 34324,
+            "unit": "ns/op",
+            "extra": "34467 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 30796,
+            "unit": "B/op",
+            "extra": "34467 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 250,
+            "unit": "allocs/op",
+            "extra": "34467 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 33291,
+            "unit": "ns/op\t   30799 B/op\t     250 allocs/op",
+            "extra": "36177 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 33291,
+            "unit": "ns/op",
+            "extra": "36177 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 30799,
+            "unit": "B/op",
+            "extra": "36177 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 250,
+            "unit": "allocs/op",
+            "extra": "36177 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 33335,
+            "unit": "ns/op\t   30799 B/op\t     250 allocs/op",
+            "extra": "35455 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 33335,
+            "unit": "ns/op",
+            "extra": "35455 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 30799,
+            "unit": "B/op",
+            "extra": "35455 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 250,
+            "unit": "allocs/op",
+            "extra": "35455 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 34191,
+            "unit": "ns/op\t   30798 B/op\t     250 allocs/op",
+            "extra": "33732 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 34191,
+            "unit": "ns/op",
+            "extra": "33732 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 30798,
+            "unit": "B/op",
+            "extra": "33732 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 250,
+            "unit": "allocs/op",
+            "extra": "33732 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent)",
+            "value": 33425,
+            "unit": "ns/op\t   30796 B/op\t     250 allocs/op",
+            "extra": "35793 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 33425,
+            "unit": "ns/op",
+            "extra": "35793 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 30796,
+            "unit": "B/op",
+            "extra": "35793 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkCascadeCompact (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 250,
+            "unit": "allocs/op",
+            "extra": "35793 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 29638,
+            "unit": "ns/op\t   32787 B/op\t     158 allocs/op",
+            "extra": "40752 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 29638,
+            "unit": "ns/op",
+            "extra": "40752 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 32787,
+            "unit": "B/op",
+            "extra": "40752 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "40752 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 29678,
+            "unit": "ns/op\t   32786 B/op\t     158 allocs/op",
+            "extra": "39634 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 29678,
+            "unit": "ns/op",
+            "extra": "39634 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 32786,
+            "unit": "B/op",
+            "extra": "39634 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "39634 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 29727,
+            "unit": "ns/op\t   32787 B/op\t     158 allocs/op",
+            "extra": "40928 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 29727,
+            "unit": "ns/op",
+            "extra": "40928 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 32787,
+            "unit": "B/op",
+            "extra": "40928 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "40928 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 29889,
+            "unit": "ns/op\t   32787 B/op\t     158 allocs/op",
+            "extra": "39658 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 29889,
+            "unit": "ns/op",
+            "extra": "39658 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 32787,
+            "unit": "B/op",
+            "extra": "39658 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "39658 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 29877,
+            "unit": "ns/op\t   32787 B/op\t     158 allocs/op",
+            "extra": "40825 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 29877,
+            "unit": "ns/op",
+            "extra": "40825 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 32787,
+            "unit": "B/op",
+            "extra": "40825 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "40825 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 29602,
+            "unit": "ns/op\t   32787 B/op\t     158 allocs/op",
+            "extra": "41134 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 29602,
+            "unit": "ns/op",
+            "extra": "41134 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 32787,
+            "unit": "B/op",
+            "extra": "41134 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "41134 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 29387,
+            "unit": "ns/op\t   32787 B/op\t     158 allocs/op",
+            "extra": "40872 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 29387,
+            "unit": "ns/op",
+            "extra": "40872 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 32787,
+            "unit": "B/op",
+            "extra": "40872 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "40872 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 29498,
+            "unit": "ns/op\t   32787 B/op\t     158 allocs/op",
+            "extra": "40917 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 29498,
+            "unit": "ns/op",
+            "extra": "40917 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 32787,
+            "unit": "B/op",
+            "extra": "40917 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "40917 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 29699,
+            "unit": "ns/op\t   32787 B/op\t     158 allocs/op",
+            "extra": "40472 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 29699,
+            "unit": "ns/op",
+            "extra": "40472 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 32787,
+            "unit": "B/op",
+            "extra": "40472 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "40472 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 29385,
+            "unit": "ns/op\t   32786 B/op\t     158 allocs/op",
+            "extra": "41222 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 29385,
+            "unit": "ns/op",
+            "extra": "41222 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 32786,
+            "unit": "B/op",
+            "extra": "41222 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadOnlyTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 158,
+            "unit": "allocs/op",
+            "extra": "41222 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 42957,
+            "unit": "ns/op\t   39059 B/op\t     222 allocs/op",
+            "extra": "28000 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 42957,
+            "unit": "ns/op",
+            "extra": "28000 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 39059,
+            "unit": "B/op",
+            "extra": "28000 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 222,
+            "unit": "allocs/op",
+            "extra": "28000 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 43682,
+            "unit": "ns/op\t   39059 B/op\t     222 allocs/op",
+            "extra": "26816 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 43682,
+            "unit": "ns/op",
+            "extra": "26816 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 39059,
+            "unit": "B/op",
+            "extra": "26816 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 222,
+            "unit": "allocs/op",
+            "extra": "26816 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 42779,
+            "unit": "ns/op\t   39059 B/op\t     222 allocs/op",
+            "extra": "28118 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 42779,
+            "unit": "ns/op",
+            "extra": "28118 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 39059,
+            "unit": "B/op",
+            "extra": "28118 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 222,
+            "unit": "allocs/op",
+            "extra": "28118 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 42939,
+            "unit": "ns/op\t   39059 B/op\t     222 allocs/op",
+            "extra": "27183 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 42939,
+            "unit": "ns/op",
+            "extra": "27183 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 39059,
+            "unit": "B/op",
+            "extra": "27183 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 222,
+            "unit": "allocs/op",
+            "extra": "27183 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 43347,
+            "unit": "ns/op\t   39059 B/op\t     222 allocs/op",
+            "extra": "28003 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 43347,
+            "unit": "ns/op",
+            "extra": "28003 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 39059,
+            "unit": "B/op",
+            "extra": "28003 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 222,
+            "unit": "allocs/op",
+            "extra": "28003 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 42522,
+            "unit": "ns/op\t   39059 B/op\t     222 allocs/op",
+            "extra": "28219 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 42522,
+            "unit": "ns/op",
+            "extra": "28219 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 39059,
+            "unit": "B/op",
+            "extra": "28219 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 222,
+            "unit": "allocs/op",
+            "extra": "28219 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 42598,
+            "unit": "ns/op\t   39059 B/op\t     222 allocs/op",
+            "extra": "28084 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 42598,
+            "unit": "ns/op",
+            "extra": "28084 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 39059,
+            "unit": "B/op",
+            "extra": "28084 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 222,
+            "unit": "allocs/op",
+            "extra": "28084 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 42360,
+            "unit": "ns/op\t   39059 B/op\t     222 allocs/op",
+            "extra": "28519 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 42360,
+            "unit": "ns/op",
+            "extra": "28519 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 39059,
+            "unit": "B/op",
+            "extra": "28519 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 222,
+            "unit": "allocs/op",
+            "extra": "28519 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 42613,
+            "unit": "ns/op\t   39059 B/op\t     222 allocs/op",
+            "extra": "28357 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 42613,
+            "unit": "ns/op",
+            "extra": "28357 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 39059,
+            "unit": "B/op",
+            "extra": "28357 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 222,
+            "unit": "allocs/op",
+            "extra": "28357 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 42856,
+            "unit": "ns/op\t   39059 B/op\t     222 allocs/op",
+            "extra": "28230 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 42856,
+            "unit": "ns/op",
+            "extra": "28230 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 39059,
+            "unit": "B/op",
+            "extra": "28230 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunReadParallelTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 222,
+            "unit": "allocs/op",
+            "extra": "28230 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 26615,
+            "unit": "ns/op\t   31866 B/op\t     153 allocs/op",
+            "extra": "44703 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 26615,
+            "unit": "ns/op",
+            "extra": "44703 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 31866,
+            "unit": "B/op",
+            "extra": "44703 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 153,
+            "unit": "allocs/op",
+            "extra": "44703 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 26735,
+            "unit": "ns/op\t   31867 B/op\t     153 allocs/op",
+            "extra": "45628 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 26735,
+            "unit": "ns/op",
+            "extra": "45628 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 31867,
+            "unit": "B/op",
+            "extra": "45628 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 153,
+            "unit": "allocs/op",
+            "extra": "45628 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 26929,
+            "unit": "ns/op\t   31866 B/op\t     153 allocs/op",
+            "extra": "43250 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 26929,
+            "unit": "ns/op",
+            "extra": "43250 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 31866,
+            "unit": "B/op",
+            "extra": "43250 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 153,
+            "unit": "allocs/op",
+            "extra": "43250 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 27479,
+            "unit": "ns/op\t   31867 B/op\t     153 allocs/op",
+            "extra": "43911 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 27479,
+            "unit": "ns/op",
+            "extra": "43911 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 31867,
+            "unit": "B/op",
+            "extra": "43911 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 153,
+            "unit": "allocs/op",
+            "extra": "43911 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 26747,
+            "unit": "ns/op\t   31867 B/op\t     153 allocs/op",
+            "extra": "45126 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 26747,
+            "unit": "ns/op",
+            "extra": "45126 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 31867,
+            "unit": "B/op",
+            "extra": "45126 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 153,
+            "unit": "allocs/op",
+            "extra": "45126 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 26438,
+            "unit": "ns/op\t   31866 B/op\t     153 allocs/op",
+            "extra": "44238 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 26438,
+            "unit": "ns/op",
+            "extra": "44238 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 31866,
+            "unit": "B/op",
+            "extra": "44238 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 153,
+            "unit": "allocs/op",
+            "extra": "44238 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 26206,
+            "unit": "ns/op\t   31867 B/op\t     153 allocs/op",
+            "extra": "45748 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 26206,
+            "unit": "ns/op",
+            "extra": "45748 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 31867,
+            "unit": "B/op",
+            "extra": "45748 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 153,
+            "unit": "allocs/op",
+            "extra": "45748 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 26325,
+            "unit": "ns/op\t   31866 B/op\t     153 allocs/op",
+            "extra": "45812 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 26325,
+            "unit": "ns/op",
+            "extra": "45812 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 31866,
+            "unit": "B/op",
+            "extra": "45812 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 153,
+            "unit": "allocs/op",
+            "extra": "45812 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 26967,
+            "unit": "ns/op\t   31867 B/op\t     153 allocs/op",
+            "extra": "42381 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 26967,
+            "unit": "ns/op",
+            "extra": "42381 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 31867,
+            "unit": "B/op",
+            "extra": "42381 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 153,
+            "unit": "allocs/op",
+            "extra": "42381 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent)",
+            "value": 26527,
+            "unit": "ns/op\t   31867 B/op\t     153 allocs/op",
+            "extra": "46095 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - ns/op",
+            "value": 26527,
+            "unit": "ns/op",
+            "extra": "46095 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - B/op",
+            "value": 31867,
+            "unit": "B/op",
+            "extra": "46095 times\n2 procs"
+          },
+          {
+            "name": "BenchmarkRunMutatingTurn (github.com/stacklok/mecatl/engine/agent) - allocs/op",
+            "value": 153,
+            "unit": "allocs/op",
+            "extra": "46095 times\n2 procs"
           }
         ]
       }
