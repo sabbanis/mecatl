@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781810954289,
+  "lastUpdate": 1781810957738,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -226281,6 +226281,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 85,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "373dd471c95effe7af19afb45388bcd6c919558d",
+          "message": "docs(modelith): capture PermissionMode fully — catalog filter + acceptEdits as-built reality (#78) (#108)\n\nCloses #78. Documents PermissionMode fully in the modelith: catalog-level plan-mode filter invariant, acceptEdits as-built reality (declared-not-implemented, correcting the false \"auto-allows edits\" claim), and two new scenarios.",
+          "timestamp": "2026-06-18T22:17:54+03:00",
+          "tree_id": "0d2048511f1459d3fb13e40389a6124fd6e25e5d",
+          "url": "https://github.com/stacklok/mecatl/commit/373dd471c95effe7af19afb45388bcd6c919558d"
+        },
+        "date": 1781810956500,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3522,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 86,
             "unit": "allocs/op"
           }
         ]
