@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781803242681,
+  "lastUpdate": 1781803245193,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -212768,6 +212768,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 35129,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ca9da1213e7ad4c50606d19bc7d064c62ecaa135",
+          "message": "fix(forker): dirty-aware read-only fork so subagents see uncommitted work (#105)\n\n* feat(forker): dirty-aware read-only fork so subagents see uncommitted work\n\nRead-only Subagent children and read-only team members that carry a Bash\nshell fork into a git worktree via `git worktree add --detach HEAD` — a\nclean committed-HEAD checkout. Their entire workspace (Read/Grep/Glob AND\nBash) is rooted there, so a read-only child asked to \"review the diff\"\nsaw a clean tree and empty `git status`/`git diff` and could not review\nthe operator's uncommitted/unstaged/untracked work. The force-copy path\n(mutating branches/members) already carried the dirty tree via copyTree —\nonly the cheap worktree path lost it.\n\nAdd an opt-in `forker.WithDirtyOverlay()` wired at the two read-only fork\nsites. When the parent tree is dirty, overlay its uncommitted state into\nthe fresh worktree: `git diff --binary HEAD` applied into the child, plus\nuntracked-non-ignored files copied in (`.gitignore`-respecting,\nsymlink-skipping). A clean tree keeps the zero-copy worktree (cheap-path\nshort-circuit). Force-copy and Parallel branches are unchanged.\n\nBest-effort and fail-soft: an overlay failure resets the worktree to a\npristine HEAD rather than breaking the fork — and surfaces a degraded-fork\nadvisory through the `WorkspaceForker.Fork` seam, which the Subagent\nprepends to the child's prompt so a child reviewing committed HEAD is told\nso (no longer indistinguishable from a genuinely clean tree).\n\nEvery new git invocation runs with the same `gitenv.Scrub(envscrub.Scrub(\nos.Environ()))` env as the existing forker calls (neutralises\npager/hooks/fsmonitor/external-diff, drops harness secrets); `git apply`\nkeeps its default path confinement (no --unsafe-paths). Read-parallel\nsafety is preserved — each child still gets its own isolated worktree.\n\nTests: tracked/staged/untracked/deleted/binary overlay visibility,\n.gitignore + symlink exclusion, isolation (child writes never touch the\nparent), scrubbed-env adversarial sentinels, fail-soft + advisory,\nclean-tree short-circuit (counted), force-copy+overlay inertness,\nconcurrent forks, a model-facing e2e (real read-only Subagent over a\ndirty repo through the real engine), and the advisory reaching the child\nprompt. Docs: ADR 0033 + IMPLEMENTATION-NOTES/parallelism/production-\nreadiness; llms.txt regenerated.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01158vELbaXZQqa3bxJH1UfS\n\n* test(e2e): live proof a read-only Subagent sees uncommitted work (ADR 0033)\n\nAdd a live e2e spec that drives a real model through the real harness over a\ndeliberately DIRTY git workspace: it seeds a tracked modification and an\nuntracked file (each with a distinctive sentinel) into the trusted,\ngit-initialised harness workspace, dispatches a single read-only Subagent\nwhose goal runs `git status --short` + `cat` over its isolated worktree, and\nasserts the Subagent RESULT text carries BOTH sentinels.\n\nThis is the regression proof for the dirty-overlay (forker.WithDirtyOverlay):\nbefore the fix the child's worktree was a clean `git worktree add HEAD`\ncheckout, so neither sentinel could appear (the untracked file would not\nexist; FRUIT.txt would hold its committed content) — exactly the \"git diff\nshows clean\" failure seen in the wild. The untracked-file sentinel is the\nunambiguous discriminator (an untracked file is absent from any HEAD\ncheckout). Asserting on the Subagent result — the only model-visible channel\nfor a child's findings (subagent.* events are metadata-only, gauntlet #7) —\nmatches the surface the operator actually saw fail.\n\nRuns in the existing live e2e lane (task e2e → ./e2e/...); verified green\nagainst OpenRouter (both sentinels observed in the child's reported output).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01158vELbaXZQqa3bxJH1UfS\n\n---------\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T20:15:12+03:00",
+          "tree_id": "b0bf39822beb98c95c5f9a36236928c2a2c5890a",
+          "url": "https://github.com/stacklok/mecatl/commit/ca9da1213e7ad4c50606d19bc7d064c62ecaa135"
+        },
+        "date": 1781803244502,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1466,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35128,
             "unit": "allocs/op"
           },
           {
