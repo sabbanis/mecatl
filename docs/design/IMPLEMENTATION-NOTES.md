@@ -2095,13 +2095,15 @@ policy-blocked / unavailable models) was counting toward the shared breaker via 
 `recordFailure`, tripping it and then blocking unrelated WORKING models for the cooldown.
 
 **Establishment bound (`PerAttemptTimeout`) is a SEPARATE timer, not an absolute deadline.**
-`PerAttemptTimeout` bounds only establishment (connect + the FIRST chunk). It is enforced by a
-standalone `time.Timer` in `establish`, NOT by a `context.WithTimeout` whose absolute deadline
+`PerAttemptTimeout` bounds only establishment (connect + the FIRST COMMITTING chunk). It is enforced
+by a standalone `time.Timer` in `establish`, NOT by a `context.WithTimeout` whose absolute deadline
 would stay live throughout streaming. The inner stream rides a deadline-free `context.WithCancel(ctx)`;
 the establishment timer's goroutine sets an `estTimedOut atomic.Bool` and calls `cancel()` ONLY if
-the first chunk has not been pulled by the budget. The timer is stopped and its goroutine fully
-JOINED the instant the first chunk is in hand (and on every failure exit — one `done`-channel join,
-so goleak stays green and the goroutine is gone before `restSeq` runs). After the first chunk the
+the first committing chunk has not been pulled by the budget. The timer stays live through any
+leading non-committing prefix (ChunkReasoning/ChunkReasoningItem), so a mid-reasoning-prefix error
+is still retried. The timer is stopped and its goroutine fully JOINED the instant the first
+committing chunk is in hand (and on every failure exit — one `done`-channel join, so goleak stays
+green and the goroutine is gone before `restSeq` runs). After the first committing chunk the
 streaming phase is governed solely by the idle watchdog (`StreamIdleTimeout`, on the SAME `cancel`
 handle) plus the parent ctx — so an actively-streaming long turn (a slow reasoning model) is NEVER
 cut at the per-attempt deadline. **Motivating incident:** a `context.WithTimeout` whose deadline
@@ -2705,6 +2707,41 @@ engine has the FS tools baked in) and `server.SessionEngineFactory` grew a
   widened only the engine-rebuild trigger, not the run-entry cursor). Skills with payload
   files are body-only in a no-fs session: the body injects fine, asset reads fail honestly
   with not-exist through the nofs workspace (and the posture note tells the model so).
+
+### Worktree binding (issue #102, `docs/adr/0032-worktree-binding.md`)
+
+A session may bind to an EXISTING git worktree (not just the launch root) so all
+local tools root there. Three clear, separated interfaces:
+
+- **Discovery** — `server.WorktreeLister` (a composition-injected, nil-safe port
+  mirroring `CommandLister`) backs the `ListWorktrees` RPC. The osfs-backed
+  `buildWorktreeLister` (`internal/app/build.go`) shells out to
+  `git worktree list --porcelain` with the SAME scrubbed+neutralised git env as
+  `gitSnapshot` (`envscrub` then `gitenv`), TRUST-GATED (`cfg.TrustProject`), and
+  FAIL-SOFT (any git fault → `nil, nil`, never an error). nil when there is no
+  workspace / no shell / untrusted — then `ListWorktrees` returns empty and
+  `ServerCapabilities.worktrees` is false (the mecatui overlay is honestly
+  absent). Cloud-native compatible: a no-FS/cloud server wires no lister.
+- **Routing** — `server.Config.DefaultWorkspace` (the launch root; empty for a
+  child/member/cloud service). `needPerSession` and `needsRehydration` (now a
+  `*Service` method) are widened: a session whose
+  `workspace != "" && workspace != DefaultWorkspace` routes through the
+  per-session engine factory, which ALREADY re-pins the CHILD permission resolver
+  to the session root via `childPermResolverFor(cfg, workspace)` (closing the
+  child-resolver gap — a shared-engine child would otherwise read the launch
+  root's `.mecatl/settings.yaml`). The main policy ALREADY re-resolves
+  per-workspace. The session rehydrates to the SAME worktree-rooted engine after
+  a restart. When `DefaultWorkspace == ""` the new arm never fires, so the
+  cloud/no-root posture is byte-identical.
+- **Switching** — mecatui's `/worktrees` overlay (`cmd/mecatui/ui/worktrees.go`)
+  lists worktrees and, on select, closes the old session and creates a NEW one
+  rooted at the chosen worktree via the NEW `SessionCreator.CreateSessionInWorkspace`
+  method (the `/models` restart-now precedent; `restartFailedMsg` reused).
+  Operator-driven only; the model has no workspace-switch tool; a live session
+  is never mutated. osfs path confinement is unchanged.
+
+Trust stays OPERATOR-tier at launch (worktrees share `.git`); per-worktree trust
+re-resolution is a documented follow-up, not blocked by the design.
 
 ### Snapshot fidelity — persisted per-session facts (cloud-native Phase 1)
 
