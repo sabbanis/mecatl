@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781811298258,
+  "lastUpdate": 1781811301357,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -227680,6 +227680,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 35129.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "533492f2e1bd0a4e5bc1ae9cb6839216eff42da1",
+          "message": "test(mecatui): deflake TestScrollbackReviseAllocsIndependentOfN (#109)\n\nThe test asserted per-op allocs are independent of iteration count via a raw\n`Δ ≤ 1` difference between a low-run (50) and high-run (2000) AllocsPerRun\nmeasurement. It flaked in CI (~30% under -race): low(50)=3469 high(2000)=3471,\nΔ=2.\n\nRoot cause is measurement noise, not a real per-op growth bug. testing.AllocsPerRun\nreturns floor(process-wide Mallocs delta / runs); under -race, background\ngoroutine/GC mallocs bleed into the window, and the 2000-run window is ~40x\nlonger in wall-clock than the 50-run window, so proportionally more background\nmallocs accumulate and the floored quotient tips up by 1-2. reviseAssistant is\ngenuinely fixed-size (`b.raw = text`, a replace — confirmed, unchanged), and the\nrender caches are keyed on the stable block index and overwrite in place.\n\nFix (test-only): assert a relative tolerance band — high must not exceed\nlow + max(2, low*0.001) (~3.5 allocs at this baseline) — instead of an exact\n±1 difference, and raise lowRuns 50→500 to cut the window wall-clock asymmetry\n~40x→~4x. The band absorbs the N-independent ±2 instrument residue while the\nreal regression this guards (reviseAssistant reverting to `b.raw += text`\nunbounded per-op growth) produces an order ~10^5 alloc/op delta that overshoots\nthe band by ~100x+ — mutation-verified RED, then GREEN on revert. Comment\ndocuments the floored-division precision argument and cross-references the\nexisting perf.yml advisory carve-out for the non-deterministic tui_scrollback_view*\nrender-alloc metrics. No production change.\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T22:23:36+03:00",
+          "tree_id": "dc6b1dc64be929712c1c1ddb054a357fd60eab98",
+          "url": "https://github.com/stacklok/mecatl/commit/533492f2e1bd0a4e5bc1ae9cb6839216eff42da1"
+        },
+        "date": 1781811300258,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35129,
             "unit": "allocs/op"
           },
           {
