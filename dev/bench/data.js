@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781771542409,
+  "lastUpdate": 1781771545794,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -197826,6 +197826,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "background_subagents/allocs_per_op",
             "value": 1468,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35128,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "a9484f5f881ff78c719d578cd6e5cfbe4e548180",
+          "message": "refactor(cliconfig): deduplicate keyValueList into cliconfig.KeyValueList (#93)\n\nThe `keyValueList` flag.Value type was declared twice — once in\ncmd/mecated/main.go and once in cmd/mecatui/config.go — and had already\ndrifted: mecated's Set error said \"model alias must be key=value\", mecatui's\nsaid \"must be key=value\". The repo built internal/cliconfig precisely so the\nmains \"cannot drift apart,\" and mecatui already imports it, so the twin copies\nwere the exact drift the package exists to prevent.\n\nMove the type to cliconfig.KeyValueList (with String/Set/AsMap), add a\nRegisterModelFlags helper mirroring RegisterProviderFlags (per-main help\noverride via ModelFlagHelp, mecated-style DefaultModelFlagHelp fallback), and\ndelete both copies. Both mains now register --model-alias/--model-slot through\nthe one helper and thread the parsed *KeyValueList onto app.Config via AsMap\n(nil-safe so an unset flag stays the byte-identical nil-map default). --help\noutput is unchanged for both mains (mecated keeps the default wording, mecatui\nkeeps its \"embedded server only:\" override).\n\nAdd cliconfig tests pinning the unified parse-error message, last-write-wins +\ntrim semantics, the nil-safe AsMap, and the flag.Value contract.\n\nCloses #93\n\nCo-Authored-By: mecatl <mecatl@stacklok.com>",
+          "timestamp": "2026-06-18T11:26:36+03:00",
+          "tree_id": "ef05fceef7214627d1f361995dae140c57422a7d",
+          "url": "https://github.com/stacklok/mecatl/commit/a9484f5f881ff78c719d578cd6e5cfbe4e548180"
+        },
+        "date": 1781771544985,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1466,
             "unit": "allocs/op"
           },
           {
