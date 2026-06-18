@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781810155724,
+  "lastUpdate": 1781810158281,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -216496,6 +216496,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 35128,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "24b81d96b3ce0cea69560ece792d92181d31ab9d",
+          "message": "fix(agent): bound cumulative model-router classifier spend (#92, #91) (#106)\n\nThe subagent model-router classifier minted a fresh session.New with zero\nUsage per classification, so --max-run-tokens never bounded cumulative\nclassifier spend — delegation_count × per_run_budget blow-up (CWE-770).\n\nThread the classifier session's Usage out of RunModelRouter, through the\nSubagentModelRouter Deps closure and buildModelRouterTask, and fold it into\nthe parent sess.Usage in the parentCaps.routeTask closure (synchronously on\nthe dispatch goroutine, on both hit and miss paths), mirroring the loop's own\nRecordUsage. The single brake authority sess.Usage.TotalTokens() now covers\nthe classifier; the per-run breaker still bounds classification COUNT.\n\nAlso corrects three as-built ADR/IMPLEMENTATION-NOTES claims that drifted from\nthe shipped model-selection implementation (#91): the router INFO emit site\n(dispatch-time routeTask closure, not the child chokepoint), the sibling\nresolveSlotModel resolver (not \"resolveProviderModel extended\"), and the\nclassifier-spend bound (now true post-#92). docs/usage.md cost note updated.\n\nTests (all mutation-verified RED on revert): classifier usage returned on the\nhit, benign-miss, and StopError/StopCancelled fail-soft paths; the routeTask\nfold accumulates into the parent session (hit + miss); composition-layer\nusage propagation through buildModelRouterTask; and a real-loop e2e where\nfolded classifier spend drives a run to terminal StopBudget.\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T22:10:22+03:00",
+          "tree_id": "9c96772b23d0d57a2899f9cd41f56e7c313daf71",
+          "url": "https://github.com/stacklok/mecatl/commit/24b81d96b3ce0cea69560ece792d92181d31ab9d"
+        },
+        "date": 1781810157527,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35129,
             "unit": "allocs/op"
           },
           {
