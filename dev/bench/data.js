@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781810603216,
+  "lastUpdate": 1781810606044,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -220194,6 +220194,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "background_subagents/allocs_per_op",
             "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35129,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "548ef43acade09ff6802ee1b8b25352184bf00ce",
+          "message": "test(server): decision-table matrix for engineAndWorkspaceFor resolution (#95) (#107)\n\nengineAndWorkspaceFor is the highest-complexity path in the service — the\nshared engine/workspace resolver for both the StartRunContent and the\nresumeFromAwaiting run-entry callers. Its branches were covered only\nincidentally by scattered scenario tests.\n\nAdd TestEngineAndWorkspaceForResolutionMatrix, an explicit decision-table that\nnames and pins every (hasEngine x resolution-branch) combination. The issue\nasked for a \"four-way\" matrix; the current code (post worktree refactor) has\n5 resolution outcomes (REUSE, REBUILD/CASE 1, PROMOTE/CASE 2, REHYDRATE,\nSHARED-DEFAULT) plus 2 error exits (mid-run-rebuild reject -> ErrInvalidArgument,\nat-cap -> ErrTooManySessionEngines) — the test doc-comment states this and the\n11 rows cover all of them, including a resume-caller REHYDRATE row proving the\ntwo run-entry callers share the resolver and do not drift.\n\nEach row asserts the SPECIFIC branch fired via the modeRecordingFactory\ncalls/modes counters and reply text — not merely \"a run completed\". The\nmid-run-rejected row asserts calls==1 at rejection so it pins the cheap\npre-check (factory uncalled) rather than the redundant authoritative guard.\nTest-only; reuses existing offline scaffolding (mockllm/memfs/memstore); no\nsleeps; deterministic under -race. No production code changed.\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T22:17:45+03:00",
+          "tree_id": "5c0a9869916078c84ae944c6abcd0dbd58679a0d",
+          "url": "https://github.com/stacklok/mecatl/commit/548ef43acade09ff6802ee1b8b25352184bf00ce"
+        },
+        "date": 1781810605244,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467.5,
             "unit": "allocs/op"
           },
           {
