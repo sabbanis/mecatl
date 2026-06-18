@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781762780365,
+  "lastUpdate": 1781762782849,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -180729,6 +180729,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 97,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3b31455ff5f7c1ca2c5f3e64c7ba7f57cf2114ab",
+          "message": "feat(provider): add GLM 5.2 to OpenRouter catalog (#88)\n\nCo-authored-by: mecatl <mecatl@users.noreply.github.com>",
+          "timestamp": "2026-06-18T09:00:53+03:00",
+          "tree_id": "72bbb58d7973152725fb5c26b103f617bcf943c5",
+          "url": "https://github.com/stacklok/mecatl/commit/3b31455ff5f7c1ca2c5f3e64c7ba7f57cf2114ab"
+        },
+        "date": 1781762781984,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3517.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 81,
             "unit": "allocs/op"
           }
         ]
