@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781765856775,
+  "lastUpdate": 1781765859785,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -184275,6 +184275,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/3b31455ff5f7c1ca2c5f3e64c7ba7f57cf2114ab"
         },
         "date": 1781762779467,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "717b576561547363db85b432ee9e463a3db0b9b4",
+          "message": "fix(mecatui): raise LLM per-attempt/idle timeouts for slow reasoning models\n\nGLM-5.2 (and other heavy reasoning models) routinely stream reasoning for\nlonger than the 60s LLMPerAttemptTimeout. Live debugging of a stuck session\nshowed 13/65 turns clamped at exactly 60001ms: the attempt was cut\nmid-reasoning, the turn ended empty, and the no-progress handler nudged twice\nthen ended the run with Stop=\"no_progress\" (\"I've been halted\"). Bump the\nhardcoded mecatui defaults to 300s per-attempt / 180s idle to unblock.\n\nFollow-up (not in this commit): expose these as flags in mecatui (parity with\nmecated) and fix the per-attempt deadline so it genuinely detaches after the\nfirst chunk (llmresilience.go:413-415) instead of silently truncating long\nreasoning streams.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T09:51:08+03:00",
+          "tree_id": "3998d3feb8d5d84e020e3d2b35c25978034f5762",
+          "url": "https://github.com/stacklok/mecatl/commit/717b576561547363db85b432ee9e463a3db0b9b4"
+        },
+        "date": 1781765858642,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
