@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781771548640,
+  "lastUpdate": 1781771551259,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -199709,6 +199709,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 87,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "a9484f5f881ff78c719d578cd6e5cfbe4e548180",
+          "message": "refactor(cliconfig): deduplicate keyValueList into cliconfig.KeyValueList (#93)\n\nThe `keyValueList` flag.Value type was declared twice — once in\ncmd/mecated/main.go and once in cmd/mecatui/config.go — and had already\ndrifted: mecated's Set error said \"model alias must be key=value\", mecatui's\nsaid \"must be key=value\". The repo built internal/cliconfig precisely so the\nmains \"cannot drift apart,\" and mecatui already imports it, so the twin copies\nwere the exact drift the package exists to prevent.\n\nMove the type to cliconfig.KeyValueList (with String/Set/AsMap), add a\nRegisterModelFlags helper mirroring RegisterProviderFlags (per-main help\noverride via ModelFlagHelp, mecated-style DefaultModelFlagHelp fallback), and\ndelete both copies. Both mains now register --model-alias/--model-slot through\nthe one helper and thread the parsed *KeyValueList onto app.Config via AsMap\n(nil-safe so an unset flag stays the byte-identical nil-map default). --help\noutput is unchanged for both mains (mecated keeps the default wording, mecatui\nkeeps its \"embedded server only:\" override).\n\nAdd cliconfig tests pinning the unified parse-error message, last-write-wins +\ntrim semantics, the nil-safe AsMap, and the flag.Value contract.\n\nCloses #93\n\nCo-Authored-By: mecatl <mecatl@stacklok.com>",
+          "timestamp": "2026-06-18T11:26:36+03:00",
+          "tree_id": "ef05fceef7214627d1f361995dae140c57422a7d",
+          "url": "https://github.com/stacklok/mecatl/commit/a9484f5f881ff78c719d578cd6e5cfbe4e548180"
+        },
+        "date": 1781771550531,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3535,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 98,
             "unit": "allocs/op"
           }
         ]
