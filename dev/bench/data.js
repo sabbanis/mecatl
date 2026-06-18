@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781765853682,
+  "lastUpdate": 1781765856775,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -182944,6 +182944,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 35126,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "717b576561547363db85b432ee9e463a3db0b9b4",
+          "message": "fix(mecatui): raise LLM per-attempt/idle timeouts for slow reasoning models\n\nGLM-5.2 (and other heavy reasoning models) routinely stream reasoning for\nlonger than the 60s LLMPerAttemptTimeout. Live debugging of a stuck session\nshowed 13/65 turns clamped at exactly 60001ms: the attempt was cut\nmid-reasoning, the turn ended empty, and the no-progress handler nudged twice\nthen ended the run with Stop=\"no_progress\" (\"I've been halted\"). Bump the\nhardcoded mecatui defaults to 300s per-attempt / 180s idle to unblock.\n\nFollow-up (not in this commit): expose these as flags in mecatui (parity with\nmecated) and fix the per-attempt deadline so it genuinely detaches after the\nfirst chunk (llmresilience.go:413-415) instead of silently truncating long\nreasoning streams.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T09:51:08+03:00",
+          "tree_id": "3998d3feb8d5d84e020e3d2b35c25978034f5762",
+          "url": "https://github.com/stacklok/mecatl/commit/717b576561547363db85b432ee9e463a3db0b9b4"
+        },
+        "date": 1781765855614,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35129,
             "unit": "allocs/op"
           },
           {
