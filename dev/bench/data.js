@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781783808613,
+  "lastUpdate": 1781783810964,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -206847,6 +206847,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/6e7ea976c22a6e2e6227f4fd27fcf212685ff1f9"
         },
         "date": 1781780098462,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "faa4b660f2c1ab642eeab29a628f310dd1b12e9c",
+          "message": "feat(mecatui): first-class worktree binding for sessions (#102)\n\nAdds a /worktrees overlay to mecatui so operators can start a new session\nrooted at any sibling git worktree discovered via `git worktree list`, making\nall file tools (Read/Edit/Write/Grep/Glob) and Bash cwd resolve to the chosen\nroot rather than the launch workspace.\n\nKey changes:\n- New ListWorktrees gRPC/HTTP RPC backed by a nil-safe, trust-gated,\n  envscrub+gitenv-double-scrubbed gitWorktreeLister (composition-injected,\n  off by default for no-FS/cloud deployments).\n- ServerCapabilities.worktrees bool gates the /worktrees overlay honestly on\n  older or no-FS servers.\n- A worktree session routes through the per-session engine factory so subagent\n  children re-pin their permission resolver to the session root (closing the\n  child-resolver gap), and rehydrates after a restart (closing the restart-\n  fidelity gap).\n- /worktrees TUI overlay: type-to-filter picker → confirm → restart-now handoff\n  (mirrors /models; no apply-on-next — workspace switch always creates a new\n  session). Active workspace shown in header when different from the launch root.\n- Security: ListWorktrees workspace parameter clamped to DefaultWorkspace so\n  authenticated clients cannot trigger git shell-outs in arbitrary directories\n  (CWE-73, panel finding).\n- ADR 0032 documents the design; docs/adr/0027-cloud-native.md List 1 updated;\n  docs/adr/README.md, parallelism.md, IMPLEMENTATION-NOTES.md, usage.md,\n  PRODUCTION-READINESS.md all updated.\n\nCloses #102\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01LgWXbgGRKH4CTWc3eFPP7G",
+          "timestamp": "2026-06-18T14:50:25+03:00",
+          "tree_id": "fdd15b6dc7701927cb64f6e1d04e67aa57ddf6b9",
+          "url": "https://github.com/stacklok/mecatl/commit/faa4b660f2c1ab642eeab29a628f310dd1b12e9c"
+        },
+        "date": 1781783810223,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
