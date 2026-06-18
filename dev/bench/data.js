@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781769119530,
+  "lastUpdate": 1781769122349,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -190400,6 +190400,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 35128.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "37a3bce0bbe7a13a1a65aea6b30b6dbb30c4d981",
+          "message": "fix(llmresilience): bound per-attempt timeout to establishment only; expose mecatui flags\n\nThe per-attempt timeout silently truncated long reasoning turns. establish()\ncreated the inner stream with context.WithTimeout(ctx, PerAttemptTimeout), and\nrestSeq kept reading on that same context, so its ABSOLUTE deadline cut an\nactively-streaming turn mid-flight as a clean-done (no ChunkDone, no error).\nA live GLM-5.2 session had 13/65 turns clamped at exactly 60001ms while\nstreaming reasoning, ending empty -> no-progress run death.\n\nFix: PerAttemptTimeout now bounds ONLY establishment + first chunk. The inner\nstream rides a deadline-free context.WithCancel(ctx); a separate establishment\ntime.Timer sets estTimedOut then cancels ONLY if the first chunk hasn't arrived\nin time, and is stopped+joined once the first chunk is buffered. Thereafter the\nstreaming phase is governed solely by StreamIdleTimeout + parent ctx, so a long\nactively-streaming turn is never truncated at the per-attempt deadline.\n\nPreserves: errFirstChunkTimeout stays retryable + breaker-counted (synthesized\nas DeadlineExceeded: errFirstChunkTimeout); a genuine parent-ctx cancel still\nsurfaces as a cancel; a genuinely-empty stream still hits empty-success;\nno-replay-after-first-chunk; the goleak join discipline on every exit path.\n\nAlso closes a late-fire race: if the timer fired in the window between pulling\nthe first chunk and stopping the timer, it could cancel the context handed to\nrestSeq -> truncation. stopEstTimer now reports whether it had already fired;\nthe success path converts a late fire into a retryable establishment timeout\n(safe -- nothing has been yielded, so no-replay holds).\n\nPart 2: expose --llm-per-attempt-timeout / --llm-stream-idle-timeout flags in\nmecatui (parity with mecated) and raise BOTH binaries' defaults to 300s/180s,\noperator-overridable, so slow reasoning models' time-to-first-token survives by\ndefault. Supersedes the hardcoded-bump quick fix (717b576).\n\nTests: a streaming-past-deadline adversarial regression guard, an\nestablishment-timeout-still-fires-and-retries test, a timer-stopped/late-fire\nboundary test (mutation-verified to fail on the pre-fix code), and the\ngenuinely-empty-stream guard. Docs (usage.md, IMPLEMENTATION-NOTES.md, AGENTS.md)\nupdated to the establishment-only semantics.\n\nCloses #89\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T10:42:11+03:00",
+          "tree_id": "760387e9ac4a5dd8d9c86907a7048d2d74c77f1b",
+          "url": "https://github.com/stacklok/mecatl/commit/37a3bce0bbe7a13a1a65aea6b30b6dbb30c4d981"
+        },
+        "date": 1781769121377,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35129,
             "unit": "allocs/op"
           },
           {
