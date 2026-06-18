@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781769626284,
+  "lastUpdate": 1781769629575,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -195913,6 +195913,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 86,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "1f460b5129b03980084353e5b1a6cbc1eeb50fad",
+          "message": "fix(mecatui): show full reasoning body when expanded (ctrl+t)\n\nrenderReasoning truncated the reasoning summary to 24 lines via\ntruncateLinesTail unconditionally, so expanding with ctrl+t still cut a\nlong chain-of-thought at \"…(truncated)\". The expanded branch now renders\nthe full text with no line cap, matching how resultBody handles tool\nresults; the collapsed path was already a header-only one-liner and is\nunchanged. The now-unused maxReasoningLines const is removed, and a\nregression test (58-line block, expanded) locks the no-truncation\nbehaviour.\n\nCloses #96\n\nCo-Authored-By: mecatl <noreply@stacklok.com>",
+          "timestamp": "2026-06-18T10:53:21+03:00",
+          "tree_id": "101a1e0edc28a8af7197633d5de80fb5ad8cd2d5",
+          "url": "https://github.com/stacklok/mecatl/commit/1f460b5129b03980084353e5b1a6cbc1eeb50fad"
+        },
+        "date": 1781769628314,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3522,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 87,
             "unit": "allocs/op"
           }
         ]
