@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781810608638,
+  "lastUpdate": 1781810611475,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -222485,6 +222485,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 85.5,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "548ef43acade09ff6802ee1b8b25352184bf00ce",
+          "message": "test(server): decision-table matrix for engineAndWorkspaceFor resolution (#95) (#107)\n\nengineAndWorkspaceFor is the highest-complexity path in the service — the\nshared engine/workspace resolver for both the StartRunContent and the\nresumeFromAwaiting run-entry callers. Its branches were covered only\nincidentally by scattered scenario tests.\n\nAdd TestEngineAndWorkspaceForResolutionMatrix, an explicit decision-table that\nnames and pins every (hasEngine x resolution-branch) combination. The issue\nasked for a \"four-way\" matrix; the current code (post worktree refactor) has\n5 resolution outcomes (REUSE, REBUILD/CASE 1, PROMOTE/CASE 2, REHYDRATE,\nSHARED-DEFAULT) plus 2 error exits (mid-run-rebuild reject -> ErrInvalidArgument,\nat-cap -> ErrTooManySessionEngines) — the test doc-comment states this and the\n11 rows cover all of them, including a resume-caller REHYDRATE row proving the\ntwo run-entry callers share the resolver and do not drift.\n\nEach row asserts the SPECIFIC branch fired via the modeRecordingFactory\ncalls/modes counters and reply text — not merely \"a run completed\". The\nmid-run-rejected row asserts calls==1 at rejection so it pins the cheap\npre-check (factory uncalled) rather than the redundant authoritative guard.\nTest-only; reuses existing offline scaffolding (mockllm/memfs/memstore); no\nsleeps; deterministic under -race. No production code changed.\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T22:17:45+03:00",
+          "tree_id": "5c0a9869916078c84ae944c6abcd0dbd58679a0d",
+          "url": "https://github.com/stacklok/mecatl/commit/548ef43acade09ff6802ee1b8b25352184bf00ce"
+        },
+        "date": 1781810610571,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3521.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 85,
             "unit": "allocs/op"
           }
         ]
