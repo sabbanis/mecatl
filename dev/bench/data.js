@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781811304606,
+  "lastUpdate": 1781811307876,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -230077,6 +230077,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 86,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "533492f2e1bd0a4e5bc1ae9cb6839216eff42da1",
+          "message": "test(mecatui): deflake TestScrollbackReviseAllocsIndependentOfN (#109)\n\nThe test asserted per-op allocs are independent of iteration count via a raw\n`Δ ≤ 1` difference between a low-run (50) and high-run (2000) AllocsPerRun\nmeasurement. It flaked in CI (~30% under -race): low(50)=3469 high(2000)=3471,\nΔ=2.\n\nRoot cause is measurement noise, not a real per-op growth bug. testing.AllocsPerRun\nreturns floor(process-wide Mallocs delta / runs); under -race, background\ngoroutine/GC mallocs bleed into the window, and the 2000-run window is ~40x\nlonger in wall-clock than the 50-run window, so proportionally more background\nmallocs accumulate and the floored quotient tips up by 1-2. reviseAssistant is\ngenuinely fixed-size (`b.raw = text`, a replace — confirmed, unchanged), and the\nrender caches are keyed on the stable block index and overwrite in place.\n\nFix (test-only): assert a relative tolerance band — high must not exceed\nlow + max(2, low*0.001) (~3.5 allocs at this baseline) — instead of an exact\n±1 difference, and raise lowRuns 50→500 to cut the window wall-clock asymmetry\n~40x→~4x. The band absorbs the N-independent ±2 instrument residue while the\nreal regression this guards (reviseAssistant reverting to `b.raw += text`\nunbounded per-op growth) produces an order ~10^5 alloc/op delta that overshoots\nthe band by ~100x+ — mutation-verified RED, then GREEN on revert. Comment\ndocuments the floored-division precision argument and cross-references the\nexisting perf.yml advisory carve-out for the non-deterministic tui_scrollback_view*\nrender-alloc metrics. No production change.\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-18T22:23:36+03:00",
+          "tree_id": "dc6b1dc64be929712c1c1ddb054a357fd60eab98",
+          "url": "https://github.com/stacklok/mecatl/commit/533492f2e1bd0a4e5bc1ae9cb6839216eff42da1"
+        },
+        "date": 1781811306626,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3521,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 85,
             "unit": "allocs/op"
           }
         ]
