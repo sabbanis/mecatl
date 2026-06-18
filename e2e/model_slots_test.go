@@ -53,7 +53,7 @@ func modelSlotSpecs() {
 					"--compaction", "cascade",
 					"--model-alias", "cheap="+cheap,
 					"--model-slot", "compaction=cheap",
-					"--max-run-tokens", envOrDefault("MECATL_E2E_COMPACTION_MAX_RUN_TOKENS", "100000"),
+					"--max-run-tokens", envOrDefault("MECATL_E2E_COMPACTION_MAX_RUN_TOKENS", "150000"),
 				)
 				gomega.Expect(err).NotTo(gomega.HaveOccurred(), "spawn local mecated with --model-slot")
 				defer func() { _ = spawn.Close() }()
