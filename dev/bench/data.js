@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781838611029,
+  "lastUpdate": 1781838614088,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -233868,6 +233868,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view/allocs_per_op",
             "value": 3521,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 85,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2c21f6b8d52281947e6d28d7eaf3de90b516c49e",
+          "message": "feat(wire): surface routed-category metadata on the subagent event wire (#97) (#110)\n\nThe opt-in semantic subagent model router (ADR 0031) classified delegations\nand minted children on the chosen category's model, but the RoutedCategory/\nRoutedModel fields lived on the session struct + diagnostics only — the\nproto/client wire was a documented follow-up from PR #87. This lands that\nfollow-up.\n\nProto + generated contracts:\n  - Add routed_category (field 11) and routed_model (field 12) to the\n    Subagent event payload in contracts/proto/mecatl/v1/harness.proto;\n    regenerate contracts/gen via buf generate.\n\nServer mapper:\n  - toProtoSubagent now populates RoutedCategory/RoutedModel from the\n    session payload. Both relays (gRPC + HTTP/SSE) flow through the one\n    toProto mapper, so no per-relay change is needed.\n\nClient (mecatui):\n  - SubagentMsg carries RoutedCategory/RoutedModel; subagentMsg reads them\n    via the generated getters (nil-safe).\n  - Thread them through the inline Subagent card (subRoutedCategory/\n    subRoutedModel on the block, set via setSubagentStart) and the fleet\n    lane (fleetStart). Rendered as a muted \"routed: <cat> -> <model>\"\n    line under the card goal and on the ctrl+a fleet roster row. Absent\n    when the child was not routed.\n\nDocs:\n  - Drop the \"session-struct + diagnostics only\" / \"follow-up\" framing\n    in the living docs (architecture/providers.md, IMPLEMENTATION-NOTES.md)\n    and the engine/session/event.go doc-comment: the fields now surface\n    end-to-end. ADR 0031 is frozen and left as-is.\n\nTests:\n  - Mapper test asserts the routed fields round-trip on subagent.start.\n  - mecatui tests assert the routed line surfaces on the inline card and\n    the fleet roster, and is absent when unrouted.\n  - The e2e model_router spec now asserts the per-delegation routed model\n    rides the subagent.start wire (the live wire confirmation), replacing\n    the \"cannot observe on the wire\" comment.\n\nMetadata-only (gauntlet #7): a category label + a model id, never the task\nprompt or classifier reasoning.",
+          "timestamp": "2026-06-19T06:04:31+03:00",
+          "tree_id": "4c0584bd904a3bd91beb9b18d5c1fb02fd4ea9ac",
+          "url": "https://github.com/stacklok/mecatl/commit/2c21f6b8d52281947e6d28d7eaf3de90b516c49e"
+        },
+        "date": 1781838612938,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3521.5,
             "unit": "allocs/op"
           },
           {
