@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781848250332,
+  "lastUpdate": 1781848253101,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -242592,6 +242592,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 35129,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "27c1af596352ca7c01dccb468352db50d30d772c",
+          "message": "feat(wire): surface per-delegation model for ALL children (#112)\n\nThe agents UI surfaced the model a delegation ran on ONLY when the opt-in\nsemantic model router routed it (routed_category/routed_model on\nsubagent.start, parallel.branch_start, team.start roster). The common\ncases — router off (default), inherited/default model, agent-def-pinned,\nper-call `model` override — showed no model indicator at all.\n\nAdd a generic `model` string to the Subagent (proto 13), TeamMemberSpec\n(7), and Parallel (21) payloads carrying the concrete model id the child\nACTUALLY ran on, regardless of how chosen. Populated at the existing emit\nsites from the child engine's resolved model via a new Engine.Model()\naccessor (deps.Model) and Supervisor.MemberModel(name) (mirroring\nMemberRouting). Threaded through the one server mapper, the mecatui client\nview-model, and the render layer. routed_category/routed_model stay as the\nrouter-provenance signal; when routed, model == routed_model.\n\nmecatui's subagentRoutedLabel generalizes to subagentModelLabel: the\nrouted cue (routed: <category> → <model>) is shown byte-identical when the\nrouter fired (not duplicated as a model: line); otherwise model: <id> for\nthe plain case; else nothing. Applied at all four render sites (Subagent\ncard, fleet lane, Parallel branch row, team roster row).\n\nMetadata-only (gauntlet #7): a model id is bare metadata, never child\ncontent — same posture as routed_model. The structural allowlist guards\nare updated. Wire-backward-compatible additive proto fields. The gRPC\nRunTeam direct path emits no EvTeamStart roster, so the only roster\nprojection site is the in-process Team tool.\n\nTests: mapper round-trip (routed + inherited for all three families),\nmecatui render (routed-no-duplicate + plain model: + count assertions),\nengine emit (inherited + per-call override carry Model), MemberModel\n(routed/defined/miss), gauntlet-#7 allowlists updated. The leak test's\nmarkerEngine(secret) was de-conflated so the secret lives only in the\nsummary, not the model field.\n\nADR 0035 records the decision; ADR 0034 gets a forward-reference update\nnote; architecture/providers.md + IMPLEMENTATION-NOTES.md flipped.\n\nCloses #112.",
+          "timestamp": "2026-06-19T08:25:57+03:00",
+          "tree_id": "6efa6e675eb1ebfd740d3dc04c5fa8a7b93d44b4",
+          "url": "https://github.com/stacklok/mecatl/commit/27c1af596352ca7c01dccb468352db50d30d772c"
+        },
+        "date": 1781848252145,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1466.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35128,
             "unit": "allocs/op"
           },
           {
