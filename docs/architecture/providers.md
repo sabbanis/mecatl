@@ -342,6 +342,13 @@ families). The per-family seam respects each family's engine lifetime:
   branch_start event carries the routed metadata. The breaker mutex serialises the concurrent
   branch classifications.
 
+Like the Subagent family, the team and parallel routed fields surface **end-to-end on the
+proto/client wire**: `routed_category`/`routed_model` on the `TeamMemberSpec` (team.start
+roster) and on the `Parallel` event (branch_start), relayed through the gRPC + HTTP relays
+and rendered by mecatui (the ctrl+a Teams roster row and the Parallel group-focus branch
+row). Bare metadata only — a category label + a model id, never member/branch content
+(gauntlet #7).
+
 The category→model→engine mapping stays in composition (`buildMemberEngine` substitutes the
 routed model on the undefined branch; the new `buildParallelEngineFactory` mints the branch
 engine) — both through the contamination-safe per-provider path (window/compactor/counter

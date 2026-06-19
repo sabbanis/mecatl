@@ -643,6 +643,19 @@ per-AddMember, session-scoped. Guards: `engine/agent`
 + `TestTeamRoutesMembersToCategoryModelsE2E` + `TestParallelRoutesBranchesToCategoryModelsE2E`
 + the two OFF-byte-identical e2e siblings.
 
+WIRE (landed, mirroring the Subagent router's #110). The team + parallel routed fields
+surface end-to-end on the proto/client wire, NOT session-struct-only: `routed_category`/
+`routed_model` on the `TeamMemberSpec` message (team.start roster, fields 5/6) and on the
+`Parallel` message (branch_start, fields 19/20). `toProtoTeam`/`toProtoParallel` populate
+them from the payload (both relays flow through the one mapper), the mecatui client structs
+(`client.TeamMemberSpec`, `client.ParallelMsg`) carry them via the generated getters, and
+mecatui renders a muted `routed: <category> → <model>` cue on the ctrl+a Teams roster row
+(`teamRosterLine`) and the Parallel group-focus branch row (`parallelBranchLine`) — reusing
+the Subagent router's `subagentRoutedLabel` helper, absent when unrouted. Bare metadata only
+(gauntlet #7). The LIVE e2e specs (`team_router_test.go` / `parallel_router_test.go`) assert
+the routed model per member/branch ON THE WIRE (deterministic), replacing the prior
+"subagent routed" log-substring proxy.
+
 **Subagent structured output (`output_schema` + `SubmitResult` + bounded validation-retry).** When
 `subagentArgs.OutputSchema` (a model-authored JSON schema) is present, the child is given a synthetic
 `SubmitResult` tool (`engine/agent/structuredoutput.go`) whose PARAMETERS ARE that schema,

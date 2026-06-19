@@ -24,8 +24,11 @@ import (
 // shared suite target) because it needs the --subagent-model-router flag plus a router
 // taxonomy, which the shared target is not started with. Local-only by construction.
 //
-// HOW THE ASSERTION WORKS. This spec asserts three observable facts that together prove
-// the team family's routing actually FIRED and did not wedge:
+// HOW THE ASSERTION WORKS. The harness observes the routed model on the wire:
+// `RoutedCategory`/`RoutedModel` ride the team.start roster (`routed_category`/
+// `routed_model` proto fields on the `TeamMemberSpec` message, ADR 0034 / issue #100), so
+// the spec asserts the OBSERVABLE facts that together prove the team family's routing
+// FIRED and did not wedge:
 //
 //	(A) the build-once "subagent model router ACTIVE" INFO (logModelRouterFacts) — the
 //	    router was wired, not silently OFF. The SAME routeTask closure that fact narrates
@@ -37,39 +40,27 @@ import (
 //	    fired and the run ended cleanly — i.e. each member's classifier call plus the
 //	    routed member runs all executed against the live provider without wedging.
 //
-//	(C) the per-classification "subagent routed" INFO (category+model) appears in the log.
-//	    This shared closure (engine/agent/dispatch.go) emits one such LevelInfo line on
-//	    EVERY successful classification, and the team supervisor routes its plain members
-//	    through that exact closure. Because this spec drives ONLY a Team call (no Subagent
-//	    calls), any "subagent routed" line MUST have come from a team-member
-//	    classification — a clean, family-specific "routing fired and selected a model"
-//	    signal. (NB the message string is hardcoded "subagent routed" even for team
-//	    classifications — cosmetically inaccurate now that the closure is shared, but the
-//	    line is the genuine per-member routing diagnostic.)
+//	(C) the team.start roster carries, for each routed (undefined) member, the routed model
+//	    the classifier picked — the PER-MEMBER WIRE assertion. The alpha member's task is a
+//	    trivial single-step lookup → "small" (the cheap lane); the beta member's task is a
+//	    deep multi-step analysis → "large". This replaces the older "subagent routed"
+//	    log-substring proxy with a deterministic, per-member wire check (the field is
+//	    populated only on a successful classification — the same signal, but checkable per
+//	    member).
 //
-// WHY THE "subagent routed" LINE IS A RELIABLE PROOF (and the classifier knob). The line
-// fires only on a SUCCESSFUL classification: the classifier must emit the one-line JSON
-// verdict, which RunModelRouter parses whole-output-single-object (modelrouter.go); a
-// verdict-less/empty classifier turn is a clean fail-soft MISS that emits NO line. So the
-// assertion is only as reliable as the CLASSIFIER MODEL. The classifier slot is therefore
-// a SEPARATE knob (MECATL_E2E_ROUTER_CLASSIFIER_MODEL, default google/gemini-2.5-flash
-// — alias router-cat → slots.router) from the cheap category-target models: a small reliable model
-// that demonstrably emits the JSON verdict, NOT reused from the category lane (a prior
-// openai/gpt-4.1-mini classifier returned near-empty completions and produced no line, the
-// live flake this fixes). With a reliable classifier the line is a genuine end-to-end proof
-// that the team routing path FIRED against a real provider. The DETERMINISTIC per-family
-// routed-model proof is the offline internal/app test
-// (TestTeamRoutesMembersToCategoryModelsE2E reads each member's Model off a mock observer);
-// this live test proves the same path works against a real provider with a reliable
-// classifier — kept FlakeAttempts(2) for residual provider jitter, not classifier emptiness.
-//
-// LIMITATION: the harness cannot observe a routed member's model on the CLIENT WIRE. The
-// routed classification (RoutedCategory/RoutedModel on session.TeamPayload) is a
-// session-struct field with NO proto/client projection this slice — the deliberate
-// follow-up the Subagent router test documents (see model_router_test.go and ADR 0031).
-// So the "subagent routed" LOG line is the live per-classification signal; the full
-// per-member routed-model WIRE assertion lands with the proto/client RoutedModel fields
-// (the offline internal/app tests already read each member's Model off a mock observer).
+// CLASSIFIER KNOB. The routed wire fields are populated only on a SUCCESSFUL
+// classification: the classifier must emit the one-line JSON verdict, which RunModelRouter
+// parses whole-output-single-object (modelrouter.go); a verdict-less/empty classifier turn
+// is a clean fail-soft MISS that empties the routed wire fields. So the assertion is only
+// as reliable as the CLASSIFIER MODEL. The classifier slot is therefore a SEPARATE knob
+// (MECATL_E2E_ROUTER_CLASSIFIER_MODEL, default google/gemini-2.5-flash — alias router-cat →
+// slots.router) from the cheap category-target models: a small reliable model that
+// demonstrably emits the JSON verdict, NOT reused from the category lane (a prior
+// openai/gpt-4.1-mini classifier returned near-empty completions and emptied the wire
+// fields, the live flake the knob fixes). The DETERMINISTIC per-member proof also exists
+// offline (TestTeamRoutesMembersToCategoryModelsE2E reads each member's Model off a mock
+// observer); this live test proves the same path works against a real provider — kept
+// FlakeAttempts(2) for residual provider jitter, not classifier emptiness.
 func teamRouterSpecs() {
 	ginkgo.Describe("team model router", func() {
 		ginkgo.It("routes plain team members through the classifier and ends cleanly",
@@ -145,7 +136,8 @@ func teamRouterSpecs() {
 				calls := res.ToolCalls("Team")
 				gomega.Expect(len(calls)).To(gomega.BeNumerically(">=", 1),
 					"expected at least one Team call (the routed delegation)"+logTail())
-				gomega.Expect(res.TeamMsgs(client.TeamStart)).NotTo(gomega.BeEmpty(),
+				teamStarts := res.TeamMsgs(client.TeamStart)
+				gomega.Expect(teamStarts).NotTo(gomega.BeEmpty(),
 					"no team.start observed — the team never enrolled its members"+logTail())
 				gomega.Expect(res.TeamMsgs(client.TeamEnd)).NotTo(gomega.BeEmpty(),
 					"no team.end observed — the team never completed"+logTail())
@@ -157,18 +149,33 @@ func teamRouterSpecs() {
 				gomega.Expect(strings.TrimSpace(res.Result.Error)).To(gomega.BeEmpty(),
 					"a clean routed team run carries no error"+logTail())
 
-				// (C) Routing ACTUALLY FIRED for the team family. The shared routeTask
-				// closure emits a "subagent routed" INFO (category+model) on every
-				// successful classification; the supervisor routes each plain member
-				// through it. Re-read the log tail AFTER res returns (these lines are
-				// emitted MID-RUN per member, not at startup). Only the Team call ran here
-				// (no Subagent calls), so any such line is a team-member classification.
-				// >=1 is the robust floor (this run expects ~3 — lead+alpha+beta are all
-				// undefined/routed); the count is not over-tightened to avoid flaking on
-				// live model behaviour.
-				runLog := spawn.LogTail(65536)
-				gomega.Expect(runLog).To(gomega.ContainSubstring("subagent routed"),
-					"expected at least one per-classification 'subagent routed' INFO from a team-member classification (routing did not fire)"+logTail())
+				// (C) The team.start roster carries each routed (undefined) member's routed
+				// model — the PER-MEMBER WIRE assertion (RoutedCategory/RoutedModel on the
+				// team.start TeamMemberSpec, ADR 0034). The alpha member's task is a trivial
+				// single-step lookup → "small" (the cheap lane); the beta member's task is a
+				// deep multi-step analysis → "large". The fields are populated only on a
+				// successful classification, so this is the deterministic per-member proof
+				// that routing FIRED and selected the right model — replacing the older
+				// "subagent routed" log-substring proxy. (The lead's coordination task is
+				// classification-ambiguous, so its category is NOT asserted.)
+				roster := map[string]client.TeamMemberSpec{}
+				for _, ts := range teamStarts {
+					for _, m := range ts.Roster {
+						roster[m.Name] = m
+					}
+				}
+				alpha, okA := roster["alpha"]
+				gomega.Expect(okA).To(gomega.BeTrue(), "alpha missing from the team.start roster"+logTail())
+				gomega.Expect(alpha.RoutedCategory).To(gomega.Equal("small"),
+					"alpha (trivial lookup) should classify to 'small'"+logTail())
+				gomega.Expect(alpha.RoutedModel).To(gomega.Equal(small),
+					"alpha should be minted on the small-category model"+logTail())
+				beta, okB := roster["beta"]
+				gomega.Expect(okB).To(gomega.BeTrue(), "beta missing from the team.start roster"+logTail())
+				gomega.Expect(beta.RoutedCategory).To(gomega.Equal("large"),
+					"beta (deep multi-step analysis) should classify to 'large'"+logTail())
+				gomega.Expect(beta.RoutedModel).To(gomega.Equal(large),
+					"beta should be minted on the large-category model"+logTail())
 			})
 	})
 }

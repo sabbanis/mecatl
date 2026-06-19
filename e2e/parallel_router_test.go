@@ -23,8 +23,11 @@ import (
 // shared suite target) because it needs the --subagent-model-router flag plus a router
 // taxonomy, which the shared target is not started with. Local-only by construction.
 //
-// HOW THE ASSERTION WORKS. This spec asserts three observable facts that together prove
-// the parallel family's routing actually FIRED and did not wedge:
+// HOW THE ASSERTION WORKS. The harness observes the routed model on the wire:
+// `RoutedCategory`/`RoutedModel` ride the `parallel.branch{branch_start}` event payload
+// (`routed_category`/`routed_model` proto fields on the `Parallel` message, ADR 0034 /
+// issue #100), so the spec asserts the OBSERVABLE facts that together prove the parallel
+// family's routing FIRED and did not wedge:
 //
 //	(A) the build-once "subagent model router ACTIVE" INFO (logModelRouterFacts) — the
 //	    router was wired, not silently OFF. The SAME routeTask closure that fact narrates
@@ -38,41 +41,27 @@ import (
 //	    branch's classifier call plus the routed branch runs all executed against the live
 //	    provider without wedging.
 //
-//	(C) the per-classification "subagent routed" INFO (category+model) appears in the log.
-//	    This shared closure (engine/agent/dispatch.go) emits one such LevelInfo line on
-//	    EVERY successful classification, and the Parallel tool routes each def-less branch
-//	    through that exact closure. Because this spec drives ONLY a Parallel call (no
-//	    Subagent calls), any "subagent routed" line MUST have come from a branch
-//	    classification — a clean, family-specific "routing fired and selected a model"
-//	    signal. (NB the message string is hardcoded "subagent routed" even for branch
-//	    classifications — cosmetically inaccurate now that the closure is shared, but the
-//	    line is the genuine per-branch routing diagnostic.)
+//	(C) each routed branch_start carries the routed model the classifier picked for that
+//	    branch — the PER-BRANCH WIRE assertion. Branch 0's task is a trivial single-step
+//	    lookup, so it should classify to the "small" category (the cheap lane); branch 1's
+//	    task is a deep multi-step analysis, so it should classify to "large". This replaces
+//	    the older "subagent routed" log-substring proxy with a deterministic, per-branch
+//	    wire check (the field is populated only on a successful classification — the same
+//	    signal, but checkable per branch).
 //
-// WHY THE "subagent routed" LINE IS A RELIABLE PROOF (and the classifier knob). The line
-// fires only on a SUCCESSFUL classification: the classifier must emit the one-line JSON
-// verdict, which RunModelRouter parses whole-output-single-object (modelrouter.go); a
-// verdict-less/empty classifier turn is a clean fail-soft MISS that emits NO line. So the
-// assertion is only as reliable as the CLASSIFIER MODEL. The classifier slot is therefore
-// a SEPARATE knob (MECATL_E2E_ROUTER_CLASSIFIER_MODEL, default google/gemini-2.5-flash
-// — alias router-cat → slots.router) from the cheap category-target models: a small reliable model
-// that demonstrably emits the JSON verdict, NOT reused from the category lane (a prior
-// openai/gpt-4.1-mini classifier returned near-empty completions and produced no line, the
-// live flake this fixes). With a reliable classifier the line is a genuine end-to-end proof
-// that the parallel routing path FIRED against a real provider. The DETERMINISTIC per-family
-// routed-model proof is the offline internal/app test
-// (TestParallelRoutesBranchesToCategoryModelsE2E reads each branch's Model off a mock
-// observer); this live test proves the same path works against a real provider with a
-// reliable classifier — kept FlakeAttempts(2) for residual provider jitter, not classifier
-// emptiness.
-//
-// LIMITATION: the harness cannot observe a routed branch's model on the CLIENT WIRE. The
-// routed classification (RoutedCategory/RoutedModel on session.ParallelPayload, carried
-// on parallel.branch{branch_start}) has NO proto/client projection this slice — the
-// deliberate follow-up the Subagent router test documents (see model_router_test.go and
-// ADR 0031). So the "subagent routed" LOG line is the live per-classification signal;
-// the full per-branch routed-model WIRE assertion lands with the proto/client
-// RoutedModel fields (the offline internal/app tests already read each branch's Model
-// off a mock observer).
+// CLASSIFIER KNOB. The routed wire fields are populated only on a SUCCESSFUL
+// classification: the classifier must emit the one-line JSON verdict, which RunModelRouter
+// parses whole-output-single-object (modelrouter.go); a verdict-less/empty classifier turn
+// is a clean fail-soft MISS that empties the routed wire fields. So the assertion is only
+// as reliable as the CLASSIFIER MODEL. The classifier slot is therefore a SEPARATE knob
+// (MECATL_E2E_ROUTER_CLASSIFIER_MODEL, default google/gemini-2.5-flash — alias router-cat →
+// slots.router) from the cheap category-target models: a small reliable model that
+// demonstrably emits the JSON verdict, NOT reused from the category lane (a prior
+// openai/gpt-4.1-mini classifier returned near-empty completions and emptied the wire
+// fields, the live flake the knob fixes). The DETERMINISTIC per-branch proof also exists
+// offline (TestParallelRoutesBranchesToCategoryModelsE2E reads each branch's Model off a
+// mock observer); this live test proves the same path works against a real provider — kept
+// FlakeAttempts(2) for residual provider jitter, not classifier emptiness.
 func parallelRouterSpecs() {
 	ginkgo.Describe("parallel model router", func() {
 		ginkgo.It("routes parallel branches through the classifier and joins cleanly",
@@ -150,9 +139,9 @@ func parallelRouterSpecs() {
 					"expected a 2-branch fan-out"+logTail())
 
 				branchStarts := res.ParallelMsgs(client.ParallelBranchStart)
-				branches := map[int]bool{}
+				branches := map[int]client.ParallelMsg{}
 				for _, b := range branchStarts {
-					branches[b.BranchIndex] = true
+					branches[b.BranchIndex] = b
 				}
 				gomega.Expect(len(branches)).To(gomega.BeNumerically(">=", 2),
 					"expected >=2 distinct branch starts (each a routed branch)"+logTail())
@@ -174,18 +163,24 @@ func parallelRouterSpecs() {
 				gomega.Expect(strings.TrimSpace(res.Result.Error)).To(gomega.BeEmpty(),
 					"a clean routed parallel run carries no error"+logTail())
 
-				// (C) Routing ACTUALLY FIRED for the parallel family. The shared routeTask
-				// closure emits a "subagent routed" INFO (category+model) on every
-				// successful classification; the Parallel tool routes each def-less branch
-				// through it. Re-read the log tail AFTER res returns (these lines are
-				// emitted MID-RUN per branch, not at startup). Only the Parallel call ran
-				// here (no Subagent calls), so any such line is a branch classification.
-				// >=1 is the robust floor (this run expects ~2 — both branches are
-				// def-less/routed); the count is not over-tightened to avoid flaking on
-				// live model behaviour.
-				runLog := spawn.LogTail(65536)
-				gomega.Expect(runLog).To(gomega.ContainSubstring("subagent routed"),
-					"expected at least one per-classification 'subagent routed' INFO from a branch classification (routing did not fire)"+logTail())
+				// (C) Each routed branch_start carries the routed model the classifier picked
+				// for that branch — the PER-BRANCH WIRE assertion (RoutedCategory/RoutedModel
+				// on the parallel.branch{branch_start} event, ADR 0034). Branch 0's task is a
+				// trivial single-step lookup → "small" (the cheap lane); branch 1's task is a
+				// deep multi-step analysis → "large". The fields are populated only on a
+				// successful classification, so this is the deterministic per-branch proof
+				// that routing FIRED and selected the right model — replacing the older
+				// "subagent routed" log-substring proxy.
+				b0 := branches[0]
+				gomega.Expect(b0.RoutedCategory).To(gomega.Equal("small"),
+					"branch 0 (trivial lookup) should classify to 'small'"+logTail())
+				gomega.Expect(b0.RoutedModel).To(gomega.Equal(small),
+					"branch 0 should be minted on the small-category model"+logTail())
+				b1 := branches[1]
+				gomega.Expect(b1.RoutedCategory).To(gomega.Equal("large"),
+					"branch 1 (deep multi-step analysis) should classify to 'large'"+logTail())
+				gomega.Expect(b1.RoutedModel).To(gomega.Equal(large),
+					"branch 1 should be minted on the large-category model"+logTail())
 			})
 	})
 }

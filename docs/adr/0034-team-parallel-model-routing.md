@@ -64,9 +64,16 @@ concurrent branch classifications + the parent-usage folds, so no new lock is ad
 **Observability.** `session.ParallelPayload` (branch_start) and `session.TeamMemberSpec`
 (the EvTeamStart roster entry) each gain `RoutedCategory` / `RoutedModel` string fields,
 mirroring `SubagentPayload`. They are BARE METADATA — a category label and a concrete model
-id — never the member role/branch prompt or the classifier's reasoning (gauntlet #7). Like
-ADR 0031's routed fields they are engine-struct + diagnostics only this slice; the
-proto/client wire for them is a deliberate follow-up (no `task generate`).
+id — never the member role/branch prompt or the classifier's reasoning (gauntlet #7).
+
+> **Update (proto/client wire landed).** This ADR's original slice scoped the routed fields
+> to the engine struct + diagnostics, with the proto/client wire as a deliberate follow-up.
+> That follow-up has since landed (mirroring ADR 0031's #110): `routed_category`/
+> `routed_model` are now proto fields on the `TeamMemberSpec` (team.start roster, 5/6) and
+> the `Parallel` event (branch_start, 19/20), populated by `toProtoTeam`/`toProtoParallel`,
+> carried by the mecatui client structs, rendered as a muted `routed: <category> → <model>`
+> cue on the ctrl+a Teams roster + Parallel group-focus branch rows, and asserted on the
+> wire by the live e2e specs. Still bare metadata only (gauntlet #7).
 
 The category→model→engine mapping stays entirely in composition (`internal/app`): the
 member factory and the new `buildParallelEngineFactory` build the routed engine through

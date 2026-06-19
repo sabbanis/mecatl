@@ -535,8 +535,8 @@ type ParallelPayload struct {
 	// Like SubagentPayload.RoutedCategory/RoutedModel they are BARE METADATA — a category
 	// label and a model id, never the branch prompt or the classifier's reasoning — so they
 	// are gauntlet-#7 safe (no branch content, no model-influenced free text crosses). They
-	// are session-struct + diagnostics only this slice; the proto/client wire for them is a
-	// deliberate follow-up (no proto field, so no `task generate` needed — see ADR 0034).
+	// ride the proto/client wire end-to-end (parallel.branch_start: Parallel.routed_category
+	// = field 19 / routed_model = field 20), surfaced via the server mapper — see ADR 0034.
 	RoutedCategory string
 	RoutedModel    string
 
@@ -599,9 +599,9 @@ type TeamMemberSpec struct {
 	// whose agent def pinned its own model so the router never fired). Like the Subagent and
 	// Parallel routed fields they are BARE METADATA — a category label and a model id, never
 	// the member's role/prompt or the classifier's reasoning — so they are gauntlet-#7 safe
-	// (no member content crosses). They are session-struct + diagnostics only this slice;
-	// the proto/client wire for them is a deliberate follow-up (no proto field, so no
-	// `task generate` needed — see ADR 0034).
+	// (no member content crosses). They ride the proto/client wire end-to-end (team.start
+	// roster: TeamMemberSpec.routed_category = field 5 / routed_model = field 6), surfaced
+	// via the server mapper — see ADR 0034.
 	RoutedCategory string
 	RoutedModel    string
 }
