@@ -36,7 +36,7 @@ import (
 // with the proto/client RoutedModel fields.
 //
 // CLASSIFIER KNOB. The classifier slot (slots.router) is a SEPARATE knob
-// (MECATL_E2E_ROUTER_CLASSIFIER_MODEL, default anthropic/claude-3.5-haiku — alias
+// (MECATL_E2E_ROUTER_CLASSIFIER_MODEL, default google/gemini-2.5-flash — alias
 // router-cat) from the cheap category-target models, so the classifier is a model that
 // demonstrably emits the one-line JSON verdict on OpenRouter rather than reusing the
 // category lane (a prior openai/gpt-4.1-mini classifier returned near-empty completions —
@@ -62,9 +62,9 @@ func modelRouterSpecs() {
 				// reliably emit the one-line JSON verdict on OpenRouter, or RunModelRouter
 				// gets a verdict-less turn → fail-soft miss → inherit the default model
 				// (openai/gpt-4.1-mini returned near-empty completions as the classifier).
-				// Default to a small Claude that demonstrably emits the JSON verdict; the
+				// Default to a cheap model that demonstrably emits the JSON verdict; the
 				// category targets stay cheap (they only run the routed child).
-				classifier := envOrDefault("MECATL_E2E_ROUTER_CLASSIFIER_MODEL", "anthropic/claude-3.5-haiku")
+				classifier := envOrDefault("MECATL_E2E_ROUTER_CLASSIFIER_MODEL", "google/gemini-2.5-flash")
 				dir, err := os.MkdirTemp("", "mecatl-router-e2e-*")
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				defer func() { _ = os.RemoveAll(dir) }()
