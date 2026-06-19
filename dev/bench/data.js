@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781852256736,
+  "lastUpdate": 1781852259157,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -248229,6 +248229,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/27c1af596352ca7c01dccb468352db50d30d772c"
         },
         "date": 1781848254910,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c8472bea091c968b23776d7af72d9eb430d4cbdc",
+          "message": "feat(cloud-native): cross-process single-writer session leasing (Phase 4) (#60) (#119)\n\nPhase 4 of the cloud-native arc (ADR 0027): code-enforced cross-process single-writer via an optional port.SessionLease (type-asserted like PrunableStore), acquired at the run-entry funnel (ErrSessionLeasedElsewhere -> gRPC FailedPrecondition / HTTP 409), session-scoped with a Service-owned renewer + cancel-on-loss. Adapters: memlease (reference), flocklease (single-host), gRPC SessionLeaseService driver, in-process k8slease (coordination.k8s.io/v1). Byte-identical default when no lease is wired. Conformance suite across all adapters + bufconn; cross-process exclusion + TTL-takeover + double-execution-prevented gates; live two-process e2e (409-while-held + post-SIGKILL takeover). Docs: ADR 0027 Phase 4 SHIPPED + List 1/2/3 re-audit, usage flags + k8s RBAC, observability seam, deployment multi-replica note.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-19T09:52:10+03:00",
+          "tree_id": "56d96b4a15ceefdf0873622223789b912c07bcf6",
+          "url": "https://github.com/stacklok/mecatl/commit/c8472bea091c968b23776d7af72d9eb430d4cbdc"
+        },
+        "date": 1781852258459,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
