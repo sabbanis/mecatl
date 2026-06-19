@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781866187906,
+  "lastUpdate": 1781866190651,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -250063,6 +250063,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "team_fanout/allocs_per_op",
             "value": 2414.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "af61fca7066a22a7a598d4da57982a5b28752f56",
+          "message": "feat(engine): downstream-consumer convergence — engine module, stability contract, clock-injectability, supply-chain, event-sourced rehydration (#120)\n\nMake engine/ a clean, dependable, embeddable library (the downstream-consumer convergence): import-and-inject the core instead of vendoring. On top of #119 (session leasing); kept a monorepo via a committed go.work.\n\n- #116 clock-injectability: all engine-core wall-clock reads route through the injected port.Clock (nil-safe Engine.now()); ephemeral child ids use an atomic counter (fake-clock-safe); AST arch guard forbids time.Now/Since/Until in core.\n- #113 engine as its own Go module (github.com/stacklok/mecatl/engine) via go.work; external consumers get a tiny dep graph (x/sync + doublestar + goleak), not the toolhive/k8s/otel/grpc/SDK cone; dedicated GOWORK=off CI hygiene proof. ADR 0036.\n- #114 stability contract: engine/COMPATIBILITY.md + a text API-snapshot freshness gate (captures const values/exported surface; tied to arch.CorePackages); gorelease advisory. ADR 0037.\n- #118 supply-chain: per-module govulncheck (engine strict-clean; root fail-closed gate + dated allowlist for two unfixable docker CVEs) + dependabot for both modules and SHA-pinned actions.\n- #115 event-sourced rehydration: engine/adapter/eventsource.Fold (EventLog + SessionMeta -> *session.Session) + reconstruction contract; new log-only EvUserPrompt so the durable log records and the fold reconstructs user-role turns (closes a latent ADR-0027 gap). ADR 0038.\n- follow-up: go 1.26.3 -> 1.26.4 to clear three newly-disclosed stdlib CVEs the new vuln gate caught.\n\nNo hard API breaks; import paths unchanged. Validated by full CI + the live OpenRouter e2e suite.\n\nCloses #113\nCloses #114\nCloses #115\nCloses #116\nCloses #118\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-19T13:44:16+03:00",
+          "tree_id": "405eb49e07871a873a71ec9c59572f2b7cda8b64",
+          "url": "https://github.com/stacklok/mecatl/commit/af61fca7066a22a7a598d4da57982a5b28752f56"
+        },
+        "date": 1781866189774,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1477,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4476,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35128,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2423,
             "unit": "allocs/op"
           },
           {
