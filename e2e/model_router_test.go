@@ -34,6 +34,16 @@ import (
 // offline test's job (internal/app TestRouterRoutesChildToClassifiedModelE2E reads the
 // child's Model off a mock observer); a live wire assertion is a follow-up that lands
 // with the proto/client RoutedModel fields.
+//
+// CLASSIFIER KNOB. The classifier slot (slots.router) is a SEPARATE knob
+// (MECATL_E2E_ROUTER_CLASSIFIER_MODEL, default anthropic/claude-3.5-haiku — alias
+// router-cat) from the cheap category-target models, so the classifier is a model that
+// demonstrably emits the one-line JSON verdict on OpenRouter rather than reusing the
+// category lane (a prior openai/gpt-4.1-mini classifier returned near-empty completions —
+// a fail-soft miss that inherits the default model; see team/parallel_router_test.go where
+// that flaked the "subagent routed" assertion). This spec only asserts ACTIVE + a clean
+// run, so it was resilient to the empty classifier, but it shares the reliable classifier
+// for consistency across the three router specs.
 func modelRouterSpecs() {
 	ginkgo.Describe("subagent model router", func() {
 		ginkgo.It("classifies a plain Subagent delegation and routes it to a category model",
@@ -48,6 +58,13 @@ func modelRouterSpecs() {
 				// cheap OpenRouter-lane models so a routed child actually runs.
 				small := envOrDefault("MECATL_E2E_ROUTER_SMALL_MODEL", "openai/gpt-4.1-mini")
 				large := envOrDefault("MECATL_E2E_ROUTER_LARGE_MODEL", "openai/gpt-4.1")
+				// The CLASSIFIER slot is a SEPARATE knob from the category targets: it must
+				// reliably emit the one-line JSON verdict on OpenRouter, or RunModelRouter
+				// gets a verdict-less turn → fail-soft miss → inherit the default model
+				// (openai/gpt-4.1-mini returned near-empty completions as the classifier).
+				// Default to a small Claude that demonstrably emits the JSON verdict; the
+				// category targets stay cheap (they only run the routed child).
+				classifier := envOrDefault("MECATL_E2E_ROUTER_CLASSIFIER_MODEL", "anthropic/claude-3.5-haiku")
 				dir, err := os.MkdirTemp("", "mecatl-router-e2e-*")
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				defer func() { _ = os.RemoveAll(dir) }()
@@ -57,8 +74,9 @@ func modelRouterSpecs() {
 					"  aliases:\n" +
 					"    small-cat: " + small + "\n" +
 					"    large-cat: " + large + "\n" +
+					"    router-cat: " + classifier + "\n" +
 					"  slots:\n" +
-					"    router: small-cat\n" +
+					"    router: router-cat\n" +
 					"  router:\n" +
 					"    default-category: small\n" +
 					"    categories:\n" +

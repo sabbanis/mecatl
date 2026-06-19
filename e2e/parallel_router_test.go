@@ -48,6 +48,23 @@ import (
 //	    classifications — cosmetically inaccurate now that the closure is shared, but the
 //	    line is the genuine per-branch routing diagnostic.)
 //
+// WHY THE "subagent routed" LINE IS A RELIABLE PROOF (and the classifier knob). The line
+// fires only on a SUCCESSFUL classification: the classifier must emit the one-line JSON
+// verdict, which RunModelRouter parses whole-output-single-object (modelrouter.go); a
+// verdict-less/empty classifier turn is a clean fail-soft MISS that emits NO line. So the
+// assertion is only as reliable as the CLASSIFIER MODEL. The classifier slot is therefore
+// a SEPARATE knob (MECATL_E2E_ROUTER_CLASSIFIER_MODEL, default anthropic/claude-3.5-haiku
+// — alias router-cat → slots.router) from the cheap category-target models: a small Claude
+// that demonstrably emits the JSON verdict, NOT reused from the category lane (a prior
+// openai/gpt-4.1-mini classifier returned near-empty completions and produced no line, the
+// live flake this fixes). With a reliable classifier the line is a genuine end-to-end proof
+// that the parallel routing path FIRED against a real provider. The DETERMINISTIC per-family
+// routed-model proof is the offline internal/app test
+// (TestParallelRoutesBranchesToCategoryModelsE2E reads each branch's Model off a mock
+// observer); this live test proves the same path works against a real provider with a
+// reliable classifier — kept FlakeAttempts(2) for residual provider jitter, not classifier
+// emptiness.
+//
 // LIMITATION: the harness cannot observe a routed branch's model on the CLIENT WIRE. The
 // routed classification (RoutedCategory/RoutedModel on session.ParallelPayload, carried
 // on parallel.branch{branch_start}) has NO proto/client projection this slice — the
@@ -70,6 +87,13 @@ func parallelRouterSpecs() {
 				// cheap OpenRouter-lane models so a routed branch actually runs.
 				small := envOrDefault("MECATL_E2E_ROUTER_SMALL_MODEL", "openai/gpt-4.1-mini")
 				large := envOrDefault("MECATL_E2E_ROUTER_LARGE_MODEL", "openai/gpt-4.1")
+				// The CLASSIFIER slot is a SEPARATE knob from the category targets: it must
+				// reliably emit the one-line JSON verdict on OpenRouter, or RunModelRouter
+				// gets a verdict-less turn → fail-soft miss → NO "subagent routed" line (the
+				// live flake — openai/gpt-4.1-mini returned near-empty completions as the
+				// classifier). Default to a small Claude that demonstrably emits the JSON
+				// verdict; the category targets stay cheap (they only run the routed branch).
+				classifier := envOrDefault("MECATL_E2E_ROUTER_CLASSIFIER_MODEL", "anthropic/claude-3.5-haiku")
 				dir, err := os.MkdirTemp("", "mecatl-parallel-router-e2e-*")
 				gomega.Expect(err).NotTo(gomega.HaveOccurred())
 				defer func() { _ = os.RemoveAll(dir) }()
@@ -79,8 +103,9 @@ func parallelRouterSpecs() {
 					"  aliases:\n" +
 					"    small-cat: " + small + "\n" +
 					"    large-cat: " + large + "\n" +
+					"    router-cat: " + classifier + "\n" +
 					"  slots:\n" +
-					"    router: small-cat\n" +
+					"    router: router-cat\n" +
 					"  router:\n" +
 					"    default-category: small\n" +
 					"    categories:\n" +
