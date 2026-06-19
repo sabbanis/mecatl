@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781841477207,
+  "lastUpdate": 1781841479544,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -235136,6 +235136,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 35129,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9ecba3adfde361b5738ebb0062a788460069d3fb",
+          "message": "feat(agent): team-member & Parallel-branch model routing + wire (#100) (#111)\n\nExtend the ADR-0031 semantic model router to team members and Parallel\nbranches, reusing the operator taxonomy via the shared concurrency-safe\ncaps.routeTask closure (one breaker, race-free usage fold). Team members\nroute once at AddMember (decide-once, MemberSessionID-stable, outside the\nround errgroup); Parallel branches route once per runBranch via a\nper-branch engine factory. Precedence: per-call > def > router > inherited;\nfail-soft; gRPC RunTeam zero-caps; gauntlet #7 metadata-only.\n\nAlso surface RoutedCategory/RoutedModel on the proto/client wire for both\nfamilies (extending #110's Subagent pattern) — server mapper + mecatui\nrender — so the live e2e asserts the routed model on the wire per\nbranch/member (deterministic). New ADR 0034.\n\nValidated: offline unit + e2e (-race), and live against OpenRouter\n(team alpha→small/beta→large, parallel branch0→small/branch1→large).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-19T06:52:32+03:00",
+          "tree_id": "7537facc08c81c436fde4382fc6ca65645ad5d10",
+          "url": "https://github.com/stacklok/mecatl/commit/9ecba3adfde361b5738ebb0062a788460069d3fb"
+        },
+        "date": 1781841478931,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1465,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35128.5,
             "unit": "allocs/op"
           },
           {
