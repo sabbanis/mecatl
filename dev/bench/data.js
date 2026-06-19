@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781852259157,
+  "lastUpdate": 1781852261435,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -249052,6 +249052,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view/allocs_per_op",
             "value": 3532.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 95,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c8472bea091c968b23776d7af72d9eb430d4cbdc",
+          "message": "feat(cloud-native): cross-process single-writer session leasing (Phase 4) (#60) (#119)\n\nPhase 4 of the cloud-native arc (ADR 0027): code-enforced cross-process single-writer via an optional port.SessionLease (type-asserted like PrunableStore), acquired at the run-entry funnel (ErrSessionLeasedElsewhere -> gRPC FailedPrecondition / HTTP 409), session-scoped with a Service-owned renewer + cancel-on-loss. Adapters: memlease (reference), flocklease (single-host), gRPC SessionLeaseService driver, in-process k8slease (coordination.k8s.io/v1). Byte-identical default when no lease is wired. Conformance suite across all adapters + bufconn; cross-process exclusion + TTL-takeover + double-execution-prevented gates; live two-process e2e (409-while-held + post-SIGKILL takeover). Docs: ADR 0027 Phase 4 SHIPPED + List 1/2/3 re-audit, usage flags + k8s RBAC, observability seam, deployment multi-replica note.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-19T09:52:10+03:00",
+          "tree_id": "56d96b4a15ceefdf0873622223789b912c07bcf6",
+          "url": "https://github.com/stacklok/mecatl/commit/c8472bea091c968b23776d7af72d9eb430d4cbdc"
+        },
+        "date": 1781852260843,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3532,
             "unit": "allocs/op"
           },
           {
