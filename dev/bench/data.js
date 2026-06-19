@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781848253101,
+  "lastUpdate": 1781848255764,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -244467,6 +244467,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/53400a493d1b7b02d3a85a7de29bdde0a27b93d5"
         },
         "date": 1781843809761,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "27c1af596352ca7c01dccb468352db50d30d772c",
+          "message": "feat(wire): surface per-delegation model for ALL children (#112)\n\nThe agents UI surfaced the model a delegation ran on ONLY when the opt-in\nsemantic model router routed it (routed_category/routed_model on\nsubagent.start, parallel.branch_start, team.start roster). The common\ncases — router off (default), inherited/default model, agent-def-pinned,\nper-call `model` override — showed no model indicator at all.\n\nAdd a generic `model` string to the Subagent (proto 13), TeamMemberSpec\n(7), and Parallel (21) payloads carrying the concrete model id the child\nACTUALLY ran on, regardless of how chosen. Populated at the existing emit\nsites from the child engine's resolved model via a new Engine.Model()\naccessor (deps.Model) and Supervisor.MemberModel(name) (mirroring\nMemberRouting). Threaded through the one server mapper, the mecatui client\nview-model, and the render layer. routed_category/routed_model stay as the\nrouter-provenance signal; when routed, model == routed_model.\n\nmecatui's subagentRoutedLabel generalizes to subagentModelLabel: the\nrouted cue (routed: <category> → <model>) is shown byte-identical when the\nrouter fired (not duplicated as a model: line); otherwise model: <id> for\nthe plain case; else nothing. Applied at all four render sites (Subagent\ncard, fleet lane, Parallel branch row, team roster row).\n\nMetadata-only (gauntlet #7): a model id is bare metadata, never child\ncontent — same posture as routed_model. The structural allowlist guards\nare updated. Wire-backward-compatible additive proto fields. The gRPC\nRunTeam direct path emits no EvTeamStart roster, so the only roster\nprojection site is the in-process Team tool.\n\nTests: mapper round-trip (routed + inherited for all three families),\nmecatui render (routed-no-duplicate + plain model: + count assertions),\nengine emit (inherited + per-call override carry Model), MemberModel\n(routed/defined/miss), gauntlet-#7 allowlists updated. The leak test's\nmarkerEngine(secret) was de-conflated so the secret lives only in the\nsummary, not the model field.\n\nADR 0035 records the decision; ADR 0034 gets a forward-reference update\nnote; architecture/providers.md + IMPLEMENTATION-NOTES.md flipped.\n\nCloses #112.",
+          "timestamp": "2026-06-19T08:25:57+03:00",
+          "tree_id": "6efa6e675eb1ebfd740d3dc04c5fa8a7b93d44b4",
+          "url": "https://github.com/stacklok/mecatl/commit/27c1af596352ca7c01dccb468352db50d30d772c"
+        },
+        "date": 1781848254910,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
