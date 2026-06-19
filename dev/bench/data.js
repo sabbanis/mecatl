@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781867298969,
+  "lastUpdate": 1781867301657,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -253776,6 +253776,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 35128,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2423,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "d42f0eabd467fcc9727ae2dd5ef807536dbd72ad",
+          "message": "docs: reconcile architecture docs, skills & trackers after the host-convergence arc\n\nHolistic post-merge documentation pass (recon -> fix/enhance -> agent review)\nover the per-area surfaces the #120 merge left untouched:\n\n- Architecture pages: ports.md (12 ports incl. SessionLease; the event-sourced\n  SessionStore.Load contract; clock-injectability), domain-model.md (EvUserPrompt\n  + the full Event field list), observability.md (the 3rd EventLog consumer =\n  eventsource.Fold + the two Load implementations), deployment-and-hardening.md\n  (#118 govulncheck/dependabot + go 1.26.4), api-surface.md / extensibility.md /\n  architecture.md (engine-as-importable-module + stability contract), and the\n  modelith model (EventLog now reconstructs user turns, with the replay caveat).\n- docs/design/PRODUCTION-READINESS.md: cloud-native Phase 4 (leasing) -> shipped;\n  add the engine-convergence (ADR 0036/0037/0038) + supply-chain (#118) rows.\n- Skills: cut-release gains the engine/vX.Y.Z submodule-tag mechanics (first tag\n  engine/v0.1.0); perf-optimization reflects the two-module (go.work) reality.\n- AGENTS.md: EvUserPrompt as the third log-only event (lean) + engine-contract\n  See-also. README/usage: importable-engine feature + eventsource.Fold pointer.\n- llms.txt regenerated; matlatl --strict green (0 broken/orphan/unreachable).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-19T11:02:59Z",
+          "tree_id": "a234b39313b622677c7386f4aedbcd6a91fa6d3c",
+          "url": "https://github.com/stacklok/mecatl/commit/d42f0eabd467fcc9727ae2dd5ef807536dbd72ad"
+        },
+        "date": 1781867300845,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1478,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4476,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35130,
             "unit": "allocs/op"
           },
           {
