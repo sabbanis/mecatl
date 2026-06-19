@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781838604392,
+  "lastUpdate": 1781838607711,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -231373,6 +231373,110 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/533492f2e1bd0a4e5bc1ae9cb6839216eff42da1"
         },
         "date": 1781811300258,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1467,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4475,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35129,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2415,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2c21f6b8d52281947e6d28d7eaf3de90b516c49e",
+          "message": "feat(wire): surface routed-category metadata on the subagent event wire (#97) (#110)\n\nThe opt-in semantic subagent model router (ADR 0031) classified delegations\nand minted children on the chosen category's model, but the RoutedCategory/\nRoutedModel fields lived on the session struct + diagnostics only — the\nproto/client wire was a documented follow-up from PR #87. This lands that\nfollow-up.\n\nProto + generated contracts:\n  - Add routed_category (field 11) and routed_model (field 12) to the\n    Subagent event payload in contracts/proto/mecatl/v1/harness.proto;\n    regenerate contracts/gen via buf generate.\n\nServer mapper:\n  - toProtoSubagent now populates RoutedCategory/RoutedModel from the\n    session payload. Both relays (gRPC + HTTP/SSE) flow through the one\n    toProto mapper, so no per-relay change is needed.\n\nClient (mecatui):\n  - SubagentMsg carries RoutedCategory/RoutedModel; subagentMsg reads them\n    via the generated getters (nil-safe).\n  - Thread them through the inline Subagent card (subRoutedCategory/\n    subRoutedModel on the block, set via setSubagentStart) and the fleet\n    lane (fleetStart). Rendered as a muted \"routed: <cat> -> <model>\"\n    line under the card goal and on the ctrl+a fleet roster row. Absent\n    when the child was not routed.\n\nDocs:\n  - Drop the \"session-struct + diagnostics only\" / \"follow-up\" framing\n    in the living docs (architecture/providers.md, IMPLEMENTATION-NOTES.md)\n    and the engine/session/event.go doc-comment: the fields now surface\n    end-to-end. ADR 0031 is frozen and left as-is.\n\nTests:\n  - Mapper test asserts the routed fields round-trip on subagent.start.\n  - mecatui tests assert the routed line surfaces on the inline card and\n    the fleet roster, and is absent when unrouted.\n  - The e2e model_router spec now asserts the per-delegation routed model\n    rides the subagent.start wire (the live wire confirmation), replacing\n    the \"cannot observe on the wire\" comment.\n\nMetadata-only (gauntlet #7): a category label + a model id, never the task\nprompt or classifier reasoning.",
+          "timestamp": "2026-06-19T06:04:31+03:00",
+          "tree_id": "4c0584bd904a3bd91beb9b18d5c1fb02fd4ea9ac",
+          "url": "https://github.com/stacklok/mecatl/commit/2c21f6b8d52281947e6d28d7eaf3de90b516c49e"
+        },
+        "date": 1781838606384,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
