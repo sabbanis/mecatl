@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781981937970,
+  "lastUpdate": 1781981940988,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -282087,6 +282087,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/d3e299e751130b6e2f70640f4fe950960ce21373"
         },
         "date": 1781981606713,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1ad18635f552e47cb7dfb44c3e1d595b8b0eb217",
+          "message": "chore(ci): bump sigstore/cosign-installer from 3.10.1 to 4.1.2 (#125)\n\nBumps [sigstore/cosign-installer](https://github.com/sigstore/cosign-installer) from 3.10.1 to 4.1.2.\n- [Release notes](https://github.com/sigstore/cosign-installer/releases)\n- [Commits](https://github.com/sigstore/cosign-installer/compare/7e8b541eb2e61bf99390e1afd4be13a184e9ebc5...6f9f17788090df1f26f669e9d70d6ae9567deba6)\n\n---\nupdated-dependencies:\n- dependency-name: sigstore/cosign-installer\n  dependency-version: 4.1.2\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-06-20T21:53:34+03:00",
+          "tree_id": "a7d105e4ca924383b55a22a816a222bace04b18e",
+          "url": "https://github.com/stacklok/mecatl/commit/1ad18635f552e47cb7dfb44c3e1d595b8b0eb217"
+        },
+        "date": 1781981939884,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
