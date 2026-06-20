@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781982265108,
+  "lastUpdate": 1781982267919,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -287017,6 +287017,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 85,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "21d34a37fc5d71ff0357b6969a6658ba883ba820",
+          "message": "chore(release): bump reusable-workflow pins v0.0.7 -> v0.0.8",
+          "timestamp": "2026-06-20T21:56:42+03:00",
+          "tree_id": "926f631c243ebaa690f253dd100a42055430f95c",
+          "url": "https://github.com/stacklok/mecatl/commit/21d34a37fc5d71ff0357b6969a6658ba883ba820"
+        },
+        "date": 1781982266918,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3512,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 75,
             "unit": "allocs/op"
           }
         ]
