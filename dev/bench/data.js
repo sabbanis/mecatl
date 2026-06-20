@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781982262461,
+  "lastUpdate": 1781982265108,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -285849,6 +285849,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/1ad18635f552e47cb7dfb44c3e1d595b8b0eb217"
         },
         "date": 1781981939884,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "21d34a37fc5d71ff0357b6969a6658ba883ba820",
+          "message": "chore(release): bump reusable-workflow pins v0.0.7 -> v0.0.8",
+          "timestamp": "2026-06-20T21:56:42+03:00",
+          "tree_id": "926f631c243ebaa690f253dd100a42055430f95c",
+          "url": "https://github.com/stacklok/mecatl/commit/21d34a37fc5d71ff0357b6969a6658ba883ba820"
+        },
+        "date": 1781982264207,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
