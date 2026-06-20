@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781978681253,
+  "lastUpdate": 1781978684258,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -267039,6 +267039,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/b2551c2dcb72f33ea30df1eb35561f6b24b6cdaa"
         },
         "date": 1781978354354,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "66216287659b3688b4ded337163b5a7efb0bdd88",
+          "message": "chore(ci): bump actions/create-github-app-token from 2.2.2 to 3.2.0 (#123)\n\nBumps [actions/create-github-app-token](https://github.com/actions/create-github-app-token) from 2.2.2 to 3.2.0.\n- [Release notes](https://github.com/actions/create-github-app-token/releases)\n- [Changelog](https://github.com/actions/create-github-app-token/blob/main/CHANGELOG.md)\n- [Commits](https://github.com/actions/create-github-app-token/compare/fee1f7d63c2ff003460e3d139729b119787bc349...bcd2ba49218906704ab6c1aa796996da409d3eb1)\n\n---\nupdated-dependencies:\n- dependency-name: actions/create-github-app-token\n  dependency-version: 3.2.0\n  dependency-type: direct:production\n  update-type: version-update:semver-major\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-06-20T20:54:15+03:00",
+          "tree_id": "b3dd7985ded26c239688e2e55f0298c27679e439",
+          "url": "https://github.com/stacklok/mecatl/commit/66216287659b3688b4ded337163b5a7efb0bdd88"
+        },
+        "date": 1781978683177,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
