@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781981601428,
+  "lastUpdate": 1781981604686,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -276144,6 +276144,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 35130,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2423,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d3e299e751130b6e2f70640f4fe950960ce21373",
+          "message": "feat(prompt): host-pluggable system-prompt builder seam (#128)\n\n* feat(prompt): host-pluggable system-prompt builder seam (#127)\n\nAdd a backward-compatible seam so a host embedding the engine for a\nnon-coding agent can fully own the system prompt (role/tone/safety/tool\ninventory) with no coding-agent defaults and no 'Available tools:' block.\n\n- prompt: new Builder func type (func(Config) Layered); prompt.Build is\n  the documented default and literally satisfies it.\n- agent: new optional Deps.PromptBuilder field; nil -> prompt.Build,\n  byte-identical to engine/v0.0.1.\n- agent/loop.go buildRequest resolves the builder once per turn after the\n  same cfg population (Tools + volatile Env), so the nil path is provably\n  byte-identical. Only the MAIN loop routes through it; the compaction\n  summarizer (cascade.go) builds its own prompt.Layered directly and is\n  unaffected.\n\nTests: byte-identity pin (nil == v0.0.1), host-ownership (no defaults, no\ntool inventory, tools present), flexibility (host can reuse prompt.Build\nhelpers), cascade-isolation (summarizer keeps its own prompt), multi-turn\n(builder applies every turn), empty-Layered (honored, not back-filled),\nand a compile-time assignability pin.\n\napi: agent.txt + prompt.txt regenerated (Added). CHANGELOG: Added (minor)\nper COMPATIBILITY.md / ADR-0037.\n\n* fix(e2e): repoint default lane to claude-haiku-4.5 (3.5 EOL'd on Bedrock)\n\nThe live e2e default-lane model anthropic/claude-3.5-haiku reached\nend-of-life on AWS Bedrock and started 404-ing\n(\"This model version has reached the end of its life\"), failing the\nprovider-smoke canary and gating every later scenario.\n\nRepoint the lane to anthropic/claude-haiku-4.5 — same family, same lane\nrationale (tool-call-capable, Bedrock-routed, no OpenAI-family\ncontent_filter on mecatl-shaped tool-bearing requests per finding F2),\ncatalogued, not EOL'd.\n\n- harness.DefaultModel() default + doc comment (e2e/harness/target.go)\n- haikuLane constant value + comment (e2e/restart_helpers_test.go) —\n  the single source the 6 hard-pinned specs reference\n- approve_after_kill lane comment (e2e/approve_after_kill_test.go)\n- modelPricing cost-ledger: add haiku-4.5 ($1/$5 per 1M from catalog),\n  keep the 3.5 entry for the historical cost ledger (e2e/suite_test.go)\n- e2e/README.md default-lane references\n\nFound by the live e2e run on PR #128 (unrelated to the PR's change —\nthe prompt-builder seam is offline-tested and the CI lint/test/api/docs\ngates are green).",
+          "timestamp": "2026-06-20T21:48:02+03:00",
+          "tree_id": "65d0b8e0c80074c6e9637c1aa67a929a0f566aa6",
+          "url": "https://github.com/stacklok/mecatl/commit/d3e299e751130b6e2f70640f4fe950960ce21373"
+        },
+        "date": 1781981603588,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1478,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4476,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35130.5,
             "unit": "allocs/op"
           },
           {
