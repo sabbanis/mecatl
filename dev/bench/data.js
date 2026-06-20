@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1781979246503,
+  "lastUpdate": 1781979248709,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -270801,6 +270801,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/66216287659b3688b4ded337163b5a7efb0bdd88"
         },
         "date": 1781978683177,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "49699333+dependabot[bot]@users.noreply.github.com",
+            "name": "dependabot[bot]",
+            "username": "dependabot[bot]"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "d1d2c2e2798f9ee587bbb4d64c23a17ba6715ddd",
+          "message": "chore(deps): bump golang.org/x/sync (#121)\n\nBumps the go-minor-patch group with 1 update in the /engine directory: [golang.org/x/sync](https://github.com/golang/sync).\n\n\nUpdates `golang.org/x/sync` from 0.20.0 to 0.21.0\n- [Commits](https://github.com/golang/sync/compare/v0.20.0...v0.21.0)\n\n---\nupdated-dependencies:\n- dependency-name: golang.org/x/sync\n  dependency-version: 0.21.0\n  dependency-type: direct:production\n  update-type: version-update:semver-minor\n  dependency-group: go-minor-patch\n...\n\nSigned-off-by: dependabot[bot] <support@github.com>\nCo-authored-by: dependabot[bot] <49699333+dependabot[bot]@users.noreply.github.com>",
+          "timestamp": "2026-06-20T21:08:38+03:00",
+          "tree_id": "3583858e74d838794e962ed0b267e9d7e6010b97",
+          "url": "https://github.com/stacklok/mecatl/commit/d1d2c2e2798f9ee587bbb4d64c23a17ba6715ddd"
+        },
+        "date": 1781979248152,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
