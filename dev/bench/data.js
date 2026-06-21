@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782026987014,
+  "lastUpdate": 1782026989962,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -300897,6 +300897,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/630b79d65147c0406859e4be8f453d392f6f92cf"
         },
         "date": 1782018041102,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "27ccc2cf0911bb2295ea227ce65c49d7fe28253a",
+          "message": "fix(agent): Parallel auto-merge, honest join=all paths, subagent spec reword (#131)\n\n* fix(agent): Parallel auto-merge, honest join=all paths, subagent spec reword\n\nFour fixes for the subagent/Parallel isolation pain the operator hit (\"the\nparallel branches wrote the files but those were cleaned up after the join\"):\n\n1. Bug: joinBranches (join=all AND the first/judge all-failed renderer) printed\n   `workspace: <childRoot>` for branches whose forks had ALREADY been torn down\n   — dead paths the model chased. joinBranches no longer prints workspace paths\n   (the branch id: line stays — it keys InspectSubagent, which reads the\n   persisted session-store transcript, NOT the filesystem). It prints an honest\n   one-line note that branch workspaces were torn down and how to keep changes\n   next time. The Parallel spec text now says join=all tears down every fork.\n\n2. Subagent spec honesty: reworded \"its file changes are DISCARDED (no\n   Edit/Write)\" → \"it can build, test, inspect history, and write scratch files,\n   but the worktree is DISCARDED after the run (no Edit/Write tools; use Parallel\n   when you need the diff kept)\". Stops the model concluding the child can't\n   write at all (Bash can write scratch files; it's the worktree + lack of\n   Edit/Write that discards).\n\n3. dev-pipeline skill: step 1 now requires the architect to size/complexity-rate\n   each task (diff-size S/M/L, complexity, dependencies, single-pass vs chunked).\n   Step 2 rewritten harness-neutral: the rigor is plan != review (not\n   \"implementer != you\"); delegate as ONE unit; pick the implementer path by what\n   your tools allow. Dropped the overclaiming \"Keeping plan and implementation\n   in different agents preserves the independence\" line.\n\n4. ADR 0039 — Parallel single-branch auto-merge (the capability fix): an OPT-IN\n   `--parallel-auto-merge` flag (default OFF) wires a tool.ForkMerger\n   (forker.Merger — git diff HEAD from the fork piped to git apply in the\n   parent, plus untracked-file copy, same scrubbed env as overlayDirty) into the\n   Parallel tool via WithAutoMerge. When a join=first run has exactly ONE branch\n   and a successful winner, its diff is auto-merged back into the parent\n   workspace after preserveWinner and before Execute returns. Multi-branch runs\n   and join=judge/join=all NEVER auto-merge (the no-auto-merge boundary stays for\n   fan-out). On a conflict Execute returns a tool error naming the conflict +\n   the preserved fork path; it never forces. ParallelTool.ReadOnly() stays true\n   (post-run step, not dispatch-time mutation). The merge runs in the parent\n   workspace under the parent's trust posture.\n\n   - engine/tool/isolation.go: new additive ForkMerger port\n   - internal/adapter/forker/forker.go: Merger adapter (mirrors overlayDirty)\n   - engine/agent/parallel.go: WithAutoMerge option + executeFirst merge block\n   - internal/app/{build,catalog}.go: ParallelAutoMerge Config field + wiring\n   - cmd/mecated/main.go: --parallel-auto-merge flag (default false)\n   - docs/adr/0039-parallel-auto-merge.md: new ADR (Proposed)\n   - docs/architecture/parallelism.md, docs/design/IMPLEMENTATION-NOTES.md,\n     docs/usage.md: the new behavior + the dead-paths fix documented\n   - engine/api/{tool,agent}.txt: regenerated (Added: ForkMerger, WithAutoMerge)\n   - engine/CHANGELOG.md: Added entries\n\nTests: 5 new engine/agent tests (auto-merge success/conflict/multi-branch-noop/\njoin-all-noop/nil-merger) + 3 real-git forker.Merger tests (apply/clean-noop/\nconflict) + 1 live e2e (auto-merge lands a sentinel file in the parent\nworkspace). task lint + task test green; mecademo prints a full offline session.\n\nCo-Authored-By: mecatl <noreply@stacklok.dev>\n\n* docs: regenerate llms.txt for ADR 0039 + parallelism/usage/IMPLEMENTATION-NOTES updates\n\nRegenerated via `task docs:llms` (matlatl index) after the markdown changes in\nthe parent commit (ADR 0039, the Parallel auto-merge section in\ndocs/architecture/parallelism.md, the --parallel-auto-merge flag in\ndocs/usage.md, the delegation-section note in\ndocs/design/IMPLEMENTATION-NOTES.md, and the dev-pipeline SKILL.md rewrite).\nLink gate clean: 0 broken links/anchors/orphans/unreachable.\n\nCo-Authored-By: mecatl <noreply@stacklok.dev>\n\n---------\n\nCo-authored-by: mecatl <noreply@stacklok.dev>",
+          "timestamp": "2026-06-21T10:24:31+03:00",
+          "tree_id": "6ebbcf5ac059234d6a7746a7e3b208a68de32f46",
+          "url": "https://github.com/stacklok/mecatl/commit/27ccc2cf0911bb2295ea227ce65c49d7fe28253a"
+        },
+        "date": 1782026989008,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
