@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782017570216,
+  "lastUpdate": 1782017573273,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -294609,6 +294609,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 74,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "32112ef21c20f54dff9508d5fe41d9375336d6e5",
+          "message": "fix(engine): pin go directive to minor (1.26) not patch (#130)\n\n* fix(engine): pin go directive to minor (1.26) not patch\n\nA library's `go` directive declares the language version it requires, and\nthe go command raises a consumer's own directive to the highest one in its\nmodule graph. A patch-level directive (`go 1.26.4`) therefore forces every\nconsumer's go.mod to a patch directive too. the downstream consumer imports the engine and\nits CI forbids a patch-level `go` directive (it requires a minor floor such\nas `go 1.26`), so the patch pin breaks the downstream consumer's build.\n\nThe engine uses no Go 1.26.4-specific language feature, so `go 1.26` is the\ncorrect minimum. Apply the same hygiene to the root module's directive. A\n`toolchain` directive (none present today) may stay patch-pinned — only the\n`go` language directive must be minor.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* docs: regenerate llms.txt after CHANGELOG entry\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-21T07:47:24+03:00",
+          "tree_id": "6063e69d196367ba794d1ef9d2b391975648acd2",
+          "url": "https://github.com/stacklok/mecatl/commit/32112ef21c20f54dff9508d5fe41d9375336d6e5"
+        },
+        "date": 1782017572184,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3522,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 85.5,
             "unit": "allocs/op"
           }
         ]
