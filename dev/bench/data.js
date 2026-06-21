@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782064936271,
+  "lastUpdate": 1782064938890,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -323469,6 +323469,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/add08c1a90813b37e444628184f4cf80309d64ce"
         },
         "date": 1782063670950,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "7d4cc438c89afb0f37c3557d248f097ce5dda20a",
+          "message": "chore(release): prep engine/v0.0.4 — CHANGELOG stamp\n\nCo-Authored-By: mecatl <noreply@stacklok.com>",
+          "timestamp": "2026-06-21T20:56:31+03:00",
+          "tree_id": "b0dbbd632d7bacb715b89d7e099035d47b8b5b51",
+          "url": "https://github.com/stacklok/mecatl/commit/7d4cc438c89afb0f37c3557d248f097ce5dda20a"
+        },
+        "date": 1782064938155,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
