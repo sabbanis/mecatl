@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782051789255,
+  "lastUpdate": 1782051792475,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -313589,6 +313589,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 96,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a189a73718d8c8dfdf92e4fcb912f735187f10a",
+          "message": "fix(e2e): upload failure transcripts (hidden-file fix) + de-flake compaction & verdict-replay (#135)\n\nFix the silently-broken e2e-live artifact upload (.scratch is a dot-dir excluded by upload-artifact's default; include-hidden-files:true + if-no-files-found:warn) so failure transcripts actually upload. De-flake two pre-existing main flakes at root cause: compaction (task to first-user-pin + act-now GO directive that doesn't restate the task) and verdict_replay (read-ledger primer turn so the auto-allowed Write succeeds first try; replay oracle unchanged). Live e2e green; no assertions weakened.",
+          "timestamp": "2026-06-21T17:17:42+03:00",
+          "tree_id": "de37365e8bf27ef47502f6286b9a2d64a2f59de5",
+          "url": "https://github.com/stacklok/mecatl/commit/6a189a73718d8c8dfdf92e4fcb912f735187f10a"
+        },
+        "date": 1782051791289,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3525,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 86,
             "unit": "allocs/op"
           }
         ]
