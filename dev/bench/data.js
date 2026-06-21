@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782031001318,
+  "lastUpdate": 1782031003906,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -302255,6 +302255,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "team_fanout/allocs_per_op",
             "value": 2423,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e74166fef850768a718ff7f56350e93a7fca496",
+          "message": "fix(agent): default-on Parallel auto-merge + security hardening (no flag) (#132)\n\nRevises ADR 0039 in response to two review findings:\n\n1. The operator: \"having an extra flag for this sounds counter intuitive, why\n   not just do the right thing?\" For a SINGLE-BRANCH join=first/join=judge\n   winner there is no fan-out, so the no-auto-merge boundary (which exists for\n   fan-out) does not apply — throwing a single winner's edits away (or handing\n   the operator a temp path to manually merge) is the broken UX that prompted\n   the whole change. An opt-in flag for \"do the right thing for one branch\" is\n   counter-intuitive. Remove --parallel-auto-merge; wire forker.NewMerger()\n   unconditionally in composition. The multi-branch boundary is preserved by\n   the len(results)==1 eligibility gate, not by a flag.\n\n   Also extends auto-merge to join=judge single-branch winners (the UX-panel\n   \"collapse paths (a) and (c)\" fix): both one-branch winners land, via the\n   shared autoMergeWinner helper. join=all still never auto-merges.\n\n2. The secure-code-reviewer panel (HIGH, verified by reproduction): the merge's\n   `git diff --no-ext-diff --binary HEAD` against an attacker-writable fork\n   `.git` fired attacker-named `diff.<drv>.textconv` drivers — executing an\n   attacker-chosen command on the parent host at merge time and letting its\n   stdout masquerade as the merged content. --no-ext-diff suppresses only\n   diff.external; --no-textconv suppresses diff.*.textconv (verified). Fix:\n   pass --no-textconv to the merge's git diff (and to overlayDirty's git diff\n   for defence-in-depth parity). Also refuse .gitattributes-touching patches\n   (closes filter.<drv>.smudge RCE via attribute repointing).\n\nOther changes:\n- Merger.Merge: a non-git fork (the forker's copy fallback, or a memfs test\n  workspace) now degrades to a no-op (return nil) instead of erroring — the\n  git-based merge concept does not apply to a non-git workspace.\n- Parallel spec: removed the --parallel-auto-merge operator-flag leak (the model\n  cannot set/observe it); reframed join modes around what survives per mode.\n- Removed ParallelAutoMerge from app.Config + the --parallel-auto-merge flag +\n  the runConfig field from mecated.\n- ADR 0039: status Accepted (was Proposed); documents the default-on decision,\n  the join=judge extension, and the two security mitigations.\n- engine/CHANGELOG: WithAutoMerge entry updated (join=judge, security notes).\n- docs/architecture/parallelism.md, docs/design/IMPLEMENTATION-NOTES.md,\n  docs/usage.md: no-flag default-on + security mitigations.\n- e2e: the auto-merge spec now spawns a plain mecated (no flag) and asserts the\n  single-branch join=first winner lands.\n\nTests: 1 new engine test (TestParallelAutoMergeJudgeSingleBranch) + 2 new\nforker security tests (TestMergerRefusesGitattributesPatch,\nTestMergerTextconvDoesNotFire — both use WithForceCopy, the real Parallel-branch\ntopology). task lint + task test green; mecademo prints a full offline session;\napi-compat gate clean; docs link gate 0 broken.\n\nCo-authored-by: mecatl <noreply@stacklok.dev>",
+          "timestamp": "2026-06-21T11:31:21+03:00",
+          "tree_id": "4cfe079bc512a072d4e5dd77d953aaec1c7e3f6e",
+          "url": "https://github.com/stacklok/mecatl/commit/7e74166fef850768a718ff7f56350e93a7fca496"
+        },
+        "date": 1782031003119,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1479.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4476,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35130,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2423.5,
             "unit": "allocs/op"
           },
           {
