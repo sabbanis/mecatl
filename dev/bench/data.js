@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782064938890,
+  "lastUpdate": 1782064941571,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -324977,6 +324977,40 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 95,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "7d4cc438c89afb0f37c3557d248f097ce5dda20a",
+          "message": "chore(release): prep engine/v0.0.4 — CHANGELOG stamp\n\nCo-Authored-By: mecatl <noreply@stacklok.com>",
+          "timestamp": "2026-06-21T20:56:31+03:00",
+          "tree_id": "b0dbbd632d7bacb715b89d7e099035d47b8b5b51",
+          "url": "https://github.com/stacklok/mecatl/commit/7d4cc438c89afb0f37c3557d248f097ce5dda20a"
+        },
+        "date": 1782064940887,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3533,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 96.5,
             "unit": "allocs/op"
           }
         ]
