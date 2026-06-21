@@ -89,9 +89,13 @@ messages).
   (`perf/scenarios/output_economy_test.go`) is the measurement harness for before/after
   comparison.
 - An operator-tier `--output-economy terse` posture knob (an answer-length default for
-  explanatory turns) is explicitly DEFERRED — it is the most over-steer-prone rule and
-  belongs behind an opt-in, not in the always-on default. The always-on default stops at
-  the five blocks above.
+  explanatory turns) is **shipped**: the `--output-economy` flag (mecated, mecatui,
+  mecatequi) + the operator-global `settings.yaml` `output-economy:` key select
+  `normal` (default, no-op — the tone already carries the economy contract) or
+  `terse` (appends the answer-length clause for explanatory turns). Operator-tier
+  only (a project-tier key is WARN-ignored, mirroring posture/guardrails); CLI
+  out-ranks YAML. The "terse" answer-length clause is the most over-steer-prone rule,
+  so it is opt-in, not the always-on default.
 
 ## See also
 
