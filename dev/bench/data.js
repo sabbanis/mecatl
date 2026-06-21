@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782052492914,
+  "lastUpdate": 1782052496049,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -315945,6 +315945,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/6a189a73718d8c8dfdf92e4fcb912f735187f10a"
         },
         "date": 1782051788049,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b964f0a2ea7182bb13265d2e7913e4a5654f63d4",
+          "message": "feat(agent): writable Subagent mode (mode:\"read-write\") + serialized merge-back (#134)\n\nAdd a read-write Subagent mode (mode:\"read-write\") as the blessed \"delegate one task and land its edits\" path (supersedes ADR 0039 → ADR 0040; Parallel single-branch auto-merge kept for back-compat). The child runs in a force-copy fork with Edit/Write and, on a clean finish, auto-merges its diff into the parent via the shared ForkMerger. Default-wired (no flag/Config/trust-gate); per-call default stays read-only.\n\nCloses a concurrent-merge race ADR 0039 missed: a merge-completing CALL is dispatched mutate-serial via an unexported parentMutatingCaller seam (read-only fan-out stays parallel; ReadOnly() unchanged), and cross-run merges share a process-wide SerializingMerger mutex. Merge fires only on a non-error/non-cancelled terminal; conflict preserves the fork with an actionable error; git apply is atomic with a --check defense-in-depth pre-pass; tracked AND untracked .gitattributes are refused (--no-textconv). New engine exports (WithSubagentAutoMerge/WithWritableChildEngine/WithWritableChildForker) = Added/minor. Offline -race + live e2e green; panel-reviewed across spec/security/architecture/QA.",
+          "timestamp": "2026-06-21T17:29:22+03:00",
+          "tree_id": "acc50f55ae3347a77a6d7e7a22804cbb8fe6bc6a",
+          "url": "https://github.com/stacklok/mecatl/commit/b964f0a2ea7182bb13265d2e7913e4a5654f63d4"
+        },
+        "date": 1782052495000,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
