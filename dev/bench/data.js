@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782052489612,
+  "lastUpdate": 1782052492914,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -313394,6 +313394,110 @@ window.BENCHMARK_DATA = {
           {
             "name": "background_subagents/allocs_per_op",
             "value": 1477.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4476,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35130,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2423,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b964f0a2ea7182bb13265d2e7913e4a5654f63d4",
+          "message": "feat(agent): writable Subagent mode (mode:\"read-write\") + serialized merge-back (#134)\n\nAdd a read-write Subagent mode (mode:\"read-write\") as the blessed \"delegate one task and land its edits\" path (supersedes ADR 0039 → ADR 0040; Parallel single-branch auto-merge kept for back-compat). The child runs in a force-copy fork with Edit/Write and, on a clean finish, auto-merges its diff into the parent via the shared ForkMerger. Default-wired (no flag/Config/trust-gate); per-call default stays read-only.\n\nCloses a concurrent-merge race ADR 0039 missed: a merge-completing CALL is dispatched mutate-serial via an unexported parentMutatingCaller seam (read-only fan-out stays parallel; ReadOnly() unchanged), and cross-run merges share a process-wide SerializingMerger mutex. Merge fires only on a non-error/non-cancelled terminal; conflict preserves the fork with an actionable error; git apply is atomic with a --check defense-in-depth pre-pass; tracked AND untracked .gitattributes are refused (--no-textconv). New engine exports (WithSubagentAutoMerge/WithWritableChildEngine/WithWritableChildForker) = Added/minor. Offline -race + live e2e green; panel-reviewed across spec/security/architecture/QA.",
+          "timestamp": "2026-06-21T17:29:22+03:00",
+          "tree_id": "acc50f55ae3347a77a6d7e7a22804cbb8fe6bc6a",
+          "url": "https://github.com/stacklok/mecatl/commit/b964f0a2ea7182bb13265d2e7913e4a5654f63d4"
+        },
+        "date": 1782052491694,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1478.5,
             "unit": "allocs/op"
           },
           {
