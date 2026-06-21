@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782031856193,
+  "lastUpdate": 1782031859140,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -308421,6 +308421,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/7e74166fef850768a718ff7f56350e93a7fca496"
         },
         "date": 1782031005685,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7bd0a74a629652f0cc836ae4b8e5c971f441f779",
+          "message": "docs(skill): route dev-pipeline implementer to single-branch Parallel (no flag) (#133)\n\nThe dev-pipeline skill's Step 2 still referenced the removed --parallel-auto-merge\nflag (PR #132 removed it; auto-merge is default-on for single-branch join=first/\njudge winners) and carried a three-path decision tree the UX panel flagged as\nover-complex (paths (a) and (c) collapsed to the same thing). Rewrite Step 2 to\nroute the operator's flow cleanly:\n\n- architect (step 1) → read-only Subagent (investigate + plan as text)\n- implementer (step 2) → single-branch Parallel join:\"first\" (read/write fork,\n  winner auto-merged back into this workspace by default — the \"everything through\n  sub-agents\" path); fall back to \"implement directly yourself\" only when\n  delegation is unavailable, and surface the gap rather than silently\n  self-implementing when the operator wants delegation but only read-only is\n  available\n- review (step 3) → panel-review skill (fresh-context read-only specialist agents)\n\nAlso applies the UX panel's findings:\n- collapse the three implementer paths to two (write-capable delegation vs\n  read-only → implement yourself)\n- reconcile \"Delegate as ONE unit\" vs \"chunked\": chunking is by task-dependency\n  boundary (one delegate per step-1 task), never by file\n- add the mecatl-specific mapping (Subagent = read-only; Parallel join:\"first\" =\n  write-capable with auto-merge)\n- surface the read-only/sub-agent-intent gap instead of routing around it\n\nNo code change; skill + docs only. llms.txt unchanged (the skill is emitExclude'd\nfrom the llms.txt surface). Docs link gate: 0 broken.\n\nCo-authored-by: mecatl <noreply@stacklok.dev>",
+          "timestamp": "2026-06-21T11:45:35+03:00",
+          "tree_id": "d3392afee607bac557e8d59241443c5fc0abb886",
+          "url": "https://github.com/stacklok/mecatl/commit/7bd0a74a629652f0cc836ae4b8e5c971f441f779"
+        },
+        "date": 1782031858210,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
