@@ -186,14 +186,20 @@ func BenchmarkScrollbackViewSteady(b *testing.B) {
 	})
 }
 
-// BenchmarkSpinnerTickVPView measures the steady-state per-spinner-tick cost when
-// the conversation has NOT changed: the viewport output (vp.View() → lipgloss
-// grapheme-width pad) should be served from renderer.vpViewCache so the per-tick
-// View() cost is near-zero. This is the scenario that motivated issue #139: during
-// a run with no active tool (or a slow tool), the spinner fires at ~10fps but the
-// conversation content is unchanged — the only difference between successive View()
-// calls is the spinner glyph in the footer, which is rendered OUTSIDE the viewport.
-// The memoized vpView returns the cached string, skipping vp.View()'s lipgloss pad.
+// BenchmarkSpinnerTickVPView measures the steady-state per-FRAME cost when the
+// conversation has NOT changed: it drives the real Bubble Tea Update->View cycle
+// (m.Update(spinner tick) then m.View()) each op, mirroring how the runtime renders a
+// frame. This is the scenario that motivated issue #139: during a run with no active
+// tool (or a slow tool), the spinner fires at ~10fps but the conversation content is
+// unchanged -- the only difference between successive frames is the spinner glyph in
+// the footer, which is rendered OUTSIDE the viewport. A spinner-only tick does NOT
+// call refreshView and so does NOT invalidate the vpView cache, so m.View() reaches
+// m.rend.vpView(m.vp) and HITS renderer.vpViewCache -- serving the cached viewport
+// string verbatim and skipping vp.View()'s O(lines) lipgloss grapheme-width pad. The
+// measured allocs/op therefore reflect the cached-View steady-state frame cost (the
+// issue-#139 win): the per-frame chrome + Update dispatch with the viewport body
+// served from cache, NOT a fresh per-line vp.View() pad. The vpViewValid assertion
+// below is meaningful because View() is exercised inside the measured loop.
 func BenchmarkSpinnerTickVPView(b *testing.B) {
 	m := buildScrollbackModel(b)
 	m.phase = phaseRunning
@@ -208,14 +214,20 @@ func BenchmarkSpinnerTickVPView(b *testing.B) {
 	b.ReportAllocs()
 	capt.Begin()
 	for b.Loop() {
-		// Drive one spinner tick: m.sp.Tick() produces the current-tag TickMsg, which
-		// is passed to Update. The conversation did NOT change, so refreshView is NOT
-		// called, and vpViewCache is served verbatim — skipping vp.View()'s per-line
-		// lipgloss grapheme-width pad. The spinner advances its tag on each update,
-		// so we call m.sp.Tick() from the UPDATED model each iteration to get a
-		// matching-id tick (avoids the stale-tick dedup that would drop the handler).
+		// Drive one spinner tick THEN render the frame, mirroring Bubble Tea's real
+		// Update->View per-frame cycle. m.sp.Tick() produces the current-tag TickMsg
+		// passed to Update; the conversation did NOT change, so refreshView is NOT called
+		// and the vpView cache is NOT invalidated. The subsequent m.View() then calls
+		// m.rend.vpView(m.vp), which HITS vpViewCache and returns the cached viewport
+		// string verbatim -- skipping vp.View()'s per-line lipgloss grapheme-width pad
+		// (the issue-#139 win this bench measures). The spinner advances its tag on each
+		// update, so we call m.sp.Tick() from the UPDATED model each iteration to get a
+		// matching-id tick (avoids the stale-tick dedup that would drop the handler). The
+		// *renderer is a shared pointer across the Model value-copy, so the cache persists
+		// across the reassignment.
 		mm, _ := m.Update(m.sp.Tick())
 		m = mm.(Model)
+		_ = m.View()
 	}
 	mtr := capt.End()
 

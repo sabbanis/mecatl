@@ -1435,4 +1435,37 @@ func TestVPViewInvalidatedByEveryViewportHandler(t *testing.T) {
 			t.Error("snapshotSelection must call invalidateVPView() (re-spliced content)")
 		}
 	})
+
+	t.Run("onResizeHeightOnly", func(t *testing.T) {
+		// The width subtest above varies WIDTH; this exercises the HEIGHT/relayout path
+		// explicitly. A WindowSizeMsg with a DIFFERENT height (same width) flows through
+		// onResize -> relayout, whose conditional refreshView early-returns on
+		// height-EQUALITY but re-renders (and re-invalidates) when bodyHeight changes.
+		// onResize also invalidateVPView()s unconditionally, so vpView must be stale after
+		// a height-only resize regardless of which path actually re-renders.
+		m := scrollModel(t)
+		warm(t, &m)
+		newHeight := m.height + 6 // bodyHeight changes -> relayout re-renders
+		mm, _ := m.Update(tea.WindowSizeMsg{Width: m.width, Height: newHeight})
+		m = mm.(Model)
+		if m.rend.vpViewValid {
+			t.Error("a height-only resize must invalidate vpView (geometry/relayout changed)")
+		}
+	})
+}
+
+// TestResetBlockCachesInvalidatesVPView: resetBlockCaches clears the viewport-output
+// memo (defense-in-depth) so a rebuilt/empty conversation can never serve a stale
+// vpView even if a future caller forgets the refreshView() that follows resetSession
+// today. Warm the cache, call resetBlockCaches directly, assert it is invalidated.
+func TestResetBlockCachesInvalidatesVPView(t *testing.T) {
+	m := scrollModel(t)
+	_ = m.rend.vpView(m.vp)
+	if !m.rend.vpViewValid {
+		t.Fatal("precondition: vpViewValid should be true after warming the cache")
+	}
+	m.rend.resetBlockCaches()
+	if m.rend.vpViewValid {
+		t.Error("resetBlockCaches must clear vpViewValid (defense-in-depth)")
+	}
 }

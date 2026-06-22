@@ -315,8 +315,11 @@ func (r *renderer) resetBlockCaches() {
 	r.joinPrefixLines = r.joinPrefixLines[:0]
 	r.joinPrefixN = 0
 	r.joinPrefixKey = joinPrefixState{}
-	// vpViewValid is NOT cleared here — every resetSession caller calls refreshView()
-	// afterwards, which calls invalidateVPView(). Clearing it here would be redundant.
+	// Drop the viewport-output memo too (defense-in-depth): every CURRENT resetSession
+	// caller calls refreshView() afterwards (which invalidateVPView()s), but clearing it
+	// here makes that ordering non-load-bearing — a future caller that forgets refreshView
+	// can never serve a stale vpView against a reset/empty conversation.
+	r.vpViewValid = false
 }
 
 // setWidth records the current wrap width. Width changes are handled by the
