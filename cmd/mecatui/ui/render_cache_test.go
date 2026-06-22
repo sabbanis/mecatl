@@ -21,6 +21,8 @@ import (
 	"strings"
 	"testing"
 
+	tea "charm.land/bubbletea/v2"
+
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
 )
@@ -1337,4 +1339,100 @@ func TestVPViewCacheInvalidatesOnSnapshotSelection(t *testing.T) {
 		t.Errorf("vpView diverged from vp.View() after snapshotSelection\n got %q\nwant %q",
 			stripANSIstr(fresh), stripANSIstr(want))
 	}
+}
+
+// TestVPViewInvalidatedByEveryViewportHandler converts the "every viewport-mutating
+// handler calls invalidateVPView()" CONVENTION into an enforced invariant: for each
+// user-facing handler that changes viewport content, scroll offset, or geometry, it
+// dispatches the handler through the REAL Update path (or calls the handler/method
+// directly where Update routing is incidental) and asserts vpViewValid is FALSE
+// afterward. If any single handler's invalidateVPView() call is deleted, the matching
+// subtest goes RED — that is the whole point (mutation-test discipline, per the repo's
+// "mutation-test the drift guards" convention; proven by deleting the onMouseWheel
+// call and watching only that subtest fail).
+//
+// The vpView cache is warmed per subtest via m.rend.vpView(m.vp) (so vpViewValid==true
+// going in), then the handler runs. m.rend is a *renderer shared across the value-copy
+// Models that Update returns, so the flag observed on the returned model is the same
+// flag the handler cleared.
+func TestVPViewInvalidatedByEveryViewportHandler(t *testing.T) {
+	// warm primes the vpView cache so vpViewValid is true before the handler runs.
+	warm := func(t *testing.T, m *Model) {
+		t.Helper()
+		_ = m.rend.vpView(m.vp)
+		if !m.rend.vpViewValid {
+			t.Fatal("precondition: vpViewValid should be true after warming the cache")
+		}
+	}
+
+	t.Run("onResize", func(t *testing.T) {
+		m := scrollModel(t)
+		warm(t, &m)
+		// A WindowSizeMsg with a DIFFERENT width changes viewport geometry → onResize
+		// must invalidate.
+		newWidth := m.width / 2
+		if newWidth < 10 {
+			newWidth = 40
+		}
+		mm, _ := m.Update(tea.WindowSizeMsg{Width: newWidth, Height: m.height})
+		m = mm.(Model)
+		if m.rend.vpViewValid {
+			t.Error("onResize must call invalidateVPView() (geometry changed)")
+		}
+	})
+
+	t.Run("onMouseWheel", func(t *testing.T) {
+		m := scrollModel(t) // tall content, starts at bottom → wheel-up scrolls
+		warm(t, &m)
+		mm, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
+		m = mm.(Model)
+		// onMouseWheel calls invalidateVPView() UNCONDITIONALLY (it does not gate on an
+		// observed YOffset change), so the assertion holds regardless of scroll math.
+		if m.rend.vpViewValid {
+			t.Error("onMouseWheel must call invalidateVPView() (scroll offset may change)")
+		}
+	})
+
+	t.Run("onScrollKey", func(t *testing.T) {
+		m := scrollModel(t) // idle, tall, stuck at bottom
+		warm(t, &m)
+		// Home (ScrollTop) jumps to the top → onScrollKey, which invalidates
+		// unconditionally.
+		mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyHome})
+		m = mm.(Model)
+		if m.rend.vpViewValid {
+			t.Error("onScrollKey must call invalidateVPView() (scroll offset changed)")
+		}
+	})
+
+	t.Run("scrollLines", func(t *testing.T) {
+		m := scrollModel(t) // tall content so a scroll-up actually moves YOffset
+		warm(t, &m)
+		before := m.vp.YOffset()
+		// scrollLines is the CONDITIONAL site: it invalidates only on OBSERVED YOffset
+		// movement. With tall content + starting at the bottom, scrollUp moves YOffset.
+		moved := m.scrollLines(scrollUp, 3)
+		if !moved || m.vp.YOffset() == before {
+			t.Fatal("precondition: scrollLines must move YOffset (content not tall enough?)")
+		}
+		if m.rend.vpViewValid {
+			t.Error("scrollLines must call invalidateVPView() when YOffset moves")
+		}
+	})
+
+	t.Run("snapshotSelection", func(t *testing.T) {
+		m := scrollModel(t)
+		warm(t, &m)
+		// Activate a selection so snapshotSelection re-splices the highlight in place;
+		// it calls invalidateVPView() at its top before vp.SetContent.
+		m.sel.active = true
+		m.sel.anchorL = 0
+		m.sel.anchorC = 0
+		m.sel.headL = 0
+		m.sel.headC = 5
+		snapshotSelection(&m)
+		if m.rend.vpViewValid {
+			t.Error("snapshotSelection must call invalidateVPView() (re-spliced content)")
+		}
+	})
 }

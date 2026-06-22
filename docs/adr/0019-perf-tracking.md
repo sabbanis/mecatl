@@ -118,10 +118,16 @@ tui_spinner_tick_vpview      ~546 allocs/op    ~94 KB/op   (400 blocks; spinner-
 > `snapshotSelection`, `scrollLines`, `onMouseWheel`, `onScrollKey`, and `onResize`
 > each call `invalidateVPView()` so the cache is dropped at every content/scroll/
 > geometry change. A spinner-only tick (the motivating case) now returns the cached
-> string verbatim. The new `tui_spinner_tick_vpview` KPI measures this scenario.
+> string verbatim. The new `tui_spinner_tick_vpview` KPI measures this scenario; it is
+> wired into `task perf:scenarios` (the bench regex matches both `BenchmarkScrollbackView`
+> and `BenchmarkSpinnerTickVPView`) and routed to the ADVISORY render-allocs suite (like
+> its `tui_scrollback_view*` siblings), NOT hard-gated, because its `allocs/op` carries
+> the same `runtime.ReadMemStats` background noise that false-positives a gated threshold.
 > Three mutation tests in `render_cache_test.go` (positive + negative pairs for
 > content, scroll, and geometry) prove the dirty-flag discipline — the NEGATIVE halves
-> show that a missed `invalidateVPView()` at a site would serve stale content.
+> show that a missed `invalidateVPView()` at a site would serve stale content; a fourth,
+> `TestVPViewInvalidatedByEveryViewportHandler`, enforces the per-handler invalidation
+> convention as an invariant (one RED subtest per deleted `invalidateVPView()` call).
 
 > **tui-scrollback bench determinism + advisory render suite (2026-06-17).** The
 > streaming bench originally APPENDED a byte to the live block every op, so the block
