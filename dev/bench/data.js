@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782159209133,
+  "lastUpdate": 1782159212560,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -351674,6 +351674,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 97,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1088,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "222fb316f74ee3573f4cbfa7a96a202208ea7d73",
+          "message": "chore(release): bump reusable-workflow pins v0.0.9 -> v0.0.10\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KViefejRCc16BnjGSXUuvv",
+          "timestamp": "2026-06-22T20:05:17Z",
+          "tree_id": "a01499698ed12c94f920d5b916d70cb4a8542c5a",
+          "url": "https://github.com/stacklok/mecatl/commit/222fb316f74ee3573f4cbfa7a96a202208ea7d73"
+        },
+        "date": 1782159211430,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3525.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 88.5,
             "unit": "allocs/op"
           },
           {
