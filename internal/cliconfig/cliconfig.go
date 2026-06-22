@@ -31,6 +31,14 @@ const (
 	envAnthropicKey  = "ANTHROPIC_API_KEY"
 )
 
+// SubagentModelRouterDeprecatedEnableMsg is the one-time WARN emitted when an operator
+// passes a bare `--subagent-model-router` (or `=true`) — the now-redundant legacy enable
+// (ADR 0042, which made the `models.router:` taxonomy the enable and repurposed the flag
+// to a kill-switch). Shared by mecated and mecatequi so the two cannot drift; WARN (not
+// INFO) because a deprecated flag the operator is actively passing no longer does what
+// they think — matching the repo precedent for deprecation/no-op-flag WARNs.
+const SubagentModelRouterDeprecatedEnableMsg = "--subagent-model-router no longer gates the router; routing is enabled by the models.router taxonomy in your user-global settings.yaml. Use --subagent-model-router=false to disable"
+
 // ProviderFlagHelp carries the per-main help text for the three provider base-URL
 // flags. The three mains word these slightly differently (mecated is the daemon;
 // mecatui prefixes "embedded server only:"), so the help is passed in rather than

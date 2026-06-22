@@ -121,11 +121,14 @@ type ModelsSection struct {
 	// with a WARN (a project cannot widen its own cap).
 	Allowlist []string `yaml:"allowlist"`
 	// Router is the OPERATOR-TIER semantic Subagent model-router taxonomy (ADR 0031,
-	// Phase 5): a classifier slot, the routing categories, and the default category. It
-	// is operator-tier ONLY — a project-tier router: sub-block is STRIPPED with a WARN
-	// (the taxonomy is an autonomous-spend/capability decision the operator owns, like
-	// the allowlist). nil/absent = no taxonomy (the --subagent-model-router flag then
-	// WARNs once and stays OFF). The flag is the ENABLE gate; this is the taxonomy.
+	// Phase 5; enable model superseded by ADR 0042): a classifier slot, the routing
+	// categories, the default category, and the YAML kill-switch. It is operator-tier
+	// ONLY — a project-tier router: sub-block is STRIPPED with a WARN (the taxonomy is
+	// an autonomous-spend/capability decision the operator owns, like the allowlist).
+	// nil/absent = no taxonomy ⇒ the router is OFF (byte-identical, silent). Per ADR
+	// 0042 the TAXONOMY is the enable: a non-empty router: with categories turns the
+	// router ON unless `disabled: true` (or the CLI kill-switch) forces it off — the
+	// guardrails-parity enable model, replacing 0031's flag-to-enable.
 	Router *RouterSection `yaml:"router"`
 }
 
@@ -146,6 +149,12 @@ type RouterSection struct {
 	// DefaultCategory is the category the classifier is told to choose when none clearly
 	// fits (advisory to the classifier; the real safety net is the fail-soft inherit).
 	DefaultCategory string `yaml:"default-category"`
+	// Disabled is the YAML-level kill switch (ADR 0042, mirroring
+	// GuardrailsSection.Disabled): per ADR 0042 a non-empty taxonomy ENABLES the router,
+	// so `disabled: true` is the "taxonomy defined but temporarily off" override. The
+	// CLI kill-switch --subagent-model-router=false also sets it (the two OR together).
+	// Default false ⇒ the router is enabled whenever categories are present.
+	Disabled bool `yaml:"disabled"`
 }
 
 // RouterCategory is one routing category in the operator taxonomy (ADR 0031): a name,
@@ -171,6 +180,7 @@ func (r *RouterSection) UnmarshalYAML(node *yaml.Node) error {
 		"classifier-slot":  &r.ClassifierSlot,
 		"categories":       &r.Categories,
 		"default-category": &r.DefaultCategory,
+		"disabled":         &r.Disabled,
 	})
 }
 

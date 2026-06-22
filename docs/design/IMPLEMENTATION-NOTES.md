@@ -574,8 +574,9 @@ the session struct + a per-classification INFO + the proto/client wire
 gRPC + HTTP and rendered by mecatui).
 
 COMPOSITION half: `buildModelRouterTask` (`internal/app/build.go`, sibling of `buildAskAdjudicator`)
-returns the `Deps.SubagentModelRouter` closure — nil when OFF (`!cfg.SubagentModelRouter ||
-len(cfg.RouterCategories)==0`, byte-identical). It resolves the classifier model via the SHARED
+returns the `Deps.SubagentModelRouter` closure — nil when OFF (`cfg.RouterDisabled ||
+len(cfg.RouterCategories)==0`, byte-identical; ADR 0042 — the TAXONOMY is the enable, a
+kill-switch disables). It resolves the classifier model via the SHARED
 `resolveRouterClassifierModel(cfg, parentModel)` (classifier-slot wins; else the `router` slot,
 default cheap; else parentModel) — the SAME helper `logModelRouterFacts` calls so the logged
 classifier matches what a session classifies on. ENGINE LIFETIME deviation from the ask-adjudicator:
@@ -588,20 +589,32 @@ calls `RunModelRouter`, then maps the category's `Model` selector through `looku
 like `attachAskAdjudicator`;
 `childEngineDepsForProvider` forces `Deps.SubagentModelRouter` nil (no nesting — the classifier is
 built through that path). `foldOperatorModelRouter` (`internal/app/slots.go`) folds the operator-tier
-`models.router:` (categories/default/classifier-slot) onto cfg, WARN-dropping a malformed category;
-the `slotRouter` slot is added to `knownSlotNames`/`slotDefaultTier`(cheap)/`logSlotConfigFacts`;
-`logModelRouterFacts` is the Build-once ACTIVE/inert narration. CONFIG: `permconfig.ModelsSection`
-gains `Router *RouterSection` (strict-parsed; `RouterSection`/`RouterCategory` strict too); a
-PROJECT-tier `router:` is stripped with a WARN in `captureProjectModels` (operator-tier only). The
-`--subagent-model-router` FLAG (both mains) is the enable gate, deliberately NOT a permconfig key.
+`models.router:` (categories/default/classifier-slot) onto cfg, WARN-dropping a malformed category,
+AND (ADR 0042) ORs the YAML `disabled:` kill-switch onto `cfg.RouterDisabled` (mirroring
+`foldOperatorGuardrails`); the `slotRouter` slot is added to
+`knownSlotNames`/`slotDefaultTier`(cheap)/`logSlotConfigFacts`; `logModelRouterFacts` is the
+Build-once narration — SILENT with no taxonomy, a DISABLED WARN when a taxonomy is kill-switched,
+the ACTIVE INFO otherwise (the old "flag set but no taxonomy → WARN" state is GONE). CONFIG:
+`permconfig.ModelsSection` gains `Router *RouterSection` (strict-parsed; `RouterSection` now carries
+`Disabled bool` `yaml:"disabled"` mirroring `GuardrailsSection.Disabled`; `RouterCategory` strict
+too); a PROJECT-tier `router:` is stripped with a WARN in `captureProjectModels` (operator-tier only).
+**ENABLE MODEL (ADR 0042, superseding 0031):** the TAXONOMY is the enable (configure = enable,
+guardrails-parity). `app.Config` carries `RouterDisabled` (NOT a `SubagentModelRouter` enable bool —
+that field was REMOVED as dead code) = OR of the YAML `disabled:` key and the CLI kill-switch. The
+`--subagent-model-router` FLAG (both mains) is now a tri-state KILL-SWITCH detected via `fs.Visit`:
+unset ⇒ governed by the taxonomy; `=false` ⇒ `RouterDisabled=true`; bare/`=true` ⇒ the deprecated
+redundant enable (still parses for backward-compat; emits a one-time deprecation INFO in `appConfig`).
 Guards: `engine/agent` `TestRunModelRouter*` + `TestRun(RouteTask|ExplicitModel|Fork|NilRouteTask)*`
 + `TestRunNamedAgentBeatsRouter` + `TestRunResumeDoesNotRoute` (the precedence-gate guards) +
 `TestRouterBreaker*` (incl. `TestRouterBreakerSerializesConcurrentCalls` under -race); `app`
-`TestBuildModelRouterTask*` + `TestFoldOperatorModelRouterDropsMalformed` + `TestLogModelRouterFacts`
+`TestBuildModelRouterTask*` (incl. `TestBuildModelRouterTaskOffWhenDisabled` — taxonomy ON,
+empty/kill-switch OFF) + `TestFoldOperatorModelRouterDropsMalformed` +
+`TestFoldOperatorModelRouterFoldsDisabled` + `TestLogModelRouterFacts` (silent/DISABLED/ACTIVE)
 + `TestRouterClassifierRunsOnSlotModel` + `TestRouterRoutesChildToClassifiedModelE2E` (asserts the
 parent→classifier→child→parent request POSITIONS) + `TestRouterOffIsByteIdenticalE2E`; `permconfig`
-`TestOperatorRouterParsed` + `TestProjectRouterStrippedWithWarn` + `TestRouterStrictUnknownKeyRejected`;
-flag parse `TestParseFlagsSubagentModelRouter` (mecated) + the mecatequi router subtest.
+`TestOperatorRouterParsed` + `TestOperatorRouterDisabledParsed` + `TestProjectRouterStrippedWithWarn`
++ `TestRouterStrictUnknownKeyRejected`; flag parse `TestParseFlagsSubagentModelRouter` (mecated,
+tri-state kill-switch) + the mecatequi router kill-switch subtest.
 
 **Extending the router to team members + Parallel branches (ADR 0034).** The router PRIMITIVE
 is family-agnostic: the ONE `parentCaps.routeTask` closure (above) is bound per run by the

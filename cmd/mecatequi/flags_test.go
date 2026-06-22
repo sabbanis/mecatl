@@ -1,13 +1,17 @@
 package main
 
 import (
+	"bytes"
 	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 
+	"github.com/stacklok/mecatl/engine/port"
+	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
 	"github.com/stacklok/mecatl/internal/app"
+	"github.com/stacklok/mecatl/internal/cliconfig"
 )
 
 // TestParseFlagsPromptInputs covers the prompt-input validation matrix: a literal
@@ -227,22 +231,31 @@ func TestAppConfigMapping(t *testing.T) {
 		}
 	})
 
-	t.Run("subagent-model-router flag", func(t *testing.T) {
-		// Default OFF.
+	t.Run("subagent-model-router kill-switch (ADR 0042)", func(t *testing.T) {
+		// Unset → router governed by the taxonomy (RouterDisabled false).
 		f, err := parseFlags([]string{"--prompt", "x"})
 		if err != nil {
 			t.Fatalf("parseFlags: %v", err)
 		}
-		if appConfig(f, newDiagnostics()).SubagentModelRouter {
-			t.Error("SubagentModelRouter must default OFF")
+		if appConfig(f, newDiagnostics()).RouterDisabled {
+			t.Error("an unset --subagent-model-router must leave RouterDisabled false (router governed by taxonomy)")
 		}
-		// Set ON.
+		// Backward-compat: the legacy bare invocation must still PARSE; it is the
+		// deprecated redundant enable and must NOT disable the router.
 		f, err = parseFlags([]string{"--prompt", "x", "--subagent-model-router"})
 		if err != nil {
-			t.Fatalf("parseFlags: %v", err)
+			t.Fatalf("legacy bare --subagent-model-router must still parse: %v", err)
 		}
-		if !appConfig(f, newDiagnostics()).SubagentModelRouter {
-			t.Error("--subagent-model-router must set SubagentModelRouter true")
+		if appConfig(f, newDiagnostics()).RouterDisabled {
+			t.Error("a bare --subagent-model-router (deprecated enable) must NOT set RouterDisabled")
+		}
+		// =false is the kill-switch → RouterDisabled.
+		f, err = parseFlags([]string{"--prompt", "x", "--subagent-model-router=false"})
+		if err != nil {
+			t.Fatalf("parseFlags --subagent-model-router=false: %v", err)
+		}
+		if !appConfig(f, newDiagnostics()).RouterDisabled {
+			t.Error("--subagent-model-router=false must set RouterDisabled (the kill-switch)")
 		}
 	})
 
@@ -311,6 +324,51 @@ func TestAppConfigMapping(t *testing.T) {
 		// An OPENAI_API_KEY present flips UseOpenAI on (matching mecated).
 		if !cfg.UseOpenAI {
 			t.Error("a present OPENAI_API_KEY should flip UseOpenAI on (mecated parity)")
+		}
+	})
+}
+
+// TestSubagentModelRouterDeprecationEmitted asserts the ADR 0042 deprecation line fires
+// at WARN level ON a bare / =true --subagent-model-router (the now-redundant legacy
+// enable), and is NOT emitted on the kill-switch (=false) or when the flag is unset. It
+// uses a capturing slogdiag buffer (the router_test.go pattern) so the emitted level +
+// message are asserted directly — appConfig is the emission site shared with mecated.
+func TestSubagentModelRouterDeprecationEmitted(t *testing.T) {
+	emit := func(t *testing.T, argv []string) string {
+		t.Helper()
+		f, err := parseFlags(append([]string{"--prompt", "x"}, argv...))
+		if err != nil {
+			t.Fatalf("parseFlags(%v): %v", argv, err)
+		}
+		var buf bytes.Buffer
+		diag := slogdiag.New(&buf, false, port.LevelDebug)
+		_ = appConfig(f, diag)
+		return buf.String()
+	}
+
+	t.Run("bare flag → WARN emitted", func(t *testing.T) {
+		log := emit(t, []string{"--subagent-model-router"})
+		if !strings.Contains(log, cliconfig.SubagentModelRouterDeprecatedEnableMsg) {
+			t.Fatalf("bare --subagent-model-router must emit the deprecation message; got:\n%s", log)
+		}
+		if !strings.Contains(log, "WARN") {
+			t.Fatalf("the deprecation must be a WARN; got:\n%s", log)
+		}
+	})
+	t.Run("=true → WARN emitted", func(t *testing.T) {
+		log := emit(t, []string{"--subagent-model-router=true"})
+		if !strings.Contains(log, cliconfig.SubagentModelRouterDeprecatedEnableMsg) {
+			t.Fatalf("--subagent-model-router=true must emit the deprecation message; got:\n%s", log)
+		}
+	})
+	t.Run("=false → NOT emitted (kill-switch, not the deprecated enable)", func(t *testing.T) {
+		if log := emit(t, []string{"--subagent-model-router=false"}); strings.Contains(log, cliconfig.SubagentModelRouterDeprecatedEnableMsg) {
+			t.Fatalf("the kill-switch (=false) must NOT emit the deprecation; got:\n%s", log)
+		}
+	})
+	t.Run("unset → NOT emitted", func(t *testing.T) {
+		if log := emit(t, nil); strings.Contains(log, cliconfig.SubagentModelRouterDeprecatedEnableMsg) {
+			t.Fatalf("an unset flag must NOT emit the deprecation; got:\n%s", log)
 		}
 	})
 }

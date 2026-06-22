@@ -257,14 +257,16 @@ type config struct {
 	subagentAskReviewerPolicyFile string
 	subagentAskReviewerPolicy     string
 
-	// Subagent model router (ADR 0031): subagentModelRouter is the OPT-IN enable gate
-	// for the semantic model router — a tiny classifier picks which model a plain
-	// Subagent delegation runs on, from an operator taxonomy in the user-global
-	// settings.yaml `models.router:` subtree. DEFAULT off (byte-identical to no router).
-	// Deliberately a FLAG, not a permission-config key: autonomous per-delegation model
-	// selection (spend/capability) is an operator deployment decision, the same posture
-	// as --subagent-ask-reviewer.
-	subagentModelRouter bool
+	// Subagent model router (ADR 0031; enable model per ADR 0042): the router is ENABLED
+	// by configuring a `models.router:` taxonomy in the user-global settings.yaml — the
+	// guardrails-parity enable model (no flag to forget). The --subagent-model-router
+	// flag is now a tri-state KILL-SWITCH: subagentModelRouter holds its value and
+	// subagentModelRouterSet records whether it was given. =false sets RouterDisabled
+	// (forces the router OFF despite a taxonomy); a bare flag / =true is the now-redundant
+	// enable and emits a one-time deprecation INFO; unset leaves the router governed by
+	// taxonomy presence.
+	subagentModelRouter    bool
+	subagentModelRouterSet bool
 
 	// Guardrails (issue #27): guardrailsModel names the tool-less checker model that
 	// inspects PreToolUse (outbound-args exfil) and PostToolUse (inbound-result
@@ -806,9 +808,13 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		SubagentAskReviewerModel:     cfg.subagentAskReviewer,
 		SubagentAskReviewerMaxDenies: cfg.subagentAskReviewerMaxDenies,
 		SubagentAskReviewerPolicy:    cfg.subagentAskReviewerPolicy,
-		// Subagent model router (ADR 0031): the enable gate only; the taxonomy comes
-		// from the operator-tier models.router: YAML (folded by foldOperatorModelRouter).
-		SubagentModelRouter: cfg.subagentModelRouter,
+		// Subagent model router (ADR 0042): the router is enabled by the operator-tier
+		// models.router: taxonomy (folded by foldOperatorModelRouter); this flag is now a
+		// tri-state KILL-SWITCH. =false forces the router OFF (RouterDisabled). A bare
+		// flag / =true is the deprecated redundant enable (deprecation INFO below). Unset
+		// leaves the router governed by taxonomy presence. The YAML disabled: key ORs in
+		// during the fold.
+		RouterDisabled: cfg.subagentModelRouterSet && !cfg.subagentModelRouter,
 		// Guardrails (issue #27): the checker model + master kill-switch. The rule list
 		// and cost knobs are operator-tier YAML only (the `guardrails:` subtree of the
 		// user-global settings.yaml), folded onto Config by foldOperatorGuardrails — a
@@ -868,6 +874,15 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 	keys := cfg.providerFlags.Apply(&out)
 	if keys.OpenAI != "" {
 		out.UseOpenAI = true
+	}
+	// Deprecation note (ADR 0042): a bare --subagent-model-router / =true is the legacy
+	// redundant enable — the router is now enabled by the models.router taxonomy, not the
+	// flag. It does NOT set RouterDisabled; emit a one-time WARN so an operator relying on
+	// the old enable semantics learns the new model and the kill-switch direction. The
+	// nil guard keeps the test callers (which pass diag=nil) panic-free; production always
+	// threads the non-nil diag built in run().
+	if diag != nil && cfg.subagentModelRouterSet && cfg.subagentModelRouter {
+		diag.Log(context.Background(), port.LevelWarn, cliconfig.SubagentModelRouterDeprecatedEnableMsg)
 	}
 	return out
 }
@@ -1061,7 +1076,7 @@ func parseFlags(argv []string) (config, error) {
 	fs.StringVar(&cfg.subagentAskReviewer, "subagent-ask-reviewer", "", "OPT-IN headless ask reviewer (issue #31): model id or --model-alias of a tool-less ONE-TURN reviewer that adjudicates a HEADLESS subagent/member/branch permission ask the 4-step model would otherwise blanket auto-deny. Allow = this call only (never learned); deny/error keeps the call denied (fail-safe). Configured Deny/Ask rules and an interactive approver always win; resolved on the session's provider (same-provider only). Empty (default) disables it; a value that does not resolve to a usable model id FAILS STARTUP. Deliberately a server flag, NOT a permission-config key: it grants an autonomous approval capability, an operator deployment decision")
 	fs.IntVar(&cfg.subagentAskReviewerMaxDenies, "subagent-ask-reviewer-max-denies", agent.DefaultAskReviewMaxDenies, "circuit breaker for --subagent-ask-reviewer: after this many CONSECUTIVE non-allow reviewer outcomes (denies/errors/timeouts) in one run, further asks skip the reviewer and fall through to the plain auto-deny; an allow resets the count. <=0 uses the default (3)")
 	fs.StringVar(&cfg.subagentAskReviewerPolicyFile, "subagent-ask-reviewer-policy", "", "path to a TRUSTED policy rubric file for --subagent-ask-reviewer; its CONTENT replaces the built-in read-only/verification rubric the reviewer applies. Empty keeps the built-in rubric. Read once at startup; an unreadable file FAILS STARTUP")
-	fs.BoolVar(&cfg.subagentModelRouter, "subagent-model-router", false, "OPT-IN semantic model router (ADR 0031): when set, a tiny one-turn classifier (on the `router` model slot) reads each plain Subagent delegation's task prompt and the operator's category taxonomy and picks which model the child runs on. The taxonomy (categories + per-category model + default) lives in the OPERATOR-TIER `models.router:` subtree of the user-global settings.yaml; this flag is only the ENABLE gate. It fires BEFORE the child is minted (decide-once, commit-for-lifetime, same-provider) and only for a plain delegation (no per-call model/agent, no fork/resume — those already pin the engine). FAIL-SOFT: any classifier failure, an unknown category, or a per-run circuit breaker (3 consecutive misses) falls through to the inherited default model. Empty/false (default) = OFF, byte-identical to no router. Deliberately a server flag, NOT a permission-config key: autonomous per-delegation model selection is an operator deployment decision")
+	fs.BoolVar(&cfg.subagentModelRouter, "subagent-model-router", false, "Semantic model router KILL-SWITCH (ADR 0042, superseding 0031's enable model): the router is ENABLED by configuring a `models.router:` category taxonomy in the OPERATOR-TIER user-global settings.yaml (the guardrails-parity enable model — configure = enable), NOT by this flag. Pass --subagent-model-router=false to force the router OFF despite a taxonomy (the kill-switch; also expressible as models.router.disabled: true in YAML). A bare --subagent-model-router / =true is the now-REDUNDANT legacy enable and only logs a deprecation note. When ENABLED, a tiny one-turn classifier (on the `router` model slot) reads each plain Subagent delegation's task prompt + the operator taxonomy and picks the child's model BEFORE the child is minted (decide-once, same-provider; only for a plain delegation — no per-call model/agent, no fork/resume). FAIL-SOFT: any classifier failure, unknown category, or the per-run breaker (3 consecutive misses) inherits the default model")
 	fs.BoolVar(&cfg.headless, "headless", false, "run NON-interactive: declare that clients drive sessions but never answer permission prompts (autonomous / CI deployments). A child subagent/member/branch permission ask is then NOT surfaced to the client (nobody would answer it — it would park until run-end) but resolved by the auto-deny path / the opt-in --subagent-ask-reviewer. DEFAULT off: a normal mecated serving an interactive client (mecatui, an IDE) surfaces asks for a human. Setting --subagent-ask-reviewer WITHOUT --headless has no effect (asks surface to the client instead) — a startup WARNING says so")
 	fs.StringVar(&cfg.guardrailsModel, "guardrails-model", "", "GUARDRAILS (issue #27): model id or --model-alias of a tool-less checker that inspects OUTBOUND tool-call args (PreToolUse, data exfil) and INBOUND tool results (PostToolUse, prompt injection) and enforces a verdict per the operator-tier `guardrails:` rule list. Empty (default) disables guardrails. A value that does not resolve to a usable model id FAILS STARTUP. The RULE LIST + cost knobs live in the user-global settings.yaml `guardrails:` subtree (operator-tier ONLY — a project repo cannot configure or weaken a checker); --guardrails-model overrides the YAML model")
 	fs.StringVar(&cfg.guardrailsMode, "guardrails", "", "GUARDRAILS master switch: pass `--guardrails=off` to force the issue-#27 content checker OFF regardless of --guardrails-model / the guardrails: YAML config (the kill-switch). Any other value (or unset) leaves guardrails governed by the model + rule config")
@@ -1112,8 +1127,14 @@ func parseFlags(argv []string) (config, error) {
 	// composition can let CLI out-rank the operator-global settings.yaml posture: key
 	// and WARN if an alias raised above an explicit lower --posture.
 	fs.Visit(func(f *flag.Flag) {
-		if f.Name == "posture" {
+		switch f.Name {
+		case "posture":
 			cfg.postureFlagSet = true
+		case "subagent-model-router":
+			// Tri-state (ADR 0042): record that the kill-switch flag was given so
+			// appConfig can distinguish "unset" (router governed by the taxonomy) from
+			// "=false" (kill-switch) and "=true/bare" (the deprecated redundant enable).
+			cfg.subagentModelRouterSet = true
 		}
 	})
 
