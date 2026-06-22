@@ -54,10 +54,11 @@ Produce a Markdown summary with exactly these sections, in this order:
 ## Open questions and known errors
 ## Next steps
 
-Under "## User instructions and intent": enumerate every user directive in order — the original request, any modifications, and the current ask — quoting each directly, and note where the user's intent CHANGED or a later instruction superseded an earlier one.
+Under "## User instructions and intent": enumerate every user directive in order — the original request, any modifications, and the current ask — quoting each directly, and note where the user's intent CHANGED or a later instruction superseded an earlier one. Any UNCOMPLETED task or CONDITIONAL/DEFERRED instruction (e.g. "when I later say X, do Y", "remember to do Z before finishing") MUST be preserved verbatim — these are the agent's ONLY memory of work still to be done.
 
 Rules:
 - This summary is the agent's ONLY memory of the dropped turns: every user directive MUST be preserved verbatim — losing a user instruction loses the task.
+- PENDING and DEFERRED work survives nowhere else: any task not yet done, any constraint that must persist, and any conditional instruction ("when X happens, do Y") MUST be carried over verbatim — dropping it loses the deferred work permanently.
 - PRESERVE verbatim: file paths, identifiers, commands, and error messages.
 - DROP: raw file contents, verbose tool output, stale grep results, and old stack traces.
 - Write "None." under any section with nothing to report.
