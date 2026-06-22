@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782158854571,
+  "lastUpdate": 1782158857326,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -347848,6 +347848,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 85,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1088,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "9ceade9db65319af9cc3674dff7bdba96a8b1b68",
+          "message": "feat(agent): host-supplied reconstructable askID discriminator (ADR-0044, #117)\n\nThe askID is `<sessionID>:<n>:<callID>:r<serial>`. Three of those four\ncomponents are reconstructable from persisted session state; the trailing\n`r<serial>` is not — `runSerial` is a process-global `atomic.Int64` reset on\nevery process start, so a different process (or the same one after a restart)\ncannot reproduce it. A host with a durable run identity therefore cannot\nreconstruct the askID for cross-process resume/correlation, which is why the downstream consumer\ntoday synthesizes its own `resumeAskID` and parses the grammar by hand\n(a downstream-consumer issue #552).\n\nAdd an opt-in `agent.RunOptions.AskIDDiscriminator string`: when set (non-empty\nand colon-free) it REPLACES the trailing component, so the askID becomes\n`<sessionID>:<n>:<callID>:<discriminator>` — fully reconstructable from the\nhost's persisted state. Resolved once in `startRun` onto `Run.askDiscriminator`;\n`newAskID` consumes the resolved value. Empty preserves the `r<serial>` fallback\nwith no behaviour change (mecatui, tests, in-memory hosts unaffected).\n\nHard constraints (pinned by tests, recorded in ADR-0044):\n1. The `<sessionID>:` prefix is preserved — mecatui `isChildAsk` classifies\n   main-vs-subagent on it.\n2. The CWE-863 replay guard is preserved by host contract: the discriminator\n   must be unique-per-run-ATTEMPT and stable-across-processes-for-the-same-\n   attempt (a per-session-stable value would re-open the retract/re-mint\n   collision). Documented on the field and in the ADR §Consequences.\n3. A colon-containing value is IGNORED (fall back to `r<serial>` with a WARN),\n   never stripped — stripping could collapse two distinct host ids onto one\n   askID and re-open the collision.\n4. No behaviour change when unset.\n\nThis is the same opt-in RunOptions seam pattern as MaxRunTokensOverride/\nExtraTools. It unblocks a downstream-consumer issue #581 (the downstream consumer passes its durable RunID as\nthe discriminator and drops resumeAskID + the grammar parse).\n\nEnforcement tests: TestNewAskIDDiscriminatorReconstructable,\nTestNewAskIDNoDiscriminatorMatchesSerial, TestNewAskIDDiscriminatorPreservesPrefix,\nTestRunOptionsAskIDDiscriminatorReplacesSerial,\nTestRunOptionsAskIDDiscriminatorColonFallsBack,\nTestAskIDDiscriminatorReconstructableAcrossRuns.\n\nAlso corrects stale docs (AGENTS.md, IMPLEMENTATION-NOTES.md): approval-replay\ncorrelates via the structured `ApprovalPayload.Call` field, not a\n`callIDFromAskID` grammar parse (that function does not exist).\n\nAdditive = minor per COMPATIBILITY.md; `engine/api/agent.txt` regenerated, a\nCHANGELOG [Unreleased]→Added entry added, and `llms.txt` regenerated for the new\nADR.\n\nCloses #117.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\nClaude-Session: https://claude.ai/code/session_01KViefejRCc16BnjGSXUuvv",
+          "timestamp": "2026-06-22T23:01:51+03:00",
+          "tree_id": "bf3e4ea95d313cdeb5412dcc4177637d5c938500",
+          "url": "https://github.com/stacklok/mecatl/commit/9ceade9db65319af9cc3674dff7bdba96a8b1b68"
+        },
+        "date": 1782158856697,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3536,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 97,
             "unit": "allocs/op"
           },
           {
