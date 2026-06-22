@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782118453916,
+  "lastUpdate": 1782118456649,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -327231,6 +327231,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/7d4cc438c89afb0f37c3557d248f097ce5dda20a"
         },
         "date": 1782064938155,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "bf7da212623a0e954bcb097afa6993368a36c3c0",
+          "message": "feat(agent): direct-write writable Subagent — drop force-copy fork + merge-back (ADR 0041) (#141)\n\nA mode:\"read-write\" Subagent now writes DIRECTLY to the real parent\nworkspace, exactly as the main agent does — no force-copy fork, no\ncopyTree, no serialized merge-back. Git is the rollback layer.\n\nWhy: the force-copy fork was O(full working tree + .git) per call —\nunfeasible on large repos (multi-GB per call on kubernetes-scale trees) —\nand the atomic merge-back lost ALL of a child's work on ANY conflict\n(it lost a 20-min/15.9M-token run in production). The \"own .git\"\nisolation it bought is overkill for the common edit/build/test task, and\na delegated writer being MORE sandboxed than its spawner is the inversion\nthat never earned its cost.\n\nMechanics:\n- prepareChildSession passes a nil forker for the writable path, so the\n  child runs against the parent workspace directly (the existing nil-forker\n  path in forkChildWorkspace).\n- MutatesParent is decoupled from the merger (true for mode:\"read-write\"\n  on writableChildEngine!=nil alone) so the dispatcher keeps running the\n  call ALONE (mutate-serial via parentMutatingCaller) — a direct-write\n  child mutates the real tree in place, so it must never overlap a sibling\n  read.\n- The writable child engine uses the main-session command runner\n  (buildCommandRunner), not the trust-ungated buildForceCopyRunner: that\n  runner was ungated only because a fork has no fork-time git, which no\n  longer holds on the real tree.\n- posture.isolated is false for a writable child (!writable && childForker),\n  correctly withholding the A2 isolation auto-approve since its Bash hits\n  the real repo; it runs at main-session policy parity instead.\n- The mode:\"read-write\" tool-arg description + result text are rewritten:\n  edits land directly, no isolation, a crash leaves partial edits\n  recoverable via git, runs serially. A mid-task kill (StopError / cancel /\n  time-budget) warns the model the edits may be PARTIAL.\n\nScope: the serial writable Subagent ONLY. Parallel branches and mutating\nteam members keep force-copy + serialized merge (genuine concurrency —\ndirect-write would race there). Moving those to git worktrees is future\nwork, out of scope here.\n\nBreaking engine API: removes WithWritableChildForker and\nWithSubagentAutoMerge (writable subagents no longer fork or merge);\nWithWritableChildEngine is retained and now fully wires the direct-write\npath. Recorded in engine/api/agent.txt + engine/CHANGELOG.md.\n\nADR 0041 supersedes 0040's writable-subagent decision only (0040's\nParallel auto-merge + the parentMutatingCaller dispatch-serial seam are\nreused, not superseded).\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-22T11:48:57+03:00",
+          "tree_id": "fb0aa1c40da2872b7da99b34d209e2b8d4a24773",
+          "url": "https://github.com/stacklok/mecatl/commit/bf7da212623a0e954bcb097afa6993368a36c3c0"
+        },
+        "date": 1782118455985,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
