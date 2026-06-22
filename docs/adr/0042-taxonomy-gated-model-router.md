@@ -63,16 +63,16 @@ Concretely:
   strictly, like the rest of the subtree). `foldOperatorModelRouter` ORs it onto
   `cfg.RouterDisabled`, mirroring `foldOperatorGuardrails`' handling of `guardrails:
   disabled`.
-- The `--subagent-model-router` CLI flag becomes a tri-state KILL-SWITCH (both `mecated`
-  and `mecatequi`), detected via `fs.Visit`:
+- The `--subagent-model-router` CLI flag becomes a KILL-SWITCH (both `mecated` and
+  `mecatequi`), detected via `fs.Visit`:
   - **unset** → the router is governed by taxonomy presence (`RouterDisabled` stays
     false unless the YAML disables it).
   - **`--subagent-model-router=false`** → the kill-switch → `RouterDisabled = true`
     (forces the router OFF despite a taxonomy).
-  - **bare `--subagent-model-router` / `=true`** → the now-REDUNDANT legacy enable: it
-    does NOT set `RouterDisabled`, and it emits a one-time deprecation INFO. Keeping the
-    bare-flag form parseable is a hard backward-compat requirement (a legacy systemd unit
-    must not fail to start).
+  - **bare `--subagent-model-router` / `=true`** → a harmless no-op: it does NOT set
+    `RouterDisabled` (the router stays governed by the taxonomy). The feature is
+    PRE-ADOPTION — there is no backward-compat / deprecation concern, so the bare form is
+    simply inert (it neither enables nor disables), not a deprecated enable.
 - `logModelRouterFacts` is rewritten: no taxonomy ⇒ SILENT (byte-identical OFF); taxonomy
   + `RouterDisabled` ⇒ a one-time DISABLED WARN (configured but kill-switched); taxonomy
   + not disabled ⇒ the existing "subagent model router ACTIVE" INFO. The old "flag set
@@ -101,13 +101,14 @@ the CLI kill-switch direction (`--subagent-model-router=false` and
   #137 mecatui-flag-wiring gap largely moot.
 - Full parity with the guardrails enable model.
 
-**Behaviour change (the honest cost):** a deployment that authored a `models.router:`
-taxonomy but never passed `--subagent-model-router` was previously OFF; it is now ON. An
-operator who wants that taxonomy present-but-inert must now say so explicitly
-(`disabled: true` or `--subagent-model-router=false`). This is the deliberate inversion —
-"configured but inert by default" was the footgun being removed — but it is a real
-behaviour change for anyone relying on the old flag-to-enable semantics, which is why the
-bare flag still parses and emits a deprecation INFO.
+**Behaviour change (the honest cost):** under the prior design a `models.router:`
+taxonomy was inert until `--subagent-model-router` was passed; now the taxonomy alone
+enables the router. An operator who wants that taxonomy present-but-inert must say so
+explicitly (`disabled: true` or `--subagent-model-router=false`). This is the deliberate
+inversion — "configured but inert by default" was the footgun being removed. The feature
+is PRE-ADOPTION, so there is no installed base relying on the old flag-to-enable
+semantics and therefore no backward-compat / deprecation concern: the bare flag still
+parses, but it is simply a harmless no-op (the router stays governed by the taxonomy).
 
 **Unchanged:** the engine-layer routing (`RunModelRouter`, the category→model mapping,
 the precedence gating `explicit > agent-def > fork/resume > router > inherited`), the

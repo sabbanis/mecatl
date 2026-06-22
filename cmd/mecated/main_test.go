@@ -17,11 +17,9 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/prometheus/client_golang/prometheus"
 
-	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/mcpperf"
 	"github.com/stacklok/mecatl/internal/adapter/skills"
-	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
 	"github.com/stacklok/mecatl/internal/adapter/telemetry"
 	"github.com/stacklok/mecatl/internal/app"
 )
@@ -87,9 +85,10 @@ func TestRunSkillsPromote(t *testing.T) {
 	})
 }
 
-// TestParseFlagsSubagentModelRouter asserts the ADR 0042 tri-state kill-switch parses:
-// unset → not set (router governed by taxonomy); the LEGACY bare flag / =true still
-// PARSES (backward-compat); =false maps to RouterDisabled via appConfig.
+// TestParseFlagsSubagentModelRouter asserts the ADR 0042 kill-switch parses:
+// unset → not set (router governed by taxonomy); a bare flag / =true still PARSES and is
+// a harmless no-op (router stays governed by taxonomy); =false maps to RouterDisabled via
+// appConfig.
 func TestParseFlagsSubagentModelRouter(t *testing.T) {
 	def, err := parseFlags(nil)
 	if err != nil {
@@ -99,20 +98,17 @@ func TestParseFlagsSubagentModelRouter(t *testing.T) {
 		t.Error("subagentModelRouterSet default = true, want false (flag not given → router governed by taxonomy)")
 	}
 
-	// Backward-compat: the legacy bare invocation must still PARSE without error.
+	// A bare invocation must still PARSE without error.
 	bare, err := parseFlags([]string{"--subagent-model-router"})
 	if err != nil {
-		t.Fatalf("legacy bare --subagent-model-router must still parse: %v", err)
+		t.Fatalf("bare --subagent-model-router must parse: %v", err)
 	}
 	if !bare.subagentModelRouterSet || !bare.subagentModelRouter {
-		t.Error("--subagent-model-router (bare) must record set=true value=true (the deprecated redundant enable)")
+		t.Error("--subagent-model-router (bare) must record set=true value=true")
 	}
-	// The deprecated bare flag must NOT disable the router (mecatequi parity): it is a
-	// redundant enable, not the kill-switch. appConfig emits the deprecation WARN here, so
-	// thread a non-nil capturing diag (the bare path Logs).
-	var bareBuf bytes.Buffer
-	if cfg := appConfig(bare, nil, nil, nil, slogdiag.New(&bareBuf, false, port.LevelDebug)); cfg.RouterDisabled {
-		t.Error("a bare --subagent-model-router (deprecated enable) must leave RouterDisabled false")
+	// A bare flag / =true is a no-op: it must NOT disable the router (taxonomy governs).
+	if cfg := appConfig(bare, nil, nil, nil, nil); cfg.RouterDisabled {
+		t.Error("a bare --subagent-model-router must leave RouterDisabled false")
 	}
 
 	// =false is the kill-switch: it must map to RouterDisabled in app.Config.

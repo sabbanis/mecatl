@@ -601,9 +601,10 @@ too); a PROJECT-tier `router:` is stripped with a WARN in `captureProjectModels`
 **ENABLE MODEL (ADR 0042, superseding 0031):** the TAXONOMY is the enable (configure = enable,
 guardrails-parity). `app.Config` carries `RouterDisabled` (NOT a `SubagentModelRouter` enable bool —
 that field was REMOVED as dead code) = OR of the YAML `disabled:` key and the CLI kill-switch. The
-`--subagent-model-router` FLAG (both mains) is now a tri-state KILL-SWITCH detected via `fs.Visit`:
-unset ⇒ governed by the taxonomy; `=false` ⇒ `RouterDisabled=true`; bare/`=true` ⇒ the deprecated
-redundant enable (still parses for backward-compat; emits a one-time deprecation INFO in `appConfig`).
+`--subagent-model-router` FLAG (both mains) is a KILL-SWITCH detected via `fs.Visit`:
+unset ⇒ governed by the taxonomy; `=false` ⇒ `RouterDisabled=true`; bare/`=true` ⇒ a harmless
+no-op (the router stays governed by the taxonomy — the feature is PRE-ADOPTION, so no
+deprecation/backward-compat concern; the bare form neither enables nor disables).
 Guards: `engine/agent` `TestRunModelRouter*` + `TestRun(RouteTask|ExplicitModel|Fork|NilRouteTask)*`
 + `TestRunNamedAgentBeatsRouter` + `TestRunResumeDoesNotRoute` (the precedence-gate guards) +
 `TestRouterBreaker*` (incl. `TestRouterBreakerSerializesConcurrentCalls` under -race); `app`
@@ -614,7 +615,7 @@ empty/kill-switch OFF) + `TestFoldOperatorModelRouterDropsMalformed` +
 parent→classifier→child→parent request POSITIONS) + `TestRouterOffIsByteIdenticalE2E`; `permconfig`
 `TestOperatorRouterParsed` + `TestOperatorRouterDisabledParsed` + `TestProjectRouterStrippedWithWarn`
 + `TestRouterStrictUnknownKeyRejected`; flag parse `TestParseFlagsSubagentModelRouter` (mecated,
-tri-state kill-switch) + the mecatequi router kill-switch subtest.
+kill-switch) + the mecatequi router kill-switch subtest.
 
 **Extending the router to team members + Parallel branches (ADR 0034).** The router PRIMITIVE
 is family-agnostic: the ONE `parentCaps.routeTask` closure (above) is bound per run by the

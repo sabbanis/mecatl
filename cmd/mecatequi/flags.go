@@ -1,7 +1,6 @@
 package main
 
 import (
-	"context"
 	"errors"
 	"flag"
 	"fmt"
@@ -99,10 +98,10 @@ type flags struct {
 
 	// Subagent model router (ADR 0031; enable model per ADR 0042): the router is ENABLED
 	// by the operator-tier models.router: taxonomy (the guardrails-parity enable model).
-	// The --subagent-model-router flag is now a tri-state KILL-SWITCH: subagentModelRouter
-	// holds its value, subagentModelRouterSet records whether it was given. =false sets
-	// RouterDisabled; a bare flag / =true is the deprecated redundant enable (deprecation
-	// INFO); unset leaves routing governed by taxonomy presence.
+	// The --subagent-model-router flag is a KILL-SWITCH: subagentModelRouter holds its
+	// value, subagentModelRouterSet records whether it was given. =false sets
+	// RouterDisabled; a bare flag / =true is a harmless no-op (the router stays governed
+	// by the taxonomy); unset leaves routing governed by taxonomy presence.
 	subagentModelRouter    bool
 	subagentModelRouterSet bool
 
@@ -159,7 +158,7 @@ func parseFlags(argv []string) (flags, error) {
 	fs.StringVar(&f.guardrailsMode, "guardrails", "", "GUARDRAILS master switch: pass --guardrails=off to force the checker OFF regardless of --guardrails-model / the YAML config")
 
 	fs.StringVar(&f.subagentAskReviewer, "subagent-ask-reviewer", "", "OPT-IN headless ask reviewer (issue #31): model id / alias of a tool-less one-turn reviewer adjudicating a child permission ask the headless auto-deny would otherwise reject. Empty disables it")
-	fs.BoolVar(&f.subagentModelRouter, "subagent-model-router", false, "Semantic model router KILL-SWITCH (ADR 0042, superseding 0031's enable model): the router is ENABLED by an operator-tier models.router: category taxonomy (configure = enable, guardrails-parity), NOT by this flag. Pass --subagent-model-router=false to force it OFF despite a taxonomy (also models.router.disabled: true in YAML). A bare flag / =true is the now-redundant legacy enable (logs a deprecation note). When enabled, a tiny classifier on the `router` slot picks the child model per plain Subagent delegation before the child is minted (decide-once, same-provider); fail-soft to the inherited model on any miss")
+	fs.BoolVar(&f.subagentModelRouter, "subagent-model-router", false, "Semantic model router KILL-SWITCH (ADR 0042, superseding 0031's enable model): the router is ENABLED by an operator-tier models.router: category taxonomy (configure = enable, guardrails-parity), NOT by this flag. Pass --subagent-model-router=false to force it OFF despite a taxonomy (also models.router.disabled: true in YAML). When enabled, a tiny classifier on the `router` slot picks the child model per plain Subagent delegation before the child is minted (decide-once, same-provider); fail-soft to the inherited model on any miss")
 	fs.IntVar(&f.subagentAskReviewerMaxDenies, "subagent-ask-reviewer-max-denies", agent.DefaultAskReviewMaxDenies, "circuit breaker for --subagent-ask-reviewer: consecutive non-allow outcomes that disable the reviewer for the rest of the run; <=0 uses the default (3)")
 	fs.StringVar(&f.subagentAskReviewerPolicyFile, "subagent-ask-reviewer-policy", "", "path to a TRUSTED policy rubric file for --subagent-ask-reviewer; its CONTENT replaces the built-in rubric. Read once at startup; an unreadable file fails startup")
 
@@ -179,7 +178,7 @@ func parseFlags(argv []string) (flags, error) {
 			f.postureFlagSet = true
 		case "subagent-model-router":
 			// Tri-state kill-switch (ADR 0042): record that the flag was given so
-			// appConfig can distinguish unset / =false (kill-switch) / =true (deprecated).
+			// appConfig can distinguish unset / =false (kill-switch) / =true (inert).
 			f.subagentModelRouterSet = true
 		}
 	})
@@ -313,9 +312,9 @@ func appConfig(f flags, diag port.Diagnostics) app.Config {
 		GuardrailsDisabled: f.guardrailsOff,
 
 		SubagentAskReviewerModel: f.subagentAskReviewer,
-		// Subagent model router (ADR 0042): tri-state kill-switch. =false forces the
-		// router OFF (RouterDisabled); a bare flag / =true is the deprecated redundant
-		// enable (deprecation INFO below); unset leaves routing governed by the taxonomy.
+		// Subagent model router (ADR 0042): kill-switch. =false forces the router OFF
+		// (RouterDisabled); a bare flag / =true is a harmless no-op (the router stays
+		// governed by the taxonomy); unset leaves routing governed by the taxonomy.
 		RouterDisabled:               f.subagentModelRouterSet && !f.subagentModelRouter,
 		SubagentAskReviewerMaxDenies: f.subagentAskReviewerMaxDenies,
 		SubagentAskReviewerPolicy:    f.subagentAskReviewerPolicy,
@@ -339,13 +338,6 @@ func appConfig(f flags, diag port.Diagnostics) app.Config {
 	keys := f.providerFlags.Apply(&out)
 	if keys.OpenAI != "" {
 		out.UseOpenAI = true
-	}
-	// Deprecation note (ADR 0042): a bare --subagent-model-router / =true is the legacy
-	// redundant enable — routing is now enabled by the models.router taxonomy, not the
-	// flag. It does NOT disable; emit a one-time WARN pointing at the new kill-switch. The
-	// nil guard mirrors mecated (defense-in-depth; appConfig always gets a non-nil diag).
-	if diag != nil && f.subagentModelRouterSet && f.subagentModelRouter {
-		diag.Log(context.Background(), port.LevelWarn, cliconfig.SubagentModelRouterDeprecatedEnableMsg)
 	}
 	return out
 }

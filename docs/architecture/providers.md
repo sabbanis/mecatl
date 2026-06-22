@@ -289,8 +289,9 @@ in the user-global `settings.yaml` `models.router:` subtree — each a `name`, a
 (configure = enable), replacing ADR 0031's flag-to-enable gate. To keep the taxonomy but
 turn routing off, set `disabled: true` in the subtree or pass
 `--subagent-model-router=false` (the two combine into `cfg.RouterDisabled`); a bare
-`--subagent-model-router` / `=true` is the now-redundant legacy enable (it still parses and
-emits a deprecation INFO). A project-tier `models.router:` is **stripped with a WARN**
+`--subagent-model-router` / `=true` is a harmless no-op (it still parses but neither
+enables nor disables — the router stays governed by the taxonomy). A project-tier
+`models.router:` is **stripped with a WARN**
 (operator-tier only). The classifier itself runs on the `router` model slot (default
 `cheap` tier; an operator `classifier-slot` overrides) — a tiny one-turn call.
 

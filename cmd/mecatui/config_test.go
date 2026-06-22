@@ -820,13 +820,13 @@ func TestEmbeddedConfigMapsPosture(t *testing.T) {
 	}
 }
 
-// TestParseFlagsSubagentModelRouter covers the tri-state --subagent-model-router
-// kill-switch (ADR 0042) end-to-end through mecatui's embeddedConfig: the flag is
-// enabled by the models.router: taxonomy, so the bool flag only sets RouterDisabled
-// when given as =false. Unset → set==false → RouterDisabled==false (taxonomy governs);
-// bare/=true → the deprecated redundant enable, set==true/value==true, RouterDisabled
-// stays false (does NOT disable); =false → the kill-switch, set==true/value==false,
-// RouterDisabled==true. The RouterDisabled assertions would fail if the mapping inverted.
+// TestParseFlagsSubagentModelRouter covers the --subagent-model-router kill-switch
+// (ADR 0042) end-to-end through mecatui's embeddedConfig: the router is enabled by the
+// models.router: taxonomy, so the bool flag only sets RouterDisabled when given as
+// =false. Unset → set==false → RouterDisabled==false (taxonomy governs); bare/=true →
+// set==true/value==true, RouterDisabled stays false (a harmless no-op, does NOT disable);
+// =false → the kill-switch, set==true/value==false, RouterDisabled==true. The
+// RouterDisabled assertions would fail if the mapping inverted.
 func TestParseFlagsSubagentModelRouter(t *testing.T) {
 	// Default: flag never given → not set, router governed by the taxonomy (not disabled).
 	def, err := parseFlags(nil)
@@ -840,8 +840,8 @@ func TestParseFlagsSubagentModelRouter(t *testing.T) {
 		t.Errorf("unset: embeddedConfig.RouterDisabled = true, want false (taxonomy governs)")
 	}
 
-	// Bare --subagent-model-router (==true): parses, set==true, value==true; this is the
-	// deprecated redundant enable — it must NOT disable the router.
+	// Bare --subagent-model-router (==true): parses, set==true, value==true; this is a
+	// harmless no-op — it must NOT disable the router (taxonomy governs).
 	bare, err := parseFlags([]string{"-subagent-model-router"})
 	if err != nil {
 		t.Fatalf("parseFlags(-subagent-model-router): %v", err)
@@ -850,7 +850,7 @@ func TestParseFlagsSubagentModelRouter(t *testing.T) {
 		t.Errorf("bare flag: set=%v value=%v, want true/true", bare.subagentModelRouterSet, bare.subagentModelRouter)
 	}
 	if ac := embeddedConfig(bare, port.NopDiagnostics{}); ac.RouterDisabled {
-		t.Errorf("bare flag: embeddedConfig.RouterDisabled = true, want false (redundant enable does not disable)")
+		t.Errorf("bare flag: embeddedConfig.RouterDisabled = true, want false (no-op does not disable)")
 	}
 
 	// --subagent-model-router=false: the kill-switch. set==true, value==false → disabled.
