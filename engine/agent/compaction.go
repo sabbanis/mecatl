@@ -244,42 +244,32 @@ func snapCutToRecentUserTurn(msgs []session.Message, cut int, floor int) int {
 
 // isGenuineUserTurn reports whether m is a GENUINE user instruction — the thing
 // the compaction pin and the verbatim-tail back-snap must anchor on — as opposed
-// to the two classes of harness-authored RoleUser message that ride in the same
+// to the two classes of harness-authored RoleUser message that can ride in the same
 // history:
 //
-//   - turn-0 context fragments (project instructions / soul / memory index / user
-//     model), injected once at run start by the InstructionAssembler chain and
-//     recorded as RoleUser so they fence as untrusted DATA — recognised by
-//     prompt.IsInjectedTurn0Fragment (the source-of-truth predicate over the
-//     assemblers' own headers; rewording a header updates it automatically);
 //   - synthesised compaction summaries (the paths-summary and the tier-4 LLM
-//     summary), recognised by isSynthesisedSummary.
+//     summary), recognised by isSynthesisedSummary — this arm is LOAD-BEARING: a
+//     re-compaction must not anchor the pin/back-snap on a PRIOR summary;
+//   - turn-0 context fragments (project instructions / soul / memory index / user
+//     model), recognised by prompt.IsInjectedTurn0Fragment. As of ADR 0043 these
+//     fragments are EPHEMERAL — prepended to the request per-run, never persisted
+//     into Conversation.Messages — so they normally do not appear here at all. This
+//     arm is therefore DEFENSE-IN-DEPTH: it keeps the predicate correct for any
+//     legacy/persisted history that still carries injected fragments (e.g. a
+//     session snapshotted before the ephemeral cutover) so the pin never anchors on
+//     a stray fragment instead of the user's real goal.
 //
-// Without this skip the pin anchored on the FIRST RoleUser message — which, with
-// a soul/memory/user-model deployment, is an injected fragment, not the user's
-// real goal — so the genuine first instruction fell into the summarised middle and
-// was dropped (the "I don't have the original task" bug). The count of leading
-// injected fragments is config-variable (0–4+), so a positional "first N" cannot
-// work; the anchor must be content-identified.
+// Without the synthesised-summary skip the pin anchored on the FIRST RoleUser
+// message — which on a re-compaction could be a prior summary, and historically
+// (with a persisted soul/memory deployment) an injected fragment — so the genuine
+// first instruction fell into the summarised middle and was dropped (the "I don't
+// have the original task" bug). The count of leading injected fragments was
+// config-variable (0–4+), so a positional "first N" cannot work; the anchor must be
+// content-identified.
 func isGenuineUserTurn(m session.Message) bool {
 	return m.Role == session.RoleUser &&
 		!prompt.IsInjectedTurn0Fragment(m.Text) &&
 		!isSynthesisedSummary(m.Text)
-}
-
-// hasGenuineUserTurn reports whether msgs already contains at least one genuine
-// user instruction (isGenuineUserTurn). It is the session-lifetime signal the
-// turn-0 injection gate uses: a fresh session (no genuine user turn yet) injects
-// the context fragments once; a resumed session that already recorded a genuine
-// user turn skips re-injection, so Reopen/Interrupt/Recover (which zero Counters)
-// no longer re-fire it and bloat the persisted history.
-func hasGenuineUserTurn(msgs []session.Message) bool {
-	for _, m := range msgs {
-		if isGenuineUserTurn(m) {
-			return true
-		}
-	}
-	return false
 }
 
 // isRecentUserTurn reports whether m is a genuine user instruction the back-snap

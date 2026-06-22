@@ -3,6 +3,7 @@
 - Status: Accepted
 - Date: 2026
 - Scope: `engine/agent` (compaction trigger, HeuristicCompactor, CascadeCompactor), `engine/session` (ReplaceHistory, ValidateToolPairing), `internal/app` (buildCompactor wiring).
+- Superseded by: [ADR 0043](./0043-ephemeral-turn0-instruction-fragments.md) (turn-0 fragment persistence → ephemeral; the compaction pin's injected-fragment skip is now defense-in-depth, and the "once-per-session injection" related-fix note below is replaced by per-run ephemeral prepend).
 
 ## Context
 

@@ -128,7 +128,14 @@ Two-layer prompt assembly + AGENTS.md/CLAUDE.md discovery; the turn-0 `Instructi
 chain and its consumer-local ports (`MemoryIndexSource`, `SoulSource` — issue #14 Phase 1's
 read-only persona seam, `UserModelSource` — issue #14 Phase 2's cross-project operator-FACTS
 seam). Turn-0 ORDER is soul → memory index → user model (identity → saved project facts →
-operator model), all on the volatile turn-0 user-message seam (never `StablePrefix`).
+operator model), all on the volatile turn-0 user-message seam (never `StablePrefix`). As of
+[ADR 0043](../adr/0043-ephemeral-turn0-instruction-fragments.md) these fragments are
+EPHEMERAL: `engine/agent/loop.go` (`buildRequest`) assembles the chain ONCE per run (cached
+on the `Run`), PREPENDS the fragments ahead of `Conversation.Messages` on every turn
+(including resume), and NEVER persists them into the conversation, event-carries them, or
+snapshots them — `recordPrompt` records only the genuine prompt. The fragments are present on
+every run unconditionally, and the snapshot + event-sourced rehydration paths converge
+fragment-free.
 
 **`SoulSource` stays trust-/provenance-UNAWARE** (issue #14 Phase 3 Item 2): the soul's
 USER-vs-PROJECT provenance + `--trust-project` gate + USER-WINS precedence are decided in
@@ -1843,17 +1850,22 @@ preserve every user message verbatim.
 
 - **Genuine-user predicate (the pin anchor).** `firstUser`, `userSnapFloor`, `preservedHead`, and
   the back-snap's `isRecentUserTurn` all anchor on the first GENUINE user instruction via the
-  SHARED `isGenuineUserTurn`: a `RoleUser` message that is NEITHER a harness-injected turn-0
-  fragment (`prompt.IsInjectedTurn0Fragment` — project-instructions/soul/memory-index/user-model,
-  recognised by the assemblers' own headers, the source of truth) NOR a synthesised compaction
-  summary (`isSynthesisedSummary`). Without the turn-0-fragment skip the pin anchored on the first
-  `RoleUser` message, which — with a soul/memory/user-model deployment — is an injected fragment,
-  not the user's real goal; the genuine instruction then fell into the summarised middle and was
-  dropped. The count of leading injected fragments is config-variable (0–4+), so a positional
-  "first N" is wrong — the anchor must be content-identified. (Related: `recordPrompt` injects the
-  turn-0 fragments ONCE per session via the `hasGenuineUserTurn` gate — "no genuine user turn
-  recorded yet" — NOT `Counters.Turns==0`, which `Reopen`/`Interrupt`/`Recover` zero, so a resumed
-  run no longer re-injects soul/AGENTS.md/memory into the persisted history.)
+  SHARED `isGenuineUserTurn`: a `RoleUser` message that is NEITHER a synthesised compaction summary
+  (`isSynthesisedSummary` — the LOAD-BEARING arm: a re-compaction must not anchor on a prior
+  summary) NOR a harness-injected turn-0 fragment (`prompt.IsInjectedTurn0Fragment` —
+  project-instructions/soul/memory-index/user-model, recognised by the assemblers' own headers,
+  the source of truth). The fragment arm is now DEFENSE-IN-DEPTH: as of
+  [ADR 0043](../adr/0043-ephemeral-turn0-instruction-fragments.md) the turn-0 fragments are
+  EPHEMERAL (prepended to the request per-run, never persisted), so they normally do not appear in
+  the history at all — the arm only protects legacy history snapshotted before that cutover.
+  Without the synthesised-summary skip the pin anchored on the first `RoleUser` message, which on a
+  re-compaction could be a prior summary (and historically, with a persisted soul/memory
+  deployment, an injected fragment); the genuine instruction then fell into the summarised middle
+  and was dropped. The count of leading fragments was config-variable (0–4+), so a positional
+  "first N" is wrong — the anchor must be content-identified. (Related: `recordPrompt` no longer
+  records the turn-0 fragments at all; `buildRequest` assembles them once per run and prepends them
+  ephemerally — see ADR 0043 — which fixes the resume bloat structurally, so a resumed run cannot
+  re-inject soul/AGENTS.md/memory into the persisted history.)
 - **The back-snap.** The shared unexported `snapCutToRecentUserTurn(msgs, cut, floor)` moves the
   cut BACKWARD so the tail BEGINS at a recent user turn, keeping the most-recent user
   instruction(s) verbatim instead of summarising them. It walks backward from `cut-1` toward

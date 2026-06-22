@@ -88,24 +88,6 @@ func TestFirstUserAndFloorAnchorPastInjectedFragments(t *testing.T) {
 	}
 }
 
-// TestHasGenuineUserTurn pins the resume-gate signal: a history of only system +
-// injected fragments has NO genuine user turn (fresh session → inject), while one
-// containing a real instruction does (resumed session → skip).
-func TestHasGenuineUserTurn(t *testing.T) {
-	onlyInjected := []session.Message{
-		session.NewSystemMessage("system rules"),
-		injectedSoulFragment(t),
-		injectedMemoryFragment(t),
-	}
-	if hasGenuineUserTurn(onlyInjected) {
-		t.Fatalf("a history of only injected fragments must have NO genuine user turn")
-	}
-	withGenuine := append(onlyInjected, session.NewUserMessage("do the thing"))
-	if !hasGenuineUserTurn(withGenuine) {
-		t.Fatalf("a history with a real user instruction must have a genuine user turn")
-	}
-}
-
 // TestSnapCutToRecentUserTurn is the direct unit test of the back-snap's pure index
 // arithmetic, exercising each of its three exits (recentUserTurnsKept reached /
 // maxUserSnapLookback hit / floor reached), the clamps, and the

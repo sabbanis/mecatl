@@ -3,12 +3,15 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/prompt"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
@@ -131,41 +134,88 @@ func TestCascadeCompactorPinsGenuineGoalPastInjectedFragments(t *testing.T) {
 	assertGenuineGoalPinnedNotFragment(t, compacted)
 }
 
-// TestTurn0InjectionFiresOnceAcrossReopen is the resume re-injection fix (Bug 2):
-// a FRESH session injects the turn-0 fragments exactly once; after Reopen + a new
-// prompt the assembler must NOT fire again (it was gated on Counters.Turns==0,
-// which Reopen zeroes, so it re-injected on every resume and bloated history). The
-// gate is now "no genuine user turn recorded yet", so a resumed session skips it.
-func TestTurn0InjectionFiresOnceAcrossReopen(t *testing.T) {
+// TestTurn0FragmentsEphemeralAcrossReopen is the ephemeral-fragment invariant (ADR
+// 0043, superseding the resume-gate of f31bde54). The turn-0 instruction fragments
+// are NO LONGER persisted into the conversation; they are prepended to every
+// LLMRequest ephemerally. The contract this pins is twofold:
+//
+//   - the persisted Conversation.Messages carries ZERO injected fragments after a
+//     fresh run AND after Reopen + a second run (no growth across resumes — the
+//     bloat the old resume-gate also fixed, now fixed structurally by not persisting);
+//   - every run, INCLUDING the resumed one, sends the fragments prepended ahead of
+//     the conversation in LLMRequest.Messages (so resume never loses its persona /
+//     project instructions / memory — what the resume-gate's "skip on resume" left
+//     ambiguous, the ephemeral prepend makes unconditional).
+//
+// It captures the FIRST request of each run via WithRequestObserver and asserts the
+// fragment leads the message slice; assembly fires once per run (the per-run cache).
+func TestTurn0FragmentsEphemeralAcrossReopen(t *testing.T) {
 	ctx := context.Background()
-	asm := &countingAssembler{msg: "Project instructions (AGENTS.md):\n\nthe house style"}
-	llm := mockllm.New(mockllm.TextTurn("first done"), mockllm.TextTurn("second done"))
+	const fragText = "Project instructions (AGENTS.md):\n\nthe house style"
+	asm := &countingAssembler{msg: fragText}
+
+	var (
+		mu      sync.Mutex
+		firstOf []port.LLMRequest // the first request observed in each run
+		seenRun bool
+	)
+	obs := func(req port.LLMRequest) {
+		mu.Lock()
+		defer mu.Unlock()
+		if !seenRun { // capture only the first turn of the current run
+			firstOf = append(firstOf, req)
+			seenRun = true
+		}
+	}
+	llm := mockllm.NewWith(
+		[]mockllm.Option{mockllm.WithRequestObserver(obs)},
+		mockllm.TextTurn("first done"), mockllm.TextTurn("second done"),
+	)
 	cat := catalogWith(t, &fakeTool{name: "Read", readOnly: true, exec: okExec})
 	e := newEngine(agent.Deps{LLM: llm, Catalog: cat, Instructions: asm})
 
 	sess := newSession(t, session.Limits{})
 	ws := memfs.NewWorkspace("/ws")
 
-	// Fresh session: the assembler fires exactly once.
+	// Fresh run: fragments are sent (prepended) but NOT persisted.
 	drain(e.Run(ctx, sess, ws, "first prompt"))
 	if asm.called != 1 {
-		t.Fatalf("fresh-session injection: assembler called %d times, want 1", asm.called)
+		t.Fatalf("fresh run: assembler called %d times, want 1 (once-per-run cache)", asm.called)
 	}
-	if got := countInjected(sess); got != 1 {
-		t.Fatalf("fresh session: %d injected fragments in history, want 1", got)
+	if got := countInjected(sess); got != 0 {
+		t.Fatalf("fresh run: %d injected fragments PERSISTED in history, want 0 (fragments are ephemeral)", got)
 	}
 
-	// Resume: a completed session is Reopened (Counters zeroed) and re-driven. The
-	// assembler must NOT fire again, and no duplicate fragment may enter history.
+	// Resume: a completed session is Reopened and re-driven. Fragments are RE-assembled
+	// (a new run → new cache) and prepended again; still none persist.
+	mu.Lock()
+	seenRun = false
+	mu.Unlock()
 	if err := sess.Reopen(); err != nil {
 		t.Fatalf("Reopen: %v", err)
 	}
 	drain(e.Run(ctx, sess, ws, "second prompt"))
-	if asm.called != 1 {
-		t.Fatalf("after Reopen: assembler called %d times, want 1 (re-injection regressed)", asm.called)
+	if asm.called != 2 {
+		t.Fatalf("after Reopen: assembler called %d times, want 2 (once per run, re-assembled on resume)", asm.called)
 	}
-	if got := countInjected(sess); got != 1 {
-		t.Fatalf("after Reopen: %d injected fragments in history, want 1 (duplicate re-injection)", got)
+	if got := countInjected(sess); got != 0 {
+		t.Fatalf("after Reopen: %d injected fragments PERSISTED in history, want 0 (no growth across resume)", got)
+	}
+
+	// Both runs' first request must lead with the ephemeral fragment.
+	mu.Lock()
+	defer mu.Unlock()
+	if len(firstOf) != 2 {
+		t.Fatalf("expected one captured request per run, got %d", len(firstOf))
+	}
+	for i, req := range firstOf {
+		if len(req.Messages) == 0 {
+			t.Fatalf("run %d: request carried no messages", i)
+		}
+		lead := req.Messages[0]
+		if lead.Role != session.RoleUser || !prompt.IsInjectedTurn0Fragment(lead.Text) || lead.Text != fragText {
+			t.Fatalf("run %d: first message is not the prepended turn-0 fragment: role=%s text=%q", i, lead.Role, lead.Text)
+		}
 	}
 }
 
@@ -189,3 +239,71 @@ func countInjected(sess *session.Session) int {
 	}
 	return n
 }
+
+// erroringAssembler always fails, so a test can drive the fail-soft branch in
+// buildRequest's once-per-run fragment assembly.
+type erroringAssembler struct{ err error }
+
+func (a erroringAssembler) Assemble(context.Context, tool.Workspace) ([]session.Message, error) {
+	return nil, a.err
+}
+
+// TestTurn0FragmentAssembleErrorIsFailSoft proves the ephemeral fragment assembly
+// (ADR 0043) is fail-soft: an Instructions.Assemble error does NOT abort the run, no
+// fragment is prepended to the request, and a single WARN fires on the run-scoped
+// diagnostics. This is the branch TestDefaultAssemblerWhenNil does NOT cover (that
+// one is nil-assembler → RootAssembler; this is assemble-ERROR).
+func TestTurn0FragmentAssembleErrorIsFailSoft(t *testing.T) {
+	ctx := context.Background()
+	diag := newCapturingDiag()
+	llm, firstReq := captureFirstRequest(t, mockllm.TextTurn("done"))
+	cat := catalogWith(t, &fakeTool{name: "Read", readOnly: true, exec: okExec})
+	e := newEngine(agent.Deps{
+		LLM:          llm,
+		Catalog:      cat,
+		Instructions: erroringAssembler{err: errAssembleFailed},
+		Diagnostics:  diag,
+	})
+
+	sess := newSession(t, session.Limits{})
+	run := e.Run(ctx, sess, memfs.NewWorkspace("/ws"), "do the thing")
+
+	// The run must COMPLETE despite the assemble error.
+	var terminal *session.Event
+	for ev := range run.Events() {
+		if ev.Type == session.EvResult {
+			r := ev
+			terminal = &r
+		}
+	}
+	if terminal == nil || terminal.Result == nil {
+		t.Fatal("run never reached a terminal result (assemble error must be fail-soft, not fatal)")
+	}
+	if terminal.Result.Stop != session.StopEndTurn {
+		t.Fatalf("run stop = %q, want a clean end_turn (assemble error must not change the terminal)", terminal.Result.Stop)
+	}
+
+	// No fragment was prepended to the request.
+	req, ok := firstReq()
+	if !ok {
+		t.Fatal("provider never received a request")
+	}
+	for _, m := range req.Messages {
+		if m.Role == session.RoleUser && prompt.IsInjectedTurn0Fragment(m.Text) {
+			t.Fatalf("a fragment was prepended despite the assemble error:\n%q", m.Text)
+		}
+	}
+
+	// Exactly the fail-soft WARN fired (and no fragment persisted, by construction).
+	var warns int
+	for _, rec := range diag.snapshot() {
+		if rec.level == port.LevelWarn && strings.Contains(rec.msg, "instruction-fragment assembly failed") {
+			warns++
+		}
+	}
+	if warns != 1 {
+		t.Fatalf("fail-soft WARN fired %d times, want exactly 1", warns)
+	}
+}
+
+var errAssembleFailed = errors.New("assemble boom")

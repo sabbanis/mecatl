@@ -11,6 +11,23 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
 
 ## [Unreleased]
 
+### Changed
+
+- **Behaviour (no API change): turn-0 instruction fragments are now EPHEMERAL.** The
+  soul / project-instruction / memory-index / user-model fragments produced by the
+  `prompt.InstructionAssembler` chain are no longer persisted into
+  `session.Conversation.Messages` at turn 0. The agent loop now assembles them ONCE per
+  run and PREPENDS them to the per-request `port.LLMRequest.Messages` on every turn
+  (including resume), never writing them into the conversation, event-carrying them, or
+  snapshotting them. The genuine user prompt is still recorded and event-carried
+  unchanged. This fixes resume-time history bloat (resumed runs no longer re-append the
+  fragments), keeps the persisted conversation clean (so compaction anchors on the
+  genuine first instruction), and converges the snapshot + `eventsource.Fold`
+  rehydration paths fragment-free. No exported surface changes:
+  `RecordUserPromptWithParts` keeps its `instr` parameter (now called with nil) and
+  `prompt.IsInjectedTurn0Fragment` is retained (defense-in-depth for legacy persisted
+  history). See `docs/adr/0043-ephemeral-turn0-instruction-fragments.md`.
+
 ### Added
 
 - `prompt.IsInjectedTurn0Fragment(text string) bool` — reports whether a string is
