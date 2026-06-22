@@ -36,6 +36,15 @@ self-contained task (multi-step investigation or build/test/git work) to a **chi
    summary string** as one `ToolResult` (gauntlet #7) — no child transcript
    ever enters the parent conversation.
 
+**The reserved `general` name.** `agent:"general"` is the explicit alias for the default
+explorer — the same engine an omitted `agent` arg selects (`SubagentTool.childEngine`).
+It is listed first in the Subagent tool's spec enumeration (when specialists are
+configured) so the model sees a general-purpose option, and it composes with
+`resume`/`fork`/`mode:"read-write"` and the model router (it is the default explorer, not
+a read-only specialist, so it is not subject to their `agent` exclusions). The name
+`general` is reserved (ADR 0044): an operator-authored `AgentDef` named `general` is
+rejected at discovery, and a driver-served def named `general` is dropped with a WARN.
+
 **Per-call knobs (`subagentArgs`).** Beyond `prompt`/`description`/`agent`, a Subagent call may
 supply: `max_turns`/`max_tool_calls`/`max_run_tokens` (TIGHTEN-ONLY caps — the model can
 make its child stricter than the operator's bound, never looser; `max_run_tokens` is the

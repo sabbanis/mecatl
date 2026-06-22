@@ -94,6 +94,11 @@ func (s *AgentSource) ListAgentDefs(ctx context.Context) ([]tool.AgentDef, error
 		if seen[name] {
 			continue // de-dup first-wins (wire order)
 		}
+		if name == tool.ReservedAgentNameGeneral {
+			s.diag.Log(ctx, port.LevelWarn, "agent def from driver uses a reserved name; def dropped",
+				"agent", name)
+			continue
+		}
 		if len(out) >= maxAgentDefs {
 			droppedOverCount++
 			continue

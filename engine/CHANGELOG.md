@@ -30,6 +30,15 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
 
 ### Added
 
+- **`tool.ReservedAgentNameGeneral`** (`"general"`) — the reserved `Subagent` `agent`
+  name that routes to the default explorer engine (`SubagentTool.childEngine`), the
+  same engine an omitted `agent` arg selects. It is an explicit alias, not a
+  replacement: omitting `agent` stays the default path. An operator-authored
+  `AgentDef` named `general` is rejected at discovery (parse time / driver-client
+  drop) so the reserved routing key can never be shadowed by a specialist. `general`
+  composes with `resume`/`fork`/`mode:"read-write"` (it is the default explorer, not a
+  read-only specialist, so it is not subject to their `agent` exclusions) and lets the
+  model router fire. No behaviour change for existing callers. See issue #146.
 - `prompt.IsInjectedTurn0Fragment(text string) bool` — reports whether a string is
   the body of a harness-injected turn-0 context fragment (project instructions /
   soul / memory index / user model) rather than a genuine user instruction. The four

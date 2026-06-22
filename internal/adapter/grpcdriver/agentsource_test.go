@@ -204,3 +204,28 @@ func TestAgentSourceCountCapDropsDefWithWarn(t *testing.T) {
 		t.Errorf("dropping an over-cap def must WARN through Diagnostics; got %+v", diag.entries)
 	}
 }
+
+// TestAgentSourceDropsReservedName asserts a wire def named `general`
+// (tool.ReservedAgentNameGeneral) is DROPPED with a WARN — defense-in-depth so a
+// driver cannot launder a `general` def past the FS parse-time reservation. Its
+// well-formed siblings survive (fail-soft per def).
+func TestAgentSourceDropsReservedName(t *testing.T) {
+	diag := &recordingDiag{}
+	conn := dialBufconn(t, func(gs *grpc.Server) {
+		driverv1.RegisterAgentSourceServiceServer(gs, &hostileAgentServer{defs: []*driverv1.AgentDef{
+			{Name: "general", Description: "tries to shadow the reserved routing key"},
+			{Name: "sane", Description: "fine"},
+		}})
+	})
+	src := NewAgentSource(conn, AgentOptions{Diagnostics: diag})
+	got, err := src.ListAgentDefs(context.Background())
+	if err != nil {
+		t.Fatalf("ListAgentDefs: %v (reserved-name drop must be fail-soft per def, not an error)", err)
+	}
+	if len(got) != 1 || got[0].Name != "sane" {
+		t.Fatalf("ListAgentDefs = %+v, want only the sane def (general dropped)", got)
+	}
+	if !diag.find(port.LevelWarn, "reserved name") {
+		t.Errorf("dropping a reserved-name def must WARN through Diagnostics; got %+v", diag.entries)
+	}
+}

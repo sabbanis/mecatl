@@ -44,6 +44,15 @@ const MaxAgentDescriptionBytes = 800
 // MaxAgentDescriptionBytes.
 const MaxAgentBodyBytes = 8 * 1024
 
+// ReservedAgentNameGeneral is the reserved name that routes a Subagent call to
+// the DEFAULT explorer engine — the same engine an OMITTED `agent` arg selects
+// (SubagentTool.childEngine). It is an explicit alias, not a replacement: omitting
+// `agent` stays the unchanged default path. An operator-authored AgentDef named
+// "general" is rejected at discovery (parse time / driver-client normalization)
+// so the reserved routing key can never be shadowed by a specialist. Mirrors how
+// tool.ValidSkillAssetName / prompt.ValidCommandName reserve grammar at the port.
+const ReservedAgentNameGeneral = "general"
+
 // AgentDef is a pure value object: one agent definition's metadata and
 // system-prompt body. It carries no behaviour, no infrastructure types, and NO
 // path/dir/root concept — where a definition came from is the source

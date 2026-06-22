@@ -355,6 +355,9 @@ func parseAgentDef(raw []byte, _ string) (AgentDef, string, []string) {
 	if name == "" {
 		return AgentDef{}, "frontmatter is missing a non-empty \"name\"", nil
 	}
+	if name == tool.ReservedAgentNameGeneral {
+		return AgentDef{}, fmt.Sprintf("agent name %q is reserved (it routes to the default explorer; choose a different name)", name), nil
+	}
 	desc := strings.TrimSpace(fm.Description)
 	if desc == "" {
 		return AgentDef{}, "frontmatter is missing a non-empty \"description\"", nil

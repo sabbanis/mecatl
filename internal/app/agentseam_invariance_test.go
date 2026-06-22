@@ -95,6 +95,7 @@ func TestSubagentRosterByteIdentical(t *testing.T) {
 		defer func() { _ = closeFn() }()
 	}
 	const wantTail = "\n\nAvailable specialist agents (pass the name as `agent`):" +
+		"\n- general: the default general-purpose read-only explorer (same as omitting `agent`)" +
 		"\n- a-reviewer: Reviews a diff for correctness bugs." +
 		"\n- b-researcher: Researches a topic deeply."
 	desc := tt.Spec().Description

@@ -1,10 +1,13 @@
 package agents
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/stacklok/mecatl/engine/tool"
 )
 
 // writeDef writes a <name>.md file into dir, creating dir if needed.
@@ -422,5 +425,53 @@ func TestParseMemoryFieldAbsentIsUnset(t *testing.T) {
 		if strings.Contains(n, "memory:") {
 			t.Fatalf("absent memory: should produce no memory note, got %q", n)
 		}
+	}
+}
+
+// TestParseAgentDefRejectsReservedName asserts the reserved `general` name
+// (tool.ReservedAgentNameGeneral) is rejected at parse time so an operator-authored
+// def can never shadow the routing key that selects the default explorer.
+func TestParseAgentDefRejectsReservedName(t *testing.T) {
+	raw := []byte(`---
+name: general
+description: should be rejected
+---
+body`)
+	def, perr, notes := parseAgentDef(raw, "general.md")
+	if perr == "" {
+		t.Fatalf("expected a parse error for the reserved name, got def %+v notes %v", def, notes)
+	}
+	if !strings.Contains(perr, "reserved") {
+		t.Fatalf("parse error should explain the reservation, got %q", perr)
+	}
+	if def.Name != "" {
+		t.Fatalf("rejected def should be zero-valued, got %+v", def)
+	}
+}
+
+// TestDirSourceRejectsReservedName asserts the end-to-end discovery path EXCLUDES a
+// def named `general` (recording a SkipError with a "reserved" reason), mirroring the
+// duplicate-name exclusion posture.
+func TestDirSourceRejectsReservedName(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "general.md"), []byte("---\nname: general\ndescription: d\n---\nbody"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	defs, skips, err := DirSource{Dir: dir, Label: "test"}.Agents(context.Background())
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(defs) != 0 {
+		t.Fatalf("a def named %q must be EXCLUDED; got %+v", tool.ReservedAgentNameGeneral, defs)
+	}
+	var sawReservedSkip bool
+	for _, sk := range skips {
+		if strings.Contains(sk.Reason, "reserved") {
+			sawReservedSkip = true
+			break
+		}
+	}
+	if !sawReservedSkip {
+		t.Fatalf("expected a reserved-name SkipError, got %+v", skips)
 	}
 }
