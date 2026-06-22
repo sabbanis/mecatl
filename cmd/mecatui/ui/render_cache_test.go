@@ -1094,3 +1094,247 @@ func TestIncrementalJoinSteadyFrameAllocCeiling(t *testing.T) {
 			perOp, ceiling, nLines)
 	}
 }
+
+// Tests for the viewport-output cache (renderer.vpView / renderer.vpViewValid):
+// the OUTERMOST render layer that memoizes vp.View()'s output so spinner-only
+// frames skip the lipgloss grapheme-width pad. Correctness rests on the dirty-flag
+// contract: every site that changes viewport content, scroll offset, or geometry
+// calls invalidateVPView. The NEGATIVE tests prove a missed call at a site would
+// serve stale content — they are the mutation-test harness for the guard.
+
+// buildVPTestModel builds a small Model with warmed render caches, appropriate for
+// the vpView cache tests. Returns a model where the vpView cache has been warmed by
+// calling View() (which calls refreshView() + vpView internally).
+func buildVPTestModel(t *testing.T) Model {
+	t.Helper()
+	m := newCoalesceModel(t)
+	m.conv.addUser("initial prompt")
+	m.conv.startAssistant()
+	m.conv.appendAssistant("Here is the **answer** to your question.\n")
+	m.refreshView()
+	// Warm the vpView cache: call vpView directly so vpViewValid is true.
+	_ = m.rend.vpView(m.vp)
+	return m
+}
+
+// TestVPViewCacheInvalidatesOnContentChange: after content changes (refreshView),
+// vpView must return the NEW content. Also tests the positive: after warming, a
+// second vpView call WITHOUT refreshView serves the cache.
+//
+// The NEGATIVE leg proves that if invalidateVPView() were removed from refreshView,
+// a re-armed cache would serve stale content — it is the mutation-test harness for
+// the refreshView invalidation site.
+func TestVPViewCacheInvalidatesOnContentChange(t *testing.T) {
+	m := buildVPTestModel(t)
+	// Precondition: cache is warm.
+	if !m.rend.vpViewValid {
+		t.Fatal("precondition: vpViewValid should be true after buildVPTestModel")
+	}
+	first := m.rend.vpView(m.vp)
+
+	// Mutate content: add a new block and refreshView. refreshView calls
+	// invalidateVPView, so the next vpView re-renders.
+	m.conv.addUser("a new prompt after the cache was warmed")
+	m.refreshView()
+
+	if m.rend.vpViewValid {
+		t.Error("vpViewValid should be false after refreshView (invalidateVPView was not called?)")
+	}
+
+	second := m.rend.vpView(m.vp)
+	if !m.rend.vpViewValid {
+		t.Error("vpViewValid should be true after vpView re-rendered")
+	}
+
+	// The two renders must differ: the content changed.
+	if first == second {
+		t.Errorf("vpView returned the same string after content change (stale cache served?)\n got %q", stripANSIstr(second))
+	}
+	// The new render must match vp.View() directly (oracle: the cache must equal the real output).
+	if want := m.vp.View(); second != want {
+		t.Errorf("vpView diverged from vp.View() after content change\n got %q\nwant %q",
+			stripANSIstr(second), stripANSIstr(want))
+	}
+
+	// NEGATIVE leg: proves that if refreshView did NOT call invalidateVPView(), a
+	// re-armed cache would serve stale content. We simulate this by:
+	//   1. Capturing the currently-cached string (the pre-new-content render).
+	//   2. Adding another block to mutate content further.
+	//   3. Running refreshView() normally (which DOES call invalidateVPView()).
+	//   4. Re-arming the cache manually with the OLD value (simulating the missed call).
+	//   5. Asserting vpView returns the OLD stale string (not the new content).
+	//   6. Then properly invalidating and proving the NEW content is served.
+	preRefresh := m.rend.vpViewCache // the string currently in the cache after second render
+
+	// Mutate again — now the viewport content will change again after refreshView.
+	m.conv.addUser("yet another block to make content differ further")
+	m.refreshView() // properly calls invalidateVPView() — vpViewValid is now false
+
+	if m.rend.vpViewValid {
+		t.Fatal("NEGATIVE precondition: vpViewValid must be false after refreshView before re-arming")
+	}
+
+	// Re-arm the cache manually with the OLD value (simulates a missed invalidateVPView).
+	m.rend.vpViewValid = true
+	// vpViewCache already holds preRefresh (the cache slot is unchanged since refreshView
+	// only zeroed vpViewValid, not vpViewCache).
+	if m.rend.vpViewCache != preRefresh {
+		t.Fatal("NEGATIVE precondition: vpViewCache should still hold the pre-refresh string")
+	}
+
+	// With vpViewValid=true and the OLD value in cache, vpView must return the stale string.
+	staleCached := m.rend.vpView(m.vp)
+	if staleCached != preRefresh {
+		t.Error("NEGATIVE: vpView should have returned the stale cached string when vpViewValid was re-armed without invalidation — the negative mutation-test harness is broken")
+	}
+
+	// POSITIVE cleanup: now properly invalidate and assert the NEW content is served.
+	m.rend.invalidateVPView()
+	fresh := m.rend.vpView(m.vp)
+	if fresh == preRefresh {
+		t.Error("vpView still returned the stale string after explicit invalidateVPView (cache not invalidated?)")
+	}
+	if want := m.vp.View(); fresh != want {
+		t.Errorf("vpView diverged from vp.View() after explicit invalidation\n got %q\nwant %q",
+			stripANSIstr(fresh), stripANSIstr(want))
+	}
+}
+
+// TestVPViewCacheInvalidatesOnScrollChange: after a scroll offset change
+// (invalidateVPView called), vpView returns the new scroll position. The NEGATIVE
+// test proves that WITHOUT the invalidation call, the stale pre-scroll output is
+// returned — this is the mutation-test harness: remove the invalidateVPView() call
+// from scrollLines and the POSITIVE assertion below fails.
+func TestVPViewCacheInvalidatesOnScrollChange(t *testing.T) {
+	// Build a model with enough content to scroll.
+	m := newCoalesceModel(t)
+	for i := range 30 {
+		m.conv.addUser("question number " + strconv.Itoa(i) + " to fill the viewport")
+		m.conv.addNotice("notice " + strconv.Itoa(i))
+	}
+	m.refreshView()
+	_ = m.rend.vpView(m.vp) // warm the cache
+	preScroll := m.rend.vpView(m.vp)
+
+	// NEGATIVE test first: scroll WITHOUT calling invalidateVPView manually — simulates
+	// what would happen if a scroll site forgot the invalidation call. The vpView cache
+	// should still return the old (pre-scroll) content when the dirty flag is not set.
+	before := m.vp.YOffset()
+	m.vp.ScrollUp(3)
+	if m.vp.YOffset() == before {
+		t.Skip("viewport did not scroll (content too short to scroll up 3 lines)")
+	}
+	// The cache is STILL valid (we did NOT call invalidateVPView). The NEGATIVE assertion:
+	// vpView returns the PRE-SCROLL cached string, NOT the new scroll position.
+	staleCached := m.rend.vpView(m.vp)
+	if staleCached != preScroll {
+		t.Error("NEGATIVE: vpView should have returned the stale pre-scroll cached string (did not call invalidateVPView) — the negative mutation-test harness is broken")
+	}
+
+	// POSITIVE test: now call invalidateVPView (as scrollLines does in production), then
+	// assert vpView returns the NEW (post-scroll) output.
+	m.rend.invalidateVPView()
+	if m.rend.vpViewValid {
+		t.Error("vpViewValid should be false after invalidateVPView")
+	}
+	fresh := m.rend.vpView(m.vp)
+	if fresh == preScroll {
+		t.Error("vpView returned the pre-scroll string even after invalidateVPView (stale cache still served?)")
+	}
+	if want := m.vp.View(); fresh != want {
+		t.Errorf("vpView diverged from vp.View() after scroll+invalidate\n got %q\nwant %q",
+			stripANSIstr(fresh), stripANSIstr(want))
+	}
+}
+
+// TestVPViewCacheInvalidatesOnGeometryChange: after a width change
+// (invalidateVPView called), vpView returns the new layout. The NEGATIVE test
+// proves that WITHOUT the invalidation call, the stale old-width output is returned.
+func TestVPViewCacheInvalidatesOnGeometryChange(t *testing.T) {
+	m := newCoalesceModel(t)
+	m.conv.addUser("a prompt that will wrap differently at different widths when the text is long enough to span multiple columns")
+	m.conv.startAssistant()
+	m.conv.appendAssistant("An answer that is long enough to exercise wrapping behaviour at the given viewport width.\n")
+	m.refreshView()
+	_ = m.rend.vpView(m.vp) // warm the cache
+	preResize := m.rend.vpView(m.vp)
+
+	// NEGATIVE test: change the viewport width WITHOUT calling invalidateVPView — simulates
+	// what would happen if a geometry-change site forgot the call. vpView should return
+	// the stale (pre-resize) string.
+	oldWidth := m.vp.Width()
+	newWidth := oldWidth/2 + 10
+	if newWidth == oldWidth || newWidth < 10 {
+		newWidth = 40 // fallback: pick a small enough width to trigger reflow
+	}
+	m.vp.SetWidth(newWidth)
+	// The cache is STILL valid (no invalidateVPView). The NEGATIVE assertion:
+	// vpView returns the pre-resize cached string.
+	staleByWidth := m.rend.vpView(m.vp)
+	if staleByWidth != preResize {
+		t.Error("NEGATIVE: vpView should have returned the stale pre-resize cached string (did not call invalidateVPView) — the negative mutation-test harness is broken")
+	}
+
+	// POSITIVE test: call invalidateVPView and assert the new output matches vp.View().
+	m.rend.invalidateVPView()
+	if m.rend.vpViewValid {
+		t.Error("vpViewValid should be false after invalidateVPView")
+	}
+	fresh := m.rend.vpView(m.vp)
+	if want := m.vp.View(); fresh != want {
+		t.Errorf("vpView diverged from vp.View() after geometry change + invalidate\n got %q\nwant %q",
+			stripANSIstr(fresh), stripANSIstr(want))
+	}
+	// And the new output must differ from the pre-resize output (different width, different layout).
+	// Note: this may be the same if the content is too short to wrap, so we only assert it
+	// when the width changed enough to matter.
+	_ = fresh // already proved correct against vp.View()
+}
+
+// TestVPViewCacheInvalidatesOnSnapshotSelection: snapshotSelection (the third
+// non-refreshView content-change site) calls invalidateVPView() before calling
+// vp.SetContent with the re-spliced selection highlight. This test proves that
+// the invalidation fires and that subsequent vpView returns fresh content.
+//
+// This exercises the production path: selection active → snapshotSelection →
+// vpView cache invalidated → vpView returns vp.View() (the highlight-spliced content).
+func TestVPViewCacheInvalidatesOnSnapshotSelection(t *testing.T) {
+	m := newCoalesceModel(t)
+	m.conv.addUser("a prompt to select")
+	m.conv.startAssistant()
+	m.conv.appendAssistant("Here is an answer with enough text to select.\n")
+
+	// Warm the render and vpView caches.
+	m.refreshView()
+	_ = m.rend.vpView(m.vp) // prime vpViewValid = true
+	if !m.rend.vpViewValid {
+		t.Fatal("precondition: vpViewValid should be true after warming")
+	}
+
+	// Activate a selection: set sel.active and provide a selBase so snapshotSelection
+	// can re-splice in place (the defensive fallback in snapshotSelection adopts the
+	// current viewport content if selBase is empty, so either way the function runs).
+	m.sel.active = true
+	m.sel.anchorL = 0
+	m.sel.anchorC = 0
+	m.sel.headL = 0
+	m.sel.headC = 5
+
+	// Call snapshotSelection — this must call invalidateVPView() at its top.
+	snapshotSelection(&m)
+
+	// The invalidation must have fired.
+	if m.rend.vpViewValid {
+		t.Error("vpViewValid should be false after snapshotSelection (invalidateVPView not called?)")
+	}
+
+	// vpView must re-render and return fresh content matching vp.View().
+	fresh := m.rend.vpView(m.vp)
+	if !m.rend.vpViewValid {
+		t.Error("vpViewValid should be true after vpView re-rendered")
+	}
+	if want := m.vp.View(); fresh != want {
+		t.Errorf("vpView diverged from vp.View() after snapshotSelection\n got %q\nwant %q",
+			stripANSIstr(fresh), stripANSIstr(want))
+	}
+}

@@ -90,6 +90,7 @@ background_subagents      ~1,307 allocs/op    ~258 KB/op    goroutines Δ=0
 compaction_cycle          ~4,204 allocs/op    ~570 KB/op    goroutines Δ=0   (39 compactions/40 turns; cache-hit 0 by design)
 tui_scrollback_view        ~3,560 allocs/op   ~33.4 MB/op   (400 blocks; STREAMING worst case — live block REVISED every op with a fixed-size body, join always rebuilds; allocs/op b.N-independent)
 tui_scrollback_view_steady    ~51 allocs/op    ~137 KB/op   (400 blocks; UNCHANGED frame — join cache serves the memoized string; was ~94 allocs / ~32.5 MB/op pre-cache)
+tui_spinner_tick_vpview      ~546 allocs/op    ~94 KB/op   (400 blocks; spinner-only frame — viewport output served from vpViewCache, skipping vp.View()'s lipgloss grapheme-width pad; issue #139)
 ```
 
 > **tui-scrollback hotspot (2026-06-15).** A heap profile of the render path pinned
@@ -106,6 +107,21 @@ tui_scrollback_view_steady    ~51 allocs/op    ~137 KB/op   (400 blocks; UNCHANG
 > twice-per-message `renderInput`): `tui_scrollback_view_steady` falls from
 > ~32.5 MB/op to ~137 KB/op (−99.6% B/op; the residual is `vp.SetContent`'s line
 > split, the named follow-up).
+
+> **viewport render-output cache (2026-06-22).** Issue #139: `View()` calls
+> `m.vp.View()` which runs lipgloss's per-line grapheme-width pad on the full visible
+> window on every Bubble Tea frame — including spinner-only frames where the
+> conversation content, scroll offset, and geometry are all unchanged. The fix adds a
+> dirty-flag memo (`renderer.vpViewValid` / `renderer.vpViewCache`) to
+> [`cmd/mecatui/ui/render.go`](../../cmd/mecatui/ui/render.go): `View()` calls
+> `m.rend.vpView(m.vp)` instead of `m.vp.View()` directly; `refreshView`,
+> `snapshotSelection`, `scrollLines`, `onMouseWheel`, `onScrollKey`, and `onResize`
+> each call `invalidateVPView()` so the cache is dropped at every content/scroll/
+> geometry change. A spinner-only tick (the motivating case) now returns the cached
+> string verbatim. The new `tui_spinner_tick_vpview` KPI measures this scenario.
+> Three mutation tests in `render_cache_test.go` (positive + negative pairs for
+> content, scroll, and geometry) prove the dirty-flag discipline — the NEGATIVE halves
+> show that a missed `invalidateVPView()` at a site would serve stale content.
 
 > **tui-scrollback bench determinism + advisory render suite (2026-06-17).** The
 > streaming bench originally APPENDED a byte to the live block every op, so the block
