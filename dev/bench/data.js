@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782129206033,
+  "lastUpdate": 1782129209855,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -336385,6 +336385,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 76,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1088,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "00cca26c30ff93b59a5ebeadaca47b6dadf3f066",
+          "message": "feat(config): config-surface UX — taxonomy-enabled router, `config init` + generated reference, mecatui flag parity (#138, #140, #137) (#144)\n\n* feat(config): enable subagent model router by taxonomy presence, not a CLI flag (ADR 0042)\n\nThe semantic subagent model router (ADR 0031) required an opt-in\n--subagent-model-router flag on top of an already-operator-tier-only\nmodels.router taxonomy. That second gate created a \"configured but\ninert\" footgun: author a taxonomy, forget the flag, get a startup WARN\nand no routing. The guardrails sibling enables by configuring a model;\nthis aligns the router with that precedent.\n\nNow the router is ON iff the models.router taxonomy is present AND not\ndisabled. The enable gate is the taxonomy; the flag/YAML key is a\nkill-switch (guardrails parity):\n\n- permconfig.RouterSection gains `disabled: true` (mirrors\n  GuardrailsSection.Disabled; strict-unknown-key parse governs it).\n- app.Config.SubagentModelRouter (the enable bool) is removed and\n  replaced with RouterDisabled (mirrors GuardrailsDisabled);\n  foldOperatorModelRouter ORs router.Disabled onto it.\n- buildModelRouterTask guard flips to\n  `cfg.RouterDisabled || len(cfg.RouterCategories) == 0` — the\n  byte-identical-OFF-when-unconfigured invariant is preserved by the\n  len==0 leg, not the flag.\n- --subagent-model-router is repurposed to a tri-state kill-switch in\n  mecated and mecatequi: unset → taxonomy governs; =false → disable;\n  bare/=true → deprecated redundant enable (still parses; emits a\n  one-time WARN). Backward-compatible for legacy systemd units.\n- logModelRouterFacts narrates: silent (no taxonomy) / ACTIVE with a\n  per-delegation classifier-spend hint / DISABLED.\n\nADR 0042 narrowly supersedes ONLY ADR 0031's enable-model decision\n(engine half, breaker, precedence, observability carry over); 0031 gets\na Superseded-by header line. Chose `disabled:` over the issue's literal\n`enabled: false` for guardrails parity (recorded in the ADR). The\ndeprecation message literal is shared via internal/cliconfig so the two\nmains can't drift. No engine/ API change.\n\nThis makes #137 (mecatui not wiring --subagent-model-router) largely\nmoot: a taxonomy in settings.yaml enables routing for every binary,\nincluding mecatui's embedded server, with no per-binary flag wiring.\n\nCloses #138\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(config): `mecated config init` + auto-generated settings.yaml reference\n\nThe operator settings.yaml surface had no single reference and no way to\nscaffold one — the dispersed subtrees and non-obvious enable semantics\nwere the root-cause UX gap behind #137/#138. This adds two coupled,\nschema-derived surfaces so neither can drift from the code:\n\n1. `mecated config init` — writes a fully-commented operator\n   settings.yaml skeleton to <XDG_CONFIG_HOME>/mecatl/settings.yaml.\n   `--print` emits to stdout (writes nothing); default refuses on an\n   existing file naming the path; `--force` overwrites. Follows the\n   existing hand-rolled subcommand dispatch (skills promote /\n   perf-mcp print-config), now surfaced in `mecated --help` under a\n   Commands: section. A bare/unknown `config` prints the subcommand\n   list and exits non-zero — it never boots the daemon.\n\n2. docs/configuration-reference.md — an auto-generated exhaustive\n   reference (key / type / default / tier / description) for the four\n   permconfig YAML subtrees (permissions, guardrails, posture, models),\n   plus a hand-written pointer section for the flag/file-configured\n   features (soul/memory/commands/user-model/session-lease → usage.md).\n\nBoth surfaces derive from ONE model built by internal/configgen,\nreflected over the permconfig *Section structs (the strict-decode\nschema = the single source of truth). Field doc-comments are harvested\nvia go/ast at GENERATE time only (internal/configgen/cmd/configref);\nthe shipped mecated binary embeds the committed skeleton, so go/ast\nnever enters its import graph. `task docs:configref` regenerates both\nartifacts (folded into `task docs`/`task generate`); a CI staleness\nstep diffs the regenerated output against the committed files, mirroring\nthe llms.txt guard.\n\nEnable semantics are spelled out inline (the original confusion): the\nguardrails block states `model:` enables it with `disabled:` as the\nkill-switch; the router block reflects ADR 0042 (a non-empty categories\ntaxonomy enables it, NOT a CLI flag). The schema is now the one source\nboth surfaces and the live parser agree on: each *Section exposes a\nstrictFields() method that backs both UnmarshalYAML and the drift\nguards. Guards (mutation-verified): every top-level Config subtree has a\nmodel; strictFields() == yaml tags; every strict key appears in both\nartifacts; renderers are deterministic; the embedded skeleton matches a\nfresh render; tier labels are pinned. No engine/ API change.\n\nCloses #140\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* feat(mecatui): wire the --subagent-model-router kill-switch into the embedded server (#137)\n\nmecatui's embedded server never registered --subagent-model-router, so\ndocs/usage.md's claim that \"mecatui accepts the same flag\" was false, a\nlegacy `mecatui --subagent-model-router` invocation was an unknown-flag\nparse error, and a mecatui operator had no CLI way to disable routing.\n\nPost-#138 the router enables by taxonomy presence (ADR 0042) and the\nflag is a tri-state kill-switch, so this mirrors the mecated/mecatequi\ntreatment into mecatui: register --subagent-model-router (bool) with a\ncompanion Set field recorded in the fs.Visit switch, and map\nRouterDisabled = set && !value onto the embedded app.Config. Unset →\nthe taxonomy governs; =false → disables routing for the embedded\nserver; bare/=true → the deprecated redundant enable, which emits the\nshared cliconfig deprecation WARN once.\n\nThe WARN is emitted in resolveTransport (the single host-embedded entry)\nrather than embeddedConfig, which is called twice per launch — so it\nfires exactly once. Help text states the flag is meaningful under\nmecatui (unlike the INERT --subagent-ask-reviewer): routing picks a\nmodel before the child runs. usage.md's claim is now true. No engine/\nor internal/app change (RouterDisabled + the fold landed in #138).\n\nCloses #137\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* refactor(config): drop the --subagent-model-router deprecation machinery\n\nThe router is pre-adoption, so there is no legacy invocation to protect\nand no reason for any deprecation framing or warning. Reframe the flag\nas a clean pure kill-switch: the `models.router` taxonomy is the enable,\n`--subagent-model-router=false` forces it off for the process, and a\nbare `--subagent-model-router` / `=true` is simply inert (the taxonomy\nstill governs) — no WARN, no \"deprecated\"/\"redundant enable\"/\"legacy\"\nlanguage anywhere.\n\n- Remove the deprecation WARN emission from mecated, mecatequi, and\n  mecatui (and the dead diag-nil guard that only protected it).\n- Remove the now-unused cliconfig.SubagentModelRouterDeprecatedEnableMsg.\n- Keep the tri-state set-companion mapping\n  (RouterDisabled = set && !value) — still needed to distinguish unset\n  from =false. Reframe all help text + comments.\n- Drop the deprecation-emission tests; keep the kill-switch mapping\n  tests (=false → disabled; unset/bare → governed by taxonomy).\n- Update ADR 0042, usage.md, providers.md, IMPLEMENTATION-NOTES to the\n  pre-adoption \"no deprecation concern\" framing. Regenerate llms.txt.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-22T14:47:40+03:00",
+          "tree_id": "12e26ab551a3982565cb89a4bb6b5e2ffc024679",
+          "url": "https://github.com/stacklok/mecatl/commit/00cca26c30ff93b59a5ebeadaca47b6dadf3f066"
+        },
+        "date": 1782129208695,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3523,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 86.5,
             "unit": "allocs/op"
           },
           {
