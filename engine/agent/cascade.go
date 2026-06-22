@@ -387,9 +387,17 @@ func mediaPlaceholder(p session.Content) string {
 	return fmt.Sprintf("[%s: %s, %dKB]", p.Kind, p.MIMEType, (len(p.Data)+1023)/1024)
 }
 
-// preservedHead returns the leading system messages plus the first user goal,
-// together with the set of source indices they occupy (so middleMessages can
+// preservedHead returns the leading system messages plus the first GENUINE user
+// goal, together with the set of source indices they occupy (so middleMessages can
 // exclude them). The head is preserved verbatim across every tier.
+//
+// The user pin skips harness-injected turn-0 fragments (project instructions /
+// soul / memory index / user model) and synthesised summaries via
+// isGenuineUserTurn, so it anchors on the user's REAL first instruction — not on
+// an injected fragment, which with a soul/memory deployment precedes the goal.
+// Injected fragments left out of the head fall into the middle and are
+// summarised/dropped, which is correct: they are regenerated fresh at the start of
+// each run, never load-bearing history.
 func preservedHead(msgs []session.Message) (head []session.Message, idx []int) {
 	for i, m := range msgs {
 		if m.Role == session.RoleSystem {
@@ -398,7 +406,7 @@ func preservedHead(msgs []session.Message) (head []session.Message, idx []int) {
 		}
 	}
 	for i, m := range msgs {
-		if m.Role == session.RoleUser {
+		if isGenuineUserTurn(m) {
 			head = append(head, m)
 			idx = append(idx, i)
 			break

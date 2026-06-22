@@ -11,6 +11,18 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
 
 ## [Unreleased]
 
+### Added
+
+- `prompt.IsInjectedTurn0Fragment(text string) bool` — reports whether a string is
+  the body of a harness-injected turn-0 context fragment (project instructions /
+  soul / memory index / user model) rather than a genuine user instruction. The four
+  turn-0 `InstructionAssembler`s record their output as `RoleUser` messages, so a
+  consumer that must anchor on "the user's genuine first instruction" (the compaction
+  first-user pin; the resume re-injection guard) calls this to skip them. It
+  recognises each fragment by the header its renderer prepends (the shared
+  source-of-truth constants in `engine/prompt/turn0.go`), so a header reword is
+  reflected automatically. Additive function in `engine/prompt`. See ADR 0012.
+
 ### Removed
 
 - **BREAKING:** `agent.WithWritableChildForker(f tool.WorkspaceForker) SubagentOption`

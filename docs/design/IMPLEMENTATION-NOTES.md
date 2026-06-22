@@ -1837,15 +1837,28 @@ instruction fell into the dropped/summarised head and was lost after compaction 
 replied "I don't have the original task/goal… please resend the specific change"). Only the
 FIRST user message was pinned. The fix FOLLOWS PRIOR ART (Codex, gemini-cli keep the recent
 user turns verbatim; Claude Code's "All user messages" + "changing intent", Cline's "Task
-Evolution"): pin the first user message (unchanged) + snap the verbatim TAIL backward to the
-recent user turns + summarise older/superseded intent in tier-4 + honest wording. It does NOT
+Evolution"): pin the first GENUINE user message (see below) + snap the verbatim TAIL backward to
+the recent user turns + summarise older/superseded intent in tier-4 + honest wording. It does NOT
 preserve every user message verbatim.
 
+- **Genuine-user predicate (the pin anchor).** `firstUser`, `userSnapFloor`, `preservedHead`, and
+  the back-snap's `isRecentUserTurn` all anchor on the first GENUINE user instruction via the
+  SHARED `isGenuineUserTurn`: a `RoleUser` message that is NEITHER a harness-injected turn-0
+  fragment (`prompt.IsInjectedTurn0Fragment` — project-instructions/soul/memory-index/user-model,
+  recognised by the assemblers' own headers, the source of truth) NOR a synthesised compaction
+  summary (`isSynthesisedSummary`). Without the turn-0-fragment skip the pin anchored on the first
+  `RoleUser` message, which — with a soul/memory/user-model deployment — is an injected fragment,
+  not the user's real goal; the genuine instruction then fell into the summarised middle and was
+  dropped. The count of leading injected fragments is config-variable (0–4+), so a positional
+  "first N" is wrong — the anchor must be content-identified. (Related: `recordPrompt` injects the
+  turn-0 fragments ONCE per session via the `hasGenuineUserTurn` gate — "no genuine user turn
+  recorded yet" — NOT `Counters.Turns==0`, which `Reopen`/`Interrupt`/`Recover` zero, so a resumed
+  run no longer re-injects soul/AGENTS.md/memory into the persisted history.)
 - **The back-snap.** The shared unexported `snapCutToRecentUserTurn(msgs, cut, floor)` moves the
   cut BACKWARD so the tail BEGINS at a recent user turn, keeping the most-recent user
   instruction(s) verbatim instead of summarising them. It walks backward from `cut-1` toward
-  `floor`, counting genuine user turns (`isRecentUserTurn`: a `RoleUser` message that is NOT a
-  synthesised compaction summary — `isSynthesisedSummary` recognises BOTH the paths-summary
+  `floor`, counting genuine user turns (`isRecentUserTurn` = `isGenuineUserTurn`, above:
+  `isSynthesisedSummary` recognises BOTH the paths-summary
   (`compactionSummaryMarker`) AND the cascade tier-4 LLM summary (`tier4SummaryMarker`); both are
   harness-authored context, skipped so a RE-compaction can't anchor on a prior summary and drag
   the whole post-summary history into the tail), and stops at the FIRST of: `recentUserTurnsKept`
@@ -1856,10 +1869,10 @@ preserve every user message verbatim.
   (back-snap only moves toward 0) and never below `floor`.
 - **Ordering (both compactors): count-cut → back-snap → forward-snap, forward-snap LAST.**
   `HeuristicCompactor.Compact`: `cut = len-keep`; `cut = snapCutToRecentUserTurn(msgs, cut, userSnapFloor(msgs))`
-  (floor = one PAST the first-user index, so the first-user pin stays out of the tail — neither
-  double-emitted nor, when it is the only user turn, able to drag everything into the tail);
+  (floor = one PAST the first GENUINE-user index, so the first-user pin stays out of the tail —
+  neither double-emitted nor, when it is the only user turn, able to drag everything into the tail);
   `cut = snapCutToTurnBoundary(msgs, cut)`. `CascadeCompactor.Compact`: same order and the SAME
-  `userSnapFloor(msgs)` (ONE definition of "one past the first-user pin" shared by both compactors;
+  `userSnapFloor(msgs)` (ONE definition of "one past the first GENUINE-user pin" shared by both compactors;
   it equals `len(headIdx)` for the contiguous system+first-user head but stays correct if they
   diverge). The forward `snapCutToTurnBoundary` stays LAST so the tool-pairing orphan guarantee
   above always holds.
