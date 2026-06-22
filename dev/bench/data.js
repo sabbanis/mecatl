@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782145578831,
+  "lastUpdate": 1782145581519,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -342334,6 +342334,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/7649b7b1e6e5d14f5e4980b8e29f83b51883d5c3"
         },
         "date": 1782141748952,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "636e8683e2f9b5e1ef37b30b1963889de324b5a5",
+          "message": "feat(prompt): output-economy default tone (ladder + prose scope + safety carveout) (#136)\n\n* feat(prompt): output-economy default tone (ladder + prose scope + safety carveout) (#0041)\n\nOutput tokens cost 3-5x input tokens across every major provider, so shrinking\nthe model's own prose + code-output footprint is the highest-leverage cost\nreduction. mecatl already pays input cheaply (cache-stable StablePrefix,\ngauntlet #6); this rewrites defaultTone to attack the output side.\n\nFive blocks, all in the cache-stable StablePrefix (gauntlet #6 preserved):\n\n1. Prose economy, scoped to PROSE ONLY — kill preamble, postamble, sycophantic\n   openers, hollow closings, restating the request, restating tool results in\n   prose. Explicitly states this does NOT mean read less / investigate less /\n   check fewer types. The separation principle from Claude Code #32508 (\"don't\n   talk much != don't think much\") and #39583 (IMPORTANT: prefix overriding user\n   thoroughness after compaction). No IMPORTANT: prefix.\n2. Silence is acceptable; prefer structured output over prose. A turn may be\n   only tool calls. Do not announce intent (\"let me...\") — act. Reinforces the\n   existing agencyDelta anti-announcement contract from the economy side.\n3. The minimum-code ladder — stop at the first rung that holds: does this need\n   to exist -> stdlib -> already-imported dep -> one line -> minimum that works.\n   Plus the mecatl-native rung: prefer Edit (emit only the change) over Write\n   (emit the whole file) for partial modifications. The biggest lever per\n   ponytail's agentic benchmark (-54% LOC, -22% tokens for the lazy-code\n   ladder; the terse-prose-only \"caveman\" control was +7% tokens — terse output\n   alone is not cheaper).\n4. The existing convention-following / anti-over-engineering block, carried\n   forward unchanged.\n5. The safety carveout — never cut these to hit a smaller line count:\n   trust-boundary input validation, data-loss-preventing error handling,\n   security, accessibility, anything explicitly requested. Measured to be\n   load-bearing by ponytail Axis 2 (an unscoped \"one-liners\" prompt dropped a\n   path-traversal guard 1/20; the scoped variant stayed 20/20).\n\nNo port.LLMRequest field added — economy is a prompt concern, never a per-\nrequest field (provider-neutrality discipline). Model-neutral; per-model tuning\nstays in the composition-layer agencyDelta. Soul / user-model / AGENTS.md\noverride these defaults on conflict.\n\nMeasurement: adds perf/scenarios/output_economy_test.go — a scripted verbose-\nprose session capturing per-run output tokens + assistant-prose byte count as\nheadline KPIs, the before/after harness for economy prompt changes. The\nscenario reports prose_bytes/op so a local A/B can eyeball the delta.\n\nTests: TestDefaultToneOutputEconomy pins the four load-bearing clauses. The\nexisting TestStablePrefixByteStableAcrossEnv / TestStablePrefixContainsTools-\nAndNoVolatile / TestBuildRequestHostPromptBuilderOwnsSystemPrompt /\nTestExplorerPromptInstructsReferences all pass unchanged (the substrings they\nassert are still present; the host-builder test checks defaults are ABSENT in a\nhost-owned prompt, which is unchanged).\n\ntask lint && task test green; task docs (matlatl strict) 0 broken; mecademo\nstill prints the full offline session (turn -> tool.call -> permission.ask +\napproval -> result).\n\nAn operator-tier --output-economy terse posture knob (an answer-length default\nfor explanatory turns) is explicitly DEFERRED — it is the most over-steer-prone\nrule and belongs behind an opt-in, not the always-on default.\n\nADR 0041 records the decision; PRODUCTION-READINESS tracker updated; llms.txt\nregenerated.\n\nCo-authored-by: mecatl <noreply@stacklok.dev>\n\n* feat(prompt): --output-economy terse posture knob (ADR 0041)\n\nLands the deferred step 3 of the output-economy action plan: the operator-tier\n--output-economy posture knob, selecting normal (default, no-op — the tone\nalready carries the economy contract) or terse (appends the answer-length clause\nfor explanatory turns — the most over-steer-prone rule, so opt-in).\n\nWiring (mirrors the posture ladder end-to-end):\n- prompt.DefaultTone() — new exported accessor (mirrors DefaultRole) so the\n  terse delta composes onto the SAME default tone, never drifting. Additive;\n  api-compat gate updated (engine/api/prompt.txt) + engine/CHANGELOG.md.\n- app.Config.OutputEconomy / OutputEconomyFlagSet — new fields; folded from the\n  operator-YAML output-economy: key by foldOperatorOutputEconomy (CLI out-ranks\n  YAML, mirroring foldOperatorPosture).\n- outputEconomyToneDelta — composition-layer tone delta: \"\" / \"normal\" = no\n  override (Build falls through to defaultTone); \"terse\" = defaultTone + the\n  answer-length clause; unknown = fail-soft to \"\".\n- promptConfig folds the delta onto pc.Tone (composition only — the prompt\n  package stays economy-agnostic). Cache-stable in StablePrefix (gauntlet #6).\n- permconfig: schema Config.OutputEconomy, resolver operatorOutputEconomy +\n  captureOutputEconomy + OperatorOutputEconomy() + project-tier WARN-ignore\n  (operator-tier only, for consistency with posture/guardrails; a project can\n  still influence prose via AGENTS.md).\n- cmd flags: --output-economy in mecated, mecatui, mecatequi, with\n  OutputEconomyFlagSet tracked via fs.Visit so CLI out-ranks YAML.\n\nOperator-tier only (not security-critical, but kept uniform with posture/\nguardrails). No port.LLMRequest widening. No proto change.\n\nTests:\n- internal/app/output_economy_test.go — the tone-delta token mapping, the\n  promptConfig threading + cache-stability, the CLI-out-ranks-YAML fold.\n- internal/adapter/permconfig/output_economy_test.go — operator-tier CLI\n  honoured, project-tier WARN-ignored, CLI out-ranks user-global, nil-safe.\n\ntask lint && task test green; task api:check green; task docs (matlatl strict)\n0 broken; mecademo still prints the full offline session. --output-economy\nappears in --help for all three mains.\n\nCo-authored-by: mecatl <noreply@stacklok.dev>\n\n* fix(configgen): model output-economy subtree (#136)\n\nThe output-economy feature (ADR 0041) added the OutputEconomy scalar to\npermconfig.Config but didn't teach internal/configgen about it, so the\nTestEveryConfigSubtreeHasAModel drift guard failed CI on PR #136. Mirror\nhow posture (the precedent operator-tier-only bare scalar) is modelled:\nadd outputEconomySubtree to BuildModel, register it, pin its tier, and\nregenerate the committed skeleton + reference + llms.txt.\n\n---------\n\nCo-authored-by: mecatl <noreply@stacklok.dev>",
+          "timestamp": "2026-06-22T19:20:00+03:00",
+          "tree_id": "48d4610503b4e66c6920429f427faed5a910a2f2",
+          "url": "https://github.com/stacklok/mecatl/commit/636e8683e2f9b5e1ef37b30b1963889de324b5a5"
+        },
+        "date": 1782145580870,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
