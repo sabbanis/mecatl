@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782141750191,
+  "lastUpdate": 1782141753936,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -340196,6 +340196,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 86.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1088,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7649b7b1e6e5d14f5e4980b8e29f83b51883d5c3",
+          "message": "fix(compaction): pin the genuine first user instruction; make turn-0 fragments ephemeral (ADR-0043) (#145)\n\n* test(compaction): gate compaction-survival structurally; quarantine the behavioural recall; harden tier-4 prompt\n\nThe live-e2e spec \"survives a real mid-run compaction\" was flaky: it\ninferred survival from a side-effect file written only when the model\nacts on a terse \"GO\" trigger after a forced compaction. But the pinned\ninstruction is the FIRST user turn, kept verbatim across compaction by\nthe first-user-pin — so the instruction is guaranteed in context; the\nflake was pure model nondeterminism (haiku misses the terse trigger;\ngemini-flash also failed and broke the compaction-timing assumption).\nPrior art (Claude Code/Codex/OpenCode summary prompts, Anthropic's\ncontext-engineering guidance, FineSurE) tests compaction STRUCTURALLY\n(the keyfact survives), not behaviourally, and externalizes deferred\nwork rather than relying on cross-compaction recall.\n\n- Gate spec now asserts preservation DETERMINISTICALLY: it reads the\n  post-compaction conversation from the local jsonlstore snapshot\n  (jsonlstore.Load → scan Conversation.Messages) and asserts the turn-0\n  instruction fragment survives verbatim — model-independent, and it\n  tests the actual product guarantee (first-user-pin survives\n  compaction), so it also guards a real future preservation regression.\n- The behavioural GO-recall moves to a Label(\"quarantine\") sibling that\n  records PRESENT/ABSENT via AddReportEntry and NEVER asserts (the\n  e2e/soul_test.go precedent), so model nondeterminism can't fail the\n  suite. No model swap — stays on the default haiku lane.\n- Harden the CascadeCompactor tier-4 summariser prompt to explicitly\n  preserve pending/uncompleted tasks and conditional/deferred\n  instructions (\"when I later say X, do Y\") verbatim — matching every\n  documented production summary prompt. Helps instructions in the\n  summarised MIDDLE (the first-user one is already pinned). Offline\n  mockllm tests assert the guidance reaches the request and that a\n  middle conditional instruction reaches the summariser; the prompt-text\n  test is mutation-verified. Prompt const is unexported — no engine API\n  change.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* fix(compaction): pin the GENUINE first user instruction, not the injected soul\n\nThe first-user-pin is meant to preserve the user's original goal verbatim\nacross compaction (ADR-0012). But the composition assembler chain injects\nthe soul / user-model / memory-index / AGENTS.md as leading RoleUser\nmessages at turn 0 (engine/prompt/{soul,usermodel,memoryindex,instructions}.go),\nand firstUser/preservedHead/userSnapFloor anchored on the FIRST RoleUser —\ni.e. the injected soul. So the user's genuine instruction fell into the\nsummarised middle and was dropped, while buildSummary falsely claimed\n\"the original goal ... preserved verbatim\". The leading-fragment count is\nconfig-variable (0-4+), so a positional fix can't work — the anchor must be\ncontent-identified.\n\nIdentify harness-injected turn-0 fragments via a source-of-truth predicate\n(prompt.IsInjectedTurn0Fragment in the new engine/prompt/turn0.go), built on\nthe assemblers' now package-level header constants — zero change to the\nprompt bytes the model sees (no cache invalidation), no duplicated prose to\ndrift. isGenuineUserTurn = RoleUser AND NOT injected AND NOT a synthesised\nsummary, mirroring the existing isSynthesisedSummary discipline. firstUser,\nuserSnapFloor (compaction.go), and preservedHead (cascade.go) now anchor on\nthe first genuine user turn; isRecentUserTurn delegates to it so the\nback-snap skips injected fragments too. The soul/user-model/AGENTS.md stay\nfenced RoleUser untrusted data (moving them to System role was rejected — it\nwould regress the prompt-injection trust model).\n\nThe e2e structural gate (added with the test infra on this branch) now\npasses for the right reason: it reads the persisted post-compaction\nconversation and finds the genuine instruction survived verbatim.\n\nEngine API: adds prompt.IsInjectedTurn0Fragment (minor/non-breaking;\nengine/api/prompt.txt + engine/CHANGELOG.md updated). Amends ADR-0012 +\nthe AGENTS.md compaction invariant to \"first GENUINE user message\".\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* refactor(compaction): turn-0 instruction fragments are ephemeral, not persisted (ADR-0043)\n\nThe turn-0 instruction fragments (soul / AGENTS.md+CLAUDE.md project\ninstructions / memory index / user model, from the InstructionAssembler\nchain) were RECORDED into Conversation.Messages as RoleUser messages at\nthe first turn. That caused three accidental couplings:\n  1. resume bloat — Reopen()/resetToIdle() zeroes Counters, so a\n     Turns==0 gate re-injected + re-appended them on every resumed run\n     (the 3x soul);\n  2. rehydration divergence — the snapshot store carried them but the\n     ADR-0038 event-fold (EvUserPrompt = genuine text only) did not, so\n     the same session reconstructed differently per path;\n  3. compaction-pin ambiguity — the first-user-pin had to content-skip\n     injected fragments to find the user's genuine goal.\n\nMake them EPHEMERAL: assembled ONCE PER RUN (cached on the Run via\nsync.Once; reassembled on a new run/resume so soul/memory changes are\npicked up) and prepended to LLMRequest.Messages at buildRequest time\n(after the System layer, before the conversation) on EVERY turn — never\npersisted, never event-carried, never snapshotted. recordPrompt records\nonly the genuine prompt + parts (RecordUserPromptWithParts(...,nil)).\nctx+ws are threaded runLoop→runTurn→buildRequest.\n\nConsequences:\n  - Bloat eliminated; fragments present on every run incl. resume\n    (the resume regression the prior turn-counter gate only half-fixed).\n  - Snapshot and eventsource.Fold rehydration paths CONVERGE\n    (fragment-free) — an ADR-0038 consistency win.\n  - The compaction pin (isGenuineUserTurn) keeps the load-bearing\n    synthesised-summary skip; its injected-fragment arm is now\n    defense-in-depth (legacy persisted history).\n  - session.ForkSnapshot no longer duplicates fragments into forks.\n  - The engine cache breakpoint (System StablePrefix) is unchanged;\n    the per-run cache keeps the message prefix byte-stable within a run.\n\nNo engine exported-API change (buildRequest/runTurn/runLoop are\nunexported; RecordUserPromptWithParts keeps its instr param;\nprompt.IsInjectedTurn0Fragment retained for the defensive arm).\nADR-0043 added (supersedes the \"loaded into the turn-0 conversation as\ndata\" framing in 0009/0011/0012, header-pointers only).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* test(e2e): verdict-replay asserts only the deterministic property (no re-ask + write attempted)\n\nThe verdict-replay spec's flakiness came from asserting the model\nSUCCESSFULLY wrote the new content. The omega Write hits the osfs\nread-before-overwrite refusal on a fresh per-converse-run read ledger\n(the ledger is not shared across converse runs), so the model must\nself-recover (Read, re-Write) — model-capability variance that is\northogonal to verdict replay and not reliably deterministic.\n\nAssert ONLY the genuine, deterministic verdict-replay property:\n  - writeAsks BeEmpty — NO Write re-ask after the SIGKILL+restart, i.e.\n    the logged allow-always verdict WAS replayed into the fresh\n    permstore so the Write is auto-allowed;\n  - sawWriteCall — a Write tool.call was actually attempted (anti-vacuity\n    for the BeEmpty check);\n  - terminal != nil — the run reached a terminal, i.e. did not park on a\n    re-raised ask (deterministic; every completed run yields a ResultMsg).\n\nDrop the model-variance assertions: stop==end_turn and the\nEventually(file==omega) side-effect. Whether the model cleanly ends and\nwhether its auto-allowed Write ultimately succeeds is model capability,\nnot the replay property under test. FlakeAttempts removed (deterministic).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-22T18:16:42+03:00",
+          "tree_id": "39ca96d2d8c9799053b71581f8b0281b4b6a9d77",
+          "url": "https://github.com/stacklok/mecatl/commit/7649b7b1e6e5d14f5e4980b8e29f83b51883d5c3"
+        },
+        "date": 1782141752644,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3524,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 88,
             "unit": "allocs/op"
           },
           {
