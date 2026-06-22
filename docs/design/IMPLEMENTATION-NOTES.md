@@ -2105,6 +2105,29 @@ discovery. A strict-parse skip WARN names the per-effect rule counts the skipped
 (`lostRuleCounts`, lenient best-effort re-read) — a typo'd key drops the file's deny/ask too,
 so the loosening is made loud.
 
+### `configgen` (the settings.yaml single source — issue #140)
+
+`internal/configgen` is the SINGLE source of truth for the operator `settings.yaml`
+surface. It builds ONE model of the four permconfig subtrees (`permissions`,
+`guardrails`, `posture`, `models`) and renders BOTH operator-facing artifacts from it —
+the commented skeleton `mecated config init` writes (`RenderSkeleton`) and the Markdown
+`docs/configuration-reference.md` table (`RenderReference`) — so the two surfaces cannot
+drift from each other, and because the model is built by REFLECTING over the
+`permconfig.*Section` structs and harvesting their field doc-comments, neither can drift
+from the code. **Flag-driven features (soul/memory/commands/user-model/session-lease) are
+OUT of the YAML reference by design** — they are configured via CLI flags + their own
+files, so the reference carries only a hand-written pointer block to `usage.md`, not an
+auto-harvested flag dump.
+
+The go/ast doc-comment harvest lives ONLY in the build-time generator
+(`internal/configgen/cmd/configref`, run by `task docs:configref`); it emits the two
+COMMITTED artifacts, and `config init` ships by `//go:embed`-ing the committed
+skeleton — so the shipped `mecated` binary never imports go/ast (the matlatl
+llms.txt generate→commit→CI-diff-guard pattern; the docs job fails on drift). The
+write path (`config init`) and the read path (the resolver's `loadUserRules`) share the
+ONE relative-path const (`permconfig.UserSettingsRelPath`, re-exported as
+`configgen.SettingsRelPath`), so they provably resolve the same file.
+
 ### `modelhook` (guardrails — LLM-backed tool-content checker, issue #27 — see `GUARDRAILS.md`)
 
 The `modelhook.Runner` is a `port.HookRunner` **decorator** that inspects

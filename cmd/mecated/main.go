@@ -27,6 +27,7 @@ import (
 	"net/http"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"runtime"
 	"runtime/trace"
 	"strings"
@@ -50,8 +51,10 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/skills"
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
 	"github.com/stacklok/mecatl/internal/adapter/telemetry"
+	"github.com/stacklok/mecatl/internal/adapter/xdgconfig"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
+	"github.com/stacklok/mecatl/internal/configgen"
 )
 
 // TRUST MODEL (security): the mecated API exposes command and file execution
@@ -469,10 +472,88 @@ func main() {
 		}
 		return
 	}
+	// `mecated config ...` is the config-management subcommand group. The ONLY
+	// subcommand is `config init` (issue #140), which writes/prints a fully-commented
+	// operator settings.yaml skeleton (the embedded generated artifact — no go/ast in
+	// this binary). A bare `config` or an UNKNOWN `config <x>` must NOT fall through to
+	// run() and boot the daemon (a typo starting an unauthenticated server is a nasty
+	// surprise): it prints the available subcommand and exits non-zero.
+	if len(os.Args) >= 2 && os.Args[1] == "config" {
+		if len(os.Args) >= 3 && os.Args[2] == "init" {
+			if err := runConfigInit(os.Args[3:], os.Stdout); err != nil {
+				if errors.Is(err, flag.ErrHelp) {
+					return // --help is a successful action: usage already printed, exit 0
+				}
+				slog.Error("config init failed", "err", err)
+				os.Exit(1)
+			}
+			return
+		}
+		sub := ""
+		if len(os.Args) >= 3 {
+			sub = os.Args[2]
+		}
+		if sub == "" {
+			fmt.Fprintln(os.Stderr, "mecated config: missing subcommand")
+		} else {
+			fmt.Fprintf(os.Stderr, "mecated config: unknown subcommand %q\n", sub)
+		}
+		fmt.Fprintln(os.Stderr, "available subcommands:")
+		fmt.Fprintln(os.Stderr, "  config init    write/print the operator settings.yaml skeleton (--print, --force)")
+		os.Exit(2)
+	}
 	if err := run(); err != nil {
 		slog.Error("mecated exited with error", "err", err)
 		os.Exit(1)
 	}
+}
+
+// runConfigInit implements `mecated config init [--print] [--force]`: it writes the
+// generated commented settings.yaml skeleton to the operator-tier path
+// (<XDG_CONFIG_HOME>/mecatl/settings.yaml). --print emits to out and writes NOTHING;
+// without --force it REFUSES to overwrite an existing file (the error names the path);
+// --force overwrites. The destination path is resolved via the SAME xdgconfig call +
+// the SAME relative-path const (configgen.SettingsRelPath ← permconfig.UserSettingsRelPath)
+// the resolver reads, so the write path provably equals the read path.
+func runConfigInit(argv []string, out io.Writer) error {
+	fs := flag.NewFlagSet("mecated config init", flag.ContinueOnError)
+	fs.SetOutput(out)
+	var printOnly, force bool
+	fs.BoolVar(&printOnly, "print", false, "print the skeleton to stdout and write NO file (a paste-ready reference)")
+	fs.BoolVar(&force, "force", false, "overwrite an existing settings.yaml (default: refuse, naming the path)")
+	if err := fs.Parse(argv); err != nil {
+		return err
+	}
+
+	skeleton := configgen.Skeleton()
+	if printOnly {
+		_, err := io.WriteString(out, skeleton)
+		return err
+	}
+
+	cfgDir := xdgconfig.UserConfigDir(xdgconfig.OSEnv)
+	if cfgDir == "" {
+		return fmt.Errorf("cannot resolve the user config directory (set $XDG_CONFIG_HOME or $HOME); use --print to emit the skeleton to stdout instead")
+	}
+	path := filepath.Join(cfgDir, configgen.SettingsRelPath)
+
+	if !force {
+		if _, err := os.Stat(path); err == nil {
+			return fmt.Errorf("%s already exists; pass --force to overwrite it (or --print to emit to stdout without writing)", path)
+		} else if !os.IsNotExist(err) {
+			return fmt.Errorf("checking %s: %w", path, err)
+		}
+	}
+
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		return fmt.Errorf("creating config directory %s: %w", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(skeleton), 0o644); err != nil {
+		return fmt.Errorf("writing %s: %w", path, err)
+	}
+	_, _ = fmt.Fprintf(out, "wrote operator settings skeleton to %s\n", path)
+	_, _ = fmt.Fprintf(out, "edit it, then (re)start mecated. See docs/configuration-reference.md for the full key reference.\n")
+	return nil
 }
 
 // runSkillsPromote implements `mecated skills promote --skills-draft-dir
@@ -1118,6 +1199,20 @@ func parseFlags(argv []string) (config, error) {
 	fs.StringVar(&cfg.clientCA, "client-ca", "", "PEM client-CA bundle; enables mutual TLS (require + verify client certs)")
 	fs.Float64Var(&cfg.rateLimit, "rate-limit", 0, "sustained per-client request rate in req/s (0 disables rate limiting)")
 	fs.IntVar(&cfg.rateBurst, "rate-burst", 0, "rate-limit token-bucket burst size (0 derives a sane default from --rate-limit)")
+
+	// Top-level --help lists the subcommands too, so the offline CLI actions (config
+	// init / skills promote / perf-mcp print-config) are discoverable from --help, not
+	// only from the docs (issue #140: config init is invisible to operators otherwise).
+	fs.Usage = func() {
+		out := fs.Output()
+		_, _ = fmt.Fprintf(out, "Usage: mecated [flags]\n       mecated <command> [args]\n\n")
+		_, _ = fmt.Fprintf(out, "Commands:\n")
+		_, _ = fmt.Fprintf(out, "  config init             write/print the operator settings.yaml skeleton (--print, --force)\n")
+		_, _ = fmt.Fprintf(out, "  skills promote          promote a model-authored candidate skill out of quarantine\n")
+		_, _ = fmt.Fprintf(out, "  perf-mcp print-config   print a paste-ready client .mcp.json for the perf MCP server\n\n")
+		_, _ = fmt.Fprintf(out, "Flags:\n")
+		fs.PrintDefaults()
+	}
 
 	if err := fs.Parse(argv); err != nil {
 		return config{}, err

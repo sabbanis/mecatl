@@ -2251,6 +2251,23 @@ only JSON-RPC frames.
 
 ## 6. Configuration
 
+### Scaffolding a settings file (`config init`)
+
+The operator-tier config lives at `<XDG_CONFIG_HOME>/mecatl/settings.yaml`
+(default `~/.config/mecatl/settings.yaml`). To scaffold a fully-commented
+skeleton with every subtree and its exact enable semantics:
+
+```console
+$ mecated config init            # writes ~/.config/mecatl/settings.yaml (refuses if it exists)
+$ mecated config init --print    # print the skeleton to stdout, write nothing
+$ mecated config init --force    # overwrite an existing file
+```
+
+For the exhaustive, auto-generated key/type/default/tier table, see the
+[configuration reference](configuration-reference.md). The inline examples in
+this guide are illustrative; the reference page is the complete source of truth
+(generated from the schema, so it never drifts).
+
 ### Workspace
 
 `--workspace` (server-wide default) and the per-session `workspace` field set
@@ -3219,6 +3236,7 @@ $ jq . DIR/8867….events.jsonl
 
 ## See also
 
+- [Configuration reference](configuration-reference.md) — the exhaustive, auto-generated `settings.yaml` key/type/default/tier table.
 - [Architecture guide](architecture.md) — how the harness works under these flags: layers, the loop, ports, the API surface.
 - [mecatui terminal UI](tui.md) — the terminal client for the server this guide runs.
 - [ADR 0001 — the ACP adapter](adr/0001-acp-adapter.md) — the editor (`--acp`) wire surface in depth.

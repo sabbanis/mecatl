@@ -173,37 +173,52 @@ type RouterCategory struct {
 	Model string `yaml:"model"`
 }
 
-// UnmarshalYAML decodes the models.router: mapping STRICTLY (ADR 0031): an unknown key
-// inside the router subtree is a parse error (same rationale as ModelsSection).
-func (r *RouterSection) UnmarshalYAML(node *yaml.Node) error {
-	return decodeStrictMapping(node, "models.router", map[string]any{
+// strictFields is the single binding map for the models.router: subtree — the ONE
+// authoritative key set both UnmarshalYAML (the parser) and the configgen drift guard
+// (via the test-only KnownKeys accessor) read, so they cannot diverge.
+func (r *RouterSection) strictFields() map[string]any {
+	return map[string]any{
 		"classifier-slot":  &r.ClassifierSlot,
 		"categories":       &r.Categories,
 		"default-category": &r.DefaultCategory,
 		"disabled":         &r.Disabled,
-	})
+	}
+}
+
+// UnmarshalYAML decodes the models.router: mapping STRICTLY (ADR 0031): an unknown key
+// inside the router subtree is a parse error (same rationale as ModelsSection).
+func (r *RouterSection) UnmarshalYAML(node *yaml.Node) error {
+	return decodeStrictMapping(node, "models.router", r.strictFields())
+}
+
+func (c *RouterCategory) strictFields() map[string]any {
+	return map[string]any{
+		"name":        &c.Name,
+		"description": &c.Description,
+		"model":       &c.Model,
+	}
 }
 
 // UnmarshalYAML decodes a router category mapping STRICTLY.
 func (c *RouterCategory) UnmarshalYAML(node *yaml.Node) error {
-	return decodeStrictMapping(node, "models.router.categories[]", map[string]any{
-		"name":        &c.Name,
-		"description": &c.Description,
-		"model":       &c.Model,
-	})
+	return decodeStrictMapping(node, "models.router.categories[]", c.strictFields())
+}
+
+func (m *ModelsSection) strictFields() map[string]any {
+	return map[string]any{
+		"slots":     &m.Slots,
+		"aliases":   &m.Aliases,
+		"default":   &m.Default,
+		"allowlist": &m.Allowlist,
+		"router":    &m.Router,
+	}
 }
 
 // UnmarshalYAML decodes the models: mapping STRICTLY (ADR 0030): an unknown key
 // inside the models subtree is a parse error — a typo like `slotz:` or `aliasez:`
 // must not silently drop a whole binding map. Same rationale as GuardrailsSection.
 func (m *ModelsSection) UnmarshalYAML(node *yaml.Node) error {
-	return decodeStrictMapping(node, "models", map[string]any{
-		"slots":     &m.Slots,
-		"aliases":   &m.Aliases,
-		"default":   &m.Default,
-		"allowlist": &m.Allowlist,
-		"router":    &m.Router,
-	})
+	return decodeStrictMapping(node, "models", m.strictFields())
 }
 
 // GuardrailsSection is the operator-tier `guardrails:` YAML subtree (issue #27): a
@@ -242,24 +257,32 @@ type GuardrailRuleSpec struct {
 // inside the guardrails subtree is a parse error — a typo like `moddel:` or `rulez:`
 // must not silently disable a guardrail. Same rationale as Permissions.UnmarshalYAML.
 func (g *GuardrailsSection) UnmarshalYAML(node *yaml.Node) error {
-	return decodeStrictMapping(node, "guardrails", map[string]any{
+	return decodeStrictMapping(node, "guardrails", g.strictFields())
+}
+
+func (g *GuardrailsSection) strictFields() map[string]any {
+	return map[string]any{
 		"model":           &g.Model,
 		"maxChecks":       &g.MaxChecks,
 		"minContentBytes": &g.MinContentBytes,
 		"disabled":        &g.Disabled,
 		"rules":           &g.Rules,
-	})
+	}
 }
 
-// UnmarshalYAML decodes a guardrails rule mapping STRICTLY.
-func (r *GuardrailRuleSpec) UnmarshalYAML(node *yaml.Node) error {
-	return decodeStrictMapping(node, "guardrails.rules[]", map[string]any{
+func (r *GuardrailRuleSpec) strictFields() map[string]any {
+	return map[string]any{
 		"match":      &r.Match,
 		"phases":     &r.Phases,
 		"mode":       &r.Mode,
 		"prompt":     &r.Prompt,
 		"failClosed": &r.FailClosed,
-	})
+	}
+}
+
+// UnmarshalYAML decodes a guardrails rule mapping STRICTLY.
+func (r *GuardrailRuleSpec) UnmarshalYAML(node *yaml.Node) error {
+	return decodeStrictMapping(node, "guardrails.rules[]", r.strictFields())
 }
 
 // Permissions is the three-bucket rule-spec set plus the child-scoped
@@ -308,22 +331,30 @@ type SubagentPermissions struct {
 // ignored config (a typo like `alow:` or `subagnet:` would otherwise disable a
 // whole rule list without a trace). The top level of Config stays lenient.
 func (p *Permissions) UnmarshalYAML(node *yaml.Node) error {
-	return decodeStrictMapping(node, "permissions", map[string]any{
+	return decodeStrictMapping(node, "permissions", p.strictFields())
+}
+
+func (p *Permissions) strictFields() map[string]any {
+	return map[string]any{
 		"allow":    &p.Allow,
 		"ask":      &p.Ask,
 		"deny":     &p.Deny,
 		"subagent": &p.Subagent,
-	})
+	}
+}
+
+func (s *SubagentPermissions) strictFields() map[string]any {
+	return map[string]any{
+		"allow": &s.Allow,
+		"ask":   &s.Ask,
+		"deny":  &s.Deny,
+	}
 }
 
 // UnmarshalYAML decodes the permissions.subagent: mapping STRICTLY — same
 // rationale as Permissions.UnmarshalYAML.
 func (s *SubagentPermissions) UnmarshalYAML(node *yaml.Node) error {
-	return decodeStrictMapping(node, "permissions.subagent", map[string]any{
-		"allow": &s.Allow,
-		"ask":   &s.Ask,
-		"deny":  &s.Deny,
-	})
+	return decodeStrictMapping(node, "permissions.subagent", s.strictFields())
 }
 
 // decodeStrictMapping walks a YAML mapping node and decodes each known key's
