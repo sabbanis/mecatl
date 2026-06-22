@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782124511898,
+  "lastUpdate": 1782124514461,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -332579,6 +332579,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 85.5,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "09d37eb937dc4a7ef1d66767fc8dbda1a2ae0b35",
+          "message": "perf(mecatui): memoize vp.View() to skip lipgloss re-pad on spinner-only frames (#139) (#143)\n\n* perf(mecatui): memoize vp.View() output to skip lipgloss re-pad on spinner-only frames (#139)\n\n`View()` called `m.vp.View()` unconditionally on every Bubble Tea frame.\nThe bubbles viewport re-runs a lipgloss Width().Height().Render(visibleLines)\non each call, re-measuring every grapheme cluster's display width from scratch.\nDuring a reasoning turn the footer spinner fires at ~10fps and each tick forces\na full viewport re-pad even though the body is byte-identical frame-to-frame:\n\n  1.31s 50.00%  Model.View\n  1.16s 44.27%    viewport.Model.View (lipgloss.Render(Join(visibleLines)))\n\nFix: add a dirty-flag memo (`renderer.vpViewValid`/`vpViewCache`) behind the\nestablished `m.rend *renderer` pointer. `View()` now calls `m.rend.vpView(m.vp)`\nwhich serves from cache on unchanged frames. `invalidateVPView()` is called at\nevery site that changes viewport content, scroll offset, or geometry:\n`refreshView`, `snapshotSelection`, `scrollLines` (when changed), `onMouseWheel`,\n`onScrollKey`, and `onResize`.\n\nSpinner-only frames (the motivating case) skip `vp.View()`'s lipgloss pad entirely.\n\nNew bench: `BenchmarkSpinnerTickVPView` (steady-state, 400 blocks, spinner-only tick).\nBaseline: ~546 allocs/op, ~94 KB/op.\n\nTests: three positive+negative mutation-test pairs covering content, scroll, and\ngeometry invalidation axes, plus a `snapshotSelection` path test.\n\nCloses #139\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* perf(mecatui): wire vpView bench into perf gate + per-handler invalidation guard (#139)\n\nIteration 2 — panel-review follow-ups and a CI perf-gate wiring gap:\n\n- Drift-guard test (TestVPViewInvalidatedByEveryViewportHandler): dispatches\n  each viewport-mutating handler (onResize, onMouseWheel, onScrollKey,\n  scrollLines, snapshotSelection) and asserts vpViewValid==false after, turning\n  the \"every mutation site calls invalidateVPView\" convention into an enforced\n  invariant. Mutation-proven: deleting any one site's call reds exactly that\n  subtest.\n- Wire BenchmarkSpinnerTickVPView into `task perf:scenarios` — the bench regex\n  was `BenchmarkScrollbackView` (prefix), which never matched the new bench, so\n  it was dead in CI. Widened to an alternation matching both.\n- Route tui_spinner_tick_vpview to the ADVISORY render-allocs suite in\n  perfconvert (it carries the same runtime.ReadMemStats noise as its\n  tui_scrollback_view* siblings; hard-gating it would false-positive unrelated\n  PRs). Updated perfconvert's split test to assert the routing.\n- Field order vpViewCache/vpViewValid to match the joinCache/joinValid sibling\n  convention; doc-note that scrollLines invalidates only on observed YOffset\n  movement.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* perf(mecatui): fix vacuous vpView bench + cover height/reset paths (#139)\n\nAddresses PR #143 review (maintainer panel):\n\n- MUST-FIX: BenchmarkSpinnerTickVPView never called View() in its measured\n  loop — it measured Update dispatch + chrome, not the vp.View()-skip, and the\n  vpViewValid assertion passed vacuously. Now drives the real Update->View\n  per-frame cycle (m.Update(tick) then m.View()), so the measured cost is the\n  cached-View steady-state frame. Proven: ~1,088 allocs/op cached vs ~24,840\n  un-cached (~23×) — the win the old bench hid.\n- Clear vpViewValid in resetBlockCaches (defense-in-depth) so the \"callers call\n  refreshView() afterwards\" ordering is no longer a load-bearing untested\n  invariant; added TestResetBlockCachesInvalidatesVPView (mutation-verified).\n- Cover the SetHeight/relayout geometry path: new onResizeHeightOnly subtest\n  varies height (the prior test varied width only).\n- ADR: corrected baseline number + memo-off comparison; added the third bench\n  to the Phase-2 enumeration; noted the win is spinner-tick frames between\n  content flushes (streaming frames still pay the refreshView re-pad by design).\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-22T13:29:53+03:00",
+          "tree_id": "8f78426562ee2f2ead037e4bee81f29c42699a25",
+          "url": "https://github.com/stacklok/mecatl/commit/09d37eb937dc4a7ef1d66767fc8dbda1a2ae0b35"
+        },
+        "date": 1782124513837,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3512,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 76,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1088,
             "unit": "allocs/op"
           }
         ]
