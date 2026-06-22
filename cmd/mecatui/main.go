@@ -41,6 +41,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
 	"github.com/stacklok/mecatl/internal/adapter/xdgconfig"
 	"github.com/stacklok/mecatl/internal/app"
+	"github.com/stacklok/mecatl/internal/cliconfig"
 )
 
 func main() {
@@ -241,6 +242,16 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 	// guarded). See docs/adr/0020-diagnostics.md.
 	slog.SetDefault(slog.New(slog.NewTextHandler(diagW, &slog.HandlerOptions{Level: slog.LevelInfo})))
 
+	// Deprecation note (ADR 0042): a bare --subagent-model-router / =true is the legacy
+	// redundant enable — routing is now enabled by the operator-tier models.router:
+	// taxonomy, not the flag. It does NOT set RouterDisabled. Emit a one-time WARN HERE
+	// (the host-embedded branch, exactly once per run), NOT inside embeddedConfig, which
+	// is called TWICE per run (applyTrustPrompt below and the embed.Start call) and would
+	// double-log. Reuse the shared literal so the three mains can't drift.
+	if cfg.subagentModelRouterSet && cfg.subagentModelRouter {
+		diag.Log(ctx, port.LevelWarn, cliconfig.SubagentModelRouterDeprecatedEnableMsg)
+	}
+
 	cfg = applyTrustPrompt(cfg, diag)
 
 	srv, err := embed.Start(ctx, embeddedConfig(cfg, diag), perfConfig(cfg, perfLogger))
@@ -336,19 +347,25 @@ func embeddedConfig(cfg config, diag port.Diagnostics) app.Config {
 		SubagentAskReviewerModel:     cfg.subagentAskReviewer,
 		SubagentAskReviewerMaxDenies: cfg.subagentAskReviewerMaxDenies,
 		SubagentAskReviewerPolicy:    cfg.subagentAskReviewerPolicy,
-		UseMock:                      cfg.mock,
-		Shell:                        "/bin/sh",
-		NoBash:                       cfg.noBash,
-		Compaction:                   "heuristic",
-		Tokenizer:                    "heuristic",
-		LLMMaxAttempts:               3,
-		LLMPerAttemptTimeout:         cfg.llmPerAttemptTimeout,
-		LLMStreamIdleTimeout:         cfg.llmStreamIdleTimeout,
-		LLMBreakerThreshold:          5,
-		LLMBreakerCooldown:           30 * time.Second,
-		EnableParallel:               true,
-		EnableTeams:                  true,
-		AgentsConventional:           true,
+		// Subagent model router (ADR 0042): tri-state kill-switch. =false forces the
+		// router OFF (RouterDisabled); a bare flag / =true is the deprecated redundant
+		// enable (the deprecation WARN is emitted ONCE in run(), NOT here — embeddedConfig
+		// is called twice per run); unset leaves routing governed by the operator-tier
+		// models.router: taxonomy. Idempotent: safe to compute on both calls.
+		RouterDisabled:       cfg.subagentModelRouterSet && !cfg.subagentModelRouter,
+		UseMock:              cfg.mock,
+		Shell:                "/bin/sh",
+		NoBash:               cfg.noBash,
+		Compaction:           "heuristic",
+		Tokenizer:            "heuristic",
+		LLMMaxAttempts:       3,
+		LLMPerAttemptTimeout: cfg.llmPerAttemptTimeout,
+		LLMStreamIdleTimeout: cfg.llmStreamIdleTimeout,
+		LLMBreakerThreshold:  5,
+		LLMBreakerCooldown:   30 * time.Second,
+		EnableParallel:       true,
+		EnableTeams:          true,
+		AgentsConventional:   true,
 		// Memory is ON by default, per-project. MemoryConsolidateInterval is left
 		// at 0 (off) deliberately: the "dream" distiller spawns a goroutine that
 		// calls the real provider on a timer, so a default-on interval would
