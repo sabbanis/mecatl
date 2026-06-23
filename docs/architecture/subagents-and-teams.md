@@ -42,7 +42,7 @@ It is listed first in the Subagent tool's spec enumeration (when specialists are
 configured) so the model sees a general-purpose option, and it composes with
 `resume`/`fork`/`mode:"read-write"` and the model router (it is the default explorer, not
 a read-only specialist, so it is not subject to their `agent` exclusions). The name
-`general` is reserved (ADR 0044): an operator-authored `AgentDef` named `general` is
+`general` is reserved ([ADR 0044](../adr/0044-reserved-general-agent-name.md)): an operator-authored `AgentDef` named `general` is
 rejected at discovery, and a driver-served def named `general` is dropped with a WARN.
 
 **Per-call knobs (`subagentArgs`).** Beyond `prompt`/`description`/`agent`, a Subagent call may
