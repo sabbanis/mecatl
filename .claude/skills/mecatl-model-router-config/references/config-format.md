@@ -118,12 +118,4 @@ ACTIVE` (or a `DISABLED` WARN if the kill-switch is set). Check the mecated log
 failed to resolve WARNs and degrades to the session model — a missing `ACTIVE`
 line is the signal something didn't bind.
 
-## Source
-
-- `docs/usage.md` "Model selection" section (~line 1131) — the canonical worked example.
-- `docs/architecture/providers.md` "Model resolution — aliases + per-slot models" — the mechanics.
-- `internal/adapter/permconfig/schema.go` — the strict YAML schema (`RouterSection`,
-  `RouterCategory`, `ModelsSection`).
-- `docs/adr/0030-model-selection-heuristics.md` — aliases + slots + plan + allowlist.
-- `docs/adr/0031-subagent-model-router.md` — the semantic router.
-- `docs/adr/0042-taxonomy-gated-model-router.md` — taxonomy-presence-enables + kill-switch.
+[← back to the skill](../SKILL.md)

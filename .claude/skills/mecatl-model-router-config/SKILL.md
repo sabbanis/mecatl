@@ -154,5 +154,4 @@ After the config, include:
 ## See also
 
 - [`references/config-format.md`](references/config-format.md) — the complete
-  `models:` YAML schema, key rules, a worked OpenRouter example, and source
-  pointers into the mecatl docs/code.
+  `models:` YAML schema, key rules, and a worked OpenRouter example.
