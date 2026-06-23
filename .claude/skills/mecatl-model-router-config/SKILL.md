@@ -1,5 +1,5 @@
 ---
-name: model-router-config
+name: mecatl-model-router-config
 description: >-
   Designs and writes a mecatl model router configuration (the `models:` subtree of
   ~/.config/mecatl/settings.yaml) tailored to the operator's preferences. Asks
