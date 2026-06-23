@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782193888858,
+  "lastUpdate": 1782193891808,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -353695,6 +353695,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/222fb316f74ee3573f4cbfa7a96a202208ea7d73"
         },
         "date": 1782159208248,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eab8c3ecd67c7938c4300d0aa2a3423bd700720c",
+          "message": "feat(skill): add model-router-config skill (#150)\n\n* feat(skill): add model-router-config skill\n\nA workflow skill that designs and writes a mecatl model router\nconfiguration (the models: subtree of ~/.config/mecatl/settings.yaml)\ntailored to operator preferences.\n\nWorkflow: elicit preferences (provider, cost vs capability axis, open vs\nproprietary, multimodal, target ceiling, existing config) BEFORE searching;\nthen search live benchmarks/pricing; map to the config schema; deliver the\nYAML + changes summary + verification note + honest gaps note.\n\nThe reference doc captures the exact YAML schema (from docs/usage.md +\ninternal/adapter/permconfig/schema.go), the provider-fixed invariant, slot\ndefaults, the 3-4 categories-max rule, and a worked OpenRouter example.\n\nEncodes the design conclusions from a cost-tiered model-selection session:\nhousekeeping slots on the cheapest credible model; heavy/plan on a frontier\nreasoning model; an optional image alias/category for multimodal invoked\nexplicitly or router-routed; 3-4 categories max (classifier accuracy +\nsteering surface); agent-def model: pin for rare task types over a 5th\ncategory.\n\n* refactor(skill): rename to mecatl-model-router-config\n\nPrepend mecatl- to the skill name and directory for namespacing consistency\nwith the project. Updates the frontmatter name: field to match (the skill\nspec requires name to match the folder name).\n\n* refactor(skill): make model-router-config self-contained\n\nDrop all references to the mecatl repo docs (docs/usage.md, docs/adr/*,\ninternal/...). The skill is now fully self-contained — the config schema,\nrules, and worked example all live inside the skill bundle, so it can be\npackaged and shipped without the surrounding repo.\n\nAdd a back-link from references/config-format.md to SKILL.md (the established\npattern in the other skills) so the reference file is not a graph dead-end\nunder the matlatl strict docs gate.",
+          "timestamp": "2026-06-23T08:45:48+03:00",
+          "tree_id": "081a5dea2e6d0094e32ab7bd8da6c6f1aa3c8559",
+          "url": "https://github.com/stacklok/mecatl/commit/eab8c3ecd67c7938c4300d0aa2a3423bd700720c"
+        },
+        "date": 1782193890879,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
