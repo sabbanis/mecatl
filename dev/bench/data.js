@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782235506235,
+  "lastUpdate": 1782235510022,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -372630,6 +372630,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/fa8b6c0d5b21a0e544bbd025e46ce09f44310eac"
         },
         "date": 1782228060772,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "570f89e4da0eddaee82581aa4ba5444bdecbcea0",
+          "message": "Merge pull request #164 from stacklok/issue-154-absolute-paths\n\nfeat(osfs): accept absolute paths resolving inside the workspace root (#154)",
+          "timestamp": "2026-06-23T20:19:18+03:00",
+          "tree_id": "ccccc676bdbb633047314c4eb9d8a54c96ad1321",
+          "url": "https://github.com/stacklok/mecatl/commit/570f89e4da0eddaee82581aa4ba5444bdecbcea0"
+        },
+        "date": 1782235508719,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
