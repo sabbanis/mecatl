@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782218294838,
+  "lastUpdate": 1782218297577,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -358320,6 +358320,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "team_fanout/allocs_per_op",
             "value": 2440,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "ee5ae1ad932dbc7bd089f86c787bdb5b75b12e87",
+          "message": "perf(adapter): benchmark per-turn request assembly to close the #157 measurement gap\n\nLive monitoring fingered main-turn allocation churn (per-turn full\nconversation re-marshal + SSE decode), but that path had ZERO offline\nbenchmark coverage — every bench drives mockllm, which bypasses the\nadapter request-assembly and decode entirely — so the hypothesis could\nnever be ranked.\n\n- Add internal/adapter/{anthropic,openai}/request_bench_test.go: benchmark\n  buildParams/buildMessages/buildInput (our glue), buildParams+json.Marshal\n  (the full per-turn re-marshal), and the test-only decodeSSE/translate\n  glue, over synthetic 50/200/500-message conversations.\n- Profile (alloc_objects) verdict: the per-turn re-marshal is ~92%\n  (anthropic) / ~87% (openai) the provider SDK's reflection-based\n  json.Marshal — code we don't own — with our glue a small, already\n  capacity-presized remainder. No byte-identical win exists in our glue\n  without risking the byte-stable prompt-cache prefix. So: gap closed,\n  NO source change (matches the GC-absorbed live data: pauses <=262us).\n- The benches are a runnable human A/B / regression guard; deliberately\n  NOT wired into the fail-closed allocs-gate (an SDK-dominated number\n  shifts on SDK bumps); glue-only gating noted as a follow-up.\n\nCloses #157\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-23T15:32:40+03:00",
+          "tree_id": "f8e7909f561b80dbf70adcd92070bd48351c5f33",
+          "url": "https://github.com/stacklok/mecatl/commit/ee5ae1ad932dbc7bd089f86c787bdb5b75b12e87"
+        },
+        "date": 1782218296931,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1473,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4000,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2814,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 34133,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2411,
             "unit": "allocs/op"
           },
           {
