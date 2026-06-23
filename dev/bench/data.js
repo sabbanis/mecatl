@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782221012337,
+  "lastUpdate": 1782221014955,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -366978,6 +366978,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 94.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "255a2afa0f48c0438d8bf25f41a15155cf591551",
+          "message": "fix(mecatui): collapse the input composer's redundant double accent bar (#162)\n\nThe input composer drew two vertical accent bars — the mode-coloured rail\nleft border (│ U+2502) and the textarea's own prompt bar (┃ U+2503) — plus\nan accent line-number gutter. The two bars encode the same \"framed,\nmode-tinted input\" signal, and the light-vs-heavy weight difference read as\na rendering stutter.\n\nSuppress the textarea's inner prompt and line-number gutter at construction\n(Prompt=\"\", ShowLineNumbers=false, set before any SetWidth so bubbles sizes\nthe gutter correctly), drop the now-dead Prompt/LineNumber/CursorLineNumber\nstyle assignments in applyModeInputStyle, and tighten the rail's left padding\n2→1 now that only the rail border remains. The rail border is the single\nmode cue and stays at full accent strength regardless of focus.\n\nGoldens regenerated via task test:golden. docs/tui.md \"Input box.\" reworded\nto match (it no longer claims a per-element blur dim, consistent with the\nTestInputRailBorderColourIgnoresFocus invariant).\n\nCloses #161\n\nCo-authored-by: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-23T16:17:54+03:00",
+          "tree_id": "d7475edcd2894d914172a285d9d81caa255a08a2",
+          "url": "https://github.com/stacklok/mecatl/commit/255a2afa0f48c0438d8bf25f41a15155cf591551"
+        },
+        "date": 1782221014278,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3297,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 94,
             "unit": "allocs/op"
           },
           {
