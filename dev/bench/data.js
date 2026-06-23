@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782193885750,
+  "lastUpdate": 1782193888858,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -350814,6 +350814,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "team_fanout/allocs_per_op",
             "value": 2439.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "eab8c3ecd67c7938c4300d0aa2a3423bd700720c",
+          "message": "feat(skill): add model-router-config skill (#150)\n\n* feat(skill): add model-router-config skill\n\nA workflow skill that designs and writes a mecatl model router\nconfiguration (the models: subtree of ~/.config/mecatl/settings.yaml)\ntailored to operator preferences.\n\nWorkflow: elicit preferences (provider, cost vs capability axis, open vs\nproprietary, multimodal, target ceiling, existing config) BEFORE searching;\nthen search live benchmarks/pricing; map to the config schema; deliver the\nYAML + changes summary + verification note + honest gaps note.\n\nThe reference doc captures the exact YAML schema (from docs/usage.md +\ninternal/adapter/permconfig/schema.go), the provider-fixed invariant, slot\ndefaults, the 3-4 categories-max rule, and a worked OpenRouter example.\n\nEncodes the design conclusions from a cost-tiered model-selection session:\nhousekeeping slots on the cheapest credible model; heavy/plan on a frontier\nreasoning model; an optional image alias/category for multimodal invoked\nexplicitly or router-routed; 3-4 categories max (classifier accuracy +\nsteering surface); agent-def model: pin for rare task types over a 5th\ncategory.\n\n* refactor(skill): rename to mecatl-model-router-config\n\nPrepend mecatl- to the skill name and directory for namespacing consistency\nwith the project. Updates the frontmatter name: field to match (the skill\nspec requires name to match the folder name).\n\n* refactor(skill): make model-router-config self-contained\n\nDrop all references to the mecatl repo docs (docs/usage.md, docs/adr/*,\ninternal/...). The skill is now fully self-contained — the config schema,\nrules, and worked example all live inside the skill bundle, so it can be\npackaged and shipped without the surrounding repo.\n\nAdd a back-link from references/config-format.md to SKILL.md (the established\npattern in the other skills) so the reference file is not a graph dead-end\nunder the matlatl strict docs gate.",
+          "timestamp": "2026-06-23T08:45:48+03:00",
+          "tree_id": "081a5dea2e6d0094e32ab7bd8da6c6f1aa3c8559",
+          "url": "https://github.com/stacklok/mecatl/commit/eab8c3ecd67c7938c4300d0aa2a3423bd700720c"
+        },
+        "date": 1782193887951,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1496,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4082,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2896,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35136,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2438.5,
             "unit": "allocs/op"
           },
           {
