@@ -100,6 +100,11 @@ func TestSubagentUnknownAgentErrors(t *testing.T) {
 	if !strings.Contains(results[0].Content, "nope") || !strings.Contains(results[0].Content, "reviewer") {
 		t.Fatalf("error should name the bad input and list valid names, got %q", results[0].Content)
 	}
+	// The reserved `general` alias is always listed first in the hint so the model can
+	// retry toward the default explorer as well as a specialist.
+	if !strings.Contains(results[0].Content, "general") {
+		t.Fatalf("error hint should list the reserved `general` name, got %q", results[0].Content)
+	}
 }
 
 // TestSubagentSpecEnumeratesAgents proves the available specialists appear in the
@@ -298,5 +303,75 @@ func TestSubagentNoAgentsNoEnumeration(t *testing.T) {
 	task := agent.NewSubagentTool(defaultEngine)
 	if strings.Contains(task.Spec().Description, "Available specialist agents") {
 		t.Fatalf("no agents configured: spec must not have an enumeration tail")
+	}
+}
+
+// TestSubagentGeneralIsDefaultExplorerAlias proves that Subagent(agent="general") runs
+// the DEFAULT explorer engine — the same engine an OMITTED `agent` arg selects — and
+// never enters the registry lookup. `general` is the reserved alias
+// (tool.ReservedAgentNameGeneral), not a specialist.
+func TestSubagentGeneralIsDefaultExplorerAlias(t *testing.T) {
+	defaultEngine := childEngineWith(mockllm.New(mockllm.TextTurn("DEFAULT")), catalogWith(t))
+	reviewerEngine := childEngineWith(mockllm.New(mockllm.TextTurn("REVIEWER")), catalogWith(t))
+
+	task := agent.NewSubagentTool(defaultEngine, agent.WithAgentEngines(
+		map[string]*agent.Engine{"reviewer": reviewerEngine},
+		[]agent.AgentMeta{{Name: "reviewer", Description: "reviews diffs"}},
+	))
+
+	// agent="general" must select the default explorer (DEFAULT), not the reviewer.
+	results, _ := subagentParentResults(t, task,
+		mockllm.ToolCallTurn(toolCall("p1", "Subagent", `{"prompt":"explore","agent":"general"}`)),
+		mockllm.TextTurn("parent done"),
+	)
+	if len(results) != 1 {
+		t.Fatalf("want 1 result, got %d", len(results))
+	}
+	if results[0].IsError || !strings.Contains(results[0].Content, "DEFAULT") {
+		t.Fatalf("agent=general should run the DEFAULT explorer, got %+v", results[0])
+	}
+
+	// The omitted path must produce the same DEFAULT summary. A FRESH default engine is
+	// used (the shared one's mockllm was drained by the general call above), so the
+	// comparison is on the summary content, not the mockllm's state.
+	defaultEngine2 := childEngineWith(mockllm.New(mockllm.TextTurn("DEFAULT")), catalogWith(t))
+	reviewerEngine2 := childEngineWith(mockllm.New(mockllm.TextTurn("REVIEWER")), catalogWith(t))
+	task2 := agent.NewSubagentTool(defaultEngine2, agent.WithAgentEngines(
+		map[string]*agent.Engine{"reviewer": reviewerEngine2},
+		[]agent.AgentMeta{{Name: "reviewer", Description: "reviews diffs"}},
+	))
+	resultsOmit, _ := subagentParentResults(t, task2,
+		mockllm.ToolCallTurn(toolCall("p1", "Subagent", `{"prompt":"explore"}`)),
+		mockllm.TextTurn("parent done"),
+	)
+	if len(resultsOmit) != 1 || resultsOmit[0].IsError {
+		t.Fatalf("omitted path failed: %+v", resultsOmit)
+	}
+	// Both paths ran the DEFAULT explorer; the summary text must match (the agentId
+	// trailer is call-id-derived and identical for the same "p1" call id).
+	if results[0].Content != resultsOmit[0].Content {
+		t.Errorf("agent=general and omitted agent should produce the same result; got %q vs %q",
+			results[0].Content, resultsOmit[0].Content)
+	}
+}
+
+// TestSubagentGeneralEnumeratedFirst proves the reserved `general` name appears in the
+// Subagent tool's Spec().Description enumeration BEFORE the custom specialists, so the
+// model sees an explicit general-purpose option alongside them.
+func TestSubagentGeneralEnumeratedFirst(t *testing.T) {
+	defaultEngine := childEngineWith(mockllm.New(mockllm.TextTurn("x")), catalogWith(t))
+	task := agent.NewSubagentTool(defaultEngine, agent.WithAgentEngines(
+		map[string]*agent.Engine{"reviewer": defaultEngine},
+		[]agent.AgentMeta{{Name: "reviewer", Description: "reviews diffs"}},
+	))
+	desc := task.Spec().Description
+	generalIdx := strings.Index(desc, "general")
+	reviewerIdx := strings.Index(desc, "reviewer:")
+	if generalIdx < 0 {
+		t.Fatalf("spec must enumerate the reserved `general` name, got:\n%s", desc)
+	}
+	if reviewerIdx < 0 || generalIdx > reviewerIdx {
+		t.Fatalf("general must appear BEFORE the first specialist; general@%d reviewer@%d\n%s",
+			generalIdx, reviewerIdx, desc)
 	}
 }

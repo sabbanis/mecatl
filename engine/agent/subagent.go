@@ -995,6 +995,11 @@ func (t *SubagentTool) agentEnumeration() string {
 	}
 	var b strings.Builder
 	b.WriteString("\n\nAvailable specialist agents (pass the name as `agent`):")
+	// The reserved `general` name is always listed FIRST — it is the explicit alias for
+	// the default explorer (the same engine an omitted `agent` selects), surfaced so the
+	// model sees a general-purpose option alongside the specialists (mirroring Claude
+	// Code's built-in general-purpose subagent type). It is never a registry entry.
+	fmt.Fprintf(&b, "\n- %s: %s", tool.ReservedAgentNameGeneral, "the default general-purpose read-only explorer (same as omitting `agent`)")
 	for _, m := range t.agentMeta {
 		fmt.Fprintf(&b, "\n- %s: %s", m.Name, m.Description)
 	}
@@ -1123,7 +1128,13 @@ func (t *SubagentTool) selectChildEngine(callID session.ToolCallID, args subagen
 	// can retry — it never silently falls back (which would run the wrong scope/prompt).
 	engine = t.childEngine
 	limits = t.limits // default explorer bound; a named agent with per-def limits overrides.
-	if wantAgent != "" {
+	// `general` is the reserved alias for the default explorer (tool.ReservedAgentNameGeneral):
+	// it selects childEngine + the default limits, exactly like an omitted `agent` arg, and
+	// never enters the registry lookup (a def named "general" is rejected at discovery, so it
+	// cannot shadow the reserved routing key). An unknown name (anything else) is a
+	// model-addressable error listing the valid names so the model can retry — it never
+	// silently falls back (which would run the wrong scope/prompt).
+	if wantAgent != "" && wantAgent != tool.ReservedAgentNameGeneral {
 		eng, found := t.agentEngines[wantAgent]
 		if !found {
 			return nil, session.Limits{}, session.NewToolError(callID, "Subagent: "+t.unknownAgentHint(wantAgent)), false
@@ -1255,7 +1266,11 @@ func (t *SubagentTool) validateResume(callID session.ToolCallID, args subagentAr
 	if t.store == nil {
 		return nil, session.NewToolError(callID, "Subagent: `resume` is not supported in this deployment (no session store wired)"), false
 	}
-	if strings.TrimSpace(args.Agent) != "" || strings.TrimSpace(args.Model) != "" {
+	// `general` is the reserved alias for the default explorer, so `agent:"general"`+`resume`
+	// is allowed (it is the same as omitting `agent`+`resume`): a resumed child runs on the
+	// default explorer engine regardless. Any OTHER non-empty `agent` (a real specialist)
+	// stays mutually exclusive with `resume`, as does `model`.
+	if (strings.TrimSpace(args.Agent) != "" && strings.TrimSpace(args.Agent) != tool.ReservedAgentNameGeneral) || strings.TrimSpace(args.Model) != "" {
 		return nil, session.NewToolError(callID,
 			"Subagent: `resume` cannot be combined with `agent` or `model` — a resumed subagent continues on the default explorer engine"), false
 	}
@@ -1301,7 +1316,7 @@ func validateFork(callID session.ToolCallID, args subagentArgs, caps parentCaps)
 	case strings.TrimSpace(args.Resume) != "":
 		return nil, session.NewToolError(callID,
 			"Subagent: `fork` cannot be combined with `resume` — a fork inherits THIS conversation; resume continues a different persisted subagent"), false
-	case strings.TrimSpace(args.Agent) != "":
+	case strings.TrimSpace(args.Agent) != "" && strings.TrimSpace(args.Agent) != tool.ReservedAgentNameGeneral:
 		return nil, session.NewToolError(callID,
 			"Subagent: `fork` cannot be combined with `agent` — a forked subagent runs on the parent's engine, not a specialist"), false
 	case strings.TrimSpace(args.Model) != "":
@@ -1348,7 +1363,7 @@ func (t *SubagentTool) validateMode(callID session.ToolCallID, args subagentArgs
 	case args.Background:
 		return false, session.NewToolError(callID,
 			"Subagent: mode:\"read-write\" cannot be combined with `background` — a writable subagent writes directly to your workspace and must run inline (serially) so it cannot race your own edits; omit `background`"), false
-	case strings.TrimSpace(args.Agent) != "":
+	case strings.TrimSpace(args.Agent) != "" && strings.TrimSpace(args.Agent) != tool.ReservedAgentNameGeneral:
 		return false, session.NewToolError(callID,
 			"Subagent: mode:\"read-write\" cannot be combined with `agent` — named specialist agents run read-only; omit `agent` to use a writable explorer"), false
 	case t.writableChildEngine == nil:
@@ -1389,7 +1404,8 @@ func (t *SubagentTool) validatePreconditions(callID session.ToolCallID, args sub
 // classifier turn (issue #94).
 func maybeRouteModel(ctx context.Context, args subagentArgs, resuming bool, caps parentCaps) (category, model string) {
 	if resuming || args.Fork || caps.routeTask == nil ||
-		strings.TrimSpace(args.Model) != "" || strings.TrimSpace(args.Agent) != "" {
+		strings.TrimSpace(args.Model) != "" ||
+		(strings.TrimSpace(args.Agent) != "" && strings.TrimSpace(args.Agent) != tool.ReservedAgentNameGeneral) {
 		return "", ""
 	}
 	if cat, m, ok := caps.routeTask(ctx, args.Prompt); ok {
@@ -2873,9 +2889,12 @@ func (t *SubagentTool) persistChild(ctx context.Context, child *session.Session)
 // retry, mirroring the Skill tool's available-names hint.
 func (t *SubagentTool) unknownAgentHint(name string) string {
 	if len(t.agentMeta) == 0 {
-		return fmt.Sprintf("unknown agent %q (no specialist agents are configured; omit `agent` to use the default explorer)", name)
+		return fmt.Sprintf("unknown agent %q (no specialist agents are configured; pass agent=%q or omit `agent` to use the default explorer)", name, tool.ReservedAgentNameGeneral)
 	}
-	names := make([]string, 0, len(t.agentMeta))
+	// `general` (the reserved default-explorer alias) is always listed first so the model
+	// can retry toward the general-purpose explorer as well as a specialist.
+	names := make([]string, 0, len(t.agentMeta)+1)
+	names = append(names, tool.ReservedAgentNameGeneral)
 	for _, m := range t.agentMeta {
 		names = append(names, m.Name)
 	}
