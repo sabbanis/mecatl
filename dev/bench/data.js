@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782218297577,
+  "lastUpdate": 1782218300700,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -361269,6 +361269,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/df1a1fa38adb06db3edb56d9c4b41e144080d27d"
         },
         "date": 1782208689498,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "ee5ae1ad932dbc7bd089f86c787bdb5b75b12e87",
+          "message": "perf(adapter): benchmark per-turn request assembly to close the #157 measurement gap\n\nLive monitoring fingered main-turn allocation churn (per-turn full\nconversation re-marshal + SSE decode), but that path had ZERO offline\nbenchmark coverage — every bench drives mockllm, which bypasses the\nadapter request-assembly and decode entirely — so the hypothesis could\nnever be ranked.\n\n- Add internal/adapter/{anthropic,openai}/request_bench_test.go: benchmark\n  buildParams/buildMessages/buildInput (our glue), buildParams+json.Marshal\n  (the full per-turn re-marshal), and the test-only decodeSSE/translate\n  glue, over synthetic 50/200/500-message conversations.\n- Profile (alloc_objects) verdict: the per-turn re-marshal is ~92%\n  (anthropic) / ~87% (openai) the provider SDK's reflection-based\n  json.Marshal — code we don't own — with our glue a small, already\n  capacity-presized remainder. No byte-identical win exists in our glue\n  without risking the byte-stable prompt-cache prefix. So: gap closed,\n  NO source change (matches the GC-absorbed live data: pauses <=262us).\n- The benches are a runnable human A/B / regression guard; deliberately\n  NOT wired into the fail-closed allocs-gate (an SDK-dominated number\n  shifts on SDK bumps); glue-only gating noted as a follow-up.\n\nCloses #157\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>",
+          "timestamp": "2026-06-23T15:32:40+03:00",
+          "tree_id": "f8e7909f561b80dbf70adcd92070bd48351c5f33",
+          "url": "https://github.com/stacklok/mecatl/commit/ee5ae1ad932dbc7bd089f86c787bdb5b75b12e87"
+        },
+        "date": 1782218300083,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
