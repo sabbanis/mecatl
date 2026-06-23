@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782208683505,
+  "lastUpdate": 1782208687126,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -354567,6 +354567,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "team_fanout/allocs_per_op",
             "value": 2438.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "df1a1fa38adb06db3edb56d9c4b41e144080d27d",
+          "message": "feat(mecatui): polish the default view (speaker turns, posture badge, input rail, contrast, padding)\n\nA UX pass on the mecatui default view, driven by iterative screenshot review. Scoped to the theme + ui layers (cmd/mecatui + docs/tui.md); no engine/internal changes.\n\n- Speaker turns: \"▌ you\" (gold rail) / \"● mecatl\", with the message body hang-indented under the speaker label and a blank line between the label and the body.\n- Posture badge: fixed the latent unstyled-badge bug (no \"warning\" style slot); auto → amber \"⚠ auto\", yolo → a fixed theme-independent alarm-red \"YOLO\" pill with a \"⚡️\" emoji decoration outside the pill on capable terminals (env-detected, MECATUI_FORCE_EMOJI/MECATUI_NO_EMOJI). Mode (inline text) vs posture (pill) now read as distinct axes.\n- Token context: per-turn \"· N% cached\" + a help-overlay legend (↑ input · ↓ output · ⊕ cache write · cache N%).\n- Inline code de-emphasised; tool cards capped at 100 cols.\n- Input box: mode-coloured left rail + an even, edge-flush panel tint (fixed the textarea internal-viewport plain-padding), stronger typed-text contrast, horizontal padding, a top inner pad row, and a spacer above the box.\n- History: a left indent + clear inter-turn spacing.\n\nRender-memo invariants preserved (no new steady-state per-frame allocations — verified A/B against main; the TUI render-alloc CI suite is advisory, engine allocs-gate untouched) and mouse-selection x-mapping kept identity under the indents. Built via the dev pipeline (architect → implementer → 6-reviewer panel incl. two performance reviewers → iterate), then several rounds of live-render refinement.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)",
+          "timestamp": "2026-06-23T12:52:17+03:00",
+          "tree_id": "220219c0b92e9d73d83f081e06a7b70fc771decb",
+          "url": "https://github.com/stacklok/mecatl/commit/df1a1fa38adb06db3edb56d9c4b41e144080d27d"
+        },
+        "date": 1782208685979,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1496,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4082,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2896,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 35136,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2440,
             "unit": "allocs/op"
           },
           {
