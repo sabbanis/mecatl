@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782228058473,
+  "lastUpdate": 1782228061493,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -368843,6 +368843,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/255a2afa0f48c0438d8bf25f41a15155cf591551"
         },
         "date": 1782221011636,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "fa8b6c0d5b21a0e544bbd025e46ce09f44310eac",
+          "message": "fix(guardrails): slot enables, startup reports resolved posture (#159)\n\nfix(guardrails): slot enables, startup reports resolved posture (#159)",
+          "timestamp": "2026-06-23T18:15:19+03:00",
+          "tree_id": "340750758e9508b82de99273dfe0f8cbf5e88eb0",
+          "url": "https://github.com/stacklok/mecatl/commit/fa8b6c0d5b21a0e544bbd025e46ce09f44310eac"
+        },
+        "date": 1782228060772,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
