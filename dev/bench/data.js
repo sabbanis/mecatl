@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782336735122,
+  "lastUpdate": 1782336738728,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -399139,6 +399139,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/617f760f62f1d0e57f1f8625e15e3ebf7d95e3a8"
         },
         "date": 1782333966853,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "1d9a0273507b17218f14db438a23c68d7e80f0a8",
+          "message": "feat(guardrails): global checker-down posture toggle (#169) (#181)\n\nAdd guardrails.onCheckerDown YAML key (warn default / fail opt-in): when\n'fail', ALL rules treat a checker error/timeout as unsafe (block), unless a\nrule explicitly sets failClosed. Per-rule failClosed overrides the global\n(true tightens under warn; false loosens under fail). The default (warn) is\nbyte-identical to the pre-feature behavior.\n\nResolution in onCheckerError: per-rule explicit failClosed (tracked via\nFailClosedSet) wins over the global; else the global fills in. Advisory\nrules always fail-open regardless. The failureStreak checker-DOWN\nescalation still fires under both postures.\n\nNew: guardrails.onCheckerDown YAML key, Config.GuardrailsOnCheckerDown,\nOptions.FailOnCheckerDown, RuleSpec.FailClosedSet/CompiledRule.failClosedSet,\nGuardrailRuleSpec.FailClosedPresent (YAML presence tracking). Decision\nrecorded in ADR 0052. No engine/port/proto/wire change.\n\nTests: TestGlobalFailOnCheckerDown, TestGlobalFailOverriddenByExplicitPerRuleWarn,\nTestGlobalWarnWithPerRuleFailClosed (the three-way matrix). Existing\nfailClosed tests updated to set FailClosedSet.\n\nCloses #169.",
+          "timestamp": "2026-06-25T00:26:30+03:00",
+          "tree_id": "881e5431e3b621b6b4a79be78dc7076996b4777c",
+          "url": "https://github.com/stacklok/mecatl/commit/1d9a0273507b17218f14db438a23c68d7e80f0a8"
+        },
+        "date": 1782336737625,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
