@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782285088299,
+  "lastUpdate": 1782285091405,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -380204,6 +380204,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/86a6a417fd5d091a24a867998b5835d36f9a6f78"
         },
         "date": 1782278980875,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "0b11bded7cf6e151893945152ea71d38f83ce755",
+          "message": "docs(mecak8s): ADR 0048 + MVP implementation plan\n\nAdds the frozen decision record (ADR 0048) and the living execution\nplan (docs/design/MECAK8S-PLAN.md) for mecak8s — a Kubernetes-native\nagent harness binary with storage-free agent pods that talk to managed\nservices (Redis for session snapshots + event log, k8s API server for\nsingle-writer leases) directly over the network.\n\nThe plan went through four iterations informed by a cloud-native expert\npanel review: v1 (RWO PVC on agents — broken, RWO pins to one node) →\nv2 (custom store binary on PVC — reinventing storage) → v3 (agent\nstorage-free but still a custom store binary) → v4 (Redis as managed\nservice, new redisstore adapter behind existing ports, no PVC on\nanything mecatl owns).\n\nNo code changes — docs only. The plan covers: a new\ninternal/adapter/redisstore adapter (port.SessionStore + EventLog +\nPrunableStore, conformance-tested via miniredis), a drain gate in\nserver.Service, cmd/mecak8s (thin peer of mecated), deploy/mecak8s\nmanifests (Redis StatefulSet + 2 storage-free agent replicas), and a\nkind-based e2e proving lease exclusion, graceful failover, and session\npersistence across pod restart.",
+          "timestamp": "2026-06-24T10:05:50+03:00",
+          "tree_id": "f6060ffbc55d53f2e6ad4b0175a4e653e86c84d9",
+          "url": "https://github.com/stacklok/mecatl/commit/0b11bded7cf6e151893945152ea71d38f83ce755"
+        },
+        "date": 1782285090569,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
