@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782278978346,
+  "lastUpdate": 1782278982135,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -376417,6 +376417,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/570f89e4da0eddaee82581aa4ba5444bdecbcea0"
         },
         "date": 1782235508719,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "86a6a417fd5d091a24a867998b5835d36f9a6f78",
+          "message": "feat(subagent): support `agent`+`model` together (rebuild specialist on override model)\n\nA Subagent call may now set BOTH `agent` and `model` (previously rejected\nwith \"specify `agent` OR `model`, not both\"). The combination rebuilds the\nnamed specialist's SCOPED engine (catalog/prompt/skills/hooks/memory) on the\noverride model via a new `WithAgentModelEngineFactory` seam — NOT the generic\nexplorer set the per-call `model`-only factory builds. This aligns with ADR\n0030's \"same agent runs under different models per deployment\" philosophy.\n\nDesign:\n- The override model runs on the DEF's resolved provider (def.Provider\n  pinned-and-known → that provider; else parent). Cross-provider override OF\n  the provider by a bare model id stays out of scope (matches\n  buildSubagentEngineFactory's existing out-of-scope comment).\n- The override model is passed VERBATIM (no alias resolution) — parity with\n  the model-only path's opaque-string posture.\n- The pre-built agentEngines map is NEVER mutated (fresh engine per call);\n  per-def limits still bind.\n- A def with INLINE MCP servers is declined on the agent+model path (v1 scope\n  limit — the inline manager's live session has no process-lifetime owner on\n  a per-call engine); reference-only MCP is supported (borrows mainMgr).\n- `read-write`+`agent`(+`model`) stays REJECTED (named specialists run\n  read-only in v1 — validateMode's args.Agent arm fires first).\n\nThe implementation extracts a shared `buildAgentDefEngine` helper from\n`buildAgentSubagentEngines` so the startup path and the per-call agent+model\nfactory share ONE per-def build step (catalog/MCP/prompt/skills/hooks/memory),\ndiffering only in the resolved (provider, model, windowFn) + role label.\n\nEngine API: added `agent.WithAgentModelEngineFactory` (Added = minor per\nCOMPATIBILITY.md); engine/api/agent.txt regenerated, CHANGELOG entry added.\n\nTests: rewrote the rejection test to assert success; added unknown-agent /\nunroutable-model / nil-factory / inline-MCP-decline / scoped-catalog-proof\n(unit + composition + e2e through the real buildSubagentTool wiring) and a\nread-write+agent+model rejection assertion.",
+          "timestamp": "2026-06-24T08:23:51+03:00",
+          "tree_id": "e06928a375f2b07d87140531e87934f0b50b0393",
+          "url": "https://github.com/stacklok/mecatl/commit/86a6a417fd5d091a24a867998b5835d36f9a6f78"
+        },
+        "date": 1782278980875,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
