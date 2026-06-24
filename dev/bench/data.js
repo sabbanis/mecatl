@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782323312899,
+  "lastUpdate": 1782323315817,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -386108,6 +386108,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 94.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "502b9717dcc41d97695f4e25f831a0ea48bc4146",
+          "message": "ci: run k8s live e2e on the e2e-live label (one label, both live suites)\n\nAdd a k8s-e2e-live job to the existing e2e-live workflow — same label\ngate (e2e-live), same secret gate (OPENROUTER_API_KEY), same nightly +\ndispatch triggers. Runs task e2e:k8s with the key exported so both the mock\nand live kind specs run. Independent concurrency group (e2e-live-k8s) so\nthe two live jobs run in parallel without canceling each other.\n\nThe existing mecatl live e2e job is unchanged. The mock k8s e2e (k8s-e2e.yml)\nstill runs on every relevant-path PR; this adds the live variant on label/\nnightly/dispatch only — matching the mecatl live e2e's trigger model.",
+          "timestamp": "2026-06-24T20:42:18+03:00",
+          "tree_id": "db2d7c57b9b76d49680bb28ed507ae6943f970c6",
+          "url": "https://github.com/stacklok/mecatl/commit/502b9717dcc41d97695f4e25f831a0ea48bc4146"
+        },
+        "date": 1782323315057,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3299,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 95,
             "unit": "allocs/op"
           },
           {
