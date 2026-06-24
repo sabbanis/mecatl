@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782323306778,
+  "lastUpdate": 1782323310013,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -380773,6 +380773,135 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/0b11bded7cf6e151893945152ea71d38f83ce755"
         },
         "date": 1782285087611,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1473,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4000,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2814,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 34133,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2411,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "502b9717dcc41d97695f4e25f831a0ea48bc4146",
+          "message": "ci: run k8s live e2e on the e2e-live label (one label, both live suites)\n\nAdd a k8s-e2e-live job to the existing e2e-live workflow — same label\ngate (e2e-live), same secret gate (OPENROUTER_API_KEY), same nightly +\ndispatch triggers. Runs task e2e:k8s with the key exported so both the mock\nand live kind specs run. Independent concurrency group (e2e-live-k8s) so\nthe two live jobs run in parallel without canceling each other.\n\nThe existing mecatl live e2e job is unchanged. The mock k8s e2e (k8s-e2e.yml)\nstill runs on every relevant-path PR; this adds the live variant on label/\nnightly/dispatch only — matching the mecatl live e2e's trigger model.",
+          "timestamp": "2026-06-24T20:42:18+03:00",
+          "tree_id": "db2d7c57b9b76d49680bb28ed507ae6943f970c6",
+          "url": "https://github.com/stacklok/mecatl/commit/502b9717dcc41d97695f4e25f831a0ea48bc4146"
+        },
+        "date": 1782323309370,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
