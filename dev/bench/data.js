@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782328040701,
+  "lastUpdate": 1782328044269,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -388344,6 +388344,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "team_fanout/allocs_per_op",
             "value": 2411.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8f3177a7a91dfcc088bf5c3de9a02defad14c642",
+          "message": "feat(guardrails): inspect oversized content instead of skipping (#172) (#179)\n\nThe maxContentBytes (256 KiB) skip-inspection behavior was a security\ngap: an attacker could pad a payload past the bound to skip inspection,\nand benign large content was never judged on its merits. 'Too big to\ncheck' is not an acceptable terminal state for a security control.\n\nRemoves the maxContentBytes const, the onContentTooLarge method, and the\nearly-return arm in check(). The checker now inspects content regardless\nof size; a checker timeout/error on huge input flows through the existing\nonCheckerError fail-open/closed path (the 30s guardrailCheckTimeout\nbounds the failure mode). minContentBytes (Post-only cost gate),\nmaxSanitizedBytes (sanitize-laundering defense), and failureStreak are\nleft untouched.\n\nTests: deleted TestOversizedContentEnforceDoesNotSilentlyPass (asserted\nthe skip); added TestOversizedContentIsInspected (proves the checker IS\ncalled on oversized content) + TestOversizedContentCheckerTimeoutFailClosed\n(proves a checker error on huge input flows through onCheckerError).\n\nDecision recorded in ADR 0050 (supersedes the maxContentBytes clause of\nADR 0021). The ADR acknowledges the N× concurrent checker-cost\namplification under the read-parallel fan-out as an accepted trade-off.\n\nFollow-up: #178 (MCP tool results are not truncated to MaxOutputBytes).\n\nCloses #172.",
+          "timestamp": "2026-06-24T22:01:36+03:00",
+          "tree_id": "15cbbd727d211d34f98d63a58efde9007c60b6fc",
+          "url": "https://github.com/stacklok/mecatl/commit/8f3177a7a91dfcc088bf5c3de9a02defad14c642"
+        },
+        "date": 1782328043198,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1474,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4000,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2814,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 34135,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2411,
             "unit": "allocs/op"
           },
           {
