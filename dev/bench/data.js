@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782328047565,
+  "lastUpdate": 1782328050823,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -393760,6 +393760,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 96,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "8f3177a7a91dfcc088bf5c3de9a02defad14c642",
+          "message": "feat(guardrails): inspect oversized content instead of skipping (#172) (#179)\n\nThe maxContentBytes (256 KiB) skip-inspection behavior was a security\ngap: an attacker could pad a payload past the bound to skip inspection,\nand benign large content was never judged on its merits. 'Too big to\ncheck' is not an acceptable terminal state for a security control.\n\nRemoves the maxContentBytes const, the onContentTooLarge method, and the\nearly-return arm in check(). The checker now inspects content regardless\nof size; a checker timeout/error on huge input flows through the existing\nonCheckerError fail-open/closed path (the 30s guardrailCheckTimeout\nbounds the failure mode). minContentBytes (Post-only cost gate),\nmaxSanitizedBytes (sanitize-laundering defense), and failureStreak are\nleft untouched.\n\nTests: deleted TestOversizedContentEnforceDoesNotSilentlyPass (asserted\nthe skip); added TestOversizedContentIsInspected (proves the checker IS\ncalled on oversized content) + TestOversizedContentCheckerTimeoutFailClosed\n(proves a checker error on huge input flows through onCheckerError).\n\nDecision recorded in ADR 0050 (supersedes the maxContentBytes clause of\nADR 0021). The ADR acknowledges the N× concurrent checker-cost\namplification under the read-parallel fan-out as an accepted trade-off.\n\nFollow-up: #178 (MCP tool results are not truncated to MaxOutputBytes).\n\nCloses #172.",
+          "timestamp": "2026-06-24T22:01:36+03:00",
+          "tree_id": "15cbbd727d211d34f98d63a58efde9007c60b6fc",
+          "url": "https://github.com/stacklok/mecatl/commit/8f3177a7a91dfcc088bf5c3de9a02defad14c642"
+        },
+        "date": 1782328049933,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3292,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 87,
             "unit": "allocs/op"
           },
           {
