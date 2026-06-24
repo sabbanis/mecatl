@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782333964619,
+  "lastUpdate": 1782333967756,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -395352,6 +395352,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/8f3177a7a91dfcc088bf5c3de9a02defad14c642"
         },
         "date": 1782328046740,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "617f760f62f1d0e57f1f8625e15e3ebf7d95e3a8",
+          "message": "feat(guardrails): surface advisory findings to the TUI (#170) (#180)\n\nAdvisory-mode guardrail findings went only to the operator log and returned\nan empty HookOutcome — dispatch only emits EvHook on Block/Mutated, so the\nTUI never saw advisory findings. This defeated advisory mode's stated purpose\n(measure the false-positive rate before promoting to block): the operator\ncould not see what the checker flagged without leaving the TUI and grepping\na log file.\n\nThe advisory arm now returns HookOutcome{Message:...} (no Block, no Mutated).\nDispatch recognises the message-only shape (a previously-unreachable state)\nand emits an EvHook with HookAdvisory — a new HookDecision value, warning-\ncoloured in the TUI (⚠ glyph). The tool result is byte-unchanged\n(model-invisible). The operator diag log stays for headless deployments.\n\nNew: session.HookAdvisory const + HOOK_DECISION_ADVISORY proto enum value.\ngovernance.HookOutcome is NOT widened (Message is the signal). ADR 0021's\nadvisory-visibility clause superseded by ADR 0051.\n\nTests: loop-level TestAdvisoryHookEmitsEvHookAndLeavesResultUnchanged proves\nEvHook+HookAdvisory emitted + result unchanged (model-invisible). TUI\nTestRenderHookAdvisory proves ⚠ glyph + warning style. Mapper + client\nround-trip tests for the new enum value. API-compat gate updated\n(engine/api/session.txt + CHANGELOG).\n\nCloses #170.",
+          "timestamp": "2026-06-24T23:40:25+03:00",
+          "tree_id": "3abec17934c78f7ec0fe1563e3ec13c916a36545",
+          "url": "https://github.com/stacklok/mecatl/commit/617f760f62f1d0e57f1f8625e15e3ebf7d95e3a8"
+        },
+        "date": 1782333966853,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
