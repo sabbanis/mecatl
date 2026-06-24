@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782337843179,
+  "lastUpdate": 1782337846948,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -399588,6 +399588,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 34133.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2411,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5d6ab3b9028a8cb7d42a9894e67c156a575805ed",
+          "message": "feat(guardrails): flip default mode from advisory to block (#171) (#182)\n\nThe default guardrail rule set shipped in advisory (observe-only) mode.\nWith #170 landing (advisory findings now surface to the TUI), advisory is\na legitimate opt-in — but it should not be the default. An operator who\nenables a security control expects enforcement.\n\nFlips defaultGuardrailSpecs from ModeAdvisory to ModeBlock. Adds a\nguardrails.defaultMode YAML key (block default / advisory / sanitize) so\nthe operator can downgrade the built-in defaults to observe-only without\nauthoring a full rule list. An explicit rules list still replaces the\ndefaults entirely.\n\nDecision recorded in ADR 0053 (supersedes the default-mode clause of ADR\n0021). Depends on #170 (advisory TUI visibility, merged).\n\nCloses #171.",
+          "timestamp": "2026-06-25T00:44:57+03:00",
+          "tree_id": "a831a5f2c6d1afbbf5bd712a9a92c5136d2667c2",
+          "url": "https://github.com/stacklok/mecatl/commit/5d6ab3b9028a8cb7d42a9894e67c156a575805ed"
+        },
+        "date": 1782337845790,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1474,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4000,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2814,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 34134,
             "unit": "allocs/op"
           },
           {
