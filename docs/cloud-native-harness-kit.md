@@ -80,8 +80,14 @@ downstream product is one consumer.
 
 **In the kit:**
 
-- **The engine** — the loop, the tools, permissions, hooks, subagents, behind a
-  provider-agnostic port. The importable core.
+- **The engine** — the loop, permissions, hooks, and delegation (subagents / teams),
+  behind a provider-agnostic port. The importable core.
+- **The tool interface and common tools** — the `Tool` contract and catalog over three
+  sources (built-in, model-defined, and MCP), with a shared set of common tools. A tool
+  executes in-process (a built-in tool may itself spawn a subagent) or out-of-process (an
+  MCP server) behind the same interface, so a consumer composes tools without caring where
+  they run. The kit inventories and presents the tools; *which* tools a session gets is
+  the consumer's capability-scoping policy (§3).
 - **The port / driver protocol** — the contract a remote driver implements for sessions,
   memory, skills, soul, agent definitions, and commands.
 - **The reference adapters** — offline defaults so a consumer can run without standing up
@@ -96,6 +102,14 @@ downstream product is one consumer.
   project, a product-specific "agent template"); that model lives in the consumer, not in
   the kit and not in mecatl's domain. The kit only resolves capabilities at session time
   (§2, property #3).
+- **Agent-composition policy (nesting / inheritance)** — the kit builds an *agent
+  environment* (mecatl's `agent.Deps` + the `Engine` assembled from it) and uses it
+  recursively to launch sub-agents: a child environment is itself an environment, inheriting
+  a strictly-less-privileged subset of the parent's tools, permissions, and trust. What is
+  *not* in the kit is the rule governing that recursion — how deep agents may nest, what a
+  child inherits, whether a child may itself delegate. mecatl currently caps this at one
+  level as a policy, not a structural limit; the kit exposes the seam so a consumer can
+  experiment with other compositions.
 
 ## 4. Skills as a service
 
@@ -127,6 +141,12 @@ These are unresolved and shape the scope of everything above:
    composition root?), and whether there's room for a desktop kit runner that dynamically
    configures and launches subsystems (à la ToolHive). Out of scope for this definition,
    but it's the test of whether the kit idea is real.
+4. **The agent environment as a first-class noun** — mecatl already builds an *agent
+   environment* (`agent.Deps` + the `Engine`) and uses it to launch sub-agents, but it
+   isn't a named entity in the domain model, and recursion is capped at one level. Should
+   the kit promote it to a first-class noun (so a consumer composes environments
+   explicitly) and separate the nesting-depth policy from the core kit parts, so consumers
+   can experiment with compositions the reference implementation doesn't ship?
 
 *Out of band (governance, not definitional):* the open-source posture — whether the kit
 (or parts of it) is open-sourced, under what license and governance, and when.
@@ -142,6 +162,7 @@ and a realization in the [architecture](architecture.md). The kit is largely a
 | #1 Disposable process | `Process` (`process-disposable`); supporting: `snapshot-at-turn-boundary`, `rehydration-needs-snapshot-plus-log`. Multi-instance handoff: `SessionLease` (`single-writer-per-session`, `session-affinity-routing`) | single-process disposability shipped (mecatl Phases 1–3); lease/affinity **modeled only**, a later phase |
 | #2 Stateless provider replay | `Provider` (`provider-stateless-replay`), `fixed-provider-per-session` | modeled + built |
 | #3 Capabilities resolved per session from a service | `Skill` (`skill-crosses-as-bundle-not-path`), `Session }o--o{ Skill : "activates"`, `Tool`, `MCPServer`, `AgentDef`; the driver protocol (`adr/0005-driver-seams.md`) | modeled + built (ports cross gRPC) |
+| (kit component) The tool interface and common tools | `Tool`/`ToolSpec`/`Catalog` and the `FileSystem`/`Workspace` interfaces; built-in + model-defined + MCP sources; in-proc (subagent-spawning) vs out-of-proc (MCP) execution | modeled + built |
 | #4 Multi-tenant within one instance | `Workspace` (`workspace-contained`, `workspace-shell-env-scrubbed`), `Principal`, per-session trust/posture, `team-goal-trusted-peers-untrusted`, `child-ask-redacts-raw-args` | isolation seams built; cross-principal tenant boundary is partly a composition concern |
 | #5 Operable over a network | the gRPC + HTTP/SSE API; the `Diagnostics` port; OTel telemetry; drain-to-discard relays | built |
 | #6 Everything behind a port | the hexagonal core + `port` interfaces + the driver protocol | built |
@@ -152,7 +173,9 @@ tool grants, model) that a `Subagent` or `TeamMember` instantiates. Neither is a
 capability-scoping policy. A consumer that wants to bind a capability set to its own
 concept (e.g. a product-specific "agent template") layers that on top via the
 session-time resolution seam (§2, property #3) — it is **not** a change to mecatl's
-domain model.
+domain model. Likewise the agent-composition policy (§3): the kit's agent environment
+recurses to launch sub-agents, but *how deep* and *what a child inherits* is the
+consumer's policy, not a structural property the kit bakes in.
 
 ## Relationship to other docs
 
