@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782337846948,
+  "lastUpdate": 1782337850948,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -402926,6 +402926,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/1d9a0273507b17218f14db438a23c68d7e80f0a8"
         },
         "date": 1782336737625,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5d6ab3b9028a8cb7d42a9894e67c156a575805ed",
+          "message": "feat(guardrails): flip default mode from advisory to block (#171) (#182)\n\nThe default guardrail rule set shipped in advisory (observe-only) mode.\nWith #170 landing (advisory findings now surface to the TUI), advisory is\na legitimate opt-in — but it should not be the default. An operator who\nenables a security control expects enforcement.\n\nFlips defaultGuardrailSpecs from ModeAdvisory to ModeBlock. Adds a\nguardrails.defaultMode YAML key (block default / advisory / sanitize) so\nthe operator can downgrade the built-in defaults to observe-only without\nauthoring a full rule list. An explicit rules list still replaces the\ndefaults entirely.\n\nDecision recorded in ADR 0053 (supersedes the default-mode clause of ADR\n0021). Depends on #170 (advisory TUI visibility, merged).\n\nCloses #171.",
+          "timestamp": "2026-06-25T00:44:57+03:00",
+          "tree_id": "a831a5f2c6d1afbbf5bd712a9a92c5136d2667c2",
+          "url": "https://github.com/stacklok/mecatl/commit/5d6ab3b9028a8cb7d42a9894e67c156a575805ed"
+        },
+        "date": 1782337849644,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
