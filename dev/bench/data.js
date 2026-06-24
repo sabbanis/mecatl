@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782333961301,
+  "lastUpdate": 1782333964619,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -392082,6 +392082,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 34135,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2411,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "617f760f62f1d0e57f1f8625e15e3ebf7d95e3a8",
+          "message": "feat(guardrails): surface advisory findings to the TUI (#170) (#180)\n\nAdvisory-mode guardrail findings went only to the operator log and returned\nan empty HookOutcome — dispatch only emits EvHook on Block/Mutated, so the\nTUI never saw advisory findings. This defeated advisory mode's stated purpose\n(measure the false-positive rate before promoting to block): the operator\ncould not see what the checker flagged without leaving the TUI and grepping\na log file.\n\nThe advisory arm now returns HookOutcome{Message:...} (no Block, no Mutated).\nDispatch recognises the message-only shape (a previously-unreachable state)\nand emits an EvHook with HookAdvisory — a new HookDecision value, warning-\ncoloured in the TUI (⚠ glyph). The tool result is byte-unchanged\n(model-invisible). The operator diag log stays for headless deployments.\n\nNew: session.HookAdvisory const + HOOK_DECISION_ADVISORY proto enum value.\ngovernance.HookOutcome is NOT widened (Message is the signal). ADR 0021's\nadvisory-visibility clause superseded by ADR 0051.\n\nTests: loop-level TestAdvisoryHookEmitsEvHookAndLeavesResultUnchanged proves\nEvHook+HookAdvisory emitted + result unchanged (model-invisible). TUI\nTestRenderHookAdvisory proves ⚠ glyph + warning style. Mapper + client\nround-trip tests for the new enum value. API-compat gate updated\n(engine/api/session.txt + CHANGELOG).\n\nCloses #170.",
+          "timestamp": "2026-06-24T23:40:25+03:00",
+          "tree_id": "3abec17934c78f7ec0fe1563e3ec13c916a36545",
+          "url": "https://github.com/stacklok/mecatl/commit/617f760f62f1d0e57f1f8625e15e3ebf7d95e3a8"
+        },
+        "date": 1782333963611,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1474,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4000,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2813,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 34131,
             "unit": "allocs/op"
           },
           {
