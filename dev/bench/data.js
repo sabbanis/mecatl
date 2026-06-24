@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782337850948,
+  "lastUpdate": 1782337854778,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -405238,6 +405238,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 96,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "5d6ab3b9028a8cb7d42a9894e67c156a575805ed",
+          "message": "feat(guardrails): flip default mode from advisory to block (#171) (#182)\n\nThe default guardrail rule set shipped in advisory (observe-only) mode.\nWith #170 landing (advisory findings now surface to the TUI), advisory is\na legitimate opt-in — but it should not be the default. An operator who\nenables a security control expects enforcement.\n\nFlips defaultGuardrailSpecs from ModeAdvisory to ModeBlock. Adds a\nguardrails.defaultMode YAML key (block default / advisory / sanitize) so\nthe operator can downgrade the built-in defaults to observe-only without\nauthoring a full rule list. An explicit rules list still replaces the\ndefaults entirely.\n\nDecision recorded in ADR 0053 (supersedes the default-mode clause of ADR\n0021). Depends on #170 (advisory TUI visibility, merged).\n\nCloses #171.",
+          "timestamp": "2026-06-25T00:44:57+03:00",
+          "tree_id": "a831a5f2c6d1afbbf5bd712a9a92c5136d2667c2",
+          "url": "https://github.com/stacklok/mecatl/commit/5d6ab3b9028a8cb7d42a9894e67c156a575805ed"
+        },
+        "date": 1782337853570,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3290.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 86,
             "unit": "allocs/op"
           },
           {
