@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782340709942,
+  "lastUpdate": 1782340713579,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -412890,6 +412890,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 94,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "008e1de44a6530f91e44f41e1354b380af444fe3",
+          "message": "docs: split monolithic usage.md into per-topic files (#174) (#184)\n\nSplit the 3,414-line docs/usage.md into 17 focused per-topic files under\ndocs/usage/, with a thin landing page carrying the TOC. This is a mechanical\nmove — no prose rewrites. The split makes the operator guide traversable:\nan operator looking for guardrails config, the HTTP SSE API, or CI\nintegration goes straight to the relevant file instead of scrolling 3,400\nlines.\n\nThe split also improves doc health: 11 orphans and 6 unreachable docs\nthat existed on main (pre-split) are now resolved (0/0/0/0/0).\n\nCloses #174.",
+          "timestamp": "2026-06-25T01:32:37+03:00",
+          "tree_id": "efdf5617a0685920a3288dfd8fae78454b5065dc",
+          "url": "https://github.com/stacklok/mecatl/commit/008e1de44a6530f91e44f41e1354b380af444fe3"
+        },
+        "date": 1782340712341,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3290,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 85,
             "unit": "allocs/op"
           },
           {
