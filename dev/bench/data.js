@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782338553131,
+  "lastUpdate": 1782338556734,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -409064,6 +409064,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 86,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "9d78e7eae61d19bb2d555808af173ab0046a51df",
+          "message": "docs(guardrails): document per-rule prompt override + defaultMode field (#173) (#183)\n\nDocument the previously-undocumented prompt override field (a per-rule YAML\nkey that replaces the built-in inspection rubric) in docs/usage.md, with a\nfield bullet, an example YAML entry, and the both-phases caveat. Also\ndocument the defaultMode key (from #171) and add the prompt field to the\nexample YAML. The field was fully implemented end-to-end but an operator\nwould only discover it by reading Go struct comments.\n\nCloses #173.",
+          "timestamp": "2026-06-25T00:56:47+03:00",
+          "tree_id": "c8b6468dc7cfb4ee8005010e4317000b9b990121",
+          "url": "https://github.com/stacklok/mecatl/commit/9d78e7eae61d19bb2d555808af173ab0046a51df"
+        },
+        "date": 1782338555604,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3298,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 94,
             "unit": "allocs/op"
           },
           {
