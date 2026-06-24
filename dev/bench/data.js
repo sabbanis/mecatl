@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782325454791,
+  "lastUpdate": 1782325457487,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -387778,6 +387778,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/502b9717dcc41d97695f4e25f831a0ea48bc4146"
         },
         "date": 1782323312147,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "4423bd20c2e98b438e155ff890ea94c5b726caad",
+          "message": "feat(guardrails): remove maxChecks per-session call-count cap (#168)\n\nThe maxChecks/checkBudget per-session cap silently failed open after N\nchecker calls — a security footgun for a control the operator explicitly\nopted into. Enabling guardrails is already the opt-in to spend; a\ncall-count budget that silently stops protecting gives a false sense of\nsecurity exactly when the session is busy.\n\nRemoves checkBudget (breaker.go), the Runner.budget field + admit() gate\n(modelhook.go), Config.GuardrailsMaxChecks + defaultGuardrailsMaxChecks +\nthe auto-200 default (guardrails.go, build.go), the maxChecks YAML key\n(permconfig/schema.go), the posture-line suffix, and all related tests.\nThe failureStreak (consecutive-checker-failure escalation) and the\nminContentBytes/maxContentBytes size gates are left byte-for-byte intact.\nThe onCheckerError fail-open/closed path is unchanged.\n\nCost control now lives in the operator's provider/billing layer. The\n30s checker timeout + fail-open/closed + the 3-strike checker-DOWN WARN\nbound the failure mode.\n\nDecision recorded in ADR 0049 (supersedes the cost-model clause of ADR\n0021). Docs updated across ADR 0021/0027/0046, usage.md,\nIMPLEMENTATION-NOTES, AGENTS.md, configuration-reference.md.\n\nCloses #168.",
+          "timestamp": "2026-06-24T21:18:25+03:00",
+          "tree_id": "54e4398f47efaa66b97ab2c1abed15e3be2e5fd2",
+          "url": "https://github.com/stacklok/mecatl/commit/4423bd20c2e98b438e155ff890ea94c5b726caad"
+        },
+        "date": 1782325456844,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
