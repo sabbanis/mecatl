@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782389414559,
+  "lastUpdate": 1782389417581,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -425648,6 +425648,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/01d7b9045086bd3d9537aee5827ad7946660e2b1"
         },
         "date": 1782378368037,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "ed0ec4b7993115dda7e0892b71ac00e5ad7d2663",
+          "message": "perf(prompt): pre-size the StablePrefix builder so a longer defaultTone can't trip the allocs gate\n\nThe reasoning-rebalance (ADR 0054) lengthened defaultTone, which tipped the\nprompt.Build strings.Builder over a growth-doubling boundary: BenchmarkBuild\nwent 21→22 allocs/op (and 7632→13008 B/op — one extra reallocation), failing the\ndeterministic allocs gate, and the +1 propagated into BenchmarkRunReadOnlyTurn\n(157→159).\n\nCompute the tool hints/inventory once and Grow the builder to the exact\nStablePrefix length up front, so it assembles in ONE allocation instead of\nseveral incremental doublings. The output bytes are unchanged (gauntlet #6\nbyte-stability holds — Grow only sets capacity). This makes prompt-build allocs\nINSENSITIVE to the length of the default role/tone/safety wording, so a future\nprompt edit can't trip the gate on a buffer boundary again.\n\nResult (vs main): BenchmarkBuild 21→19 allocs (7632→6416 B), BuildLargeCatalog\n32→29, BuildRequest 58→55, RunReadOnlyTurn 157→153 — all BELOW the baseline, so\nthe allocs gate passes with margin.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-25T15:04:30+03:00",
+          "tree_id": "0ea0f4191e6b71cd0d104a48973de29fcdb0d474",
+          "url": "https://github.com/stacklok/mecatl/commit/ed0ec4b7993115dda7e0892b71ac00e5ad7d2663"
+        },
+        "date": 1782389416849,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
