@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782371905550,
+  "lastUpdate": 1782371909261,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -420537,6 +420537,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view/allocs_per_op",
             "value": 3289.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 85,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "e6f51bc785a15224ec98cd98e2838fa94e65ad9d",
+          "message": "fix(mecatui): kitty mascot never rendered on Ghostty — downscale before transmit + spec-level verifier (#165)\n\n* fixup! fix(mecatui): kitty mascot never rendered on Ghostty — downscale before transmit + spec-level verifier\n\n* fix(lint): add return after t.Fatal in engine test files (SA5011)\n\nSame class of staticcheck SA5011 failure as #185: a t.Fatalf nil-check\nwithout a trailing return makes staticcheck flag the next line as a\npossible nil pointer dereference. Adds the missing return after each\nt.Fatal in the three engine-module test files CI flagged.\n\n- engine/adapter/eventsource/review_test.go (result nil-check)\n- engine/adapter/sessnap/sessnap_test.go (restoredCall nil-check)\n- engine/agent/childregistry_internal_test.go (registry entry nil-check)\n\n* docs(usage): add See-also cross-links to fix matlatl dead-end gate\n\nThe #174 docs split created 11 docs/usage/*.md leaf files that had inbound\nlinks from the usage.md landing page's TOC but no outbound links onward —\neach was a 'dead-end' under matlatl's graduated-structure check. mecatl's\n.matlatl.yml promotes dead-ends from Info to Warning, and the CI docs gate\nruns --strict, so warnings fail the build.\n\nAdds a short 'See also' cross-link block to the tail of each dead-end file,\nlinking to a natural sibling and back to the operator-guide index. This is\nthe minimal fix: one outbound link clears the finding per file.\n\nRegenerates llms.txt (task docs:llms) for the changed markdown.\n\n---------\n\nCo-authored-by: Jakub Hrozek <jakub@stacklok.com>",
+          "timestamp": "2026-06-25T10:12:36+03:00",
+          "tree_id": "cdf56d7ee0e37783e497295f1375ca90a819dde3",
+          "url": "https://github.com/stacklok/mecatl/commit/e6f51bc785a15224ec98cd98e2838fa94e65ad9d"
+        },
+        "date": 1782371908354,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3288.5,
             "unit": "allocs/op"
           },
           {
