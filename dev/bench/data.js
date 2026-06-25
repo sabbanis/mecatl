@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782393107839,
+  "lastUpdate": 1782393111033,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -437009,6 +437009,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/766772e58067e20156d8c204d1d228d58e60388d"
         },
         "date": 1782392746083,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "797e0987fa8e1e9ea7919e284afca7918d035f87",
+          "message": "chore(engine): release engine/v0.2.0\n\nFinalize the [Unreleased] changelog header for engine/v0.2.0.\n\ngorelease (base engine/v0.1.0): compatible additions (Session.ReasoningEffort,\nHookAdvisory, WithAgentModelEngineFactory) + incompatible const-value changes\n(MaxAgentDescriptionBytes 800→2000, MaxAgentBodyBytes 8192→32768). Pre-v1 per\nCOMPATIBILITY.md both classify as a minor bump → v0.2.0.\n\nCo-Authored-By: Juan Osorio <josorior@redhat.com>",
+          "timestamp": "2026-06-25T16:05:38+03:00",
+          "tree_id": "0f92947ac398f1283c361541128a70ed56e102fd",
+          "url": "https://github.com/stacklok/mecatl/commit/797e0987fa8e1e9ea7919e284afca7918d035f87"
+        },
+        "date": 1782393110338,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
