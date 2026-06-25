@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782362852294,
+  "lastUpdate": 1782362855236,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -416711,6 +416711,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view/allocs_per_op",
             "value": 3290,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 85,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a1898197e7183b69c93725f4f9f06f6b9a567a1",
+          "message": "fix(lint): add return after t.Fatal to satisfy staticcheck SA5011 (#185)\n\nCI's golangci-lint (with staticcheck) flags SA5011 (possible nil pointer\ndereference) in three test files where a nil check + t.Fatal is followed by\na dereference. staticcheck can't prove t.Fatal exits, so adding an explicit\nreturn after each t.Fatal satisfies the analyzer.\n\nThese were pre-existing (not introduced by the guardrails rework) and have\nbeen failing CI on every push to main since before #168.",
+          "timestamp": "2026-06-25T07:41:43+03:00",
+          "tree_id": "253dae46448fcf2e75ffea8389709cce6bdf19e8",
+          "url": "https://github.com/stacklok/mecatl/commit/6a1898197e7183b69c93725f4f9f06f6b9a567a1"
+        },
+        "date": 1782362854496,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3289.5,
             "unit": "allocs/op"
           },
           {
