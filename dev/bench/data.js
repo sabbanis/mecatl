@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782389411540,
+  "lastUpdate": 1782389414559,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -422121,6 +422121,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "team_fanout/allocs_per_op",
             "value": 2411,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "ed0ec4b7993115dda7e0892b71ac00e5ad7d2663",
+          "message": "perf(prompt): pre-size the StablePrefix builder so a longer defaultTone can't trip the allocs gate\n\nThe reasoning-rebalance (ADR 0054) lengthened defaultTone, which tipped the\nprompt.Build strings.Builder over a growth-doubling boundary: BenchmarkBuild\nwent 21→22 allocs/op (and 7632→13008 B/op — one extra reallocation), failing the\ndeterministic allocs gate, and the +1 propagated into BenchmarkRunReadOnlyTurn\n(157→159).\n\nCompute the tool hints/inventory once and Grow the builder to the exact\nStablePrefix length up front, so it assembles in ONE allocation instead of\nseveral incremental doublings. The output bytes are unchanged (gauntlet #6\nbyte-stability holds — Grow only sets capacity). This makes prompt-build allocs\nINSENSITIVE to the length of the default role/tone/safety wording, so a future\nprompt edit can't trip the gate on a buffer boundary again.\n\nResult (vs main): BenchmarkBuild 21→19 allocs (7632→6416 B), BuildLargeCatalog\n32→29, BuildRequest 58→55, RunReadOnlyTurn 157→153 — all BELOW the baseline, so\nthe allocs gate passes with margin.\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-25T15:04:30+03:00",
+          "tree_id": "0ea0f4191e6b71cd0d104a48973de29fcdb0d474",
+          "url": "https://github.com/stacklok/mecatl/commit/ed0ec4b7993115dda7e0892b71ac00e5ad7d2663"
+        },
+        "date": 1782389413823,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1449,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 3918,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2732,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 33130,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2368.5,
             "unit": "allocs/op"
           },
           {
