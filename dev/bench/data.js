@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782393111033,
+  "lastUpdate": 1782393114533,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -439672,6 +439672,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 74,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "797e0987fa8e1e9ea7919e284afca7918d035f87",
+          "message": "chore(engine): release engine/v0.2.0\n\nFinalize the [Unreleased] changelog header for engine/v0.2.0.\n\ngorelease (base engine/v0.1.0): compatible additions (Session.ReasoningEffort,\nHookAdvisory, WithAgentModelEngineFactory) + incompatible const-value changes\n(MaxAgentDescriptionBytes 800→2000, MaxAgentBodyBytes 8192→32768). Pre-v1 per\nCOMPATIBILITY.md both classify as a minor bump → v0.2.0.\n\nCo-Authored-By: Juan Osorio <josorior@redhat.com>",
+          "timestamp": "2026-06-25T16:05:38+03:00",
+          "tree_id": "0f92947ac398f1283c361541128a70ed56e102fd",
+          "url": "https://github.com/stacklok/mecatl/commit/797e0987fa8e1e9ea7919e284afca7918d035f87"
+        },
+        "date": 1782393113797,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3290,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 88,
             "unit": "allocs/op"
           },
           {
