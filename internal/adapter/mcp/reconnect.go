@@ -38,12 +38,18 @@ var errReconnectFailed = errors.New("mcp: server unavailable after reconnect")
 // the primary check). "client is closing" is the jsonrpc2 ErrClientClosing text
 // the SDK wraps into ErrConnectionClosed. "connection refused" is the dial
 // failure when the server endpoint is down (the session is effectively dead, so
-// a reconnect attempt is appropriate). nil is never a drop.
+// a reconnect attempt is appropriate). "rejected by transport" is the SDK's
+// internal ErrRejected marker for a transient transport failure (a half-open /
+// dropped connection on the POST), and "EOF" is the raw TCP reset a hard-stopped
+// server yields on CI — both mean the session is unusable and a reconnect is
+// the right response. nil is never a drop.
 var connectionDropSignatures = []string{
 	"session not found",
 	"client is closing",
 	"connection closed",
 	"connection refused",
+	"rejected by transport",
+	"EOF",
 }
 
 // isConnectionDrop reports whether err is in the class of "the MCP session is

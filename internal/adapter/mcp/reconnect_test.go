@@ -372,6 +372,12 @@ func TestIsConnectionDropClassifier(t *testing.T) {
 		{"client is closing string", errors.New("client is closing"), true},
 		{"connection closed string", errors.New("connection closed by remote"), true},
 		{"connection refused string", errors.New("dial tcp: connection refused"), true},
+		{
+			"rejected by transport (SDK transient, CI EOF)",
+			errors.New(`calling "tools/call": sending "tools/call": rejected by transport: Post "http://127.0.0.1:34239/mcp": EOF`),
+			true,
+		},
+		{"bare EOF (hard-stopped server TCP reset)", errors.New("Post http://x/mcp: EOF"), true},
 		{"unknown tool (not a drop)", errors.New("unknown tool foo"), false},
 		{"invalid params (not a drop)", errors.New("invalid params"), false},
 		{"nil", nil, false},
