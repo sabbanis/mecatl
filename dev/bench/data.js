@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782412762747,
+  "lastUpdate": 1782412766264,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -440871,6 +440871,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 33128.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2369,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "675bf810fa44aea019a3f3768bb7ce75f9f18795",
+          "message": "feat(mcp): consume server-initiated notifications via standalone SSE (#193)\n\nEnable the standalone SSE GET stream (remove DisableStandaloneSSE) and wire\nthe three list-changed notification handlers (ToolListChangedHandler,\nPromptListChangedHandler, ResourceListChangedHandler) in Server.dial — the\nsingle construction site reused by Connect and reconnect, so a reconnect\nre-attaches them automatically.\n\nEach handler only sets a dirty flag + logs a WARN; it does NOT re-list\neagerly (it runs on the SDK's SSE goroutine, where a network call would\nstall notification processing and could deadlock against s.mu). The\naccessors (Tools/Resources/Prompts) lazily re-list on the next read under a\nbounded context.Background(), swapping in the fresh snapshot. The re-list\nruns WITHOUT s.mu held across the network (only the check + swap hold it)\nto avoid deadlocking against reconnect, which re-acquires s.mu.\n\nNo catalog mutation: the registered remoteTool specs are untouched; a tool\nthe server dropped surfaces a tool-call error on use. Live catalog refresh\n(Phase 2, needs a tool.Catalog Replace/Unregister seam) is deferred to its\nown ADR.\n\nLifecycle: the SDK spawns one handleSSE goroutine per connected server,\ndrained by session.Close() → conn.Close() cancelling connCtx. Added a\ngoleak gate (leakmain_test.go) with a targeted ignore list for the SDK +\nstdlib goroutines that unwind asynchronously after close. The SSE stream\ncomposes with #177's reconnect: a transient SSE drop is healed by the SDK's\nown reconnect loop; when that exhausts, the connection fails → next POST\nsurfaces ErrSessionMissing → #177 reconnects the session.\n\nTest teardown ordering fix: with SSE on, httptest.Server.Close() blocks if\nthe SDK's SSE reader is still attached. The test fixtures (newTestServer,\nnewToolsOnlyServer, and the internal/app MCP test helpers) now self-register\nt.Cleanup(httpSrv.Close) so the listener closes AFTER *Server.Close/\nmgr.Close (LIFO), and callers no longer defer stop() (which closed the\nlistener before the session). This is the bulk of the test-file churn.\n\nTests: TestToolListChangedNotificationRefreshesSnapshot +\nTestResourceListChangedNotificationRefreshesSnapshot (the Phase-1 acceptance\ngate — drive a notifications/tools/list_changed from an in-process server,\nassert the handler fires + the lazy re-list picks up the new tool). The\ngoleak gate catches a leaked SSE goroutine.\n\nDocs: ADR 0057 (frozen), ADR 0027 List 1 row 28 (SSE goroutine inventory),\narchitecture/extensibility.md, PRODUCTION-READINESS.md, llms.txt regenerated.\n\nPhase 2 (live catalog refresh) is referenced in ADR 0057 as the deferred\nfollow-up.\n\nCloses #193",
+          "timestamp": "2026-06-25T21:33:46+03:00",
+          "tree_id": "cbedfacf29d423ad22990f054ac6f87492d51fb3",
+          "url": "https://github.com/stacklok/mecatl/commit/675bf810fa44aea019a3f3768bb7ce75f9f18795"
+        },
+        "date": 1782412765155,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1449,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 3917,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2731,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 33125.5,
             "unit": "allocs/op"
           },
           {
