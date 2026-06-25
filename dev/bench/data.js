@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782401279332,
+  "lastUpdate": 1782401282170,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -443498,6 +443498,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 88,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "60dd661dbdaa0e96abd40e5f5619e5929892f068",
+          "message": "feat(mcp): reconnect client session on connection drop (#177)\n\n* feat(mcp): reconnect client session on connection drop (#177)\n\nWhen a remote MCP server's session drops mid-session (server restart loses\nits session map, returns 404 \"session not found\", or closes the transport),\nthe harness now transparently re-establishes the session and retries the\ncall once, instead of hard-failing every subsequent MCP call and requiring\na full session restart.\n\nThe reconnect lives on *Server (which owns the session lifecycle and now\nretains the ServerConfig + httpClient + diag to rebuild the transport).\nremoteTool holds *Server instead of a raw *ClientSession and calls through\nServer.withSession — the single retry shape shared by tool.Execute,\nreadResource, and getPrompt. A connection-drop error class\n(isConnectionDrop: errors.Is the SDK's ErrConnectionClosed/ErrSessionMissing\nplus string-match for the unexported sentinels) triggers exactly one\nserialized reconnect (N concurrent failing calls produce ONE dial via a\nstale-session CAS under s.mu), then one retry. A permanently-down server\nsurfaces a clear \"unavailable after reconnect\" tool error, never a raw\ntransport string. Close is terminal (a separate `closed` flag): a post-close\nor racing in-flight call never dials and cannot resurrect a closed server.\n\nA breaker is deliberately deferred (ADR 0056): the one-attempt bound already\nprevents masking a permanently-down server; add a breaker only if field data\nshows flapping-server latency.\n\nTests: restartableServer fixture (stable-URL listener swap) covering\nreconnect-after-restart, permanently-down clear error (both reject-404 and\ndial-failure paths), concurrent-calls-reconnect-once (CAS-skip is\nload-bearing), call-after-close-does-not-dial, readResource/getPrompt\nreconnect, reconnect-then-retry-fails-non-drop, IsError-does-not-trigger-\nreconnect, and the classifier table. All pass under -race -count=3.\n\nDocs: ADR 0056 (frozen), PRODUCTION-READINESS reliability row,\narchitecture/extensibility.md one-liner, llms.txt regenerated.\n\nCloses #177\n\n* fix(mcp): classify EOF + transport-rejected as connection drops (#177)\n\nCI failed TestPermanentlyDownServerDialFailureClearError on Linux: a\nhard-stopped server yields a TCP reset (\"EOF\") rather than \"connection\nrefused\", and the SDK wraps it as \"rejected by transport\" (its internal\nErrRejected marker for a transient transport failure). Neither was in\nconnectionDropSignatures, so isConnectionDrop returned false → no reconnect\n→ the raw transport string leaked to the model (the spec's clear-error\nrequirement was violated on CI).\n\nBoth are genuine connection drops: the session is unusable and a reconnect\nis the right response. Add them to the classifier. Table test gains the\nexact CI error string as a case so the regression is pinned.",
+          "timestamp": "2026-06-25T18:22:19+03:00",
+          "tree_id": "c0030dcdc8c2a8a949c36727c162340bb59b2ba3",
+          "url": "https://github.com/stacklok/mecatl/commit/60dd661dbdaa0e96abd40e5f5619e5929892f068"
+        },
+        "date": 1782401281512,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3288.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 86.5,
             "unit": "allocs/op"
           },
           {
