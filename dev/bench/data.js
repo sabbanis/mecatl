@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782362849327,
+  "lastUpdate": 1782362852294,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -414287,6 +414287,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/008e1de44a6530f91e44f41e1354b380af444fe3"
         },
         "date": 1782340708698,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "6a1898197e7183b69c93725f4f9f06f6b9a567a1",
+          "message": "fix(lint): add return after t.Fatal to satisfy staticcheck SA5011 (#185)\n\nCI's golangci-lint (with staticcheck) flags SA5011 (possible nil pointer\ndereference) in three test files where a nil check + t.Fatal is followed by\na dereference. staticcheck can't prove t.Fatal exits, so adding an explicit\nreturn after each t.Fatal satisfies the analyzer.\n\nThese were pre-existing (not introduced by the guardrails rework) and have\nbeen failing CI on every push to main since before #168.",
+          "timestamp": "2026-06-25T07:41:43+03:00",
+          "tree_id": "253dae46448fcf2e75ffea8389709cce6bdf19e8",
+          "url": "https://github.com/stacklok/mecatl/commit/6a1898197e7183b69c93725f4f9f06f6b9a567a1"
+        },
+        "date": 1782362851553,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
