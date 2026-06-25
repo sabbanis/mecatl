@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782392379317,
+  "lastUpdate": 1782392382582,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -432020,6 +432020,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 96,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "f1f6c6964250fa97d16834cb11138441c4e52e06",
+          "message": "feat(agent): raise concurrency defaults (4→8) and Parallel branch cap (8→16)\n\nThe three mirrored agent-concurrency gates (defaultMaxConcurrentChildren,\ndefaultParallelConcurrency, defaultTeamConcurrency) and the Parallel hard\nfan-out ceiling (defaultMaxBranches) were tuned too conservatively: a default\n4-wide gate starves a parent that wants to delegate several independent\ninvestigations at once, and the 8-branch cap is the wall the TUI surfaces when\nfanning out parallel agents.\n\nRaise the defaults so fan-out isn't bottlenecked at the layer an operator hits\nby default:\n  - defaultMaxConcurrentChildren  4 → 8  (matches Claude Code's 10-read cap\n    more closely without exceeding it; the read-only fan-out is cheap)\n  - defaultParallelConcurrency     4 → 8  (mirrors defaultMaxConcurrentChildren)\n  - defaultTeamConcurrency         4 → 8  (same mirroring rationale)\n  - defaultMaxBranches             8 → 16 (hard ceiling; doubling gives headroom\n    over the concurrency gate so judge/first join isn't bottlenecked by the\n    branch cap before the concurrency cap)\n\nThe three gates stay mirrored (subagent.go:47 invariant). The branch cap raise\nis independent — it's the hard fan-out ceiling, not a concurrency gate. The\nmirroring comments cite the relationship, not the literal, so they stay accurate.\n\nThe parallel ToolSpec description (\"up to 8\" → \"up to 16\") and the living docs\n(IMPLEMENTATION-NOTES bounds table, architecture/usage/AGENTS.md literals)\ntrack the new values. ADR 0014 is left frozen (the const was 4 at decision\ntime; the rationale — the cap bounds shell usage — still holds at 8, and the\ncurrent value is carried in the living docs).\n\nNon-goals (unchanged): no CLI/server flags (stay as With* wiring options); no\nread-parallel/mutate-serial dispatch-ordering change; no defaultMaxRounds (48)\nchange. The drift guard (runbounds_drift_test.go) is updated in lockstep.\n\nCloses #186.",
+          "timestamp": "2026-06-25T15:53:55+03:00",
+          "tree_id": "31fbda414a10b7fc6e40611c5beaff2309355b2c",
+          "url": "https://github.com/stacklok/mecatl/commit/f1f6c6964250fa97d16834cb11138441c4e52e06"
+        },
+        "date": 1782392381652,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3298.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 94,
             "unit": "allocs/op"
           },
           {
