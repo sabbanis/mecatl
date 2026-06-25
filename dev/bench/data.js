@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782378365291,
+  "lastUpdate": 1782378369261,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -421861,6 +421861,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/e6f51bc785a15224ec98cd98e2838fa94e65ad9d"
         },
         "date": 1782371904612,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "01d7b9045086bd3d9537aee5827ad7946660e2b1",
+          "message": "docs(usage): make the operator guide user-friendly (#187)\n\nThe usage documentation leaked internal development artifacts that mean\nnothing to an end user. This cleans them up:\n\n- Fix TOC numbering: seven sections were all numbered 3; now sequential 1-17.\n  All sub-page headers and cross-references (§N) updated to match.\n\n- Remove internal phase labels from headings and prose: WORKSPACE-TRUST\n  Phase 0/1/2a/2b/2c, cloud-native Phase 4, Phase C2, Phase 3/4/5, etc.\n  The hooks \"### Phases\" table (SessionStart/PreToolUse) was preserved\n  since it is a user-facing concept.\n\n- Remove ~25 issue-tracker references (issue #27, #14, #33, etc.) from\n  prose across 10 files. The URL link to issues/118 in install.md stays.\n\n- Remove internal Go package paths from user-facing prose: internal/app,\n  internal/adapter/permconfig, internal/adapter/envscrub, engine/agent/...,\n  etc. Replaced with plain descriptions.\n\n- Reframe hooks.md and permissions-config.md: the hooks page no longer\n  tells the user to edit Go source with a code snippet; it honestly states\n  that global hooks require editing the composition layer and rebuilding,\n  and points to agent-def hooks as the config-driven path. The permissions\n  page replaced the \"edit defaultRules()\" snippet similarly.\n\n- Fix stale mecatequi tag examples: @v0.0.4 in YAML uses: lines → @<latest>.\n\nVerified: task docs passes (0 broken links, 0 broken anchors, 0 orphans).",
+          "timestamp": "2026-06-25T12:00:14+03:00",
+          "tree_id": "3598fc7cc47c216f75486e931a321ac71e1281b9",
+          "url": "https://github.com/stacklok/mecatl/commit/01d7b9045086bd3d9537aee5827ad7946660e2b1"
+        },
+        "date": 1782378368037,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
