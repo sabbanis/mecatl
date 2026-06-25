@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782378361565,
+  "lastUpdate": 1782378365291,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -418353,6 +418353,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 34135,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2411,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "01d7b9045086bd3d9537aee5827ad7946660e2b1",
+          "message": "docs(usage): make the operator guide user-friendly (#187)\n\nThe usage documentation leaked internal development artifacts that mean\nnothing to an end user. This cleans them up:\n\n- Fix TOC numbering: seven sections were all numbered 3; now sequential 1-17.\n  All sub-page headers and cross-references (§N) updated to match.\n\n- Remove internal phase labels from headings and prose: WORKSPACE-TRUST\n  Phase 0/1/2a/2b/2c, cloud-native Phase 4, Phase C2, Phase 3/4/5, etc.\n  The hooks \"### Phases\" table (SessionStart/PreToolUse) was preserved\n  since it is a user-facing concept.\n\n- Remove ~25 issue-tracker references (issue #27, #14, #33, etc.) from\n  prose across 10 files. The URL link to issues/118 in install.md stays.\n\n- Remove internal Go package paths from user-facing prose: internal/app,\n  internal/adapter/permconfig, internal/adapter/envscrub, engine/agent/...,\n  etc. Replaced with plain descriptions.\n\n- Reframe hooks.md and permissions-config.md: the hooks page no longer\n  tells the user to edit Go source with a code snippet; it honestly states\n  that global hooks require editing the composition layer and rebuilding,\n  and points to agent-def hooks as the config-driven path. The permissions\n  page replaced the \"edit defaultRules()\" snippet similarly.\n\n- Fix stale mecatequi tag examples: @v0.0.4 in YAML uses: lines → @<latest>.\n\nVerified: task docs passes (0 broken links, 0 broken anchors, 0 orphans).",
+          "timestamp": "2026-06-25T12:00:14+03:00",
+          "tree_id": "3598fc7cc47c216f75486e931a321ac71e1281b9",
+          "url": "https://github.com/stacklok/mecatl/commit/01d7b9045086bd3d9537aee5827ad7946660e2b1"
+        },
+        "date": 1782378364181,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1474.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 4000,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2814,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 34133,
             "unit": "allocs/op"
           },
           {
