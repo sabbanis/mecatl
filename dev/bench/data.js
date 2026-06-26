@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782463652476,
+  "lastUpdate": 1782463655738,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -451150,6 +451150,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 80,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "2be3c056e95da7895fc7d229053fcacbd63995c4",
+          "message": "fix(mcp): apply panel-review fixes to server-initiated notifications (#197)\n\nFollow-up to #195. Resolves all panel-review findings: notification-storm log dedup, single + concurrent lost-update (clear-before-fetch + per-list generation counters), unbounded-ingestion cap (maxListEntries), honest ADR/doc comments, de-flaked storm test, added prompts/list_changed test. Also bumps toolhive v0.28.3 -> v0.31.0 (pulls a fixed docker/docker), clearing the govulncheck allowlist entirely.",
+          "timestamp": "2026-06-26T11:41:37+03:00",
+          "tree_id": "bafc42b9fc4c29aed6d751f6a97779a08a5ff8b4",
+          "url": "https://github.com/stacklok/mecatl/commit/2be3c056e95da7895fc7d229053fcacbd63995c4"
+        },
+        "date": 1782463654923,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3299,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 95,
             "unit": "allocs/op"
           },
           {
