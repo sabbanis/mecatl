@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782535157625,
+  "lastUpdate": 1782535161133,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -448377,6 +448377,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 33127,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2369,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de960846bfcb2400f2fe9eaf8ce469d70d860599",
+          "message": "feat(tui): platform-aware scroll-key markings (#200)\n\nMac keyboards have no dedicated PgUp/PgDn keys — the user presses\nfn+↑/fn+↓ — so the scroll-key hint text in the help, skills, soul, and\nagents overlays was misleading on macOS (it read \"pgup/pgdn\" with no\nhint of the physical gesture).\n\nIntroduce a stdlib-only platform package (Platform enum: PC/Mac) whose\nScrollKeysMarking() returns \"fn+↑/fn+↓ (pgup/pgdn)\" on Mac and the\ncanonical \"pgup/pgdn\" elsewhere. The six footer/hint sites that\nhardcoded the literal now read from this single source of truth.\n\nThe binding itself is unchanged (still the pgup/pgdown wire keycodes);\nonly the displayed marking adapts. Goldens stay host-independent: the\nexisting ui TestMain pins MECATUI_TEST_PLATFORM=pc (alongside the\nMECATUI_NO_EMOJI pin), so checked-in .golden files keep the canonical\npgup/pgdn string regardless of which OS runs task test:golden. The Mac\nbranch is exercised by unit + integration tests, not by goldens.\n\nhelpKeyWidth widens 14→22 to accommodate the longer Mac marking at\nruntime; the five affected goldens show only the uniform padding shift.\n\nCo-authored-by: mecatl <noreply@stacklok.com>",
+          "timestamp": "2026-06-27T07:33:41+03:00",
+          "tree_id": "47de2409829f652f6b3ccfb5e21052fef040d193",
+          "url": "https://github.com/stacklok/mecatl/commit/de960846bfcb2400f2fe9eaf8ce469d70d860599"
+        },
+        "date": 1782535159934,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1450,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 3918,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2731,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 33129,
             "unit": "allocs/op"
           },
           {
