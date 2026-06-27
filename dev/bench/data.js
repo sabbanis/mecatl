@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782535161133,
+  "lastUpdate": 1782535164692,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -452157,6 +452157,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/2be3c056e95da7895fc7d229053fcacbd63995c4"
         },
         "date": 1782463651594,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "de960846bfcb2400f2fe9eaf8ce469d70d860599",
+          "message": "feat(tui): platform-aware scroll-key markings (#200)\n\nMac keyboards have no dedicated PgUp/PgDn keys — the user presses\nfn+↑/fn+↓ — so the scroll-key hint text in the help, skills, soul, and\nagents overlays was misleading on macOS (it read \"pgup/pgdn\" with no\nhint of the physical gesture).\n\nIntroduce a stdlib-only platform package (Platform enum: PC/Mac) whose\nScrollKeysMarking() returns \"fn+↑/fn+↓ (pgup/pgdn)\" on Mac and the\ncanonical \"pgup/pgdn\" elsewhere. The six footer/hint sites that\nhardcoded the literal now read from this single source of truth.\n\nThe binding itself is unchanged (still the pgup/pgdown wire keycodes);\nonly the displayed marking adapts. Goldens stay host-independent: the\nexisting ui TestMain pins MECATUI_TEST_PLATFORM=pc (alongside the\nMECATUI_NO_EMOJI pin), so checked-in .golden files keep the canonical\npgup/pgdn string regardless of which OS runs task test:golden. The Mac\nbranch is exercised by unit + integration tests, not by goldens.\n\nhelpKeyWidth widens 14→22 to accommodate the longer Mac marking at\nruntime; the five affected goldens show only the uniform padding shift.\n\nCo-authored-by: mecatl <noreply@stacklok.com>",
+          "timestamp": "2026-06-27T07:33:41+03:00",
+          "tree_id": "47de2409829f652f6b3ccfb5e21052fef040d193",
+          "url": "https://github.com/stacklok/mecatl/commit/de960846bfcb2400f2fe9eaf8ce469d70d860599"
+        },
+        "date": 1782535163478,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
