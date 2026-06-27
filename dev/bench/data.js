@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782535522167,
+  "lastUpdate": 1782535525650,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -458802,6 +458802,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 86.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ef60c5110c00a9c32a23c476a538c0c41ac80fbf",
+          "message": "fix(osfs): canonicalize non-existent paths in resolveRoot (#201)\n\nresolveRoot canonicalized existing paths via EvalSymlinks but fell back to\nfilepath.Clean(abs) for non-existent paths, leaving the unresolved symlink\nform. On macOS (where /var/folders -> /private/var/folders), a not-yet-created\nSkillsDraftDir inside an existing workspace resolved to /var/... while the\nworkspace resolved to /private/var/..., so dirsOverlap returned false and\nvalidateSkillDraftConfig silently accepted an inside-workspace quarantine —\na security-boundary bypass (the model's Write/Edit could reach the\nquarantine, defeating the draft->promote gate).\n\nWalk up to the deepest existing ancestor, EvalSymlinks it, and re-append the\nnon-existent tail — the same idiom resolveInRoot already uses — so existing\nand non-existent paths under a symlinked root land in the same canonical\nform. Three macOS-only test-friction cases (TestChildPermResolverNilWorkspace,\nTestBuildSubagentToolWiresForkerWhenShell, TestBuildWorktreeListerParsesPorcelain)\nare fixed by canonicalizing their expected t.TempDir() values through\nosfs.ResolveRoot for canonical-to-canonical comparison. CI is Linux-only so\nnone of these blocked a merge, but the skilldraft bypass was a real\nmacOS-only production bug.\n\nCo-authored-by: mecatl <noreply@stacklok.com>",
+          "timestamp": "2026-06-27T07:34:03+03:00",
+          "tree_id": "b570074434d13b9ddae21099f3bb65e9b324a1bb",
+          "url": "https://github.com/stacklok/mecatl/commit/ef60c5110c00a9c32a23c476a538c0c41ac80fbf"
+        },
+        "date": 1782535524528,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3290,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 87,
             "unit": "allocs/op"
           },
           {
