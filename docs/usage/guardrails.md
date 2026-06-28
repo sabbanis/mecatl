@@ -14,19 +14,102 @@ enable, the router-parity model of [ADR 0042](../adr/0042-taxonomy-gated-model-r
 extended to the guardrail slot by [ADR 0046](../adr/0046-guardrails-slot-enable.md)): a
 `guardrail` slot no longer merely routes an already-enabled checker, it turns it ON.
 With a model and no rule list, guardrails are ON with the **default block rule set**
-— block (enforcement) for the network/MCP surfaces, off for local tools:
+— block (enforcement) for the network/MCP surfaces and the local shell, off for the
+other local tools:
 
-| Tool matcher | Phases | Mode |
-| --- | --- | --- |
-| `WebSearch` | pre + post | block |
-| `WebFetch` | post | block |
-| `mcp__*` | pre + post | block |
+| Tool matcher | Phases | Mode | Notes |
+| --- | --- | --- | --- |
+| `WebSearch` | pre + post | block | |
+| `WebFetch` | post | block | |
+| `mcp__*` | pre + post | block | |
+| `Bash` | pre | block | read-only pre-filter (see below) |
+
+The `Bash` rule (added by [ADR 0058](../adr/0058-guardrails-bash-default.md)) protects
+the local-shell blast radius — a mutating/outward command such as `gh pr merge` is
+inspected (and, in block mode, vetoed) — but a **read-only pre-filter** skips the
+checker entirely for a command it can prove read-only (`ls`, `grep`, `git status`,
+`cat $(ls)`), so a guardrail-protected shell costs an LLM call ONLY on a
+mutating/outward command, not on every shell call. The filter is fail-safe: a
+substitution-as-verb or unknown verb is inspected, never skipped. The other local tools
+(`Read`/`Edit`/`Write`/`Grep`/`Glob`) remain unmatched. An explicit `rules:` list
+replaces the defaults entirely — an operator's own `Bash` rule does NOT carry the
+pre-filter and inspects every command.
+
+The default Bash rule uses a **Bash-specific inspection rubric**, not the generic
+exfiltration rubric the Web/MCP rules use. It flags only concrete dangerous shell
+actions — data sent off the machine to a network destination (especially secrets),
+fetching-and-executing remote code (`curl … | sh`), an irreversible action on a remote
+you may not control (force-push, push/merge to a remote, `gh pr merge`, publishing a
+release, deleting a remote branch/repo), a destructive hard-to-reverse local
+operation (recursive tree deletion, overwriting a disk device, mass recursive
+chmod/chown), or a **local-persistence** write to a credential / SSH-key / shell-startup
+/ scheduler (cron/systemd) / git-hook target that could grant later off-machine access
+or persistent code execution (e.g. appending to an authorized_keys file, a shell
+rc/profile, a crontab, or a repo's git-hooks directory). It treats **ordinary local work
+as SAFE**: writing or creating ordinary files (source, config, build output, notes)
+anywhere on the local filesystem — *including other directories or sibling git
+repositories* — is data staying on the machine, not exfiltration; so are builds, tests,
+local file moves/copies, and routine git against the normal origin remote. (A normal
+source write to a sibling repo stays SAFE; only the named sensitive targets are unsafe.)
+The rubric's
+posture is "judge SAFE unless a specific dangerous action is identifiable" (the opposite
+of the network rubric's "if uncertain, judge unsafe"); the `/guardrail-allow` override
+(below) recovers any residual block. An operator's explicit `Bash` rule with no
+`prompt:` falls back to the generic rubric — set `prompt:` to customise.
 
 Set `defaultMode: advisory` to downgrade to observe-only (see [ADR 0053](../adr/0053-guardrails-default-block.md)).
 Advisory = observe-only: a finding is an **operator-log diagnostic** + a client-visible
 session id + tool-call id + a `guardrail-finding` marker so you can correlate it back
 to the conversation); the call/result is byte-unchanged and the client/model see
 nothing. Measure the false-positive rate, then promote a rule to `block`/`sanitize`.
+
+## Authorizing a block once: `/guardrail-allow` (ADR 0059)
+
+A `block` is enforcement, not advice — so a false positive (a legitimate `gh pr merge`
+the checker flags) would otherwise be a dead-end. A **human** can authorize the NEXT
+matching block ONCE by re-issuing the request with a first-line directive:
+
+```
+/guardrail-allow [<tool>] [-- <command-substring>]
+<the task to run>
+```
+
+- `/guardrail-allow` alone authorizes the next block on **any** tool.
+- `/guardrail-allow Bash` restricts it to `Bash` (recommended — scope it to the tool you
+  expect to be blocked).
+- `/guardrail-allow Bash -- gh pr merge` further restricts it to a Bash command
+  **containing** `gh pr merge`, so it cannot be spent on an unrelated block.
+
+It is **one-shot**: it authorizes exactly one matching block, then is gone. It must
+accompany a task — a message that is only the directive is rejected. The directive line
+is **stripped** from the prompt before it reaches the model or history. If the first
+line looks like a directive but does not parse (a typo, wrong case, or malformed
+grammar), it is **not** armed (fail-safe) and a WARN tells you it was not recognized.
+
+**Worked example.** You ran a prompt and saw the tool card come back
+`blocked by guardrail: …`. Re-run *the same prompt* with the directive as its first
+line — e.g.:
+
+```
+/guardrail-allow Bash -- gh pr merge
+merge PR 7 once CI is green
+```
+
+The next `Bash` call whose command contains `gh pr merge` runs once; everything else
+stays guarded.
+
+**Security:** the override arms ONLY from the genuine user prompt — never from a tool
+result, a fetched page, an MCP response, or model output. The model cannot grant itself
+an override; a block message tells the model a *human* may re-issue with
+`/guardrail-allow`, and any claim of approval the model makes is void. The override is
+session-scoped (a subagent/child session never inherits a parent's). Every consumed
+override is logged with a grep-able `guardrail-override-consumed` operator-audit marker.
+
+**Headless / non-interactive runs.** There is no human to type the directive mid-run, so
+a `block` is **final** — the override is an interactive recovery, not a headless one. If
+a headless run keeps hitting a guardrail block, the fix is to tune the rule (`mode`, a
+per-rule `prompt:` rubric) or the checker model, not to rely on `/guardrail-allow`. A
+near-miss directive in a headless prompt is still fail-safe (not armed, WARN logged).
 
 **Operator-tier ONLY.** The `guardrails:` config is read from the **user-global**
 `settings.yaml` + the CLI — **never** the project-tier file. This inverts the usual

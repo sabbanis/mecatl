@@ -126,7 +126,12 @@ func (e guardrailError) Error() string { return string(e) }
 // child deps path (childEngineDepsForProvider), so it compacts/counts on the
 // session's provider and carries the recursion-guard posture (inert hooks, nil
 // reviewer, Interactive false, tool-less catalog).
-func buildGuardrailsHooks(cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, inner port.HookRunner) port.HookRunner {
+// armer is the SHARED one-shot human-override holder (ADR 0059): the SAME instance must
+// reach every Runner site (the shared engine + each per-session engine) AND the Service
+// that arms it from the genuine user prompt, so an arm on a session id is visible to
+// whichever Runner that session's engine carries. nil is the byte-identical no-override
+// posture (Consume on nil → false).
+func buildGuardrailsHooks(cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, inner port.HookRunner, armer *modelhook.OverrideArmer) port.HookRunner {
 	if !guardrailsConfigured(cfg) {
 		return inner // OFF: byte-identical to no guardrails
 	}
@@ -147,6 +152,7 @@ func buildGuardrailsHooks(cfg Config, provReg *providerRegistry, provider port.L
 		Diagnostics:       cfg.diag(),
 		MinContentBytes:   cfg.GuardrailsMinContentBytes,
 		FailOnCheckerDown: strings.EqualFold(strings.TrimSpace(cfg.GuardrailsOnCheckerDown), "fail"),
+		OverrideArmer:     armer,
 	})
 }
 
@@ -154,8 +160,18 @@ func buildGuardrailsHooks(cfg Config, provReg *providerRegistry, provider port.L
 // model is configured but the operator authored no explicit rules. Enabling
 // guardrails is the opt-in to spend — the default posture is enforcement (block),
 // not observe-only. Advisory is available via the defaultMode key or an explicit
-// rule list. Local tools (Read/Edit/Write/Bash/Grep/Glob) are deliberately NOT
-// matched.
+// rule list.
+//
+// Bash IS matched (pre, block) so a configured guardrail protects the local-shell
+// blast radius out of the box (the motivating incident: an agent ran
+// `gh pr merge --squash` as a Bash call and merged its own PR unattended; the old
+// default set only matched WebSearch/WebFetch/mcp__* so guardrails never saw it). To
+// avoid an LLM call on every shell command, the Bash rule carries SkipReadOnlyBash:
+// the modelhook adapter's read-only pre-filter lets a confidently-read-only Pre Bash
+// command bypass the checker entirely, so ONLY mutating/outward commands are
+// inspected. The pre-filter is fail-safe — an ambiguous/substitution command is still
+// inspected. The OTHER local tools (Read/Edit/Write/Grep/Glob) remain deliberately
+// unmatched. See ADR 0058.
 var defaultGuardrailSpecs = []modelhook.RuleSpec{
 	// Outbound search/fetch args (a query/URL carrying a secret) AND inbound results
 	// (a fetched page / search snippet carrying an injection).
@@ -166,6 +182,16 @@ var defaultGuardrailSpecs = []modelhook.RuleSpec{
 	// All MCP tools, both directions: outbound args (exfil into an MCP call body) and
 	// inbound results (injection in an MCP server's response).
 	{Match: "mcp__*", Phases: []string{"pre", "post"}, Mode: string(modelhook.ModeBlock)},
+	// Local shell (the #1 blast radius). Pre only — inspect the OUTBOUND command for a
+	// mutating/outward action (e.g. `gh pr merge`, a push, a destructive write). The
+	// read-only pre-filter (SkipReadOnlyBash) skips the checker for a confidently
+	// read-only command, so a guardrail-protected shell costs an LLM call ONLY on a
+	// mutating/outward command, not on every `ls`/`grep`/`git status`. It carries a
+	// Bash-SPECIFIC rubric (modelhook.DefaultBashPrePrompt): the generic exfiltration
+	// rubric (defaultPrePrompt) false-positives on ordinary local writes (a local write
+	// is data STAYING on the machine, not exfiltration), so Bash gets a concrete-trigger,
+	// fail-toward-safe rubric instead. ADR 0058.
+	{Match: "Bash", Phases: []string{"pre"}, Mode: string(modelhook.ModeBlock), SkipReadOnlyBash: true, Prompt: modelhook.DefaultBashPrePrompt},
 }
 
 // effectiveGuardrailSpecs returns the rule specs to compile: the operator's explicit

@@ -1144,7 +1144,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	if agentClose == nil {
 		agentClose = func() {}
 	}
-	engine, mainMgr, mcpProvider, mcpInventory, sessFactory, learned, policy, assets, mcpClose, err := buildEngine(ctx, cfg, reg, provider, store, agentReg)
+	engine, mainMgr, mcpProvider, mcpInventory, sessFactory, learned, policy, assets, overrideArmer, mcpClose, err := buildEngine(ctx, cfg, reg, provider, store, agentReg)
 	if err != nil {
 		agentClose()
 		storeClose()
@@ -1160,6 +1160,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 
 	svcCfg := server.Config{
 		Engine:           engine,
+		OverrideArmer:    overrideArmer, // ADR 0059: the SAME holder the guardrail Runners consult
 		Store:            store,
 		Workspaces:       osfsWorkspaceFactory(cfg.diag(), assets.skillReadRoots),
 		DefaultWorkspace: cfg.Workspace, // the launch root; a session on a DIFFERENT root routes through the per-session factory (issue #102, docs/adr/0032)
@@ -1477,6 +1478,7 @@ func sessionEngineFactory(
 	mcpProvider mcp.Provider,
 	instructions prompt.InstructionAssembler,
 	assets catalogAssets,
+	overrideArmer *modelhook.OverrideArmer,
 ) server.SessionEngineFactory {
 	return func(ctx context.Context, sel server.ProviderSelector, specs []mcp.ServerConfig, profile server.SessionProfile, workspace string, mode session.PermissionMode) (server.SessionEngineResult, error) {
 		// Pin the CHILD permission resolver to THIS session's base root (issue
@@ -1644,7 +1646,7 @@ func sessionEngineFactory(
 		// The three utility engines pin utilityProvider (the OPERATOR-DEFAULT effort), NOT
 		// resolvedProvider — reasoning effort binds the agent, not the harness's internal
 		// classifier/one-turn calls (ADR 0055).
-		deps.Hooks = buildGuardrailsHooks(cfg, reg, utilityProvider, resolvedProviderID, resolvedModel, deps.Hooks)
+		deps.Hooks = buildGuardrailsHooks(cfg, reg, utilityProvider, resolvedProviderID, resolvedModel, deps.Hooks, overrideArmer)
 		// The OPT-IN child-ask reviewer (issue #31), RE-DERIVED on this session's
 		// resolved (provider, model) through the same attachAskAdjudicator the shared
 		// engine uses — never a clone-and-swap of the build-time reviewer.
@@ -1958,12 +1960,12 @@ func chainClose(first, second func()) func() {
 // resolveAgentSeam (FS or driver) — threaded in, never re-resolved here, so
 // every consumer (catalog, per-session factory, snapshot, team wiring) shares
 // the same registry.
-func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provider port.LLMProvider, store port.SessionStore, agentReg *agents.Registry) (*agent.Engine, *mcp.Manager, mcp.Provider, []mcpsource.SourceInfo, server.SessionEngineFactory, *permstore.Memory, port.PermissionPolicy, catalogAssets, func(), error) {
+func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provider port.LLMProvider, store port.SessionStore, agentReg *agents.Registry) (*agent.Engine, *mcp.Manager, mcp.Provider, []mcpsource.SourceInfo, server.SessionEngineFactory, *permstore.Memory, port.PermissionPolicy, catalogAssets, *modelhook.OverrideArmer, func(), error) {
 	// SkillDraft trust boundary: when enabled, the quarantine dir must live OUTSIDE
 	// the workspace root (so the model's workspace-confined Write/Edit cannot reach
 	// it) and be disjoint from every active skills dir. Fatal on a misconfig.
 	if err := validateSkillDraftConfig(cfg); err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, catalogAssets{}, func() {}, err
+		return nil, nil, nil, nil, nil, nil, nil, catalogAssets{}, nil, func() {}, err
 	}
 	warnSkillDraftResiduals(cfg)
 
@@ -1992,7 +1994,7 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 	// SAME registry, closed over below) — ONE resolution per process.
 	cat, assets, mcpProvider, mcpInventory, mcpClose, err := buildCatalog(ctx, cfg, reg, provider, hooks, agentReg, store)
 	if err != nil {
-		return nil, nil, nil, nil, nil, nil, nil, catalogAssets{}, func() {}, err
+		return nil, nil, nil, nil, nil, nil, nil, catalogAssets{}, nil, func() {}, err
 	}
 	memStore, userModelStore := assets.memStore, assets.userModelStore
 
@@ -2006,13 +2008,13 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 		conn, connClose, derr := cfg.drivers().dial(cfg, cfg.SoulSourceURL)
 		if derr != nil {
 			mcpClose()
-			return nil, nil, nil, nil, nil, nil, nil, catalogAssets{}, func() {}, fmt.Errorf("dial soul-source driver %q: %w", cfg.SoulSourceURL, derr)
+			return nil, nil, nil, nil, nil, nil, nil, catalogAssets{}, nil, func() {}, fmt.Errorf("dial soul-source driver %q: %w", cfg.SoulSourceURL, derr)
 		}
 		probe := grpcdriver.NewSoulSource(conn, grpcdriver.SoulOptions{Diagnostics: cfg.diag()})
 		if perr := probe.Probe(ctx); perr != nil {
 			connClose()
 			mcpClose()
-			return nil, nil, nil, nil, nil, nil, nil, catalogAssets{}, func() {}, fmt.Errorf("probe soul-source driver %q: %w", cfg.SoulSourceURL, perr)
+			return nil, nil, nil, nil, nil, nil, nil, catalogAssets{}, nil, func() {}, fmt.Errorf("probe soul-source driver %q: %w", cfg.SoulSourceURL, perr)
 		}
 		prevClose := mcpClose
 		mcpClose = func() {
@@ -2055,7 +2057,13 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 	// OFF-by-default (returns mainHooks UNCHANGED when unconfigured) and is wired ONLY
 	// here + in the per-session factory — NEVER into buildCatalog's child hooks (the
 	// recursion guard). The shared engine's checker rides the default provider/model.
-	mainHooks = buildGuardrailsHooks(cfg, reg, provider, reg.Default(), cfg.Model, mainHooks)
+	// The SHARED one-shot human-override holder (ADR 0059): created ONCE here and
+	// threaded to the shared-engine Runner (below), the per-session factory (so every
+	// per-session Runner shares it), AND the Service (which arms it from the genuine
+	// user prompt). One instance, so an arm on a session id is seen by whichever
+	// Runner that session's engine carries.
+	overrideArmer := modelhook.NewOverrideArmer()
+	mainHooks = buildGuardrailsHooks(cfg, reg, provider, reg.Default(), cfg.Model, mainHooks, overrideArmer)
 
 	deps := baseEngineDeps(cfg, reg, provider, store, policy, mainHooks, mcpProvider, instructions)
 	deps.Catalog = cat
@@ -2073,12 +2081,12 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 	// catalog is assembled over the SAME collaborators as the shared one. It keeps
 	// the UNWRAPPED hooks: the Phase-2b reviewer fires once per MAIN-engine Stop,
 	// not per per-session stop (one of the two sanctioned per-session deltas).
-	sessFactory := sessionEngineFactory(cfg, reg, provider, store, policy, hooks, mcpProvider, instructions, assets)
+	sessFactory := sessionEngineFactory(cfg, reg, provider, store, policy, hooks, mcpProvider, instructions, assets, overrideArmer)
 	// The build-once assets travel back to Build whole: it reads assets.skills
 	// (ListSkills snapshot), assets.userModelStore (GetUserModel lister), and
 	// assets.skillReadRoots (the workspace factory + team fork closures) off the
 	// SAME value every catalog assembly shares.
-	return agent.NewEngine(deps), assets.globalMgr, mcpProvider, mcpInventory, sessFactory, learned, policy, assets, mcpClose, nil
+	return agent.NewEngine(deps), assets.globalMgr, mcpProvider, mcpInventory, sessFactory, learned, policy, assets, overrideArmer, mcpClose, nil
 }
 
 // buildInstructionAssembler composes the turn-0 instruction assembler in order:

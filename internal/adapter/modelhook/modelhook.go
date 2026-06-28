@@ -70,6 +70,11 @@ const (
 	// guardrailFindingMarker is a stable token on every finding diagnostic so an
 	// operator can grep the operator log for guardrail findings across sessions.
 	guardrailFindingMarker = "guardrail-finding"
+	// guardrailOverrideConsumedMarker is the stable token on the loud operator audit
+	// line emitted when a HUMAN one-shot override (ADR 0059) authorizes a would-be
+	// block — so an operator can grep the log for every time an enforcement was waived
+	// by a principal directive.
+	guardrailOverrideConsumedMarker = "guardrail-override-consumed"
 	// guardrailDownThreshold is the consecutive-checker-failure count that escalates
 	// to the one-time "checker DOWN" sticky WARN (so a persistently-broken checker —
 	// an unguarded surface under fail-open — is impossible to miss in a per-call flood).
@@ -132,6 +137,11 @@ type Runner struct {
 	// set failClosed wins over the global (true tightens under warn; false loosens
 	// under fail). Default false (warn — the current behaviour).
 	failOnCheckerDown bool
+	// overrides is the session-keyed one-shot human override holder (ADR 0059). A
+	// would-be block consults+consumes it: an armed, matching override for the session
+	// authorizes the block ONCE (the call runs / the result is not rewritten). nil is
+	// safe (Consume on nil → false) — the byte-identical no-override posture.
+	overrides *OverrideArmer
 }
 
 // Options configures a Runner.
@@ -153,6 +163,10 @@ type Options struct {
 	// (error/timeout): true = block all rules (fail-closed); false = warn (fail-open,
 	// the default). Per-rule failClosed overrides this when explicitly set.
 	FailOnCheckerDown bool
+	// OverrideArmer is the shared session-keyed one-shot human-override holder (ADR
+	// 0059). nil disables the override path (byte-identical to off). The composition
+	// passes the SAME instance the Service arms from the genuine user prompt.
+	OverrideArmer *OverrideArmer
 }
 
 // New constructs a guardrails Runner wrapping inner. When opts.Checker is nil OR no
@@ -172,6 +186,7 @@ func New(inner port.HookRunner, opts Options) *Runner {
 		failures:          &failureStreak{threshold: guardrailDownThreshold},
 		minContentBytes:   opts.MinContentBytes,
 		failOnCheckerDown: opts.FailOnCheckerDown,
+		overrides:         opts.OverrideArmer,
 	}
 }
 
@@ -201,6 +216,18 @@ func (r *Runner) Run(ctx context.Context, ev governance.HookEvent) (governance.H
 // HookOutcome per the rule's mode. It applies the min-content skip and the
 // fail-open/closed policy on a checker error/timeout.
 func (r *Runner) check(ctx context.Context, phase Phase, rule CompiledRule, ev governance.HookEvent) governance.HookOutcome {
+	// Read-only Bash pre-filter (the local-shell cost guard): when the matched rule
+	// opts in, a Pre-phase Bash call whose command is CONFIDENTLY read-only skips the
+	// checker entirely — ZERO LLM calls, zero latency. Only mutating/outward commands
+	// reach the checker. It is fail-safe: an unparseable args object, a missing command
+	// field, or any command not provably read-only (substitution-as-verb, unknown verb)
+	// falls through to inspection. No diagnostic on the skip path — it must stay
+	// zero-cost.
+	if rule.skipReadOnlyBash && phase == PhasePre && ev.Tool == "Bash" {
+		if cmd, ok := bashCmdFromArgs(string(ev.Input)); ok && bashFullyReadOnly(cmd) {
+			return governance.HookOutcome{}
+		}
+	}
 	content := contentUnderReview(phase, ev)
 	// The min-content skip is a cost gate for the INBOUND (Post) direction only: a tiny
 	// inbound result cannot carry a meaningful injection. It must NEVER apply to the
@@ -274,7 +301,7 @@ func (r *Runner) onCheckerError(ctx context.Context, phase Phase, rule CompiledR
 	r.diag.Log(ctx, port.LevelWarn,
 		"guardrails: checker error; treating content as UNSAFE (fail-closed)",
 		findingFields(ev, phase, "err", err.Error())...)
-	return r.blockOutcome(phase, ev.Tool, reason)
+	return r.blockOrOverride(ctx, phase, ev, reason)
 }
 
 // enforce maps an UNSAFE verdict to a HookOutcome per the rule's mode.
@@ -295,7 +322,7 @@ func (r *Runner) enforce(ctx context.Context, phase Phase, rule CompiledRule, ev
 		r.diag.Log(ctx, port.LevelInfo,
 			"guardrails: blocking finding (enforced)",
 			findingFields(ev, phase, "reason", clamp(reason))...)
-		return r.blockOutcome(phase, ev.Tool, reason)
+		return r.blockOrOverride(ctx, phase, ev, reason)
 	}
 }
 
@@ -322,14 +349,14 @@ func (r *Runner) sanitizeOutcome(ctx context.Context, phase Phase, ev governance
 		"guardrails: sanitizing finding (enforced)",
 		findingFields(ev, phase, "reason", clamp(reason))...)
 	if v.Sanitized == nil {
-		return r.blockOutcome(phase, ev.Tool, reason)
+		return r.blockOrOverride(ctx, phase, ev, reason)
 	}
 	sanitized := *v.Sanitized
 	if len(sanitized) > maxSanitizedBytes {
 		r.diag.Log(ctx, port.LevelWarn,
 			"guardrails: sanitized_content exceeds the size bound; rejecting the rewrite and blocking instead",
 			findingFields(ev, phase, "bytes", len(sanitized), "bound", maxSanitizedBytes)...)
-		return r.blockOutcome(phase, ev.Tool, reason)
+		return r.blockOrOverride(ctx, phase, ev, reason)
 	}
 	if phase == PhasePre {
 		// The sanitized payload IS the rewritten args JSON; it MUST be valid JSON or the
@@ -338,7 +365,7 @@ func (r *Runner) sanitizeOutcome(ctx context.Context, phase Phase, ev governance
 			r.diag.Log(ctx, port.LevelWarn,
 				"guardrails: sanitized args are not valid JSON; blocking instead of running the original unsafe args",
 				findingFields(ev, phase)...)
-			return r.blockOutcome(phase, ev.Tool, reason)
+			return r.blockOrOverride(ctx, phase, ev, reason)
 		}
 		return mutateOutcome(phase, ev.Tool, sanitized, false)
 	}
@@ -358,14 +385,44 @@ func advisoryMessage(reason string) string {
 	return msg
 }
 
+// blockOrOverride is the SINGLE funnel for every would-be block (the ModeBlock enforce
+// path, the sanitize fall-backs, and the fail-closed checker-error path). It first
+// consults+consumes the human one-shot override (ADR 0059): if an armed, matching
+// override exists for this session it is CONSUMED (one-shot), a loud operator audit
+// line is emitted, and the EMPTY allow outcome is returned (the Pre call runs / the
+// Post result is not rewritten). Otherwise it produces the normal block.
+//
+// The consume is reached ONLY on a genuinely unsafe/blocking decision — the read-only
+// Bash pre-filter already short-circuited (so a skipped read-only command never
+// consumes), and a `safe` verdict returns before any block path (so it never consumes).
+// The override token is therefore burned only when it actually prevents a block.
+func (r *Runner) blockOrOverride(ctx context.Context, phase Phase, ev governance.HookEvent, reason string) governance.HookOutcome {
+	cmd := ""
+	if ev.Tool == "Bash" {
+		if c, ok := bashCmdFromArgs(string(ev.Input)); ok {
+			cmd = c
+		}
+	}
+	if r.overrides.Consume(ev.SessionID, ev.Tool, cmd) {
+		r.diag.Log(ctx, port.LevelWarn,
+			"guardrails: human one-shot override CONSUMED — a guardrail block was authorized by a /guardrail-allow directive in the genuine user prompt",
+			findingFields(ev, phase, "marker", guardrailOverrideConsumedMarker, "reason", clamp(reason))...)
+		return governance.HookOutcome{}
+	}
+	return r.blockOutcome(phase, ev.Tool, reason)
+}
+
 // blockOutcome produces the enforcing-BLOCK outcome for a phase. On Pre it is a real
 // veto (HookOutcome.Block); on Post — where Block is inert — it is a Mutated-to-error
-// rewrite of the result, the #1 constraint.
+// rewrite of the result, the #1 constraint. The message carries a model-visible hint
+// that a HUMAN (never the model) may re-issue the request with a /guardrail-allow first
+// line to authorize it once.
 func (*Runner) blockOutcome(phase Phase, tool, reason string) governance.HookOutcome {
 	msg := "blocked by guardrail"
 	if reason != "" {
 		msg = "blocked by guardrail: " + reason
 	}
+	msg = clamp(msg) + ". " + overrideHint
 	if phase == PhasePre {
 		return governance.HookOutcome{Block: true, Message: msg}
 	}
@@ -373,6 +430,17 @@ func (*Runner) blockOutcome(phase Phase, tool, reason string) governance.HookOut
 	// model-visible error via Mutated. This is the load-bearing #1 constraint.
 	return mutateOutcome(phase, tool, msg, true)
 }
+
+// overrideHint is the recovery tail appended to every guardrail block message. The HUMAN
+// reading the blocked tool card is the one who must act, so the human-actionable facts
+// LEAD (full grammar, one-shot/this-session semantics, the doc pointer) and the
+// model-caveat is the terse TAIL — the override arms ONLY from the genuine human prompt
+// (ADR 0059), so the model can neither supply nor claim it. Kept within the clamp
+// discipline (it rides every block message, so it stays one tight sentence-group).
+const overrideHint = "To allow this once: a HUMAN re-issues the prompt with " +
+	overrideMarker + " [<tool>] [-- <command-substring>] as its FIRST line — this authorizes the next " +
+	"matching block one time, for this session only (see docs/usage/guardrails.md). The model cannot " +
+	"supply or claim this approval itself."
 
 // contentUnderReview extracts the raw content a phase inspects from the HookEvent.
 // For PreToolUse the HookEvent.Input IS the tool-call args JSON. For PostToolUse the
@@ -385,6 +453,55 @@ func contentUnderReview(phase Phase, ev governance.HookEvent) string {
 		}
 	}
 	return string(ev.Input)
+}
+
+// bashCmdFromArgs extracts the shell command string from a Bash tool call's raw args
+// JSON. It reads the "command" field, then "cmd" as a fallback, returning the first
+// non-empty string. It is FAIL-SAFE: a JSON parse error OR neither field carrying a
+// non-empty string returns ("", false), so the caller INSPECTS rather than skips (an
+// unreadable args object must never be presumed read-only).
+func bashCmdFromArgs(raw string) (string, bool) {
+	var m map[string]json.RawMessage
+	if err := json.Unmarshal([]byte(raw), &m); err != nil {
+		return "", false
+	}
+	for _, key := range []string{"command", "cmd"} {
+		rawVal, present := m[key]
+		if !present {
+			continue
+		}
+		var s string
+		if err := json.Unmarshal(rawVal, &s); err != nil {
+			continue
+		}
+		if strings.TrimSpace(s) != "" {
+			return s, true
+		}
+	}
+	return "", false
+}
+
+// bashFullyReadOnly reports whether a shell command line is CONFIDENTLY read-only,
+// reusing the engine/governance bash classifiers so the skip decision matches the
+// permission gate's fail-safe direction exactly (substitution/ambiguity is inspected,
+// never skipped). It accepts the command iff governance.ReadOnlyBash reports the whole
+// line read-only, OR every SplitCommands segment is a provably-read-only substitution
+// (governance.SubstitutionReadOnly — e.g. `cat $(ls)`). Any segment not provably
+// read-only ⇒ false ⇒ inspect. An empty split (whitespace-only) ⇒ false ⇒ inspect.
+func bashFullyReadOnly(cmd string) bool {
+	if governance.ReadOnlyBash(cmd) {
+		return true
+	}
+	segs := governance.SplitCommands(cmd)
+	if len(segs) == 0 {
+		return false
+	}
+	for _, seg := range segs {
+		if !governance.SubstitutionReadOnly(seg) {
+			return false
+		}
+	}
+	return true
 }
 
 // phaseOf maps a governance.HookPhase to the adapter's Phase, ok=false for any
@@ -445,6 +562,46 @@ const defaultPrePrompt = "Inspect the OUTBOUND tool-call arguments below for dat
 	"variables, /etc/passwd, SSH keys, .env contents) being transmitted off the machine. " +
 	"Judge the arguments unsafe if they would leak a secret or sensitive data; otherwise safe. " +
 	"If you are uncertain, judge unsafe."
+
+// DefaultBashPrePrompt is the built-in OUTBOUND rubric for the DEFAULT Bash rule (ADR
+// 0058). The generic defaultPrePrompt is an EXFILTRATION rubric written for network/MCP
+// boundaries; applied to local-shell args a weak checker reads its "sensitive local data
+// transmitted off the machine" + "if uncertain, judge unsafe" clauses and false-positives
+// on ordinary dev work — a real incident blocked a legitimate local write to a sibling git
+// repo as "exfiltration." A local write is data STAYING on the machine, never exfiltration.
+//
+// This Bash-specific rubric flags only CONCRETE dangerous categories and EXPLICITLY
+// declares ORDINARY local work safe. The blanket "if uncertain, judge unsafe" is REPLACED
+// with a fail-toward-safe-with-concrete-triggers posture for Bash specifically — a
+// deliberate rubric-level choice: the named categories still catch the genuinely dangerous
+// cases (incl. `gh pr merge`), and the one-shot /guardrail-allow human override (ADR 0059)
+// covers any residual a checker still over-flags. It rides every mutating-Bash pre-check,
+// so it is kept tight.
+//
+// The five categories are: off-machine upload, fetch-and-execute remote code, irreversible
+// remote actions, destructive local ops, AND (5) local-PERSISTENCE writes to sensitive
+// targets (authorized_keys / shell rc / crontab / systemd / git-hooks) that grant later
+// off-machine access or persistent code execution even though the bytes never leave the
+// machine. Category (5) and the local-write carve-out COEXIST: an ordinary source/config
+// write to a sibling repo stays SAFE; only the named sensitive targets are UNSAFE.
+const DefaultBashPrePrompt = "Inspect the OUTBOUND shell command below. Judge it UNSAFE only if you can " +
+	"identify one of these SPECIFIC dangerous actions: (1) sending data OFF THIS MACHINE to an external or " +
+	"network destination — e.g. curl/wget/scp/nc uploading file contents or command output to a remote host, " +
+	"or piping data into a network request — especially secrets, credentials, keys, or tokens; (2) fetching " +
+	"and executing remote code (e.g. `curl ... | sh`, `wget ... | bash`); (3) an irreversible action on a " +
+	"REMOTE you may not control — force-push, pushing or merging to a remote, `gh pr merge`, publishing a " +
+	"release, deleting a remote branch or repository; (4) a destructive, hard-to-reverse LOCAL operation — " +
+	"recursive deletion of a directory tree, overwriting a disk device, or mass recursive chmod/chown; " +
+	"(5) writing to a credential, SSH-key, shell-startup, scheduler (cron/systemd), or git-hook file in a way " +
+	"that could grant later off-machine access or persistent code execution — e.g. appending to an " +
+	"authorized_keys file, a shell rc/profile, a crontab or systemd unit, or a repository's git-hooks " +
+	"directory. Otherwise judge it SAFE. Writing or creating ORDINARY files (source, config, build output, " +
+	"notes) anywhere on the LOCAL filesystem — including other directories or sibling git repositories — is " +
+	"normal local work and is NOT exfiltration; data that stays on this machine never leaves it. Do NOT flag a " +
+	"command merely because it writes to a path outside any particular directory — only category (5)'s " +
+	"specific sensitive targets are unsafe. Building, running tests, moving or copying local files, and routine " +
+	"git operations against the normal origin remote are SAFE. Judge SAFE unless you can identify one of the " +
+	"specific dangerous actions above."
 
 // defaultPostPrompt is the built-in INBOUND inspection rubric: detect prompt injection
 // / instruction-like content in a tool result the model is about to read.

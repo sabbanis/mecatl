@@ -2287,12 +2287,42 @@ three layers to keep the engine importable and the verdict shape in the adapter:
   ACTIVE fact).
 
 **Default-on with no rules.** A configured checker model is the opt-in-to-spend; with
-no explicit rule list guardrails take the built-in **default advisory rule set**
-(`defaultGuardrailSpecs`: WebSearch pre+post, WebFetch post, `mcp__*` pre+post, all
-advisory — the headline default, local tools deliberately unmatched). An explicit
-`guardrails.rules` list replaces it. There is no per-session call-count cap — the
-checker runs per matched call, and cost control lives in the operator's
-provider/billing layer (checker token spend is not folded into `MaxRunTokens`).
+no explicit rule list guardrails take the built-in **default block rule set**
+(`defaultGuardrailSpecs`: WebSearch pre+post, WebFetch post, `mcp__*` pre+post, and
+`Bash` pre — all block, the headline default; ADR 0053 flipped advisory→block, ADR
+0058 added `Bash`). The `Bash` rule carries a **read-only pre-filter**
+(`SkipReadOnlyBash`): the modelhook adapter skips the checker entirely for a Pre Bash
+command it can prove read-only (reusing `governance.ReadOnlyBash`/`SplitCommands`/
+`SubstitutionReadOnly` — fail-safe: substitution/ambiguity is inspected), so a
+guardrail-protected shell costs an LLM call ONLY on a mutating/outward command (e.g.
+`gh pr merge`), not on every `ls`. The OTHER local tools (Read/Edit/Write/Grep/Glob)
+remain deliberately unmatched. An explicit `guardrails.rules` list replaces the
+defaults (an operator's explicit `Bash` rule does NOT inherit the pre-filter — it
+inspects every command). There is no per-session call-count cap — the checker runs per
+matched call, and cost control lives in the operator's provider/billing layer (checker
+token spend is not folded into `MaxRunTokens`).
+
+**Per-tool rubric routing (ADR 0058).** `buildCheckPrompt` calls `rubric(phase, rule)`,
+which prefers a rule's non-empty `prompt` over the built-in default — the SAME seam
+operator custom prompts use. The default **Bash** rule wires `Prompt:
+modelhook.DefaultBashPrePrompt` (an EXPORTED const), so a Pre Bash check routes to a
+Bash-SPECIFIC rubric; **Web/MCP** rules leave `Prompt` empty and keep the generic
+`defaultPrePrompt`. Why: `defaultPrePrompt` is an exfiltration rubric for network/MCP
+boundaries — its "sensitive local data transmitted off the machine" + "if uncertain,
+judge unsafe" clauses false-positive on local-shell args (a real incident blocked a
+legitimate write to a sibling repo as "exfiltration"; a local write is data STAYING on
+the machine). `DefaultBashPrePrompt` flags only FIVE concrete dangerous categories
+(off-machine upload, `curl … | sh`, irreversible remote actions incl. `gh pr merge`,
+destructive local ops, AND local-PERSISTENCE writes to sensitive targets — authorized_keys
+/ shell rc / crontab / systemd / git-hooks — which never leave the machine so the first
+four miss them) and EXPLICITLY declares ORDINARY local writes/builds/tests/origin-remote
+git SAFE (category 5 and the local-write carve-out coexist: a normal source write to a
+sibling repo stays SAFE, only the named sensitive targets are UNSAFE), replacing the
+blanket "if uncertain, judge unsafe" with "judge SAFE unless a specific dangerous action
+is identifiable" — a deliberate precision-over-recall posture for the local shell, with
+the `/guardrail-allow` override (ADR 0059) as the residual recovery. An operator's
+explicit `Bash` rule with no `prompt:` falls back to `defaultPrePrompt` (least-surprising
+— an explicit rule opts out of the default-set conveniences).
 
 **The #1 constraint — `PostToolUse` Block is INERT.** The tool has already run by the
 time the post hook fires (`dispatch.go` ~642-648 only emits a hook annotation). So an
@@ -2330,6 +2360,38 @@ lost in a per-call WARN flood. **Operator-tier config:** the `guardrails:` YAML 
 is read by `permconfig.Resolver.OperatorGuardrails()` from the **user-global + CLI
 tiers only** — a project-tier block is ignored with a WARN (the trust inversion: a
 project weakening a checker is a downgrade), parsed strictly (unknown sub-key = error).
+
+**Human one-shot override — `/guardrail-allow` ([ADR 0059](../adr/0059-guardrails-human-override.md)).**
+A `block` is not a permanent dead-end: a HUMAN re-issues the request with a first-line
+`/guardrail-allow [<tool>] [-- <command-substring>]` directive to authorize the NEXT
+matching block ONCE. The **security boundary is the scan point**: the directive is
+parsed ONLY in `internal/adapter/server` `Service.StartRunContent`'s `text` param — the
+genuine user prompt, BEFORE the engine's `CommandExpander.Expand` and BEFORE any tool
+result / fetched page / MCP response / model output (those enter only inside the loop).
+`ParseOverrideDirective` (a tiny separate parser in `modelhook/override.go`, NOT the
+`engine/prompt` slash-command path — different trust domain) matches the case-sensitive
+marker on the FIRST non-empty line, arms the session-keyed `OverrideArmer`, and STRIPS
+the directive line so it never reaches the model/history (a directive-only message is
+rejected — arming still requires a task). A first-line NEAR-MISS (`LooksLikeOverrideDirective`:
+the first non-empty line begins with `/guardrail` but did not parse — typo/wrong-case/
+malformed) is fail-safe (NOT armed) and emits a WARN via the Service diag so the operator
+learns it was unrecognized; a mid-text `/guardrail` mention does not trip it (first-line
+only). The loop NEVER arms — there is no path from tool content to arming. The Runner's `blockOrOverride` funnel (the single point all
+would-be blocks pass through: ModeBlock, the sanitize fall-backs, fail-closed) calls
+`OverrideArmer.Consume(sessionID, tool, cmd)` — an atomic test-and-clear that hits iff
+an armed entry matches the scope (tool exact-match when set; command substring when set,
+Bash-only since `cmd` is `""` for non-Bash). On a hit it emits a loud
+`guardrail-override-consumed` operator-audit line and returns the empty allow outcome;
+the token is burned ONLY on a real block (a `safe` verdict and a read-only-skipped Bash
+command return before the funnel, so neither consumes). Session-keying gives **child
+isolation** for free (the Runner is main-engine-only; a child session id never matches a
+parent's arm). The `OverrideArmer` is created ONCE in `buildEngine` and threaded to BOTH
+Runner sites (shared engine + per-session factory) AND `server.Config.OverrideArmer` —
+one instance, so an arm is visible to whichever Runner the session's engine carries. nil
+armer = byte-identical no-override posture (the strip still runs; arming is a no-op). The
+block message gains a model-visible hint naming the recovery path WITHOUT inviting the
+model to claim it. The holder is in-memory and not persisted (an un-consumed override
+lost on restart is the SAFE direction).
 
 ### `workspacetrust` (WORKSPACE-TRUST — see `WORKSPACE-TRUST-SPIKE.md`)
 

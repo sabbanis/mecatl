@@ -22,6 +22,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/mcp"
 	"github.com/stacklok/mecatl/internal/adapter/mcp/source"
 	"github.com/stacklok/mecatl/internal/adapter/memory"
+	"github.com/stacklok/mecatl/internal/adapter/modelhook"
 	"github.com/stacklok/mecatl/internal/adapter/skills"
 	"github.com/stacklok/mecatl/internal/adapter/tools"
 )
@@ -478,6 +479,15 @@ type Config struct {
 	// LeaseRenewInterval is how often the renewer refreshes a held lease. A
 	// non-positive value defaults to LeaseTTL/3. Ignored when SessionLease is nil.
 	LeaseRenewInterval time.Duration
+
+	// OverrideArmer is the SHARED session-keyed one-shot human-override holder (ADR
+	// 0059). StartRunContent scans the GENUINE user prompt for a /guardrail-allow
+	// directive and arms it here; the SAME instance is wired into the guardrails
+	// Runner so a would-be block consults+consumes it. nil disables the override path
+	// entirely (byte-identical to off) — the genuine-prompt scan still strips the
+	// directive line, but arming is a no-op. The composition root supplies it (the
+	// same pointer it passes to buildGuardrailsHooks).
+	OverrideArmer *modelhook.OverrideArmer
 }
 
 // defaultMaxTeams is the live-team registry cap applied when Config.MaxTeams is
@@ -1494,6 +1504,32 @@ func (s *Service) StartRun(ctx context.Context, id session.SessionID, text strin
 func (s *Service) StartRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
 	if text == "" && len(parts) == 0 {
 		return nil, fmt.Errorf("%w: prompt text or parts is required", ErrInvalidArgument)
+	}
+	// Human guardrail override (ADR 0059): this `text` param is the GENUINE user
+	// prompt, pre-expansion (the engine's CommandExpander runs later inside
+	// RunContent) and PRE-injection (tool results / fetched pages / MCP responses /
+	// model output never reach this param — they enter only inside the loop). It is
+	// therefore the SOLE trusted-principal channel from which a one-shot override may
+	// arm. A first-line /guardrail-allow directive arms the shared armer for THIS
+	// session and is STRIPPED from the prompt so it never reaches the model/history.
+	// The strip applies even when no armer is wired (nil Arm is a no-op) so a directive
+	// is never recorded. A directive that was the WHOLE message (empty remainder) is
+	// rejected — arming an override must still state a task.
+	if scope, remainder, found := modelhook.ParseOverrideDirective(text); found {
+		s.cfg.OverrideArmer.Arm(string(id), scope)
+		text = remainder
+		if strings.TrimSpace(text) == "" && len(parts) == 0 {
+			return nil, fmt.Errorf("%w: a /guardrail-allow directive must accompany a task (the prompt was the directive alone)", ErrInvalidArgument)
+		}
+	} else if modelhook.LooksLikeOverrideDirective(text) {
+		// Near-miss (ADR 0059): the first line plainly intends a /guardrail-allow
+		// directive but did not parse (typo, wrong case, malformed grammar). It is
+		// FAIL-SAFE — nothing is armed and the text passes through unchanged as the
+		// task — but a silent pass would leave the operator believing a guardrail
+		// override was armed when it was not. WARN so they learn it was not recognized.
+		s.cfg.Diagnostics.Log(ctx, port.LevelWarn,
+			"guardrails: first-line looks like a /guardrail-allow override but did not parse; NOT armed (check the spelling/case and grammar `/guardrail-allow [<tool>] [-- <command-substring>]`)",
+			"session", string(id))
 	}
 	// loadAndReopen (not GetSession): a session that cleanly completed a prior turn
 	// is in StateCompleted, and the engine's RecordUserPrompt rejects a terminal
