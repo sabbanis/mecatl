@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782640740278,
+  "lastUpdate": 1782640743256,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -459731,6 +459731,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/ef60c5110c00a9c32a23c476a538c0c41ac80fbf"
         },
         "date": 1782535521203,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b35c9662f483cff859046261e627ba3008f3bd9f",
+          "message": "test(parallel): fix flaky TestParallelPersistsAllBranchesAllJoinModes/first (#142) (#202)\n\njoin=first cancels the losing branches the instant a winner completes. A\nloser cancelled BEFORE it acquired a worker slot returns via\ncancelledBeforeStart, which never creates a child session and so never\npersists — its persistence is genuinely best-effort, not a guarantee. On a\ncontended runner the loser's select sees both the free semaphore slot AND\nthe cancelled ctx ready and Go picks randomly, so the old assertion that\nBOTH branches always persist under first was load-dependent.\n\nRelax the first-mode assertion to the HARD guarantee: the winner (which\nalways ran to completion) persists and stays inspectable, derived from the\nprominent \"branch id:\" line. all/judge never cancel a branch, so they keep\nthe deterministic winner-AND-losers assertion.\n\n\nClaude-Session: https://claude.ai/code/session_018PUjmLLFLh4GYyTaZm28HH\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-28T12:53:29+03:00",
+          "tree_id": "c3fac3a1eccc7194965dec30b4764cad7c4d8d99",
+          "url": "https://github.com/stacklok/mecatl/commit/b35c9662f483cff859046261e627ba3008f3bd9f"
+        },
+        "date": 1782640742488,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
