@@ -2665,8 +2665,8 @@ func normalizeAskReviewerModel(cfg Config) (string, error) {
 // guardrail checker fires on the MAIN loop's PreToolUse/PostToolUse phases
 // regardless of whether the deployment surfaces permission asks to a human. A
 // configured model with NO explicit rules is still ACTIVE — it takes the built-in
-// DEFAULT advisory rule set (WebSearch/WebFetch/mcp__*, observe-only), the headline
-// default. The master kill-switch (GuardrailsDisabled) turns it off. No-op under
+// DEFAULT block rule set (WebSearch/WebFetch/mcp__*/Bash, enforcing — ADR 0060/0053),
+// the headline default. The master kill-switch (GuardrailsDisabled) turns it off. No-op under
 // UseMock. It is now VALIDATE-ONLY: it no longer emits the build-once ACTIVE fact.
 // The always-one-line posture — ON|OFF carrying the RESOLVED checker model + its
 // provenance, which this function never computed (it only validated the GATE value)
@@ -2740,14 +2740,13 @@ func logGuardrailsPosture(cfg Config) {
 // guardrailsPostureLine composes the ON posture line as a pure helper so it can be
 // table-tested directly (TestLogGuardrailsPostureBranches). It carries the resolved
 // checker model + provenance, the effective rule mode, the rule count, and whether
-// the default advisory set is in force. Provenance: srcSlot →
+// the default set is in force. Provenance: srcSlot →
 // "via slot `guardrail`"; srcSlotSupersedingGate → "via slot `guardrail`, supersedes gate
-// value `<gateval>`"; srcGate → "via --guardrails-model". Mode: usedDefaults → "advisory";
-// else the highest-severity explicit-rule mode present (block > sanitize > advisory), or
-// "mixed" only if a lower-severity mode coexists with block/sanitize in a way the
-// highest-severity roll-up would hide — we report the highest-severity present (block >
-// sanitize > advisory), so "mixed" is unreachable under the severity ordering; it is kept
-// as the honest fallback for an unforeseen mode string.
+// value `<gateval>`"; srcGate → "via --guardrails-model". Mode: the highest-severity mode
+// present across the RESOLVED specs (block > sanitize > advisory) — the default set is
+// block (ADR 0060), so the default-set branch reports block unless a defaultMode override
+// or a yolo demotion lowered it (both already baked into specs). "mixed" is unreachable
+// under the severity roll-up; it is kept as the honest fallback for an unforeseen mode.
 func guardrailsPostureLine(cfg Config, model string, src guardrailSource, specs []modelhook.RuleSpec, usedDefaults bool) string {
 	var provenance string
 	switch src {
@@ -2758,10 +2757,13 @@ func guardrailsPostureLine(cfg Config, model string, src guardrailSource, specs 
 	case srcGate:
 		provenance = "via --guardrails-model"
 	}
-	mode := "advisory"
-	if !usedDefaults {
-		mode = highestSeverityGuardrailMode(specs)
-	}
+	// Mode is the highest-severity mode across the RESOLVED specs — for BOTH the
+	// default-set and explicit-rule branches. The default set is block (ADR 0060), so
+	// the default-set branch honestly reports mode=block (a prior version hardcoded
+	// "advisory" here, misreporting the enforcing default as observe-only); a
+	// defaultMode override or a yolo demotion is already baked into specs, so this
+	// reflects it.
+	mode := highestSeverityGuardrailMode(specs)
 	out := fmt.Sprintf("guardrails: ON, checker=%s (%s), mode=%s, rules=%d", model, provenance, mode, len(specs))
 	if usedDefaults {
 		out += " (default set: WebSearch, WebFetch, mcp__*)"

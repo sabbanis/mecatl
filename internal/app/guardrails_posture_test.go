@@ -32,14 +32,15 @@ func TestLogGuardrailsPostureBranches(t *testing.T) {
 			wantSubs:  []string{"guardrails: OFF", "kill-switch"},
 		},
 		{
-			name: "ON via slot defaults (advisory + default set)",
+			name: "ON via slot defaults (block + default set)",
 			cfg: Config{
 				UseMock:      true,
 				ModelSlots:   map[string]string{slotGuardrail: "cheap"},
 				ModelAliases: map[string]string{"cheap": "slot-id"},
 			},
 			wantCount: 1,
-			wantSubs:  []string{"guardrails: ON", "checker=slot-id", "via slot `guardrail`", "mode=advisory", "default set"},
+			// The default set is BLOCK (ADR 0060), so the posture line reports mode=block.
+			wantSubs: []string{"guardrails: ON", "checker=slot-id", "via slot `guardrail`", "mode=block", "default set"},
 		},
 		{
 			name: "ON via slot superseding gate",
@@ -60,7 +61,7 @@ func TestLogGuardrailsPostureBranches(t *testing.T) {
 				GuardrailsModel: "gpt-5-mini",
 			},
 			wantCount: 1,
-			wantSubs:  []string{"guardrails: ON", "checker=gpt-5-mini", "via --guardrails-model", "mode=advisory", "default set"},
+			wantSubs:  []string{"guardrails: ON", "checker=gpt-5-mini", "via --guardrails-model", "mode=block", "default set"},
 		},
 		{
 			name: "ON with custom rules (block + rules)",

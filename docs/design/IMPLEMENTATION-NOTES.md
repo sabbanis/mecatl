@@ -2279,7 +2279,7 @@ three layers to keep the engine importable and the verdict shape in the adapter:
 - **`internal/app/guardrails.go`** — `buildGuardrailsHooks` (decorates the **main**
   hooks at `buildEngine` + the per-session factory, so a **fresh per-session
   failure-streak** is built; returns inner unchanged when no model is set),
-  `effectiveGuardrailSpecs` (explicit rules OR the default advisory set),
+  `effectiveGuardrailSpecs` (explicit rules OR the default BLOCK set, ADR 0060/0053),
   `engineGuardrailsChecker` (the `VerdictChecker` impl: `agent.RunGuardrailCheck` +
   `modelhook.ParseVerdict`), `compileGuardrailRules`, `foldOperatorGuardrails` (the
   operator-tier YAML fold — CLI out-ranks YAML for model/disable, rules come from

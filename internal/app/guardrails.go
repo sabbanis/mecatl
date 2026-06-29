@@ -196,9 +196,9 @@ var defaultGuardrailSpecs = []modelhook.RuleSpec{
 }
 
 // effectiveGuardrailSpecs returns the rule specs to compile: the operator's explicit
-// rules when any are configured, else the built-in default advisory set. usedDefaults
-// reports which, so the posture line (logGuardrailsPosture) can annotate "default
-// set" only when the defaults are in force.
+// rules when any are configured, else the built-in default BLOCK set (ADR 0060).
+// usedDefaults reports which, so the posture line (logGuardrailsPosture) can annotate
+// "default set" only when the defaults are in force.
 //
 // Posture-coupling (ADR 0062, sub-decision B): under posture YOLO ONLY (the
 // truly-off, gate-free tier that maps to Claude Code's bypassPermissions) ALL
@@ -257,11 +257,11 @@ func demoteForPosture(cfg Config, mode string) string {
 // guardrailsConfigured reports whether guardrails are switched on: a checker model
 // is configured — via --guardrails-model OR a bound `guardrail` model slot (ADR 0046,
 // configure = enable, the router-parity model of ADR 0042) — AND the master kill-switch
-// is not set. A model with NO explicit rules is still ON — it takes the default advisory
-// rule set (effectiveGuardrailSpecs), honouring the headline default. The kill-switch
-// (--guardrails=off → GuardrailsDisabled) wins over any config. Resolution precedence
-// is unchanged: a bound slot SUPERSEDES the gate value's model (see
-// resolveGuardrailsCheckerModel).
+// is not set. A model with NO explicit rules is still ON — it takes the default BLOCK
+// rule set (effectiveGuardrailSpecs, ADR 0060; the model being configured is the opt-in
+// to spend). The kill-switch (--guardrails=off → GuardrailsDisabled) wins over any
+// config. Resolution precedence is unchanged: a bound slot SUPERSEDES the gate value's
+// model (see resolveGuardrailsCheckerModel).
 func guardrailsConfigured(cfg Config) bool {
 	if cfg.GuardrailsDisabled {
 		return false
