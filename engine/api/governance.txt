@@ -23,6 +23,7 @@ const ScopeLocalProject Scope = 2
 const ScopeManaged Scope = 0
 const ScopeSharedProject Scope = 3
 const ScopeUser Scope = 4
+func BashCommandFromArgs(args json.RawMessage) (string, bool)
 func Canonicalize(cmd string) string
 func HasSubstitutionOrGrouping(seg string) bool
 func IsReadOnlyTool(tool string) bool

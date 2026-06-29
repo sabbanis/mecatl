@@ -195,6 +195,18 @@ var _ port.HookRunner = (*Runner)(nil)
 
 // Run delegates non-tool phases straight to inner. For PreToolUse/PostToolUse it
 // runs inner FIRST, then the checker SECOND, and merges per decision 5.
+//
+// Override-vs-inner interaction (ADR 0059): when the guardrail checker's block is
+// authorized by a consumed one-shot override, the override authorizes the MERGED
+// outcome — not just the checker's slice. So a consumed override also clears an
+// inner hook's Block (e.g. a configured external PreToolUse hook exiting 2 on the
+// same call). Without this, the override would be burned (the audit line fires,
+// "override CONSUMED") yet the call would stay blocked via innerOut.Block — an
+// auditability gap vs ADR 0059's "an armed, matching override authorizes the block
+// ONCE… the call runs". This is fail-safe in the security direction either way
+// (the call not running is the safe outcome), but the override must not be silently
+// voided. A consumed override does NOT suppress an inner Mutated rewrite (a
+// sanitizer's args fix is independent of the block authorization).
 func (r *Runner) Run(ctx context.Context, ev governance.HookEvent) (governance.HookOutcome, error) {
 	innerOut, innerErr := r.inner.Run(ctx, ev)
 
@@ -208,14 +220,23 @@ func (r *Runner) Run(ctx context.Context, ev governance.HookEvent) (governance.H
 		return innerOut, innerErr
 	}
 
-	checkOut := r.check(ctx, phase, rule, ev)
+	var overrideConsumed bool
+	checkOut := r.check(ctx, phase, rule, ev, &overrideConsumed)
+	if overrideConsumed && innerOut.Block {
+		// The human's one-shot override authorizes the block ONCE — including an
+		// inner hook's block on the same call. Drop the inner veto (and its block
+		// message) so the tool runs; the override's own audit line already fired
+		// in blockOrOverride.
+		innerOut.Block = false
+		innerOut.Message = ""
+	}
 	return mergeOutcomes(innerOut, checkOut), innerErr
 }
 
 // check runs the guardrail checker for one matched rule and maps its verdict to a
 // HookOutcome per the rule's mode. It applies the min-content skip and the
 // fail-open/closed policy on a checker error/timeout.
-func (r *Runner) check(ctx context.Context, phase Phase, rule CompiledRule, ev governance.HookEvent) governance.HookOutcome {
+func (r *Runner) check(ctx context.Context, phase Phase, rule CompiledRule, ev governance.HookEvent, consumed *bool) governance.HookOutcome {
 	// Read-only Bash pre-filter (the local-shell cost guard): when the matched rule
 	// opts in, a Pre-phase Bash call whose command is CONFIDENTLY read-only skips the
 	// checker entirely — ZERO LLM calls, zero latency. Only mutating/outward commands
@@ -241,7 +262,7 @@ func (r *Runner) check(ctx context.Context, phase Phase, rule CompiledRule, ev g
 	prompt := buildCheckPrompt(phase, rule, ev.Tool, content)
 	verdict, err := r.checker.Check(ctx, CheckRequest{Phase: phase, Tool: ev.Tool, Content: content, Prompt: prompt})
 	if err != nil {
-		return r.onCheckerError(ctx, phase, rule, ev, err)
+		return r.onCheckerError(ctx, phase, rule, ev, err, consumed)
 	}
 
 	if verdict.Safe != nil && *verdict.Safe {
@@ -249,7 +270,7 @@ func (r *Runner) check(ctx context.Context, phase Phase, rule CompiledRule, ev g
 		return governance.HookOutcome{} // a checker SAYING safe always passes
 	}
 	r.failures.reset()
-	return r.enforce(ctx, phase, rule, ev, verdict)
+	return r.enforce(ctx, phase, rule, ev, verdict, consumed)
 }
 
 // findingFields builds the correlatable diagnostic key/values shared by every
@@ -280,7 +301,7 @@ func findingFields(ev governance.HookEvent, phase Phase, extra ...any) []any {
 // (failClosed:true tightens even under the warn default; failClosed:false loosens
 // even under the fail global). Advisory rules always fail-open regardless — an
 // advisory finding is observe-only by definition.
-func (r *Runner) onCheckerError(ctx context.Context, phase Phase, rule CompiledRule, ev governance.HookEvent, err error) governance.HookOutcome {
+func (r *Runner) onCheckerError(ctx context.Context, phase Phase, rule CompiledRule, ev governance.HookEvent, err error, consumed *bool) governance.HookOutcome {
 	if down, n := r.failures.fail(); down {
 		r.diag.Log(ctx, port.LevelWarn,
 			"guardrails: checker DOWN — "+itoa(n)+" consecutive checker failures; tool I/O is currently UNGUARDED on fail-open rules until the checker recovers",
@@ -301,11 +322,11 @@ func (r *Runner) onCheckerError(ctx context.Context, phase Phase, rule CompiledR
 	r.diag.Log(ctx, port.LevelWarn,
 		"guardrails: checker error; treating content as UNSAFE (fail-closed)",
 		findingFields(ev, phase, "err", err.Error())...)
-	return r.blockOrOverride(ctx, phase, ev, reason)
+	return r.blockOrOverride(ctx, phase, ev, reason, consumed)
 }
 
 // enforce maps an UNSAFE verdict to a HookOutcome per the rule's mode.
-func (r *Runner) enforce(ctx context.Context, phase Phase, rule CompiledRule, ev governance.HookEvent, v Verdict) governance.HookOutcome {
+func (r *Runner) enforce(ctx context.Context, phase Phase, rule CompiledRule, ev governance.HookEvent, v Verdict, consumed *bool) governance.HookOutcome {
 	reason := strings.TrimSpace(v.Reason)
 	switch rule.mode {
 	case ModeAdvisory:
@@ -317,12 +338,12 @@ func (r *Runner) enforce(ctx context.Context, phase Phase, rule CompiledRule, ev
 			findingFields(ev, phase, "reason", clamp(reason))...)
 		return governance.HookOutcome{Message: advisoryMessage(reason)}
 	case ModeSanitize:
-		return r.sanitizeOutcome(ctx, phase, ev, reason, v)
+		return r.sanitizeOutcome(ctx, phase, ev, reason, v, consumed)
 	default: // ModeBlock
 		r.diag.Log(ctx, port.LevelInfo,
 			"guardrails: blocking finding (enforced)",
 			findingFields(ev, phase, "reason", clamp(reason))...)
-		return r.blockOrOverride(ctx, phase, ev, reason)
+		return r.blockOrOverride(ctx, phase, ev, reason, consumed)
 	}
 }
 
@@ -344,19 +365,19 @@ func (r *Runner) enforce(ctx context.Context, phase Phase, rule CompiledRule, ev
 // The trust assumption is explicit: a compromised checker can rewrite content;
 // sanitize TRUSTS the checker's output. Use enforce+sanitize only with a checker
 // model you trust (documented in GUARDRAILS.md).
-func (r *Runner) sanitizeOutcome(ctx context.Context, phase Phase, ev governance.HookEvent, reason string, v Verdict) governance.HookOutcome {
+func (r *Runner) sanitizeOutcome(ctx context.Context, phase Phase, ev governance.HookEvent, reason string, v Verdict, consumed *bool) governance.HookOutcome {
 	r.diag.Log(ctx, port.LevelInfo,
 		"guardrails: sanitizing finding (enforced)",
 		findingFields(ev, phase, "reason", clamp(reason))...)
 	if v.Sanitized == nil {
-		return r.blockOrOverride(ctx, phase, ev, reason)
+		return r.blockOrOverride(ctx, phase, ev, reason, consumed)
 	}
 	sanitized := *v.Sanitized
 	if len(sanitized) > maxSanitizedBytes {
 		r.diag.Log(ctx, port.LevelWarn,
 			"guardrails: sanitized_content exceeds the size bound; rejecting the rewrite and blocking instead",
 			findingFields(ev, phase, "bytes", len(sanitized), "bound", maxSanitizedBytes)...)
-		return r.blockOrOverride(ctx, phase, ev, reason)
+		return r.blockOrOverride(ctx, phase, ev, reason, consumed)
 	}
 	if phase == PhasePre {
 		// The sanitized payload IS the rewritten args JSON; it MUST be valid JSON or the
@@ -365,7 +386,7 @@ func (r *Runner) sanitizeOutcome(ctx context.Context, phase Phase, ev governance
 			r.diag.Log(ctx, port.LevelWarn,
 				"guardrails: sanitized args are not valid JSON; blocking instead of running the original unsafe args",
 				findingFields(ev, phase)...)
-			return r.blockOrOverride(ctx, phase, ev, reason)
+			return r.blockOrOverride(ctx, phase, ev, reason, consumed)
 		}
 		return mutateOutcome(phase, ev.Tool, sanitized, false)
 	}
@@ -396,7 +417,7 @@ func advisoryMessage(reason string) string {
 // Bash pre-filter already short-circuited (so a skipped read-only command never
 // consumes), and a `safe` verdict returns before any block path (so it never consumes).
 // The override token is therefore burned only when it actually prevents a block.
-func (r *Runner) blockOrOverride(ctx context.Context, phase Phase, ev governance.HookEvent, reason string) governance.HookOutcome {
+func (r *Runner) blockOrOverride(ctx context.Context, phase Phase, ev governance.HookEvent, reason string, consumed *bool) governance.HookOutcome {
 	cmd := ""
 	if ev.Tool == "Bash" {
 		if c, ok := bashCmdFromArgs(string(ev.Input)); ok {
@@ -407,6 +428,9 @@ func (r *Runner) blockOrOverride(ctx context.Context, phase Phase, ev governance
 		r.diag.Log(ctx, port.LevelWarn,
 			"guardrails: human one-shot override CONSUMED — a guardrail block was authorized by a /guardrail-allow directive in the genuine user prompt",
 			findingFields(ev, phase, "marker", guardrailOverrideConsumedMarker, "reason", clamp(reason))...)
+		if consumed != nil {
+			*consumed = true
+		}
 		return governance.HookOutcome{}
 	}
 	return r.blockOutcome(phase, ev.Tool, reason)
@@ -456,29 +480,13 @@ func contentUnderReview(phase Phase, ev governance.HookEvent) string {
 }
 
 // bashCmdFromArgs extracts the shell command string from a Bash tool call's raw args
-// JSON. It reads the "command" field, then "cmd" as a fallback, returning the first
-// non-empty string. It is FAIL-SAFE: a JSON parse error OR neither field carrying a
-// non-empty string returns ("", false), so the caller INSPECTS rather than skips (an
+// JSON via the shared governance extractor (the single source of truth for the Bash
+// tool-call args schema, reused by the permission evaluator and the Subagent
+// isolation gate). It is FAIL-SAFE: a parse error or a missing/whitespace-only
+// command returns ("", false), so the caller INSPECTS rather than skips (an
 // unreadable args object must never be presumed read-only).
 func bashCmdFromArgs(raw string) (string, bool) {
-	var m map[string]json.RawMessage
-	if err := json.Unmarshal([]byte(raw), &m); err != nil {
-		return "", false
-	}
-	for _, key := range []string{"command", "cmd"} {
-		rawVal, present := m[key]
-		if !present {
-			continue
-		}
-		var s string
-		if err := json.Unmarshal(rawVal, &s); err != nil {
-			continue
-		}
-		if strings.TrimSpace(s) != "" {
-			return s, true
-		}
-	}
-	return "", false
+	return governance.BashCommandFromArgs(json.RawMessage(raw))
 }
 
 // bashFullyReadOnly reports whether a shell command line is CONFIDENTLY read-only,

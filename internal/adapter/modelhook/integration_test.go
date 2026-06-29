@@ -629,3 +629,55 @@ func TestBlockMessageCarriesOverrideHint(t *testing.T) {
 		t.Fatal("a block message must carry the human-actionable /guardrail-allow recovery hint (full grammar, one-shot/session, doc pointer) plus the model-cannot-claim caveat")
 	}
 }
+
+// blockingInnerHook is a fake port.HookRunner whose PreToolUse outcome is a hard Block.
+// It models a configured external PreToolUse hook (e.g. hookexec operator hook exiting 2)
+// that blocks the SAME call a guardrail rule also blocks.
+type blockingInnerHook struct{}
+
+func (blockingInnerHook) Run(_ context.Context, ev governance.HookEvent) (governance.HookOutcome, error) {
+	if ev.Phase == governance.PhasePreToolUse {
+		return governance.HookOutcome{Block: true, Message: "inner hook veto"}, nil
+	}
+	return governance.HookOutcome{}, nil
+}
+
+// A consumed one-shot override authorizes the MERGED outcome, not just the guardrail's
+// slice: when an INNER hook (blockingInnerHook) AND the guardrail checker both block the
+// same call, the human's /guardrail-allow must still let the tool run — the override is
+// not silently voided by the inner veto (ADR 0059). Pin: the tool runs, the override is
+// consumed exactly once, and a second block (no re-arm) stays blocked by BOTH layers.
+func TestOverrideAuthorizesInnerBlockToo(t *testing.T) {
+	armer := modelhook.NewOverrideArmer()
+	diag := &warnCapturingDiag{}
+	armer.Arm("s1", modelhook.OverrideScope{Tool: "Bash"})
+	ran := false
+	bt := bashTool(&ran)
+	chk := &scriptedChecker{verdict: modelhook.Verdict{Safe: boolp(false), Reason: "mutating shell action"}}
+	hooks := modelhook.New(blockingInnerHook{}, modelhook.Options{
+		Rules: []modelhook.CompiledRule{bashDefaultRule(t)}, Checker: chk, Diagnostics: diag, OverrideArmer: armer,
+	})
+	llm := mockllm.New(mockllm.ToolCallTurn(bashCall("c1", "gh pr merge 12 --squash")), mockllm.TextTurn("done"))
+	cat := tool.NewCatalog()
+	cat.MustRegister(bt)
+	e := newEngine(agent.Deps{LLM: llm, Catalog: cat, Hooks: hooks})
+	drain(e.Run(context.Background(), session.New("s1", session.ModeDefault, "/ws", session.Limits{}, time.Unix(0, 0)), memfs.NewWorkspace("/ws"), "go"))
+	if !ran {
+		t.Fatal("an armed override must authorize BOTH the inner block and the guardrail block — the tool must run")
+	}
+	if !diag.has("override CONSUMED") {
+		t.Fatalf("the override must be consumed (audit line); msgs=%v", diag.msgs)
+	}
+	// One-shot: a second identical call with NO re-arm stays blocked (the inner hook
+	// AND the guardrail both still block).
+	ran2 := false
+	bt2 := bashTool(&ran2)
+	cat2 := tool.NewCatalog()
+	cat2.MustRegister(bt2)
+	llm2 := mockllm.New(mockllm.ToolCallTurn(bashCall("c1", "gh pr merge 12 --squash")), mockllm.TextTurn("done"))
+	e2 := newEngine(agent.Deps{LLM: llm2, Catalog: cat2, Hooks: hooks})
+	drain(e2.Run(context.Background(), session.New("s1", session.ModeDefault, "/ws", session.Limits{}, time.Unix(0, 0)), memfs.NewWorkspace("/ws"), "go"))
+	if ran2 {
+		t.Fatal("the override is one-shot — a second block (no re-arm) must NOT run")
+	}
+}

@@ -43,6 +43,15 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
   contamination-safe per-provider path. A def with inline MCP servers is
   declined on the agent+model path (v1 scope limit); reference-only MCP is
   supported. Classified Added per COMPATIBILITY.md (a new exported Option).
+- **`governance.BashCommandFromArgs`.** A new exported helper
+  `func(args json.RawMessage) (string, bool)` extracting the Bash tool-call command
+  string from its args JSON (the `command`/`cmd` field pair), with fail-safe
+  semantics: a parse error or a missing/whitespace-only command returns `("", false)`
+  so a caller gating a safety decision INSPECTS rather than skips. It consolidates
+  three prior private copies (`governance.bashCommand`, `agent.bashCmdFromArgs`,
+  `modelhook.bashCmdFromArgs`) into the single source of truth for the Bash args
+  schema, so a schema change lands in one place. The two agent/modelhook wrappers
+  now delegate to it. Classified Added per COMPATIBILITY.md (a new exported func).
 
 - **`agent.WithAgentWritableEngineFactory`.** A new `SubagentOption` injecting a
   composition-supplied factory `func(agentName string) (*Engine, bool)` that rebuilds
