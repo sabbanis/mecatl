@@ -1,0 +1,834 @@
+//go:build kind_e2e
+
+// Package k8s_e2e_test is the kind-based Kubernetes cloud-native PROOF for
+// mecak8s (ADR 0048, MECAK8S-PLAN §4h). It spins a real kind cluster with a
+// Redis StatefulSet + two storage-free agent replicas and asserts three
+// cloud-native properties over the HTTP API:
+//
+//  1. Lease exclusion across replicas (the single-writer proof).
+//  2. Graceful failover releases the session lease before the TTL.
+//  3. Session persistence across an agent pod restart (Redis-backed).
+//
+// It is GATED behind the `kind_e2e` build tag so `task test` never compiles
+// it; it runs via `task e2e:k8s` (needs Docker + kind + ko + kubectl). The
+// suite skips gracefully (ginkgo.Skip, not a failure) when a tool is missing,
+// so a bare `go test -tags kind_e2e` without the toolchain does not hard-fail.
+//
+// Unlike e2e_test (which spawns local mecated processes), this suite drives
+// pods via kubectl/port-forward — it imports NO engine/ code and shares none of
+// the e2e_test harness.
+package k8s_e2e_test
+
+import (
+	"bufio"
+	"bytes"
+	"context"
+	"encoding/json"
+	"fmt"
+	"io"
+	"net"
+	"net/http"
+	"os"
+	"os/exec"
+	"strings"
+	"sync"
+	"time"
+
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
+)
+
+// Cluster + manifest constants (ADR 0048 §4h, deploy/mecak8s/).
+const (
+	kindClusterName = "mecatl-e2e"
+	kindNodeImage   = "kindest/node:v1.34.3"
+	k8sNamespace    = "mecatl"
+	agentComponent  = "agent" // app.kubernetes.io/component label value
+	partOfLabel     = "mecak8s"
+	agentPodPort    = 8081 // the HTTP/SSE listener (--http-addr default in the pod)
+
+	// liveProviderSecret is the k8s Secret holding OPENROUTER_API_KEY for the live
+	// specs. The key is staged from the test process's environment into a Secret —
+	// never into a pod arg, a manifest, or a log — so it cannot leak.
+	liveProviderSecret = "openrouter-key"
+	// liveProviderModel is the default-lane model the live specs run on (the same
+	// verified-cheap lane as e2e/harness/target.go's DefaultModel).
+	liveProviderModel = "anthropic/claude-haiku-4.5"
+	// liveProviderID is the provider id the live deployment is patched to.
+	liveProviderID = "openrouter"
+)
+
+// liveProviderEnabled reports whether OPENROUTER_API_KEY is set in the test
+// process's environment — the gate for the live LLM specs. The mock specs run
+// unconditionally; the live specs Skip when this is false.
+func liveProviderEnabled() bool {
+	return os.Getenv("OPENROUTER_API_KEY") != ""
+}
+
+// --- tool availability / cluster lifecycle -----------------------------------
+
+// requireTools skips the suite (ginkgo.Skip) if a container runtime (Docker OR
+// podman), kind, ko, or kubectl is not on PATH. This is a tool-availability
+// gate, not a failure — the Taskfile also has preconditions, but the Go code
+// skips too so a bare `go test -tags kind_e2e` does not hard-fail on a machine
+// without the toolchain. The suite header says "Needs Docker + kind + ko +
+// kubectl", but podman is an ACCEPTABLE ALTERNATIVE container runtime: when
+// KIND_EXPERIMENTAL_PROVIDER=podman is set, ko loads into podman's store and
+// `podman save` feeds the kind `image-archive` load. So EITHER docker OR podman
+// satisfies the runtime requirement (the other three tools are mandatory);
+// without a runtime those commands hit an Expect and fail the spec instead of
+// skipping.
+func requireTools() {
+	ginkgo.GinkgoHelper()
+	// Docker OR podman (the chosen runtime saves the image to a tarball that
+	// `kind load image-archive` reads, sidestepping the snapshotter bridge).
+	_, dockerErr := exec.LookPath("docker")
+	_, podmanErr := exec.LookPath("podman")
+	if dockerErr != nil && podmanErr != nil {
+		ginkgo.Skip("neither docker nor podman is on PATH — skipping the kind k8s e2e suite")
+	}
+	for _, tool := range []string{"kind", "ko", "kubectl"} {
+		if _, err := exec.LookPath(tool); err != nil {
+			ginkgo.Skip(fmt.Sprintf("%q is not on PATH — skipping the kind k8s e2e suite (needs container runtime + kind + ko + kubectl)", tool))
+		}
+	}
+}
+
+// kindCreateCluster creates a fresh kind cluster. It is idempotent-ish: if a
+// cluster with the same name already exists (a prior run left it), it is
+// deleted first so the suite starts from a clean slate. The kind node image is
+// pulled by kind itself.
+func kindCreateCluster() {
+	ginkgo.GinkgoHelper()
+	// Best-effort delete of a leftover cluster (ignore errors — it may not exist).
+	_ = exec.Command("kind", "delete", "cluster", "--name", kindClusterName).Run()
+	runCmd(ginkgoSuiteCtx(), "kind", "create", "cluster",
+		"--name", kindClusterName, "--image", kindNodeImage)
+}
+
+// kindDeleteCluster tears the cluster down. Called in AfterSuite / DeferCleanup.
+func kindDeleteCluster() {
+	_ = exec.Command("kind", "delete", "cluster", "--name", kindClusterName).Run()
+}
+
+// koResolveMecak8s is the SINGLE build+resolve step: `ko resolve -f
+// deploy/mecak8s/` builds the mecak8s image (loading it into the local container
+// daemon under `ko.local/mecak8s-<hash>:<sha>`) AND renders the manifests with
+// the `ko://` placeholder substituted by that EXACT ref. It returns the rendered
+// YAML plus the resolved image ref — ONE build, ONE ref, ONE load. There is no
+// second `ko build` producing a differently-shaped `ko.local:<sha>` bare tag, so
+// no retagging and no image-ref mismatch is possible.
+//
+// KO_DOCKER_REPO=ko.local keeps the image local (no registry push, no
+// credentials). The image lands in whichever local daemon ko selects (docker by
+// default; podman when the environment routes ko there).
+func koResolveMecak8s() (yaml []byte, imageRef string) {
+	ginkgo.GinkgoHelper()
+	ctx := ginkgoSuiteCtx()
+	resolve := exec.CommandContext(ctx, "ko", "resolve", "-f", "deploy/mecak8s/")
+	resolve.Dir = repoRoot()
+	resolve.Env = append(resolve.Environ(), "KO_DOCKER_REPO=ko.local")
+	out, err := resolve.Output()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"ko resolve -f deploy/mecak8s/ failed\n--- output ---\n%s", out)
+	imageRef = extractImageRef(out)
+	return out, imageRef
+}
+
+// extractImageRef scans rendered manifests for the agent container's image line
+// — the EXACT string the pod will reference. It matches `image: ko.local/...`
+// (the built agent image), not the Redis image (pulled from Docker Hub, no
+// ko.local prefix).
+func extractImageRef(rendered []byte) string {
+	ginkgo.GinkgoHelper()
+	for _, line := range strings.Split(string(rendered), "\n") {
+		line = strings.TrimSpace(line)
+		if strings.HasPrefix(line, "image: ko.local/") {
+			return strings.TrimPrefix(line, "image: ")
+		}
+	}
+	ginkgo.Fail("could not find the resolved agent image ref in ko resolve output")
+	return ""
+}
+
+// containerRuntime is the local daemon ko loaded the image into: podman when
+// KIND_EXPERIMENTAL_PROVIDER=podman is set (ko routes there in that case),
+// otherwise docker (ko's default). It is the runtime whose store holds the
+// resolved image, so it is the runtime that must `save` it to a tarball.
+func containerRuntime() string {
+	if os.Getenv("KIND_EXPERIMENTAL_PROVIDER") == "podman" {
+		return "podman"
+	}
+	return "docker"
+}
+
+// saveAndLoadImage loads a local image into the kind cluster's node via a
+// tarball: `<runtime> save <ref> -o <tar>` then `kind load image-archive <tar>`.
+// This bypasses `kind load docker-image`'s containerd-snapshotter detection
+// entirely — the snapshotter bridge is a known failure on some Docker daemons
+// (the GitHub runner's overlayfs), and `image-archive` reads the tarball
+// straight into the kind node's containerd regardless of the host's snapshotter.
+// It works against EITHER docker OR podman (whichever holds the image, per
+// containerRuntime). The tarball is a transient runtime artifact, cleaned up on
+// return.
+func saveAndLoadImage(imageRef string) {
+	ginkgo.GinkgoHelper()
+	ctx := ginkgoSuiteCtx()
+	runtime := containerRuntime()
+
+	tmp, err := os.CreateTemp("", "mecak8s-e2e-*.tar")
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "create image tarball")
+	tmpPath := tmp.Name()
+	_ = tmp.Close()
+	defer os.Remove(tmpPath)
+
+	// `<runtime> save` writes the image (under the EXACT resolved ref the pod
+	// references) to a tarball. CombinedOutput captures save progress on stderr.
+	saveOut, err := exec.CommandContext(ctx, runtime, "save", imageRef, "-o", tmpPath).CombinedOutput()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"%s save %s -o %s failed\n--- output ---\n%s", runtime, imageRef, tmpPath, saveOut)
+
+	// `kind load image-archive` loads the tarball into the kind node's containerd
+	// without touching the host snapshotter — the portable path that works on
+	// Docker (CI) and podman (local) alike.
+	loadOut, err := exec.CommandContext(ctx, "kind", "load", "image-archive", tmpPath,
+		"--name", kindClusterName).CombinedOutput()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"kind load image-archive %s failed\n--- output ---\n%s", tmpPath, loadOut)
+}
+
+// applyResolvedManifests applies the pre-resolved manifests (the YAML returned
+// by koResolveMecak8s) — no second `ko resolve` call. The image MUST already be
+// loaded into the kind node (saveAndLoadImage) so the pod can pull it.
+//
+// The Kustomization resource itself leaks into ko resolve's output (a ko
+// version behavior); it must be filtered out before kubectl apply, or the API
+// server rejects it as an unknown kind.
+//
+// The namespace is applied FIRST and waited on before the rest: kubectl apply
+// processes documents in order, but the namespace's "active" state is set by
+// the namespace controller asynchronously — resources in that namespace fail
+// with "namespaces not found" if applied in the same invocation.
+func applyResolvedManifests(resolved []byte) {
+	ginkgo.GinkgoHelper()
+	ctx := ginkgoSuiteCtx()
+
+	// Filter out the Kustomization resource (ko emits it; kubectl can't apply it).
+	filtered := filterKustomization(resolved)
+
+	// Split into namespace-first + rest: the namespace must be active before
+	// namespaced resources can be created.
+	namespaceDoc, restDocs := splitNamespace(filtered)
+	if namespaceDoc != nil {
+		apply := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+		apply.Stdin = bytes.NewReader(namespaceDoc)
+		applyOut, err := apply.CombinedOutput()
+		gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+			"kubectl apply namespace failed\n--- output ---\n%s", applyOut)
+		// Wait for the namespace to be active (the controller sets it asynchronously).
+		gomega.Eventually(func() string {
+			return runCmdQuiet("kubectl", "get", "namespace", k8sNamespace,
+				"-o", "jsonpath={.status.phase}")
+		}, 30*time.Second, time.Second).Should(gomega.Equal("Active"),
+			"namespace %s did not become Active", k8sNamespace)
+	}
+	if len(restDocs) > 0 {
+		apply := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+		apply.Stdin = bytes.NewReader(restDocs)
+		applyOut, err := apply.CombinedOutput()
+		gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+			"kubectl apply failed\n--- output ---\n%s", applyOut)
+	}
+}
+
+// filterKustomization removes any `kind: Kustomization` YAML document from the
+// multi-document stream. ko resolve (ko v0.18) emits the kustomization.yaml
+// itself as a resource in the output, which kubectl apply rejects as an unknown
+// kind (the Kustomization CRD is not installed on a vanilla cluster).
+func filterKustomization(input []byte) []byte {
+	var out bytes.Buffer
+	docs := bytes.Split(input, []byte("\n---\n"))
+	for _, doc := range docs {
+		if bytes.Contains(doc, []byte("kind: Kustomization")) {
+			continue
+		}
+		if out.Len() > 0 {
+			out.Write([]byte("\n---\n"))
+		}
+		out.Write(doc)
+	}
+	return out.Bytes()
+}
+
+// splitNamespace separates the Namespace document from the rest so the namespace
+// can be applied (and waited on) first. Returns (namespaceDoc, restDocs).
+func splitNamespace(input []byte) (namespaceDoc, rest []byte) {
+	docs := bytes.Split(input, []byte("\n---\n"))
+	var restBuf bytes.Buffer
+	for _, doc := range docs {
+		if bytes.Contains(doc, []byte("kind: Namespace")) {
+			namespaceDoc = doc
+			continue
+		}
+		if restBuf.Len() > 0 {
+			restBuf.Write([]byte("\n---\n"))
+		}
+		restBuf.Write(doc)
+	}
+	return namespaceDoc, restBuf.Bytes()
+}
+
+// waitPodsReady waits for every pod in the mecatl namespace carrying the
+// part-of=mecak8s label to be Ready. This covers both agent replicas AND the
+// Redis pod (both carry the label). The Redis image is pulled from Docker Hub
+// on first apply, so the timeout must allow for an image pull.
+func waitPodsReady() {
+	ginkgo.GinkgoHelper()
+	runCmd(ginkgoSuiteCtx(), "kubectl", "wait",
+		"--for=condition=Ready", "pod",
+		"-n", k8sNamespace,
+		"-l", "app.kubernetes.io/part-of="+partOfLabel,
+		"--timeout=180s")
+}
+
+// podNames returns the names of the agent pods (component=agent) that are
+// Running and Ready, in stable sorted order so pod-A / pod-B are addressable
+// across the suite. There are exactly two (the Deployment replicas:2); the
+// suite asserts that. Filtering to Ready pods excludes terminating pods during
+// a rolling update (the old pods leave the Ready set when /readyz flips to 503
+// via the drain gate, but they remain in the pod list during the
+// terminationGracePeriodSeconds window).
+//
+// This is an Eventually because a RollingUpdate with maxSurge:1 has a transient
+// 3-pod window: the new pods surge Ready before the old pod's preStop /drain
+// hook flips its readiness to not-ready. The rollout is "complete" (kubectl
+// rollout status returns) when the new ReplicaSet reaches replicas, NOT when the
+// old pod is gone. Waiting for exactly 2 Ready pods is the correct semantic —
+// it resolves the transient state naturally via the readiness probe, not via a
+// pod-count guess.
+func podNames() []string {
+	ginkgo.GinkgoHelper()
+	var names []string
+	gomega.Eventually(func(g gomega.Gomega) {
+		out := runCmdQuiet("kubectl", "get", "pods",
+			"-n", k8sNamespace,
+			"-l", "app.kubernetes.io/component="+agentComponent,
+			"--field-selector=status.phase==Running",
+			"-o", "jsonpath={.items[?(@.status.containerStatuses[0].ready==true)].metadata.name}")
+		names = strings.Fields(strings.TrimSpace(out))
+		g.Expect(names).To(gomega.HaveLen(2),
+			"expected exactly two Ready agent pods (replicas:2), got %d: %v", len(names), names)
+	}, 120*time.Second, 2*time.Second).Should(gomega.Succeed(),
+		"did not converge on exactly two Ready agent pods")
+	return names
+}
+
+// kubectlDeletePod deletes a pod. Graceful (the default) lets the preStop /drain
+// hook + SIGTERM fire, so the pod's Service.Close releases its held leases
+// before the TTL. force=true passes --force --grace-period=0, which skips the
+// graceful shutdown — NO releaseLease, so the k8s Lease object remains until its
+// TTL lapses. The contrast is the failover control case.
+func kubectlDeletePod(podName string, force bool) {
+	ginkgo.GinkgoHelper()
+	args := []string{"delete", "pod", podName, "-n", k8sNamespace}
+	if force {
+		args = append(args, "--force", "--grace-period=0")
+	}
+	runCmd(ginkgoSuiteCtx(), "kubectl", args...)
+}
+
+// waitReplacementReady waits for a NEW Ready agent pod — one whose name is NOT in
+// the preDelete snapshot of pod names that existed before the delete. With
+// replicas:2, after deleting pod-A there are briefly two candidates for "a pod
+// that is not deletedName": pod-B (the survivor, Ready all along) and the
+// genuinely-new replacement. Taking a pre-delete roster and excluding ALL of it
+// ensures this returns the NEW replacement pod, never the survivor — which
+// matters for the force-delete control case, where the survivor pod-B may have
+// just been force-killed and must not be mistaken for its own replacement.
+//
+// Callers MUST capture the pod names BEFORE calling kubectlDeletePod and pass
+// them as preDelete.
+func waitReplacementReady(preDelete []string) string {
+	ginkgo.GinkgoHelper()
+	old := make(map[string]struct{}, len(preDelete))
+	for _, n := range preDelete {
+		old[n] = struct{}{}
+	}
+	isNewReady := func(name string) bool {
+		if _, hit := old[name]; hit {
+			return false // a survivor from the pre-delete roster, not the replacement
+		}
+		ready := runCmdQuiet("kubectl", "get", "pod", name, "-n", k8sNamespace,
+			"-o", "jsonpath={.status.containerStatuses[0].ready}")
+		return ready == "true"
+	}
+	gomega.Eventually(func(g gomega.Gomega) string {
+		out := runCmdQuiet("kubectl", "get", "pods",
+			"-n", k8sNamespace,
+			"-l", "app.kubernetes.io/component="+agentComponent,
+			"-o", "jsonpath={.items[*].metadata.name}")
+		for _, n := range strings.Fields(strings.TrimSpace(out)) {
+			if isNewReady(n) {
+				return n
+			}
+		}
+		return ""
+	}, 120*time.Second, 2*time.Second).ShouldNot(gomega.BeEmpty(),
+		"no NEW (pre-delete-roster-excluded) replacement pod became Ready (pre-delete roster: %v)", preDelete)
+
+	// Re-query to return the stable name (the Eventually closure's return is
+	// discarded to keep the matcher simple; re-read once it is known ready).
+	for _, n := range strings.Fields(runCmdQuiet("kubectl", "get", "pods",
+		"-n", k8sNamespace, "-l", "app.kubernetes.io/component="+agentComponent,
+		"-o", "jsonpath={.items[*].metadata.name}")) {
+		if isNewReady(n) {
+			return n
+		}
+	}
+	ginkgo.Fail("replacement pod became Ready then vanished — race in waitReplacementReady")
+	return ""
+}
+
+// --- port-forward ------------------------------------------------------------
+
+// portForward starts `kubectl port-forward` from a free local port to the
+// agent pod's HTTP listener and returns the local "host:port" address plus a
+// stop function that terminates the forward. The forward runs for the lifetime
+// of the returned context-cancellation / stop call. The local port is chosen by
+// binding a free loopback port first (the same race-free pattern as
+// e2e/harness/local.go's freePorts) and handing it to port-forward.
+func portForward(podName string) (addr string, stop func()) {
+	ginkgo.GinkgoHelper()
+	port := freeLocalPort()
+	ctx, cancel := context.WithCancel(ginkgoSuiteCtx())
+	cmd := exec.CommandContext(ctx, "kubectl", "port-forward",
+		"-n", k8sNamespace,
+		fmt.Sprintf("pod/%s", podName),
+		fmt.Sprintf("%d:%d", port, agentPodPort))
+	// port-forward writes progress to stderr; capture it for failure diagnosis.
+	var buf ginkgoWriter
+	cmd.Stderr = &buf
+	gomega.ExpectWithOffset(1, cmd.Start()).To(gomega.Succeed(),
+		"start kubectl port-forward for pod %s", podName)
+
+	addr = fmt.Sprintf("127.0.0.1:%d", port)
+	// Wait for the forward to be accepting connections before returning, so the
+	// caller's first HTTP request does not race the tunnel setup.
+	gomega.Eventually(func() bool {
+		c, err := net.DialTimeout("tcp", addr, 500*time.Millisecond)
+		if err != nil {
+			return false
+		}
+		_ = c.Close()
+		return true
+	}, 30*time.Second, 500*time.Millisecond).Should(gomega.BeTrue(),
+		"port-forward to pod %s never accepted on %s\n--- port-forward stderr ---\n%s",
+		podName, addr, buf.String())
+
+	return addr, func() {
+		cancel()
+		_ = cmd.Wait()
+	}
+}
+
+// ginkgoWriter is a thread-safe bytes.Buffer suitable for an exec Cmd's Stderr
+// capture (port-forward writes from its own goroutine).
+type ginkgoWriter struct {
+	mu  sync.Mutex
+	buf bytes.Buffer
+}
+
+func (g *ginkgoWriter) Write(p []byte) (int, error) {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.buf.Write(p)
+}
+
+func (g *ginkgoWriter) String() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.buf.String()
+}
+
+// freeLocalPort returns a free loopback TCP port. It binds :0, reads the
+// assigned port, and closes — the standard ephemeral-port probe. The bind→close
+// →hand-to-port-forward window is racy in principle against other processes
+// (loopback-private in practice; FlakeAttempts covers the rare collision).
+func freeLocalPort() int {
+	ginkgo.GinkgoHelper()
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "bind free local port")
+	port := ln.Addr().(*net.TCPAddr).Port
+	_ = ln.Close()
+	return port
+}
+
+// --- HTTP API helpers --------------------------------------------------------
+
+// createSessionOverHTTP creates a session via POST /v1/sessions and returns the
+// session id. It mirrors the createSessionBody shape (workspace + mode) the
+// server's HTTP handler decodes. The workspace is empty (the mock provider does
+// not touch the filesystem; a no-fs profile is unnecessary — the default
+// profile requires a workspace, so pass "/tmp" which exists in the pod).
+func createSessionOverHTTP(ctx context.Context, addr string) string {
+	ginkgo.GinkgoHelper()
+	body, _ := json.Marshal(map[string]any{
+		"workspace": "/tmp",
+		"mode":      "default",
+	})
+	url := fmt.Sprintf("http://%s/v1/sessions", addr)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "POST %s", url)
+	defer func() { _ = resp.Body.Close() }()
+	raw, _ := io.ReadAll(io.LimitReader(resp.Body, 8192))
+	gomega.ExpectWithOffset(1, resp.StatusCode).To(gomega.Equal(http.StatusCreated),
+		"create session: status %d, body %s", resp.StatusCode, string(raw))
+	var respBody struct {
+		SessionID string `json:"session_id"`
+	}
+	gomega.ExpectWithOffset(1, json.Unmarshal(raw, &respBody)).To(gomega.Succeed(),
+		"create session: unmarshal %s", string(raw))
+	gomega.ExpectWithOffset(1, respBody.SessionID).NotTo(gomega.BeEmpty(), "empty session_id")
+	return respBody.SessionID
+}
+
+// httpPrompt POSTs a prompt to /v1/sessions/{id}/prompt and returns the HTTP
+// status + a bounded slice of the body. A 2xx is an SSE stream; this reads a
+// bounded slice (enough to capture a 409 refusal message) — mirroring
+// e2e/harness/approve.go's PromptOverHTTP. To drive a run to terminal, use
+// drainRun instead.
+func httpPrompt(ctx context.Context, addr, sessionID, text string) (status int, body []byte) {
+	ginkgo.GinkgoHelper()
+	reqBody, _ := json.Marshal(map[string]any{"text": text})
+	url := fmt.Sprintf("http://%s/v1/sessions/%s/prompt", addr, sessionID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "POST %s", url)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ = io.ReadAll(io.LimitReader(resp.Body, 8192))
+	return resp.StatusCode, body
+}
+
+// drainRun starts a prompt run and drains the SSE stream to completion, returning
+// the HTTP status. It is the "drive the run to terminal" helper: the mock
+// provider completes a run quickly, and draining ensures the run has fully ended
+// (the session reaches a terminal state) before subsequent assertions. A 409
+// (lease held elsewhere) returns immediately — there is no stream to drain.
+func drainRun(ctx context.Context, addr, sessionID, text string) int {
+	ginkgo.GinkgoHelper()
+	reqBody, _ := json.Marshal(map[string]any{"text": text})
+	url := fmt.Sprintf("http://%s/v1/sessions/%s/prompt", addr, sessionID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "POST %s", url)
+	defer func() { _ = resp.Body.Close() }()
+	// Drain the SSE stream fully so the run reaches terminal server-side. A 409
+	// has a tiny body (the error JSON) and closes immediately. A 2xx streams
+	// events until the run ends; read to EOF.
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// httpGetSession GETs /v1/sessions/{id} and returns (status, body). Used to
+// prove session persistence across a pod restart (the snapshot lives in Redis,
+// so pod-B reads what pod-A wrote).
+func httpGetSession(ctx context.Context, addr, sessionID string) (status int, body []byte) {
+	ginkgo.GinkgoHelper()
+	url := fmt.Sprintf("http://%s/v1/sessions/%s", addr, sessionID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "GET %s", url)
+	defer func() { _ = resp.Body.Close() }()
+	body, _ = io.ReadAll(io.LimitReader(resp.Body, 8192))
+	return resp.StatusCode, body
+}
+
+// httpDeleteSession DELETEs /v1/sessions/{id} (CloseSession → releaseLease).
+// It is the explicit lease-release lever: a session-scoped lease is held for
+// the session's life, and this is what ends it in-process (vs a pod restart,
+// which ends it via Service.Close). Returns the HTTP status.
+func httpDeleteSession(ctx context.Context, addr, sessionID string) int {
+	ginkgo.GinkgoHelper()
+	url := fmt.Sprintf("http://%s/v1/sessions/%s", addr, sessionID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodDelete, url, nil)
+	resp, err := http.DefaultClient.Do(req)
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(), "DELETE %s", url)
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode
+}
+
+// drainRunSoft is drainRun without the hard failure on a transport error: it
+// returns the status and ok=false on a dial/HTTP error. It is the Eventually-
+// safe probe for takeover assertions where a transient connection blip (the
+// survivor mid-acquire) should RETRY, not abort the attempt.
+func drainRunSoft(ctx context.Context, addr, sessionID, text string) (status int, ok bool) {
+	ginkgo.GinkgoHelper()
+	reqBody, _ := json.Marshal(map[string]any{"text": text})
+	url := fmt.Sprintf("http://%s/v1/sessions/%s/prompt", addr, sessionID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, false
+	}
+	defer func() { _ = resp.Body.Close() }()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	return resp.StatusCode, true
+}
+
+// --- live-provider patching (the live LLM e2e path) ------------------------
+
+// enableLiveProvider swaps the agent Deployment from --mock to the real
+// OpenRouter provider + the default-lane model, staged via a k8s Secret so the
+// OPENROUTER_API_KEY never reaches a pod arg, a manifest, or a log. It is called
+// ONCE in BeforeSuite (after the mock pods are Ready) when OPENROUTER_API_KEY is
+// set in the test process's environment. The mock specs then run on the real-
+// provider pods (their assertions are provider-agnostic), and the live specs run
+// after. No un-patching — kind delete cluster (AfterSuite) destroys everything.
+//
+// SECURITY: the key is read from os.Getenv ONCE and written to a Secret via a
+// `kubectl apply -f -` of a `stringData` JSON manifest (kubectl carries the value
+// to the API server over its stdin; it is never echoed to stdout/stderr, never a
+// bare argv token, never in a file). The Secret NAME is the only identifier
+// surfaced in logs — the value never is. The patch then consumes it via an
+// envFrom secretKeyRef, so the key reaches the pod ONLY through the Secret, never
+// a pod arg or a Deployment spec field.
+func enableLiveProvider() {
+	ginkgo.GinkgoHelper()
+	ctx := ginkgoSuiteCtx()
+	key := os.Getenv("OPENROUTER_API_KEY")
+	gomega.ExpectWithOffset(1, key).NotTo(gomega.BeEmpty(),
+		"enableLiveProvider called without OPENROUTER_API_KEY")
+
+	// 1. Stage the key as a k8s Secret. `kubectl apply -f -` over a stringData
+	//    JSON manifest is idempotent (create-or-replace) without a prior delete.
+	ginkgo.By("creating the openrouter-key Secret (key staged from env, never logged)")
+	// stringData keeps the key as a plaintext field inside the manifest (kubectl
+	// converts it to base64 data server-side); the manifest rides stdin, never a
+	// bare argv token, so it never appears in a shell history or ps listing.
+	envSecretApply := fmt.Sprintf(
+		`{"apiVersion":"v1","kind":"Secret","metadata":{"name":%q,"namespace":%q},"type":"Opaque","stringData":{"OPENROUTER_API_KEY":%q}}`,
+		liveProviderSecret, k8sNamespace, key)
+	applySecret := exec.CommandContext(ctx, "kubectl", "apply", "-f", "-")
+	applySecret.Stdin = strings.NewReader(envSecretApply)
+	out, err := applySecret.CombinedOutput()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"kubectl apply secret %s failed\n--- output ---\n%s", liveProviderSecret, out)
+
+	// 2. Patch the Deployment: drop --mock, set --default-provider=openrouter +
+	//    --default-model=<haiku>, and consume the key from the Secret via an
+	//    envFrom-secretKeyRef. The args REPLACE the whole container args list, so
+	//    they must carry every flag the pod needs (the storage-free defaults).
+	ginkgo.By("patching mecak8s-agent to the real OpenRouter provider + model")
+	newArgs := []string{
+		"--grpc-addr=0.0.0.0:8080",
+		"--http-addr=0.0.0.0:8081",
+		"--redis-url=redis:6379",
+		"--session-lease-k8s-namespace=mecatl",
+		"--headless=true",
+		"--posture=auto",
+		"--default-provider=" + liveProviderID,
+		"--default-model=" + liveProviderModel,
+	}
+	argsJSON, _ := json.Marshal(newArgs)
+	patch := fmt.Sprintf(
+		`[{"op":"replace","path":"/spec/template/spec/containers/0/args","value":%s},`+
+			`{"op":"replace","path":"/spec/template/spec/containers/0/env","value":[{"name":"OPENROUTER_API_KEY","valueFrom":{"secretKeyRef":{"name":%q,"key":"OPENROUTER_API_KEY"}}}]}]`,
+		argsJSON, liveProviderSecret)
+	patchOut, err := exec.CommandContext(ctx, "kubectl", "patch",
+		"deployment/mecak8s-agent", "-n", k8sNamespace,
+		"--type=json", "-p", patch).CombinedOutput()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"kubectl patch deployment to live provider failed\n--- output ---\n%s", patchOut)
+
+	// 3. Wait for the rollout: the RollingUpdate (maxSurge:1, maxUnavailable:0)
+	//    spins a new pod first, so readiness gates on the live provider's startup
+	//    (the openrouter adapter is construction-time only; no network at startup,
+	//    but the startupProbe still must clear).
+	ginkgo.By("waiting for the live-provider rollout to complete")
+	rolloutCtx, rolloutCancel := context.WithTimeout(ctx, 300*time.Second)
+	defer rolloutCancel()
+	rolloutOut, err := exec.CommandContext(rolloutCtx, "kubectl", "rollout", "status",
+		"deployment/mecak8s-agent", "-n", k8sNamespace,
+		"--timeout=290s").CombinedOutput()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"kubectl rollout status (live provider) failed\n--- output ---\n%s", rolloutOut)
+
+	ginkgo.By("waiting for all mecak8s pods to be Ready (after the live-provider patch)")
+	waitPodsReady()
+
+	// Refresh the captured pod names: the rollout replaced both pods. podNames()
+	// filters to Ready pods only, so the terminating old pods (still in the pod
+	// list during terminationGracePeriodSeconds) are excluded automatically.
+	agentPods = podNames()
+	ginkgo.GinkgoWriter.Printf("live provider enabled; agent pods after rollout: pod-A=%s pod-B=%s\n",
+		agentPods[0], agentPods[1])
+}
+
+// --- SSE result parsing ------------------------------------------------------
+
+// sseResult captures the terminal `result` event from a prompt SSE stream. The
+// HTTP relay frames each Event as one `data: <json>\n\n` line; the terminal
+// event carries type="result" with a nested result{stop,text,usage}. This parses
+// the stream incrementally (a live model turn can emit many events over 10-30s)
+// and returns the first result event seen, or an error if the stream ended
+// without one. It is the "drive a real run to terminal + assert end_turn + real
+// usage" helper for the live specs — distinct from drainRun (which discards the
+// body, fine for the mock's instant completion but blind to a real run's stop).
+type sseResult struct {
+	Stop   string `json:"stop"`
+	Text   string `json:"text"`
+	Input  int64  `json:"input_tokens"`
+	Output int64  `json:"output_tokens"`
+}
+
+// drainRunSSE starts a prompt run, drains the SSE stream to terminal, and parses
+// the terminal `result` event (stop + usage). It is the live-spec counterpart of
+// drainRun: instead of discarding the body, it scans the stream for the result
+// event so the live specs can assert stop=end_turn + real (non-zero) usage — the
+// difference between "the run completed" and "a real model produced output".
+//
+// A non-2xx status returns (status, nil, nil) immediately (the caller asserts on
+// the status — e.g. the 409 lease-conflict path). On a 2xx stream that ends
+// without a result event, it returns the status + a non-nil error.
+func drainRunSSE(ctx context.Context, addr, sessionID, text string) (status int, res *sseResult, err error) {
+	ginkgo.GinkgoHelper()
+	reqBody, _ := json.Marshal(map[string]any{"text": text})
+	url := fmt.Sprintf("http://%s/v1/sessions/%s/prompt", addr, sessionID)
+	req, _ := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(reqBody))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "text/event-stream")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, nil, err
+	}
+	defer func() { _ = resp.Body.Close() }()
+	status = resp.StatusCode
+	if status != http.StatusOK {
+		_, _ = io.Copy(io.Discard, resp.Body)
+		return status, nil, nil
+	}
+	// Scan the SSE stream for the `data:` line carrying type:"result". Each frame
+	// is `data: <json>\n\n`; a bufio.Scanner over lines is sufficient.
+	scanner := bufio.NewScanner(resp.Body)
+	// A single event JSON is small, but a reasoning turn's text can be long; raise
+	// the per-line budget so a large result text is not truncated.
+	scanner.Buffer(make([]byte, 0, 64*1024), 4*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Text()
+		if !strings.HasPrefix(line, "data: ") {
+			continue
+		}
+		payload := strings.TrimSpace(strings.TrimPrefix(line, "data: "))
+		if payload == "" {
+			continue
+		}
+		var ev struct {
+			Type   string `json:"type"`
+			Result *struct {
+				Stop  string `json:"stop"`
+				Text  string `json:"text"`
+				Usage *struct {
+					InputTokens  int64 `json:"input_tokens"`
+					OutputTokens int64 `json:"output_tokens"`
+				} `json:"usage"`
+			} `json:"result"`
+		}
+		if jerr := json.Unmarshal([]byte(payload), &ev); jerr != nil {
+			continue // not a JSON event frame (e.g. a keep-alive comment); skip
+		}
+		if ev.Type == "result" && ev.Result != nil {
+			res = &sseResult{Stop: ev.Result.Stop, Text: ev.Result.Text}
+			if ev.Result.Usage != nil {
+				res.Input = ev.Result.Usage.InputTokens
+				res.Output = ev.Result.Usage.OutputTokens
+			}
+			return status, res, nil
+		}
+	}
+	if serr := scanner.Err(); serr != nil {
+		return status, nil, fmt.Errorf("scanning SSE stream: %w", serr)
+	}
+	return status, nil, fmt.Errorf("SSE stream ended without a result event")
+}
+
+// promptLiveProviderSm is the canary prompt the live specs drive: a cheap
+// single-turn run that completes with stop=end_turn and real (non-zero) usage
+// without invoking any tools. It mirrors e2e/provider_test.go's default-lane
+// canary so the same verified-cheap lane + phrasing is exercised through the pod.
+const promptLiveProviderSm = "Reply with exactly the single word: ok. Do not call any tools."
+
+// ginkgoSuiteCtx returns a context cancelled when the ginkgo suite exits. It is
+// the parent for all kubectl/kind/ko commands so a suite abort tears them down.
+func ginkgoSuiteCtx() context.Context { return suiteCtx }
+
+// runCmd runs a command under the suite context and fails the spec on a non-zero
+// exit, attaching combined output. It is the loud variant for commands whose
+// failure is fatal to the spec.
+func runCmd(ctx context.Context, name string, args ...string) string {
+	ginkgo.GinkgoHelper()
+	out, err := exec.CommandContext(ctx, name, args...).CombinedOutput()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"%s %s failed\n--- output ---\n%s", name, strings.Join(args, " "), out)
+	return string(out)
+}
+
+// runCmdQuiet runs a command and returns its combined output WITHOUT failing on
+// a non-zero exit. It is the probe variant — used in Eventually loops where a
+// transient failure (pod not yet ready) is expected and retried.
+func runCmdQuiet(name string, args ...string) string {
+	out, _ := exec.CommandContext(ginkgoSuiteCtx(), name, args...).CombinedOutput()
+	return string(out)
+}
+
+// repoRoot returns the repository root directory so ko/kubectl commands that
+// reference relative paths (./cmd/mecak8s, deploy/mecak8s/) resolve correctly
+// regardless of the Go test's working directory.
+func repoRoot() string {
+	out, err := exec.Command("git", "rev-parse", "--show-toplevel").Output()
+	if err != nil {
+		return "." // fallback: the test's CWD (usually the repo root anyway)
+	}
+	return strings.TrimSpace(string(out))
+}
+
+// formatBody clamps a response body for an assertion message.
+func formatBody(b []byte) string {
+	if len(b) > 1024 {
+		return string(b[:1024]) + "…(truncated)"
+	}
+	return string(b)
+}
+
+// expectLeaseConflict asserts an HTTP 409 response is the LEASE-ELSEWHERE
+// refusal, not an unrelated 409. HTTP 409 is returned for two distinct
+// conditions — ErrSessionLeasedElsewhere ("server: session is leased by another
+// process") AND ErrNoActiveRun — so a bare status==409 check would pass for the
+// wrong reason. The handler writes err.Error() as the body, so this verifies the
+// body carries the lease signal. Used at every 409 assertion that is meant to
+// PROVE lease exclusion (lease_test.go pod-B refusal, failover_test.go force-
+// delete control case).
+func expectLeaseConflict(status int, body []byte) {
+	ginkgo.GinkgoHelper()
+	gomega.ExpectWithOffset(1, status).To(gomega.Equal(http.StatusConflict),
+		"want HTTP 409 Conflict (lease held elsewhere), got %d\n--- body ---\n%s",
+		status, formatBody(body))
+	gomega.ExpectWithOffset(1, strings.Contains(string(body), "leased by another process")).
+		To(gomega.BeTrue(),
+			"409 body does not carry the lease-elsewhere signal (want %q in body)\n--- body ---\n%s",
+			"leased by another process", formatBody(body))
+}
+
+// leaseTTL is the configured session-lease TTL (30s; the pods run with the
+// default --session-lease-ttl, and internal/adapter/k8slease defaults to 30s).
+// It bounds how long a force-killed holder's lease blocks a survivor and is the
+// timing window the failover control case must observe its 409 WITHIN.
+const leaseTTL = 30 * time.Second

@@ -26,7 +26,7 @@ record; current behaviour is in the linked [architecture](../architecture.md) do
 | Soul / persona + user-model | ✅ Phase 1 + 2a + 2b + Phase 3 items 1–3 | [SOUL-SPIKE.md](../adr/0011-soul-and-user-model.md) | — |
 | Compaction (heuristic + cascade) | ✅ shipped | [COMPACTION.md](../adr/0012-compaction.md) | [context & compaction](../architecture/context-and-compaction.md) |
 | System-prompt enhancement | ✅ §7a shipped (`agencyDelta`, tool-discipline hints, `<env>`) · ✅ output-economy default (`defaultTone` rewrite, ADR 0041) | [SYSTEM-PROMPT-RESEARCH.md](../adr/0024-system-prompt-research.md) · [OUTPUT-ECONOMY.md](../adr/0041-output-economy-default-prompt.md) | — |
-| Guardrails (LLM-backed tool-content inspection) | ✅ shipped | [GUARDRAILS.md](../adr/0021-guardrails.md) · [0046-guardrails-slot-enable.md](../adr/0046-guardrails-slot-enable.md) | [hooks & guardrails](../architecture/hooks-and-guardrails.md) |
+| Guardrails (LLM-backed tool-content inspection) | ✅ shipped | [0021](../adr/0021-guardrails.md) · [0046](../adr/0046-guardrails-slot-enable.md) · [0049](../adr/0049-guardrails-remove-maxchecks.md) · [0050](../adr/0050-guardrails-remove-maxcontentbytes.md) · [0051](../adr/0051-guardrails-advisory-tui-visibility.md) · [0052](../adr/0052-guardrails-checker-down-toggle.md) · [0053](../adr/0053-guardrails-default-block.md) | [hooks & guardrails](../architecture/hooks-and-guardrails.md) |
 | Allow-all / posture ladder | ✅ shipped · ⛔ managed-scope kill-switch · ⛔ `auto`+reviewer posture | [ALLOW-ALL-POSTURE.md](../adr/0022-allow-all-posture.md) | [deployment & hardening](../architecture/deployment-and-hardening.md) |
 | Workspace trust | ✅ Phases 0/1/2a/2b/2c · ⛔ Phase 3 (descoped) | [WORKSPACE-TRUST-SPIKE.md](../adr/0023-workspace-trust.md) | [deployment & hardening](../architecture/deployment-and-hardening.md) |
 | Driver seams (remote stores/sources) | ✅ Phases A–C2 · ⛔ workspace/FS driver (sketch only) | [DRIVERS.md](../adr/0005-driver-seams.md) | [observability](../architecture/observability.md) |
@@ -38,6 +38,7 @@ record; current behaviour is in the linked [architecture](../architecture.md) do
 | UX discoverability (mecatui) | ✅ shipped | [UX-DISCOVERABILITY.md](../adr/0025-ux-discoverability.md) | — |
 | Clipboard image paste (mecatui `ctrl+v`) | ✅ shipped | [CLIPBOARD-IMAGE-PASTE.md](../adr/0026-clipboard-image-paste.md) | — |
 | mecatequi (single-shot GitHub Action) | ✅ shipped (v1 forge glue) | [MECATEQUI.md](../adr/0028-mecatequi.md) | [overview](../architecture.md) |
+| mecak8s (storage-free k8s-native agent) | ✅ shipped (MVP) · ⛔ CRD/Operator · ⛔ HPA (custom-metrics on active-runs) · ⛔ managed Redis (ElastiCache/MemoryStore — manifest swap, no code) · ⛔ Redis auth · ⛔ fix `mecated`'s unbounded `GracefulStop` (pre-existing, follow-up) | [mecak8s.md](../adr/0048-mecak8s.md) · [MECAK8S-PLAN.md](./MECAK8S-PLAN.md) | [overview](../architecture.md) |
 | ACP adapter (editor stdio surface) | ✅ Phase 1+2 + bounded Phase 3 + multimodal shipped · ⛔ Phase 3 long-tail (rule persistence, grep-over-buffers, fs/* on resume) | [0001-acp-adapter.md](../adr/0001-acp-adapter.md) | [api surface](../architecture/api-surface.md) |
 | _Historical / retired_ | — | [ARCHITECTURE.md](../adr/0004-v1-architecture.md) · [STEP-CHAIN.md](../adr/0006-v1-step-chain.md) · [TWELVE-PATTERNS-AUDIT.md](../adr/0007-twelve-patterns-audit.md) · [REPOMAP-TREE-SITTER.md](../adr/0029-repomap-tree-sitter.md) | — |
 
@@ -53,7 +54,7 @@ record; current behaviour is in the linked [architecture](../architecture.md) do
 | **API authentication + rate limiting** | ✅ | bearer (`--auth-token`/`MECATL_AUTH_TOKEN`, constant-time) + optional TLS/mTLS (`--tls-cert`/`--tls-key`/`--client-ca`) gRPC interceptors + HTTP middleware; per-client + global token-bucket rate limit (`--rate-limit`/`--rate-burst`, bounded/idle-evicting); off-loopback-no-auth WARNING (`internal/adapter/server/authn.go`) |
 | OS-level sandbox (process trust) | ⏸️ Deferred | Explicitly deferred (2026-05-29). The `CommandRunner` port is the seam; a Landlock(+seccomp) wrapper drops in later without touching the loop. Bash is also fully optional (shell-less deploys avoid the surface entirely), so this is not a blocker for those. |
 | Secrets handling (no key logging) | ✅ | key via env, never logged |
-| MCP transport restriction (no stdio) | ✅ | streaming-HTTP only |
+| MCP transport restriction (no stdio) | ✅ | streaming-HTTP only; standalone SSE GET enabled for server-initiated notifications (ADR 0057) |
 | Supply-chain hygiene (per-module vuln scan, dependabot, SHA-pinned actions) | ✅ | per-module `govulncheck` (engine STRICT, no allowlist / root fail-closed reachable-vuln gate via `.github/scripts/govulncheck-gate.go` + a documented 2-CVE docker allowlist reachable only through `internal/` ToolHive); `.github/dependabot.yml` for both modules + github-actions; every action SHA-pinned. Issue #118 |
 
 ## Reliability
@@ -65,6 +66,7 @@ record; current behaviour is in the linked [architecture](../architecture.md) do
 | Provider error surfaced to client | ✅ | `ResultPayload.Error` |
 | **Auto-resume persisted sessions after restart** | ✅ | `GetSession`/`Approve`/`Cancel` fall back to `SessionStore.Load`; persist at create, on entering `awaiting`, and at run end (engine `Store` + `Service.Persist`). With `--store-dir` (jsonlstore) a session survives restart and is loadable — `mecatui` defaults this on at a per-workspace dir under `$XDG_STATE_HOME/mecatui/sessions` (issue #79), `mecated` leaves it off by default. Boundary: an in-flight *stream* is NOT resumed across restart (the `*agent.Run` is in-memory). Since cloud-native Phase 2, an `Approve` against a runless-but-stored session that died while `awaiting` **re-enters the loop at the ask** (`Service.resumeFromAwaiting`); `ErrNoActiveRun` (HTTP 409 / gRPC FailedPrecondition) is returned only for `Approve` against a non-awaiting state and for `Cancel` against any runless session. See `CLOUD-NATIVE.md` Phase 2 |
 | Graceful shutdown | ✅ | gRPC GracefulStop + HTTP Shutdown |
+| MCP client reconnect on connection drop | ✅ | client-side; 1 bounded reconnect attempt per call; serialized under mutex; breaker deferred (ADR 0056); consumes `notifications/*` over the standalone SSE stream (ADR 0057) |
 
 ## Observability
 

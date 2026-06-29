@@ -31,6 +31,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0037 — Engine public-API stability contract](./0037-engine-stability-contract.md)
 - [0038 — Event-sourced SessionStore rehydration (the reference fold)](./0038-event-sourced-rehydration.md)
 - [0044 — Host-supplied askID discriminator (cross-process-reconstructable askID)](./0044-host-supplied-askid-discriminator.md)
+- [0048 — mecak8s: Kubernetes-native agent harness (storage-free, managed-service state)](./0048-mecak8s.md)
 
 ### Memory & context
 - [0008 — Memory on by default](./0008-memory-on-by-default.md)
@@ -63,9 +64,16 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 
 ### Governance & trust
 - [0021 — Guardrails](./0021-guardrails.md)
+- [0049 — Remove the guardrails per-session checker call-count cap](./0049-guardrails-remove-maxchecks.md)
+- [0050 — Remove the guardrails oversized-content inspection skip](./0050-guardrails-remove-maxcontentbytes.md)
+- [0051 — Surface advisory guardrail findings to the TUI](./0051-guardrails-advisory-tui-visibility.md)
+- [0052 — Global guardrails checker-down posture toggle](./0052-guardrails-checker-down-toggle.md)
+- [0053 — Flip guardrails default mode from advisory to block](./0053-guardrails-default-block.md)
 - [0022 — Allow-all posture](./0022-allow-all-posture.md)
 - [0023 — Workspace trust](./0023-workspace-trust.md)
 - [0024 — System-prompt research](./0024-system-prompt-research.md) *(research)*
+- [0054 — Reasoning rebalance of the default-tone prompt](./0054-reasoning-rebalance-default-prompt.md)
+- [0055 — Reasoning-effort knob](./0055-reasoning-effort.md)
 
 ### UX & forge
 - [0025 — UX discoverability](./0025-ux-discoverability.md)

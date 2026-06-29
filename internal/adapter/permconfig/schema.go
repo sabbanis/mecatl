@@ -93,6 +93,15 @@ type Config struct {
 	// returns "" and composition keeps the default tone). The composition layer
 	// interprets the token; permconfig only reads the scalar.
 	OutputEconomy string `yaml:"output-economy"`
+	// ReasoningEffort is the OPERATOR-TIER reasoning-effort scalar (ADR 0055: the
+	// neutral vocabulary "" / "auto" / "low" / "medium" / "high" / "xhigh" / "max").
+	// Like Posture/OutputEconomy it is honoured ONLY from the user-global + CLI
+	// tiers; a project-tier file's reasoning-effort: key is IGNORED with a WARN
+	// (operator-tier only, for consistency — a project cannot raise the model's
+	// reasoning spend). Empty = absent (the resolver returns "" and composition uses
+	// the provider default). The composition layer interprets + clamps the token;
+	// permconfig only reads the scalar.
+	ReasoningEffort string `yaml:"reasoning-effort"`
 }
 
 // ModelsSection is the `models:` YAML subtree (ADR 0030): a per-slot model-binding
@@ -229,18 +238,25 @@ func (m *ModelsSection) UnmarshalYAML(node *yaml.Node) error {
 }
 
 // GuardrailsSection is the operator-tier `guardrails:` YAML subtree (issue #27): a
-// checker model, the per-session check cap, a master-disable, and the rule list. It
-// is parsed STRICTLY (unknown keys error).
+// checker model, a master-disable, and the rule list. It is parsed STRICTLY
+// (unknown keys error).
 type GuardrailsSection struct {
 	// Model is the checker model id / alias. Empty leaves the CLI --guardrails-model
 	// to supply it; a value here is overridden by the CLI flag when both are set.
 	Model string `yaml:"model"`
-	// MaxChecks is the per-session checker-call cap. 0 = unbounded.
-	MaxChecks int `yaml:"maxChecks"`
 	// MinContentBytes skips the checker for content shorter than this. 0 = check all.
 	MinContentBytes int `yaml:"minContentBytes"`
 	// Disabled is the YAML-level kill switch (the CLI --guardrails=off also sets it).
 	Disabled bool `yaml:"disabled"`
+	// OnCheckerDown sets the global posture when the checker model is unavailable
+	// (error/timeout): "warn" (default, fail-open) or "fail" (fail-closed for all
+	// rules). Per-rule failClosed overrides: failClosed:true tightens even under
+	// warn; failClosed:false (explicit) loosens even under fail. Empty = warn.
+	OnCheckerDown string `yaml:"onCheckerDown"`
+	// DefaultMode sets the enforcement mode for the built-in default rules when no
+	// explicit rules are configured: "block" (default), "advisory", or "sanitize".
+	// An explicit rules list replaces the defaults entirely (this key is ignored).
+	DefaultMode string `yaml:"defaultMode"`
 	// Rules is the guardrail rule list.
 	Rules []GuardrailRuleSpec `yaml:"rules"`
 }
@@ -258,6 +274,11 @@ type GuardrailRuleSpec struct {
 	Prompt string `yaml:"prompt"`
 	// FailClosed flips the fail-open default for enforcing modes.
 	FailClosed bool `yaml:"failClosed"`
+	// FailClosedPresent reports whether the failClosed key was explicitly set in
+	// the YAML — a bool can't distinguish "false" from "not set", so this lets the
+	// global onCheckerDown toggle distinguish a per-rule explicit opt-out from an
+	// unset rule that should inherit the global.
+	FailClosedPresent bool `yaml:"-"`
 }
 
 // UnmarshalYAML decodes the guardrails: mapping STRICTLY (issue #27): an unknown key
@@ -270,9 +291,10 @@ func (g *GuardrailsSection) UnmarshalYAML(node *yaml.Node) error {
 func (g *GuardrailsSection) strictFields() map[string]any {
 	return map[string]any{
 		"model":           &g.Model,
-		"maxChecks":       &g.MaxChecks,
 		"minContentBytes": &g.MinContentBytes,
 		"disabled":        &g.Disabled,
+		"onCheckerDown":   &g.OnCheckerDown,
+		"defaultMode":     &g.DefaultMode,
 		"rules":           &g.Rules,
 	}
 }
@@ -289,7 +311,18 @@ func (r *GuardrailRuleSpec) strictFields() map[string]any {
 
 // UnmarshalYAML decodes a guardrails rule mapping STRICTLY.
 func (r *GuardrailRuleSpec) UnmarshalYAML(node *yaml.Node) error {
-	return decodeStrictMapping(node, "guardrails.rules[]", r.strictFields())
+	if err := decodeStrictMapping(node, "guardrails.rules[]", r.strictFields()); err != nil {
+		return err
+	}
+	// Track whether failClosed was explicitly present so the global onCheckerDown
+	// toggle can distinguish a per-rule opt-out from an unset rule.
+	for i := 0; i+1 < len(node.Content); i += 2 {
+		if node.Content[i].Value == "failClosed" {
+			r.FailClosedPresent = true
+			break
+		}
+	}
+	return nil
 }
 
 // Permissions is the three-bucket rule-spec set plus the child-scoped

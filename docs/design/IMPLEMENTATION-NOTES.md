@@ -301,14 +301,14 @@ cancellation). No wire/proto change (`session.Limits` semantics unchanged). Guar
 `agent.TestSubagentPerCall*`.
 
 **Subagent child concurrency cap.** `SubagentTool.childGate` (a counting-semaphore channel, default
-`defaultMaxConcurrentChildren = 4`, override `WithMaxConcurrentChildren`; the old
+`defaultMaxConcurrentChildren = 8`, override `WithMaxConcurrentChildren`; the old
 `WithMaxConcurrentSubagentShells` is a deprecated alias) is now acquired at the TOP of `run()` for
 ALL Subagent children — forking AND forker-less — not only the worktree-forking path. Subagent is
 read-only so the dispatcher fans out N concurrent Subagent calls in one turn; each consumes a child
 session + an LLM slot (and, when shell-bearing, a forked worktree), so the gate is the single
 fan-out brake bounding how many children run at once. This closes the previously-unbounded
 forker-LESS fan-out. The team supervisor's round was ALREADY bounded
-(`errgroup.SetLimit(s.concurrency)`, `WithTeamConcurrency`, default 4) — a code comment + the
+(`errgroup.SetLimit(s.concurrency)`, `WithTeamConcurrency`, default 8) — a code comment + the
 `TestSupervisorRoundConcurrencyBounded` guard keep a future refactor from silently dropping it.
 read-parallel/mutate-serial is UNCHANGED (the gate bounds child START, not dispatch ordering).
 Guards: `agent.TestSubagentChildGateCapsForkerlessConcurrency`,
@@ -1832,7 +1832,7 @@ reflects the operator's in-progress work — Edit/Write still dropped, no Subage
 `SubagentTool.ReadOnly()`
 stays **true**: isolation (not catalog read-only-ness) is what keeps Subagent read-parallel — its
 writes land in the worktree, never the shared base; a fork FAILURE is a tool error, NOT a
-silent fallback to the shared ws. A `WithMaxConcurrentChildren` (default 4; old
+silent fallback to the shared ws. A `WithMaxConcurrentChildren` (default 8; old
 `WithMaxConcurrentSubagentShells` is a deprecated alias) semaphore bounds concurrent children —
 ALL of them now, forking and forker-less (Subagent is read-parallel, so the model can fan out; see
 the Subagent-concurrency-cap note above). Same
@@ -2029,13 +2029,13 @@ new cascade tier knob does not.
 |---|---|---|---|---|
 | no-progress nudge cap | 2 | `engine/agent/loop.go` (`defaultNoProgressNudges`) | shared loop (main + Subagent + team member + lead synthesis + Parallel) | `Deps.MaxNoProgressNudges` ← `Config.MaxNoProgressNudges`; `<0` disables, `0`→this |
 | compaction trigger ratio | 0.8 | `engine/agent/loop.go` (`defaultCompactionRatio`) | shared loop | `Deps.CompactionRatio` ← `Config.CompactionRatio`; `(0,1]` overrides, else this |
-| child concurrency gate | 4 | `engine/agent/subagent.go` (`defaultMaxConcurrentChildren`) | Subagent fan-out (forking + forker-less) | `WithMaxConcurrentChildren`; `<1`→1 |
+| child concurrency gate | 8 | `engine/agent/subagent.go` (`defaultMaxConcurrentChildren`) | Subagent fan-out (forking + forker-less) | `WithMaxConcurrentChildren`; `<1`→1 |
 | structured-output retries | 2 | `engine/agent/subagent.go` (`defaultStructuredOutputRetries`) | per Subagent `output_schema` call | not configurable (correction re-drives) |
 | subagent run-token floor | 25 000 | `engine/agent/subagent.go` (`MinSubagentRunTokens`) | per-call `MaxRunTokensOverride` floor | tighten-only floor; raises a below-floor override |
-| Parallel fan-out cap | 8 | `engine/agent/parallel.go` (`defaultMaxBranches`) | per `Parallel` call | `WithMaxBranches`; non-positive ignored |
-| Parallel concurrency | 4 | `engine/agent/parallel.go` (`defaultParallelConcurrency`) | per `Parallel` call | `WithParallelConcurrency`; non-positive ignored |
+| Parallel fan-out cap | 16 | `engine/agent/parallel.go` (`defaultMaxBranches`) | per `Parallel` call | `WithMaxBranches`; non-positive ignored |
+| Parallel concurrency | 8 | `engine/agent/parallel.go` (`defaultParallelConcurrency`) | per `Parallel` call | `WithParallelConcurrency`; non-positive ignored |
 | team round cap | 48 | `engine/agent/teamsupervisor.go` (`defaultMaxRounds`) | per team `Run` | `WithMaxRounds` |
-| team member concurrency | 4 | `engine/agent/teamsupervisor.go` (`defaultTeamConcurrency`) | per scheduling round | `WithTeamConcurrency` |
+| team member concurrency | 8 | `engine/agent/teamsupervisor.go` (`defaultTeamConcurrency`) | per scheduling round | `WithTeamConcurrency` |
 | member lifetime turn budget | 200 | `engine/agent/teamsupervisor.go` (`defaultMemberTurnBudget`) | cumulative per member across rounds | `WithMemberTurnBudget` |
 | ask-reviewer breaker | 3 | `engine/agent/askadjudicator.go` (`DefaultAskReviewMaxDenies`) | per run (consecutive non-allow reviewer outcomes) | `Deps.ChildAskReviewMaxDenies` ← `Config.SubagentAskReviewerMaxDenies` ← `--subagent-ask-reviewer-max-denies`; `<=0`→this |
 | model-router breaker | 3 | `engine/agent/modelrouter.go` (`defaultModelRouterMaxMisses`) | per run (router circuit-breaker) | not configurable |
@@ -2054,7 +2054,6 @@ new cascade tier knob does not.
 | compaction trigger ratio (composition) | 0.8 | `internal/app/build.go` (`defaultCompactionRatio`) | shared engine compactor | `Config.CompactionRatio`; **duplicated in** `engine/agent/loop.go` (`defaultCompactionRatio`) — both pinned to 0.8, keep in sync |
 | cascade compaction target ratio | 0.6 | `internal/app/build.go` (`defaultCompactionTargetRatio`) | cascade compactor reduce-toward target | not separately configurable |
 | context-window floor | 128 000 | `internal/app/build.go` (`defaultContextWindowTokens`) | context-window resolver terminal floor | `--context-window-override` wins |
-| guardrails per-session check cap | 200 | `internal/app/guardrails.go` (`defaultGuardrailsMaxChecks`) | per-session checker-call cap (auto-applied when operator enables guardrails with a model and no `maxChecks`) | operator-tier `guardrails.maxChecks` |
 
 ### Precedence (the MaxTurns axis; same shape applies to the other bounds)
 
@@ -2260,7 +2259,7 @@ three layers to keep the engine importable and the verdict shape in the adapter:
   port (keeps engine/agent types out of the adapter), `Verdict` + `ParseVerdict`
   (whole-output-single-object, the #31 discipline — **not** `session.ValidateJSON`),
   `CompileRule`/`RuleSpec`/`CompiledRule` + the most-specific-wins matcher, the
-  per-session `checkBudget`, the merge, the built-in inspection prompts. It imports
+  consecutive-failure `failureStreak`, the merge, the built-in inspection prompts. It imports
   `engine/agent` **only** for the exported fence helpers (`agent.UntrustedFence` /
   `NeutraliseFraming` / `WriteUntrustedBlock` — exported in #27 so the checker fences
   untrusted content with the **same** single source of truth as the team/ask-review
@@ -2277,8 +2276,8 @@ three layers to keep the engine importable and the verdict shape in the adapter:
   security-sensitive lone-fence stripper the ask-review AND guardrail verdict parsers
   now share — one parser, never diverging).
 - **`internal/app/guardrails.go`** — `buildGuardrailsHooks` (decorates the **main**
-  hooks at `buildEngine` + the per-session factory, so a **fresh per-session budget +
-  failure-streak** are built; returns inner unchanged when no model is set),
+  hooks at `buildEngine` + the per-session factory, so a **fresh per-session
+  failure-streak** is built; returns inner unchanged when no model is set),
   `effectiveGuardrailSpecs` (explicit rules OR the default advisory set),
   `engineGuardrailsChecker` (the `VerdictChecker` impl: `agent.RunGuardrailCheck` +
   `modelhook.ParseVerdict`), `compileGuardrailRules`, `foldOperatorGuardrails` (the
@@ -2290,10 +2289,9 @@ three layers to keep the engine importable and the verdict shape in the adapter:
 no explicit rule list guardrails take the built-in **default advisory rule set**
 (`defaultGuardrailSpecs`: WebSearch pre+post, WebFetch post, `mcp__*` pre+post, all
 advisory — the headline default, local tools deliberately unmatched). An explicit
-`guardrails.rules` list replaces it. The default set gets an auto `maxChecks`=200 when
-the operator did not pin one (it matches `mcp__*` on both directions, so it could
-otherwise surprise-bill); an explicit `maxChecks` (incl. a deliberate 0 = unbounded)
-or an explicit rule list keeps the operator's value.
+`guardrails.rules` list replaces it. There is no per-session call-count cap — the
+checker runs per matched call, and cost control lives in the operator's
+provider/billing layer (checker token spend is not folded into `MaxRunTokens`).
 
 **The #1 constraint — `PostToolUse` Block is INERT.** The tool has already run by the
 time the post hook fires (`dispatch.go` ~642-648 only emits a hook annotation). So an
@@ -2318,12 +2316,12 @@ a trusted checker model. **Advisory + every finding diagnostic is correlatable:*
 carries `session` + `call` (the `HookEvent.CallID`, threaded from `dispatch.go`) + a
 stable `guardrail-finding` marker. **Merge (decision 5):** inner FIRST, checker
 SECOND, Block-dominant, messages concat inner-first, mutation conflict → checker wins.
-**Cost/abuse:** a per-session `maxChecks` cap (bounded separately from `MaxRunTokens`)
-+ a `minContentBytes` skip **(Post/inbound ONLY — Pre/outbound args are always
+**Cost/abuse:** a `minContentBytes` skip **(Post/inbound ONLY — Pre/outbound args are always
 inspected regardless of size, since a short exfiltration arg is exactly what the Pre
-check catches)** + a `maxContentBytes` (256 KiB) bound — oversized content in an
-**enforce** mode is NOT silently passed (it routes through fail-open/closed: the
-induced-fail-open defense). **Fail-open by default** (checker error / oversized content
+check catches)**. The former `maxContentBytes` (256 KiB) bound was REMOVED
+([ADR 0050](../adr/0050-guardrails-remove-maxcontentbytes.md)) — the checker now inspects
+content regardless of size, and a checker error / timeout on huge input flows through the
+existing fail-open/closed path. **Fail-open by default** (checker error / timeout
 → "no checker" + WARN); `failClosed: true` treats it as unsafe. A sustained checker
 outage escalates to a **one-time "checker DOWN" sticky WARN** (a `failureStreak`
 per Runner; a completed verdict resets it) so a persistently-unguarded surface is not

@@ -1,0 +1,119 @@
+//go:build kind_e2e
+
+package k8s_e2e_test
+
+import (
+	"context"
+	"testing"
+	"time"
+
+	"github.com/onsi/ginkgo/v2"
+	"github.com/onsi/gomega"
+)
+
+// suiteCtx is the suite-lifetime context cancelled in AfterSuite. It parents
+// every kubectl/kind/ko command (via ginkgoSuiteCtx) so a suite abort tears
+// down long-running port-forwards and waits.
+var suiteCtx, suiteCancel = context.WithCancel(context.Background())
+
+// agentPods holds the two agent pod names captured in BeforeSuite, addressed as
+// pod-A / pod-B across the suite. They are refreshed after any delete by the
+// individual specs that delete pods.
+var agentPods []string
+
+// TestK8sE2E is the ginkgo entry point. It is gated behind the kind_e2e build
+// tag, so `task test` (no tag) never compiles or runs it.
+func TestK8sE2E(t *testing.T) {
+	gomega.RegisterFailHandler(ginkgo.Fail)
+	ginkgo.RunSpecs(t, "mecatl kind k8s e2e suite (ADR 0048)")
+}
+
+// BeforeSuite runs the cluster lifecycle (MECAK8S-PLAN §4h):
+//  1. require kind/ko/kubectl (skip gracefully if missing)
+//  2. kind create cluster
+//  3. ko resolve builds + renders the mecak8s image + manifests (ONE ref)
+//  4. save the image to a tarball + kind load image-archive into the cluster node
+//  5. kubectl apply the resolved deploy/mecak8s/ manifests (namespace first)
+//  6. kubectl wait for all part-of=mecak8s pods Ready (agent replicas + Redis)
+//  7. capture the two agent pod names
+//
+// The build+resolve is a SINGLE `ko resolve` step: it builds the image under the
+// EXACT ref the pod references (`ko.local/mecak8s-<hash>:<sha>`) and renders the
+// manifests with that ref substituted in. That ref is then saved to a tarball
+// and loaded into the kind node via `kind load image-archive` (bypassing the
+// containerd-snapshotter bridge that breaks `kind load docker-image` on some
+// Docker daemons). One build, one ref, one load — no retagging, no mismatch.
+//
+// AfterSuite deletes the cluster. The cluster is created ONCE per suite run and
+// shared across the three specs (Serial + Ordered), so the ~30s kind bring-up
+// cost is paid once.
+var _ = ginkgo.BeforeSuite(func() {
+	requireTools()
+
+	ginkgo.By("creating the kind cluster")
+	kindCreateCluster()
+
+	ginkgo.By("building + resolving the mecak8s image with ko")
+	resolvedYAML, imageRef := koResolveMecak8s()
+
+	ginkgo.By("saving the image to a tarball + loading it into the kind node")
+	saveAndLoadImage(imageRef)
+
+	ginkgo.By("applying the deploy/mecak8s/ manifests")
+	applyResolvedManifests(resolvedYAML)
+
+	ginkgo.By("waiting for all mecak8s pods to be Ready")
+	waitPodsReady()
+
+	ginkgo.By("capturing the agent pod names")
+	agentPods = podNames()
+	ginkgo.GinkgoWriter.Printf("agent pods: pod-A=%s pod-B=%s\n", agentPods[0], agentPods[1])
+
+	// LIVE PROVIDER: if OPENROUTER_API_KEY is set in the test process's
+	// environment, patch the Deployment from --mock to the real OpenRouter
+	// provider + the default-lane model (staged via a k8s Secret — the key is
+	// never logged). The mock specs run on the real-provider pods (their
+	// assertions are provider-agnostic); the live specs (live_test.go) then run
+	// real multi-second model turns proving the plumbing holds under load. The
+	// live specs Skip when the key is absent, so the mock-only run is unchanged.
+	if liveProviderEnabled() {
+		ginkgo.By("OPENROUTER_API_KEY is set — enabling the live provider")
+		enableLiveProvider()
+	} else {
+		ginkgo.By("OPENROUTER_API_KEY is not set — running the mock suite only (live specs will skip)")
+	}
+})
+
+// AfterSuite tears the cluster down unconditionally (even on failure) so a
+// failed run does not leak a kind cluster. suiteCancel also stops any in-flight
+// port-forward / kubectl command goroutines. It mirrors the existing e2e
+// suite's AfterSuite teardown pattern.
+var _ = ginkgo.AfterSuite(func() {
+	suiteCancel()
+	ginkgo.By("deleting the kind cluster")
+	kindDeleteCluster()
+})
+
+// The suite is Serial + Ordered: the three specs share ONE cluster and manipulate
+// the SAME pod set (deleting pods changes the roster), so they cannot run
+// concurrently. ContinueOnFailure keeps a mid-suite failure from skipping the
+// teardown (the AfterSuite cluster delete always runs).
+var _ = ginkgo.Describe("mecak8s cloud-native properties (ADR 0048)", ginkgo.Serial, ginkgo.Ordered, ginkgo.ContinueOnFailure, func() {
+	leaseExclusionSpecs()
+	failoverSpecs()
+	persistenceSpecs()
+	liveSpecs()
+})
+
+// refreshPods re-reads the two agent pod names. Called by specs that delete a
+// pod, so the suite's pod-A/pod-B addressing stays accurate after a replacement.
+func refreshPods() {
+	ginkgo.GinkgoHelper()
+	agentPods = podNames()
+}
+
+// shortCtx returns a context with a per-call timeout, parented at the suite
+// context. It is the per-spec command/HTTP timeout helper.
+func shortCtx(timeout time.Duration) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(suiteCtx, timeout)
+}

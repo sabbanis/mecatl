@@ -129,6 +129,7 @@ func TestFoldedAwaitingSessionIsDrivable(t *testing.T) {
 	}
 	if result == nil {
 		t.Fatalf("no terminal result event")
+		return
 	}
 	if result.Stop == session.StopError {
 		t.Fatalf("resume failed (likely dangling-tool 400): %q", result.Error)
@@ -235,11 +236,11 @@ func TestFoldContractDocMatchesSessionFields(t *testing.T) {
 	//   reconstructed-from-events: Conversation, State, Usage
 	//   run-scoped (latest segment): Counters
 	//   supplied via SessionMeta (not event-carried): ID, Mode, Limits, Workspace,
-	//     Profile, ProviderID, ModelID, CreatedAt
+	//     Profile, ProviderID, ModelID, ReasoningEffort, CreatedAt
 	wantSessionFields := map[string]struct{}{
 		"ID": {}, "State": {}, "Mode": {}, "Conversation": {}, "Limits": {},
 		"Counters": {}, "Usage": {}, "Workspace": {}, "Profile": {},
-		"ProviderID": {}, "ModelID": {}, "CreatedAt": {},
+		"ProviderID": {}, "ModelID": {}, "ReasoningEffort": {}, "CreatedAt": {},
 	}
 	assertExportedFields(t, reflect.TypeOf(session.Session{}), wantSessionFields,
 		"session.Session — classify the new field in COMPATIBILITY.md's reconstruction contract")

@@ -421,6 +421,15 @@ type config struct {
 	// outputEconomyFlagSet is true when --output-economy was passed explicitly, so
 	// composition lets CLI out-rank the settings.yaml output-economy: key.
 	outputEconomyFlagSet bool
+	// reasoningEffort is the operator-tier reasoning-effort default (ADR 0055): ""
+	// or "auto" (unset → the provider default) or low/medium/high/xhigh/max.
+	// Operator-tier only: the operator-global settings.yaml reasoning-effort: key
+	// folds in, a project-tier key is WARN-ignored. A per-session CreateSession
+	// reasoning_effort out-ranks it.
+	reasoningEffort string
+	// reasoningEffortFlagSet is true when --reasoning-effort was passed explicitly,
+	// so composition lets CLI out-rank the settings.yaml reasoning-effort: key.
+	reasoningEffortFlagSet bool
 }
 
 // mcpServerList is a repeatable flag.Value collecting --mcp-server name=URL
@@ -950,7 +959,11 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		// lets CLI out-rank the operator-global settings.yaml output-economy: key.
 		OutputEconomy:        cfg.outputEconomy,
 		OutputEconomyFlagSet: cfg.outputEconomyFlagSet,
-		Privileged:           privilegedProcess(),
+		// Reasoning-effort tier (ADR 0055): operator-tier only; reasoningEffortFlagSet
+		// lets CLI out-rank the operator-global settings.yaml reasoning-effort: key.
+		ReasoningEffort:        cfg.reasoningEffort,
+		ReasoningEffortFlagSet: cfg.reasoningEffortFlagSet,
+		Privileged:             privilegedProcess(),
 		// mecated serves the bidi Converse + HTTP-SSE surfaces, whose clients CAN
 		// answer a permission ask (ResumeApproval) — so by default a subagent's
 		// unresolved Bash ask is SURFACED to the attached human rather than
@@ -1126,7 +1139,7 @@ func parseFlags(argv []string) (config, error) {
 	fs.StringVar(&cfg.eventLogURL, "event-log-url", "", "host:port of a remote event-log gRPC driver (mecatl.driver.v1.EventLogService) for the durable per-session event timeline (reasoning, ask/verdict pairs, delegation lifecycle); INDEPENDENT of the session store. Empty keeps the local default (the --store-dir jsonl log, or in-memory). Append happens at the relay (a fault WARNs, never aborts the run); Read is server-streaming. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 	fs.StringVar(&cfg.sessionLeaseURL, "session-lease-url", "", "host:port of a remote session-lease gRPC driver (mecatl.driver.v1.SessionLeaseService) for cross-process single-writer enforcement (cloud-native Phase 4, multi-replica). Empty = NO leasing (the byte-identical single-writer-by-affinity default: route every session to one replica). Mutually exclusive with --session-lease-dir / --session-lease-k8s-namespace. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 	fs.StringVar(&cfg.sessionLeaseDir, "session-lease-dir", "", "directory for a SINGLE-HOST flock session lease (cross-process single-writer enforcement among processes on ONE machine; flock auto-releases on crash). NOT safe across hosts — use --session-lease-k8s-namespace or --session-lease-url for multi-host/multi-replica. Empty = no leasing")
-	fs.StringVar(&cfg.sessionLeaseK8sNamespace, "session-lease-k8s-namespace", "", "Kubernetes namespace for coordination.k8s.io Lease-backed session leasing (the in-cluster multi-replica path). Uses in-cluster config (or the default kubeconfig out-of-cluster); the ServiceAccount needs get,list,watch,create,update,delete on leases in coordination.k8s.io for this namespace (see docs/usage.md). Empty = no leasing")
+	fs.StringVar(&cfg.sessionLeaseK8sNamespace, "session-lease-k8s-namespace", "", "Kubernetes namespace for coordination.k8s.io Lease-backed session leasing (the in-cluster multi-replica path). Uses in-cluster config (or the default kubeconfig out-of-cluster); the ServiceAccount needs get,create,update,delete on leases in coordination.k8s.io for this namespace (never list/watch — see docs/usage.md). Empty = no leasing")
 	fs.DurationVar(&cfg.sessionLeaseTTL, "session-lease-ttl", 30*time.Second, "session-lease lifetime: a crashed/killed holder's lease becomes claimable after this long. Only meaningful when a lease backend is selected")
 	fs.DurationVar(&cfg.sessionLeaseRenewInterval, "session-lease-renew-interval", 0, "how often the per-session renewer refreshes a held lease; 0 = --session-lease-ttl / 3. Keep it well below the TTL so a slow store does not lose the lease and cancel the run. Only meaningful when a lease backend is selected")
 	fs.StringVar(&cfg.driverAuthToken, "driver-auth-token", "", "bearer token sent on every store-driver RPC (or MECATL_DRIVER_AUTH_TOKEN; empty disables driver auth). Refused over cleartext to a non-loopback driver — pair with --driver-tls")
@@ -1201,6 +1214,9 @@ func parseFlags(argv []string) (config, error) {
 	fs.StringVar(&cfg.outputEconomy, "output-economy", "",
 		"OPERATOR OUTPUT-ECONOMY TIER (ADR 0041): normal (default — the system prompt already carries the prose-economy + minimum-code ladder + safety carveout) or terse (additionally caps purely-explanatory answers to a few sentences, offering to elaborate rather than elaborating unprompted — the most over-steer-prone rule, so opt-in). Empty = unset (honours the operator-global settings.yaml output-economy: key if present). Operator-tier only; a project-tier output-economy: key is ignored with a WARN. An unknown value fail-softs to the default with a WARN.")
 
+	fs.StringVar(&cfg.reasoningEffort, "reasoning-effort", "",
+		"OPERATOR REASONING-EFFORT TIER (ADR 0055): auto (default — unset, the provider's own default applies) or low/medium/high/xhigh/max. OpenAI supports low/medium/high only, so xhigh/max are clamped down to high (with a WARN); Anthropic maps all five. Empty = unset (honours the operator-global settings.yaml reasoning-effort: key if present). A per-session CreateSession reasoning_effort out-ranks this default. A model with no reasoning support drops it. Operator-tier only; a project-tier reasoning-effort: key is ignored with a WARN. An unknown value fail-softs to unset with a WARN.")
+
 	fs.BoolVar(&cfg.acp, "acp", false, "serve the Agent Client Protocol (ACP) over stdio for an editor that spawned mecated as a subprocess (JSON-RPC 2.0 on stdin/stdout). Skips the TCP/HTTP listeners; the single session workspace is the editor-provided cwd. No TLS/auth/rate-limit (stdio is a local, parent-process trust boundary)")
 
 	fs.StringVar(&cfg.authToken, "auth-token", "", "bearer token required on every gRPC/HTTP request (or MECATL_AUTH_TOKEN; empty disables auth)")
@@ -1243,6 +1259,9 @@ func parseFlags(argv []string) (config, error) {
 		}
 		if f.Name == "output-economy" {
 			cfg.outputEconomyFlagSet = true
+		}
+		if f.Name == "reasoning-effort" {
+			cfg.reasoningEffortFlagSet = true
 		}
 	})
 

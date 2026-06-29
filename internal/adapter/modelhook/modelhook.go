@@ -58,11 +58,6 @@ import (
 
 // Bounds and markers for the guardrail enforcement paths.
 const (
-	// maxContentBytes bounds the tool content the checker will inspect. Content over
-	// this is NOT silently passed: in an enforcing mode it routes through the
-	// fail-open/closed policy (the induced-fail-open defense — an attacker cannot emit
-	// a huge result to slip past). A real injection/exfil payload is far under this.
-	maxContentBytes = 256 * 1024
 	// maxSanitizedBytes bounds a sanitize verdict's sanitized_content. A compromised
 	// checker could pad/launder content back into the trusted stream; an oversized
 	// rewrite is rejected (→ block). It is comfortably larger than any legitimate
@@ -121,7 +116,6 @@ type Runner struct {
 	rules   []CompiledRule
 	checker VerdictChecker
 	diag    port.Diagnostics
-	budget  *checkBudget
 	// failures tracks the CONSECUTIVE checker-failure streak so a persistently-down
 	// checker escalates to a one-time sticky "checker DOWN" WARN (a continuously-
 	// unguarded surface under fail-open must not vanish in a per-call WARN flood).
@@ -132,6 +126,12 @@ type Runner struct {
 	// regardless of size, because secrets are short and a tiny exfiltration arg is
 	// exactly what the Pre check exists to catch. 0 checks every Post result.
 	minContentBytes int
+	// failOnCheckerDown is the global posture for checker errors/timeouts: when true,
+	// ALL rules treat a checker error as UNSAFE (block) — the operator opted into
+	// "halt rather than run unguarded". Per-rule failClosed overrides: an explicitly-
+	// set failClosed wins over the global (true tightens under warn; false loosens
+	// under fail). Default false (warn — the current behaviour).
+	failOnCheckerDown bool
 }
 
 // Options configures a Runner.
@@ -141,16 +141,18 @@ type Options struct {
 	// Checker is the engine-backed verdict checker. A nil Checker makes the Runner a
 	// transparent pass-through to inner (the OFF posture) regardless of Rules.
 	Checker VerdictChecker
-	// Diagnostics is the operator-logging sink (advisory findings, fail-open WARN,
-	// budget-exhausted WARN). nil defaults to port.NopDiagnostics.
+	// Diagnostics is the operator-logging sink (advisory findings, fail-open WARN).
+	// nil defaults to port.NopDiagnostics.
 	Diagnostics port.Diagnostics
-	// MaxChecks is the per-session checker call cap (decision 7). <=0 disables it.
-	MaxChecks int
 	// MinContentBytes skips the checker for a Post (inbound) result shorter than this
 	// (a cost gate). It does NOT apply to Pre (outbound) args — those are always
 	// inspected, since a short exfiltration arg is the point of the Pre check. 0 checks
 	// every Post result.
 	MinContentBytes int
+	// FailOnCheckerDown is the global posture when the checker model is unavailable
+	// (error/timeout): true = block all rules (fail-closed); false = warn (fail-open,
+	// the default). Per-rule failClosed overrides this when explicitly set.
+	FailOnCheckerDown bool
 }
 
 // New constructs a guardrails Runner wrapping inner. When opts.Checker is nil OR no
@@ -163,13 +165,13 @@ func New(inner port.HookRunner, opts Options) *Runner {
 		diag = port.NopDiagnostics{}
 	}
 	return &Runner{
-		inner:           inner,
-		rules:           opts.Rules,
-		checker:         opts.Checker,
-		diag:            diag,
-		budget:          newCheckBudget(opts.MaxChecks),
-		failures:        &failureStreak{threshold: guardrailDownThreshold},
-		minContentBytes: opts.MinContentBytes,
+		inner:             inner,
+		rules:             opts.Rules,
+		checker:           opts.Checker,
+		diag:              diag,
+		failures:          &failureStreak{threshold: guardrailDownThreshold},
+		minContentBytes:   opts.MinContentBytes,
+		failOnCheckerDown: opts.FailOnCheckerDown,
 	}
 }
 
@@ -196,8 +198,8 @@ func (r *Runner) Run(ctx context.Context, ev governance.HookEvent) (governance.H
 }
 
 // check runs the guardrail checker for one matched rule and maps its verdict to a
-// HookOutcome per the rule's mode. It applies the cost budget, the min-content
-// skip, the max-content bound, and the fail-open/closed policy on a checker error.
+// HookOutcome per the rule's mode. It applies the min-content skip and the
+// fail-open/closed policy on a checker error/timeout.
 func (r *Runner) check(ctx context.Context, phase Phase, rule CompiledRule, ev governance.HookEvent) governance.HookOutcome {
 	content := contentUnderReview(phase, ev)
 	// The min-content skip is a cost gate for the INBOUND (Post) direction only: a tiny
@@ -206,29 +208,6 @@ func (r *Runner) check(ctx context.Context, phase Phase, rule CompiledRule, ev g
 	// args object (e.g. a curl to an attacker URL with an embedded key) is exactly the
 	// exfiltration the Pre check exists to catch. Always inspect outbound args.
 	if phase == PhasePost && len(content) < r.minContentBytes {
-		return governance.HookOutcome{}
-	}
-
-	// Oversized content (induced fail-open): an attacker can emit a huge tool result
-	// to error/time-out the checker and slip through unchecked. Bound it BEFORE the
-	// checker call. In an ENFORCE mode, over-bound content does NOT silently pass:
-	// treat it as a checker failure (which fail-open WARNs, fail-closed blocks) so it
-	// can never be silently unguarded. Advisory passes but logs.
-	if len(content) > maxContentBytes {
-		return r.onContentTooLarge(ctx, phase, rule, ev, len(content))
-	}
-
-	// Cost budget (decision 7): a per-session checker-call cap, distinct from the
-	// parent's token budget. Exhaustion is a one-time WARN, then a silent skip —
-	// FAIL-OPEN (an exhausted budget degrades to "no checker"), the same posture as a
-	// checker error in the default (non-fail-closed) mode.
-	admit, firstExhaustion := r.budget.admit()
-	if !admit {
-		if firstExhaustion {
-			r.diag.Log(ctx, port.LevelWarn,
-				"guardrails: per-session checker budget exhausted; further tool content is NOT inspected this session (raise the guardrails maxChecks to inspect more)",
-				"tool", ev.Tool, "phase", string(phase))
-		}
 		return governance.HookOutcome{}
 	}
 
@@ -259,21 +238,6 @@ func findingFields(ev governance.HookEvent, phase Phase, extra ...any) []any {
 	return append(base, extra...)
 }
 
-// onContentTooLarge handles content that exceeds maxContentBytes: in advisory mode it
-// passes (but logs), in an enforcing mode it routes through the same fail-open/closed
-// policy as a checker error — so oversized content can never silently slip past an
-// enforcing guardrail unchecked (the induced-fail-open defense).
-func (r *Runner) onContentTooLarge(ctx context.Context, phase Phase, rule CompiledRule, ev governance.HookEvent, n int) governance.HookOutcome {
-	if rule.mode == ModeAdvisory {
-		r.diag.Log(ctx, port.LevelWarn,
-			"guardrails: content exceeds the inspection size bound; NOT inspected (advisory)",
-			findingFields(ev, phase, "bytes", n, "bound", maxContentBytes)...)
-		return governance.HookOutcome{}
-	}
-	return r.onCheckerError(ctx, phase, rule, ev,
-		fmt.Errorf("content too large to inspect (%d bytes exceeds the %d-byte bound)", n, maxContentBytes))
-}
-
 // onCheckerError applies the fail-open/closed policy. The DEFAULT is fail-OPEN:
 // degrade to "no checker" with a WARN. A fail-closed rule treats a checker
 // error/timeout as UNSAFE — a Block on Pre, a Mutated-to-error on Post. EITHER way it
@@ -282,13 +246,25 @@ func (r *Runner) onContentTooLarge(ctx context.Context, phase Phase, rule Compil
 // WARN so a persistently-broken checker (a continuously-unguarded surface, under
 // fail-open) cannot be lost in a per-call WARN flood. A later completed verdict
 // resets the streak (the reset lives in check()).
+//
+// The global failOnCheckerDown posture (issue #169) is a DEFAULT FLOOR: when true,
+// ALL rules fail-closed on a checker error, UNLESS the rule explicitly set
+// failClosed (failClosedSet) — an explicit per-rule value wins over the global
+// (failClosed:true tightens even under the warn default; failClosed:false loosens
+// even under the fail global). Advisory rules always fail-open regardless — an
+// advisory finding is observe-only by definition.
 func (r *Runner) onCheckerError(ctx context.Context, phase Phase, rule CompiledRule, ev governance.HookEvent, err error) governance.HookOutcome {
 	if down, n := r.failures.fail(); down {
 		r.diag.Log(ctx, port.LevelWarn,
 			"guardrails: checker DOWN — "+itoa(n)+" consecutive checker failures; tool I/O is currently UNGUARDED on fail-open rules until the checker recovers",
 			findingFields(ev, phase, "consecutive_failures", n, "err", err.Error())...)
 	}
-	if rule.mode == ModeAdvisory || !rule.failClosed {
+	// Resolve the effective fail-closed posture: per-rule explicit wins over global.
+	effectiveFailClosed := r.failOnCheckerDown // global default
+	if rule.failClosedSet {
+		effectiveFailClosed = rule.failClosed // per-rule override
+	}
+	if rule.mode == ModeAdvisory || !effectiveFailClosed {
 		r.diag.Log(ctx, port.LevelWarn,
 			"guardrails: checker error; content NOT inspected (fail-open)",
 			findingFields(ev, phase, "mode", string(rule.mode), "err", err.Error())...)
@@ -306,11 +282,13 @@ func (r *Runner) enforce(ctx context.Context, phase Phase, rule CompiledRule, ev
 	reason := strings.TrimSpace(v.Reason)
 	switch rule.mode {
 	case ModeAdvisory:
-		// Observe only: an operator diagnostic, the call/result byte-unchanged.
+		// Observe only: an operator diagnostic + a client-visible EvHook (the
+		// loop surfaces a HookAdvisory notice from outcome.Message), but the
+		// call/result is byte-unchanged (model-invisible).
 		r.diag.Log(ctx, port.LevelInfo,
 			"guardrails: advisory finding (content NOT altered)",
 			findingFields(ev, phase, "reason", clamp(reason))...)
-		return governance.HookOutcome{}
+		return governance.HookOutcome{Message: advisoryMessage(reason)}
 	case ModeSanitize:
 		return r.sanitizeOutcome(ctx, phase, ev, reason, v)
 	default: // ModeBlock
@@ -367,6 +345,17 @@ func (r *Runner) sanitizeOutcome(ctx context.Context, phase Phase, ev governance
 	// Post: prepend a visible redaction marker so the model adapts (it may otherwise
 	// cite a removed hole as if present).
 	return mutateOutcome(phase, ev.Tool, guardrailRedactionMarker+"\n"+sanitized, false)
+}
+
+// advisoryMessage builds the client-visible EvHook text for an advisory finding:
+// a stable "guardrail advisory" prefix plus the (clamped) checker reason. The
+// loop emits the EvHook from outcome.Message; the call/result itself is unchanged.
+func advisoryMessage(reason string) string {
+	msg := "guardrail advisory"
+	if r := strings.TrimSpace(reason); r != "" {
+		msg += ": " + clamp(r)
+	}
+	return msg
 }
 
 // blockOutcome produces the enforcing-BLOCK outcome for a phase. On Pre it is a real

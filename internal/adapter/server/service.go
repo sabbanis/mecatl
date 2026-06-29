@@ -52,6 +52,15 @@ type ProviderSelector struct {
 	// ModelID is the model selector ("" => provider default; a non-empty id the
 	// catalog doesn't know is passed through to the provider verbatim).
 	ModelID string
+	// ReasoningEffort is the per-session reasoning-effort selector (ADR 0055): a
+	// NEUTRAL token ("" / "auto" => unset, the operator default applies; otherwise
+	// low/medium/high/xhigh/max). It is OPAQUE to the adapter — the composition root
+	// normalises + clamps it per provider and re-mints the engine's adapter when it
+	// differs from the operator default. "" keeps the operator default (and the
+	// shared engine on a byte-identical default path). It composes orthogonally with
+	// ProviderID/ModelID; unlike ModelID it is meaningful WITHOUT a ProviderID (it
+	// rides the server-default provider).
+	ReasoningEffort string
 }
 
 // SessionEngineResult is what a SessionEngineFactory returns: the built
@@ -80,6 +89,14 @@ type SessionEngineResult struct {
 	// echo and the running engine agree after a live-catalog swap with no rebuild.
 	ProviderID string
 	ModelID    string
+	// ReasoningEffort is the EFFECTIVE, normalised + per-provider-clamped reasoning
+	// effort this session resolved to (ADR 0055): "" when unset (provider default),
+	// else the neutral token actually sent to the adapter (e.g. openai + "max" echoes
+	// "high"). Computed ONCE in composition from the SAME resolved value that re-mints
+	// (or reuses) the engine's adapter; the server echoes it verbatim on
+	// CreateSessionResponse.resolved_model and never recomputes — the SAME single-
+	// source discipline as ProviderID/ModelID.
+	ReasoningEffort string
 	// BuiltForMode is the session PermissionMode the factory RESOLVED THE MODEL FOR
 	// (ADR 0030 Layer 3, the mode→model re-resolution). The factory echoes back the
 	// mode it was handed — the SAME single-source discipline as ProviderID/ModelID —
@@ -104,6 +121,11 @@ type ResolvedModel struct {
 	ProviderID    string
 	ModelID       string
 	ContextWindow int64
+	// ReasoningEffort is the effective per-session reasoning-effort token (ADR
+	// 0055), "" when unset. Carried on the resolved-model echo so the wire (and the
+	// TUI footer) can show the active effort; it is the value held on the
+	// per-session engine record (sessionEngine.reasoningEffort), not recomputed.
+	ReasoningEffort string
 }
 
 // SessionEngineFactory builds a PER-SESSION agent engine over a non-default
@@ -603,6 +625,14 @@ type Service struct {
 	// gate stickily stops consulting it and degrades to the no-lease path (the
 	// ErrPruneUnsupported sticky-disable precedent). Guarded by s.mu.
 	leaseDisabled bool
+
+	// draining is the cloud-native drain gate (ADR 0048, mecak8s): once armed by
+	// Drain, acquireLease rejects new run-entries with ErrUnavailable so a
+	// shutting-down replica steers new traffic to a survivor within the
+	// termination grace period. It starts false (the byte-identical default), so
+	// mecated and an undrained mecak8s are unaffected. Read with atomic.Load in
+	// the run-entry hot path (no s.mu).
+	draining atomic.Bool
 }
 
 // heldLease is one process-held session lease plus the cancel that stops its
@@ -633,6 +663,11 @@ type sessionEngine struct {
 	// can never diverge after a live-catalog swap. Same single-source discipline as caps.
 	providerID string
 	modelID    string
+	// reasoningEffort is the session's EFFECTIVE reasoning-effort token (ADR 0055),
+	// "" when unset. Stamped from SessionEngineResult.ReasoningEffort and echoed
+	// verbatim on resolved_model via ResolvedModel — never recomputed. Same single-
+	// source discipline as providerID/modelID.
+	reasoningEffort string
 	// builtForMode is the session PermissionMode this engine's model was RESOLVED FOR
 	// (ADR 0030 Layer 3). Stamped from SessionEngineResult.BuiltForMode at every
 	// construction site (create, rehydrate, mode-rebuild) — the SAME single source the
@@ -862,6 +897,7 @@ func setSessionLabels(sess *session.Session, sel ProviderSelector, profile Sessi
 	sess.Profile = string(profile)
 	sess.ProviderID = sel.ProviderID
 	sess.ModelID = sel.ModelID
+	sess.ReasoningEffort = sel.ReasoningEffort
 }
 
 func (s *Service) createSession(ctx context.Context, workspace string, mode session.PermissionMode, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile) (*session.Session, error) {
@@ -948,12 +984,13 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 	// then persist OUTSIDE the lock (no I/O under the mutex). If the persist fails,
 	// evict the reservation and tear the engine down.
 	s.sessionEngines[sess.ID] = &sessionEngine{
-		engine:       eng,
-		caps:         res.Capabilities,
-		providerID:   res.ProviderID,
-		modelID:      res.ModelID,
-		builtForMode: res.BuiltForMode,
-		close:        closeFn,
+		engine:          eng,
+		caps:            res.Capabilities,
+		providerID:      res.ProviderID,
+		modelID:         res.ModelID,
+		reasoningEffort: res.ReasoningEffort,
+		builtForMode:    res.BuiltForMode,
+		close:           closeFn,
 	}
 	if profile == ProfileNoFS {
 		// Register the no-FS Workspace as this session's per-session workspace
@@ -1154,6 +1191,62 @@ func (s *Service) Close() {
 	}
 }
 
+// Drain arms the drain gate (ADR 0048, mecak8s): subsequent run-entries
+// (StartRunContent / resumeFromAwaiting via acquireLease) are rejected with
+// ErrUnavailable so a shutting-down replica stops accepting new runs and a
+// rolling update steers traffic to a survivor. It is idempotent and safe to
+// call from a signal handler or the /drain HTTP endpoint. In-flight runs are
+// NOT cancelled here — that is the bounded GracefulStop's job in the cmd
+// binary; Drain only gates new entries. The gate is one-way: there is no
+// un-drain (a draining replica is retiring).
+func (s *Service) Drain() {
+	s.draining.Store(true)
+}
+
+// IsDraining reports whether the drain gate is armed. It is the read-side
+// companion to Drain: a cmd binary's dynamic ReadyFunc (mecak8s /readyz)
+// closes over it so readiness flips to not-ready the moment Drain is armed,
+// without coupling the probe to the Service's internal atomic. It is the
+// ReadyFunc's read; ActiveRuns is the "how many in flight" figure. Safe to
+// call from a signal handler / HTTP handler goroutine.
+func (s *Service) IsDraining() bool {
+	return s.draining.Load()
+}
+
+// ActiveRuns reports the number of sessions this process is actively driving —
+// the count of held session leases (one per live run-entry). It is the
+// "draining: N active runs" figure a graceful shutdown logs after Drain, so the
+// operator can see how many in-flight runs the bounded GracefulStop will
+// cancel. Zero (or no lease wired) means nothing is in flight.
+func (s *Service) ActiveRuns() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return len(s.heldLeases)
+}
+
+// storagePinger is a store that can report its own readiness (e.g.
+// redisstore.Store). A store without a backend to ping (memstore, jsonlstore,
+// grpcdriver) does not implement it, and StorageReady treats it as always
+// ready — readiness is then drain-gated only.
+type storagePinger interface {
+	Ping(ctx context.Context) error
+}
+
+// StorageReady reports whether the session store is reachable. It is the
+// readiness probe the cmd binary's ReadyFunc closes over, so /readyz tests the
+// SAME store the Service serves traffic through (not a second client opened in
+// the binary). A non-pinging store (memstore, jsonlstore, grpcdriver — no
+// Ping method) is treated as always ready; a Redis store's Ping determines
+// readiness. The caller should bound ctx (e.g. 2s) so a stalled backend fails
+// the probe quickly rather than wedging readiness.
+func (s *Service) StorageReady(ctx context.Context) bool {
+	p, ok := s.cfg.Store.(storagePinger)
+	if !ok {
+		return true // a non-Redis store has no ping — always ready
+	}
+	return p.Ping(ctx) == nil
+}
+
 // GetSession returns the persisted session under id, or ErrNotFound.
 func (s *Service) GetSession(ctx context.Context, id session.SessionID) (*session.Session, error) {
 	sess, err := s.cfg.Store.Load(ctx, id)
@@ -1331,7 +1424,7 @@ func (s *Service) LoadSessionWithMCP(ctx context.Context, id session.SessionID, 
 	// ProviderID/ModelID), not the default-provider floor. The profile derivation
 	// keeps the empty-workspace inference as the second defense for a pre-label
 	// snapshot.
-	sel := ProviderSelector{ProviderID: sess.ProviderID, ModelID: sess.ModelID}
+	sel := ProviderSelector{ProviderID: sess.ProviderID, ModelID: sess.ModelID, ReasoningEffort: sess.ReasoningEffort}
 	// The profile derivation keeps the empty-workspace inference as the second defense
 	// for a pre-label snapshot (profileForSession).
 	profile := profileForSession(sess)
@@ -1358,12 +1451,13 @@ func (s *Service) LoadSessionWithMCP(ctx context.Context, id session.SessionID, 
 		_ = prior.close()
 	}
 	s.sessionEngines[id] = &sessionEngine{
-		engine:       res.Engine,
-		caps:         res.Capabilities,
-		providerID:   res.ProviderID,
-		modelID:      res.ModelID,
-		builtForMode: res.BuiltForMode,
-		close:        res.Close,
+		engine:          res.Engine,
+		caps:            res.Capabilities,
+		providerID:      res.ProviderID,
+		modelID:         res.ModelID,
+		reasoningEffort: res.ReasoningEffort,
+		builtForMode:    res.BuiltForMode,
+		close:           res.Close,
 	}
 	if profile == ProfileNoFS {
 		// A no-fs session's workspace override is re-registered with the engine
@@ -1488,7 +1582,7 @@ func (s *Service) engineAndWorkspaceFor(ctx context.Context, sess *session.Sessi
 		if live {
 			return nil, nil, fmt.Errorf("%w: cannot rebuild engine for session %q mid-run (mode change must be deferred to a turn boundary)", ErrInvalidArgument, id)
 		}
-		sel := ProviderSelector{ProviderID: sess.ProviderID, ModelID: sess.ModelID}
+		sel := ProviderSelector{ProviderID: sess.ProviderID, ModelID: sess.ModelID, ReasoningEffort: sess.ReasoningEffort}
 		profile := profileForSession(sess)
 		rebuilt, err := s.buildAndRegisterSessionEngine(ctx, sess, sel, profile, sess.Mode, true)
 		if err != nil {
@@ -1505,7 +1599,7 @@ func (s *Service) engineAndWorkspaceFor(ctx context.Context, sess *session.Sessi
 		// per-session factory engine. A default-FS session has the empty selector + a real
 		// workspace, so no workspace override is registered (the run-entry seam builds it
 		// from the shared factory below, unchanged).
-		sel := ProviderSelector{ProviderID: sess.ProviderID, ModelID: sess.ModelID}
+		sel := ProviderSelector{ProviderID: sess.ProviderID, ModelID: sess.ModelID, ReasoningEffort: sess.ReasoningEffort}
 		promoted, err := s.buildAndRegisterSessionEngine(ctx, sess, sel, ProfileDefault, sess.Mode, false)
 		if err != nil {
 			return nil, nil, err
@@ -1591,6 +1685,7 @@ func (s *Service) sessionNeedsPerFactory(sel ProviderSelector, specs []mcp.Serve
 func (s *Service) needsRehydration(sess *session.Session) bool {
 	return sess.Profile == string(ProfileNoFS) ||
 		sess.ProviderID != "" || sess.ModelID != "" ||
+		sess.ReasoningEffort != "" ||
 		sess.Workspace == "" ||
 		(sess.Workspace != "" && s.cfg.DefaultWorkspace != "" && sess.Workspace != s.cfg.DefaultWorkspace)
 }
@@ -1637,7 +1732,7 @@ func (s *Service) rehydrateSession(ctx context.Context, sess *session.Session) (
 	// Reconstruct the selector + profile from the persisted inert labels. The
 	// ProviderSelector type stays server-adapter-owned; the aggregate only carried
 	// the two opaque strings.
-	sel := ProviderSelector{ProviderID: sess.ProviderID, ModelID: sess.ModelID}
+	sel := ProviderSelector{ProviderID: sess.ProviderID, ModelID: sess.ModelID, ReasoningEffort: sess.ReasoningEffort}
 	// Second-defense inference inside profileForSession: an empty persisted workspace
 	// can only be a no-fs session (every FS path requires a non-empty workspace), so a
 	// snapshot that predates the profile label still rehydrates as no-fs.
@@ -1687,12 +1782,13 @@ func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *sessi
 		return nil, fmt.Errorf("server: build session engine %q: %w", id, err)
 	}
 	se := &sessionEngine{
-		engine:       res.Engine,
-		caps:         res.Capabilities,
-		providerID:   res.ProviderID,
-		modelID:      res.ModelID,
-		builtForMode: res.BuiltForMode,
-		close:        res.Close,
+		engine:          res.Engine,
+		caps:            res.Capabilities,
+		providerID:      res.ProviderID,
+		modelID:         res.ModelID,
+		reasoningEffort: res.ReasoningEffort,
+		builtForMode:    res.BuiltForMode,
+		close:           res.Close,
 	}
 	s.mu.Lock()
 	prior, hadPrior := s.sessionEngines[id]
@@ -1824,7 +1920,7 @@ func (s *Service) ResolvedModel(id session.SessionID) ResolvedModel {
 	// below for either branch — the frozen per-session scalar is gone.
 	rm := s.cfg.DefaultResolvedModel
 	if ok {
-		rm = ResolvedModel{ProviderID: se.providerID, ModelID: se.modelID}
+		rm = ResolvedModel{ProviderID: se.providerID, ModelID: se.modelID, ReasoningEffort: se.reasoningEffort}
 	}
 	if s.cfg.ResolveContextWindow != nil {
 		// Overlay the live-first window; provider/model identity stays verbatim. The
@@ -2104,6 +2200,17 @@ func (s *Service) appendEvent(ctx context.Context, id session.SessionID, ev sess
 // The Acquire RPC is bounded by leaseAcquireTimeout so a wedged backend cannot
 // stall run-entry indefinitely (this runs under s.runEntryMu on the hot path).
 func (s *Service) acquireLease(ctx context.Context, id session.SessionID) error {
+	// Drain gate (ADR 0048, mecak8s): once Drain is armed, refuse new run-entries
+	// BEFORE leasing/launching so a shutting-down replica steers new traffic to a
+	// survivor. Checked here (the single run-entry chokepoint covering
+	// StartRunContent + resumeFromAwaiting) so both prompt and awaiting-resume
+	// paths are gated uniformly. An in-flight same-process Approve on a LIVE run
+	// does NOT pass through acquireLease (it resolves over the channel), so a
+	// verdict on an already-running session stays allowed during drain. The gate
+	// starts false — byte-identical default for mecated and an undrained mecak8s.
+	if s.draining.Load() {
+		return fmt.Errorf("%w: %q", ErrUnavailable, id)
+	}
 	if s.cfg.SessionLease == nil {
 		return nil
 	}

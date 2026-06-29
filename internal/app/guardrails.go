@@ -37,22 +37,27 @@ func foldOperatorGuardrails(cfg Config) Config {
 	}
 	// Scalar cost knobs: YAML supplies them (no flag), but a non-zero CLI value (if a
 	// flag is ever added) would win; today these come only from YAML.
-	if cfg.GuardrailsMaxChecks == 0 {
-		cfg.GuardrailsMaxChecks = g.MaxChecks
-	}
 	if cfg.GuardrailsMinContentBytes == 0 {
 		cfg.GuardrailsMinContentBytes = g.MinContentBytes
+	}
+	// OnCheckerDown: YAML supplies it (no flag); empty = warn (the default).
+	if cfg.GuardrailsOnCheckerDown == "" {
+		cfg.GuardrailsOnCheckerDown = strings.TrimSpace(g.OnCheckerDown)
+	}
+	if cfg.GuardrailsDefaultMode == "" {
+		cfg.GuardrailsDefaultMode = strings.TrimSpace(g.DefaultMode)
 	}
 	// Rules: YAML is the sole source. Map the on-disk specs to app.GuardrailRule.
 	if len(cfg.GuardrailsRules) == 0 && len(g.Rules) > 0 {
 		rules := make([]GuardrailRule, 0, len(g.Rules))
 		for _, r := range g.Rules {
 			rules = append(rules, GuardrailRule{
-				Match:      r.Match,
-				Phases:     r.Phases,
-				Mode:       r.Mode,
-				Prompt:     r.Prompt,
-				FailClosed: r.FailClosed,
+				Match:         r.Match,
+				Phases:        r.Phases,
+				Mode:          r.Mode,
+				Prompt:        r.Prompt,
+				FailClosed:    r.FailClosed,
+				FailClosedSet: r.FailClosedPresent,
 			})
 		}
 		cfg.GuardrailsRules = rules
@@ -115,7 +120,7 @@ func (e guardrailError) Error() string { return string(e) }
 // byte-identical to the pre-feature posture). It is called at BOTH main-engine hook
 // sites — buildEngine (the shared default-provider engine) and sessionEngineFactory
 // (each per-session engine, re-derived on the session's resolved provider/model) —
-// so a FRESH Runner (and thus a FRESH per-session cost budget) is built per session.
+// so a FRESH Runner is built per session.
 //
 // The checker engine is built over the supplied (provider, model, window) via the
 // child deps path (childEngineDepsForProvider), so it compacts/counts on the
@@ -125,7 +130,7 @@ func buildGuardrailsHooks(cfg Config, provReg *providerRegistry, provider port.L
 	if !guardrailsConfigured(cfg) {
 		return inner // OFF: byte-identical to no guardrails
 	}
-	specs, usedDefaults := effectiveGuardrailSpecs(cfg)
+	specs, _ := effectiveGuardrailSpecs(cfg)
 	rules, ok := compileGuardrailRules(cfg, specs)
 	if !ok {
 		// No usable rule (every spec was invalid and logged): leave inner unchanged
@@ -136,76 +141,63 @@ func buildGuardrailsHooks(cfg Config, provReg *providerRegistry, provider port.L
 	if checker == nil {
 		return inner
 	}
-	maxChecks := cfg.GuardrailsMaxChecks
-	if maxChecks == 0 && usedDefaults {
-		// The DEFAULT advisory rule set matches mcp__* on both directions, so it can
-		// surprise-bill on an MCP-heavy session. When the operator only set a model
-		// (taking the default rules) and did not pin maxChecks, apply a sane non-zero
-		// per-session cap so default-on guardrails cannot bill without bound. An
-		// explicit maxChecks (or explicit rules) keeps the operator's value, including
-		// a deliberate 0 = unbounded.
-		maxChecks = defaultGuardrailsMaxChecks
-	}
 	return modelhook.New(inner, modelhook.Options{
-		Rules:           rules,
-		Checker:         checker,
-		Diagnostics:     cfg.diag(),
-		MaxChecks:       maxChecks,
-		MinContentBytes: cfg.GuardrailsMinContentBytes,
+		Rules:             rules,
+		Checker:           checker,
+		Diagnostics:       cfg.diag(),
+		MinContentBytes:   cfg.GuardrailsMinContentBytes,
+		FailOnCheckerDown: strings.EqualFold(strings.TrimSpace(cfg.GuardrailsOnCheckerDown), "fail"),
 	})
 }
 
-// defaultGuardrailsMaxChecks is the per-session checker-call cap applied when the
-// operator enabled guardrails with only a model (taking the DEFAULT advisory rule
-// set) and did not pin maxChecks — so default-on guardrails cannot bill without
-// bound on an MCP-heavy session. An explicit maxChecks (including a deliberate 0 =
-// unbounded) or an explicit rule list keeps the operator's value untouched.
-const defaultGuardrailsMaxChecks = 200
-
-// defaultGuardrailSpecs is the built-in ADVISORY rule set applied when a guardrails
-// model is configured but the operator authored no explicit rules. It honours the
-// issue's headline default — ON (advisory) for the network/MCP surfaces, OFF for
-// local tools — without spending tokens until a model is configured (the model IS
-// the opt-in-to-spend). Advisory means observe-only: a finding is an operator
-// diagnostic, the call/result is byte-unchanged, so the operator measures the
-// false-positive rate before promoting a rule to block/sanitize. Local tools
-// (Read/Edit/Write/Bash/Grep/Glob) are deliberately NOT matched.
+// defaultGuardrailSpecs is the built-in BLOCK rule set applied when a guardrails
+// model is configured but the operator authored no explicit rules. Enabling
+// guardrails is the opt-in to spend — the default posture is enforcement (block),
+// not observe-only. Advisory is available via the defaultMode key or an explicit
+// rule list. Local tools (Read/Edit/Write/Bash/Grep/Glob) are deliberately NOT
+// matched.
 var defaultGuardrailSpecs = []modelhook.RuleSpec{
 	// Outbound search/fetch args (a query/URL carrying a secret) AND inbound results
 	// (a fetched page / search snippet carrying an injection).
-	{Match: "WebSearch", Phases: []string{"pre", "post"}, Mode: string(modelhook.ModeAdvisory)},
+	{Match: "WebSearch", Phases: []string{"pre", "post"}, Mode: string(modelhook.ModeBlock)},
 	// WebFetch's risk is overwhelmingly the INBOUND page (injection); its outbound arg
-	// is just a URL. Post only, matching the issue's default.
-	{Match: "WebFetch", Phases: []string{"post"}, Mode: string(modelhook.ModeAdvisory)},
+	// is just a URL. Post only.
+	{Match: "WebFetch", Phases: []string{"post"}, Mode: string(modelhook.ModeBlock)},
 	// All MCP tools, both directions: outbound args (exfil into an MCP call body) and
 	// inbound results (injection in an MCP server's response).
-	{Match: "mcp__*", Phases: []string{"pre", "post"}, Mode: string(modelhook.ModeAdvisory)},
+	{Match: "mcp__*", Phases: []string{"pre", "post"}, Mode: string(modelhook.ModeBlock)},
 }
 
 // effectiveGuardrailSpecs returns the rule specs to compile: the operator's explicit
 // rules when any are configured, else the built-in default advisory set. usedDefaults
-// reports which, so buildGuardrailsHooks can apply the default cost cap only when the
-// defaults are in force.
+// reports which, so the posture line (logGuardrailsPosture) can annotate "default
+// set" only when the defaults are in force.
 func effectiveGuardrailSpecs(cfg Config) (specs []modelhook.RuleSpec, usedDefaults bool) {
 	if len(cfg.GuardrailsRules) > 0 {
 		out := make([]modelhook.RuleSpec, 0, len(cfg.GuardrailsRules))
 		for i, gr := range cfg.GuardrailsRules {
 			out = append(out, modelhook.RuleSpec{
-				Match:      gr.Match,
-				Phases:     gr.Phases,
-				Mode:       gr.Mode,
-				Prompt:     gr.Prompt,
-				FailClosed: gr.FailClosed,
-				Order:      i,
+				Match:         gr.Match,
+				Phases:        gr.Phases,
+				Mode:          gr.Mode,
+				Prompt:        gr.Prompt,
+				FailClosed:    gr.FailClosed,
+				FailClosedSet: gr.FailClosedSet,
+				Order:         i,
 			})
 		}
 		return out, false
 	}
-	// No explicit rules: ship the default advisory set (the model being configured is
-	// the opt-in). Copy with Order stamped so the matcher tiebreak is deterministic.
+	// No explicit rules: ship the default rule set (the model being configured is
+	// the opt-in). Apply the operator's defaultMode override if set; else the
+	// built-in block default. Copy with Order stamped so the matcher tiebreak is
+	// deterministic.
 	out := make([]modelhook.RuleSpec, len(defaultGuardrailSpecs))
 	for i, s := range defaultGuardrailSpecs {
 		s.Order = i
+		if dm := strings.TrimSpace(cfg.GuardrailsDefaultMode); dm != "" {
+			s.Mode = dm
+		}
 		out[i] = s
 	}
 	return out, true

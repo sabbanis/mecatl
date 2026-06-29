@@ -50,9 +50,10 @@ OPERATOR-TIER LLM content-checker (issue #27). Parsed strictly. A project-tier g
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
 | `guardrails.model` | `string` | `(empty)` | Model is the checker model id / alias. Empty leaves the CLI --guardrails-model to supply it; a value here is overridden by the CLI flag when both are set. **Enable:** Setting a model here ENABLES guardrails (the guardrails-parity enable model). A configured model with no rules runs the default advisory set. Leave empty (and pass no --guardrails-model) to keep guardrails OFF. |
-| `guardrails.maxChecks` | `int` | `0` | MaxChecks is the per-session checker-call cap. 0 = unbounded. |
 | `guardrails.minContentBytes` | `int` | `0` | MinContentBytes skips the checker for content shorter than this. 0 = check all. |
 | `guardrails.disabled` | `bool` | `false` | Disabled is the YAML-level kill switch (the CLI --guardrails=off also sets it). |
+| `guardrails.onCheckerDown` | `string` | `(empty)` | OnCheckerDown sets the global posture when the checker model is unavailable (error/timeout): "warn" (default, fail-open) or "fail" (fail-closed for all rules). Per-rule failClosed overrides: failClosed:true tightens even under warn; failClosed:false (explicit) loosens even under fail. Empty = warn. |
+| `guardrails.defaultMode` | `string` | `(empty)` | DefaultMode sets the enforcement mode for the built-in default rules when no explicit rules are configured: "block" (default), "advisory", or "sanitize". An explicit rules list replaces the defaults entirely (this key is ignored). |
 | `guardrails.rules` | `[]guardrailrulespec` | `(absent)` | Rules is the guardrail rule list. |
 | `guardrails.rules[].match` | `string` | `(empty)` | Match is the tool-name matcher (exact / "prefix*" / "*"). |
 | `guardrails.rules[].phases` | `[]string` | `(absent)` | Phases lists "pre"/"post"; empty = both. |
@@ -79,6 +80,16 @@ OPERATOR-TIER output-economy scalar (ADR 0041): "" / "normal" / "terse". "terse"
 | Value | Type | Default | Description |
 | --- | --- | --- | --- |
 | `output-economy` | `string` | `(empty)` | OutputEconomy is the OPERATOR-TIER output-economy scalar (ADR 0041: "" / "normal" / "terse"). Like Posture it is honoured ONLY from the user-global + CLI tiers; a project-tier file's output-economy: key is IGNORED with a WARN (operator-tier only, for consistency with posture/guardrails). Empty = absent (the resolver returns "" and composition keeps the default tone). The composition layer interprets the token; permconfig only reads the scalar. |
+
+## `reasoning-effort`
+
+Tier: **operator**
+
+OPERATOR-TIER reasoning-effort scalar (ADR 0055): "" / "auto" (unset — the provider default) / "low" / "medium" / "high" / "xhigh" / "max". OpenAI clamps xhigh/max down to high; Anthropic maps all five. A per-session CreateSession.reasoning_effort out-ranks this default. A project-tier reasoning-effort: is IGNORED with a WARN (a project cannot raise the model's reasoning spend). Empty = keep the CLI/default (provider default).
+
+| Value | Type | Default | Description |
+| --- | --- | --- | --- |
+| `reasoning-effort` | `string` | `(empty)` | ReasoningEffort is the OPERATOR-TIER reasoning-effort scalar (ADR 0055: the neutral vocabulary "" / "auto" / "low" / "medium" / "high" / "xhigh" / "max"). Like Posture/OutputEconomy it is honoured ONLY from the user-global + CLI tiers; a project-tier file's reasoning-effort: key is IGNORED with a WARN (operator-tier only, for consistency — a project cannot raise the model's reasoning spend). Empty = absent (the resolver returns "" and composition uses the provider default). The composition layer interprets + clamps the token; permconfig only reads the scalar. |
 
 ## `models`
 

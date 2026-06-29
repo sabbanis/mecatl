@@ -26,11 +26,19 @@ type noArgs struct{}
 
 // newTestServer stands up an in-process MCP server exposing three fake tools and
 // serves it over a real httptest server speaking the Streamable HTTP transport.
-// It returns the server URL and a cleanup func.
+// It returns the server URL.
+//
+// The httptest listener close is self-registered via t.Cleanup (NOT returned to
+// the caller) so it runs AFTER the *Server.Close cleanup (LIFO), which is
+// required now that the standalone SSE GET stream is enabled (ADR 0057):
+// closing the listener while the SDK's handleSSE goroutine is still attached
+// wedges httptest.Server.Close. Returning a stop-func would invite a future
+// `defer stop()` that re-introduces the wedge, so the helper returns only the
+// URL.
 //
 // gotAuth, if non-nil, receives the Authorization header seen on the most recent
 // request, so a test can assert header injection.
-func newTestServer(t *testing.T, gotAuth *string) (string, func()) {
+func newTestServer(t *testing.T, gotAuth *string) string {
 	t.Helper()
 
 	srv := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "fake", Version: "v1"}, nil)
@@ -82,7 +90,17 @@ func newTestServer(t *testing.T, gotAuth *string) (string, func()) {
 		handler.ServeHTTP(w, r)
 	}))
 
-	return httpSrv.URL, httpSrv.Close
+	cleanup := httpSrv.Close
+	// With the standalone SSE GET stream enabled (ADR 0057) the SDK spawns a
+	// persistent handleSSE goroutine per connected server. That goroutine must
+	// unwind BEFORE the test HTTP server's listener closes, otherwise it enters
+	// its reconnect loop against a dead endpoint and outlives the test (tripping
+	// the package goleak gate). Registering the listener close via t.Cleanup
+	// (rather than a caller `defer stop()`) makes it run AFTER the *Server.Close
+	// cleanup connectTest/connectRestartable registers, so the SSE reader is
+	// cancelled first (LIFO order).
+	t.Cleanup(cleanup)
+	return httpSrv.URL
 }
 
 func connectTest(t *testing.T, cfg ServerConfig) *Server {
@@ -106,8 +124,7 @@ func toolsByName(tools []tool.Tool) map[string]tool.Tool {
 }
 
 func TestConnectListsAndNamespacesTools(t *testing.T) {
-	url, stop := newTestServer(t, nil)
-	defer stop()
+	url := newTestServer(t, nil)
 
 	s := connectTest(t, ServerConfig{Name: "fake", URL: url})
 
@@ -142,8 +159,7 @@ func TestConnectListsAndNamespacesTools(t *testing.T) {
 }
 
 func TestReadOnlyHintMapping(t *testing.T) {
-	url, stop := newTestServer(t, nil)
-	defer stop()
+	url := newTestServer(t, nil)
 
 	s := connectTest(t, ServerConfig{Name: "fake", URL: url})
 	byName := toolsByName(s.Tools())
@@ -160,8 +176,7 @@ func TestReadOnlyHintMapping(t *testing.T) {
 }
 
 func TestExecuteRoundTripsArgs(t *testing.T) {
-	url, stop := newTestServer(t, nil)
-	defer stop()
+	url := newTestServer(t, nil)
 
 	s := connectTest(t, ServerConfig{Name: "fake", URL: url})
 	echo := toolsByName(s.Tools())["mcp__fake__echo"]
@@ -183,8 +198,7 @@ func TestExecuteRoundTripsArgs(t *testing.T) {
 }
 
 func TestExecuteMapsIsError(t *testing.T) {
-	url, stop := newTestServer(t, nil)
-	defer stop()
+	url := newTestServer(t, nil)
 
 	s := connectTest(t, ServerConfig{Name: "fake", URL: url})
 	boom := toolsByName(s.Tools())["mcp__fake__boom"]
@@ -203,8 +217,7 @@ func TestExecuteMapsIsError(t *testing.T) {
 }
 
 func TestExecuteContextCancellation(t *testing.T) {
-	url, stop := newTestServer(t, nil)
-	defer stop()
+	url := newTestServer(t, nil)
 
 	s := connectTest(t, ServerConfig{Name: "fake", URL: url})
 	echo := toolsByName(s.Tools())["mcp__fake__echo"]
@@ -221,8 +234,7 @@ func TestExecuteContextCancellation(t *testing.T) {
 
 func TestAuthHeaderInjected(t *testing.T) {
 	var seen string
-	url, stop := newTestServer(t, &seen)
-	defer stop()
+	url := newTestServer(t, &seen)
 
 	connectTest(t, ServerConfig{
 		Name:    "fake",
@@ -280,8 +292,7 @@ func TestHeaderRoundTripperStripsHeadersCrossOrigin(t *testing.T) {
 }
 
 func TestRegisterIntoCatalog(t *testing.T) {
-	url, stop := newTestServer(t, nil)
-	defer stop()
+	url := newTestServer(t, nil)
 
 	s := connectTest(t, ServerConfig{Name: "fake", URL: url})
 
@@ -346,8 +357,7 @@ func TestRegisterSkipAndContinueOnCollision(t *testing.T) {
 }
 
 func TestManagerSkipsUnreachableServer(t *testing.T) {
-	url, stop := newTestServer(t, nil)
-	defer stop()
+	url := newTestServer(t, nil)
 
 	var skipped []string
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
@@ -497,7 +507,7 @@ func addTestResourcesAndPrompts(srv *mcpsdk.Server) {
 // tool and NO resources or prompts, so its initialize handshake advertises
 // neither capability. Used to assert the capability-absent server is skipped
 // gracefully.
-func newToolsOnlyServer(t *testing.T) (string, func()) {
+func newToolsOnlyServer(t *testing.T) string {
 	t.Helper()
 	srv := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "toolsonly", Version: "v1"}, nil)
 	mcpsdk.AddTool(srv, &mcpsdk.Tool{Name: "ping", Description: "ping"},
@@ -506,7 +516,8 @@ func newToolsOnlyServer(t *testing.T) (string, func()) {
 		})
 	handler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return srv }, nil)
 	httpSrv := httptest.NewServer(handler)
-	return httpSrv.URL, httpSrv.Close
+	t.Cleanup(httpSrv.Close) // see newTestServer: close after *Server.Close for the SSE goroutine
+	return httpSrv.URL
 }
 
 func keys(m map[string]tool.Tool) []string {

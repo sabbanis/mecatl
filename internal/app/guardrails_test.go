@@ -189,39 +189,38 @@ func TestGuardrailsOffReturnsInnerUnchanged(t *testing.T) {
 
 // A model with NO explicit rules WRAPS inner with the DEFAULT advisory rule set (the
 // headline default: ON advisory for WebSearch/WebFetch/mcp__*).
-func TestGuardrailsModelOnlyShipsDefaultAdvisory(t *testing.T) {
+func TestGuardrailsModelOnlyShipsDefaultBlock(t *testing.T) {
 	inner := hookexec.New(nil)
 	llm := mockllm.New()
 	cfg := Config{UseMock: true, GuardrailsModel: "checker-model"}
 	got := buildGuardrailsHooks(cfg, nil, llm, "mock", "m", inner)
 	if got == port.HookRunner(inner) {
-		t.Fatal("a guardrails model with no explicit rules must ship the DEFAULT advisory rules, not stay inert")
+		t.Fatal("a guardrails model with no explicit rules must ship the DEFAULT block rules, not stay inert")
 	}
 	// The default set is exactly WebSearch/WebFetch/mcp__*; assert it compiles to 3.
 	specs, usedDefaults := effectiveGuardrailSpecs(cfg)
 	if !usedDefaults || len(specs) != 3 {
-		t.Fatalf("model-only must use the 3-rule default advisory set; usedDefaults=%v n=%d", usedDefaults, len(specs))
+		t.Fatalf("model-only must use the 3-rule default set; usedDefaults=%v n=%d", usedDefaults, len(specs))
 	}
 	for _, s := range specs {
-		if s.Mode != string(modelhook.ModeAdvisory) {
-			t.Fatalf("default rules must be advisory (observe-only); got %q for %q", s.Mode, s.Match)
+		if s.Mode != string(modelhook.ModeBlock) {
+			t.Fatalf("default rules must be block (enforcement); got %q for %q", s.Mode, s.Match)
 		}
 	}
 }
 
-// The default cost cap is applied only when the defaults are in force AND the operator
-// did not pin maxChecks; an explicit rule list or explicit maxChecks keeps the
-// operator's value (including a deliberate 0 = unbounded).
-func TestGuardrailsDefaultMaxChecksOnlyWithDefaults(t *testing.T) {
-	// Explicit rules → defaults NOT used → no default cap injected.
-	_, usedDefaults := effectiveGuardrailSpecs(Config{GuardrailsRules: []GuardrailRule{{Match: "*"}}})
-	if usedDefaults {
-		t.Fatal("explicit rules must not be flagged as defaults")
+// TestGuardrailsDefaultModeAdvisory tests the defaultMode override: setting
+// defaultMode:advisory downgrades the built-in defaults to observe-only.
+func TestGuardrailsDefaultModeAdvisory(t *testing.T) {
+	cfg := Config{UseMock: true, GuardrailsModel: "checker-model", GuardrailsDefaultMode: "advisory"}
+	specs, usedDefaults := effectiveGuardrailSpecs(cfg)
+	if !usedDefaults || len(specs) != 3 {
+		t.Fatalf("model-only with defaultMode must still use the 3-rule default set; usedDefaults=%v n=%d", usedDefaults, len(specs))
 	}
-	// Model only → defaults used.
-	_, usedDefaults = effectiveGuardrailSpecs(Config{GuardrailsModel: "x"})
-	if !usedDefaults {
-		t.Fatal("model-only must use the defaults")
+	for _, s := range specs {
+		if s.Mode != string(modelhook.ModeAdvisory) {
+			t.Fatalf("defaultMode:advisory must downgrade defaults to advisory; got %q for %q", s.Mode, s.Match)
+		}
 	}
 }
 
@@ -273,14 +272,13 @@ func TestFoldOperatorGuardrailsNoResolverNoOp(t *testing.T) {
 	}
 }
 
-// foldOperatorGuardrails folds the OPERATOR-TIER YAML (model + maxChecks +
-// minContentBytes + rules) onto Config; a CLI --guardrails-model wins over the YAML
-// model. This also proves MinContentBytes is LIVE config (folded end-to-end), not dead.
+// foldOperatorGuardrails folds the OPERATOR-TIER YAML (model + minContentBytes +
+// rules) onto Config; a CLI --guardrails-model wins over the YAML model. This also
+// proves MinContentBytes is LIVE config (folded end-to-end), not dead.
 func TestFoldOperatorGuardrailsFromYAML(t *testing.T) {
 	const yamlCfg = `
 guardrails:
   model: "yaml-model"
-  maxChecks: 9
   minContentBytes: 24
   rules:
     - match: "WebFetch"
@@ -301,8 +299,8 @@ guardrails:
 	if cfg.GuardrailsModel != "yaml-model" {
 		t.Fatalf("YAML model must fold when no CLI model; got %q", cfg.GuardrailsModel)
 	}
-	if cfg.GuardrailsMaxChecks != 9 || cfg.GuardrailsMinContentBytes != 24 {
-		t.Fatalf("cost knobs must fold (maxChecks=%d minContentBytes=%d)", cfg.GuardrailsMaxChecks, cfg.GuardrailsMinContentBytes)
+	if cfg.GuardrailsMinContentBytes != 24 {
+		t.Fatalf("cost knob must fold (minContentBytes=%d)", cfg.GuardrailsMinContentBytes)
 	}
 	if len(cfg.GuardrailsRules) != 1 || cfg.GuardrailsRules[0].Match != "WebFetch" {
 		t.Fatalf("rules must fold from YAML; got %+v", cfg.GuardrailsRules)

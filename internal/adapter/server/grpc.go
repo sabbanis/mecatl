@@ -44,7 +44,7 @@ func (h *HarnessServer) CreateSession(ctx context.Context, req *mecatlv1.CreateS
 	// fields map to the neutral ProviderSelector; the zero selector keeps the
 	// shared-engine fast path. An unknown/unavailable provider, or model_id without
 	// provider_id, surfaces as InvalidArgument via toStatus.
-	sel := ProviderSelector{ProviderID: req.GetProviderId(), ModelID: req.GetModelId()}
+	sel := ProviderSelector{ProviderID: req.GetProviderId(), ModelID: req.GetModelId(), ReasoningEffort: req.GetReasoningEffort()}
 	sess, err := h.svc.CreateSessionWithProfile(ctx, req.GetWorkspace(), modeFromProto(req.GetMode()), limitsFromProto(req.GetLimits()), sel, profile)
 	if err != nil {
 		return nil, toStatus(err)
@@ -365,6 +365,11 @@ func toStatus(err error) error {
 		// lease. Well-formed request, transiently owned elsewhere — FailedPrecondition
 		// (consistent with ErrNoActiveRun; HTTP maps it to 409 Conflict).
 		return status.Error(codes.FailedPrecondition, err.Error())
+	case errors.Is(err, ErrUnavailable):
+		// ADR 0048 drain gate: this replica is draining (graceful shutdown) and
+		// refuses new run-entries. Unavailable (HTTP 503) so the client retries a
+		// survivor.
+		return status.Error(codes.Unavailable, err.Error())
 	case errors.Is(err, ErrNoMCPProvider):
 		return status.Error(codes.FailedPrecondition, err.Error())
 	case errors.Is(err, ErrTeamsDisabled):

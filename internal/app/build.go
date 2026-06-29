@@ -62,6 +62,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/osfs"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
 	"github.com/stacklok/mecatl/internal/adapter/providercatalog"
+	"github.com/stacklok/mecatl/internal/adapter/redisstore"
 	httpsearch "github.com/stacklok/mecatl/internal/adapter/search"
 	"github.com/stacklok/mecatl/internal/adapter/server"
 	"github.com/stacklok/mecatl/internal/adapter/skills"
@@ -118,8 +119,16 @@ type Config struct {
 	OpenAIKey     string
 	UseMock       bool
 	StoreDir      string
-	Shell         string
-	NoBash        bool
+	// RedisURL (ADR 0048, mecak8s) points the session store + durable event log
+	// at a Redis managed service (internal/adapter/redisstore). It is mutually
+	// exclusive with StoreDir and SessionStoreURL (validateDriverConfig: one
+	// store per seam). Empty keeps today's behaviour byte-identical. The Redis
+	// adapter reuses sessnap-json/1 snapshots + the event-log envelope shape, so
+	// it is a TRANSPORT alternative to jsonlstore — validated by the same
+	// conformance suites. The Store doubles as its own EventLog (like jsonlstore).
+	RedisURL string
+	Shell    string
+	NoBash   bool
 
 	// DefaultProvider/DefaultModel are the SERVER-CONFIGURED deployment-wide
 	// default (issue #21; --default-provider / --default-model — the wire's
@@ -469,10 +478,6 @@ type Config struct {
 	// per-rule prompt + fail-closed). Empty disables guardrails. Sourced only from
 	// the operator tier (user-global YAML + CLI), never the project file.
 	GuardrailsRules []GuardrailRule
-	// GuardrailsMaxChecks is the PER-SESSION checker-call cap (decision 7): checker
-	// token spend is bounded SEPARATELY from the parent's MaxRunTokens so
-	// infrastructure spend cannot starve the agent. <=0 disables the cap.
-	GuardrailsMaxChecks int
 	// GuardrailsMinContentBytes skips the checker for content shorter than this (a
 	// cost guard — trivially short content cannot carry a meaningful payload). 0
 	// checks everything.
@@ -480,6 +485,14 @@ type Config struct {
 	// GuardrailsDisabled is the master kill-switch (--guardrails=off): when true,
 	// guardrails are forced OFF regardless of model/rules config.
 	GuardrailsDisabled bool
+	// GuardrailsOnCheckerDown is the global posture when the checker model is
+	// unavailable (error/timeout): "fail" = block all rules (fail-closed); "warn"
+	// (empty/default) = fail-open. Per-rule failClosed overrides when explicitly set.
+	GuardrailsOnCheckerDown string
+	// GuardrailsDefaultMode sets the enforcement mode for the built-in default
+	// rules when no explicit rules are configured: "block" (default), "advisory",
+	// or "sanitize". An explicit rules list replaces the defaults entirely.
+	GuardrailsDefaultMode string
 
 	// ModelAliases maps a short alias (e.g. "sonnet"/"opus"/"haiku"/"fast") to a
 	// concrete provider model id. Resolved only here; the domain/agent always
@@ -623,6 +636,23 @@ type Config struct {
 	// operator-YAML value alone (CLI out-ranks YAML). Set by the cmd mains alongside
 	// OutputEconomy.
 	OutputEconomyFlagSet bool
+	// ReasoningEffort is the OPERATOR-TIER reasoning-effort default (ADR 0055): the
+	// neutral vocabulary "" / "auto" (unset — provider default) / "low" / "medium" /
+	// "high" / "xhigh" / "max". It is folded from the operator-YAML reasoning-effort:
+	// key by foldOperatorReasoningEffort (CLI out-ranks YAML, mirroring posture/
+	// output-economy) and threaded into the provider registry as the DEFAULT effort
+	// each adapter is built with; a per-session CreateSession.reasoning_effort
+	// OUT-RANKS it (resolveSessionEffort), re-minting the adapter via the engine
+	// factory when it differs. Operator-tier only: a project-tier reasoning-effort:
+	// key is WARN-ignored by permconfig. OpenAI clamps xhigh/max→high (with a
+	// diagnostic); Anthropic identity-maps all five tiers. NEVER a port.LLMRequest
+	// field — the loop never branches on it.
+	ReasoningEffort string
+	// ReasoningEffortFlagSet records whether the operator passed an explicit
+	// --reasoning-effort flag. When true, foldOperatorReasoningEffort leaves the
+	// operator-YAML value alone (CLI out-ranks YAML). Set by the cmd mains alongside
+	// ReasoningEffort.
+	ReasoningEffortFlagSet bool
 	// Privileged is the cmd-computed predicate "running as root WITHOUT a declared
 	// sandbox" (euid 0 && MECATL_SANDBOX/IS_SANDBOX unset). It is the input to the
 	// authoritative posture root-refusal: Build calls PostureRefusalReason AFTER the
@@ -793,6 +823,10 @@ type GuardrailRule struct {
 	// mode then treats the content as UNSAFE (block) instead of degrading to "no
 	// checker". A checker SAYING safe always passes regardless.
 	FailClosed bool
+	// FailClosedSet reports whether the operator explicitly set FailClosed on this
+	// rule. When false, the global GuardrailsOnCheckerDown posture fills in; when
+	// true, the per-rule value wins over the global.
+	FailClosedSet bool
 }
 
 // providerConstructor builds the port.LLMProvider for an available provider id,
@@ -892,6 +926,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	cfg.permResolver = buildPermResolver(cfg)
 	cfg = foldOperatorPosture(cfg)
 	cfg = foldOperatorOutputEconomy(cfg)
+	cfg = foldOperatorReasoningEffort(cfg)
 	cfg.Posture = resolvePosture(cfg, postureNoCeiling)
 	cfg = applyPosture(cfg)
 	// AUTHORITATIVE root/no-sandbox refusal: applied HERE, after the full posture fold,
@@ -1496,6 +1531,54 @@ func sessionEngineFactory(
 				resolvedModel = planModel
 			}
 		}
+		// REASONING EFFORT (ADR 0055), re-minted via the engine FACTORY — never a
+		// clone-and-swap-LLM (the "provider FIXED per session" discipline). Precedence:
+		// the per-session selector value OUT-RANKS the operator default; both normalise
+		// through resolveSessionEffort (an unknown token falls back + WARNs). The
+		// resolved neutral token is then per-provider CLAMPED here in composition (xhigh/
+		// max→high for openai, with a diagnostic — the adapter has no port.Diagnostics)
+		// and CAPABILITY-GATED (a model the catalog/live source says has NO reasoning →
+		// DEGRADE: drop the effort + WARN; an UNKNOWN model fails open and sends it, the
+		// thinking-path posture). resolvedEffort is the EFFECTIVE token echoed on
+		// resolved_model. The DEFAULT PATH stays BYTE-IDENTICAL: when the resolved effort
+		// equals the operator default the entry was built with, the shared entry.provider
+		// is reused (no re-mint); a re-mint happens ONLY when they differ and the entry
+		// exposes a remintEffort closure.
+		resolvedEffort := resolveSessionEffort(ctx, cfg, sel.ReasoningEffort)
+		resolvedEffort, clamped := clampEffortForProvider(resolvedProviderID, resolvedEffort)
+		if clamped {
+			cfg.diag().Log(ctx, port.LevelWarn,
+				"reasoning-effort: clamped for provider (this provider supports low/medium/high only)",
+				"provider", resolvedProviderID, "effort", resolvedEffort)
+		}
+		if resolvedEffort != "" {
+			if supported, known := modelReasoningSupport(reg, resolvedProviderID, resolvedModel); known && !supported {
+				cfg.diag().Log(ctx, port.LevelWarn,
+					"reasoning-effort: model does not support reasoning effort; ignoring",
+					"provider", resolvedProviderID, "model", resolvedModel, "effort", resolvedEffort)
+				resolvedEffort = ""
+			}
+		}
+		// utilityProvider is the OPERATOR-DEFAULT provider (the entry's shared
+		// .provider). Reasoning effort binds the AGENT's reasoning (the main engine) and
+		// its SUBAGENTS (the catalog parent below) — NOT the harness's own internal
+		// classifier/one-turn calls. So the three utility engines (the guardrail content
+		// checker, the child-ask reviewer, the model-router classifier) are built off
+		// THIS provider, never the session-re-minted resolvedProvider — a session that
+		// dials reasoning_effort:max must not silently raise the spend of those
+		// cost-sensitive internal calls (ADR 0055).
+		utilityProvider := resolvedProvider
+		// Re-mint ONLY when the resolved session effort differs from the OPERATOR-DEFAULT
+		// effort the entry's shared .provider was built with (the SAME normalise+clamp the
+		// registry applied at build). When they match, the shared provider is reused
+		// byte-for-byte (the byte-identical default path).
+		if entry, ok := reg.Lookup(resolvedProviderID); ok && entry.remintEffort != nil {
+			entryEffort, _ := NormalizeReasoningEffort(cfg.ReasoningEffort)
+			entryEffort, _ = clampEffortForProvider(resolvedProviderID, entryEffort)
+			if resolvedEffort != entryEffort {
+				resolvedProvider = entry.remintEffort(resolvedEffort)
+			}
+		}
 		// The compaction window is the LIVE-FIRST resolver over the resolved
 		// (provider, model) — the SAME reg.windowResolver the shared and child engines
 		// use, evaluated at the point of use. So the live ListModels picker, the session
@@ -1558,16 +1641,19 @@ func sessionEngineFactory(
 		// content checker, over the session's resolved provider/model. OFF-by-default
 		// (returns deps.Hooks unchanged when unconfigured); wired onto the MAIN engine's
 		// hooks only — buildCatalog's child hooks above stay RAW (the recursion guard).
-		deps.Hooks = buildGuardrailsHooks(cfg, reg, resolvedProvider, resolvedProviderID, resolvedModel, deps.Hooks)
+		// The three utility engines pin utilityProvider (the OPERATOR-DEFAULT effort), NOT
+		// resolvedProvider — reasoning effort binds the agent, not the harness's internal
+		// classifier/one-turn calls (ADR 0055).
+		deps.Hooks = buildGuardrailsHooks(cfg, reg, utilityProvider, resolvedProviderID, resolvedModel, deps.Hooks)
 		// The OPT-IN child-ask reviewer (issue #31), RE-DERIVED on this session's
 		// resolved (provider, model) through the same attachAskAdjudicator the shared
 		// engine uses — never a clone-and-swap of the build-time reviewer.
-		deps = attachAskAdjudicator(deps, cfg, reg, resolvedProvider, resolvedProviderID, resolvedModel)
+		deps = attachAskAdjudicator(deps, cfg, reg, utilityProvider, resolvedProviderID, resolvedModel)
 		// The OPT-IN semantic model router (ADR 0031), RE-DERIVED on this session's
 		// resolved (provider, model) through the same buildModelRouterTask the shared
 		// engine uses — the classifier compacts/counts on the session's provider, never a
 		// clone-and-swap. nil (the field stays nil) when the router is OFF.
-		deps.SubagentModelRouter = buildModelRouterTask(cfg, reg, resolvedProvider, resolvedProviderID, resolvedModel)
+		deps.SubagentModelRouter = buildModelRouterTask(cfg, reg, utilityProvider, resolvedProviderID, resolvedModel)
 		if noFS {
 			// MODEL-VISIBLE POSTURE (mandatory discoverability, the #40 pattern):
 			// tell the model up front there is no filesystem — and stop the prompt
@@ -1588,6 +1674,11 @@ func sessionEngineFactory(
 			// (resolve-at-use), so the echo and the running engine never diverge.
 			ProviderID: resolvedProviderID,
 			ModelID:    resolvedModel,
+			// The EFFECTIVE reasoning-effort this session resolved to (ADR 0055): the
+			// normalised + per-provider-clamped + capability-gated token actually wired
+			// into the (possibly re-minted) adapter. The server echoes it on
+			// resolved_model — the SAME single-source discipline as the ids.
+			ReasoningEffort: resolvedEffort,
 			// Echo the mode this engine resolved its model for (ADR 0030 Layer 3), so the
 			// Service stamps sessionEngine.builtForMode from this one source and detects a
 			// later mode→model staleness — the SAME single-source discipline as the ids.
@@ -1811,6 +1902,17 @@ func newK8sClientset() (kubernetes.Interface, error) {
 // driver leaves the EventLog nil. The --event-log-url override is layered on top
 // in buildStore.
 func buildSessionStore(cfg Config) (port.SessionStore, port.EventLog, func(), error) {
+	// Redis (ADR 0048, mecak8s): a managed-service store. The Store doubles as
+	// its own EventLog (like jsonlstore), so wire it as both. Mutually exclusive
+	// with StoreDir/SessionStoreURL (validateDriverConfig enforces it).
+	if cfg.RedisURL != "" {
+		st, err := redisstore.New(cfg.RedisURL)
+		if err != nil {
+			return nil, nil, nil, fmt.Errorf("redis store: %w", err)
+		}
+		cfg.diag().Log(context.Background(), port.LevelInfo, "session store: redis", "url", cfg.RedisURL)
+		return st, st, func() { _ = st.Close() }, nil
+	}
 	if cfg.SessionStoreURL != "" {
 		conn, closeFn, err := cfg.drivers().dial(cfg, cfg.SessionStoreURL)
 		if err != nil {
@@ -2602,7 +2704,7 @@ func normalizeGuardrailsModel(cfg Config) (string, error) {
 //  2. nothing resolvable (no gate model, no resolvable slot) → "guardrails: OFF …" + a
 //     hint naming BOTH enable paths (bind the `guardrail` slot OR set --guardrails-model).
 //  3. configured → "guardrails: ON, checker=<resolved> (via <provenance>), mode=…, rules=N
-//     [ (default set: WebSearch, WebFetch, mcp__*)][, maxChecks=<n>]".
+//     [ (default set: WebSearch, WebFetch, mcp__*)]".
 //
 // Build-once ONLY (called from Build right after logModelRouterFacts, alongside the other
 // build-once fact emitters). NOT a loop line — the "loop emits exactly THREE lines"
@@ -2629,8 +2731,8 @@ func logGuardrailsPosture(cfg Config) {
 
 // guardrailsPostureLine composes the ON posture line as a pure helper so it can be
 // table-tested directly (TestLogGuardrailsPostureBranches). It carries the resolved
-// checker model + provenance, the effective rule mode, the rule count, whether the default
-// advisory set is in force, and the per-session maxChecks cap. Provenance: srcSlot →
+// checker model + provenance, the effective rule mode, the rule count, and whether
+// the default advisory set is in force. Provenance: srcSlot →
 // "via slot `guardrail`"; srcSlotSupersedingGate → "via slot `guardrail`, supersedes gate
 // value `<gateval>`"; srcGate → "via --guardrails-model". Mode: usedDefaults → "advisory";
 // else the highest-severity explicit-rule mode present (block > sanitize > advisory), or
@@ -2655,9 +2757,6 @@ func guardrailsPostureLine(cfg Config, model string, src guardrailSource, specs 
 	out := fmt.Sprintf("guardrails: ON, checker=%s (%s), mode=%s, rules=%d", model, provenance, mode, len(specs))
 	if usedDefaults {
 		out += " (default set: WebSearch, WebFetch, mcp__*)"
-	}
-	if mc := cfg.GuardrailsMaxChecks; mc > 0 {
-		out += fmt.Sprintf(", maxChecks=%d", mc)
 	}
 	return out
 }
@@ -3637,7 +3736,7 @@ func buildCommandRunner(cfg Config) tool.CommandRunner {
 // The MAIN session keeps its own UNHARDENED runner (buildCommandRunner) so operator
 // hooks/pager are honoured there; only team-member shells are sandboxed. Per-command
 // timeout (~30s, applied by the runner) and the supervisor's concurrency cap
-// (defaultTeamConcurrency=4) already bound how much shell a team can run, so no extra
+// (defaultTeamConcurrency=8) already bound how much shell a team can run, so no extra
 // per-subagent deadline/semaphore is added here.
 func buildSandboxedCommandRunner(cfg Config) tool.CommandRunner {
 	if cfg.NoBash || cfg.Shell == "" {
@@ -5233,6 +5332,28 @@ func foldOperatorOutputEconomy(cfg Config) Config {
 		return cfg
 	}
 	cfg.OutputEconomy = yamlEconomy
+	return cfg
+}
+
+// foldOperatorReasoningEffort merges the OPERATOR-TIER `reasoning-effort:` YAML
+// scalar (read by the permconfig resolver from the user-global + CLI tiers ONLY —
+// never the project file, which is IGNORED with a WARN) onto cfg.ReasoningEffort.
+// A CLI --reasoning-effort (cfg.ReasoningEffortFlagSet) OUT-RANKS the YAML value.
+// It is a no-op when no operator-tier reasoning-effort: key was configured.
+// Mirrors foldOperatorOutputEconomy. cfg is taken and returned by value (ADR 0055).
+func foldOperatorReasoningEffort(cfg Config) Config {
+	if cfg.ReasoningEffortFlagSet {
+		return cfg // CLI wins; YAML cannot override an explicit flag.
+	}
+	res, ok := cfg.permResolver.(*permconfig.Resolver)
+	if !ok || res == nil {
+		return cfg
+	}
+	yamlEffort := strings.TrimSpace(res.OperatorReasoningEffort())
+	if yamlEffort == "" {
+		return cfg
+	}
+	cfg.ReasoningEffort = yamlEffort
 	return cfg
 }
 

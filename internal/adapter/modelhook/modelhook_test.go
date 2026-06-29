@@ -154,8 +154,10 @@ func TestEnforceSanitizePostRewritesResult(t *testing.T) {
 	}
 }
 
-// (5) ADVISORY → result byte-unchanged (no Block, no Mutated). The diagnostic side
-// effect is asserted by the integration test; here we assert non-alteration.
+// (5) ADVISORY → result byte-unchanged (no Block, no Mutated), BUT the outcome now
+// carries a client-visible Message (the loop surfaces a HookAdvisory EvHook from
+// it). The diagnostic side effect is asserted by the integration test; here we
+// assert non-alteration + the message.
 func TestAdvisoryDoesNotAlter(t *testing.T) {
 	chk := &fakeChecker{verdict: unsafe("suspicious but advisory")}
 	rule, _ := CompileRule(RuleSpec{Match: "WebFetch", Phases: []string{"post"}, Mode: string(ModeAdvisory)})
@@ -168,8 +170,37 @@ func TestAdvisoryDoesNotAlter(t *testing.T) {
 	if out.Block || len(out.Mutated) != 0 {
 		t.Fatalf("advisory must not alter the result, got %+v", out)
 	}
+	if out.Message == "" {
+		t.Fatalf("advisory must carry a client-visible Message (the loop emits a HookAdvisory EvHook from it), got empty")
+	}
+	if !strings.Contains(out.Message, "guardrail advisory") {
+		t.Fatalf("advisory message should be the guardrail-advisory notice, got %q", out.Message)
+	}
+	if !strings.Contains(out.Message, "suspicious but advisory") {
+		t.Fatalf("advisory message should carry the (clamped) reason, got %q", out.Message)
+	}
 	if chk.calls != 1 {
 		t.Fatalf("advisory still runs the checker; calls=%d", chk.calls)
+	}
+}
+
+// TestAdvisoryOutcomeSurvivesMerge asserts an advisory (message-only) outcome
+// survives the multi-runner merge with a zero inner: the merged outcome keeps the
+// advisory Message, stays non-blocking, and carries no mutation (model-invisible).
+func TestAdvisoryOutcomeSurvivesMerge(t *testing.T) {
+	chk := &fakeChecker{verdict: unsafe("borderline")}
+	rule, _ := CompileRule(RuleSpec{Match: "WebFetch", Phases: []string{"post"}, Mode: string(ModeAdvisory)})
+	r := New(&passInner{}, Options{Rules: []CompiledRule{rule}, Checker: chk})
+
+	out, _ := r.Run(context.Background(), postEvent("WebFetch", "borderline content", false))
+	if out.Block {
+		t.Fatalf("advisory merge must not block, got %+v", out)
+	}
+	if len(out.Mutated) != 0 {
+		t.Fatalf("advisory merge must not mutate (model-invisible), got %s", out.Mutated)
+	}
+	if out.Message == "" || !strings.Contains(out.Message, "guardrail advisory") {
+		t.Fatalf("advisory merge must keep the client-visible Message, got %q", out.Message)
 	}
 }
 
@@ -259,7 +290,7 @@ func TestCheckerErrorFailOpenByDefault(t *testing.T) {
 
 func TestCheckerErrorFailClosedWhenOptedIn(t *testing.T) {
 	chk := &fakeChecker{err: errors.New("timeout")}
-	rule, _ := CompileRule(RuleSpec{Match: "Bash", Phases: []string{"pre"}, Mode: string(ModeBlock), FailClosed: true})
+	rule, _ := CompileRule(RuleSpec{Match: "Bash", Phases: []string{"pre"}, Mode: string(ModeBlock), FailClosed: true, FailClosedSet: true})
 	r := New(&passInner{}, Options{Rules: []CompiledRule{rule}, Checker: chk})
 	out, _ := r.Run(context.Background(), preEvent("Bash", `{"command":"ls"}`))
 	if !out.Block {
@@ -267,7 +298,7 @@ func TestCheckerErrorFailClosedWhenOptedIn(t *testing.T) {
 	}
 
 	// And on Post, fail-closed rewrites to error (Post-Block is inert).
-	postRule, _ := CompileRule(RuleSpec{Match: "WebFetch", Phases: []string{"post"}, Mode: string(ModeBlock), FailClosed: true})
+	postRule, _ := CompileRule(RuleSpec{Match: "WebFetch", Phases: []string{"post"}, Mode: string(ModeBlock), FailClosed: true, FailClosedSet: true})
 	rp := New(&passInner{}, Options{Rules: []CompiledRule{postRule}, Checker: &fakeChecker{err: errors.New("x")}})
 	outp, _ := rp.Run(context.Background(), postEvent("WebFetch", "some result", false))
 	if outp.Block || len(outp.Mutated) == 0 {
@@ -275,33 +306,49 @@ func TestCheckerErrorFailClosedWhenOptedIn(t *testing.T) {
 	}
 }
 
-// (11) cost breaker → maxChecks exceeded → skip + ONE-TIME exhaustion WARN; reset is
-// per-Runner (per-session, since the factory builds one Runner per session).
-func TestCheckBudgetCapsAndSkips(t *testing.T) {
-	diag := &capDiag{}
-	chk := &fakeChecker{verdict: unsafe("bad")}
-	r := New(&passInner{}, Options{Rules: []CompiledRule{ruleBlock("Bash", "pre")}, Checker: chk, MaxChecks: 2, Diagnostics: diag})
-	for i := 0; i < 5; i++ {
-		_, _ = r.Run(context.Background(), preEvent("Bash", `{"command":"ls"}`))
-	}
-	if chk.calls != 2 {
-		t.Fatalf("budget maxChecks=2 must cap checker calls at 2, got %d", chk.calls)
-	}
-	// The exhaustion WARN fires exactly ONCE (not once per skipped call).
-	if n := diag.count("budget exhausted"); n != 1 {
-		t.Fatalf("budget-exhausted WARN must fire exactly once; fired %d", n)
-	}
-
-	// A FRESH Runner (the per-session reset) checks again — its checker is consulted.
-	freshChk := &fakeChecker{verdict: safe()}
-	fresh := New(&passInner{}, Options{Rules: []CompiledRule{ruleBlock("Bash", "pre")}, Checker: freshChk, MaxChecks: 2})
-	_, _ = fresh.Run(context.Background(), preEvent("Bash", `{"command":"ls"}`))
-	if freshChk.calls != 1 {
-		t.Fatalf("a fresh per-session Runner must check again (budget reset); calls=%d", freshChk.calls)
+// TestGlobalFailOnCheckerDown tests the global onCheckerDown:fail posture (#169):
+// ALL rules treat a checker error as unsafe (block), even without per-rule failClosed.
+func TestGlobalFailOnCheckerDown(t *testing.T) {
+	chk := &fakeChecker{err: errors.New("timeout")}
+	// Rule has NO per-rule failClosed — the global posture fills in.
+	rule, _ := CompileRule(RuleSpec{Match: "Bash", Phases: []string{"pre"}, Mode: string(ModeBlock)})
+	r := New(&passInner{}, Options{Rules: []CompiledRule{rule}, Checker: chk, FailOnCheckerDown: true})
+	out, _ := r.Run(context.Background(), preEvent("Bash", `{"command":"ls"}`))
+	if !out.Block {
+		t.Fatalf("global onCheckerDown:fail must block on a checker error, even without per-rule failClosed; got %+v", out)
 	}
 }
 
-// sanitize with a NIL payload on an unsafe verdict → BLOCK fallback (Pre veto, Post
+// TestGlobalFailOverriddenByExplicitPerRuleWarn tests that an explicit per-rule
+// failClosed:false overrides the global onCheckerDown:fail posture (#169).
+func TestGlobalFailOverriddenByExplicitPerRuleWarn(t *testing.T) {
+	diag := &capDiag{}
+	chk := &fakeChecker{err: errors.New("timeout")}
+	// Rule explicitly sets failClosed:false — it should WARN even under global fail.
+	rule, _ := CompileRule(RuleSpec{Match: "Bash", Phases: []string{"pre"}, Mode: string(ModeBlock), FailClosed: false, FailClosedSet: true})
+	r := New(&passInner{}, Options{Rules: []CompiledRule{rule}, Checker: chk, FailOnCheckerDown: true, Diagnostics: diag})
+	out, _ := r.Run(context.Background(), preEvent("Bash", `{"command":"ls"}`))
+	if out.Block {
+		t.Fatalf("explicit per-rule failClosed:false must override global fail and WARN (not block); got %+v", out)
+	}
+	if diag.count("checker error; content NOT inspected (fail-open)") == 0 {
+		t.Fatalf("explicit per-rule warn must produce the fail-open WARN; lines=%v", diag.lines)
+	}
+}
+
+// TestGlobalWarnWithPerRuleFailClosed tests that per-rule failClosed:true tightens
+// even under the global warn posture (the default) — the existing behaviour, now
+// pinned alongside the new global.
+func TestGlobalWarnWithPerRuleFailClosed(t *testing.T) {
+	chk := &fakeChecker{err: errors.New("timeout")}
+	rule, _ := CompileRule(RuleSpec{Match: "Bash", Phases: []string{"pre"}, Mode: string(ModeBlock), FailClosed: true, FailClosedSet: true})
+	r := New(&passInner{}, Options{Rules: []CompiledRule{rule}, Checker: chk, FailOnCheckerDown: false})
+	out, _ := r.Run(context.Background(), preEvent("Bash", `{"command":"ls"}`))
+	if !out.Block {
+		t.Fatalf("per-rule failClosed:true must block even under global warn (the default); got %+v", out)
+	}
+}
+
 // rewrite-to-error), never letting the unsafe content through (finding 2b).
 func TestSanitizeNilPayloadFallsBackToBlock(t *testing.T) {
 	// Pre: nil sanitized → real veto.
@@ -357,26 +404,51 @@ func TestSanitizeOversizedPayloadFallsBackToBlock(t *testing.T) {
 	}
 }
 
-// (2c) oversized CONTENT in an enforcing mode does NOT silently fail-open: it routes
-// through fail-open/closed (fail-closed blocks; fail-open WARNs).
-func TestOversizedContentEnforceDoesNotSilentlyPass(t *testing.T) {
-	huge := strings.Repeat("y", maxContentBytes+1)
+// (2c) oversized CONTENT is now INSPECTED (ADR 0050 removed maxContentBytes). A huge
+// tool result drives one checker call; a safe verdict passes, an UNSAFE verdict enforces.
+func TestOversizedContentIsInspected(t *testing.T) {
+	huge := strings.Repeat("y", 300*1024) // well over the former 256 KiB bound
+	chk := &fakeChecker{verdict: safe()}
+	rule, _ := CompileRule(RuleSpec{Match: "WebFetch", Phases: []string{"post"}, Mode: string(ModeBlock)})
+	r := New(&passInner{}, Options{Rules: []CompiledRule{rule}, Checker: chk})
+	out, _ := r.Run(context.Background(), postEvent("WebFetch", huge, false))
+	if chk.calls != 1 {
+		t.Fatalf("oversized content must be INSPECTED (checker called once), not skipped; calls=%d", chk.calls)
+	}
+	if !strings.Contains(chk.lastReq.Content, "yyyy") {
+		t.Fatalf("the checker must receive the full oversized payload; got %d bytes in Content", len(chk.lastReq.Content))
+	}
+	// A safe verdict passes: no Block, no Mutated (the bound no longer induces a fail-open).
+	if out.Block || len(out.Mutated) != 0 {
+		t.Fatalf("a safe verdict on oversized content must pass; got %+v", out)
+	}
+}
+
+// (2c-err) a checker ERROR/TIMEOUT on oversized content flows through the existing
+// fail-open/closed path (onCheckerError): fail-closed blocks, fail-open WARNs-but-passes.
+// Replaces the deleted skip-behavior test's fail-open/closed coverage, now via a real
+// checker error on huge input.
+func TestOversizedContentCheckerTimeoutFailClosed(t *testing.T) {
+	huge := strings.Repeat("z", 300*1024)
 	diag := &capDiag{}
-	// fail-open block rule: oversized content WARNs but passes (degraded).
-	openRule, _ := CompileRule(RuleSpec{Match: "WebFetch", Phases: []string{"post"}, Mode: string(ModeBlock)})
-	rOpen := New(&passInner{}, Options{Rules: []CompiledRule{openRule}, Checker: &fakeChecker{verdict: safe()}, Diagnostics: diag})
-	_, _ = rOpen.Run(context.Background(), postEvent("WebFetch", huge, false))
-	if diag.count("checker error; content NOT inspected (fail-open)") == 0 {
-		t.Fatalf("oversized content in an enforcing fail-open rule must WARN, not silently pass; lines=%v", diag.lines)
+
+	// fail-closed: a checker timeout on huge content BLOCKS (Pre veto).
+	closedRule, _ := CompileRule(RuleSpec{Match: "Bash", Phases: []string{"pre"}, Mode: string(ModeBlock), FailClosed: true, FailClosedSet: true})
+	rClosed := New(&passInner{}, Options{Rules: []CompiledRule{closedRule}, Checker: &fakeChecker{err: errors.New("context deadline exceeded on huge input")}})
+	out, _ := rClosed.Run(context.Background(), preEvent("Bash", `{"command":"`+huge+`"}`))
+	if !out.Block {
+		t.Fatalf("a checker timeout on huge content in a fail-closed rule must block; got %+v", out)
 	}
 
-	// fail-closed: oversized content BLOCKS (rewrite-to-error on post).
-	closedRule, _ := CompileRule(RuleSpec{Match: "WebFetch", Phases: []string{"post"}, Mode: string(ModeBlock), FailClosed: true})
-	rClosed := New(&passInner{}, Options{Rules: []CompiledRule{closedRule}, Checker: &fakeChecker{verdict: safe()}})
-	out, _ := rClosed.Run(context.Background(), postEvent("WebFetch", huge, false))
-	var p resultPayload
-	if err := json.Unmarshal(out.Mutated, &p); err != nil || !p.IsError {
-		t.Fatalf("oversized content in a fail-closed rule must block; got %+v err %v", p, err)
+	// fail-open: a checker timeout on huge content WARNs but passes (degraded to no checker).
+	openRule, _ := CompileRule(RuleSpec{Match: "WebFetch", Phases: []string{"post"}, Mode: string(ModeBlock)})
+	rOpen := New(&passInner{}, Options{Rules: []CompiledRule{openRule}, Checker: &fakeChecker{err: errors.New("context deadline exceeded on huge input")}, Diagnostics: diag})
+	outp, _ := rOpen.Run(context.Background(), postEvent("WebFetch", huge, false))
+	if outp.Block || len(outp.Mutated) != 0 {
+		t.Fatalf("fail-open on a checker timeout must pass (degraded), not alter; got %+v", outp)
+	}
+	if diag.count("checker error; content NOT inspected (fail-open)") == 0 {
+		t.Fatalf("fail-open must WARN that content was not inspected; lines=%v", diag.lines)
 	}
 }
 
@@ -402,6 +474,28 @@ func TestFailOpenEscalatesToDownWarn(t *testing.T) {
 	}
 	if n := diag.count("checker DOWN"); n != 2 {
 		t.Fatalf("a verdict must reset the streak so a new outage re-arms the DOWN WARN; fired %d", n)
+	}
+}
+
+// (11) the per-session checker call-count cap (maxChecks / checkBudget) was removed
+// (ADR 0049). The checker now runs UNBOUNDED per session: N matched calls reach the
+// checker, and no "budget"/"exhausted" diagnostic appears. This is the inverse of the
+// deleted TestCheckBudgetCapsAndSkips — it proves the cap is GONE, not merely unset.
+func TestCheckerRunsUnboundedNoCallCap(t *testing.T) {
+	const n = 12
+	diag := &capDiag{}
+	chk := &fakeChecker{verdict: safe()}
+	r := New(&passInner{}, Options{Rules: []CompiledRule{ruleBlock("Bash", "pre")}, Checker: chk, Diagnostics: diag})
+	for i := 0; i < n; i++ {
+		_, _ = r.Run(context.Background(), preEvent("Bash", `{"command":"ls"}`))
+	}
+	if chk.calls != n {
+		t.Fatalf("with no call cap ALL %d matched calls must reach the checker; got %d", n, chk.calls)
+	}
+	for _, l := range diag.lines {
+		if strings.Contains(l.msg, "budget") || strings.Contains(l.msg, "exhausted") {
+			t.Fatalf("no budget/exhaustion diagnostic may appear once the cap is removed; got %q", l.msg)
+		}
 	}
 }
 
