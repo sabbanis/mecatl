@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782730338385,
+  "lastUpdate": 1782730341308,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -470280,6 +470280,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 88,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "a9e76af05a980483535301ea7351cf9f1376af19",
+          "message": "feat(agent): writable named-specialist Subagents (mode:\"read-write\" + agent) (#205)\n\n* feat(agent): writable named-specialist Subagents (mode:read-write + agent)\n\nAllow a `mode:\"read-write\"` Subagent call to be combined with `agent` so a\nnamed specialist (its scoped catalog/prompt/skills/hooks/memory) can land\nedits directly against the real parent workspace — previously the\ncombination was hard-rejected (an ADR 0041 v1 scope cut).\n\nThe machinery already existed: `agent`+`model` rebuilds a specialist's\nscoped engine per call. A writable specialist is the same pattern with\n`allowMutating=true` and the MAIN session's command runner (direct-write\nparity, ADR 0041 — no fork, no merge-back; git is the rollback layer).\n\nEngine seam (`engine/agent/subagent.go`):\n- New `WithAgentWritableEngineFactory(func(agentName string) (*Engine, bool))`\n  composition-supplied closure (mirrors WithAgentModelEngineFactory; layering-\n  clean — no adapter/proto/server type crosses).\n- `validateMode`: allow read-write+agent when the factory is wired; reject\n  read-write+agent+model (v1 scope limit); reject read-write+agent with no\n  factory as \"not supported in this deployment\" (also the no-FS gate).\n- `selectChildEngine` threads `writable` and routes read-write+agent through\n  `agentWritableFactory` (fresh engine per call; `agentEngines` read for the\n  name-truth check + per-def limits only — never mutated). Extracted to\n  `selectWritableSpecialistEngine` to keep gocyclo under budget.\n- `resolveEngineAndLimits`: the `writable` clobber is now gated on\n  `args.Agent == \"\"` so a writable specialist KEEPS its factory engine\n  (previously `if writable` unconditionally overwrote it with the generic\n  writableChildEngine — the load-bearing fix).\n- `MutatesParent`: gate is now `mode==\"read-write\" AND (writableChildEngine\n  != nil OR agentWritableFactory != nil)` so a writable specialist stays\n  dispatch-serial. `isolated:false` (shares real tree) → A2 isolation\n  auto-approve does NOT apply; Bash/Edit/Write resolve at main-session\n  parity, same as the writable explorer (ADR 0041).\n\nComposition (`internal/app/build.go`, `internal/app/agentdefs.go`):\n- New `buildAgentWritableEngineFactory` mirroring `buildAgentModelEngineFactory`:\n  rebuilds the def's scoped engine with `allowMutating=true` on the def's\n  resolved provider/model (NO per-call model override — read-write+agent+model\n  is rejected upstream), using `buildCommandRunner(cfg)` (MAIN runner).\n  Inline-MCP defs decline (v1 scope limit, mirrors the agent+model path);\n  reference-only MCP is supported (borrows mainMgr). Wired in `buildSubagentTool`\n  only — NOT in `buildNoFSSubagentTool` (no writable path on no-FS).\n- `buildAgentDefEngine` gains an `allowMutating bool` parameter threaded to\n  `scopedToolNamesMode`; existing callers pass `false` (read-only, unchanged).\n\nTests:\n- `engine/agent/subagent_writable_test.go`: inverted the read-write+agent\n  pin to assert success via the factory; updated read-write+agent+model to\n  the new v1-scope message; split the unwired case.\n- New `engine/agent/subagent_writable_agent_test.go`: factory routing (no\n  map reuse), per-def limits bind, MutatesParent true, unknown-agent error,\n  factory-nil unsupported, A2 skipped (isolated:false).\n- New `internal/app/subagent_writable_agent_test.go`: factory rebuilds scoped\n  catalog writable, full E2E edits the parent tree, inline-MCP declines,\n  reference-MCP supported.\n\nAPI gate: `engine/api/agent.txt` gains `WithAgentWritableEngineFactory`\n(Added, minor).\n\n`task lint` 0 issues; `task test` green (incl. engine-standalone +\napi-compat); `go run ./cmd/mecademo` prints a full offline session.\n\nRefs: #204\n\n* docs(adr): ADR 0058 — writable named-specialist Subagent\n\nDocument the `mode:\"read-write\"`+`agent` combination (issue #204) now that\nWave 1 landed the code. New ADR 0058 supersedes ONLY ADR 0041's \"named\nspecialists run read-only\" v1 scope cut — it REUSES 0041's direct-write\nmechanics, the `parentMutatingCaller` seam, and the `isolated:false`\nposture. ADR 0041 stays frozen (referenced, not wholesale-superseded).\n\nLiving-doc updates:\n- AGENTS.md gotcha line: read-write+agent is SUPPORTED via\n  WithAgentWritableEngineFactory; read-write+agent+model stays REJECTED.\n- docs/design/IMPLEMENTATION-NOTES.md: the writable-Subagent entry now\n  describes the factory + the four new guard tests.\n- docs/architecture/subagents-and-teams.md: the rejection list and the\n  writableChildEngine paragraph now cover the writable-specialist routing.\n- engine/CHANGELOG.md: Added entry for WithAgentWritableEngineFactory (#204).\n- llms.txt: regenerated (task docs).\n\n`task test` green; `task lint` 0 issues. The matlatl `docs:check` strict\ngate reports 1 unreachable — verified pre-existing on clean main (not a\nregression from this change; this change adds 0 broken/orphan/unreachable).\n\nRefs: #204\n\n* docs(adr): apply panel-review fixes to ADR 0058\n\nTwo doc tweaks from the review panel:\n- Reword the `Supersedes:` line: the read-only-specialist scope cut lived\n  in `validateMode` code, not ADR 0041's prose — don't overstate 0041's\n  content (0041's direct-write mechanics are REUSED, not superseded).\n- Add a Consequences bullet recording the Rule-of-Three trigger: a fourth\n  per-call specialist factory (the deferred read-write+agent+model combo)\n  is the point to extract a shared specialistOverride builder — not before.\n\nllms.txt regenerated. task test green.\n\nRefs: #204\n\n* docs(adr): link ADR 0058 from the ADR index (fix matlatl unreachable)\n\nThe new ADR 0058 was unreachable from the root set (nothing linked to\nit), failing the matlatl --strict docs gate. Add it to the subagents\nsection of docs/adr/README.md, right after the ADR 0041 entry it\nsupplements. llms.txt regenerated.\n\nThis was a gap in the ADR 0058 commit (e5d2cae), not a pre-existing\nissue — corrected here so the docs CI gate is green.\n\nRefs: #204",
+          "timestamp": "2026-06-29T13:46:45+03:00",
+          "tree_id": "077cf0b69569900ed49602b13f56f45d6347c75b",
+          "url": "https://github.com/stacklok/mecatl/commit/a9e76af05a980483535301ea7351cf9f1376af19"
+        },
+        "date": 1782730340675,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3297,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 96,
             "unit": "allocs/op"
           },
           {
