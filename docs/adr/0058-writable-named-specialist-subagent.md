@@ -3,7 +3,7 @@
 - Status: Accepted
 - Date: 2026-06-29
 - Scope: `engine/agent` (the Subagent tool's `validateMode` / `selectChildEngine` / `resolveEngineAndLimits` / `MutatesParent` + the new `WithAgentWritableEngineFactory` Option and `selectWritableSpecialistEngine` helper), `internal/app` (`buildAgentWritableEngineFactory`, the `allowMutating` plumb in `buildAgentDefEngine`)
-- Supersedes: the "named specialists run read-only" v1 scope cut in [ADR 0041](./0041-direct-write-subagent.md) ONLY (NOT 0041's direct-write mechanics, the `parentMutatingCaller` dispatch-serial seam, or the `isolated:false` posture — all REUSED)
+- Supersedes: the named-specialists-run-read-only v1 scope restriction shipped alongside ADR 0041's direct-write explorer (lived in `validateMode`, not 0041's prose) — NOT 0041's direct-write mechanics, the `parentMutatingCaller` dispatch-serial seam, or the `isolated:false` posture, all of which are REUSED
 - Superseded by: none
 
 ## Context
@@ -81,6 +81,9 @@ composition wiring is in `internal/app/build.go` (`buildAgentWritableEngineFacto
   all-three rejection fires first in `validateMode`.
 - Scope is the serial Subagent ONLY. `Parallel` branches and mutating `Team` members keep the
   force-copy fork + serialized merge — they have genuine concurrency that direct-write would race.
+- A fourth per-call specialist factory (the deferred `read-write`+`agent`+`model` combination) is the
+  point to extract a shared `specialistOverride` builder — not before (the Rule-of-Three trigger,
+  recorded here as a deferred decision so the next implementer knows the threshold).
 
 ## See also
 
