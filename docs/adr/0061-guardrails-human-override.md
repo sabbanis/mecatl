@@ -4,7 +4,7 @@
 - Date: 2026-06-26
 - Scope: a HUMAN-controlled, one-shot override that authorizes the NEXT matching guardrail block — `internal/adapter/modelhook` (a session-keyed `OverrideArmer` + the Runner consume path + the model-visible hint) and `internal/adapter/server` (the genuine-prompt scan in `StartRunContent`). No engine/port/proto/wire change.
 - Supersedes: none (it ADDS a recovery path to the guardrails feature).
-- Superseded by: none
+- Superseded by: [ADR 0062](./0062-guardrails-approve-once.md)
 
 ## Context
 

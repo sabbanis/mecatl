@@ -2320,7 +2320,7 @@ git SAFE (category 5 and the local-write carve-out coexist: a normal source writ
 sibling repo stays SAFE, only the named sensitive targets are UNSAFE), replacing the
 blanket "if uncertain, judge unsafe" with "judge SAFE unless a specific dangerous action
 is identifiable" — a deliberate precision-over-recall posture for the local shell, with
-the `/guardrail-allow` override (ADR 0061) as the residual recovery. An operator's
+the out-of-band approve-once ask (ADR 0062) as the residual recovery. An operator's
 explicit `Bash` rule with no `prompt:` falls back to `defaultPrePrompt` (least-surprising
 — an explicit rule opts out of the default-set conveniences).
 
@@ -2361,37 +2361,53 @@ is read by `permconfig.Resolver.OperatorGuardrails()` from the **user-global + C
 tiers only** — a project-tier block is ignored with a WARN (the trust inversion: a
 project weakening a checker is a downgrade), parsed strictly (unknown sub-key = error).
 
-**Human one-shot override — `/guardrail-allow` ([ADR 0061](../adr/0061-guardrails-human-override.md)).**
-A `block` is not a permanent dead-end: a HUMAN re-issues the request with a first-line
-`/guardrail-allow [<tool>] [-- <command-substring>]` directive to authorize the NEXT
-matching block ONCE. The **security boundary is the scan point**: the directive is
-parsed ONLY in `internal/adapter/server` `Service.StartRunContent`'s `text` param — the
-genuine user prompt, BEFORE the engine's `CommandExpander.Expand` and BEFORE any tool
-result / fetched page / MCP response / model output (those enter only inside the loop).
-`ParseOverrideDirective` (a tiny separate parser in `modelhook/override.go`, NOT the
-`engine/prompt` slash-command path — different trust domain) matches the case-sensitive
-marker on the FIRST non-empty line, arms the session-keyed `OverrideArmer`, and STRIPS
-the directive line so it never reaches the model/history (a directive-only message is
-rejected — arming still requires a task). A first-line NEAR-MISS (`LooksLikeOverrideDirective`:
-the first non-empty line begins with `/guardrail` but did not parse — typo/wrong-case/
-malformed) is fail-safe (NOT armed) and emits a WARN via the Service diag so the operator
-learns it was unrecognized; a mid-text `/guardrail` mention does not trip it (first-line
-only). The loop NEVER arms — there is no path from tool content to arming. The Runner's `blockOrOverride` funnel (the single point all
-would-be blocks pass through: ModeBlock, the sanitize fall-backs, fail-closed) calls
-`OverrideArmer.Consume(sessionID, tool, cmd)` — an atomic test-and-clear that hits iff
-an armed entry matches the scope (tool exact-match when set; command substring when set,
-Bash-only since `cmd` is `""` for non-Bash). On a hit it emits a loud
-`guardrail-override-consumed` operator-audit line and returns the empty allow outcome;
-the token is burned ONLY on a real block (a `safe` verdict and a read-only-skipped Bash
-command return before the funnel, so neither consumes). Session-keying gives **child
-isolation** for free (the Runner is main-engine-only; a child session id never matches a
-parent's arm). The `OverrideArmer` is created ONCE in `buildEngine` and threaded to BOTH
-Runner sites (shared engine + per-session factory) AND `server.Config.OverrideArmer` —
-one instance, so an arm is visible to whichever Runner the session's engine carries. nil
-armer = byte-identical no-override posture (the strip still runs; arming is a no-op). The
-block message gains a model-visible hint naming the recovery path WITHOUT inviting the
-model to claim it. The holder is in-memory and not persisted (an un-consumed override
-lost on restart is the SAFE direction).
+**Out-of-band approve-once — the askable block ([ADR 0062](../adr/0062-guardrails-approve-once.md), supersedes 0061's prompt directive).**
+A `block` is not a permanent dead-end: it surfaces to the human as an ORDINARY permission
+ask, reusing the existing approval machinery, instead of the removed `/guardrail-allow`
+prompt directive.
+
+- **Engine seam (generic, no guardrail vocabulary).** `governance.HookOutcome.AskApproval`
+  (a `bool`, meaningful only on a PreToolUse `Block`) REFINES a block into an askable
+  block. `engine/agent`'s `preHook` returns a normalized `preHookResult{effective,
+  blocked, askApproval, msg}`; on `{Block, AskApproval}` with `Deps.Interactive` it routes
+  to `askHookApproval` — mint askID, build a `session.PendingAsk{HookOriginated:true}`,
+  `PauseForApproval` → StateAwaiting → emit `EvPermissionAsk` → block on the verdict — the
+  mirror of `authorize`'s policy-ask block. Allow once / Allow always EXECUTE the call
+  DIRECTLY (NOT re-running preHook — the human authorized THIS call); Deny → error result.
+  The headless degrade lives INSIDE `preHook` (a non-`Interactive` engine returns a
+  terminal `blocked` result and emits the `HookBlocked` annotation), so every caller
+  (`runOne`, `runReadBatch` Phase 1, `resolvePendingCall`) inherits the fail-safe. The ask
+  is sequenced one-at-a-time in dispatch (Phase 1, never the parallel fan-out).
+- **Resume skip (the load-bearing serialized marker).** `session.PendingAsk.HookOriginated`
+  (`json:"hook_originated,omitempty"`, SERIALIZED — unlike run-scoped
+  `ConfiguredAsk`/`FlooredConfiguredAllow`) survives a snapshot. The awaiting-resume path
+  (`Engine.ResumeApproval` → `resolvePendingCall`) RE-RUNS preHook on Allow, which for a
+  hook ask would re-block in a fresh process with no in-memory waiver — so when
+  `ask.HookOriginated` it SKIPS preHook and executes directly. Without the serialized
+  marker a resumed guardrail ask re-asks (pinned by a snapshot round-trip test).
+- **Session waiver ("Allow & don't ask again").** A new OPTIONAL `port.HookApprovalLearner`
+  (`LearnHookApproval(ctx, governance.HookEvent)`) is type-asserted on `Deps.Hooks` and
+  called by `askHookApproval` ONLY on a `VerdictAllowAlways` verdict for a hook ask (no
+  method added to `HookRunner` — that would break the API). The `modelhook.Runner`
+  implements it by arming `modelhook.WaiverHolder` (session-keyed; tool-exact + Bash
+  command-substring, the matching shape inherited from the deleted `OverrideScope`). The
+  Runner's `check` consults the waiver FIRST on a Pre phase — a hit returns the empty
+  allow outcome WITHOUT an LLM call and logs a `guardrail-waived` audit line. In-memory
+  only (NOT persisted — the SAFE direction); session-keying gives child isolation for
+  free (the Runner is main-engine-only). The holder is created ONCE in `buildEngine` and
+  threaded to BOTH Runner sites (shared engine + per-session factory); nil = byte-identical
+  no-waiver posture. It is NOT plumbed to the Service — arming is in-loop from a human
+  verdict, never a prompt scan (so there is no `Service.StartRunContent` scan at all).
+- **`blockOutcome` (the single would-be-block funnel).** Pre → `{Block, AskApproval}`
+  (askable; headless degrades in the engine); Post → the inert Mutated-to-error rewrite
+  UNCHANGED (the approve-once flow is PreToolUse-only; `AskApproval` is ignored on Post).
+  `mergeOutcomes` propagates `AskApproval` so a checker block that wants an ask keeps the
+  bit on the merged outcome. The block message carries NO directive grammar.
+- **Posture-coupling (composition-only).** `internal/app`'s `demoteForPosture` (the SINGLE
+  posture→mode coupling point, consumed by both branches of `effectiveGuardrailSpecs`)
+  demotes every rule to advisory under posture **yolo ONLY** (CC `bypassPermissions`
+  parity). strict/trusted/**auto** keep enforcing — under `auto` the interactive
+  approve-once ask IS the enforcement (gated on `Deps.Interactive`, not on posture).
 
 ### `workspacetrust` (WORKSPACE-TRUST — see `WORKSPACE-TRUST-SPIKE.md`)
 

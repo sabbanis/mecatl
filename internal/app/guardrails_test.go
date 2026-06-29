@@ -352,37 +352,78 @@ func TestGuardrailsModelOnlyShipsDefaultBlock(t *testing.T) {
 	}
 }
 
-// TestGuardrailsSharedOverrideArmerReachesRunner: buildGuardrailsHooks threads the
-// SHARED armer into the Runner it builds, so an arm visible to the Service (which arms
-// it from the genuine prompt) is the SAME holder a block consults. A nil armer is
-// byte-identical to no override path (the block holds). This is the composition-side
-// proof that the override holder is shared, not per-Runner.
-func TestGuardrailsSharedOverrideArmerReachesRunner(t *testing.T) {
+// TestGuardrailsSharedWaiverReachesRunner: buildGuardrailsHooks threads the SHARED
+// waiver holder into the Runner it builds, so a verdict-armed waiver (ADR 0062, armed
+// by the engine via the Runner's HookApprovalLearner) is the SAME holder a later block
+// consults. A nil waiver is byte-identical to no waiver path (every block surfaces).
+// This is the composition-side proof that the waiver holder is shared, not per-Runner.
+func TestGuardrailsSharedWaiverReachesRunner(t *testing.T) {
 	inner := hookexec.New(nil)
 	llm := mockllm.New()
 	cfg := Config{UseMock: true, GuardrailsModel: "checker-model",
 		GuardrailsRules: []GuardrailRule{{Match: "Bash", Phases: []string{"pre"}, Mode: "block"}}}
 
-	armer := modelhook.NewOverrideArmer()
-	armer.Arm("s-shared", modelhook.OverrideScope{Tool: "Bash"})
+	waiver := modelhook.NewWaiverHolder()
+	waiver.ArmFromApproval("s-shared", "Bash", "gh pr merge 7")
 
-	// The checker is engine-backed (UseMock); to exercise the override deterministically
-	// we instead verify the WIRING: the Runner built with the shared armer is distinct
-	// from inner (it wrapped), and Consume on the shared armer still hits (the Runner did
-	// not steal/clear it at construction).
-	got := buildGuardrailsHooks(cfg, nil, llm, "mock", "m", inner, armer)
+	// The checker is engine-backed (UseMock); verify the WIRING: the Runner built with
+	// the shared waiver is distinct from inner (it wrapped), and the shared waiver still
+	// authorizes its EXACT command (the holder is shared, not copied/cleared at
+	// construction). Matching is exact-equality (ADR 0062 / CWE-863), so the same key.
+	got := buildGuardrailsHooks(cfg, nil, llm, "mock", "m", inner, waiver)
 	if got == port.HookRunner(inner) {
 		t.Fatal("a configured guardrail must wrap inner")
 	}
-	if !armer.Consume("s-shared", "Bash", "git commit -m x") {
-		t.Fatal("the shared armer must remain armed after wiring (the holder is shared, not consumed at build)")
+	if !waiver.Allows("s-shared", "Bash", "gh pr merge 7") {
+		t.Fatal("the shared waiver must remain armed after wiring (the holder is shared)")
 	}
 
-	// nil armer: still wraps (guardrail is configured) but the override path is off —
-	// byte-identical to the pre-override posture (no panic, no behaviour change).
+	// nil waiver: still wraps (guardrail is configured) but the waiver path is off —
+	// byte-identical to the pre-waiver posture (no panic, no behaviour change).
 	gotNil := buildGuardrailsHooks(cfg, nil, llm, "mock", "m", hookexec.New(nil), nil)
 	if gotNil == nil {
-		t.Fatal("a configured guardrail with a nil armer must still build a Runner")
+		t.Fatal("a configured guardrail with a nil waiver must still build a Runner")
+	}
+}
+
+// TestGuardrailsPostureCouplingDemotesOnlyYolo (ADR 0062, sub-decision B): posture
+// yolo demotes every guardrail rule to advisory (observe-only); strict/trusted/auto
+// keep the configured enforcing mode (under auto the approve-once ask IS the
+// enforcement, gated on interactivity, not posture).
+func TestGuardrailsPostureCouplingDemotesOnlyYolo(t *testing.T) {
+	rules := []GuardrailRule{{Match: "Bash", Phases: []string{"pre"}, Mode: "block"}}
+	for _, tc := range []struct {
+		posture  Posture
+		wantMode string
+	}{
+		{PostureStrict, "block"},
+		{PostureTrusted, "block"},
+		{PostureAuto, "block"},
+		{PostureYolo, string(modelhook.ModeAdvisory)},
+	} {
+		cfg := Config{UseMock: true, GuardrailsModel: "m", GuardrailsRules: rules, Posture: tc.posture}
+		specs, _ := effectiveGuardrailSpecs(cfg)
+		if len(specs) != 1 {
+			t.Fatalf("%s: want 1 spec, got %d", tc.posture, len(specs))
+		}
+		if specs[0].Mode != tc.wantMode {
+			t.Fatalf("posture %s: want mode %q, got %q", tc.posture, tc.wantMode, specs[0].Mode)
+		}
+	}
+}
+
+// TestGuardrailsPostureCouplingDemotesDefaults: the yolo demotion also applies to the
+// built-in default rule set (not just operator-authored rules).
+func TestGuardrailsPostureCouplingDemotesDefaults(t *testing.T) {
+	cfg := Config{UseMock: true, GuardrailsModel: "m", Posture: PostureYolo}
+	specs, usedDefaults := effectiveGuardrailSpecs(cfg)
+	if !usedDefaults {
+		t.Fatal("no explicit rules: must use the default set")
+	}
+	for _, s := range specs {
+		if s.Mode != string(modelhook.ModeAdvisory) {
+			t.Fatalf("under yolo every default rule must be advisory; got %q for %q", s.Mode, s.Match)
+		}
 	}
 }
 

@@ -277,3 +277,20 @@ func TestGuardrailsPostureLine(t *testing.T) {
 		})
 	}
 }
+
+// TestGuardrailsPostureLineStatesYoloDemotion (ADR 0062, item 10): the startup posture
+// line must SURFACE the yolo advisory demotion so an operator sees the security
+// downgrade in the log, not only in docs. Non-yolo tiers must NOT carry the note.
+func TestGuardrailsPostureLineStatesYoloDemotion(t *testing.T) {
+	specs := []modelhook.RuleSpec{{Match: "Bash", Phases: []string{"pre"}, Mode: string(modelhook.ModeAdvisory)}}
+	yolo := guardrailsPostureLine(Config{Posture: PostureYolo}, "m", srcGate, specs, false)
+	if !strings.Contains(yolo, "DEMOTED to advisory by posture yolo") {
+		t.Fatalf("the yolo posture line must state the advisory demotion; line=%q", yolo)
+	}
+	for _, p := range []Posture{PostureStrict, PostureTrusted, PostureAuto} {
+		line := guardrailsPostureLine(Config{Posture: p}, "m", srcGate, specs, false)
+		if strings.Contains(line, "DEMOTED to advisory by posture yolo") {
+			t.Fatalf("posture %s must NOT carry the yolo demotion note; line=%q", p, line)
+		}
+	}
+}

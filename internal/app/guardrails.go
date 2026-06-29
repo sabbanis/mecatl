@@ -126,12 +126,13 @@ func (e guardrailError) Error() string { return string(e) }
 // child deps path (childEngineDepsForProvider), so it compacts/counts on the
 // session's provider and carries the recursion-guard posture (inert hooks, nil
 // reviewer, Interactive false, tool-less catalog).
-// armer is the SHARED one-shot human-override holder (ADR 0061): the SAME instance must
-// reach every Runner site (the shared engine + each per-session engine) AND the Service
-// that arms it from the genuine user prompt, so an arm on a session id is visible to
-// whichever Runner that session's engine carries. nil is the byte-identical no-override
-// posture (Consume on nil → false).
-func buildGuardrailsHooks(cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, inner port.HookRunner, armer *modelhook.OverrideArmer) port.HookRunner {
+// waiver is the SHARED "Allow & don't ask again" holder (ADR 0062): the SAME instance
+// must reach every Runner site (the shared engine + each per-session engine) so a
+// verdict armed on a session id is visible to whichever Runner that session's engine
+// carries. It is armed by the engine via the Runner's port.HookApprovalLearner on a
+// human AllowAlways verdict — NOT from a prompt scan. nil is the byte-identical
+// no-waiver posture (Allows on nil → false).
+func buildGuardrailsHooks(cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, inner port.HookRunner, waiver *modelhook.WaiverHolder) port.HookRunner {
 	if !guardrailsConfigured(cfg) {
 		return inner // OFF: byte-identical to no guardrails
 	}
@@ -152,7 +153,7 @@ func buildGuardrailsHooks(cfg Config, provReg *providerRegistry, provider port.L
 		Diagnostics:       cfg.diag(),
 		MinContentBytes:   cfg.GuardrailsMinContentBytes,
 		FailOnCheckerDown: strings.EqualFold(strings.TrimSpace(cfg.GuardrailsOnCheckerDown), "fail"),
-		OverrideArmer:     armer,
+		Waiver:            waiver,
 	})
 }
 
@@ -198,6 +199,17 @@ var defaultGuardrailSpecs = []modelhook.RuleSpec{
 // rules when any are configured, else the built-in default advisory set. usedDefaults
 // reports which, so the posture line (logGuardrailsPosture) can annotate "default
 // set" only when the defaults are in force.
+//
+// Posture-coupling (ADR 0062, sub-decision B): under posture YOLO ONLY (the
+// truly-off, gate-free tier that maps to Claude Code's bypassPermissions) ALL
+// guardrail rule modes are DEMOTED to advisory (observe-only) by demoteForPosture —
+// it never blocks or asks, it only logs + emits an EvHook. strict/trusted/AUTO keep
+// ENFORCING: under auto the approve-once ask IS the auto-mode behaviour (the checker
+// blocks, an interactive human allows once — CC auto-mode parity), so demoting auto
+// would remove that very behaviour. The interactive approve-once path is gated on
+// Deps.Interactive, NOT on posture. This is composition-only (no engine change) and
+// posture is operator-tier, consistent with guardrails being operator-tier (no
+// project-tier downgrade).
 func effectiveGuardrailSpecs(cfg Config) (specs []modelhook.RuleSpec, usedDefaults bool) {
 	if len(cfg.GuardrailsRules) > 0 {
 		out := make([]modelhook.RuleSpec, 0, len(cfg.GuardrailsRules))
@@ -205,7 +217,7 @@ func effectiveGuardrailSpecs(cfg Config) (specs []modelhook.RuleSpec, usedDefaul
 			out = append(out, modelhook.RuleSpec{
 				Match:         gr.Match,
 				Phases:        gr.Phases,
-				Mode:          gr.Mode,
+				Mode:          demoteForPosture(cfg, gr.Mode),
 				Prompt:        gr.Prompt,
 				FailClosed:    gr.FailClosed,
 				FailClosedSet: gr.FailClosedSet,
@@ -224,9 +236,22 @@ func effectiveGuardrailSpecs(cfg Config) (specs []modelhook.RuleSpec, usedDefaul
 		if dm := strings.TrimSpace(cfg.GuardrailsDefaultMode); dm != "" {
 			s.Mode = dm
 		}
+		s.Mode = demoteForPosture(cfg, s.Mode)
 		out[i] = s
 	}
 	return out, true
+}
+
+// demoteForPosture demotes an enforcing guardrail mode (block/sanitize) to advisory
+// under posture YOLO ONLY (ADR 0062, sub-decision B; CC bypassPermissions parity).
+// strict/trusted/auto keep the configured mode — under auto the approve-once ask IS
+// the enforcement behaviour. It is the SINGLE posture→mode coupling point so the
+// default-set and operator-rule branches cannot drift.
+func demoteForPosture(cfg Config, mode string) string {
+	if cfg.Posture < PostureYolo {
+		return mode
+	}
+	return string(modelhook.ModeAdvisory)
 }
 
 // guardrailsConfigured reports whether guardrails are switched on: a checker model

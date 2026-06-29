@@ -9,6 +9,34 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
 `prompt`, `port`, `team`, `agent`); their committed API snapshots live in
 [`engine/api/`](./api/).
 
+## [Unreleased]
+
+### Added
+
+- **Guardrail approve-once seam (ADR 0062).** Three additive surfaces let a
+  PreToolUse hook BLOCK be refined into an interactive approval ask (reusing the
+  existing permission-ask machinery) instead of a permanent dead-end:
+  - **`governance.HookOutcome.AskApproval`** — a new `bool` field (after
+    `Mutated`). Meaningful only on a PreToolUse outcome with `Block==true`: an
+    interactive engine (`Deps.Interactive`) surfaces the block as a permission ask
+    (PauseForApproval → StateAwaiting → EvPermissionAsk → Approve); a headless
+    engine IGNORES it and the block stands (byte-identical fail-safe).
+  - **`session.PendingAsk.HookOriginated`** — a new `bool` field
+    (`json:"hook_originated,omitempty"`, SERIALIZED). Marks an ask that arose from
+    a hook block; the cross-process awaiting-resume path keys on it to execute the
+    approved call WITHOUT re-running the PreToolUse hook (which would re-block).
+  - **`port.HookApprovalLearner`** — a new OPTIONAL interface
+    (`LearnHookApproval(ctx, governance.HookEvent)`). The engine type-asserts it on
+    `Deps.Hooks` and calls it ONLY on a `VerdictAllowAlways` verdict for a
+    hook-originated ask, so a consumer (the guardrails adapter) can arm a
+    session-scoped "Allow & don't ask again" waiver. No method was added to
+    `HookRunner` (that would be breaking).
+
+  All three are classified Added per COMPATIBILITY.md (a new struct field is a
+  minor bump; a new optional interface is a minor bump). The engine stays generic —
+  the new surfaces carry NO guardrail vocabulary. See
+  [ADR 0062](../docs/adr/0062-guardrails-approve-once.md). (guardrail-approve-once)
+
 ## [0.2.0] - 2026-06-25
 
 ### Added

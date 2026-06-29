@@ -53,8 +53,8 @@ local file moves/copies, and routine git against the normal origin remote. (A no
 source write to a sibling repo stays SAFE; only the named sensitive targets are unsafe.)
 The rubric's
 posture is "judge SAFE unless a specific dangerous action is identifiable" (the opposite
-of the network rubric's "if uncertain, judge unsafe"); the `/guardrail-allow` override
-(below) recovers any residual block. An operator's explicit `Bash` rule with no
+of the network rubric's "if uncertain, judge unsafe"); the approve-once modal (below)
+recovers any residual block. An operator's explicit `Bash` rule with no
 `prompt:` falls back to the generic rubric — set `prompt:` to customise.
 
 Set `defaultMode: advisory` to downgrade to observe-only (see [ADR 0053](../adr/0053-guardrails-default-block.md)).
@@ -63,53 +63,62 @@ session id + tool-call id + a `guardrail-finding` marker so you can correlate it
 to the conversation); the call/result is byte-unchanged and the client/model see
 nothing. Measure the false-positive rate, then promote a rule to `block`/`sanitize`.
 
-## Authorizing a block once: `/guardrail-allow` (ADR 0061)
+## Authorizing a block: the approve-once modal (ADR 0062)
 
 A `block` is enforcement, not advice — so a false positive (a legitimate `gh pr merge`
-the checker flags) would otherwise be a dead-end. A **human** can authorize the NEXT
-matching block ONCE by re-issuing the request with a first-line directive:
+the checker flags) would otherwise be a dead-end. Instead of a prompt directive (the old
+`/guardrail-allow`, superseded), a guardrail block on an **interactive** client surfaces
+**out of band as an ordinary permission ask** — the same modal a permission rule's "ask"
+uses — with three choices:
 
-```
-/guardrail-allow [<tool>] [-- <command-substring>]
-<the task to run>
-```
+> **Migration note.** The `/guardrail-allow` first-line directive is GONE — there is no
+> prompt scan any more. If you still type `/guardrail-allow …` as the first line, it is
+> now treated as ordinary prompt text (sent to the model verbatim), NOT a directive.
+> Answer the approval modal below instead.
 
-- `/guardrail-allow` alone authorizes the next block on **any** tool.
-- `/guardrail-allow Bash` restricts it to `Bash` (recommended — scope it to the tool you
-  expect to be blocked).
-- `/guardrail-allow Bash -- gh pr merge` further restricts it to a Bash command
-  **containing** `gh pr merge`, so it cannot be spent on an unrelated block.
+- **Allow once** — run this exact blocked call now; nothing is remembered.
+- **Allow & don't ask again** — run it now AND record a session-scoped **waiver** so a
+  later identical block in the same session runs without asking again (see below).
+- **Deny** — refuse the call; the model receives the guardrail reason as an error result
+  and can re-route.
 
-It is **one-shot**: it authorizes exactly one matching block, then is gone. It must
-accompany a task — a message that is only the directive is rejected. The directive line
-is **stripped** from the prompt before it reaches the model or history. If the first
-line looks like a directive but does not parse (a typo, wrong case, or malformed
-grammar), it is **not** armed (fail-safe) and a WARN tells you it was not recognized.
+There is nothing to type and nothing to predict: the human acts AT the block, in real
+time, on the exact tool call, using the approval UI your client already has (mecatui's
+modal, an ACP `requestPermission`, or a gRPC/HTTP `/approve` with the ask id). The run
+pauses in `awaiting` until you answer, then continues.
 
-**Worked example.** You ran a prompt and saw the tool card come back
-`blocked by guardrail: …`. Re-run *the same prompt* with the directive as its first
-line — e.g.:
+**The session waiver ("Allow & don't ask again").** Choosing *Allow & don't ask again*
+arms an in-memory, session-scoped waiver for that tool (for `Bash`, scoped to the
+**command substring** so it cannot be spent on an unrelated command). A later matching
+Pre block in the **same session** is then authorized silently — no ask, and no checker
+call (zero latency) — and a grep-able `guardrail-waived` operator-audit line is logged.
+A *non*-matching command still asks. The waiver is **in-memory only**: it does **not**
+survive a process restart (the safe direction — a stale waiver never silently outlives
+the run), and it is session-keyed, so a subagent/child session never inherits a parent's.
 
-```
-/guardrail-allow Bash -- gh pr merge
-merge PR 7 once CI is green
-```
+**Worked example.** You see a tool card come back `blocked by guardrail: …`. Your client
+shows the approval modal for the `Bash` call. Pick *Allow once* to run just this one, or
+*Allow & don't ask again* so the rest of this session's matching `gh pr merge` calls run
+without re-prompting. No re-issuing the prompt, no directive grammar.
 
-The next `Bash` call whose command contains `gh pr merge` runs once; everything else
-stays guarded.
+**Security:** a waiver arms ONLY from a genuine human verdict routed through the engine's
+approval site — there is **no** prompt-channel scan, so a tool result, a fetched page, an
+MCP response, or model output can never authorize anything. The model cannot grant itself
+an approval; the verdict comes from the principal answering the modal.
 
-**Security:** the override arms ONLY from the genuine user prompt — never from a tool
-result, a fetched page, an MCP response, or model output. The model cannot grant itself
-an override; a block message tells the model a *human* may re-issue with
-`/guardrail-allow`, and any claim of approval the model makes is void. The override is
-session-scoped (a subagent/child session never inherits a parent's). Every consumed
-override is logged with a grep-able `guardrail-override-consumed` operator-audit marker.
+**Headless / non-interactive runs.** There is no human to answer the modal, so a `block`
+**degrades to a terminal block** (fail-safe) — the tool does not run and the model gets
+the block error. If a headless run keeps hitting a guardrail block, the fix is to tune
+the rule (`mode`, a per-rule `prompt:` rubric) or the checker model, or to run that
+deployment under posture `auto`/`yolo` (below) — not to rely on an interactive approval.
 
-**Headless / non-interactive runs.** There is no human to type the directive mid-run, so
-a `block` is **final** — the override is an interactive recovery, not a headless one. If
-a headless run keeps hitting a guardrail block, the fix is to tune the rule (`mode`, a
-per-rule `prompt:` rubric) or the checker model, not to rely on `/guardrail-allow`. A
-near-miss directive in a headless prompt is still fail-safe (not armed, WARN logged).
+**Posture coupling.** Under posture **`yolo`** (Claude Code's `bypassPermissions`
+equivalent) guardrails are **demoted to advisory** (observe-only — they log a finding and
+emit a client `EvHook`, but never block or ask). `strict`, `trusted`, and **`auto`** keep
+**enforcing**: under `auto`, the interactive approve-once modal *is* the auto-mode
+behaviour — the checker blocks and an interactive human allows it once, exactly like
+Claude Code's auto mode. (The approve-once path is gated on whether a human approver is
+attached, not on the posture tier.)
 
 **Operator-tier ONLY.** The `guardrails:` config is read from the **user-global**
 `settings.yaml` + the CLI — **never** the project-tier file. This inverts the usual
