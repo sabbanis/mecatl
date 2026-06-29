@@ -481,7 +481,7 @@ type Config struct {
 	LeaseRenewInterval time.Duration
 
 	// OverrideArmer is the SHARED session-keyed one-shot human-override holder (ADR
-	// 0059). StartRunContent scans the GENUINE user prompt for a /guardrail-allow
+	// 0061). StartRunContent scans the GENUINE user prompt for a /guardrail-allow
 	// directive and arms it here; the SAME instance is wired into the guardrails
 	// Runner so a would-be block consults+consumes it. nil disables the override path
 	// entirely (byte-identical to off) — the genuine-prompt scan still strips the
@@ -1505,7 +1505,7 @@ func (s *Service) StartRunContent(ctx context.Context, id session.SessionID, tex
 	if text == "" && len(parts) == 0 {
 		return nil, fmt.Errorf("%w: prompt text or parts is required", ErrInvalidArgument)
 	}
-	// Human guardrail override (ADR 0059): this `text` param is the GENUINE user
+	// Human guardrail override (ADR 0061): this `text` param is the GENUINE user
 	// prompt, pre-expansion (the engine's CommandExpander runs later inside
 	// RunContent) and PRE-injection (tool results / fetched pages / MCP responses /
 	// model output never reach this param — they enter only inside the loop). It is
@@ -1522,7 +1522,7 @@ func (s *Service) StartRunContent(ctx context.Context, id session.SessionID, tex
 			return nil, fmt.Errorf("%w: a /guardrail-allow directive must accompany a task (the prompt was the directive alone)", ErrInvalidArgument)
 		}
 	} else if modelhook.LooksLikeOverrideDirective(text) {
-		// Near-miss (ADR 0059): the first line plainly intends a /guardrail-allow
+		// Near-miss (ADR 0061): the first line plainly intends a /guardrail-allow
 		// directive but did not parse (typo, wrong case, malformed grammar). It is
 		// FAIL-SAFE — nothing is armed and the text passes through unchanged as the
 		// task — but a silent pass would leave the operator believing a guardrail

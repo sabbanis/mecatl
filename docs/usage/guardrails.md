@@ -24,7 +24,7 @@ other local tools:
 | `mcp__*` | pre + post | block | |
 | `Bash` | pre | block | read-only pre-filter (see below) |
 
-The `Bash` rule (added by [ADR 0058](../adr/0058-guardrails-bash-default.md)) protects
+The `Bash` rule (added by [ADR 0060](../adr/0060-guardrails-bash-default.md)) protects
 the local-shell blast radius — a mutating/outward command such as `gh pr merge` is
 inspected (and, in block mode, vetoed) — but a **read-only pre-filter** skips the
 checker entirely for a command it can prove read-only (`ls`, `grep`, `git status`,
@@ -63,7 +63,7 @@ session id + tool-call id + a `guardrail-finding` marker so you can correlate it
 to the conversation); the call/result is byte-unchanged and the client/model see
 nothing. Measure the false-positive rate, then promote a rule to `block`/`sanitize`.
 
-## Authorizing a block once: `/guardrail-allow` (ADR 0059)
+## Authorizing a block once: `/guardrail-allow` (ADR 0061)
 
 A `block` is enforcement, not advice — so a false positive (a legitimate `gh pr merge`
 the checker flags) would otherwise be a dead-end. A **human** can authorize the NEXT

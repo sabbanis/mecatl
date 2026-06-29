@@ -31,7 +31,7 @@ func (c overrideScriptedChecker) Check(_ context.Context, _ modelhook.CheckReque
 }
 
 // newOverrideService builds a Service whose Config carries a fresh OverrideArmer, so the
-// StartRunContent genuine-prompt scan (ADR 0059) can be exercised end-to-end. It returns
+// StartRunContent genuine-prompt scan (ADR 0061) can be exercised end-to-end. It returns
 // the service, the armer (so a test can inspect the armed state), and the store (so a
 // test can read back the recorded conversation to prove the directive line was stripped).
 func newOverrideService(t *testing.T, llm *mockllm.Provider) (*server.Service, *modelhook.OverrideArmer, *memstore.Store) {
@@ -59,7 +59,7 @@ func newOverrideService(t *testing.T, llm *mockllm.Provider) (*server.Service, *
 
 // TestOverrideArmsOnlyFromGenuinePromptText: a /guardrail-allow directive on the first
 // line of the StartRunContent text param ARMS the shared armer for that session. This is
-// the SOLE arming channel (ADR 0059) — the text param is the genuine, pre-expansion,
+// the SOLE arming channel (ADR 0061) — the text param is the genuine, pre-expansion,
 // pre-injection user prompt.
 func TestOverrideArmsOnlyFromGenuinePromptText(t *testing.T) {
 	llm := mockllm.New(mockllm.TextTurn("ok"))
@@ -184,7 +184,7 @@ func (d *capturingDiag) hasWarn(sub string) bool {
 }
 
 // TestOverrideEndToEndThroughServiceAndRunner is the composition-level JOIN of the two
-// halves (ADR 0059): arming via Service.StartRunContent's genuine-prompt scan AND
+// halves (ADR 0061): arming via Service.StartRunContent's genuine-prompt scan AND
 // consumption by THAT session's actual guardrails Runner on a block, through the SAME
 // shared OverrideArmer. The Service's engine carries a real modelhook.Runner (Bash block
 // rule + an unsafe scripted checker) sharing the armer the Service arms — exactly the

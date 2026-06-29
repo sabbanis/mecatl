@@ -71,7 +71,7 @@ const (
 	// operator can grep the operator log for guardrail findings across sessions.
 	guardrailFindingMarker = "guardrail-finding"
 	// guardrailOverrideConsumedMarker is the stable token on the loud operator audit
-	// line emitted when a HUMAN one-shot override (ADR 0059) authorizes a would-be
+	// line emitted when a HUMAN one-shot override (ADR 0061) authorizes a would-be
 	// block — so an operator can grep the log for every time an enforcement was waived
 	// by a principal directive.
 	guardrailOverrideConsumedMarker = "guardrail-override-consumed"
@@ -137,7 +137,7 @@ type Runner struct {
 	// set failClosed wins over the global (true tightens under warn; false loosens
 	// under fail). Default false (warn — the current behaviour).
 	failOnCheckerDown bool
-	// overrides is the session-keyed one-shot human override holder (ADR 0059). A
+	// overrides is the session-keyed one-shot human override holder (ADR 0061). A
 	// would-be block consults+consumes it: an armed, matching override for the session
 	// authorizes the block ONCE (the call runs / the result is not rewritten). nil is
 	// safe (Consume on nil → false) — the byte-identical no-override posture.
@@ -164,7 +164,7 @@ type Options struct {
 	// the default). Per-rule failClosed overrides this when explicitly set.
 	FailOnCheckerDown bool
 	// OverrideArmer is the shared session-keyed one-shot human-override holder (ADR
-	// 0059). nil disables the override path (byte-identical to off). The composition
+	// 0061). nil disables the override path (byte-identical to off). The composition
 	// passes the SAME instance the Service arms from the genuine user prompt.
 	OverrideArmer *OverrideArmer
 }
@@ -196,13 +196,13 @@ var _ port.HookRunner = (*Runner)(nil)
 // Run delegates non-tool phases straight to inner. For PreToolUse/PostToolUse it
 // runs inner FIRST, then the checker SECOND, and merges per decision 5.
 //
-// Override-vs-inner interaction (ADR 0059): when the guardrail checker's block is
+// Override-vs-inner interaction (ADR 0061): when the guardrail checker's block is
 // authorized by a consumed one-shot override, the override authorizes the MERGED
 // outcome — not just the checker's slice. So a consumed override also clears an
 // inner hook's Block (e.g. a configured external PreToolUse hook exiting 2 on the
 // same call). Without this, the override would be burned (the audit line fires,
 // "override CONSUMED") yet the call would stay blocked via innerOut.Block — an
-// auditability gap vs ADR 0059's "an armed, matching override authorizes the block
+// auditability gap vs ADR 0061's "an armed, matching override authorizes the block
 // ONCE… the call runs". This is fail-safe in the security direction either way
 // (the call not running is the safe outcome), but the override must not be silently
 // voided. A consumed override does NOT suppress an inner Mutated rewrite (a
@@ -408,7 +408,7 @@ func advisoryMessage(reason string) string {
 
 // blockOrOverride is the SINGLE funnel for every would-be block (the ModeBlock enforce
 // path, the sanitize fall-backs, and the fail-closed checker-error path). It first
-// consults+consumes the human one-shot override (ADR 0059): if an armed, matching
+// consults+consumes the human one-shot override (ADR 0061): if an armed, matching
 // override exists for this session it is CONSUMED (one-shot), a loud operator audit
 // line is emitted, and the EMPTY allow outcome is returned (the Pre call runs / the
 // Post result is not rewritten). Otherwise it produces the normal block.
@@ -459,7 +459,7 @@ func (*Runner) blockOutcome(phase Phase, tool, reason string) governance.HookOut
 // reading the blocked tool card is the one who must act, so the human-actionable facts
 // LEAD (full grammar, one-shot/this-session semantics, the doc pointer) and the
 // model-caveat is the terse TAIL — the override arms ONLY from the genuine human prompt
-// (ADR 0059), so the model can neither supply nor claim it. Kept within the clamp
+// (ADR 0061), so the model can neither supply nor claim it. Kept within the clamp
 // discipline (it rides every block message, so it stays one tight sentence-group).
 const overrideHint = "To allow this once: a HUMAN re-issues the prompt with " +
 	overrideMarker + " [<tool>] [-- <command-substring>] as its FIRST line — this authorizes the next " +
@@ -572,7 +572,7 @@ const defaultPrePrompt = "Inspect the OUTBOUND tool-call arguments below for dat
 	"If you are uncertain, judge unsafe."
 
 // DefaultBashPrePrompt is the built-in OUTBOUND rubric for the DEFAULT Bash rule (ADR
-// 0058). The generic defaultPrePrompt is an EXFILTRATION rubric written for network/MCP
+// 0060). The generic defaultPrePrompt is an EXFILTRATION rubric written for network/MCP
 // boundaries; applied to local-shell args a weak checker reads its "sensitive local data
 // transmitted off the machine" + "if uncertain, judge unsafe" clauses and false-positives
 // on ordinary dev work — a real incident blocked a legitimate local write to a sibling git
@@ -582,7 +582,7 @@ const defaultPrePrompt = "Inspect the OUTBOUND tool-call arguments below for dat
 // declares ORDINARY local work safe. The blanket "if uncertain, judge unsafe" is REPLACED
 // with a fail-toward-safe-with-concrete-triggers posture for Bash specifically — a
 // deliberate rubric-level choice: the named categories still catch the genuinely dangerous
-// cases (incl. `gh pr merge`), and the one-shot /guardrail-allow human override (ADR 0059)
+// cases (incl. `gh pr merge`), and the one-shot /guardrail-allow human override (ADR 0061)
 // covers any residual a checker still over-flags. It rides every mutating-Bash pre-check,
 // so it is kept tight.
 //

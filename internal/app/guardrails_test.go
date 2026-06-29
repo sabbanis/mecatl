@@ -29,7 +29,7 @@ func (c *promptCapturingChecker) Check(_ context.Context, req modelhook.CheckReq
 }
 
 // TestDefaultBashRuleRoutesToBashRubric is the KEY wiring test for the false-positive
-// fix (ADR 0058): the DEFAULT Bash rule must route a Pre Bash check to
+// fix (ADR 0060): the DEFAULT Bash rule must route a Pre Bash check to
 // modelhook.DefaultBashPrePrompt (the local-writes-are-safe rubric), while Web/MCP Pre
 // checks keep the generic exfiltration rubric. It drives the REAL compiled default
 // rule set through a Runner with a prompt-capturing checker — so it proves the
@@ -312,7 +312,7 @@ func TestGuardrailsOffReturnsInnerUnchanged(t *testing.T) {
 
 // A model with NO explicit rules WRAPS inner with the DEFAULT block rule set (the
 // headline default: ON block for WebSearch/WebFetch/mcp__* + Bash with a read-only
-// pre-filter — ADR 0058).
+// pre-filter — ADR 0060).
 func TestGuardrailsModelOnlyShipsDefaultBlock(t *testing.T) {
 	inner := hookexec.New(nil)
 	llm := mockllm.New()
@@ -339,7 +339,7 @@ func TestGuardrailsModelOnlyShipsDefaultBlock(t *testing.T) {
 		}
 	}
 	if bash == nil {
-		t.Fatal("the default set must include a Bash rule (ADR 0058)")
+		t.Fatal("the default set must include a Bash rule (ADR 0060)")
 	}
 	if len(bash.Phases) != 1 || bash.Phases[0] != "pre" {
 		t.Fatalf("the default Bash rule must be pre-only; phases=%v", bash.Phases)

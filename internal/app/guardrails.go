@@ -126,7 +126,7 @@ func (e guardrailError) Error() string { return string(e) }
 // child deps path (childEngineDepsForProvider), so it compacts/counts on the
 // session's provider and carries the recursion-guard posture (inert hooks, nil
 // reviewer, Interactive false, tool-less catalog).
-// armer is the SHARED one-shot human-override holder (ADR 0059): the SAME instance must
+// armer is the SHARED one-shot human-override holder (ADR 0061): the SAME instance must
 // reach every Runner site (the shared engine + each per-session engine) AND the Service
 // that arms it from the genuine user prompt, so an arm on a session id is visible to
 // whichever Runner that session's engine carries. nil is the byte-identical no-override
@@ -171,7 +171,7 @@ func buildGuardrailsHooks(cfg Config, provReg *providerRegistry, provider port.L
 // command bypass the checker entirely, so ONLY mutating/outward commands are
 // inspected. The pre-filter is fail-safe — an ambiguous/substitution command is still
 // inspected. The OTHER local tools (Read/Edit/Write/Grep/Glob) remain deliberately
-// unmatched. See ADR 0058.
+// unmatched. See ADR 0060.
 var defaultGuardrailSpecs = []modelhook.RuleSpec{
 	// Outbound search/fetch args (a query/URL carrying a secret) AND inbound results
 	// (a fetched page / search snippet carrying an injection).
@@ -190,7 +190,7 @@ var defaultGuardrailSpecs = []modelhook.RuleSpec{
 	// Bash-SPECIFIC rubric (modelhook.DefaultBashPrePrompt): the generic exfiltration
 	// rubric (defaultPrePrompt) false-positives on ordinary local writes (a local write
 	// is data STAYING on the machine, not exfiltration), so Bash gets a concrete-trigger,
-	// fail-toward-safe rubric instead. ADR 0058.
+	// fail-toward-safe rubric instead. ADR 0060.
 	{Match: "Bash", Phases: []string{"pre"}, Mode: string(modelhook.ModeBlock), SkipReadOnlyBash: true, Prompt: modelhook.DefaultBashPrePrompt},
 }
 

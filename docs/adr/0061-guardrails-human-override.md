@@ -1,4 +1,4 @@
-# ADR 0059 — Human one-shot guardrail override (`/guardrail-allow`)
+# ADR 0061 — Human one-shot guardrail override (`/guardrail-allow`)
 
 - Status: Accepted
 - Date: 2026-06-26
@@ -8,7 +8,7 @@
 
 ## Context
 
-[ADR 0021](./0021-guardrails.md) (guardrails), [ADR 0053](./0053-guardrails-default-block.md) (default block), and [ADR 0058](./0058-guardrails-bash-default.md) (default Bash rule) make a configured guardrail a real enforcement boundary: a `block` verdict vetoes the call. That is the point — but it also makes a block a PERMANENT dead-end. A guardrail false-positive (a legitimate `gh pr merge` the checker flags as risky) cannot be gotten past without an operator editing config and restarting. The human is in the loop and has decided the action is fine, but has no in-band way to say so.
+[ADR 0021](./0021-guardrails.md) (guardrails), [ADR 0053](./0053-guardrails-default-block.md) (default block), and [ADR 0060](./0060-guardrails-bash-default.md) (default Bash rule) make a configured guardrail a real enforcement boundary: a `block` verdict vetoes the call. That is the point — but it also makes a block a PERMANENT dead-end. A guardrail false-positive (a legitimate `gh pr merge` the checker flags as risky) cannot be gotten past without an operator editing config and restarting. The human is in the loop and has decided the action is fine, but has no in-band way to say so.
 
 The naive fixes are unsafe. Letting the MODEL waive a block is excessive agency — the model could be the very thing the guardrail is protecting against (a prompt-injected agent). Letting any prompt-shaped string waive a block is worse: a tool result, a fetched page, or an MCP response carrying "`/guardrail-allow`" could self-authorize the exfiltration it is performing. The override must arm ONLY from the genuine, trusted-principal channel.
 
@@ -45,6 +45,6 @@ The naive fixes are unsafe. Letting the MODEL waive a block is excessive agency 
 
 - [ADR 0021](./0021-guardrails.md) — the guardrails feature this adds a recovery path to.
 - [ADR 0053](./0053-guardrails-default-block.md) — default block (the posture that makes an override useful).
-- [ADR 0058](./0058-guardrails-bash-default.md) — the default Bash rule (the most common block an operator will override).
+- [ADR 0060](./0060-guardrails-bash-default.md) — the default Bash rule (the most common block an operator will override).
 - `docs/design/IMPLEMENTATION-NOTES.md` — the seam narrative (scan point, holder, strip, the security boundary).
 - The documentation lifecycle convention in [ADR 0002](./0002-documentation-lifecycle.md).

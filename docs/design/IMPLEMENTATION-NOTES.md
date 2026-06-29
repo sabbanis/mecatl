@@ -2290,7 +2290,7 @@ three layers to keep the engine importable and the verdict shape in the adapter:
 no explicit rule list guardrails take the built-in **default block rule set**
 (`defaultGuardrailSpecs`: WebSearch pre+post, WebFetch post, `mcp__*` pre+post, and
 `Bash` pre — all block, the headline default; ADR 0053 flipped advisory→block, ADR
-0058 added `Bash`). The `Bash` rule carries a **read-only pre-filter**
+0060 added `Bash`). The `Bash` rule carries a **read-only pre-filter**
 (`SkipReadOnlyBash`): the modelhook adapter skips the checker entirely for a Pre Bash
 command it can prove read-only (reusing `governance.ReadOnlyBash`/`SplitCommands`/
 `SubstitutionReadOnly` — fail-safe: substitution/ambiguity is inspected), so a
@@ -2302,7 +2302,7 @@ inspects every command). There is no per-session call-count cap — the checker 
 matched call, and cost control lives in the operator's provider/billing layer (checker
 token spend is not folded into `MaxRunTokens`).
 
-**Per-tool rubric routing (ADR 0058).** `buildCheckPrompt` calls `rubric(phase, rule)`,
+**Per-tool rubric routing (ADR 0060).** `buildCheckPrompt` calls `rubric(phase, rule)`,
 which prefers a rule's non-empty `prompt` over the built-in default — the SAME seam
 operator custom prompts use. The default **Bash** rule wires `Prompt:
 modelhook.DefaultBashPrePrompt` (an EXPORTED const), so a Pre Bash check routes to a
@@ -2320,7 +2320,7 @@ git SAFE (category 5 and the local-write carve-out coexist: a normal source writ
 sibling repo stays SAFE, only the named sensitive targets are UNSAFE), replacing the
 blanket "if uncertain, judge unsafe" with "judge SAFE unless a specific dangerous action
 is identifiable" — a deliberate precision-over-recall posture for the local shell, with
-the `/guardrail-allow` override (ADR 0059) as the residual recovery. An operator's
+the `/guardrail-allow` override (ADR 0061) as the residual recovery. An operator's
 explicit `Bash` rule with no `prompt:` falls back to `defaultPrePrompt` (least-surprising
 — an explicit rule opts out of the default-set conveniences).
 
@@ -2361,7 +2361,7 @@ is read by `permconfig.Resolver.OperatorGuardrails()` from the **user-global + C
 tiers only** — a project-tier block is ignored with a WARN (the trust inversion: a
 project weakening a checker is a downgrade), parsed strictly (unknown sub-key = error).
 
-**Human one-shot override — `/guardrail-allow` ([ADR 0059](../adr/0059-guardrails-human-override.md)).**
+**Human one-shot override — `/guardrail-allow` ([ADR 0061](../adr/0061-guardrails-human-override.md)).**
 A `block` is not a permanent dead-end: a HUMAN re-issues the request with a first-line
 `/guardrail-allow [<tool>] [-- <command-substring>]` directive to authorize the NEXT
 matching block ONCE. The **security boundary is the scan point**: the directive is

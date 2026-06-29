@@ -83,7 +83,7 @@ func block(t *testing.T, match string, phases ...string) modelhook.CompiledRule 
 }
 
 // bashDefaultRule is the default-shaped Bash guardrail: pre/block with the read-only
-// pre-filter on (ADR 0058) — what an operator gets out of the box when guardrails are
+// pre-filter on (ADR 0060) — what an operator gets out of the box when guardrails are
 // configured with no explicit rule list. It carries the Bash-specific rubric, exactly as
 // the composition's defaultGuardrailSpecs wires it.
 func bashDefaultRule(t *testing.T) modelhook.CompiledRule {
@@ -274,7 +274,7 @@ func TestGuardrailBashMutatingBlockedInLoop(t *testing.T) {
 }
 
 // a READ-ONLY Bash call on the default Bash rule: the tool RUNS and the checker is
-// NEVER called (the read-only pre-filter, ADR 0058 — zero LLM calls).
+// NEVER called (the read-only pre-filter, ADR 0060 — zero LLM calls).
 func TestGuardrailBashReadOnlySkipsCheckerInLoop(t *testing.T) {
 	chk := &scriptedChecker{verdict: modelhook.Verdict{Safe: boolp(false)}} // would block if consulted
 	ran, evs := runBashGuardrail(t, chk, bashDefaultRule(t), "git status", agent.Deps{})
@@ -459,7 +459,7 @@ func TestGuardrailSafeContentUnchanged(t *testing.T) {
 	}
 }
 
-// ===== ADR 0059 human-override security matrix (driven through the real loop) =====
+// ===== ADR 0061 human-override security matrix (driven through the real loop) =====
 
 // (1) an armed, matching override authorizes a mutating Bash block ONCE — the tool
 // runs and a loud audit diagnostic is emitted with the consumed marker.
@@ -645,7 +645,7 @@ func (blockingInnerHook) Run(_ context.Context, ev governance.HookEvent) (govern
 // A consumed one-shot override authorizes the MERGED outcome, not just the guardrail's
 // slice: when an INNER hook (blockingInnerHook) AND the guardrail checker both block the
 // same call, the human's /guardrail-allow must still let the tool run — the override is
-// not silently voided by the inner veto (ADR 0059). Pin: the tool runs, the override is
+// not silently voided by the inner veto (ADR 0061). Pin: the tool runs, the override is
 // consumed exactly once, and a second block (no re-arm) stays blocked by BOTH layers.
 func TestOverrideAuthorizesInnerBlockToo(t *testing.T) {
 	armer := modelhook.NewOverrideArmer()

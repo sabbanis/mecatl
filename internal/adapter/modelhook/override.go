@@ -9,7 +9,7 @@ import (
 // prompt to authorize the NEXT matching guardrail block ONCE. It is matched only on
 // the first non-empty line of the GENUINE user prompt (Service.StartRunContent), never
 // on tool results / fetched pages / MCP responses / model output — that channel
-// separation is the load-bearing security property (ADR 0059).
+// separation is the load-bearing security property (ADR 0061).
 const overrideMarker = "/guardrail-allow"
 
 // overrideScopeSep separates the optional tool token from the optional command

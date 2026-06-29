@@ -1160,7 +1160,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 
 	svcCfg := server.Config{
 		Engine:           engine,
-		OverrideArmer:    overrideArmer, // ADR 0059: the SAME holder the guardrail Runners consult
+		OverrideArmer:    overrideArmer, // ADR 0061: the SAME holder the guardrail Runners consult
 		Store:            store,
 		Workspaces:       osfsWorkspaceFactory(cfg.diag(), assets.skillReadRoots),
 		DefaultWorkspace: cfg.Workspace, // the launch root; a session on a DIFFERENT root routes through the per-session factory (issue #102, docs/adr/0032)
@@ -2057,7 +2057,7 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 	// OFF-by-default (returns mainHooks UNCHANGED when unconfigured) and is wired ONLY
 	// here + in the per-session factory — NEVER into buildCatalog's child hooks (the
 	// recursion guard). The shared engine's checker rides the default provider/model.
-	// The SHARED one-shot human-override holder (ADR 0059): created ONCE here and
+	// The SHARED one-shot human-override holder (ADR 0061): created ONCE here and
 	// threaded to the shared-engine Runner (below), the per-session factory (so every
 	// per-session Runner shares it), AND the Service (which arms it from the genuine
 	// user prompt). One instance, so an arm on a session id is seen by whichever
