@@ -720,7 +720,7 @@ func (r *renderer) renderConversation(c *conversation, expand bool) string {
 	var b strings.Builder
 	for i, s := range r.joinScratch {
 		if i > 0 {
-			b.WriteString(interBlockSep)
+			b.WriteString(blockSepAfter(c.blocks, i-1))
 		}
 		b.WriteString(s)
 		b.WriteString("\n")
@@ -804,7 +804,7 @@ func (r *renderer) renderConversationLines(c *conversation, expand bool) []strin
 	// current width/expand. If not, rebuild it from the settled segments.
 	wantKey := joinPrefixState{width: r.width, expand: expand}
 	if r.joinPrefixKey != wantKey || r.joinPrefixN != prefixN {
-		r.rebuildPrefix(prefixN)
+		r.rebuildPrefix(c.blocks, prefixN)
 		r.joinPrefixN = prefixN
 		r.joinPrefixKey = wantKey
 	}
@@ -815,7 +815,7 @@ func (r *renderer) renderConversationLines(c *conversation, expand bool) []strin
 	lines := make([]string, 0, len(r.joinPrefixLines)+(n-prefixN)*2+1)
 	lines = append(lines, r.joinPrefixLines...)
 	for i := prefixN; i < n; i++ {
-		appendSegmentLines(&lines, i, r.joinScratch[i])
+		appendSegmentLines(&lines, c.blocks, i, r.joinScratch[i])
 	}
 	// The full join ends with the last segment's trailing "\n", whose split tail is a
 	// single trailing "" element — the same one strings.Split(join, "\n") produces.
@@ -829,11 +829,12 @@ func (r *renderer) renderConversationLines(c *conversation, expand bool) []strin
 
 // rebuildPrefix rebuilds joinPrefixLines as the line-split of segments [0, prefixN),
 // reusing the existing backing array (truncate-and-append). prefixN==0 leaves it
-// empty.
-func (r *renderer) rebuildPrefix(prefixN int) {
+// empty. blocks is the conversation's block slice, threaded through so
+// appendSegmentLines can apply per-kind separator widths.
+func (r *renderer) rebuildPrefix(blocks []block, prefixN int) {
 	r.joinPrefixLines = r.joinPrefixLines[:0]
 	for i := 0; i < prefixN; i++ {
-		appendSegmentLines(&r.joinPrefixLines, i, r.joinScratch[i])
+		appendSegmentLines(&r.joinPrefixLines, blocks, i, r.joinScratch[i])
 	}
 }
 
@@ -846,23 +847,53 @@ func (r *renderer) rebuildPrefix(prefixN int) {
 // lines-path (appendSegmentLines) MUST mirror this exactly (interBlockBlankLines blank
 // "" lines before each block i>0) or the cache-equivalence oracle (render_cache_test.go)
 // trips. Two is the deliberate ceiling — more wastes scrollback.
+//
+// EXCEPTION: when block i-1 is a blockTurnStat (the muted per-turn usage line), the
+// gap is reduced to ONE blank line. The stat line is a compact annotation, not a
+// content turn, so the full two-blank-line pause reads as too much vertical space
+// between the stats and the tool result or next user turn that follows it.
+// blockSepAfter / blockBlankLinesAfter encode this rule; both paths (string and lines)
+// must use them so the cache-equivalence oracle continues to hold.
 const (
 	interBlockSep        = "\n\n"
 	interBlockBlankLines = 2 // == strings.Count(trailing-"\n" + interBlockSep, "\n") - 1
+
+	interBlockSepCompact        = "\n"
+	interBlockBlankLinesCompact = 1 // == strings.Count(trailing-"\n" + interBlockSepCompact, "\n") - 1
 )
 
+// blockSepAfter returns the inter-block separator to write AFTER block i (i.e.
+// before block i+1). A blockTurnStat uses the compact single-blank separator so
+// the stat annotation doesn't balloon the visual gap to the next content block.
+func blockSepAfter(blocks []block, i int) string {
+	if blocks[i].kind == blockTurnStat {
+		return interBlockSepCompact
+	}
+	return interBlockSep
+}
+
+// blockBlankLinesAfter is the lines-path mirror of blockSepAfter: it returns the
+// number of blank "" lines to insert before block i (i.e. after block i-1).
+func blockBlankLinesAfter(blocks []block, i int) int {
+	if blocks[i-1].kind == blockTurnStat {
+		return interBlockBlankLinesCompact
+	}
+	return interBlockBlankLines
+}
+
 // appendSegmentLines appends block i's content lines to dst, modelling the canonical
-// segment sep(i) + scratch + "\n" (sep(0)="", sep(i>0)=interBlockSep) MINUS its trailing
-// "\n" — that terminal "\n"'s split tail is handled once, at the absolute end of the
-// frame, by renderConversationLines. The leading inter-block separator of block i>0
-// becomes interBlockBlankLines blank "" lines BEFORE the block's content; the content
-// itself is scratch split on "\n". Concatenated across all blocks this yields
-// strings.Split(fullJoin, "\n") exactly, modulo that single terminal "".
-func appendSegmentLines(dst *[]string, i int, scratch string) {
+// segment sep(i) + scratch + "\n" (sep(0)="", sep(i>0)=blockSepAfter(blocks,i-1))
+// MINUS its trailing "\n" — that terminal "\n"'s split tail is handled once, at the
+// absolute end of the frame, by renderConversationLines. The leading inter-block
+// separator of block i>0 becomes blockBlankLinesAfter(blocks,i) blank "" lines BEFORE
+// the block's content; the content itself is scratch split on "\n". Concatenated across
+// all blocks this yields strings.Split(fullJoin, "\n") exactly, modulo that single
+// terminal "".
+func appendSegmentLines(dst *[]string, blocks []block, i int, scratch string) {
 	if i > 0 {
-		// The inter-block separator produces interBlockBlankLines blank lines before
-		// this block (must match interBlockSep in the string-path join byte-for-byte).
-		for n := 0; n < interBlockBlankLines; n++ {
+		// The inter-block separator produces blank lines before this block; the count
+		// depends on the previous block's kind (must match blockSepAfter byte-for-byte).
+		for n := 0; n < blockBlankLinesAfter(blocks, i); n++ {
 			*dst = append(*dst, "")
 		}
 	}
