@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782722652933,
+  "lastUpdate": 1782722656632,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -466454,6 +466454,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 94,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "ed0ab804bab7a46f80f36e96d465f2a39eb14148",
+          "message": "docs: cloud-native harness kit definition (strawman) (#71)\n\n* docs: cloud-native harness kit definition (strawman), rebased + relocated\n\nRebases PR #71 onto current main and places the kit-definition doc per the new\ndocs taxonomy.\n\n- Reconstructed on current main: the PR's other edits (to docs/design/CLOUD-NATIVE.md,\n  docs/design/README.md, llms.txt) targeted files the ADR consolidation (ADR 0003)\n  moved/regenerated, so they're dropped; the doc's prose is preserved verbatim.\n- Placed at docs/cloud-native-harness-kit.md (top-level) — it's a vision/positioning\n  doc, not an ADR (no frozen decision), not as-built architecture, so it sits as a\n  peer of the other top-level docs, labeled a strawman. Its open questions become ADRs\n  as they resolve.\n- Fixed cross-links for the new structure: CLOUD-NATIVE.md → adr/0027-cloud-native.md,\n  DRIVERS.md → adr/0005-driver-seams.md, mecatl.modelith.md →\n  architecture/mecatl.modelith.md, architecture.md (now sibling).\n- Added the reciprocal pointer in ADR 0027 (cloud-native arc → kit definition), which\n  also gives the kit doc its inbound link. llms.txt regenerated.\n\nStill a strawman — open questions + Joe/Derek input pending (see PR description).\n\nCo-Authored-By: Claude Opus 4.8 (1M context) <noreply@anthropic.com>\n\n* docs(kit): add 'Why a kit?' section (resolves Joe's review thread)\n\nAdds the motivation Joe asked for in PR #71: a kit is core components that\nhold up across more than one context; the test is reuse as we move from\ninteractive chat toward long-running/self-triggering work; leave room for\nunexpected composition.\n\nPlaced before the numbered Definition so the existing §N cross-references\nstay intact.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* docs(kit): log 'what using the kit looks like' as an open question\n\nCaptures Joe's review nudge from PR #71: the consumer-side shape a level\ndown (the 'main', DI-style configuration, a possible thv-like desktop kit\nrunner). Out of scope for the definition, but it's the test of whether the\nkit idea is real.\n\nCo-Authored-By: Claude Opus 4.8 <noreply@anthropic.com>\n\n* docs(kit): name tools as a kit component; add agent-composition boundary\n\nTwo review threads on #71:\n\n- jbeda@83: tools are first-class, not buried under 'The engine'. Split out\n  the tool interface + common tools (built-in / model-defined / MCP, in-proc\n  subagent-spawning vs out-of-proc MCP execution) as their own kit component,\n  and add a mapping-table row for the Tool/Catalog/Workspace surface.\n\n- jbeda@120: the capability-resolution contract is really a recursive\n  'Agent Environment' (agent.Deps + Engine) that already launches sub-agents\n  but isn't a first-class noun, with nesting capped at one level. Add the\n  agent-composition policy (nesting / inheritance) to 'Not in the kit', a\n  matching open question (#4), and extend the §6 boundary statement so the\n  nesting-depth rule is explicitly the consumer's policy, not a structural\n  limit the kit bakes in.\n\n* docs: regenerate llms.txt after rebase onto main\n\n---------\n\nCo-authored-by: Claude Opus 4.8 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-29T11:38:21+03:00",
+          "tree_id": "78a5974481ac524d1188454c5cc8e4fee147c87f",
+          "url": "https://github.com/stacklok/mecatl/commit/ed0ab804bab7a46f80f36e96d465f2a39eb14148"
+        },
+        "date": 1782722655417,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3293,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 88,
             "unit": "allocs/op"
           },
           {
