@@ -92,10 +92,10 @@ Ask (showing ✓ for Q1–Q2):
 
 → Open-weights required?
 
-  ▸ no — proprietary hosted APIs are fine (recommended)
-    yes — MIT/Apache open-weights only (self-hostable)
+  ▸ proprietary — hosted APIs are fine (recommended)
+    open-weights — MIT/Apache only (self-hostable)
 
-  yes = proprietary fine · "back" to redo previous
+  yes = proprietary · "back" to redo previous
 ───────────────────────────────
 ```
 
@@ -112,11 +112,11 @@ Ask (showing ✓ for Q1–Q3):
 
 → Image/vision input needed?
 
-  ▸ no — text only (recommended)
-    yes, rarely — explicit per-call invocation is fine
-    yes, commonly — bake a vision tier into the router
+  ▸ text-only — no vision needed (recommended)
+    rarely — explicit per-call invocation is fine
+    commonly — bake a vision tier into the router
 
-  yes = no vision · "back" to redo previous
+  yes = text-only · "back" to redo previous
 ───────────────────────────────
 ```
 
@@ -330,10 +330,10 @@ This shows what the Step 1 Q-by-Q conversation looks like in practice.
 
 → Open-weights required?
 
-  ▸ no — proprietary hosted APIs are fine (recommended)
-    yes — MIT/Apache open-weights only (self-hostable)
+  ▸ proprietary — hosted APIs are fine (recommended)
+    open-weights — MIT/Apache only (self-hostable)
 
-  yes = proprietary fine · "back" to redo previous
+  yes = proprietary · "back" to redo previous
 ───────────────────────────────
 
 **User:** yes
@@ -343,15 +343,15 @@ This shows what the Step 1 Q-by-Q conversation looks like in practice.
 ───────────────────────────────
 ✓ Provider: OpenRouter
 ✓ Priority: capability-first
-✓ Open-weights: proprietary fine
+✓ Open-weights: proprietary
 
 → Image/vision input needed?
 
-  ▸ no — text only (recommended)
-    yes, rarely — explicit per-call invocation is fine
-    yes, commonly — bake a vision tier into the router
+  ▸ text-only — no vision needed (recommended)
+    rarely — explicit per-call invocation is fine
+    commonly — bake a vision tier into the router
 
-  yes = no vision · "back" to redo previous
+  yes = text-only · "back" to redo previous
 ───────────────────────────────
 
 **User:** yes, rarely
