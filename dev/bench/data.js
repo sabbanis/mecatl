@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782812595568,
+  "lastUpdate": 1782812598544,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -486240,6 +486240,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/1ec70ea602fffe55a2459a8cda358850bf93fe83"
         },
         "date": 1782806048968,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7194e87fd0ca49af22247afb8c4fa3bfcdaebcdb",
+          "message": "feat(session): add ReasoningTokens to session.Usage (#213) (#216)\n\nAdd ReasoningTokens int to session.Usage as a SUBSET of OutputTokens\n(mirroring CacheReadTokens ⊂ InputTokens): providers bill reasoning as\npart of the inclusive output total (OpenAI output_tokens_details.\nreasoning_tokens; Anthropic output_tokens_details.thinking_tokens), so\nTotalTokens() stays Input+Output — the budget brake already counts\nreasoning spend via OutputTokens, and adding it would double-count.\n\nThreaded through: OpenAI + Anthropic adapter usage mappings, proto\nUsage field 5 (+ regen), server toProtoUsage mapper, telemetry metrics,\nmecatui client struct + sumUsage merge, mecatequi SummaryUsage + render,\napi-compat baseline (session.txt), CHANGELOG (Added/minor), and docs.\n\nA host whose LLM gateway reports provider reasoning-token spend can now\nread it off ResultPayload.Usage instead of bypassing the engine.\n\nTests: domain unit (TotalTokens exclusion, Add sum, subset-invariant\nguard); adapter subset guards with vacuity guards; gauntlet e2e through\nthe agent loop proving propagation + no-budget-inflation; mapper,\nsnapshot round-trip, mecatequi summary.\n\nCloses #213",
+          "timestamp": "2026-06-30T12:37:41+03:00",
+          "tree_id": "694546a2e0aa1e186a789597fc8658218ee1bf5a",
+          "url": "https://github.com/stacklok/mecatl/commit/7194e87fd0ca49af22247afb8c4fa3bfcdaebcdb"
+        },
+        "date": 1782812597779,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
