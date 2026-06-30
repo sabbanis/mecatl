@@ -24,155 +24,79 @@ description: >-
 
 ### Step 1 — Elicit preferences (BEFORE any search)
 
-Ask questions ONE AT A TIME in this exact order. Do NOT present the full list
-upfront. Wait for the operator's answer before moving to the next question.
-After each answer, show the `✓` progress summary above the next `→` question.
-
-The format for each question is:
-
-```
-───────────────────────────────
-✓ <answered question label>: <captured answer>      ← repeat for each prior answer
-
-→ <current question label>?
-
-  ▸ <recommended option> (recommended)
-    <other option>
-    <other option>
-
-  yes = <recommended label> · "back" to redo previous
-───────────────────────────────
-```
+Use the **`AskUserQuestion` tool** for each question — one call at a time, in
+this exact order. Do NOT batch multiple questions into one call. Record each
+answer, then call `AskUserQuestion` for the next question.
 
 **Q1 — Provider**
 
-Ask:
-```
-───────────────────────────────
-→ Provider?
-
-  ▸ OpenRouter — aggregates all vendors behind one key (recommended)
-    Anthropic direct
-    OpenAI direct
-    Other (you'll need to name it)
-
-  yes = OpenRouter · "back" to redo previous
-───────────────────────────────
-```
-
-Capture: the provider name. All aliases must point at model ids on this ONE
-provider (the provider-fixed invariant).
+Call `AskUserQuestion`:
+- header: `"Provider"`
+- question: `"Which provider are you routing through? All aliases must resolve to model ids on this one provider."`
+- options:
+  - `OpenRouter` — aggregates all vendors behind one key (recommended)
+  - `Anthropic direct` — native Anthropic API, `claude-*` model ids
+  - `OpenAI direct` — native OpenAI API, `gpt-*` model ids
+  - `Other` — specify via the Other field
 
 **Q2 — Priority axis**
 
-Ask (showing ✓ for Q1):
-```
-───────────────────────────────
-✓ Provider: <Q1 answer>
-
-→ Priority axis?
-
-  ▸ balanced — frontier where it matters, cheap elsewhere (recommended)
-    cost-tiered — prefer cheap/open models, accept lower ceiling
-    capability-first — most capable regardless of cost
-
-  yes = balanced · "back" to redo previous
-───────────────────────────────
-```
-
-Capture: one of `balanced` / `cost-tiered` / `capability-first`.
+Call `AskUserQuestion`:
+- header: `"Priority"`
+- question: `"Where do you sit on the cost ↔ capability spectrum?"`
+- options:
+  - `balanced` — frontier where it matters, cheap elsewhere (recommended)
+  - `cost-tiered` — prefer cheap/open models, accept lower ceiling
+  - `capability-first` — most capable regardless of cost
 
 **Q3 — Open vs proprietary**
 
-Ask (showing ✓ for Q1–Q2):
-```
-───────────────────────────────
-✓ Provider: <Q1 answer>
-✓ Priority: <Q2 answer>
-
-→ Open-weights required?
-
-  ▸ proprietary — hosted APIs are fine (recommended)
-    open-weights — MIT/Apache only (self-hostable)
-
-  yes = proprietary · "back" to redo previous
-───────────────────────────────
-```
-
-Capture: whether open-weights models are required.
+Call `AskUserQuestion`:
+- header: `"Licensing"`
+- question: `"Do you require open-weights models, or are proprietary hosted APIs fine?"`
+- options:
+  - `proprietary` — hosted APIs are fine (recommended)
+  - `open-weights` — MIT/Apache only, self-hostable
 
 **Q4 — Multimodal**
 
-Ask (showing ✓ for Q1–Q3):
-```
-───────────────────────────────
-✓ Provider: <Q1 answer>
-✓ Priority: <Q2 answer>
-✓ Open-weights: <Q3 answer>
+Call `AskUserQuestion`:
+- header: `"Vision"`
+- question: `"Do you need image/vision input anywhere in the fleet?"`
+- options:
+  - `text-only` — no vision needed (recommended)
+  - `rarely` — explicit per-call invocation via `model: image`
+  - `commonly` — bake a vision tier into the router
 
-→ Image/vision input needed?
+**Q5 — Target ceiling**
 
-  ▸ text-only — no vision needed (recommended)
-    rarely — explicit per-call invocation is fine
-    commonly — bake a vision tier into the router
+Call `AskUserQuestion`:
+- header: `"Ceiling"`
+- question: `"Is there a specific model you want to match or beat on coding? (optional)"`
+- options:
+  - `skip` — no specific ceiling target (recommended)
+  - `Sonnet 4.6 territory`
+  - `Opus 4.8 territory`
+  - `Other` — specify via the Other field
 
-  yes = text-only · "back" to redo previous
-───────────────────────────────
-```
+**Q6 — Existing config (auto-discovered, no blank ask)**
 
-Capture: none / rare / common.
-
-**Q5 — Target ceiling (optional)**
-
-Ask (showing ✓ for Q1–Q4):
-```
-───────────────────────────────
-✓ Provider: <Q1 answer>
-✓ Priority: <Q2 answer>
-✓ Open-weights: <Q3 answer>
-✓ Vision: <Q4 answer>
-
-→ Target coding ceiling? (optional — press Enter or "skip" to omit)
-
-  ▸ skip — no specific ceiling target (recommended)
-    name a model, e.g. "Sonnet 4.6", "Opus 4.8", "GPT-5.5"
-
-  yes = skip · "back" to redo previous
-───────────────────────────────
-```
-
-Capture: a model name, or "none".
-
-**Q6 — Existing config (auto-discovered, not asked blank)**
-
-Do NOT ask the operator to paste their config. Instead, silently run:
+Do NOT call `AskUserQuestion` for this. Instead, silently read:
 
 ```
 cat ~/.config/mecatl/settings.yaml
 ```
 
-- If the file is **found and contains a `models:` block**: extract it, display
-  it fenced, then ask:
-  ```
-  ───────────────────────────────
-  ✓ Provider: <Q1 answer>
-  ✓ Priority: <Q2 answer>
-  ✓ Open-weights: <Q3 answer>
-  ✓ Vision: <Q4 answer>
-  ✓ Ceiling: <Q5 answer>
-
-  → Found an existing models: config — use it as a base, or start fresh?
-
-    ▸ use as base — revise only what needs changing (recommended)
-      start fresh — build from scratch, ignore the existing config
-
-    yes = use as base · "back" to redo previous
-  ───────────────────────────────
-  ```
-  Capture: the existing `models:` block + whether to use it as a base.
+- If the file is **found and contains a `models:` block**: show it fenced, then
+  call `AskUserQuestion`:
+  - header: `"Existing config"`
+  - question: `"Found an existing models: config. Use it as a base, or start fresh?"`
+  - options:
+    - `use as base` — revise only what needs changing (recommended)
+    - `start fresh` — build from scratch, ignore the existing config
 
 - If the file is **not found or has no `models:` block**: skip Q6 silently and
-  proceed to Step 2. No prompt, no "I couldn't find..." message — just move on.
+  proceed to Step 2. No message, just move on.
 
 Record all answers. These determine which models are even candidates.
 
@@ -285,128 +209,21 @@ After the config, include:
 
 ## Interaction example
 
-This shows what the Step 1 Q-by-Q conversation looks like in practice.
+Step 1 uses `AskUserQuestion` — each question renders as a native UI widget
+(radio buttons, descriptions). The operator clicks or types; no "yes"/"back"
+shortcuts needed. The five calls happen one at a time:
 
----
+1. `AskUserQuestion` → Provider → operator picks **OpenRouter**
+2. `AskUserQuestion` → Priority → operator picks **capability-first**
+3. `AskUserQuestion` → Licensing → operator picks **proprietary**
+4. `AskUserQuestion` → Vision → operator picks **rarely**
+5. `AskUserQuestion` → Ceiling → operator picks **Opus 4.8 territory**
 
-**User:** Let's set up my mecatl model config.
+Then the skill silently runs `cat ~/.config/mecatl/settings.yaml`. If a
+`models:` block is found it is shown fenced and a final `AskUserQuestion`
+asks **use as base** vs **start fresh**. If not found, Step 2 starts
+immediately.
 
-**Assistant:**
-
-───────────────────────────────
-→ Provider?
-
-  ▸ OpenRouter — aggregates all vendors behind one key (recommended)
-    Anthropic direct
-    OpenAI direct
-    Other (you'll need to name it)
-
-  yes = OpenRouter · "back" to redo previous
-───────────────────────────────
-
-**User:** yes
-
-**Assistant:**
-
-───────────────────────────────
-✓ Provider: OpenRouter
-
-→ Priority axis?
-
-  ▸ balanced — frontier where it matters, cheap elsewhere (recommended)
-    cost-tiered — prefer cheap/open models, accept lower ceiling
-    capability-first — most capable regardless of cost
-
-  yes = balanced · "back" to redo previous
-───────────────────────────────
-
-**User:** capability-first
-
-**Assistant:**
-
-───────────────────────────────
-✓ Provider: OpenRouter
-✓ Priority: capability-first
-
-→ Open-weights required?
-
-  ▸ proprietary — hosted APIs are fine (recommended)
-    open-weights — MIT/Apache only (self-hostable)
-
-  yes = proprietary · "back" to redo previous
-───────────────────────────────
-
-**User:** yes
-
-**Assistant:**
-
-───────────────────────────────
-✓ Provider: OpenRouter
-✓ Priority: capability-first
-✓ Open-weights: proprietary
-
-→ Image/vision input needed?
-
-  ▸ text-only — no vision needed (recommended)
-    rarely — explicit per-call invocation is fine
-    commonly — bake a vision tier into the router
-
-  yes = text-only · "back" to redo previous
-───────────────────────────────
-
-**User:** yes, rarely
-
-**Assistant:**
-
-───────────────────────────────
-✓ Provider: OpenRouter
-✓ Priority: capability-first
-✓ Open-weights: proprietary fine
-✓ Vision: rarely (explicit invocation)
-
-→ Target coding ceiling? (optional — press Enter or "skip" to omit)
-
-  ▸ skip — no specific ceiling target (recommended)
-    name a model, e.g. "Sonnet 4.6", "Opus 4.8", "GPT-5.5"
-
-  yes = skip · "back" to redo previous
-───────────────────────────────
-
-**User:** reach Opus 4.8 territory
-
-*(At this point the skill silently runs `cat ~/.config/mecatl/settings.yaml`.
-Suppose the file exists with a `models:` block.)*
-
-**Assistant:**
-
-───────────────────────────────
-✓ Provider: OpenRouter
-✓ Priority: capability-first
-✓ Open-weights: proprietary fine
-✓ Vision: rarely (explicit invocation)
-✓ Ceiling: Opus 4.8 territory
-
-Found an existing `models:` config:
-
-```yaml
-models:
-  aliases:
-    heavy: openai/gpt-4o
-    coder: openai/gpt-4o-mini
-    quick: openai/gpt-4o-mini
-  default: heavy
-```
-
-→ Use it as a base, or start fresh?
-
-  ▸ use as base — revise only what needs changing (recommended)
-    start fresh — build from scratch, ignore the existing config
-
-  yes = use as base · "back" to redo previous
-───────────────────────────────
-
-**User:** start fresh
-
-*(The skill now moves to Step 2 — searching benchmarks and pricing for
-OpenRouter models that can reach Opus 4.8 territory on SWE-bench Verified,
-with a vision alias for the rare-vision requirement.)*
+After all answers are recorded the skill moves to Step 2 — searching
+benchmarks and pricing for OpenRouter models that can reach Opus 4.8 territory,
+with a vision alias for the rare-vision requirement.
