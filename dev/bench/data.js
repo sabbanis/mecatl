@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782815392678,
+  "lastUpdate": 1782815396381,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -497601,6 +497601,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/3dadec80f1dc8e06b247d6044854b115dd9543e5"
         },
         "date": 1782815037797,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "peppescg@gmail.com",
+            "name": "Giuseppe Scuglia",
+            "username": "peppescg"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b72b279f86c6d55ef5ab3d4dc1dd5d01c2211203",
+          "message": "feat(skill): rewrite mecatl-model-router-config Step 1 as a one-question-at-a-time interview (#214)\n\n* feat(skill): rewrite mecatl-model-router-config Step 1 as Q-by-Q interview\n\nReplace the flat 6-question numbered list with a one-question-at-a-time\nsquad/grill style flow:\n- Each question shows ✓ progress for prior answers and a ▸ recommended\n  default the operator can accept with \"yes\"\n- \"back\" option available on every question to redo the previous answer\n- Q6 (existing config) is now auto-discovered: the skill silently runs\n  `cat ~/.config/mecatl/settings.yaml` and pre-fills the config block;\n  if found it asks \"use as base or start fresh?\"; if not found it skips\n  silently — no blank prompt asking the operator to paste their config\n\nAdd a worked interaction example at the end of SKILL.md showing what the\nfull Q1–Q6 conversation looks like, including the auto-discovered config\npath and the \"start fresh\" branch.\n\nSteps 2–4 (search, schema mapping, delivery) are unchanged.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* fix(skill): rephrase Q3/Q4 options so 'yes' maps to a positive label\n\nQ3 'no — proprietary' and Q4 'no — text only' made 'yes = no' which\nis contradictory. Renamed to 'proprietary' and 'text-only' respectively.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* feat(skill): use AskUserQuestion for mecatl-model-router-config Step 1\n\nReplace text-based ▸/yes/back format with native AskUserQuestion UI calls —\none per question, radio buttons with descriptions, no typing required.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* fix(skill): force AskUserQuestion tool calls with explicit JSON params\n\nAdd MANDATORY warning block + show exact JSON parameters for each\nAskUserQuestion call so the model invokes the tool rather than\ngenerating formatted text output.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* revert(skill): remove AskUserQuestion attempts, restore text Q-by-Q\n\nAskUserQuestion cannot be reliably forced from skill instructions —\nthe model ignores the MANDATORY note and generates text anyway\n(confirmed by deep research: no SKILL.md frontmatter key can force\na tool call; tool_choice enforcement exists only at the API level).\n\nRestore the clean text Q-by-Q format with ✓/→/▸ progress markers\nthat works consistently in every context.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* docs: regenerate llms.txt for skill heading\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-30T13:22:52+03:00",
+          "tree_id": "bca319e652cc29a4c6c91cb0997695ca6fa731ba",
+          "url": "https://github.com/stacklok/mecatl/commit/b72b279f86c6d55ef5ab3d4dc1dd5d01c2211203"
+        },
+        "date": 1782815395220,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
