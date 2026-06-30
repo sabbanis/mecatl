@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782813428706,
+  "lastUpdate": 1782813431411,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -490027,6 +490027,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/7194e87fd0ca49af22247afb8c4fa3bfcdaebcdb"
         },
         "date": 1782812597779,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "peppescg@gmail.com",
+            "name": "Giuseppe Scuglia",
+            "username": "peppescg"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c62d0cd0d85ce3e6fe392b0bdd656b8ae1775e0b",
+          "message": "fix(tui): reduce inter-block spacing in scrollback (#215)\n\n* fix(tui): reduce vertical spacing after turn-stats line\n\nThe per-turn stats block (↑110.1K ↓56 · 7.8s · 100% cached) used the\nsame two-blank-line inter-block separator as full content turns, making\nthe gap between the stats annotation and the next tool result or user\nprompt feel excessively tall.\n\nIntroduce blockSepAfter / blockBlankLinesAfter helpers that use a\ncompact single-blank separator when the preceding block is a\nblockTurnStat. Both the string-path join (renderConversation) and the\nlines-path join (renderConversationLines + rebuildPrefix) use these so\nthe cache-equivalence oracle in render_cache_test.go continues to hold.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* fix(tui): aggressively reduce inter-block spacing\n\nTool boxes now cluster with 0 blank lines between them; all other\ntransitions (user↔assistant, stat→user) use 1 blank line instead of 2.\nIntroduces interBlockSepNone/interBlockBlankLinesNone constants and\nupdates blockSepAfter/blockBlankLinesAfter with per-kind switch.\nUpdates TestInterTurnSpacing to expect the new compact value.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* fix(tui): remove now-unused interBlockSep/interBlockBlankLines consts\n\nThe aggressive-spacing switch in blockSepAfter/blockBlankLinesAfter no\nlonger references the 2-blank-line constants, so golangci-lint (unused)\nflagged them. Remove both and rewrite the doc comment to describe the\nper-transition policy in terms of the Compact/None constants that remain.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-30T11:51:47+02:00",
+          "tree_id": "f1b118954cca1dc76ce9d9252c6c895794edfb04",
+          "url": "https://github.com/stacklok/mecatl/commit/c62d0cd0d85ce3e6fe392b0bdd656b8ae1775e0b"
+        },
+        "date": 1782813430718,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
