@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782815035146,
+  "lastUpdate": 1782815039126,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -493814,6 +493814,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/c62d0cd0d85ce3e6fe392b0bdd656b8ae1775e0b"
         },
         "date": 1782813430718,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3dadec80f1dc8e06b247d6044854b115dd9543e5",
+          "message": "chore(agent): bump defaultChildLimits (turns×5, toolCalls×5, failures 3→5) (#217)\n\nRaise the default subagent/team-member/parallel-branch/fork-judge stop\nlimits: MaxTurns 100→500, MaxToolCalls 400→2000, MaxConsecutiveFailures\n3→5. These deliberately-tight defaults had not been revisited; 100 turns /\n400 tool calls was cutting off legitimate focused investigations before\nthey could complete, especially under multi-step build/test/git flows.\n\nMaxConsecutiveFailures is bumped modestly (3→5, matching the main-session\ndefault) rather than ×5: a child repeatedly failing is a signal to stop,\nnot to keep retrying — the turns/tool-calls ceilings are the right place\nfor generous headroom, the consecutive-failure ceiling is a safety brake.\n\nOverride seams (WithChildLimits, per-def maxTurns/maxToolCalls frontmatter,\nper-call max_turns/max_tool_calls tighten-only) all compose over the new\ndefault unchanged. The one-shot adjudicator limits (ask-reviewer /\nguardrail-checker / model-router: 1/1/1) are separate and untouched.\n\nUpdates the run-bounds drift guard (engine/agent/runbounds_drift_test.go)\nand the two tests that scripted ~120 turns to prove the default cap bites\n(they now script 520 turns + a higher max_turns request, preserving the\ntighten-only assertion under the new default). Docs updated in lockstep\nper the drift test's requirement.",
+          "timestamp": "2026-06-30T13:18:05+03:00",
+          "tree_id": "960ee3fe70a9ee6c3a0c4ebb3d543ca87e2d7ce1",
+          "url": "https://github.com/stacklok/mecatl/commit/3dadec80f1dc8e06b247d6044854b115dd9543e5"
+        },
+        "date": 1782815037797,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
