@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782815389014,
+  "lastUpdate": 1782815392678,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -493428,6 +493428,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "team_fanout/allocs_per_op",
             "value": 2369,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "peppescg@gmail.com",
+            "name": "Giuseppe Scuglia",
+            "username": "peppescg"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "b72b279f86c6d55ef5ab3d4dc1dd5d01c2211203",
+          "message": "feat(skill): rewrite mecatl-model-router-config Step 1 as a one-question-at-a-time interview (#214)\n\n* feat(skill): rewrite mecatl-model-router-config Step 1 as Q-by-Q interview\n\nReplace the flat 6-question numbered list with a one-question-at-a-time\nsquad/grill style flow:\n- Each question shows ✓ progress for prior answers and a ▸ recommended\n  default the operator can accept with \"yes\"\n- \"back\" option available on every question to redo the previous answer\n- Q6 (existing config) is now auto-discovered: the skill silently runs\n  `cat ~/.config/mecatl/settings.yaml` and pre-fills the config block;\n  if found it asks \"use as base or start fresh?\"; if not found it skips\n  silently — no blank prompt asking the operator to paste their config\n\nAdd a worked interaction example at the end of SKILL.md showing what the\nfull Q1–Q6 conversation looks like, including the auto-discovered config\npath and the \"start fresh\" branch.\n\nSteps 2–4 (search, schema mapping, delivery) are unchanged.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* fix(skill): rephrase Q3/Q4 options so 'yes' maps to a positive label\n\nQ3 'no — proprietary' and Q4 'no — text only' made 'yes = no' which\nis contradictory. Renamed to 'proprietary' and 'text-only' respectively.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* feat(skill): use AskUserQuestion for mecatl-model-router-config Step 1\n\nReplace text-based ▸/yes/back format with native AskUserQuestion UI calls —\none per question, radio buttons with descriptions, no typing required.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* fix(skill): force AskUserQuestion tool calls with explicit JSON params\n\nAdd MANDATORY warning block + show exact JSON parameters for each\nAskUserQuestion call so the model invokes the tool rather than\ngenerating formatted text output.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* revert(skill): remove AskUserQuestion attempts, restore text Q-by-Q\n\nAskUserQuestion cannot be reliably forced from skill instructions —\nthe model ignores the MANDATORY note and generates text anyway\n(confirmed by deep research: no SKILL.md frontmatter key can force\na tool call; tool_choice enforcement exists only at the API level).\n\nRestore the clean text Q-by-Q format with ✓/→/▸ progress markers\nthat works consistently in every context.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* docs: regenerate llms.txt for skill heading\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-30T13:22:52+03:00",
+          "tree_id": "bca319e652cc29a4c6c91cb0997695ca6fa731ba",
+          "url": "https://github.com/stacklok/mecatl/commit/b72b279f86c6d55ef5ab3d4dc1dd5d01c2211203"
+        },
+        "date": 1782815391546,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1449,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 3917,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2731,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 33126,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2368.5,
             "unit": "allocs/op"
           },
           {
