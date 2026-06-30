@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782805691707,
+  "lastUpdate": 1782805695443,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -481758,6 +481758,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 85,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3367e061ece2c78723ed7feab184512f6634894d",
+          "message": "feat(tui): add keyword filter to /skills inventory panel (#176) (#212)\n\nThe /skills TUI panel was scroll-only with no way to find a skill by name\nin a large corpus. Add a type-to-narrow filter mirroring the existing\n/models picker pattern:\n\n- skillsState gains a filter textinput + filtered []client.Skill\n- onSkillsKey routes printable keys into the filter (two-stage esc:\n  clear filter first, then close); arrow nav switched to msg.String()\n  so the j/k-bound Up/Down keys don't hijack typed filter text\n- filterSkills: case-insensitive substring on Name AND Description\n- renderSkillsPanel renders the filter input, a 'no skills match'\n  no-match note, and windows over the filtered set\n- footer extended with the activation hint + filter/clear affordance\n  + arrow-key names\n\nTests: 9 new (filter narrows, case-insensitive, by-description,\nesc-clears, no-match note, empty-shows-full, j/k-not-intercepted,\norder-preservation, uppercase-field) + 3 golden tests. Goldens\nregenerated; docs/tui.md updated.\n\nCloses #176",
+          "timestamp": "2026-06-30T10:42:22+03:00",
+          "tree_id": "496950b52f152585a08d816c5b20bcd8ecd6855a",
+          "url": "https://github.com/stacklok/mecatl/commit/3367e061ece2c78723ed7feab184512f6634894d"
+        },
+        "date": 1782805694164,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3290,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 84.5,
             "unit": "allocs/op"
           },
           {
