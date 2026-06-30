@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782820326017,
+  "lastUpdate": 1782820329236,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -500869,6 +500869,135 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/590da56881e4b95e12757d64ea87392a0f1bd25b"
         },
         "date": 1782819979022,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1450,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 3918,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2731,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 33129,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2369,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e3a1c71e32f58c73f80d0d20d688a189adb5c25",
+          "message": "fix(llmresilience): retry HTTP/2 stream resets (RST_STREAM / INTERNAL_ERROR) (#220)\n\nA peer HTTP/2 RST_STREAM (e.g. \"stream error: stream ID 45; INTERNAL_ERROR;\nreceived from peer\") surfaced as *http2.StreamError, which the resilience\nclassifier fell through to \"unknown error -> permanent\" — so it was neither\nretried nor counted toward the shared breaker. The result was a single\ntransport reset terminating a run instead of a bounded retry, and the\nbreaker staying open to a flapping provider.\n\nClassify *http2.StreamError as retryable in DefaultClassifier and transient\nin isTransientForBreaker (all http2.StreamError codes, matching net/http's\nown behaviour). The bounded-retry invariant still caps the blast radius.\n\nTests: TestHTTP2StreamErrorRetried proves an http2.StreamError is retried\nto success (2 retries + 1 success) and that a burst opens the breaker with\n*BreakerError on the 4th call without touching the inner provider; the\nclassifier + breaker tables gain rows for bare and wrapped StreamError\nacross ErrCodeInternal / ErrCodeProtocol.\n\ngo.mod promotes golang.org/x/net to direct (the test imports\ngolang.org/x/net/http2).\n\ntask lint 0 issues; task test green (incl. engine-standalone + api-compat).\n\nRefs: #208\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-06-30T14:41:15+03:00",
+          "tree_id": "20ffd52a3084a6cdb2388748164c42d9079e72aa",
+          "url": "https://github.com/stacklok/mecatl/commit/7e3a1c71e32f58c73f80d0d20d688a189adb5c25"
+        },
+        "date": 1782820328464,
         "tool": "customSmallerIsBetter",
         "benches": [
           {
