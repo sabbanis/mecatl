@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782812598544,
+  "lastUpdate": 1782812601484,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -489410,6 +489410,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 85.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7194e87fd0ca49af22247afb8c4fa3bfcdaebcdb",
+          "message": "feat(session): add ReasoningTokens to session.Usage (#213) (#216)\n\nAdd ReasoningTokens int to session.Usage as a SUBSET of OutputTokens\n(mirroring CacheReadTokens ⊂ InputTokens): providers bill reasoning as\npart of the inclusive output total (OpenAI output_tokens_details.\nreasoning_tokens; Anthropic output_tokens_details.thinking_tokens), so\nTotalTokens() stays Input+Output — the budget brake already counts\nreasoning spend via OutputTokens, and adding it would double-count.\n\nThreaded through: OpenAI + Anthropic adapter usage mappings, proto\nUsage field 5 (+ regen), server toProtoUsage mapper, telemetry metrics,\nmecatui client struct + sumUsage merge, mecatequi SummaryUsage + render,\napi-compat baseline (session.txt), CHANGELOG (Added/minor), and docs.\n\nA host whose LLM gateway reports provider reasoning-token spend can now\nread it off ResultPayload.Usage instead of bypassing the engine.\n\nTests: domain unit (TotalTokens exclusion, Add sum, subset-invariant\nguard); adapter subset guards with vacuity guards; gauntlet e2e through\nthe agent loop proving propagation + no-budget-inflation; mapper,\nsnapshot round-trip, mecatequi summary.\n\nCloses #213",
+          "timestamp": "2026-06-30T12:37:41+03:00",
+          "tree_id": "694546a2e0aa1e186a789597fc8658218ee1bf5a",
+          "url": "https://github.com/stacklok/mecatl/commit/7194e87fd0ca49af22247afb8c4fa3bfcdaebcdb"
+        },
+        "date": 1782812600716,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3298,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 95,
             "unit": "allocs/op"
           },
           {
