@@ -848,37 +848,55 @@ func (r *renderer) rebuildPrefix(blocks []block, prefixN int) {
 // "" lines before each block i>0) or the cache-equivalence oracle (render_cache_test.go)
 // trips. Two is the deliberate ceiling — more wastes scrollback.
 //
-// EXCEPTION: when block i-1 is a blockTurnStat (the muted per-turn usage line), the
-// gap is reduced to ONE blank line. The stat line is a compact annotation, not a
-// content turn, so the full two-blank-line pause reads as too much vertical space
-// between the stats and the tool result or next user turn that follows it.
-// blockSepAfter / blockBlankLinesAfter encode this rule; both paths (string and lines)
-// must use them so the cache-equivalence oracle continues to hold.
+// blockSepAfter / blockBlankLinesAfter encode per-transition spacing rules; both
+// paths (string and lines) must use them so the cache-equivalence oracle holds.
+//
+// Spacing policy (compact throughout):
+//   - blockTool → any              : 0 blank lines — tool boxes cluster tight
+//   - blockAssistant → blockTurnStat : 0 blank lines — empty turns need no gap before stats
+//   - blockTurnStat → any          : 1 blank line  — compact stat annotation
+//   - everything else              : 1 blank line  — user↔assistant, assistant→tool, etc.
 const (
 	interBlockSep        = "\n\n"
 	interBlockBlankLines = 2 // == strings.Count(trailing-"\n" + interBlockSep, "\n") - 1
 
 	interBlockSepCompact        = "\n"
 	interBlockBlankLinesCompact = 1 // == strings.Count(trailing-"\n" + interBlockSepCompact, "\n") - 1
+
+	interBlockSepNone        = ""
+	interBlockBlankLinesNone = 0 // == strings.Count(trailing-"\n" + interBlockSepNone, "\n") - 1
 )
 
 // blockSepAfter returns the inter-block separator to write AFTER block i (i.e.
-// before block i+1). A blockTurnStat uses the compact single-blank separator so
-// the stat annotation doesn't balloon the visual gap to the next content block.
+// before block i+1).
 func blockSepAfter(blocks []block, i int) string {
-	if blocks[i].kind == blockTurnStat {
+	switch blocks[i].kind {
+	case blockTool:
+		return interBlockSepNone
+	case blockTurnStat:
 		return interBlockSepCompact
+	case blockAssistant:
+		if i+1 < len(blocks) && blocks[i+1].kind == blockTurnStat {
+			return interBlockSepNone
+		}
 	}
-	return interBlockSep
+	return interBlockSepCompact
 }
 
 // blockBlankLinesAfter is the lines-path mirror of blockSepAfter: it returns the
 // number of blank "" lines to insert before block i (i.e. after block i-1).
 func blockBlankLinesAfter(blocks []block, i int) int {
-	if blocks[i-1].kind == blockTurnStat {
+	switch blocks[i-1].kind {
+	case blockTool:
+		return interBlockBlankLinesNone
+	case blockTurnStat:
 		return interBlockBlankLinesCompact
+	case blockAssistant:
+		if i < len(blocks) && blocks[i].kind == blockTurnStat {
+			return interBlockBlankLinesNone
+		}
 	}
-	return interBlockBlankLines
+	return interBlockBlankLinesCompact
 }
 
 // appendSegmentLines appends block i's content lines to dst, modelling the canonical
