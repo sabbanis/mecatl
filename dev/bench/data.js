@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782813425747,
+  "lastUpdate": 1782813428706,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -485907,6 +485907,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "single_session_long/allocs_per_op",
             "value": 33127.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2368.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "peppescg@gmail.com",
+            "name": "Giuseppe Scuglia",
+            "username": "peppescg"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "c62d0cd0d85ce3e6fe392b0bdd656b8ae1775e0b",
+          "message": "fix(tui): reduce inter-block spacing in scrollback (#215)\n\n* fix(tui): reduce vertical spacing after turn-stats line\n\nThe per-turn stats block (↑110.1K ↓56 · 7.8s · 100% cached) used the\nsame two-blank-line inter-block separator as full content turns, making\nthe gap between the stats annotation and the next tool result or user\nprompt feel excessively tall.\n\nIntroduce blockSepAfter / blockBlankLinesAfter helpers that use a\ncompact single-blank separator when the preceding block is a\nblockTurnStat. Both the string-path join (renderConversation) and the\nlines-path join (renderConversationLines + rebuildPrefix) use these so\nthe cache-equivalence oracle in render_cache_test.go continues to hold.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* fix(tui): aggressively reduce inter-block spacing\n\nTool boxes now cluster with 0 blank lines between them; all other\ntransitions (user↔assistant, stat→user) use 1 blank line instead of 2.\nIntroduces interBlockSepNone/interBlockBlankLinesNone constants and\nupdates blockSepAfter/blockBlankLinesAfter with per-kind switch.\nUpdates TestInterTurnSpacing to expect the new compact value.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n* fix(tui): remove now-unused interBlockSep/interBlockBlankLines consts\n\nThe aggressive-spacing switch in blockSepAfter/blockBlankLinesAfter no\nlonger references the 2-blank-line constants, so golangci-lint (unused)\nflagged them. Remove both and rewrite the doc comment to describe the\nper-transition policy in terms of the Compact/None constants that remain.\n\nCo-Authored-By: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>\n\n---------\n\nCo-authored-by: Claude Sonnet 4.6 (1M context) <noreply@anthropic.com>",
+          "timestamp": "2026-06-30T11:51:47+02:00",
+          "tree_id": "f1b118954cca1dc76ce9d9252c6c895794edfb04",
+          "url": "https://github.com/stacklok/mecatl/commit/c62d0cd0d85ce3e6fe392b0bdd656b8ae1775e0b"
+        },
+        "date": 1782813428013,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1449,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 3917,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2731,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 33123,
             "unit": "allocs/op"
           },
           {
