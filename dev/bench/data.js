@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782823683259,
+  "lastUpdate": 1782823686581,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -512361,6 +512361,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view/allocs_per_op",
             "value": 3288.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 85,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "distinct": true,
+          "id": "ba4683adcb652aad531a191977e63099df5e1c46",
+          "message": "chore(engine): release engine/v0.4.0\n\nMove the ReasoningTokens additive surface (ADR #213) from [Unreleased]\nto the [0.4.0] header — an Added change (minor bump per COMPATIBILITY.md).\n\nCo-Authored-By: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-06-30T15:41:32+03:00",
+          "tree_id": "3fdaab439cfc558c163e6f1f9d2220bceff1d758",
+          "url": "https://github.com/stacklok/mecatl/commit/ba4683adcb652aad531a191977e63099df5e1c46"
+        },
+        "date": 1782823685714,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3285,
             "unit": "allocs/op"
           },
           {
