@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782819976804,
+  "lastUpdate": 1782819979885,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -497181,6 +497181,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "team_fanout/allocs_per_op",
             "value": 2368.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "590da56881e4b95e12757d64ea87392a0f1bd25b",
+          "message": "fix(mcp): connect servers concurrently to cut startup delay (#218) (#219)\n\nNewManager connected every MCP server in a serial for-loop, each bounded\nby defaultConnectTimeout (30s). With N ToolHive workloads discovered\n(the default group), startup paid N×(handshake) on the critical path of\napp.Build → embed.Start, before the gRPC listener even opened. Measured\nat ~106ms for 7 servers on a real mecatui run; the connect dominates\nembedded-server bring-up.\n\nConnect them concurrently under a bounded semaphore (cap 16) and fold\nresults in config order afterwards, so:\n  - N independent handshakes collapse to ~max(handshake)\n  - onError + lastErr accounting is byte-identical to the serial loop\n    (callbacks fire in config order from the main goroutine, no race)\n  - the 'no servers connected' fatal path is unchanged\n  - the zero-config fast path returns early\n\nThe only observable change is that m.servers ordering is no longer\ninsertion-ordered; callers are name-routed (Tools/Servers), not\npositional, so no consumer regresses.\n\nAdds TestManagerConnectsConcurrently: three real MCP servers each\nimposing a fixed handshake delay; asserts NewManager completes in\nmaterially less than the serial floor.",
+          "timestamp": "2026-06-30T14:40:46+03:00",
+          "tree_id": "ecd5b0b950e2ed0a90e13f46ecd30a674eb9fd08",
+          "url": "https://github.com/stacklok/mecatl/commit/590da56881e4b95e12757d64ea87392a0f1bd25b"
+        },
+        "date": 1782819979022,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1450,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 3918,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2731,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 33129,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2369,
             "unit": "allocs/op"
           },
           {
