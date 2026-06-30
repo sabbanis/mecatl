@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782812592438,
+  "lastUpdate": 1782812595568,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -482169,6 +482169,135 @@ window.BENCHMARK_DATA = {
           {
             "name": "team_fanout/allocs_per_op",
             "value": 2369,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "team_fanout/tokens_total",
+            "value": 12880,
+            "unit": "tokens"
+          },
+          {
+            "name": "team_fanout/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_scrollback_view_steady/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_scrollback_view_steady/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7194e87fd0ca49af22247afb8c4fa3bfcdaebcdb",
+          "message": "feat(session): add ReasoningTokens to session.Usage (#213) (#216)\n\nAdd ReasoningTokens int to session.Usage as a SUBSET of OutputTokens\n(mirroring CacheReadTokens ⊂ InputTokens): providers bill reasoning as\npart of the inclusive output total (OpenAI output_tokens_details.\nreasoning_tokens; Anthropic output_tokens_details.thinking_tokens), so\nTotalTokens() stays Input+Output — the budget brake already counts\nreasoning spend via OutputTokens, and adding it would double-count.\n\nThreaded through: OpenAI + Anthropic adapter usage mappings, proto\nUsage field 5 (+ regen), server toProtoUsage mapper, telemetry metrics,\nmecatui client struct + sumUsage merge, mecatequi SummaryUsage + render,\napi-compat baseline (session.txt), CHANGELOG (Added/minor), and docs.\n\nA host whose LLM gateway reports provider reasoning-token spend can now\nread it off ResultPayload.Usage instead of bypassing the engine.\n\nTests: domain unit (TotalTokens exclusion, Add sum, subset-invariant\nguard); adapter subset guards with vacuity guards; gauntlet e2e through\nthe agent loop proving propagation + no-budget-inflation; mapper,\nsnapshot round-trip, mecatequi summary.\n\nCloses #213",
+          "timestamp": "2026-06-30T12:37:41+03:00",
+          "tree_id": "694546a2e0aa1e186a789597fc8658218ee1bf5a",
+          "url": "https://github.com/stacklok/mecatl/commit/7194e87fd0ca49af22247afb8c4fa3bfcdaebcdb"
+        },
+        "date": 1782812594855,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "background_subagents/allocs_per_op",
+            "value": 1449,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "background_subagents/tokens_total",
+            "value": 0,
+            "unit": "tokens"
+          },
+          {
+            "name": "background_subagents/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "compaction_cycle/allocs_per_op",
+            "value": 3918,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "compaction_cycle/tokens_total",
+            "value": 40110,
+            "unit": "tokens"
+          },
+          {
+            "name": "compaction_cycle/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "output_economy/allocs_per_op",
+            "value": 2731,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "output_economy/tokens_total",
+            "value": 37610,
+            "unit": "tokens"
+          },
+          {
+            "name": "output_economy/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "single_session_long/allocs_per_op",
+            "value": 33127.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "single_session_long/tokens_total",
+            "value": 521040,
+            "unit": "tokens"
+          },
+          {
+            "name": "single_session_long/goroutine_delta",
+            "value": 0,
+            "unit": "goroutines"
+          },
+          {
+            "name": "team_fanout/allocs_per_op",
+            "value": 2368.5,
             "unit": "allocs/op"
           },
           {
