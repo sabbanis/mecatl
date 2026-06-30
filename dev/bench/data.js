@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782820332289,
+  "lastUpdate": 1782820335188,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -508540,6 +508540,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 87,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "7e3a1c71e32f58c73f80d0d20d688a189adb5c25",
+          "message": "fix(llmresilience): retry HTTP/2 stream resets (RST_STREAM / INTERNAL_ERROR) (#220)\n\nA peer HTTP/2 RST_STREAM (e.g. \"stream error: stream ID 45; INTERNAL_ERROR;\nreceived from peer\") surfaced as *http2.StreamError, which the resilience\nclassifier fell through to \"unknown error -> permanent\" — so it was neither\nretried nor counted toward the shared breaker. The result was a single\ntransport reset terminating a run instead of a bounded retry, and the\nbreaker staying open to a flapping provider.\n\nClassify *http2.StreamError as retryable in DefaultClassifier and transient\nin isTransientForBreaker (all http2.StreamError codes, matching net/http's\nown behaviour). The bounded-retry invariant still caps the blast radius.\n\nTests: TestHTTP2StreamErrorRetried proves an http2.StreamError is retried\nto success (2 retries + 1 success) and that a burst opens the breaker with\n*BreakerError on the 4th call without touching the inner provider; the\nclassifier + breaker tables gain rows for bare and wrapped StreamError\nacross ErrCodeInternal / ErrCodeProtocol.\n\ngo.mod promotes golang.org/x/net to direct (the test imports\ngolang.org/x/net/http2).\n\ntask lint 0 issues; task test green (incl. engine-standalone + api-compat).\n\nRefs: #208\n\nCo-authored-by: Claude <noreply@anthropic.com>",
+          "timestamp": "2026-06-30T14:41:15+03:00",
+          "tree_id": "20ffd52a3084a6cdb2388748164c42d9079e72aa",
+          "url": "https://github.com/stacklok/mecatl/commit/7e3a1c71e32f58c73f80d0d20d688a189adb5c25"
+        },
+        "date": 1782820334538,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3288.5,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 85,
             "unit": "allocs/op"
           },
           {
