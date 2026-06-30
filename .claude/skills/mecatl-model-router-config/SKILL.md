@@ -24,130 +24,126 @@ description: >-
 
 ### Step 1 — Elicit preferences (BEFORE any search)
 
-> **MANDATORY TOOL USE — DO NOT OUTPUT TEXT QUESTIONS.**
-> Every question in this step MUST be asked by invoking the `AskUserQuestion`
-> tool as a real tool call. Never write `→ Question?` or `▸ option` in text.
-> Never output a list of options in prose. If you find yourself writing question
-> text instead of calling the tool, stop and call the tool instead.
-> `AskUserQuestion` is a Claude Code built-in — it is always available here.
+Ask questions **one at a time** in this exact order. Do NOT present the full
+list upfront. Wait for the operator's answer before moving to the next question.
 
-Ask questions one at a time using `AskUserQuestion`. Wait for each answer
-before making the next call. Do NOT batch multiple questions into one call.
+Format for each question:
+
+```
+───────────────────────────────
+✓ <label>: <answer>     ← repeat for each prior answer
+
+→ <current question>?
+
+  ▸ <recommended option> (recommended)
+    <other option>
+
+  yes = <recommended> · "back" to redo previous
+───────────────────────────────
+```
 
 **Q1 — Provider**
 
-Invoke `AskUserQuestion` with exactly these parameters:
-```json
-{
-  "questions": [{
-    "header": "Provider",
-    "question": "Which provider are you routing through? All aliases must resolve to model ids on this one provider.",
-    "multiSelect": false,
-    "options": [
-      { "label": "OpenRouter",       "description": "Aggregates all vendors behind one API key — most flexible (recommended)" },
-      { "label": "Anthropic direct", "description": "Native Anthropic API, claude-* model ids" },
-      { "label": "OpenAI direct",    "description": "Native OpenAI API, gpt-* model ids" },
-      { "label": "Other",            "description": "Name it in the Other field" }
-    ]
-  }]
-}
+```
+───────────────────────────────
+→ Provider?
+
+  ▸ OpenRouter — aggregates all vendors behind one key (recommended)
+    Anthropic direct
+    OpenAI direct
+    Other (name it)
+
+  yes = OpenRouter · "back" to redo previous
+───────────────────────────────
 ```
 
 **Q2 — Priority axis**
 
-Invoke `AskUserQuestion`:
-```json
-{
-  "questions": [{
-    "header": "Priority",
-    "question": "Where do you sit on the cost ↔ capability spectrum?",
-    "multiSelect": false,
-    "options": [
-      { "label": "balanced",          "description": "Frontier where it matters, cheap elsewhere (recommended)" },
-      { "label": "cost-tiered",       "description": "Prefer cheap/open models, accept lower ceiling" },
-      { "label": "capability-first",  "description": "Most capable models regardless of cost" }
-    ]
-  }]
-}
+```
+───────────────────────────────
+✓ Provider: <Q1>
+
+→ Priority axis?
+
+  ▸ balanced — frontier where it matters, cheap elsewhere (recommended)
+    cost-tiered — prefer cheap/open models, accept lower ceiling
+    capability-first — most capable regardless of cost
+
+  yes = balanced · "back" to redo previous
+───────────────────────────────
 ```
 
 **Q3 — Open vs proprietary**
 
-Invoke `AskUserQuestion`:
-```json
-{
-  "questions": [{
-    "header": "Licensing",
-    "question": "Do you require open-weights models, or are proprietary hosted APIs fine?",
-    "multiSelect": false,
-    "options": [
-      { "label": "proprietary",   "description": "Hosted APIs are fine — widest model selection (recommended)" },
-      { "label": "open-weights",  "description": "MIT/Apache only, self-hostable" }
-    ]
-  }]
-}
+```
+───────────────────────────────
+✓ Provider: <Q1>
+✓ Priority: <Q2>
+
+→ Open-weights required?
+
+  ▸ proprietary — hosted APIs are fine (recommended)
+    open-weights — MIT/Apache only (self-hostable)
+
+  yes = proprietary · "back" to redo previous
+───────────────────────────────
 ```
 
 **Q4 — Multimodal**
 
-Invoke `AskUserQuestion`:
-```json
-{
-  "questions": [{
-    "header": "Vision",
-    "question": "Do you need image/vision input anywhere in the fleet?",
-    "multiSelect": false,
-    "options": [
-      { "label": "text-only", "description": "No vision needed (recommended)" },
-      { "label": "rarely",    "description": "Explicit per-call invocation via model: image" },
-      { "label": "commonly",  "description": "Bake a vision tier into the router" }
-    ]
-  }]
-}
+```
+───────────────────────────────
+✓ Provider: <Q1>
+✓ Priority: <Q2>
+✓ Open-weights: <Q3>
+
+→ Image/vision input needed?
+
+  ▸ text-only — no vision needed (recommended)
+    rarely — explicit per-call via model: image
+    commonly — bake a vision tier into the router
+
+  yes = text-only · "back" to redo previous
+───────────────────────────────
 ```
 
-**Q5 — Target ceiling**
+**Q5 — Target ceiling (optional)**
 
-Invoke `AskUserQuestion`:
-```json
-{
-  "questions": [{
-    "header": "Ceiling",
-    "question": "Is there a specific model you want to match or beat on coding? (optional)",
-    "multiSelect": false,
-    "options": [
-      { "label": "skip",                  "description": "No specific ceiling target (recommended)" },
-      { "label": "Sonnet 4.6 territory",  "description": "~79% SWE-bench Verified" },
-      { "label": "Opus 4.8 territory",    "description": "~88% SWE-bench Verified" },
-      { "label": "Other",                 "description": "Specify in the Other field" }
-    ]
-  }]
-}
+```
+───────────────────────────────
+✓ Provider: <Q1>
+✓ Priority: <Q2>
+✓ Open-weights: <Q3>
+✓ Vision: <Q4>
+
+→ Target coding ceiling? (optional)
+
+  ▸ skip — no specific target (recommended)
+    name a model, e.g. "Sonnet 4.6", "Opus 4.8"
+
+  yes = skip · "back" to redo previous
+───────────────────────────────
 ```
 
-**Q6 — Existing config (auto-discovered, no blank ask)**
+**Q6 — Existing config (auto-discovered, not asked blank)**
 
-Do NOT call `AskUserQuestion` for this. Instead, silently run:
-```bash
-cat ~/.config/mecatl/settings.yaml
-```
+Do NOT ask. Silently run `cat ~/.config/mecatl/settings.yaml`.
 
-- If found with a `models:` block: show it fenced, then invoke `AskUserQuestion`:
-```json
-{
-  "questions": [{
-    "header": "Existing config",
-    "question": "Found an existing models: config. Use it as a base, or start fresh?",
-    "multiSelect": false,
-    "options": [
-      { "label": "use as base",   "description": "Revise only what needs changing (recommended)" },
-      { "label": "start fresh",   "description": "Build from scratch, ignore the existing config" }
-    ]
-  }]
-}
-```
+- **Found with `models:` block** — show it fenced, then ask:
+  ```
+  ───────────────────────────────
+  ✓ Provider: <Q1> · ✓ Priority: <Q2> · ✓ Open-weights: <Q3> · ✓ Vision: <Q4> · ✓ Ceiling: <Q5>
 
-- If not found or no `models:` block: skip silently, proceed to Step 2.
+  → Found an existing models: config — use as base or start fresh?
+
+    ▸ use as base — revise only what needs changing (recommended)
+      start fresh — ignore existing config
+
+    yes = use as base · "back" to redo previous
+  ───────────────────────────────
+  ```
+
+- **Not found or no `models:` block** — skip silently, proceed to Step 2.
 
 Record all answers. These determine which models are even candidates.
 
