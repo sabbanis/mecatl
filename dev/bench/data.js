@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782805687864,
+  "lastUpdate": 1782805691707,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -478666,6 +478666,40 @@ window.BENCHMARK_DATA = {
           "url": "https://github.com/stacklok/mecatl/commit/4523445b14e0bc1b913a8ed1375379d221738519"
         },
         "date": 1782798182947,
+        "tool": "customBiggerIsBetter",
+        "benches": [
+          {
+            "name": "single_session_long/cache_hit_rate",
+            "value": 0.9,
+            "unit": "ratio"
+          },
+          {
+            "name": "team_fanout/cache_hit_rate",
+            "value": 0.75,
+            "unit": "ratio"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "3367e061ece2c78723ed7feab184512f6634894d",
+          "message": "feat(tui): add keyword filter to /skills inventory panel (#176) (#212)\n\nThe /skills TUI panel was scroll-only with no way to find a skill by name\nin a large corpus. Add a type-to-narrow filter mirroring the existing\n/models picker pattern:\n\n- skillsState gains a filter textinput + filtered []client.Skill\n- onSkillsKey routes printable keys into the filter (two-stage esc:\n  clear filter first, then close); arrow nav switched to msg.String()\n  so the j/k-bound Up/Down keys don't hijack typed filter text\n- filterSkills: case-insensitive substring on Name AND Description\n- renderSkillsPanel renders the filter input, a 'no skills match'\n  no-match note, and windows over the filtered set\n- footer extended with the activation hint + filter/clear affordance\n  + arrow-key names\n\nTests: 9 new (filter narrows, case-insensitive, by-description,\nesc-clears, no-match note, empty-shows-full, j/k-not-intercepted,\norder-preservation, uppercase-field) + 3 golden tests. Goldens\nregenerated; docs/tui.md updated.\n\nCloses #176",
+          "timestamp": "2026-06-30T10:42:22+03:00",
+          "tree_id": "496950b52f152585a08d816c5b20bcd8ecd6855a",
+          "url": "https://github.com/stacklok/mecatl/commit/3367e061ece2c78723ed7feab184512f6634894d"
+        },
+        "date": 1782805690383,
         "tool": "customBiggerIsBetter",
         "benches": [
           {
