@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782819982879,
+  "lastUpdate": 1782819985942,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -504714,6 +504714,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 85,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "ozz@stacklok.com",
+            "name": "Juan Antonio Osorio",
+            "username": "JAORMX"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "590da56881e4b95e12757d64ea87392a0f1bd25b",
+          "message": "fix(mcp): connect servers concurrently to cut startup delay (#218) (#219)\n\nNewManager connected every MCP server in a serial for-loop, each bounded\nby defaultConnectTimeout (30s). With N ToolHive workloads discovered\n(the default group), startup paid N×(handshake) on the critical path of\napp.Build → embed.Start, before the gRPC listener even opened. Measured\nat ~106ms for 7 servers on a real mecatui run; the connect dominates\nembedded-server bring-up.\n\nConnect them concurrently under a bounded semaphore (cap 16) and fold\nresults in config order afterwards, so:\n  - N independent handshakes collapse to ~max(handshake)\n  - onError + lastErr accounting is byte-identical to the serial loop\n    (callbacks fire in config order from the main goroutine, no race)\n  - the 'no servers connected' fatal path is unchanged\n  - the zero-config fast path returns early\n\nThe only observable change is that m.servers ordering is no longer\ninsertion-ordered; callers are name-routed (Tools/Servers), not\npositional, so no consumer regresses.\n\nAdds TestManagerConnectsConcurrently: three real MCP servers each\nimposing a fixed handshake delay; asserts NewManager completes in\nmaterially less than the serial floor.",
+          "timestamp": "2026-06-30T14:40:46+03:00",
+          "tree_id": "ecd5b0b950e2ed0a90e13f46ecd30a674eb9fd08",
+          "url": "https://github.com/stacklok/mecatl/commit/590da56881e4b95e12757d64ea87392a0f1bd25b"
+        },
+        "date": 1782819985142,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3286,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 87,
             "unit": "allocs/op"
           },
           {
