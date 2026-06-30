@@ -838,28 +838,21 @@ func (r *renderer) rebuildPrefix(blocks []block, prefixN int) {
 	}
 }
 
-// interBlockSep is the separator the string-path join (renderConversation) writes
-// BEFORE every block after the first. Each block already ends with a trailing "\n", so
-// the on-screen gap between two turns is (trailing "\n") + interBlockSep. With
-// interBlockSep = "\n\n" that is three newlines = TWO blank lines between turns — the
-// CC-style breathing room that makes user vs assistant turns read as distinct blocks
-// (one blank line read as too cramped once the messages carry no background). The
-// lines-path (appendSegmentLines) MUST mirror this exactly (interBlockBlankLines blank
-// "" lines before each block i>0) or the cache-equivalence oracle (render_cache_test.go)
-// trips. Two is the deliberate ceiling — more wastes scrollback.
+// The inter-block separator is written BEFORE every block after the first by the
+// string-path join (renderConversation); each block already ends with a trailing "\n",
+// so the on-screen gap between two blocks is (trailing "\n") + separator. The lines-path
+// (appendSegmentLines) MUST mirror this exactly (the matching blank-"" count before each
+// block i>0) or the cache-equivalence oracle (render_cache_test.go) trips.
 //
 // blockSepAfter / blockBlankLinesAfter encode per-transition spacing rules; both
 // paths (string and lines) must use them so the cache-equivalence oracle holds.
 //
 // Spacing policy (compact throughout):
-//   - blockTool → any              : 0 blank lines — tool boxes cluster tight
+//   - blockTool → any                : 0 blank lines — tool boxes cluster tight
 //   - blockAssistant → blockTurnStat : 0 blank lines — empty turns need no gap before stats
-//   - blockTurnStat → any          : 1 blank line  — compact stat annotation
-//   - everything else              : 1 blank line  — user↔assistant, assistant→tool, etc.
+//   - blockTurnStat → any            : 1 blank line  — compact stat annotation
+//   - everything else                : 1 blank line  — user↔assistant, assistant→tool, etc.
 const (
-	interBlockSep        = "\n\n"
-	interBlockBlankLines = 2 // == strings.Count(trailing-"\n" + interBlockSep, "\n") - 1
-
 	interBlockSepCompact        = "\n"
 	interBlockBlankLinesCompact = 1 // == strings.Count(trailing-"\n" + interBlockSepCompact, "\n") - 1
 
