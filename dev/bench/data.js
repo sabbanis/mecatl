@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1782797828448,
+  "lastUpdate": 1782797831488,
   "repoUrl": "https://github.com/stacklok/mecatl",
   "entries": {
     "mecatl go microbenchmarks": [
@@ -474106,6 +474106,45 @@ window.BENCHMARK_DATA = {
           {
             "name": "tui_scrollback_view_steady/allocs_per_op",
             "value": 96,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_spinner_tick_vpview/allocs_per_op",
+            "value": 1092,
+            "unit": "allocs/op"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "jakub@stacklok.com",
+            "name": "Jakub Hrozek",
+            "username": "jhrozek"
+          },
+          "committer": {
+            "email": "noreply@github.com",
+            "name": "GitHub",
+            "username": "web-flow"
+          },
+          "distinct": true,
+          "id": "90797fa69ba9d6efa57e07afcdabd50d08c9cd84",
+          "message": "fix(openai): classify context-window overflow as non-retryable, not server_error (#210)\n\nOpenRouter (and the OpenAI Responses API) return a response.failed event with\ncode `server_error` and a message like \"Your input exceeds the context window\nof this model\" when a prompt exceeds the model's context window. The adapter\nmapped `server_error` unconditionally to HTTP 503, so llmresilience retried\nthe identical over-context prompt MaxAttempts times and counted each failure\ntoward the circuit breaker — wedging it open (half-open trials fail identically\nand re-open on every prompt).\n\nA context-window overflow is a permanent client error: replaying the identical\nprompt cannot help. Detect the overflow via a message-substring guard (the\nprovider offers no structured field under `server_error`) and demote the status\nto 0 (non-retryable, breaker-neutral) before the code mapping. Genuine\n`server_error` transient faults stay 503.\n\nThe five signatures are anchored to the context-window / token-limit domain so\na genuine transient rate-limit or capacity message cannot false-positive and\nstrip retry + breaker protection.\n\nFixes #207.\n\nCo-authored-by: mecatl <noreply@stacklok.com>",
+          "timestamp": "2026-06-30T08:31:32+03:00",
+          "tree_id": "064789442ea60be64fb31f0ccad4e57c629d4121",
+          "url": "https://github.com/stacklok/mecatl/commit/90797fa69ba9d6efa57e07afcdabd50d08c9cd84"
+        },
+        "date": 1782797830618,
+        "tool": "customSmallerIsBetter",
+        "benches": [
+          {
+            "name": "tui_scrollback_view/allocs_per_op",
+            "value": 3285,
+            "unit": "allocs/op"
+          },
+          {
+            "name": "tui_scrollback_view_steady/allocs_per_op",
+            "value": 84.5,
             "unit": "allocs/op"
           },
           {
