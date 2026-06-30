@@ -24,79 +24,130 @@ description: >-
 
 ### Step 1 — Elicit preferences (BEFORE any search)
 
-Use the **`AskUserQuestion` tool** for each question — one call at a time, in
-this exact order. Do NOT batch multiple questions into one call. Record each
-answer, then call `AskUserQuestion` for the next question.
+> **MANDATORY TOOL USE — DO NOT OUTPUT TEXT QUESTIONS.**
+> Every question in this step MUST be asked by invoking the `AskUserQuestion`
+> tool as a real tool call. Never write `→ Question?` or `▸ option` in text.
+> Never output a list of options in prose. If you find yourself writing question
+> text instead of calling the tool, stop and call the tool instead.
+> `AskUserQuestion` is a Claude Code built-in — it is always available here.
+
+Ask questions one at a time using `AskUserQuestion`. Wait for each answer
+before making the next call. Do NOT batch multiple questions into one call.
 
 **Q1 — Provider**
 
-Call `AskUserQuestion`:
-- header: `"Provider"`
-- question: `"Which provider are you routing through? All aliases must resolve to model ids on this one provider."`
-- options:
-  - `OpenRouter` — aggregates all vendors behind one key (recommended)
-  - `Anthropic direct` — native Anthropic API, `claude-*` model ids
-  - `OpenAI direct` — native OpenAI API, `gpt-*` model ids
-  - `Other` — specify via the Other field
+Invoke `AskUserQuestion` with exactly these parameters:
+```json
+{
+  "questions": [{
+    "header": "Provider",
+    "question": "Which provider are you routing through? All aliases must resolve to model ids on this one provider.",
+    "multiSelect": false,
+    "options": [
+      { "label": "OpenRouter",       "description": "Aggregates all vendors behind one API key — most flexible (recommended)" },
+      { "label": "Anthropic direct", "description": "Native Anthropic API, claude-* model ids" },
+      { "label": "OpenAI direct",    "description": "Native OpenAI API, gpt-* model ids" },
+      { "label": "Other",            "description": "Name it in the Other field" }
+    ]
+  }]
+}
+```
 
 **Q2 — Priority axis**
 
-Call `AskUserQuestion`:
-- header: `"Priority"`
-- question: `"Where do you sit on the cost ↔ capability spectrum?"`
-- options:
-  - `balanced` — frontier where it matters, cheap elsewhere (recommended)
-  - `cost-tiered` — prefer cheap/open models, accept lower ceiling
-  - `capability-first` — most capable regardless of cost
+Invoke `AskUserQuestion`:
+```json
+{
+  "questions": [{
+    "header": "Priority",
+    "question": "Where do you sit on the cost ↔ capability spectrum?",
+    "multiSelect": false,
+    "options": [
+      { "label": "balanced",          "description": "Frontier where it matters, cheap elsewhere (recommended)" },
+      { "label": "cost-tiered",       "description": "Prefer cheap/open models, accept lower ceiling" },
+      { "label": "capability-first",  "description": "Most capable models regardless of cost" }
+    ]
+  }]
+}
+```
 
 **Q3 — Open vs proprietary**
 
-Call `AskUserQuestion`:
-- header: `"Licensing"`
-- question: `"Do you require open-weights models, or are proprietary hosted APIs fine?"`
-- options:
-  - `proprietary` — hosted APIs are fine (recommended)
-  - `open-weights` — MIT/Apache only, self-hostable
+Invoke `AskUserQuestion`:
+```json
+{
+  "questions": [{
+    "header": "Licensing",
+    "question": "Do you require open-weights models, or are proprietary hosted APIs fine?",
+    "multiSelect": false,
+    "options": [
+      { "label": "proprietary",   "description": "Hosted APIs are fine — widest model selection (recommended)" },
+      { "label": "open-weights",  "description": "MIT/Apache only, self-hostable" }
+    ]
+  }]
+}
+```
 
 **Q4 — Multimodal**
 
-Call `AskUserQuestion`:
-- header: `"Vision"`
-- question: `"Do you need image/vision input anywhere in the fleet?"`
-- options:
-  - `text-only` — no vision needed (recommended)
-  - `rarely` — explicit per-call invocation via `model: image`
-  - `commonly` — bake a vision tier into the router
+Invoke `AskUserQuestion`:
+```json
+{
+  "questions": [{
+    "header": "Vision",
+    "question": "Do you need image/vision input anywhere in the fleet?",
+    "multiSelect": false,
+    "options": [
+      { "label": "text-only", "description": "No vision needed (recommended)" },
+      { "label": "rarely",    "description": "Explicit per-call invocation via model: image" },
+      { "label": "commonly",  "description": "Bake a vision tier into the router" }
+    ]
+  }]
+}
+```
 
 **Q5 — Target ceiling**
 
-Call `AskUserQuestion`:
-- header: `"Ceiling"`
-- question: `"Is there a specific model you want to match or beat on coding? (optional)"`
-- options:
-  - `skip` — no specific ceiling target (recommended)
-  - `Sonnet 4.6 territory`
-  - `Opus 4.8 territory`
-  - `Other` — specify via the Other field
+Invoke `AskUserQuestion`:
+```json
+{
+  "questions": [{
+    "header": "Ceiling",
+    "question": "Is there a specific model you want to match or beat on coding? (optional)",
+    "multiSelect": false,
+    "options": [
+      { "label": "skip",                  "description": "No specific ceiling target (recommended)" },
+      { "label": "Sonnet 4.6 territory",  "description": "~79% SWE-bench Verified" },
+      { "label": "Opus 4.8 territory",    "description": "~88% SWE-bench Verified" },
+      { "label": "Other",                 "description": "Specify in the Other field" }
+    ]
+  }]
+}
+```
 
 **Q6 — Existing config (auto-discovered, no blank ask)**
 
-Do NOT call `AskUserQuestion` for this. Instead, silently read:
-
-```
+Do NOT call `AskUserQuestion` for this. Instead, silently run:
+```bash
 cat ~/.config/mecatl/settings.yaml
 ```
 
-- If the file is **found and contains a `models:` block**: show it fenced, then
-  call `AskUserQuestion`:
-  - header: `"Existing config"`
-  - question: `"Found an existing models: config. Use it as a base, or start fresh?"`
-  - options:
-    - `use as base` — revise only what needs changing (recommended)
-    - `start fresh` — build from scratch, ignore the existing config
+- If found with a `models:` block: show it fenced, then invoke `AskUserQuestion`:
+```json
+{
+  "questions": [{
+    "header": "Existing config",
+    "question": "Found an existing models: config. Use it as a base, or start fresh?",
+    "multiSelect": false,
+    "options": [
+      { "label": "use as base",   "description": "Revise only what needs changing (recommended)" },
+      { "label": "start fresh",   "description": "Build from scratch, ignore the existing config" }
+    ]
+  }]
+}
+```
 
-- If the file is **not found or has no `models:` block**: skip Q6 silently and
-  proceed to Step 2. No message, just move on.
+- If not found or no `models:` block: skip silently, proceed to Step 2.
 
 Record all answers. These determine which models are even candidates.
 
