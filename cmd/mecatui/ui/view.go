@@ -752,7 +752,7 @@ func (m Model) renderQueue() string {
 		reason, _ := stopReasonLabel(m.queuePaused)
 		b.WriteString(th.Style("ctxWarn").Render(fmt.Sprintf("⏸ %d queued · paused: %s", n, reason)))
 	} else {
-		b.WriteString(muted.Render(fmt.Sprintf("⏳ %d queued", n)))
+		b.WriteString(muted.Render(fmt.Sprintf("⏳ %d queued · ↑ edit", n)))
 	}
 	shown := min(n, queuePreviewLimit)
 	for i := 0; i < shown; i++ {
@@ -764,7 +764,7 @@ func (m Model) renderQueue() string {
 		b.WriteString("\n" + muted.Render(fmt.Sprintf("  +%d more", rest)))
 	}
 	if m.queuePaused != "" {
-		b.WriteString("\n" + muted.Render("  enter sends next · esc clears"))
+		b.WriteString("\n" + muted.Render("  enter sends · ↑ edit · esc clears"))
 	}
 	return th.Style("askCard").Render(b.String())
 }
