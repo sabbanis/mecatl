@@ -244,6 +244,28 @@ func TestCancelStillPausesEvenIfTransientFlag(t *testing.T) {
 	}
 }
 
+// TestMaxConsecutiveFailuresStillPausesEvenIfTransientFlag: a
+// `max_consecutive_failures` stop PAUSES regardless — the transient path is gated on
+// stop==stopError, so a `max_consecutive_failures` stop never auto-resumes even if a
+// (spurious) transient flag rode along with an error text that WOULD otherwise
+// classify as transient.
+func TestMaxConsecutiveFailuresStillPausesEvenIfTransientFlag(t *testing.T) {
+	m, conv := newQueueModel(t)
+	m = startRunning(t, m, "first")
+	m = enqueue(t, m, "second")
+
+	mm, cmd := m.Update(client.ResultMsg{Stop: "max_consecutive_failures", Error: "engine overloaded", Transient: true})
+	m = mm.(Model)
+	runBatchLeaves(cmd)
+
+	if len(m.queued) != 1 || m.queuePaused != "max_consecutive_failures" {
+		t.Fatalf("max_consecutive_failures must pause even with a transient flag, got queued=%v paused=%q", m.queued, m.queuePaused)
+	}
+	if got := promptTexts(conv.send); len(got) != 1 {
+		t.Fatalf("max_consecutive_failures must not auto-submit, frames = %v", got)
+	}
+}
+
 // TestStreamClosedPausesQueue: a clean stream close (io.EOF → StreamClosedMsg) while
 // a run is streaming with a non-empty queue PAUSES and KEEPS the queue — a transient
 // drop normally arrives as StreamErrMsg (with a gRPC status), so a bare close is

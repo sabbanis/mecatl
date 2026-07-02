@@ -902,7 +902,10 @@ is what a lined-up "continue" wants).
 
 A **transient** failure — an idle/stalled stream, an overloaded/unavailable backend, a
 rate limit, or a transient upstream 5xx — is treated like a healthy stop and
-**auto-resumes** the merged queue, since a plain retry is likely to succeed. A **hard**
+**auto-resumes** the merged queue, since a plain retry is likely to succeed. This
+auto-resume fires **only** when follow-ups are staged: a transient death of a run with
+an **empty** queue does not auto-retry the original prompt — the user must resend it
+manually. A **hard**
 error, a **user cancel**, `max_consecutive_failures`, or a stream close instead
 **pauses and keeps** the queue, so a genuinely-broken run or a deliberate cancel never
 silently fires the backlog. The card switches from the muted `⏳ N queued · ↑ edit` to a

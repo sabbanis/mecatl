@@ -752,7 +752,14 @@ func (m Model) renderQueue() string {
 		reason, _ := stopReasonLabel(m.queuePaused)
 		b.WriteString(th.Style("ctxWarn").Render(fmt.Sprintf("⏸ %d queued · paused: %s", n, reason)))
 	} else {
-		b.WriteString(muted.Render(fmt.Sprintf("⏳ %d queued · ↑ edit", n)))
+		// "· ↑ edit" only applies when EditBack is actionable, which
+		// requires an EMPTY input line; a draft present would make the
+		// hint misleading.
+		if strings.TrimSpace(m.ta.Value()) == "" {
+			b.WriteString(muted.Render(fmt.Sprintf("⏳ %d queued · ↑ edit", n)))
+		} else {
+			b.WriteString(muted.Render(fmt.Sprintf("⏳ %d queued", n)))
+		}
 	}
 	shown := min(n, queuePreviewLimit)
 	for i := 0; i < shown; i++ {
