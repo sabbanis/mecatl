@@ -34,6 +34,9 @@ func TestTransientStreamErr(t *testing.T) {
 		{"vocab_status_message", status.Error(codes.Internal, "service_unavailable upstream"), true},
 		{"bare_server_error", errors.New("server_error"), false},
 		{"unrelated", errors.New("json parse failed"), false},
+		// Digit-boundary: a code embedded in a port/model id is NOT transient.
+		{"port_false_positive", errors.New("port 50378 refused"), false},
+		{"model_id_false_positive", errors.New("unknown model 1230503"), false},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -63,6 +66,10 @@ func TestTransientResultError(t *testing.T) {
 	nonTransient := []string{
 		"", "   ", "server_error", "invalid request", "context length exceeded",
 		"tool execution failed",
+		// Numeric status codes are digit-bounded: a code embedded in a port number or
+		// model id must NOT match (the bare-substring false-positive the reviewer
+		// flagged — "503" in "port 50378" / "1230503" is not an HTTP 503).
+		"port 50378 unreachable", "model 1230503 failed", "listening on 42900",
 	}
 	for _, s := range nonTransient {
 		if TransientResultError(s) {

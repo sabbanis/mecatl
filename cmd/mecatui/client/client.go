@@ -137,23 +137,31 @@ func IsInvalidArgument(err error) bool {
 	return status.Code(err) == codes.InvalidArgument
 }
 
-// transientVocab is the shared, case-insensitive substring vocabulary that marks a
-// terminal error as TRANSIENT — a failure the run is likely to survive on a plain
-// retry (an idle/stalled stream, an overloaded/unavailable backend, a rate limit, a
-// transient upstream 5xx). It is deliberately kept in the client package (the ONLY
-// mecatui layer with gRPC/proto access): the ui reads only the derived Transient
-// bool on ResultMsg/StreamErrMsg, never classifies. Deliberately EXCLUDES the bare
+// transientVocab is the shared, case-insensitive vocabulary that marks a terminal
+// error as TRANSIENT — a failure the run is likely to survive on a plain retry (an
+// idle/stalled stream, an overloaded/unavailable backend, a rate limit, a transient
+// upstream 5xx). It is deliberately kept in the client package (the ONLY mecatui
+// layer with gRPC/proto access): the ui reads only the derived Transient bool on
+// ResultMsg/StreamErrMsg, never classifies. Deliberately EXCLUDES the bare
 // "server_error" token — OpenRouter reuses that string for non-transient upstream
 // faults too, so auto-resuming on it would fight a genuinely broken run.
+//
+// The word entries are matched as substrings (they are alphabetic, so they land
+// word-bounded in real error text). The numeric HTTP status codes in transientCodes
+// are matched with digit-boundary checks so a code like 503 matches "HTTP 503" but
+// NOT "port 50378" or "model 1230503" — a bare substring match would misclassify a
+// port/model id carrying those digits as transient.
 var transientVocab = []string{
 	"idle timeout", "stream stalled", "stream idle", "unavailable",
-	"overloaded", "deadline exceeded", "too many requests", "429",
-	"502", "503", "504", "temporarily", "engine_overloaded",
-	"service_unavailable",
+	"overloaded", "deadline exceeded", "too many requests",
+	"temporarily", "engine_overloaded", "service_unavailable",
 }
 
+var transientCodes = []string{"429", "502", "503", "504"}
+
 // matchesTransientVocab reports whether s contains any transientVocab substring
-// (case-insensitive). A blank string never matches.
+// (case-insensitive) or any transientCodes entry as a digit-bounded token. A blank
+// string never matches.
 func matchesTransientVocab(s string) bool {
 	low := strings.ToLower(s)
 	for _, v := range transientVocab {
@@ -161,8 +169,34 @@ func matchesTransientVocab(s string) bool {
 			return true
 		}
 	}
+	for _, code := range transientCodes {
+		if containsBoundedCode(low, code) {
+			return true
+		}
+	}
 	return false
 }
+
+// containsBoundedCode reports whether code appears in s bounded by non-digit
+// characters (or the start/end of s), so "503" matches "HTTP 503" and "got a 503."
+// but not "port 50378" or "model 1230503". s and code are assumed lower-cased.
+func containsBoundedCode(s, code string) bool {
+	for i := 0; i+len(code) <= len(s); i++ {
+		if s[i:i+len(code)] != code {
+			continue
+		}
+		if i > 0 && isDigitByte(s[i-1]) {
+			continue
+		}
+		if end := i + len(code); end < len(s) && isDigitByte(s[end]) {
+			continue
+		}
+		return true
+	}
+	return false
+}
+
+func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
 
 // TransientStreamErr classifies a Converse stream Recv error as transient (safe to
 // auto-resume a paused queue against) vs a hard failure. The gRPC status code is the
