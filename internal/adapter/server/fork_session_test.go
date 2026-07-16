@@ -91,7 +91,7 @@ func TestForkSessionInheritsHistoryAndLabels(t *testing.T) {
 	// Reset the factory recorder so the NEXT call is unambiguously the fork's.
 	calls.Store(0)
 	gotSel.Store(server.ProviderSelector{})
-	newID, err := svc.ForkSession(ctx, src.ID)
+	newID, err := svc.ForkSession(ctx, src.ID, "")
 	if err != nil {
 		t.Fatalf("ForkSession: %v", err)
 	}
@@ -163,6 +163,44 @@ func TestForkSessionInheritsHistoryAndLabels(t *testing.T) {
 	}
 }
 
+// TestForkSessionTitleOverride verifies the optional title parameter: empty
+// inherits the source's title, non-empty overrides it.
+func TestForkSessionTitleOverride(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newMCPServiceStore(t, "shared", nil)
+
+	src, err := svc.CreateSession(ctx, "/ws", session.ModeDefault, session.Limits{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	driveCompletedTurn(t, svc, src.ID, "what is the plan?")
+	srcSnap, _ := store.Load(ctx, src.ID)
+	if srcSnap.Title == "" {
+		t.Fatalf("source has no title after a turn")
+	}
+
+	// Empty title → inherits source's.
+	inherited, err := svc.ForkSession(ctx, src.ID, "")
+	if err != nil {
+		t.Fatalf("ForkSession empty title: %v", err)
+	}
+	inheritedSnap, _ := store.Load(ctx, inherited)
+	if inheritedSnap.Title != srcSnap.Title {
+		t.Fatalf("inherited title = %q, want source's %q", inheritedSnap.Title, srcSnap.Title)
+	}
+
+	// Non-empty title → overrides.
+	override := "fix the bug first"
+	overridden, err := svc.ForkSession(ctx, src.ID, override)
+	if err != nil {
+		t.Fatalf("ForkSession override title: %v", err)
+	}
+	overriddenSnap, _ := store.Load(ctx, overridden)
+	if overriddenSnap.Title != override {
+		t.Fatalf("overridden title = %q, want %q", overriddenSnap.Title, override)
+	}
+}
+
 // TestForkSessionDefaultFSRidesSharedEngine pins gotcha #1: a DEFAULT-FS session
 // (empty selector, default profile, non-empty workspace) fork rides the SHARED
 // engine — no per-session engine is registered for the fork, and a run on the
@@ -195,7 +233,7 @@ func TestForkSessionDefaultFSRidesSharedEngine(t *testing.T) {
 	}
 	driveCompletedTurn(t, svc, src.ID, "hello")
 
-	newID, err := svc.ForkSession(ctx, src.ID)
+	newID, err := svc.ForkSession(ctx, src.ID, "")
 	if err != nil {
 		t.Fatalf("ForkSession: %v", err)
 	}
@@ -237,7 +275,7 @@ func TestForkSessionRejectsRunningSource(t *testing.T) {
 		t.Fatalf("Save running: %v", err)
 	}
 
-	_, ferr := svc.ForkSession(ctx, sess.ID)
+	_, ferr := svc.ForkSession(ctx, sess.ID, "")
 	if !errors.Is(ferr, server.ErrFailedPrecondition) {
 		t.Fatalf("ForkSession on a running source: err = %v, want ErrFailedPrecondition", ferr)
 	}
@@ -251,7 +289,7 @@ func TestForkSessionCompletedSourceRecoversToIdle(t *testing.T) {
 	svc, store := newMCPServiceStore(t, "shared", nil)
 	id := persistCompleted(t, store)
 
-	newID, err := svc.ForkSession(ctx, id)
+	newID, err := svc.ForkSession(ctx, id, "")
 	if err != nil {
 		t.Fatalf("ForkSession on a completed source: %v", err)
 	}
@@ -435,7 +473,7 @@ func TestHTTPForkSessionRoundTrip(t *testing.T) {
 func TestForkSessionUnknownSourceNotFound(t *testing.T) {
 	t.Run("service", func(t *testing.T) {
 		svc := newMCPService(t, "shared", nil)
-		_, err := svc.ForkSession(context.Background(), "never-created")
+		_, err := svc.ForkSession(context.Background(), "never-created", "")
 		if !errors.Is(err, server.ErrNotFound) {
 			t.Fatalf("ForkSession unknown id: err = %v, want ErrNotFound", err)
 		}
@@ -479,7 +517,7 @@ func TestForkSessionRespectsEngineCap(t *testing.T) {
 	}
 	driveCompletedTurn(t, svc, src.ID, "hi")
 
-	_, ferr := svc.ForkSession(ctx, src.ID)
+	_, ferr := svc.ForkSession(ctx, src.ID, "")
 	if !errors.Is(ferr, server.ErrTooManySessionEngines) {
 		t.Fatalf("ForkSession past cap: err = %v, want ErrTooManySessionEngines", ferr)
 	}

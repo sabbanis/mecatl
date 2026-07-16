@@ -1600,13 +1600,16 @@ func (s *Service) LoadSession(ctx context.Context, id session.SessionID) (*sessi
 // Counters/Usage but inherits the source's history verbatim (not re-fenced —
 // peer-trust parity, same as the subagent fork).
 //
+// title overrides the forked session's title when non-empty; empty inherits the
+// source's title verbatim.
+//
 // The engine is rehydrated ONLY when the source needed a per-session engine
 // (non-default selector / no-fs profile / worktree workspace), mirroring
 // createSession's branching on sessionNeedsPerFactory; a default-FS fork rides the
 // shared engine (zero overhead, no registry entry). The MaxSessionEngines cap is
 // enforced by the rehydrate path. No runEntryMu is taken (the new session has no
 // run; the source is loaded, not driven). Returns the new id.
-func (s *Service) ForkSession(ctx context.Context, srcID session.SessionID) (session.SessionID, error) {
+func (s *Service) ForkSession(ctx context.Context, srcID session.SessionID, title string) (session.SessionID, error) {
 	src, err := s.loadAndReopen(ctx, srcID)
 	if err != nil {
 		return "", err
@@ -1622,7 +1625,15 @@ func (s *Service) ForkSession(ctx context.Context, srcID session.SessionID) (ses
 	sel := ProviderSelector{ProviderID: src.ProviderID, ModelID: src.ModelID, ReasoningEffort: src.ReasoningEffort}
 	profile := profileForSession(src)
 	setSessionLabels(forked, sel, profile)
-	forked.Title = src.Title
+	if title != "" {
+		forked.Title = title
+	} else {
+		forked.Title = src.Title
+	}
+	// Save first, then rehydrate: a rehydrate failure (e.g. ErrTooManySessionEngines)
+	// leaves a valid persisted session that self-heals at the next StartRunContent
+	// (needsRehydration re-runs rehydrateSession). Do NOT Store.Delete on failure —
+	// it would race a concurrent rehydrating StartRunContent on the same id.
 	if err := s.cfg.Store.Save(ctx, forked); err != nil {
 		return "", fmt.Errorf("server: persist forked session: %w", err)
 	}

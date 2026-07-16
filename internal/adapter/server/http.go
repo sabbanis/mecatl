@@ -354,11 +354,23 @@ func (h *HTTPHandler) setMode(w http.ResponseWriter, r *http.Request) {
 // conversation history is a snapshot of {id}'s (ADR 0065). The new session
 // inherits the source's mode, workspace, limits, and provider/model/profile
 // labels; same provider and model only. The source must be at a turn boundary
-// (idle/terminal); a running/awaiting source is rejected with 412. No request
-// body — the source id is in the path. Returns 201 + the new session id.
+// (idle/terminal); a running/awaiting source is rejected with 412. An OPTIONAL
+// JSON body `{"title": "..."}` overrides the forked session's title (empty/absent
+// inherits the source's). Returns 201 + the new session id.
 func (h *HTTPHandler) forkSession(w http.ResponseWriter, r *http.Request) {
 	id := session.SessionID(r.PathValue("id"))
-	newID, err := h.svc.ForkSession(r.Context(), id)
+	var body struct {
+		Title string `json:"title"`
+	}
+	// An empty body is valid (title inherits the source's); only a malformed
+	// non-empty body is an error.
+	if r.ContentLength != 0 {
+		if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+			writeError(w, http.StatusBadRequest, "invalid JSON body")
+			return
+		}
+	}
+	newID, err := h.svc.ForkSession(r.Context(), id, body.Title)
 	if err != nil {
 		writeServiceError(w, err)
 		return

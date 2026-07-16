@@ -29,7 +29,7 @@ Add a **`ForkSession`** operation: create a new peer session whose conversation 
 `Service.ForkSession(ctx, srcID) (newID, error)` in `internal/adapter/server/service.go`:
 
 1. **Load the source** via the existing run-entry funnel `loadAndReopen(ctx, srcID)`, so a terminal source is recovered to `idle` first (`completed→Reopen`, `cancelled→Interrupt`, `failed→Recover`) and approval replay runs. A `running`/`awaiting` source is rejected with `ErrFailedPrecondition` ("fork requires a session at a turn boundary; the source is running/awaiting") — the operator waits for the turn to finish or cancels first.
-2. **Snapshot** via `session.ForkSnapshot(&src.Conversation)` — fresh backing array, trailing orphans stripped, tool-pairing-valid.
+2. **Snapshot** via `session.ForkSnapshot(src.Conversation)` — fresh backing array, trailing orphans stripped, tool-pairing-valid.
 3. **Mint** a new aggregate: `session.New(s.cfg.NewID(), src.Mode, src.Workspace, src.Limits, s.cfg.Now())`.
 4. **Seed** the copied history: `new.SeedHistory(snapshot)`.
 5. **Inherit labels** — copy `src.Profile`, `src.ProviderID`, `src.ModelID`, `src.ReasoningEffort`, `src.Title` onto the new session (the same labels `rehydrateSession` reads to rebuild the matching engine). The new session starts `idle` with zeroed `Counters` and zero `Usage`.
@@ -43,10 +43,10 @@ No `engine/`, `port`, or domain package changes. The only production-code additi
 
 A new gRPC RPC and HTTP route, additive to the `Mecatl` service:
 
-- `rpc ForkSession(ForkSessionRequest) returns (ForkSessionResponse);` — `ForkSessionRequest{ string source_session_id = 1; }`, `ForkSessionResponse{ string session_id = 1; }`.
-- HTTP `POST /v1/sessions/{source}/fork` → `{ "session_id": "..." }`.
+- `rpc ForkSession(ForkSessionRequest) returns (ForkSessionResponse);` — `ForkSessionRequest{ string source_session_id = 1; string title = 2; }`, `ForkSessionResponse{ string session_id = 1; }`. An empty `title` inherits the source's title verbatim; a non-empty `title` overrides it so the operator can distinguish "implement feature X" from "fix the bug first" in `ListSessions` without a separate rename RPC.
+- HTTP `POST /v1/sessions/{source}/fork` with an optional `{"title": "..."}` body → `{ "session_id": "..." }`. An empty/absent body inherits the source's title.
 
-No streaming — the fork is synchronous (load + snapshot + save + rehydrate). No new event type; the new session's own `EvSessionInit`/event log records its lifecycle from the fork point forward. The source session is untouched (read-only `Load`).
+No streaming — the fork is synchronous (load + snapshot + save + rehydrate). No new event type; the new session's own `EvSessionInit`/event log records its lifecycle from the fork point forward. The source session's conversation is never modified — `loadAndReopen` may re-persist a terminal source (Reopen/Interrupt/Recover to idle) as a side effect, but its history is untouched.
 
 ### Trust model
 

@@ -125,7 +125,7 @@ func (h *HarnessServer) ForkSession(ctx context.Context, req *mecatlv1.ForkSessi
 	if req.GetSourceSessionId() == "" {
 		return nil, status.Error(codes.InvalidArgument, "source_session_id is required")
 	}
-	id, err := h.svc.ForkSession(ctx, session.SessionID(req.GetSourceSessionId()))
+	id, err := h.svc.ForkSession(ctx, session.SessionID(req.GetSourceSessionId()), req.GetTitle())
 	if err != nil {
 		return nil, toStatus(err)
 	}
