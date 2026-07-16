@@ -552,6 +552,11 @@ message ForkSessionRequest {
   // source_session_id is the session whose conversation history is snapshotted
   // into the new peer session.
   string source_session_id = 1 [(buf.validate.field).string.min_len = 1];
+  // title is an OPTIONAL override for the forked session's title. Empty (the
+  // default) inherits the source's title verbatim; a non-empty value overrides
+  // it so the operator can distinguish "implement feature X" from "fix the bug
+  // first" in ListSessions without a separate rename RPC.
+  string title = 2;
 }
 
 // ForkSessionResponse carries the new forked session's id.
