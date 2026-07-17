@@ -44,13 +44,15 @@
 // onboarding manual, gauntlet #10) and a correct ReadOnly() value, which drives
 // the agent loop's read-parallel / mutate-serial dispatch (gauntlet #4).
 //
-// # Output cap lockstep
+// # Output cap
 //
-// MaxOutputBytes here mirrors internal/adapter/toolkit.MaxOutputBytes and
-// engine/session.MaxToolResultTextBytes (all "25 KiB"). It is redefined locally
-// (not imported) because engine/ is its own module and toolkit lives under the
-// host repo's internal/adapter tree, which the engine module must not import.
-// Keep the three in lockstep.
+// MaxOutputBytes (25,000 bytes) mirrors internal/adapter/toolkit.MaxOutputBytes
+// EXACTLY — keep those two byte-identical. It is redefined locally (not imported)
+// because engine/ is its own module and toolkit lives under the host repo's
+// internal/adapter tree, which the engine module must not import. The related
+// domain bound engine/session.MaxToolResultTextBytes (25 KiB = 25,600 bytes) is a
+// slightly LARGER upper bound on any tool-result text block that these tool caps
+// sit under — deliberately not byte-identical.
 package fstools
 
 import (
@@ -74,8 +76,9 @@ const (
 
 // MaxOutputBytes caps the byte length of a single tool's textual result. It is
 // the fstools output cap; tools append a truncation marker (see truncate) when
-// they trim to it. It mirrors internal/adapter/toolkit.MaxOutputBytes and
-// engine/session.MaxToolResultTextBytes ("25 KiB") — keep them in lockstep.
+// they trim to it. It mirrors internal/adapter/toolkit.MaxOutputBytes EXACTLY
+// (both 25,000 bytes); the domain block bound engine/session.MaxToolResultTextBytes
+// (25 KiB = 25,600 bytes) is a larger upper bound these caps sit under.
 const MaxOutputBytes = 25_000
 
 // TruncationMarker is the suffix truncate appends when it trims a body to the

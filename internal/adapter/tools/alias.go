@@ -1,6 +1,9 @@
 package tools
 
-import "github.com/stacklok/mecatl/engine/adapter/fstools"
+import (
+	"github.com/stacklok/mecatl/engine/adapter/fstools"
+	"github.com/stacklok/mecatl/engine/tool"
+)
 
 // alias.go re-exports the filesystem tool bodies that graduated into the
 // importable engine module (engine/adapter/fstools, issue #269) so every existing
@@ -35,7 +38,8 @@ type (
 // catalog for bash enablement by this constant rather than a literal.
 const BashToolName = fstools.BashToolName
 
-// NewBashTool constructs the Bash tool bound to runner (see fstools.NewBashTool).
-// The composition root registers the returned tool ONLY when a runner is
-// configured; runner must be non-nil.
-var NewBashTool = fstools.NewBashTool
+// NewBashTool constructs the Bash tool bound to runner (a thin wrapper over
+// fstools.NewBashTool). The composition root registers the returned tool ONLY
+// when a runner is configured; runner must be non-nil. It is a function, not a
+// re-exported var, so no other package can reassign the constructor.
+func NewBashTool(runner tool.CommandRunner) tool.Tool { return fstools.NewBashTool(runner) }

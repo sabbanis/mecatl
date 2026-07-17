@@ -8,10 +8,12 @@
 // (MCP-coupled).
 //
 // All() and Register() cover the always-available tools that need only a
-// Workspace. Bash is special: it needs a tool.CommandRunner and is therefore not
-// part of All(); construct it explicitly with NewBashTool(runner) (an alias for
-// fstools.NewBashTool) and register it only when a runner is configured. A
-// deployment with no shell simply omits it.
+// Workspace — the fstools filesystem tools plus WebFetch and FetchMcpResource,
+// which need no extra dependency. Two tools are NOT in All() because they need an
+// injected dependency and are constructed/registered separately by the
+// composition root: Bash needs a tool.CommandRunner (NewBashTool(runner), an
+// alias for fstools.NewBashTool; a deployment with no shell simply omits it), and
+// WebSearch needs a search provider (NewWebSearchTool(provider)).
 //
 // Each tool parses its session.ToolCall.Args (JSON), runs against the Workspace
 // seam, and returns a session.ToolResult. Recoverable, model-addressable
