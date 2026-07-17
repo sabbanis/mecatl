@@ -37,10 +37,13 @@ const (
 )
 
 // MaxToolResultTextBytes caps the byte length of a single TEXT tool-result block.
-// It mirrors internal/adapter/toolkit.MaxOutputBytes (25 KiB) — the single
-// adapter-layer output cap — so a tool-result text block carries no more than a
-// textual tool's own result would. Defined locally (not imported) because
-// engine/ is its own module and toolkit lives under internal/adapter.
+// It mirrors engine/adapter/fstools.MaxOutputBytes and
+// internal/adapter/toolkit.MaxOutputBytes (both "25 KiB") — the adapter-layer
+// output caps — so a tool-result text block carries no more than a textual tool's
+// own result would. Defined locally (not imported) because engine/session is the
+// domain leaf: it may not import an adapter (even fstools, which lives in this
+// module), and toolkit lives under the host repo's internal/adapter tree. Keep
+// the three in lockstep.
 const MaxToolResultTextBytes = 25 << 10 // 25 KiB
 
 // MaxToolResultBytes is the cap on the SUM of all block bytes in one tool
