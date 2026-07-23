@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -559,6 +560,177 @@ func TestGRPCCreateSessionWithCarryover(t *testing.T) {
 	if res := lastResult(t, recvAll(t, stream)); res.GetStop() != "end_turn" {
 		t.Fatalf("carryover-session Converse result = %+v, want end_turn", res)
 	}
+}
+
+// TestGRPCCreateSessionCrossProviderCarryover drives a CROSS-PROVIDER carryover
+// THROUGH the gRPC CreateSession handler: a blob-carrying source persisted on
+// provider A (Reasoning/ProviderPhase + a tool call's ItemID), carried over via
+// CreateSessionRequest.SourceSessionId AND an explicit selector on provider B,
+// SUCCEEDS (NOT InvalidArgument) and the seeded session's blobs are CLEARED
+// while text/tool-call/tool-result content is preserved. MUTATION-VERIFY: if
+// someone re-adds a same-provider gate in the HANDLER (rejecting a cross-provider
+// source_session_id with InvalidArgument), this goes red at the CreateSession
+// call — the existing TestGRPCCreateSessionWithCarryover is same-provider (default
+// selector) and would NOT catch it. Mirrors TestCarryoverCrossProviderStripsBlobs
+// at the service level, but pins the WIRE handler path. Reuses persistBlobsSource
+// for the blob-carrying source shape.
+func TestGRPCCreateSessionCrossProviderCarryover(t *testing.T) {
+	const newReply = "GRPC-CROSS-NEW-REPLY"
+	var seen atomic.Value
+	// Build the service over a SessionEngine factory (a cross-provider selector
+	// requires a per-session engine), NOT the shared-engine newService helper.
+	shared := agent.NewEngine(agent.Deps{
+		LLM:     mockllm.New(mockllm.TextTurn(newReply), mockllm.TextTurn(newReply)),
+		Catalog: tool.NewCatalog(),
+		Policy:  permpolicy.NewPolicy(allowRules(), nil),
+		Model:   "test-model",
+	})
+	store := memstore.New()
+	svc, err := server.NewService(server.Config{
+		Engine:        shared,
+		Store:         store,
+		Workspaces:    func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		DefaultLimits: session.Limits{MaxTurns: 10, MaxToolCalls: 20},
+		Now:           func() time.Time { return time.Unix(0, 0) },
+		SessionEngine: carryoverFactory(newReply, &seen),
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+	client, cleanup := dialGRPC(t, svc)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Persist a blob-carrying, tool-pairing-valid source directly on provider A.
+	const srcProvider = "openrouter"
+	persistBlobsSource(t, store, "grpc-src-cross", srcProvider)
+	srcSel := server.ProviderSelector{ProviderID: srcProvider, ModelID: "anthropic/claude-3.5-sonnet"}
+
+	// The WIRE call: source_session_id + an explicit CROSS-provider selector.
+	newSel := server.ProviderSelector{ProviderID: "openai", ModelID: "gpt-4o"}
+	seen.Store(server.ProviderSelector{})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{
+		Workspace:       "/ws/grpc-cross",
+		SourceSessionId: "grpc-src-cross",
+		ProviderId:      newSel.ProviderID,
+		ModelId:         newSel.ModelID,
+	})
+	if err != nil {
+		t.Fatalf("cross-provider CreateSession with carryover: err = %v, want nil (carryover is always allowed across providers)", err)
+	}
+	if cs.GetSessionId() == "" || cs.GetSessionId() == "grpc-src-cross" {
+		t.Fatalf("carryover session id = %q, want a new distinct id", cs.GetSessionId())
+	}
+
+	// The new session rehydrated a per-session engine for the NEW provider.
+	if got := seen.Load().(server.ProviderSelector); got != newSel {
+		t.Fatalf("new session rehydration selector = %+v, want %+v", got, newSel)
+	}
+
+	// Assert the seeded history: blobs CLEARED, text/tool-call/tool-result
+	// content PRESERVED. OpenAI destination → ToolCall ItemIDs are SYNTHESISED
+	// (carryover_item_ prefix, NOT fc_). Load both directly from the store.
+	srcSnap, err := store.Load(ctx, "grpc-src-cross")
+	if err != nil {
+		t.Fatalf("Load src: %v", err)
+	}
+	newSnap, err := store.Load(ctx, session.SessionID(cs.GetSessionId()))
+	if err != nil {
+		t.Fatalf("Load new: %v", err)
+	}
+	if got, want := len(newSnap.Conversation.Messages), len(srcSnap.Conversation.Messages); got != want {
+		t.Fatalf("seeded history len = %d, want source's %d", got, want)
+	}
+	var sawAssistantText, sawToolCall, sawToolResult, sawReasoning, sawPhase bool
+	seenIDs := make(map[string]int) // id → msg index
+	for i, sm := range srcSnap.Conversation.Messages {
+		nm := newSnap.Conversation.Messages[i]
+		if nm.Role != sm.Role {
+			t.Fatalf("msg %d: role = %q, want source's %q", i, nm.Role, sm.Role)
+		}
+		if nm.Text != sm.Text {
+			t.Fatalf("msg %d: text = %q, want source's %q", i, nm.Text, sm.Text)
+		}
+		// Tool-result content is provider-neutral: it survives the strip.
+		if sm.Role == session.RoleTool {
+			if sm.ToolResult == nil || nm.ToolResult == nil {
+				t.Fatalf("msg %d: tool message lost its ToolResult (src=%v new=%v)", i, sm.ToolResult, nm.ToolResult)
+			}
+			if nm.ToolResult.CallID != sm.ToolResult.CallID || nm.ToolResult.Content != sm.ToolResult.Content || nm.ToolResult.IsError != sm.ToolResult.IsError {
+				t.Fatalf("msg %d: ToolResult drifted (callID %q/%q content %q/%q isErr %v/%v)", i,
+					nm.ToolResult.CallID, sm.ToolResult.CallID, nm.ToolResult.Content, sm.ToolResult.Content, nm.ToolResult.IsError, sm.ToolResult.IsError)
+			}
+			sawToolResult = true
+		}
+		if nm.Reasoning != "" {
+			sawReasoning = true
+		}
+		if nm.ProviderPhase != "" {
+			sawPhase = true
+		}
+		for j, c := range nm.ToolCalls {
+			// OpenAI destination: ItemIDs are synthesised.
+			if c.ItemID == "" {
+				t.Fatalf("msg %d call %d: ItemID is empty — want a synthesised id (cross-provider to openai must synthesise)", i, j)
+			}
+			if !strings.HasPrefix(c.ItemID, "carryover_item_") {
+				t.Fatalf("msg %d call %d: ItemID = %q, want carryover_item_ prefix", i, j, c.ItemID)
+			}
+			if strings.HasPrefix(c.ItemID, "fc_") {
+				t.Fatalf("msg %d call %d: ItemID = %q, must NOT use fc_ prefix (collision risk)", i, j, c.ItemID)
+			}
+			if prevIdx, dup := seenIDs[c.ItemID]; dup {
+				t.Fatalf("msg %d call %d: duplicate ItemID %q (first seen at msg %d)", i, j, c.ItemID, prevIdx)
+			}
+			seenIDs[c.ItemID] = i
+			// Preserve caller identity.
+			if c.ID != session.ToolCallID("c1") || c.Name != "Read" || string(c.Args) != `{"path":"f.go"}` {
+				t.Fatalf("msg %d call %d: tool-call identity/args drifted (ID=%q Name=%q Args=%s)", i, j, c.ID, c.Name, c.Args)
+			}
+		}
+	}
+	if len(seenIDs) == 0 {
+		t.Fatalf("no tool calls to synthesise ItemIDs for — source fixture missing tool calls")
+	}
+	// Pin the provider-neutral content survived and the provider-private blobs stripped.
+	for _, m := range newSnap.Conversation.Messages {
+		if m.Role == session.RoleAssistant {
+			if m.Text == "reading f.go" {
+				sawAssistantText = true
+			}
+			if len(m.ToolCalls) > 0 && m.ToolCalls[0].ID == "c1" {
+				sawToolCall = true
+			}
+		}
+	}
+	if !sawAssistantText || !sawToolCall || !sawToolResult {
+		t.Fatalf("stripped history lost provider-neutral content (assistantText=%v toolCall=%v toolResult=%v)", sawAssistantText, sawToolCall, sawToolResult)
+	}
+	if sawReasoning || sawPhase {
+		t.Fatalf("cross-provider carryover kept a provider-private blob (reasoning=%v phase=%v)", sawReasoning, sawPhase)
+	}
+	if err := session.ValidateToolPairing(newSnap.Conversation.Messages); err != nil {
+		t.Fatalf("seeded history not tool-pairing-valid after strip: %v", err)
+	}
+
+	// The seeded session runs a turn to completion over the WIRE: the stripped,
+	// provider-neutral history replays cleanly to the new provider (no 400).
+	stream, err := client.Converse(ctx)
+	if err != nil {
+		t.Fatalf("Converse: %v", err)
+	}
+	if err := stream.Send(&mecatlv1.ConverseRequest{
+		Kind: &mecatlv1.ConverseRequest_Prompt{Prompt: &mecatlv1.Prompt{SessionId: cs.GetSessionId(), Text: "continue"}},
+	}); err != nil {
+		t.Fatalf("Send prompt: %v", err)
+	}
+	_ = stream.CloseSend()
+	if res := lastResult(t, recvAll(t, stream)); res.GetStop() != "end_turn" || res.GetText() != newReply {
+		t.Fatalf("cross-provider carryover Converse result = stop %q text %q, want end_turn/%q", res.GetStop(), res.GetText(), newReply)
+	}
+	_ = srcSel // srcSel documents the source provider; the source is persisted, not created via a selector
 }
 
 // allowRules returns a policy rule set that allows every tool call: the

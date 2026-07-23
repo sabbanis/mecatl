@@ -705,10 +705,10 @@ func (s *sessionAdapter) CreateSessionInWorkspace(ctx context.Context, workspace
 // CreateSessionWithCarryover implements the ui SessionCreator's carryover seam
 // (issue #20): like CreateSession it carries the pick + mode, but it ALSO sets
 // source_session_id so the server seeds the new session's history from the source.
-// The ui pre-gates the [c] affordance on the same live provider, so this should
-// only be reached for a same-provider switch; the server is the final authority
-// (it rejects cross-provider with InvalidArgument). Best-effort CloseSession of
-// the source is the CALLER's job (after the new session is ready).
+// The ui offers the switch unconditionally when a live session exists; the server
+// is the authority on same-vs-cross (same-provider replays verbatim, cross-provider
+// strips the prior provider's replay blobs via StripProviderState). Best-effort
+// CloseSession of the source is the CALLER's job (after the new session is ready).
 func (s *sessionAdapter) CreateSessionWithCarryover(ctx context.Context, sourceSessionID string, sel client.ModelSelection, mode string) (string, client.Capabilities, client.ResolvedModel, error) {
 	if mode == "" {
 		mode = s.mode

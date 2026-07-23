@@ -604,12 +604,17 @@ type CreateSessionRequest struct {
 	ReasoningEffort string `protobuf:"bytes,7,opt,name=reasoning_effort,json=reasoningEffort,proto3" json:"reasoning_effort,omitempty"`
 	// source_session_id, when non-empty, seeds the NEW session's conversation
 	// history from the source session's (via session.ForkSnapshot + SeedHistory).
-	// SAME-PROVIDER ONLY: the source's resolved provider must match the new
-	// session's resolved provider; a cross-provider carryover is rejected with
-	// InvalidArgument (cross-provider is v2, deferred). The source must be at a
-	// turn boundary (idle/completed/cancelled/failed — the run-entry funnel
-	// recovers terminal states); a running/awaiting source is rejected with
-	// FailedPrecondition. Empty means no carryover (byte-identical default).
+	// Carryover is ALWAYS allowed across providers: a model switch must never
+	// drop the conversation. A SAME-provider carryover replays the history
+	// VERBATIM (provider-private replay blobs intact, warm cache); a
+	// CROSS-provider carryover seeds a PROVIDER-NEUTRAL copy — Reasoning /
+	// ProviderPhase / ToolCall.ItemID are stripped (session.StripProviderState),
+	// so the history replays safely to any provider (the new session's
+	// thinking/reasoning config is derived from the NEW model, not the history).
+	// The source must be at a turn boundary (idle/completed/cancelled/failed —
+	// the run-entry funnel recovers terminal states); a running/awaiting source
+	// is rejected with FailedPrecondition. Empty means no carryover
+	// (byte-identical default).
 	SourceSessionId string `protobuf:"bytes,8,opt,name=source_session_id,json=sourceSessionId,proto3" json:"source_session_id,omitempty"`
 	unknownFields   protoimpl.UnknownFields
 	sizeCache       protoimpl.SizeCache

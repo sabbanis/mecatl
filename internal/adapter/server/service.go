@@ -1006,12 +1006,12 @@ func WithSessionID(id session.SessionID) CreateSessionOption {
 // loaded through the run-entry funnel (loadAndReopen recovers terminal states
 // to idle), snapshotted via session.ForkSnapshot (a deep copy with trailing
 // unanswered tool calls stripped), and seeded into the new session BEFORE its
-// first Store.Save via session.SeedHistory. SAME-PROVIDER ONLY: the source's
-// resolved provider must match the new session's resolved provider (empty on
-// either side means the server default); a mismatch is rejected with
-// ErrInvalidArgument. A source that is still running/awaiting is rejected with
-// ErrFailedPrecondition. Empty (no option) is the byte-identical no-carryover
-// path. Cross-provider carryover is v2 (deferred).
+// first Store.Save via session.SeedHistory. Carryover is ALWAYS allowed across
+// providers: a SAME-provider carryover replays the history verbatim (blobs
+// intact, warm cache); a CROSS-provider carryover seeds a provider-neutral copy
+// (session.StripProviderState clears Reasoning/ProviderPhase/ItemID). A source
+// that is still running/awaiting is rejected with ErrFailedPrecondition. Empty
+// (no option) is the byte-identical no-carryover path.
 func WithSourceSession(id session.SessionID) CreateSessionOption {
 	return func(o *createSessionOpts) { o.sourceSessionID = id }
 }
@@ -1204,15 +1204,17 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 	}
 
 	// Issue #20 (model-switch context carryover): when a source session is
-	// named, validate it (same-provider, turn-boundary) and snapshot its
-	// conversation ONCE here, so both create branches seed the new session's
-	// history BEFORE the first Store.Save (the persisted snapshot records the
-	// seeded history). The snapshot is a deep copy (session.ForkSnapshot) with
-	// trailing unanswered tool calls stripped, so it is tool-pairing-valid for
-	// SeedHistory. An empty sourceSessionID (the default) skips carryover
-	// entirely — byte-identical to the pre-issue-#20 path. The new session's
-	// resolved provider is sel.ProviderID (empty => server default, resolved
-	// against DefaultResolvedModel inside validateCarryover).
+	// named, validate it (turn-boundary) and snapshot its conversation ONCE
+	// here, so both create branches seed the new session's history BEFORE the
+	// first Store.Save (the persisted snapshot records the seeded history). The
+	// snapshot is a deep copy (session.ForkSnapshot) with trailing unanswered
+	// tool calls stripped, so it is tool-pairing-valid for SeedHistory. An empty
+	// sourceSessionID (the default) skips carryover entirely — byte-identical to
+	// the pre-issue-#20 path. The new session's resolved provider is
+	// sel.ProviderID (empty => server default, resolved against
+	// DefaultResolvedModel inside validateCarryover); a SAME-provider carryover
+	// replays the history verbatim, a CROSS-provider carryover strips the
+	// provider-private blobs (session.StripProviderState).
 	var carrySnap []session.Message
 	if opts.sourceSessionID != "" {
 		snap, err := s.validateCarryover(ctx, opts.sourceSessionID, sel.ProviderID)
@@ -1781,23 +1783,33 @@ func (s *Service) ForkSession(ctx context.Context, srcID session.SessionID, titl
 //     or StateAwaiting (mid-run) is rejected with ErrFailedPrecondition — the
 //     same turn-boundary rule ForkSession enforces, because a snapshot of an
 //     in-flight conversation could carry a dangling tool call.
-//   - SAME-PROVIDER ONLY (v1): the source's resolved provider must match the
-//     new session's. Each side is canonicalised the way the rest of createSession
-//     treats it: an empty id means the server default provider
-//     (Config.DefaultResolvedModel.ProviderID). A mismatch is rejected with
-//     ErrInvalidArgument ("carryover requires the same provider");
-//     cross-provider carryover is v2 (deferred).
 //
-// It returns session.ForkSnapshot(src.Conversation) (a deep copy with trailing
-// unanswered tool calls stripped, so it is tool-pairing-valid for SeedHistory).
+// Carryover is ALWAYS allowed across providers: a model switch must never drop
+// the conversation. The source's resolved provider is compared to the new
+// session's resolved provider (each canonicalised the way the rest of
+// createSession treats it: an empty id means the server default provider,
+// Config.DefaultResolvedModel.ProviderID):
+//
+//   - SAME provider → the snapshot is returned VERBATIM
+//     (session.ForkSnapshot(src.Conversation)). The provider-private replay
+//     blobs (Message.Reasoning, Message.ProviderPhase, each ToolCall.ItemID)
+//     replay intact, so the prompt-cache prefix stays warm.
+//   - DIFFERENT provider → the snapshot is STRIPPED to a provider-neutral copy
+//     via session.StripProviderState(session.ForkSnapshot(src.Conversation)),
+//     clearing Reasoning/ProviderPhase/ItemID while preserving text/roles/
+//     tool-call IDs/Args/tool results. Both the OpenAI and Anthropic adapters
+//     treat an EMPTY blob as "no blob" and omit it on the wire, so a stripped
+//     history replays safely to ANY provider; the new session's
+//     thinking/reasoning config is derived from the NEW model, not the history.
+//
 // The snapshot is taken from the LOADED source, NOT a re-load, so the history
 // the new session seeds is exactly the history loadAndReopen recovered.
 //
 // The new session's resolved provider is the caller's newProviderID (the
 // ProviderSelector.ProviderID the create request carried, empty for the server
-// default). The model is intentionally NOT compared: v1 carries the conversation
-// onto a DIFFERENT model within the SAME provider (that is the point of the
-// /models picker switch), so a model mismatch is permitted.
+// default). The model is intentionally NOT compared: a model mismatch within a
+// provider is the point of the /models picker switch, so a same-provider
+// model change is permitted; a cross-provider model change strips and replays.
 func (s *Service) validateCarryover(ctx context.Context, srcID session.SessionID, newProviderID string) ([]session.Message, error) {
 	src, err := s.loadAndReopen(ctx, srcID)
 	if err != nil {
@@ -1819,10 +1831,63 @@ func (s *Service) validateCarryover(ctx context.Context, srcID session.SessionID
 	if newProv == "" {
 		newProv = defaultProv
 	}
+	snap := session.ForkSnapshot(src.Conversation)
 	if srcProv != newProv {
-		return nil, fmt.Errorf("%w: carryover requires the same provider (source %q, new %q); cross-provider carryover is not supported", ErrInvalidArgument, srcProv, newProv)
+		// Cross-provider: strip the provider-private replay blobs so the history
+		// is provider-neutral (session.StripProviderState clears Reasoning/
+		// ProviderPhase/ItemID, preserving text/roles/tool-call IDs/Args/results).
+		stripped := session.StripProviderState(snap)
+		// When the new provider is OpenAI, every stripped ToolCall has an
+		// empty ItemID. The OpenAI adapter is store:false (full history replay
+		// every turn) and uses ItemID (the provider's "id" field, e.g. "fc_1")
+		// to de-duplicate replayed function_call items (request.go:353-359).
+		// Without stable unique ids the provider auto-assigns sequential fc_N
+		// values; on the SECOND post-carryover turn those collide with the
+		// current response's items → "Duplicate item found with id fc_N"
+		// HTTP 400 (observed on Azure GPT-5.x). Synthesise stable, unique,
+		// positional ids with a carryover-namespaced prefix that cannot collide
+		// with the provider's fc_ scheme.
+		if newProv == "openai" {
+			return synthesizeOpenAIItemIDs(stripped), nil
+		}
+		return stripped, nil
 	}
-	return session.ForkSnapshot(src.Conversation), nil
+	// Same provider: replay the blobs verbatim (warm cache).
+	return snap, nil
+}
+
+// synthesizeOpenAIItemIDs synthesises a stable, unique ItemID for every ToolCall
+// in the carried history whose ItemID is empty after cross-provider stripping.
+// The OpenAI adapter uses ItemID (the provider's "id", e.g. "fc_1") to
+// de-duplicate replayed function_call items in store:false stateless replay
+// (request.go:353-359). After StripProviderState clears every ItemID, the provider
+// auto-assigns sequential fc_N values — which on the second post-carryover turn
+// collide with the current response's items → "Duplicate item found with id fc_N"
+// HTTP 400. Stable positional ids ("carryover_item_N") keep a retried/re-created
+// session deterministic and cannot collide with the provider's fc_ prefix.
+//
+// A history with no tool calls is returned unchanged. The input slice is
+// shallow-copied (the backing array is fresh) so the caller's messages are never
+// mutated.
+func synthesizeOpenAIItemIDs(messages []session.Message) []session.Message {
+	if len(messages) == 0 {
+		return messages
+	}
+	out := make([]session.Message, len(messages))
+	n := 0
+	for i, m := range messages {
+		if len(m.ToolCalls) > 0 {
+			calls := make([]session.ToolCall, len(m.ToolCalls))
+			for j, c := range m.ToolCalls {
+				c.ItemID = fmt.Sprintf("carryover_item_%d", n)
+				n++
+				calls[j] = c
+			}
+			m.ToolCalls = calls
+		}
+		out[i] = m
+	}
+	return out
 }
 
 // maybeReplayApprovals repopulates the learned-rule store from the durable

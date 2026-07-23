@@ -117,8 +117,10 @@ type createSessionBody struct {
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
 	// SourceSessionID, when non-empty, seeds the new session's conversation history
 	// from the named source session (issue #20: model-switch context carryover).
-	// Same-provider only; a running/awaiting source or a cross-provider mismatch is
-	// a 4xx. Empty means no carryover.
+	// Always allowed across providers: same-provider replays verbatim,
+	// cross-provider seeds a provider-neutral copy (blobs stripped). A
+	// running/awaiting source is a 4xx (FailedPrecondition). Empty means no
+	// carryover.
 	SourceSessionID string `json:"source_session_id,omitempty"`
 }
 

@@ -330,41 +330,6 @@ func TestModelsSetGlobalDefaultPersists(t *testing.T) {
 	}
 }
 
-// --- confirm overlay: [s] defer + [esc] undo --------------------------------
-
-// TestModelsConfirmEscUndoesPick: opening the confirm overlay then esc reverts
-// pendingNext to its prior value and returns to the picker panel (no persist).
-func TestModelsConfirmEscUndoesPick(t *testing.T) {
-	prior := client.ModelSelection{ProviderID: "openai", ModelID: "gpt-5"}
-	store := &fakeStore{}
-	m := newModelsModel(t, sampleModels(), store, modelsCaps(), prior)
-	mm, cmd := m.runModels()
-	m = feedCmd(t, mm.(Model), cmd)
-	// Move to claude and press enter to open the confirm.
-	for i := 0; i < 3; i++ {
-		m = pressModelsKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
-	}
-	m = pressModelsKey(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
-	if m.models.view != modelsConfirm {
-		t.Fatalf("enter should open the confirm overlay, view = %v", m.models.view)
-	}
-	// esc — undo: revert pendingNext, back to the panel, no persist.
-	mm, _, handled := m.onModelsKey(tea.KeyPressMsg{Code: tea.KeyEsc})
-	m = mm.(Model)
-	if !handled {
-		t.Fatal("esc in the confirm overlay should be handled")
-	}
-	if m.models.view != modelsPanel {
-		t.Errorf("esc should return to the picker panel, view = %v", m.models.view)
-	}
-	if m.activeModel != prior {
-		t.Errorf("esc should revert pendingNext to %+v, got %+v", prior, m.activeModel)
-	}
-	if store.saves != 0 {
-		t.Errorf("esc (undo) must not persist, got %d saves", store.saves)
-	}
-}
-
 // --- reconcile notice names the fallback model ------------------------------
 
 // TestReconcileNoticeNamesFallbackModel: when the persisted model is gone AND the
@@ -389,135 +354,17 @@ func TestReconcileNoticeNamesFallbackModel(t *testing.T) {
 	}
 }
 
-// --- restart-now handoff (high-risk path) -----------------------------------
+// --- seamless switch handoff (the redesigned pick→switch flow) --------------
 
-// TestRestartNowHandoff drives the full restart-now flow at the teatest level. It
-// first runs a COMPLETE prompt (so the transcript is genuinely non-empty and the
-// reset is non-vacuous), then — back at idle — opens /models, picks a DIFFERENT
-// model, confirms with [enter], and asserts (a) the OLD session was closed, (b) a NEW
-// session id was bound, (c) the header shows the NEW effective model, (d) the
-// conversation transcript was reset clean (it HAD content), and (e) the stream is
-// nil. Sequenced on the fake's signals + FinalModel — never tm.Output() (the
-// documented flush-starvation discipline). (The live-run cancellation half of the
-// teardown is proved by the unit-level TestRestartOnModelTearsDownLiveRun, since the
-// picker is idle-only and cannot coexist with a streaming run.)
-func TestRestartNowHandoff(t *testing.T) {
-	models := []client.ModelInfo{
-		{ID: "gpt-5", ProviderID: "openai", DisplayName: "GPT-5", ContextLimit: 200000},
-		{ID: "anthropic/claude", ProviderID: "openrouter", DisplayName: "Claude", ContextLimit: 1000000},
-	}
-	// One scripted run that COMPLETES, so the transcript is non-empty before the
-	// restart (the reset then provably wipes real content).
-	run := &fakeRecver{script: simpleRunScript("first")}
-	conv := &fakeConv{
-		recv:              run,
-		send:              &fakeSender{},
-		recvers:           []*fakeRecver{run},
-		caps:              client.Capabilities{ModelSelection: true},
-		sessionReady:      make(chan struct{}),
-		created:           make(chan struct{}),
-		recreated:         make(chan struct{}),
-		echoSelAsResolved: true, // the new effective model mirrors the picked selector
-		// The default (first) session resolves to gpt-5 so a switch to claude is a real
-		// change.
-		resolvedModel: client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"},
-	}
-	prog := newProgress()
-	m := New(Deps{
-		Session:     conv,
-		Conv:        conv,
-		Models:      &fakeModels{models: models},
-		Theme:       theme.New("aztec", theme.AztecPalette()),
-		Server:      "127.0.0.1:8080",
-		Workspace:   "/workspace",
-		Mode:        "default",
-		Ctx:         context.Background(),
-		NoAltScreen: true,
-		onPhase:     prog.record,
-	})
-	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
-
-	// Connect, then run a prompt to COMPLETION so the transcript holds content.
-	waitClosed(t, "startup CreateSession", conv.created, 5*time.Second)
-	prog.wait(t, phaseIdle, 5*time.Second)
-	tm.Type("hello there")
-	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
-	prog.waitRunComplete(t, 1, 5*time.Second) // phaseRunning → phaseIdle (run done)
-
-	// Open /models, filter to claude, enter (confirm), enter (restart now).
-	for _, r := range "/models" {
-		tm.Send(tea.KeyPressMsg{Code: r, Text: string(r)})
-	}
-	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
-	for _, r := range "claude" {
-		tm.Send(tea.KeyPressMsg{Code: r, Text: string(r)})
-	}
-	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter}) // open the confirm overlay
-	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter}) // [enter] = restart now
-
-	// The re-create fired (handoff happened).
-	waitClosed(t, "restart-now re-create", conv.recreated, 5*time.Second)
-
-	// Graceful double-ctrl+c quit, then assert on the final model.
-	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
-	tm.WaitFinished(t, teatest.WithFinalTimeout(scaleWait(3*time.Second)))
-	fm := tm.FinalModel(t).(Model)
-
-	// (a) the OLD session was closed.
-	closed := conv.closed()
-	if len(closed) != 1 || closed[0] != "sess-test-0001" {
-		t.Fatalf("CloseSession calls = %v, want [sess-test-0001] (the old session)", closed)
-	}
-	// (b) a NEW session id is bound.
-	if fm.sessionID != "sess-test-0002" {
-		t.Fatalf("final sessionID = %q, want sess-test-0002 (rebound to the new session)", fm.sessionID)
-	}
-	// (c) the header shows the NEW effective model (claude), set from the new
-	// SessionReadyMsg — not the old gpt-5.
-	want := client.ResolvedModel{ProviderID: "openrouter", ModelID: "anthropic/claude"}
-	if fm.effectiveModel != want {
-		t.Fatalf("final effectiveModel = %+v, want %+v (rebound from the new session)", fm.effectiveModel, want)
-	}
-	if !strings.Contains(stripANSIstr(fm.renderHeader()), "Claude") {
-		t.Fatalf("header should show the new effective model:\n%s", stripANSIstr(fm.renderHeader()))
-	}
-	// (d) the conversation transcript was reset clean — and it HAD content (the
-	// completed run), so this is a real wipe, not a vacuous already-empty check.
-	if !fm.conv.isEmpty() {
-		t.Fatalf("conversation transcript should be reset clean after the handoff")
-	}
-	if len(fm.filesChanged) != 0 {
-		t.Fatalf("changed-files set should be reset after the handoff, got %v", fm.filesChanged)
-	}
-	// (e) the stream is nil (no subscription to the old session).
-	if fm.stream != nil {
-		t.Fatalf("stream should be nil after the handoff (no subscription to the old session)")
-	}
-	// pickedThisSession records the provenance of the explicit switch.
-	pick := client.ModelSelection{ProviderID: "openrouter", ModelID: "anthropic/claude"}
-	if fm.pickedThisSession != pick {
-		t.Fatalf("pickedThisSession = %+v, want %+v", fm.pickedThisSession, pick)
-	}
-	// The first-run welcome splash must NOT re-show after the restart (it is a
-	// first-run affordance; restartedThisRun suppresses it).
-	if !fm.restartedThisRun {
-		t.Fatalf("restartedThisRun should be set after a restart-now handoff")
-	}
-	if strings.Contains(stripANSIstr(fm.View().Content), "Welcome to mecatui") {
-		t.Fatalf("the welcome splash must not re-show after a restart-now handoff")
-	}
-}
-
-// TestCarryoverHandoff is the issue-#20 /models [c] e2e: pick a SAME-PROVIDER model
-// (gpt-5-mini, openai — the live session is openai/gpt-5), press 'c', and assert the
-// carryover path fires: CreateSessionWithCarryover was called with the OLD session id
-// as the source, the old session was closed AFTER the new one is ready, a NEW session
-// id is bound, and the footer/effective-model heal path rebinds via SessionReadyMsg
-// (same reducer as restart-now). Mirrors TestRestartNowHandoff's shape; the divergence
-// is the carryover create method + the source-id threading. (Server-side history
-// seeding is owned by create_carryover_test.go; this asserts the CLIENT wiring end to
-// end through the real fake-backed harness.)
+// TestCarryoverHandoff is the seamless /models switch e2e (same-provider): pick
+// gpt-5-mini (openai — the live session is openai/gpt-5), press enter, and assert the
+// carryover path fires with NO confirm overlay: CreateSessionWithCarryover was called
+// with the OLD session id as the source, the old session was closed AFTER the new one
+// is ready, a NEW session id is bound, the footer/effective-model heal path rebinds via
+// SessionReadyMsg, and the transient "switched to <model> — conversation kept" status
+// note surfaces on the rebind. (Server-side history seeding is owned by
+// create_carryover_test.go; this asserts the CLIENT wiring end to end through the real
+// fake-backed harness.)
 func TestCarryoverHandoff(t *testing.T) {
 	models := []client.ModelInfo{
 		{ID: "gpt-5", ProviderID: "openai", DisplayName: "GPT-5", ContextLimit: 200000},
@@ -558,7 +405,7 @@ func TestCarryoverHandoff(t *testing.T) {
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
 	prog.waitRunComplete(t, 1, 5*time.Second)
 
-	// Open /models, filter to mini, enter (confirm), 'c' (carryover restart).
+	// Open /models, filter to mini, enter — seamless switch (carryover, same provider).
 	for _, r := range "/models" {
 		tm.Send(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
@@ -566,8 +413,7 @@ func TestCarryoverHandoff(t *testing.T) {
 	for _, r := range "mini" {
 		tm.Send(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
-	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})   // open the confirm overlay
-	tm.Send(tea.KeyPressMsg{Code: 'c', Text: "c"}) // [c] = carryover restart
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter}) // seamless switch — carries the conversation
 
 	// The carryover create fired (recreate signal shared with restart-now).
 	waitClosed(t, "carryover re-create", conv.recreated, 5*time.Second)
@@ -608,6 +454,9 @@ func TestCarryoverHandoff(t *testing.T) {
 	if !fm.restartedThisRun {
 		t.Fatalf("restartedThisRun should be set after a carryover handoff")
 	}
+	// The transient switch note is unit-tested in TestModelsChooseSwitchArmsStatusNote
+	// (the double-ctrl+c quit overwrites statusMsg here, so it can't be asserted at
+	// FinalModel without output-flush sequencing).
 }
 
 // TestCarryoverHandoffFailure asserts a FAILED CreateSessionWithCarryover surfaces
@@ -639,19 +488,17 @@ func TestCarryoverHandoffFailure(t *testing.T) {
 		client.SessionReadyMsg{SessionID: "sess-test-0001", Capabilities: modelsCaps(),
 			ResolvedModel: client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"}})
 
-	// Pick gpt-5-mini (same provider) and carryover-restart: chooseModel opens the
-	// confirm, 'c' restarts with carryover.
+	// Pick gpt-5-mini (same provider) via the seamless switch: chooseModel reads the
+	// cursor row, arms the status note, and fires restartOnModelWithCarryover (the
+	// carryover create). Prime the picker so the cursor is on gpt-5-mini.
 	sel := client.ModelSelection{ProviderID: "openai", ModelID: "gpt-5-mini"}
-	m.models.confirm = modelsConfirmState{
-		candidate:   client.ModelInfo{ID: sel.ModelID, ProviderID: sel.ProviderID, DisplayName: "GPT-5 mini"},
-		priorActive: m.activeModel,
-		carryover:   true,
-	}
-	m.models.view = modelsConfirm
-	mm, _, handled := m.onModelsConfirmKey(tea.KeyPressMsg{Code: 'c', Text: "c"}) // carryover restart
+	m.models.models = sampleModels().models
+	m.models.filtered = sampleModels().models
+	m.models.cursor = 1 // gpt-5-mini (same provider as the live openai/gpt-5)
+	mm, _, handled := m.chooseModel()
 	m = mm.(Model)
 	if !handled {
-		t.Fatal("confirm 'c' should be handled for a same-provider candidate")
+		t.Fatal("chooseModel should be handled for a same-provider candidate")
 	}
 	if m.phase != phaseConnecting {
 		t.Fatalf("phase mid-handoff = %v, want phaseConnecting", m.phase)
@@ -694,23 +541,26 @@ func TestCarryoverHandoffFailure(t *testing.T) {
 	}
 }
 
-// TestCarryoverKeySwallowedCrossProviderProgram asserts via the real program that
-// pressing 'c' on a CROSS-PROVIDER candidate does NOT call the carryover method: the
-// key is swallowed (no handoff, no create). The live session is openai/gpt-5; claude
-// is openrouter. Complements the unit-level TestModelsConfirmCarryoverGateCrossProvider.
-func TestCarryoverKeySwallowedCrossProviderProgram(t *testing.T) {
+// TestSeamlessSwitchCrossProviderCarriesProgram asserts via the real program that a
+// CROSS-PROVIDER pick STILL carries the conversation (the redesign removed the
+// same-provider gate): the live session is openai/gpt-5, claude is openrouter, and
+// picking it fires CreateSessionWithCarryover (the server strips the prior provider's
+// reasoning cache). Complements the unit-level TestModelsChooseCrossProviderStillCarries.
+func TestSeamlessSwitchCrossProviderCarriesProgram(t *testing.T) {
 	models := []client.ModelInfo{
 		{ID: "gpt-5", ProviderID: "openai", DisplayName: "GPT-5", ContextLimit: 200000},
 		{ID: "anthropic/claude", ProviderID: "openrouter", DisplayName: "Claude", ContextLimit: 1000000},
 	}
 	run := &fakeRecver{script: simpleRunScript("first")}
 	conv := &fakeConv{
-		recv:         run,
-		send:         &fakeSender{},
-		recvers:      []*fakeRecver{run},
-		caps:         client.Capabilities{ModelSelection: true},
-		sessionReady: make(chan struct{}),
-		created:      make(chan struct{}),
+		recv:              run,
+		send:              &fakeSender{},
+		recvers:           []*fakeRecver{run},
+		caps:              client.Capabilities{ModelSelection: true},
+		sessionReady:      make(chan struct{}),
+		created:           make(chan struct{}),
+		recreated:         make(chan struct{}),
+		echoSelAsResolved: true, // the rebind's SessionReadyMsg mirrors the picked selector
 		// Live session openai/gpt-5; claude is cross-provider.
 		resolvedModel: client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"},
 	}
@@ -732,7 +582,7 @@ func TestCarryoverKeySwallowedCrossProviderProgram(t *testing.T) {
 	waitClosed(t, "startup CreateSession", conv.created, 5*time.Second)
 	prog.wait(t, phaseIdle, 5*time.Second)
 
-	// Open /models, filter to claude (cross-provider), enter (confirm), 'c'.
+	// Open /models, filter to claude (cross-provider), enter — seamless switch.
 	for _, r := range "/models" {
 		tm.Send(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
@@ -740,24 +590,36 @@ func TestCarryoverKeySwallowedCrossProviderProgram(t *testing.T) {
 	for _, r := range "claude" {
 		tm.Send(tea.KeyPressMsg{Code: r, Text: string(r)})
 	}
-	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})   // open the confirm overlay
-	tm.Send(tea.KeyPressMsg{Code: 'c', Text: "c"}) // [c] — swallowed (cross-provider)
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter}) // seamless switch — carries (cross-provider)
 
-	// Give the reducer a beat to process the swallowed key, then quit.
-	tm.Send(tea.KeyPressMsg{Code: tea.KeyEsc}) // close the confirm/picker
+	// The carryover create fired (no gate swallowed it).
+	waitClosed(t, "cross-provider carryover re-create", conv.recreated, 5*time.Second)
+
+	// Graceful double-ctrl+c quit, then assert on the final model.
 	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
 	tm.WaitFinished(t, teatest.WithFinalTimeout(scaleWait(3*time.Second)))
 	fm := tm.FinalModel(t).(Model)
 
-	// The carryover method was NEVER called.
-	if got := conv.carryoverCalls(); got != 0 {
-		t.Fatalf("CreateSessionWithCarryover calls = %d, want 0 (cross-provider 'c' must be swallowed)", got)
+	// The carryover method WAS called (cross-provider still carries, no gate).
+	if got := conv.carryoverCalls(); got != 1 {
+		t.Fatalf("CreateSessionWithCarryover calls = %d, want 1 (cross-provider still carries)", got)
 	}
-	// And the original session is still bound (no handoff happened).
-	if fm.sessionID != "sess-test-0001" {
-		t.Fatalf("sessionID = %q, want sess-test-0001 (no handoff on a swallowed cross-provider 'c')", fm.sessionID)
+	if srcs := conv.carryoverSources(); len(srcs) != 1 || srcs[0] != "sess-test-0001" {
+		t.Fatalf("carryover source ids = %v, want [sess-test-0001] (the old session)", srcs)
 	}
+	// A NEW session id is bound (the handoff happened).
+	if fm.sessionID != "sess-test-0002" {
+		t.Fatalf("sessionID = %q, want sess-test-0002 (rebound to the carryover session)", fm.sessionID)
+	}
+	// The header shows the NEW effective model (claude).
+	want := client.ResolvedModel{ProviderID: "openrouter", ModelID: "anthropic/claude"}
+	if fm.effectiveModel != want {
+		t.Fatalf("final effectiveModel = %+v, want %+v (rebound from the carryover session)", fm.effectiveModel, want)
+	}
+	// The cross-provider strip caveat is unit-tested in TestModelsChooseSwitchArmsStatusNote
+	// (the double-ctrl+c quit overwrites statusMsg here, so it can't be asserted at
+	// FinalModel without output-flush sequencing).
 }
 
 // TestRestartOnModelTearsDownLiveRun is the LOAD-BEARING teardown proof: it drives a
@@ -864,17 +726,15 @@ func TestRestartNowCreateFailureRecovers(t *testing.T) {
 		client.SessionReadyMsg{SessionID: "sess-test-0001", Capabilities: modelsCaps(),
 			ResolvedModel: client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"}})
 
-	// Pick claude and restart now: chooseModel opens the confirm, enter restarts.
+	// Pick claude (cross-provider) via the seamless switch: with a live session the
+	// carryover path fires, but this test exercises the PLAIN-create failure recovery
+	// (restartOnModelCmd — the no-session fallback + the retry path share it), so drive
+	// restartOnModel directly to set phaseConnecting, then run its failing cmd.
 	sel := client.ModelSelection{ProviderID: "openrouter", ModelID: "anthropic/claude"}
-	m.models.confirm = modelsConfirmState{
-		candidate:   client.ModelInfo{ID: sel.ModelID, ProviderID: sel.ProviderID, DisplayName: "Claude"},
-		priorActive: m.activeModel,
-	}
-	m.models.view = modelsConfirm
-	mm, _, handled := m.onModelsConfirmKey(tea.KeyPressMsg{Code: tea.KeyEnter}) // restart now
+	mm, _, handled := m.restartOnModel(sel)
 	m = mm.(Model)
 	if !handled {
-		t.Fatal("confirm enter should be handled")
+		t.Fatal("restartOnModel should be handled")
 	}
 	if m.phase != phaseConnecting {
 		t.Fatalf("phase mid-handoff = %v, want phaseConnecting", m.phase)

@@ -120,13 +120,16 @@ func (c *Client) CreateSession(ctx context.Context, workspace string, mode mecat
 }
 
 // CreateSessionWithCarryover is CreateSession seeded with the source session's
-// conversation history (issue #20, same-provider carryover). sourceSessionID, when
-// non-empty, sets source_session_id on the request; the server snapshots the source
-// (it must be at a turn boundary + same provider) and seeds the new session's
-// history. An empty sourceSessionID is byte-identical to CreateSession (no
-// carryover). The caller owns closing the source session AFTER the new one is ready
-// (the server snapshotted it at create time). This is the SINGLE proto-build point
-// for the carryover selector — the ui passes plain strings and never sees the proto.
+// conversation history (issue #20). sourceSessionID, when non-empty, sets
+// source_session_id on the request; the server snapshots the source (it must be
+// at a turn boundary) and seeds the new session's history. The server is the
+// authority on same-vs-cross: a same-provider carryover replays verbatim, a
+// cross-provider carryover strips the prior provider's private replay blobs.
+// An empty sourceSessionID is byte-identical to CreateSession (no carryover).
+// The caller owns closing the source session AFTER the new one is ready (the
+// server snapshotted it at create time). This is the SINGLE proto-build point
+// for the carryover selector — the ui passes plain strings and never sees the
+// proto.
 func (c *Client) CreateSessionWithCarryover(ctx context.Context, workspace string, mode mecatlv1.PermissionMode, sel ModelSelection, sourceSessionID string) (string, Capabilities, ResolvedModel, error) {
 	return c.createSession(ctx, &mecatlv1.CreateSessionRequest{
 		Workspace:       workspace,

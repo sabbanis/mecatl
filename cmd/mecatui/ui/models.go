@@ -14,11 +14,13 @@ import (
 
 // models.go is the /models picker — the FIRST *selecting* overlay (every other
 // inventory overlay is read-only / esc-only). It mirrors the mcp.go resource
-// picker's cursor+Choose model, NOT the soul/usermodel read-only model. Selecting
-// a row sets the ACTIVE selection, persists it via the injected SelectionStore,
-// and shows a status notice. Per the slice's UX decision it does NOT recreate the
-// live session: the selection is applied to the NEXT CreateSession (apply-on-next-
-// create). The picker renders purely from client.ModelInfo — no proto in ui.
+// picker's cursor+Choose model, NOT the soul/usermodel read-only model. Selecting a
+// row SWITCHES IMMEDIATELY, always keeping the conversation: a live session is
+// re-created via CreateSessionWithCarryover (server carries the history, any provider);
+// with no live session the plain create path runs. The pick is persisted via the
+// injected SelectionStore and a transient "switched to <model> — conversation kept"
+// note surfaces on the rebind. Dropping context is /clear's job, not the switcher's.
+// The picker renders purely from client.ModelInfo — no proto in ui.
 
 // modelsView is the active /models overlay (none = closed). Like the other
 // inventory overlays it is idle-only and dismissed with esc; UNLIKE them it has a
@@ -26,9 +28,8 @@ import (
 type modelsView int
 
 const (
-	modelsNone    modelsView = iota // overlay closed
-	modelsPanel                     // the flat, type-to-filter picker
-	modelsConfirm                   // the post-Enter confirmation overlay (restart-now / switch-next / undo)
+	modelsNone  modelsView = iota // overlay closed
+	modelsPanel                   // the flat, type-to-filter picker
 )
 
 // modelsChrome is the number of non-row lines renderModelsPanel writes around the
@@ -59,11 +60,8 @@ type modelsState struct {
 	filter   textinput.Model       // the type-to-filter input; focused while the picker is open
 	cursor   int                   // index into FILTERED (clamped to its bounds)
 	active   client.ModelSelection // the persisted/active selection (drives the ● marker)
-	// confirm holds the in-flight confirmation when view==modelsConfirm: the model the
-	// user just picked (candidate) plus the pendingNext selection from BEFORE the pick
-	// (priorActive) so esc can UNDO the pick. globalDefault is the global `default:`
-	// block (drives the ★ marker + the "global default" provenance label).
-	confirm       modelsConfirmState
+	// globalDefault is the global `default:` block (drives the ★ marker + the
+	// "global default" provenance label).
 	globalDefault client.ModelSelection
 	// statuses is the (possibly empty) per-provider live-listing status list
 	// (issue #262: the ToolHive LLM gateway) relayed alongside models. Empty
@@ -76,19 +74,6 @@ type modelsState struct {
 	// whose ProviderID is in this set carries a "org" segment. nil when there
 	// are no statuses (byte-identical to the pre-feature render path).
 	intentProviders map[string]bool
-}
-
-// modelsConfirmState is the modelsConfirm overlay's data: the candidate model the
-// user picked and the selection that was active before the pick (so esc reverts).
-// carryover is precomputed at chooseModel time: whether the [c] carry-over key
-// should be OFFERED — true only when a live session exists AND the candidate's
-// provider matches the live session's resolved provider (carryover is same-provider
-// only, issue #20). Rendered as a keyed choice when true, omitted when false (so a
-// cross-provider pick never offers a key the server would reject).
-type modelsConfirmState struct {
-	candidate   client.ModelInfo
-	priorActive client.ModelSelection
-	carryover   bool
 }
 
 // openModels opens the picker and fires the ListModels RPC. Only callable while
@@ -155,11 +140,6 @@ func (m Model) onModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	if m.models.view == modelsNone {
 		return m, nil, false
 	}
-	// The post-Enter confirmation overlay owns the keyboard while open (restart-now /
-	// switch-next / undo) — route it FIRST so its keys never feed the filter input.
-	if m.models.view == modelsConfirm {
-		return m.onModelsConfirmKey(msg)
-	}
 	budget := m.modelsRowBudget()
 	switch {
 	case key.Matches(msg, m.keys.Close):
@@ -196,7 +176,7 @@ func (m Model) onModelsKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		mm, cmd := m.setGlobalDefault()
 		return mm, cmd, true
 	case key.Matches(msg, m.keys.Choose):
-		return m.chooseModel(), nil, true
+		return m.chooseModel()
 	}
 	// Everything else feeds the focused filter input (printable runes, backspace,
 	// ←/→, …); recompute the filtered slice + clamp the cursor afterwards.
@@ -250,71 +230,50 @@ func (m Model) syncModelsFilter() Model {
 	return m
 }
 
-// chooseModel handles Enter on the cursor row: it OPENS the confirmation overlay
-// (modelsConfirm) rather than silently applying-on-next-create. The overlay offers
-// the restart-now / switch-next / undo choices (see onModelsConfirmKey). It stashes
-// the candidate model AND the pendingNext selection from BEFORE this pick, so esc
-// can revert. A cursor past the list end (or an already-empty list) is a no-op.
-func (m Model) chooseModel() Model {
+// chooseModel handles Enter on the cursor row: it switches IMMEDIATELY, always
+// keeping the conversation — the seamless model-switch UX (no confirm overlay).
+// Dropping context is the job of /clear, not the model switcher. The server accepts
+// carryover for ANY provider (same-provider verbatim, cross-provider stripped), so
+// there is no client-side same-provider gate.
+//
+//   - If a LIVE session exists (m.sessionID != "") → restartOnModelWithCarryover:
+//     a new session seeded from the current one via CreateSessionWithCarryover.
+//   - If NO live session yet (pre-first-connect, or a failure left no session) →
+//     restartOnModel: the plain create path (there's no source to carry from).
+//
+// Either way a transient status note is armed (pendingModelSwitchNote) so the
+// SessionReadyMsg rebind surfaces "switched to <model> — conversation kept" (or, for
+// a cross-provider switch, the honest caveat that the prior model's cached reasoning
+// was stripped). A cursor past the list end (or an already-empty list) is a no-op.
+func (m Model) chooseModel() (tea.Model, tea.Cmd, bool) {
 	if m.models.cursor < 0 || m.models.cursor >= len(m.models.filtered) {
-		return m
-	}
-	chosen := m.models.filtered[m.models.cursor]
-	m.models.confirm = modelsConfirmState{
-		candidate:   chosen,
-		priorActive: m.activeModel,
-		carryover:   m.liveProviderID() != "" && chosen.ProviderID == m.liveProviderID(),
-	}
-	m.models.view = modelsConfirm
-	return m
-}
-
-// onModelsConfirmKey routes keys while the modelsConfirm overlay is open. Four
-// choices, mirroring the permission-modal's keyed-button pattern:
-//
-//   - enter — RESTART NOW: close the old session and create a fresh one on the picked
-//     model (the risky handoff — see restartOnModelCmd). The pick is persisted
-//     per-workspace.
-//   - c — RESTART NOW + CARRY OVER: like enter, but the new session is seeded with the
-//     current session's conversation (issue #20). ONLY offered for a SAME-PROVIDER
-//     pick (carryoverCandidate); a cross-provider pick swallows the key (the server
-//     would reject it with InvalidArgument, so the affordance is never shown).
-//   - s — SWITCH NEXT TIME (today's behavior): keep the live session, set pendingNext
-//     so the NEXT create uses the picked model, persist per-workspace, and show a
-//     notice naming BOTH the live model and the queued-next model (no "nothing
-//     happened" confusion).
-//   - esc — UNDO: revert pendingNext to what it was before this pick (no persist) and
-//     return to the picker panel.
-//
-// Any other key is swallowed (handled=true) so stray input can't leak to the prompt.
-func (m Model) onModelsConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
-	chosen := m.models.confirm.candidate
-	sel := client.ModelSelection{ProviderID: chosen.ProviderID, ModelID: chosen.ID}
-	switch {
-	case key.Matches(msg, m.keys.Choose): // enter — restart now
-		return m.restartOnModel(sel)
-	case msg.String() == "c": // restart now + carry over the conversation (same-provider only)
-		if !m.models.confirm.carryover {
-			return m, nil, true // swallow: cross-provider / no session — affordance not offered
-		}
-		return m.restartOnModelWithCarryover(sel)
-	case msg.String() == "s": // keep this session; switch next time
-		m.models.active = sel
-		m.activeModel = sel // header next:/create reads from this
-		mm, cmd := m.closeModels()
-		m = mm.(Model)
-		live := m.liveModelLabel()
-		m.statusMsg = m.deps.Theme.Style("success").Render(
-			"next session will use " + sanitizeTerminal(modelLabel(chosen)) +
-				" (still running " + sanitizeTerminal(live) + ")")
-		return m, tea.Batch(cmd, m.saveSelectionCmd(sel)), true
-	case key.Matches(msg, m.keys.Close): // esc — undo
-		m.activeModel = m.models.confirm.priorActive
-		m.models.view = modelsPanel
-		m.models.confirm = modelsConfirmState{}
 		return m, nil, true
 	}
-	return m, nil, true
+	chosen := m.models.filtered[m.models.cursor]
+	sel := client.ModelSelection{ProviderID: chosen.ProviderID, ModelID: chosen.ID}
+	// Detect a cross-provider switch BEFORE the reset (resetSession zeroes
+	// effectiveModel). A prior provider of "" means no live session yet, so the
+	// plain-create path runs and the note is the simple "conversation kept" form
+	// (there's nothing to strip — there was no prior model).
+	priorProvider := m.effectiveModel.ProviderID
+	crossProvider := priorProvider != "" && chosen.ProviderID != priorProvider
+	m.pendingModelSwitchNote = modelSwitchNote(modelLabel(chosen), crossProvider)
+	if m.sessionID != "" {
+		return m.restartOnModelWithCarryover(sel)
+	}
+	return m.restartOnModel(sel)
+}
+
+// modelSwitchNote is the transient status note armed at chooseModel time and surfaced
+// on the SessionReadyMsg rebind. Same-provider: "switched to <model> — conversation
+// kept". Cross-provider: the honest caveat that the conversation carried but the
+// prior model's provider-private reasoning cache was stripped (the server-side
+// StripProviderState path). Kept as a helper so the wording is testable in isolation.
+func modelSwitchNote(label string, crossProvider bool) string {
+	if crossProvider {
+		return "switched to " + label + " — conversation kept (prior reasoning cache dropped)"
+	}
+	return "switched to " + label + " — conversation kept"
 }
 
 // restartOnModel performs the restart-now handoff: it persists the pick
@@ -387,17 +346,22 @@ func (m Model) restartOnModelCmd(oldID string, sel client.ModelSelection) tea.Cm
 	}
 }
 
-// restartOnModelWithCarryover is the [c] restart-now + carry-over handoff (issue
-// #20): it mirrors restartOnModel (end the run, persist the pick, reset session
-// state, phaseConnecting) but seeds the NEW session with the current session's
-// conversation via carryoverCmd → CreateSessionWithCarryover. Only reached for a
-// SAME-PROVIDER pick (carryoverCandidate gates the [c] key); the server is the final
-// authority on same-provider. Like restartOnModel it resetSession()s the LOCAL
-// transcript — the server-side seed is what carries the history, NOT the client's
-// m.conv (which is wiped so stale per-block renderer caches never key into a dead
-// conversation); the new SessionReadyMsg + the next turn rebuild it from the seeded
-// server history. The old session id is captured BEFORE the reset as the carryover
-// source.
+// restartOnModelWithCarryover is the seamless-switch handoff (issue #20): it
+// mirrors restartOnModel (end the run, persist the pick, reset session state,
+// phaseConnecting) but seeds the NEW session with the current session's
+// conversation via carryoverCmd → CreateSessionWithCarryover. Reached for ANY
+// pick with a live session (same- AND cross-provider) — the confirm overlay and
+// its [c] key are gone, so chooseModel calls this unconditionally when a session
+// exists. The server is the authority on same-vs-cross (validateCarryover): a
+// same-provider carryover replays the history VERBATIM, a cross-provider
+// carryover strips the provider-private replay blobs via StripProviderState
+// (both adapters omit empty blobs, so a stripped history replays safely to any
+// provider). Like restartOnModel it resetSession()s the LOCAL transcript — the
+// server-side seed is what carries the history, NOT the client's m.conv (which
+// is wiped so stale per-block renderer caches never key into a dead
+// conversation); the new SessionReadyMsg + the next turn rebuild it from the
+// seeded server history. The old session id is captured BEFORE the reset as the
+// carryover source.
 func (m Model) restartOnModelWithCarryover(sel client.ModelSelection) (tea.Model, tea.Cmd, bool) {
 	// Cancel any in-flight run FIRST (same endRun rationale as restartOnModel: bump
 	// streamGen + tear down the stream so nothing stays subscribed to the
@@ -586,19 +550,6 @@ func (m Model) liveModelLabel() string {
 	return rm.ModelID
 }
 
-// liveProviderID is the provider the LIVE (current) session resolved to, echoed on
-// SessionReadyMsg (m.effectiveModel.ProviderID). Empty when no session exists yet
-// (still connecting) or an older server omitted the resolved-model echo. The [c]
-// carryover affordance is offered ONLY when the picked candidate's provider matches
-// this — same-provider is a server-side hard requirement for carryover (issue #20),
-// so pre-gating here avoids offering a key the server would just reject. The gate is
-// evaluated once at chooseModel time and stored on modelsConfirmState.carryover, so
-// the render + the [c] handler read the same flag (the candidate cannot change while
-// the confirm overlay is open).
-func (m Model) liveProviderID() string {
-	return m.effectiveModel.ProviderID
-}
-
 // saveSelectionCmd persists the selection via the injected SelectionStore off the
 // update goroutine. A nil store (persistence disabled) or a write failure is
 // fail-soft: the in-memory active selection still holds for this run, and the
@@ -784,40 +735,16 @@ func (m Model) reconcileSelection() Model {
 	return m
 }
 
-// renderModelsOverlay draws the picker (or its post-Enter confirmation overlay)
-// centred over the conversation region via centerCard. prov is the precomputed
-// provenance line (modelProvenanceLine). All server-derived strings are
-// terminal-sanitized.
+// renderModelsOverlay draws the picker centred over the conversation region via
+// centerCard. prov is the precomputed provenance line (modelProvenanceLine). All
+// server-derived strings are terminal-sanitized.
 func renderModelsOverlay(th theme.Theme, st modelsState, caps client.Capabilities, prov string, width, height int) string {
 	switch st.view {
-	case modelsConfirm:
-		return centerCard(th, renderModelsConfirm(th, st.confirm), width, height)
 	case modelsPanel:
 		return centerCard(th, renderModelsPanel(th, st, caps, prov, modelsRowBudgetFor(height)), width, height)
 	default:
 		return ""
 	}
-}
-
-// renderModelsConfirm draws the post-Enter confirmation card: the picked model and
-// the keyed choices (restart now / carry over [same-provider only] / switch next
-// time / undo). It mirrors the permission modal's title + keyed-button treatment
-// (askTitle/askButton) so it reads as the same kind of modal. The model label is
-// terminal-sanitized. The [c] carry-over choice is rendered ONLY when c.carryover
-// (precomputed at chooseModel time from the live provider == candidate provider); a
-// cross-provider pick omits it so no server-rejected key is offered.
-func renderModelsConfirm(th theme.Theme, c modelsConfirmState) string {
-	var b strings.Builder
-	b.WriteString(th.Style("askTitle").Render("Switch model") + "\n\n")
-	b.WriteString(th.Style("toolName").Render(sanitizeTerminal(modelLabel(c.candidate))) + "\n")
-	b.WriteString(th.Style("muted").Render(sanitizeTerminal(c.candidate.ProviderID)) + "\n\n")
-	b.WriteString(th.Style("askButton").Render("[enter]") + " start a new session now on this model\n")
-	if c.carryover {
-		b.WriteString(th.Style("askButton").Render("[c]") + "     start fresh, carrying over this conversation\n")
-	}
-	b.WriteString(th.Style("askButton").Render("[s]") + "     keep this session; switch next time\n")
-	b.WriteString(th.Style("askButton").Render("[esc]") + "   cancel")
-	return b.String()
 }
 
 // modelProvenanceLine is the "current: <model> (<provenance>)" line for the picker
