@@ -3,6 +3,7 @@
 - Status: Accepted (P0/P1 shipped; P2/P3 deferred)
 - Date: 2026
 - Scope: the provider registry, per-session engine binding, DTO neutrality at the LLM port, capability single-source intersection, live model listing, and per-sub-agent provider selection
+- Superseded by: [ADR 0071](./0071-seamless-model-switch.md) (in part — the "Mid-session model switch" confirm-overlay UX and the "Same-provider history carryover" gate; the rest of this ADR stands)
 
 ## Context
 

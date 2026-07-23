@@ -4,7 +4,7 @@
 - Date: 2026-07-14
 - Scope: a new `ForkSession` wire RPC + HTTP route, a `Service.ForkSession` method in `internal/adapter/server`, reuse of existing domain primitives (`session.ForkSnapshot`/`SeedHistory`/`New`); no `engine/`, `port`, or domain-package change
 - Supersedes: none
-- Superseded by: none
+- Superseded by: [ADR 0071](./0071-seamless-model-switch.md) (in part — the same-provider constraint for the *carryover* path; the `ForkSession` RPC itself remains same-provider/model-locked)
 
 ## Context
 
