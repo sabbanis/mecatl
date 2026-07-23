@@ -36,6 +36,16 @@ type SessionCreator interface {
 	// different root. The workspace becomes the session's tool root (Read/Edit/
 	// Write/Grep/Glob/Bash cwd all resolve there); osfs confinement is unchanged.
 	CreateSessionInWorkspace(ctx context.Context, workspace string, sel client.ModelSelection, mode string) (string, client.Capabilities, client.ResolvedModel, error)
+	// CreateSessionWithCarryover is CreateSession seeded with sourceSessionID's
+	// conversation history (issue #20, model-switch carryover): it restarts on a
+	// picked model AND carries the current session's transcript onto the new
+	// session. The server enforces SAME-PROVIDER (a cross-provider candidate is
+	// rejected with InvalidArgument) and a turn-boundary source; the ui PRE-GATES
+	// on the live provider so the [c] affordance is only offered when it can
+	// succeed. The caller owns closing the source session AFTER the new one is
+	// ready (the server snapshotted it at create time). Same return shape as
+	// CreateSession so the footer/effective-model heal path is shared.
+	CreateSessionWithCarryover(ctx context.Context, sourceSessionID string, sel client.ModelSelection, mode string) (string, client.Capabilities, client.ResolvedModel, error)
 	// CloseSession ends a server-side session by id. The /models restart-now handoff
 	// closes the OLD session before creating the new one so a model switch leaves no
 	// orphaned server-side session. Best-effort: the caller proceeds with the new

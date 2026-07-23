@@ -509,6 +509,257 @@ func TestRestartNowHandoff(t *testing.T) {
 	}
 }
 
+// TestCarryoverHandoff is the issue-#20 /models [c] e2e: pick a SAME-PROVIDER model
+// (gpt-5-mini, openai — the live session is openai/gpt-5), press 'c', and assert the
+// carryover path fires: CreateSessionWithCarryover was called with the OLD session id
+// as the source, the old session was closed AFTER the new one is ready, a NEW session
+// id is bound, and the footer/effective-model heal path rebinds via SessionReadyMsg
+// (same reducer as restart-now). Mirrors TestRestartNowHandoff's shape; the divergence
+// is the carryover create method + the source-id threading. (Server-side history
+// seeding is owned by create_carryover_test.go; this asserts the CLIENT wiring end to
+// end through the real fake-backed harness.)
+func TestCarryoverHandoff(t *testing.T) {
+	models := []client.ModelInfo{
+		{ID: "gpt-5", ProviderID: "openai", DisplayName: "GPT-5", ContextLimit: 200000},
+		{ID: "gpt-5-mini", ProviderID: "openai", DisplayName: "GPT-5 mini", ContextLimit: 128000},
+	}
+	run := &fakeRecver{script: simpleRunScript("first")}
+	conv := &fakeConv{
+		recv:              run,
+		send:              &fakeSender{},
+		recvers:           []*fakeRecver{run},
+		caps:              client.Capabilities{ModelSelection: true},
+		sessionReady:      make(chan struct{}),
+		created:           make(chan struct{}),
+		recreated:         make(chan struct{}),
+		echoSelAsResolved: true,
+		// The live session resolves to gpt-5/openai; gpt-5-mini is SAME provider.
+		resolvedModel: client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"},
+	}
+	prog := newProgress()
+	m := New(Deps{
+		Session:     conv,
+		Conv:        conv,
+		Models:      &fakeModels{models: models},
+		Theme:       theme.New("aztec", theme.AztecPalette()),
+		Server:      "127.0.0.1:8080",
+		Workspace:   "/workspace",
+		Mode:        "default",
+		Ctx:         context.Background(),
+		NoAltScreen: true,
+		onPhase:     prog.record,
+	})
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
+
+	// Connect + run a prompt to completion (a real transcript exists to carry over).
+	waitClosed(t, "startup CreateSession", conv.created, 5*time.Second)
+	prog.wait(t, phaseIdle, 5*time.Second)
+	tm.Type("hello there")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	prog.waitRunComplete(t, 1, 5*time.Second)
+
+	// Open /models, filter to mini, enter (confirm), 'c' (carryover restart).
+	for _, r := range "/models" {
+		tm.Send(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	for _, r := range "mini" {
+		tm.Send(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})   // open the confirm overlay
+	tm.Send(tea.KeyPressMsg{Code: 'c', Text: "c"}) // [c] = carryover restart
+
+	// The carryover create fired (recreate signal shared with restart-now).
+	waitClosed(t, "carryover re-create", conv.recreated, 5*time.Second)
+
+	// Graceful double-ctrl+c quit, then assert on the final model.
+	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(scaleWait(3*time.Second)))
+	fm := tm.FinalModel(t).(Model)
+
+	// (a) CreateSessionWithCarryover was called exactly once, with the OLD session id.
+	if got := conv.carryoverCalls(); got != 1 {
+		t.Fatalf("CreateSessionWithCarryover calls = %d, want 1", got)
+	}
+	if srcs := conv.carryoverSources(); len(srcs) != 1 || srcs[0] != "sess-test-0001" {
+		t.Fatalf("carryover source ids = %v, want [sess-test-0001] (the old session)", srcs)
+	}
+	// (b) the OLD session was closed (best-effort, after the new one was ready).
+	closed := conv.closed()
+	if len(closed) != 1 || closed[0] != "sess-test-0001" {
+		t.Fatalf("CloseSession calls = %v, want [sess-test-0001] (the old session, closed after the new one was ready)", closed)
+	}
+	// (c) a NEW session id is bound.
+	if fm.sessionID != "sess-test-0002" {
+		t.Fatalf("final sessionID = %q, want sess-test-0002 (rebound to the carryover session)", fm.sessionID)
+	}
+	// (d) the header shows the NEW effective model (gpt-5-mini), set from the new
+	// SessionReadyMsg — the shared reducer path.
+	want := client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5-mini"}
+	if fm.effectiveModel != want {
+		t.Fatalf("final effectiveModel = %+v, want %+v (rebound from the carryover session)", fm.effectiveModel, want)
+	}
+	// (e) the carryover handoff reset the LOCAL transcript (the server carries the
+	// history; the client rebuilds from the seeded session).
+	if !fm.conv.isEmpty() {
+		t.Fatalf("local conversation transcript should be reset after the carryover handoff (server carries history)")
+	}
+	if !fm.restartedThisRun {
+		t.Fatalf("restartedThisRun should be set after a carryover handoff")
+	}
+}
+
+// TestCarryoverHandoffFailure asserts a FAILED CreateSessionWithCarryover surfaces
+// through the SAME recoverable path as a plain restart failure (restartFailedMsg),
+// NOT a new failure type: the reducer drives idle + restartFailed armed + a loud
+// status naming the model. Mirrors the TestRestartFailedRecoverable shape over the
+// carryover cmd. The source session is NOT closed on the failure path (the carryover
+// cmd closes the source only AFTER a successful create).
+func TestCarryoverHandoffFailure(t *testing.T) {
+	conv := &fakeConv{
+		recv:      &fakeRecver{},
+		send:      &fakeSender{},
+		caps:      client.Capabilities{ModelSelection: true},
+		createErr: errors.New("carryover create rejected"),
+	}
+	m := New(Deps{
+		Session:      conv,
+		Conv:         conv,
+		Models:       &fakeModels{models: sampleModels().models},
+		Theme:        theme.New("aztec", theme.AztecPalette()),
+		Server:       "127.0.0.1:8080",
+		Workspace:    "/workspace",
+		Mode:         "default",
+		Ctx:          context.Background(),
+		NoAltScreen:  true,
+		InitialModel: client.ModelSelection{},
+	})
+	m = applyAll(m, tea.WindowSizeMsg{Width: 120, Height: 30},
+		client.SessionReadyMsg{SessionID: "sess-test-0001", Capabilities: modelsCaps(),
+			ResolvedModel: client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"}})
+
+	// Pick gpt-5-mini (same provider) and carryover-restart: chooseModel opens the
+	// confirm, 'c' restarts with carryover.
+	sel := client.ModelSelection{ProviderID: "openai", ModelID: "gpt-5-mini"}
+	m.models.confirm = modelsConfirmState{
+		candidate:   client.ModelInfo{ID: sel.ModelID, ProviderID: sel.ProviderID, DisplayName: "GPT-5 mini"},
+		priorActive: m.activeModel,
+		carryover:   true,
+	}
+	m.models.view = modelsConfirm
+	mm, _, handled := m.onModelsConfirmKey(tea.KeyPressMsg{Code: 'c', Text: "c"}) // carryover restart
+	m = mm.(Model)
+	if !handled {
+		t.Fatal("confirm 'c' should be handled for a same-provider candidate")
+	}
+	if m.phase != phaseConnecting {
+		t.Fatalf("phase mid-handoff = %v, want phaseConnecting", m.phase)
+	}
+
+	// Drive the carryover cmd → the failing create → restartFailedMsg, then reduce it.
+	failMsg := m.carryoverCmd("sess-test-0001", sel)()
+	if _, ok := failMsg.(restartFailedMsg); !ok {
+		t.Fatalf("a failed carryover create must produce restartFailedMsg, got %T (NOT a new failure type)", failMsg)
+	}
+	mm2, _ := m.Update(failMsg)
+	m = mm2.(Model)
+
+	// The source session was NOT closed on the failure path (the carryover cmd closes
+	// the source only AFTER a successful create).
+	if closed := conv.closed(); len(closed) != 0 {
+		t.Fatalf("CloseSession calls = %v, want [] (source not closed on carryover failure)", closed)
+	}
+	// RECOVERABLE: NOT the terminal fatal screen.
+	if m.phase == phaseFatal {
+		t.Fatalf("a failed carryover create must NOT drive the fatal screen (phase=%v)", m.phase)
+	}
+	if m.phase != phaseIdle {
+		t.Fatalf("phase after a failed carryover create = %v, want phaseIdle (recoverable)", m.phase)
+	}
+	if m.sessionID != "" {
+		t.Fatalf("sessionID after a failed carryover create = %q, want empty (no session)", m.sessionID)
+	}
+	if !m.restartFailed {
+		t.Fatalf("restartFailed should be set after a failed carryover create (arms enter-to-retry)")
+	}
+	// A visible error status names the model that failed.
+	st := stripANSIstr(m.statusMsg)
+	if !strings.Contains(st, "could not switch") || !strings.Contains(st, "gpt-5-mini") {
+		t.Fatalf("status should name the failed carryover model, got %q", st)
+	}
+	// The carryover method WAS called (the attempt fired), but the source survived.
+	if got := conv.carryoverCalls(); got != 1 {
+		t.Fatalf("CreateSessionWithCarryover calls = %d, want 1 (the attempt fired)", got)
+	}
+}
+
+// TestCarryoverKeySwallowedCrossProviderProgram asserts via the real program that
+// pressing 'c' on a CROSS-PROVIDER candidate does NOT call the carryover method: the
+// key is swallowed (no handoff, no create). The live session is openai/gpt-5; claude
+// is openrouter. Complements the unit-level TestModelsConfirmCarryoverGateCrossProvider.
+func TestCarryoverKeySwallowedCrossProviderProgram(t *testing.T) {
+	models := []client.ModelInfo{
+		{ID: "gpt-5", ProviderID: "openai", DisplayName: "GPT-5", ContextLimit: 200000},
+		{ID: "anthropic/claude", ProviderID: "openrouter", DisplayName: "Claude", ContextLimit: 1000000},
+	}
+	run := &fakeRecver{script: simpleRunScript("first")}
+	conv := &fakeConv{
+		recv:         run,
+		send:         &fakeSender{},
+		recvers:      []*fakeRecver{run},
+		caps:         client.Capabilities{ModelSelection: true},
+		sessionReady: make(chan struct{}),
+		created:      make(chan struct{}),
+		// Live session openai/gpt-5; claude is cross-provider.
+		resolvedModel: client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"},
+	}
+	prog := newProgress()
+	m := New(Deps{
+		Session:     conv,
+		Conv:        conv,
+		Models:      &fakeModels{models: models},
+		Theme:       theme.New("aztec", theme.AztecPalette()),
+		Server:      "127.0.0.1:8080",
+		Workspace:   "/workspace",
+		Mode:        "default",
+		Ctx:         context.Background(),
+		NoAltScreen: true,
+		onPhase:     prog.record,
+	})
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(120, 30))
+
+	waitClosed(t, "startup CreateSession", conv.created, 5*time.Second)
+	prog.wait(t, phaseIdle, 5*time.Second)
+
+	// Open /models, filter to claude (cross-provider), enter (confirm), 'c'.
+	for _, r := range "/models" {
+		tm.Send(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	for _, r := range "claude" {
+		tm.Send(tea.KeyPressMsg{Code: r, Text: string(r)})
+	}
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})   // open the confirm overlay
+	tm.Send(tea.KeyPressMsg{Code: 'c', Text: "c"}) // [c] — swallowed (cross-provider)
+
+	// Give the reducer a beat to process the swallowed key, then quit.
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEsc}) // close the confirm/picker
+	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(scaleWait(3*time.Second)))
+	fm := tm.FinalModel(t).(Model)
+
+	// The carryover method was NEVER called.
+	if got := conv.carryoverCalls(); got != 0 {
+		t.Fatalf("CreateSessionWithCarryover calls = %d, want 0 (cross-provider 'c' must be swallowed)", got)
+	}
+	// And the original session is still bound (no handoff happened).
+	if fm.sessionID != "sess-test-0001" {
+		t.Fatalf("sessionID = %q, want sess-test-0001 (no handoff on a swallowed cross-provider 'c')", fm.sessionID)
+	}
+}
+
 // TestRestartOnModelTearsDownLiveRun is the LOAD-BEARING teardown proof: it drives a
 // real streaming run (a gated recver holds the stream open, so m.stream != nil,
 // cancelRun is set, and a reader goroutine is subscribed), then invokes

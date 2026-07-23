@@ -275,13 +275,19 @@ navigate here, unlike the read-only overlays — so a name like `kimi`/`jamba` f
 as typed.) `esc` is **two-stage**: with a non-empty filter it clears the filter (the
 picker stays open); with an empty filter it closes the picker.
 
-`enter` opens a **confirmation overlay** for the cursor model with three choices:
+`enter` opens a **confirmation overlay** for the cursor model with up to four choices:
 
 - **`enter` — start a new session now** on the picked model. Because the provider is
   FIXED per session, switching live means a real handoff: the old session is closed
   (`CloseSession`) and a fresh one is created on the picked model. The conversation
   transcript is reset and the header rebinds to the NEW session's effective model;
-  there is no history carryover (the server has no history-seed surface).
+  history starts fresh.
+- **`c` — carry-over (same-provider only).** Available only when the cursor model
+  shares the live session's provider.  The new session inherits the old session's
+  conversation history via `source_session_id` on the `CreateSessionRequest` —
+  the server snapshots the source conversation (same-provider gate) and seeds it
+  into the new session, so the model sees the full prior context.  The old session
+  is still closed; the new session gets its own id and header.
 - **`s` — keep this session; switch next time.** The pick becomes the pending-next
   selection (applied on the NEXT `CreateSession`) and a notice names both the live
   model and the queued-next one, so it's clear nothing changed *yet*.

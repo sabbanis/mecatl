@@ -76,6 +76,27 @@ transient provider failure). Regression:
 
 ---
 
+## Model-switch context carryover (issue #20)
+
+When the mecatui `/models` picker confirms a **same-provider** model switch, the
+client calls `CreateSessionWithCarryover` (`cmd/mecatui/client/client.go`) which
+sets `source_session_id` on the `CreateSessionRequest`. The server-side
+`Service.validateCarryover` (`internal/adapter/server/service.go`) loads the
+source session, validates the same-provider gate (provider canonicalised to
+default when empty; model intentionally NOT compared — v1 carries the
+conversation onto a different model within the same provider), and snapshots
+the conversation via `session.ForkSnapshot` (the ADR-0065 fork primitive).
+Running/awaiting source → `FailedPrecondition`, cross-provider →
+`InvalidArgument`, missing → `NotFound`. The snapshot is seeded into the new
+session with `Session.SeedHistory` before the first save — zero
+`engine/`/domain change.  Turn-zero compaction is free via the existing
+`maybeCompact`.  The mecatui `[c]` carry-over key gates on `liveProviderID()`
+(`cmd/mecatui/ui/models.go`) — the option only appears when the cursor model
+shares the live session's provider.  Cross-provider strip
+(`session.StripReasoning`) is the deferred v2.
+
+---
+
 ## Domain — `engine/governance/`
 
 Permission `Effect`/`Scope`/`Rule` + `Evaluator`, bash splitting/canonicalization, hook

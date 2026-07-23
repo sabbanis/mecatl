@@ -345,6 +345,16 @@ message CreateSessionRequest {
   // meaningful WITHOUT a provider_id (it rides the server-default provider). The
   // EFFECTIVE resolved value is echoed back on resolved_model.reasoning_effort.
   string reasoning_effort = 7;
+
+  // source_session_id, when non-empty, seeds the NEW session's conversation
+  // history from the source session's (via session.ForkSnapshot + SeedHistory).
+  // SAME-PROVIDER ONLY: the source's resolved provider must match the new
+  // session's resolved provider; a cross-provider carryover is rejected with
+  // InvalidArgument (cross-provider is v2, deferred). The source must be at a
+  // turn boundary (idle/completed/cancelled/failed — the run-entry funnel
+  // recovers terminal states); a running/awaiting source is rejected with
+  // FailedPrecondition. Empty means no carryover (byte-identical default).
+  string source_session_id = 8;
 }
 
 // ServerCapabilities reports which optional features this server has ENABLED,

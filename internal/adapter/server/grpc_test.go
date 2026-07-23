@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -22,6 +23,7 @@ import (
 	"github.com/stacklok/mecatl/engine/adapter/permstore"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/governance"
+	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/server"
 )
@@ -475,6 +477,87 @@ func TestGRPCConverseFirstFrameMustBePrompt(t *testing.T) {
 	_, err = stream.Recv()
 	if err == nil {
 		t.Fatalf("expected error for non-prompt first frame")
+	}
+}
+
+// TestGRPCCreateSessionWithCarryover drives source_session_id THROUGH the gRPC
+// CreateSession handler: a source session with a small valid conversation,
+// carried over via CreateSessionRequest.SourceSessionId, yields a NEW session
+// whose persisted history is seeded verbatim. MUTATION-VERIFY: deleting the
+// `if src := req.GetSourceSessionId()` wiring line in grpc.go leaves the new
+// session with an EMPTY history — the len/content assertions below go red (the
+// handler itself still succeeds, so an error-path check alone would not catch it).
+func TestGRPCCreateSessionWithCarryover(t *testing.T) {
+	// Two text turns: the source's and the post-carryover Converse (the shared
+	// engine drives both, so the mockllm carries both replies).
+	svc := newService(t, mockllm.New(
+		mockllm.TextTurn("GRPC-CARRY-SRC-REPLY"),
+		mockllm.TextTurn("GRPC-CARRY-NEW-REPLY"),
+	), allowRules())
+	client, cleanup := dialGRPC(t, svc)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	// Build the source over gRPC CreateSession, then drive its turn through the
+	// SERVICE-level API (StartRun→drain→Persist→FinishRun, the driveCompletedTurn
+	// pattern) so its history is durably persisted for loadAndReopen on carryover.
+	src, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws/grpc-carry"})
+	if err != nil {
+		t.Fatalf("CreateSession source: %v", err)
+	}
+	srcID := session.SessionID(src.GetSessionId())
+	if got := driveCompletedTurn(t, svc, srcID, "carry this context"); got != "GRPC-CARRY-SRC-REPLY" {
+		t.Fatalf("source turn reply = %q", got)
+	}
+
+	// The wire field: SourceSessionId must cross the handler into a seeded history.
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{
+		Workspace:       "/ws/grpc-carry",
+		SourceSessionId: src.GetSessionId(),
+	})
+	if err != nil {
+		t.Fatalf("CreateSession with carryover: %v", err)
+	}
+	if cs.GetSessionId() == "" || cs.GetSessionId() == src.GetSessionId() {
+		t.Fatalf("carryover session id = %q, want a new distinct id", cs.GetSessionId())
+	}
+
+	newSess, err := svc.GetSession(ctx, session.SessionID(cs.GetSessionId()))
+	if err != nil {
+		t.Fatalf("GetSession new: %v", err)
+	}
+	if len(newSess.Conversation.Messages) == 0 {
+		t.Fatalf("carryover seeded NO history — the source_session_id wiring did not reach the service")
+	}
+	var sawUser, sawAssistant bool
+	for _, m := range newSess.Conversation.Messages {
+		if m.Role == session.RoleUser && strings.Contains(m.Text, "carry this context") {
+			sawUser = true
+		}
+		if m.Role == session.RoleAssistant && strings.Contains(m.Text, "GRPC-CARRY-SRC-REPLY") {
+			sawAssistant = true
+		}
+	}
+	if !sawUser || !sawAssistant {
+		t.Fatalf("seeded history missing the source's user/assistant text (user=%v assistant=%v)", sawUser, sawAssistant)
+	}
+
+	// The seeded session runs a turn to completion over the WIRE: the carried
+	// history replays with no provider 400 (the ForkSnapshot+SeedHistory pairing).
+	stream, err := client.Converse(ctx)
+	if err != nil {
+		t.Fatalf("Converse: %v", err)
+	}
+	if err := stream.Send(&mecatlv1.ConverseRequest{
+		Kind: &mecatlv1.ConverseRequest_Prompt{Prompt: &mecatlv1.Prompt{SessionId: cs.GetSessionId(), Text: "continue"}},
+	}); err != nil {
+		t.Fatalf("Send prompt: %v", err)
+	}
+	_ = stream.CloseSend()
+	if res := lastResult(t, recvAll(t, stream)); res.GetStop() != "end_turn" {
+		t.Fatalf("carryover-session Converse result = %+v, want end_turn", res)
 	}
 }
 

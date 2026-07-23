@@ -1421,6 +1421,65 @@ func TestModelsConfirmOverlayGolden(t *testing.T) {
 	compareGolden(t, "models_confirm.golden", got)
 }
 
+// TestModelsConfirmCarryoverGolden locks the SAME-PROVIDER confirm overlay: the live
+// session is openai/gpt-5 and the candidate is gpt-5-mini (also openai), so the [c]
+// carry-over choice is offered (issue #20). The cross-provider case
+// (models_confirm.golden, claude/openrouter) omits it — the two goldens together
+// lock the same-provider gate's render.
+func TestModelsConfirmCarryoverGolden(t *testing.T) {
+	m := newModelsModel(t, sampleModels(), &fakeStore{}, modelsCaps(), client.ModelSelection{})
+	mm, cmd := m.runModels()
+	m = feedCmd(t, mm.(Model), cmd)
+	// gpt-5-mini is one down — same provider (openai) as the live session.
+	m = pressModelsKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	m = pressModelsKey(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.models.view != modelsConfirm {
+		t.Fatalf("view = %v, want modelsConfirm", m.models.view)
+	}
+	if !m.models.confirm.carryover {
+		t.Fatalf("carryover gate should be set for a same-provider candidate (openai → openai)")
+	}
+	got := stripANSI([]byte(m.View().Content))
+	compareGolden(t, "models_confirm_carryover.golden", got)
+}
+
+// TestModelsConfirmCarryoverGateCrossProvider asserts the [c] affordance is NOT
+// offered (and the gate stays false) for a cross-provider candidate: the live
+// session is openai/gpt-5 and claude is openrouter. The render must omit the [c]
+// line and the handler must swallow a 'c' press.
+func TestModelsConfirmCarryoverGateCrossProvider(t *testing.T) {
+	m := newModelsModel(t, sampleModels(), &fakeStore{}, modelsCaps(), client.ModelSelection{})
+	mm, cmd := m.runModels()
+	m = feedCmd(t, mm.(Model), cmd)
+	// claude is 3 down — cross-provider (openrouter vs live openai).
+	for i := 0; i < 3; i++ {
+		m = pressModelsKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
+	}
+	m = pressModelsKey(t, m, tea.KeyPressMsg{Code: tea.KeyEnter})
+	if m.models.view != modelsConfirm {
+		t.Fatalf("view = %v, want modelsConfirm", m.models.view)
+	}
+	if m.models.confirm.carryover {
+		t.Fatalf("carryover gate must NOT be set for a cross-provider candidate (openai → openrouter)")
+	}
+	// The [c] line is absent from the render.
+	if strings.Contains(stripANSIstr(m.View().Content), "[c]") {
+		t.Fatalf("cross-provider confirm overlay must NOT offer the [c] carry-over key:\n%s", stripANSIstr(m.View().Content))
+	}
+	// And the 'c' key is swallowed (handled, no handoff): phase stays modelsConfirm's
+	// idle-equivalent, no carryover create fired.
+	mm2, c, handled := m.onModelsConfirmKey(tea.KeyPressMsg{Code: 'c', Text: "c"})
+	if !handled {
+		t.Fatalf("'c' should be swallowed (handled) on a cross-provider candidate")
+	}
+	if c != nil {
+		t.Fatalf("'c' on a cross-provider candidate must fire no cmd, got %v", c)
+	}
+	if mm2.(Model).phase != phaseIdle {
+		t.Fatalf("'c' on a cross-provider candidate must not change phase, got %v", mm2.(Model).phase)
+	}
+}
+
 // pressModelsKey routes a key through onModelsKey, asserting it was handled.
 func pressModelsKey(t *testing.T, m Model, msg tea.KeyPressMsg) Model {
 	t.Helper()

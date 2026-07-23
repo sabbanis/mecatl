@@ -983,6 +983,12 @@ type CreateSessionOption func(*createSessionOpts)
 type createSessionOpts struct {
 	id    session.SessionID
 	idSet bool
+	// sourceSessionID, when non-empty, seeds the new session's conversation
+	// history from the named source session (issue #20, model-switch carryover).
+	// Validated + snapshotted in createSession via validateCarryover BEFORE the
+	// first Store.Save so the seeded history is persisted. Empty = no carryover
+	// (byte-identical default).
+	sourceSessionID session.SessionID
 }
 
 // WithSessionID overrides the session id a CreateSession* call mints. When set,
@@ -993,6 +999,21 @@ type createSessionOpts struct {
 // uses to mint "sched--"-prefixed fire-session ids.
 func WithSessionID(id session.SessionID) CreateSessionOption {
 	return func(o *createSessionOpts) { o.id, o.idSet = id, true }
+}
+
+// WithSourceSession seeds a NEW session's conversation history from the named
+// source session (issue #20: model-switch context carryover). The source is
+// loaded through the run-entry funnel (loadAndReopen recovers terminal states
+// to idle), snapshotted via session.ForkSnapshot (a deep copy with trailing
+// unanswered tool calls stripped), and seeded into the new session BEFORE its
+// first Store.Save via session.SeedHistory. SAME-PROVIDER ONLY: the source's
+// resolved provider must match the new session's resolved provider (empty on
+// either side means the server default); a mismatch is rejected with
+// ErrInvalidArgument. A source that is still running/awaiting is rejected with
+// ErrFailedPrecondition. Empty (no option) is the byte-identical no-carryover
+// path. Cross-provider carryover is v2 (deferred).
+func WithSourceSession(id session.SessionID) CreateSessionOption {
+	return func(o *createSessionOpts) { o.sourceSessionID = id }
 }
 
 // CreateSession allocates a new idle session on the SHARED engine, persists it,
@@ -1070,6 +1091,24 @@ func setSessionLabels(sess *session.Session, sel ProviderSelector, profile Sessi
 	sess.ProviderID = sel.ProviderID
 	sess.ModelID = sel.ModelID
 	sess.ReasoningEffort = sel.ReasoningEffort
+}
+
+// seedCarryover seeds the freshly-created (idle) session with an optional
+// carryover snapshot (issue #20). A nil snapshot is a no-op (the byte-identical
+// no-carryover default); a non-nil snapshot is seeded via session.SeedHistory,
+// which re-validates tool-pairing (ForkSnapshot already stripped trailing
+// orphans, so this is a defense-in-depth re-check) and is legal only from
+// StateIdle (a freshly-created session). The error is wrapped for the caller to
+// map to a status; on failure the caller tears down any per-session engine it
+// already built.
+func seedCarryover(sess *session.Session, snap []session.Message) error {
+	if snap == nil {
+		return nil
+	}
+	if err := sess.SeedHistory(snap); err != nil {
+		return fmt.Errorf("server: seed carryover history: %w", err)
+	}
+	return nil
 }
 
 // reserveSessionID validates a caller-chosen session id (WithSessionID, ADR 0059
@@ -1164,6 +1203,25 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 		mintID = func() session.SessionID { return opts.id }
 	}
 
+	// Issue #20 (model-switch context carryover): when a source session is
+	// named, validate it (same-provider, turn-boundary) and snapshot its
+	// conversation ONCE here, so both create branches seed the new session's
+	// history BEFORE the first Store.Save (the persisted snapshot records the
+	// seeded history). The snapshot is a deep copy (session.ForkSnapshot) with
+	// trailing unanswered tool calls stripped, so it is tool-pairing-valid for
+	// SeedHistory. An empty sourceSessionID (the default) skips carryover
+	// entirely — byte-identical to the pre-issue-#20 path. The new session's
+	// resolved provider is sel.ProviderID (empty => server default, resolved
+	// against DefaultResolvedModel inside validateCarryover).
+	var carrySnap []session.Message
+	if opts.sourceSessionID != "" {
+		snap, err := s.validateCarryover(ctx, opts.sourceSessionID, sel.ProviderID)
+		if err != nil {
+			return nil, err
+		}
+		carrySnap = snap
+	}
+
 	needPerSession := s.sessionNeedsPerFactory(sel, specs, profile, workspace)
 	if !needPerSession {
 		// Shared-engine fast path (today's behaviour, byte-identical). The labels are
@@ -1172,12 +1230,27 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 		// snapshot stays byte-identical to a pre-Phase-1 default session.
 		sess := session.New(mintID(), mode, workspace, limits, s.cfg.Now())
 		setSessionLabels(sess, sel, profile)
+		if err := seedCarryover(sess, carrySnap); err != nil {
+			return nil, err
+		}
 		if err := s.cfg.Store.Save(ctx, sess); err != nil {
 			return nil, fmt.Errorf("server: persist session: %w", err)
 		}
 		return sess, nil
 	}
 
+	return s.createPerSessionEngine(ctx, mintID, mode, workspace, limits, sel, specs, profile, carrySnap)
+}
+
+// createPerSessionEngine is the per-session-engine create branch, factored out
+// of createSession so createSession stays under the gocyclo threshold. It
+// enforces the engine-factory + registry-cap discipline (cheap pre-check, build
+// outside the lock, authoritative re-check + register under the lock), seeds any
+// carryover history BEFORE the first Store.Save, and on a persist failure
+// evicts the reservation and tears the freshly-built engine down so a failed
+// create leaks neither a slot nor a connection. See createSession for the
+// profile-aware workspace rule and the carryover snapshot semantics.
+func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() session.SessionID, mode session.PermissionMode, workspace string, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, carrySnap []session.Message) (*session.Session, error) {
 	if s.cfg.SessionEngine == nil {
 		return nil, fmt.Errorf("%w: per-session engine not supported (no session-engine factory configured)", ErrInvalidArgument)
 	}
@@ -1206,6 +1279,12 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 	// per-session engine via the factory (rehydrateSession) instead of falling to the
 	// default-provider floor / inferring the profile from the empty-workspace pun.
 	setSessionLabels(sess, sel, profile)
+	if err := seedCarryover(sess, carrySnap); err != nil {
+		if closeFn != nil {
+			_ = closeFn()
+		}
+		return nil, err
+	}
 
 	// Authoritative cap check under the SAME lock as the insert (TOCTOU-safe): if
 	// the registry filled between the pre-check and here, tear the freshly-built
@@ -1690,6 +1769,60 @@ func (s *Service) ForkSession(ctx context.Context, srcID session.SessionID, titl
 		}
 	}
 	return forked.ID, nil
+}
+
+// validateCarryover loads a source session (issue #20: model-switch context
+// carryover) and returns a ForkSnapshot of its conversation ready to seed a NEW
+// session's history, after enforcing the carryover invariants:
+//
+//   - The source is loaded through the run-entry funnel (loadAndReopen), which
+//     recovers a terminal source (completed/cancelled/failed) to idle so a
+//     just-finished session is carryover-eligible. A source still StateRunning
+//     or StateAwaiting (mid-run) is rejected with ErrFailedPrecondition — the
+//     same turn-boundary rule ForkSession enforces, because a snapshot of an
+//     in-flight conversation could carry a dangling tool call.
+//   - SAME-PROVIDER ONLY (v1): the source's resolved provider must match the
+//     new session's. Each side is canonicalised the way the rest of createSession
+//     treats it: an empty id means the server default provider
+//     (Config.DefaultResolvedModel.ProviderID). A mismatch is rejected with
+//     ErrInvalidArgument ("carryover requires the same provider");
+//     cross-provider carryover is v2 (deferred).
+//
+// It returns session.ForkSnapshot(src.Conversation) (a deep copy with trailing
+// unanswered tool calls stripped, so it is tool-pairing-valid for SeedHistory).
+// The snapshot is taken from the LOADED source, NOT a re-load, so the history
+// the new session seeds is exactly the history loadAndReopen recovered.
+//
+// The new session's resolved provider is the caller's newProviderID (the
+// ProviderSelector.ProviderID the create request carried, empty for the server
+// default). The model is intentionally NOT compared: v1 carries the conversation
+// onto a DIFFERENT model within the SAME provider (that is the point of the
+// /models picker switch), so a model mismatch is permitted.
+func (s *Service) validateCarryover(ctx context.Context, srcID session.SessionID, newProviderID string) ([]session.Message, error) {
+	src, err := s.loadAndReopen(ctx, srcID)
+	if err != nil {
+		return nil, err
+	}
+	if src.State == session.StateRunning || src.State == session.StateAwaiting {
+		return nil, fmt.Errorf("%w: carryover requires a session at a turn boundary; source %q is %s", ErrFailedPrecondition, srcID, src.State)
+	}
+	// Canonicalise each side: empty => the server default provider, mirroring how
+	// createSession resolves the selector (a zero ProviderSelector rides the
+	// shared/default engine). DefaultResolvedModel.ProviderID is the composition-
+	// computed canonical default id (reg.Default()).
+	defaultProv := s.cfg.DefaultResolvedModel.ProviderID
+	srcProv := src.ProviderID
+	if srcProv == "" {
+		srcProv = defaultProv
+	}
+	newProv := newProviderID
+	if newProv == "" {
+		newProv = defaultProv
+	}
+	if srcProv != newProv {
+		return nil, fmt.Errorf("%w: carryover requires the same provider (source %q, new %q); cross-provider carryover is not supported", ErrInvalidArgument, srcProv, newProv)
+	}
+	return session.ForkSnapshot(src.Conversation), nil
 }
 
 // maybeReplayApprovals repopulates the learned-rule store from the durable

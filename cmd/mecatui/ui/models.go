@@ -80,9 +80,15 @@ type modelsState struct {
 
 // modelsConfirmState is the modelsConfirm overlay's data: the candidate model the
 // user picked and the selection that was active before the pick (so esc reverts).
+// carryover is precomputed at chooseModel time: whether the [c] carry-over key
+// should be OFFERED — true only when a live session exists AND the candidate's
+// provider matches the live session's resolved provider (carryover is same-provider
+// only, issue #20). Rendered as a keyed choice when true, omitted when false (so a
+// cross-provider pick never offers a key the server would reject).
 type modelsConfirmState struct {
 	candidate   client.ModelInfo
 	priorActive client.ModelSelection
+	carryover   bool
 }
 
 // openModels opens the picker and fires the ListModels RPC. Only callable while
@@ -254,17 +260,25 @@ func (m Model) chooseModel() Model {
 		return m
 	}
 	chosen := m.models.filtered[m.models.cursor]
-	m.models.confirm = modelsConfirmState{candidate: chosen, priorActive: m.activeModel}
+	m.models.confirm = modelsConfirmState{
+		candidate:   chosen,
+		priorActive: m.activeModel,
+		carryover:   m.liveProviderID() != "" && chosen.ProviderID == m.liveProviderID(),
+	}
 	m.models.view = modelsConfirm
 	return m
 }
 
-// onModelsConfirmKey routes keys while the modelsConfirm overlay is open. Three
+// onModelsConfirmKey routes keys while the modelsConfirm overlay is open. Four
 // choices, mirroring the permission-modal's keyed-button pattern:
 //
 //   - enter — RESTART NOW: close the old session and create a fresh one on the picked
 //     model (the risky handoff — see restartOnModelCmd). The pick is persisted
 //     per-workspace.
+//   - c — RESTART NOW + CARRY OVER: like enter, but the new session is seeded with the
+//     current session's conversation (issue #20). ONLY offered for a SAME-PROVIDER
+//     pick (carryoverCandidate); a cross-provider pick swallows the key (the server
+//     would reject it with InvalidArgument, so the affordance is never shown).
 //   - s — SWITCH NEXT TIME (today's behavior): keep the live session, set pendingNext
 //     so the NEXT create uses the picked model, persist per-workspace, and show a
 //     notice naming BOTH the live model and the queued-next model (no "nothing
@@ -279,6 +293,11 @@ func (m Model) onModelsConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool
 	switch {
 	case key.Matches(msg, m.keys.Choose): // enter — restart now
 		return m.restartOnModel(sel)
+	case msg.String() == "c": // restart now + carry over the conversation (same-provider only)
+		if !m.models.confirm.carryover {
+			return m, nil, true // swallow: cross-provider / no session — affordance not offered
+		}
+		return m.restartOnModelWithCarryover(sel)
 	case msg.String() == "s": // keep this session; switch next time
 		m.models.active = sel
 		m.activeModel = sel // header next:/create reads from this
@@ -363,6 +382,81 @@ func (m Model) restartOnModelCmd(oldID string, sel client.ModelSelection) tea.Cm
 		id, caps, resolved, err := deps.Session.CreateSession(deps.Ctx, sel, m.desiredMode())
 		if err != nil {
 			return restartFailedMsg{err: err, model: modelSelLabel(sel)}
+		}
+		return client.SessionReadyMsg{SessionID: id, Capabilities: caps, ResolvedModel: resolved, Mode: m.desiredMode()}
+	}
+}
+
+// restartOnModelWithCarryover is the [c] restart-now + carry-over handoff (issue
+// #20): it mirrors restartOnModel (end the run, persist the pick, reset session
+// state, phaseConnecting) but seeds the NEW session with the current session's
+// conversation via carryoverCmd → CreateSessionWithCarryover. Only reached for a
+// SAME-PROVIDER pick (carryoverCandidate gates the [c] key); the server is the final
+// authority on same-provider. Like restartOnModel it resetSession()s the LOCAL
+// transcript — the server-side seed is what carries the history, NOT the client's
+// m.conv (which is wiped so stale per-block renderer caches never key into a dead
+// conversation); the new SessionReadyMsg + the next turn rebuild it from the seeded
+// server history. The old session id is captured BEFORE the reset as the carryover
+// source.
+func (m Model) restartOnModelWithCarryover(sel client.ModelSelection) (tea.Model, tea.Cmd, bool) {
+	// Cancel any in-flight run FIRST (same endRun rationale as restartOnModel: bump
+	// streamGen + tear down the stream so nothing stays subscribed to the
+	// soon-to-be-closed source session). Pass "" so endRun sets no stop-status (we set
+	// the "carrying over" status below). Safe even when idle (endRun is a no-op then).
+	m = m.endRun("")
+
+	oldID := m.sessionID
+	m.models.active = sel
+	m.activeModel = sel
+	m.pickedThisSession = sel
+	m.restartedThisRun = true
+
+	// Reset the LOCAL conversation/transcript + stream-accumulated state (same
+	// rationale as restartOnModel): the server carries the history, the client
+	// rebuilds it from the seeded session. Stale per-block caches would otherwise key
+	// into the dead conversation.
+	m = m.resetSession()
+
+	// Rebind the rest of the per-session client state to "no session yet": the new
+	// values arrive on the new session's SessionReadyMsg.
+	m.sessionID = ""
+	m.effectiveModel = client.ResolvedModel{}
+	m.caps = client.Capabilities{}
+	m.restartFailed = false
+	m.restartFailedForkID = ""
+	m.phase = phaseConnecting
+	m.statusMsg = "switching model — carrying over conversation…"
+
+	mm, cmd := m.closeModels() // dismiss the overlay, return focus to the prompt
+	m = mm.(Model)
+	m.refreshView()
+	return m, tea.Batch(cmd, m.carryoverCmd(oldID, sel), m.saveSelectionCmd(sel), m.sp.Tick), true
+}
+
+// carryoverCmd mirrors restartOnModelCmd but calls CreateSessionWithCarryover so the
+// server seeds the new session's history from oldID's conversation. On SUCCESS it
+// closes the OLD session best-effort AFTER the new one is ready (the server already
+// snapshotted it at create time, so a late close is safe) and returns the SAME
+// SessionReadyMsg the connect path uses (the reducer rebinds uniformly — no second
+// code path). On FAILURE it returns restartFailedMsg (reuse the recoverable reducer
+// path — NOT a new failure type): like a plain restart failure the local transcript
+// is already gone, so the app stays idle + retryable. The retry re-creates FRESH
+// (CreateSession, not carryover): the source session was closed below only on the
+// SUCCESS path, so on failure oldID is still live — but a retry via enter-to-r
+// re-fires restartOnModelCmd (create-fresh), which is the honest recoverable
+// behaviour (the carryover affordance is re-offered on the next confirm, not
+// auto-retried as carryover).
+func (m Model) carryoverCmd(oldID string, sel client.ModelSelection) tea.Cmd {
+	deps := m.deps
+	return func() tea.Msg {
+		id, caps, resolved, err := deps.Session.CreateSessionWithCarryover(deps.Ctx, oldID, sel, m.desiredMode())
+		if err != nil {
+			return restartFailedMsg{err: err, model: modelSelLabel(sel)}
+		}
+		// Close the source AFTER the new session is ready — the server snapshotted it
+		// at create time, so a late close can't orphan the seed. Best-effort (swallowed).
+		if oldID != "" {
+			_ = deps.Session.CloseSession(deps.Ctx, oldID)
 		}
 		return client.SessionReadyMsg{SessionID: id, Capabilities: caps, ResolvedModel: resolved, Mode: m.desiredMode()}
 	}
@@ -490,6 +584,19 @@ func (m Model) liveModelLabel() string {
 		}
 	}
 	return rm.ModelID
+}
+
+// liveProviderID is the provider the LIVE (current) session resolved to, echoed on
+// SessionReadyMsg (m.effectiveModel.ProviderID). Empty when no session exists yet
+// (still connecting) or an older server omitted the resolved-model echo. The [c]
+// carryover affordance is offered ONLY when the picked candidate's provider matches
+// this — same-provider is a server-side hard requirement for carryover (issue #20),
+// so pre-gating here avoids offering a key the server would just reject. The gate is
+// evaluated once at chooseModel time and stored on modelsConfirmState.carryover, so
+// the render + the [c] handler read the same flag (the candidate cannot change while
+// the confirm overlay is open).
+func (m Model) liveProviderID() string {
+	return m.effectiveModel.ProviderID
 }
 
 // saveSelectionCmd persists the selection via the injected SelectionStore off the
@@ -693,15 +800,21 @@ func renderModelsOverlay(th theme.Theme, st modelsState, caps client.Capabilitie
 }
 
 // renderModelsConfirm draws the post-Enter confirmation card: the picked model and
-// the three keyed choices (restart now / switch next time / undo). It mirrors the
-// permission modal's title + keyed-button treatment (askTitle/askButton) so it reads
-// as the same kind of modal. The model label is terminal-sanitized.
+// the keyed choices (restart now / carry over [same-provider only] / switch next
+// time / undo). It mirrors the permission modal's title + keyed-button treatment
+// (askTitle/askButton) so it reads as the same kind of modal. The model label is
+// terminal-sanitized. The [c] carry-over choice is rendered ONLY when c.carryover
+// (precomputed at chooseModel time from the live provider == candidate provider); a
+// cross-provider pick omits it so no server-rejected key is offered.
 func renderModelsConfirm(th theme.Theme, c modelsConfirmState) string {
 	var b strings.Builder
 	b.WriteString(th.Style("askTitle").Render("Switch model") + "\n\n")
 	b.WriteString(th.Style("toolName").Render(sanitizeTerminal(modelLabel(c.candidate))) + "\n")
 	b.WriteString(th.Style("muted").Render(sanitizeTerminal(c.candidate.ProviderID)) + "\n\n")
 	b.WriteString(th.Style("askButton").Render("[enter]") + " start a new session now on this model\n")
+	if c.carryover {
+		b.WriteString(th.Style("askButton").Render("[c]") + "     start fresh, carrying over this conversation\n")
+	}
 	b.WriteString(th.Style("askButton").Render("[s]") + "     keep this session; switch next time\n")
 	b.WriteString(th.Style("askButton").Render("[esc]") + "   cancel")
 	return b.String()

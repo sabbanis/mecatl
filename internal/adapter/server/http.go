@@ -115,6 +115,11 @@ type createSessionBody struct {
 	// capability-gates it; an unknown value falls back to the operator default with
 	// a WARN. The effective value is echoed on resolved_model.reasoning_effort.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// SourceSessionID, when non-empty, seeds the new session's conversation history
+	// from the named source session (issue #20: model-switch context carryover).
+	// Same-provider only; a running/awaiting source or a cross-provider mismatch is
+	// a 4xx. Empty means no carryover.
+	SourceSessionID string `json:"source_session_id,omitempty"`
 }
 
 type limitsIn struct {
@@ -310,7 +315,11 @@ func (h *HTTPHandler) createSession(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	sel := ProviderSelector{ProviderID: body.ProviderID, ModelID: body.ModelID, ReasoningEffort: body.ReasoningEffort}
-	sess, err := h.svc.CreateSessionWithProfile(r.Context(), body.Workspace, modeFromString(body.Mode), limits, sel, profile)
+	var opts []CreateSessionOption
+	if body.SourceSessionID != "" {
+		opts = append(opts, WithSourceSession(session.SessionID(body.SourceSessionID)))
+	}
+	sess, err := h.svc.CreateSessionWithProfile(r.Context(), body.Workspace, modeFromString(body.Mode), limits, sel, profile, opts...)
 	if err != nil {
 		writeServiceError(w, err)
 		return
