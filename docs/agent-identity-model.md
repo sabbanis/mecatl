@@ -535,10 +535,21 @@ the definition/instance/run mapping makes it explicit and testable.
 A consequence that simplifies everything: **subagents are not network
 entities**. A subagent is a goroutine, not a pod; it never presents its own
 SVID. When the harness makes an outbound call attributable to a subagent
-(a forge API call, an MCP call), the *harness* presents the subagent's SVID
-plus its own proof-of-possession. Only the pod tier holds keys; everything
-below is signed claims. No per-subagent key material, no PoP problem below
-the pod.
+(a forge API call, an MCP call), the *harness* is what presents credentials on
+its behalf. Only the pod tier holds keys; everything below is signed claims.
+No per-subagent key material, no PoP problem below the pod.
+
+**What the harness presents at that hop is open, and deliberately not settled
+here.** An earlier draft of this section said it presents the subagent's SVID
+plus its own proof-of-possession. That reads as decided, and it is not: the
+MCP servers in scope are ToolHive vMCPs, and vMCP is a *gateway*, so there are
+two boundaries with different problems rather than one. What crosses the first
+one decides how much of the issuer apparatus above is load-bearing — under one
+of the live options the SVID does no work at that hop at all.
+
+That question, the two-hop decomposition, and the cross-repo changes it implies
+are worked out separately rather than inline here, because they carry their own
+open decisions and deserve their own review.
 
 ## Threat model and trust boundaries
 
