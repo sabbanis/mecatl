@@ -1,0 +1,456 @@
+diff --git i/docs/agent-identity-model.md w/docs/agent-identity-model.md
+index 04fdb82d..26b31827 100644
+--- i/docs/agent-identity-model.md
++++ w/docs/agent-identity-model.md
+@@ -61,6 +61,12 @@ chain yourself."
+ The design is not abstract: mecatl's current multi-user posture already
+ leaks, and the identity layer is what closes it. Honest inventory:
+ 
++- **Outbound calls carry no identity dimension at all.** The MCP adapter bakes
++  a static `Headers` map into an HTTP client when it dials
++  (`internal/adapter/mcp/mcp.go`): one client per server per process, scoped
++  to the origin, with nothing per-user, per-session or per-subagent anywhere
++  in it. That is the floor everything below builds up from.
++
+ - **`ListSessions` returns every stored session with a title derived from
+   that session's first user prompt** (clamped to 120 runes), inventory and
+   prompt content, no id needed. On Redis it takes the slow path (loads every
+@@ -291,6 +297,25 @@ ids are issuer-minted and stay inside the family prefixes by construction.)
+   runtime delegation graph cannot drift; across instances the child id is
+   not globally unique (provider call ids are per-conversation), which is
+   exactly why the instance tier must qualify them.
++
++  Two caveats on the verbatim id. It is the provider's tool-call id taken off
++  the stream, so its uniqueness rides provider entropy: fine for OpenAI and
++  Anthropic, not for a gateway that emits `call_1`, where a collision is a
++  silent principal swap. `sanitizeFireIDName` exists because a schedule name
++  containing a slash would land in a session id; the child id families never
++  got the same treatment, and they need it before becoming path segments.
++
++  And per-instance keying has a cost worth stating, because it points the
++  other way from cacheability. A token keyed on
++  `(user, definition, scope set, audience)` can be shared by eight concurrent
++  subagents of one `AgentDef` and survives across turns for its TTL. Keyed on
++  the instance, every token is per-session and uncacheable, which puts a
++  network round trip on the tool-call path at every fan-out; ToolHive has no
++  token cache in its proxy path today. RFC 8693 §4.1 licenses the split:
++  the definition in the actor claim where it is both authorizable and
++  cacheable, the instance id as a correlation value not used for
++  authorization. Per-instance minting is only *forced* if every instance needs
++  a distinct scope set, which definition-level tool sets suggest it does not.
+ - **Runs are not identities.** A run carries the instance credential plus a
+   per-run `txn` claim; resumption re-proves the instance, it does not create
+   one.
+@@ -535,10 +560,110 @@ the definition/instance/run mapping makes it explicit and testable.
+ A consequence that simplifies everything: **subagents are not network
+ entities**. A subagent is a goroutine, not a pod; it never presents its own
+ SVID. When the harness makes an outbound call attributable to a subagent
+-(a forge API call, an MCP call), the *harness* presents the subagent's SVID
+-plus its own proof-of-possession. Only the pod tier holds keys; everything
+-below is signed claims. No per-subagent key material, no PoP problem below
+-the pod.
++(a forge API call, an MCP call), the *harness* is what presents credentials
++on its behalf. Only the pod tier holds keys; everything below is signed
++claims. No per-subagent key material, no PoP problem below the pod.
++
++*What* the harness presents at that hop is an open question, not a settled
++one, and the next subsection works it out. It matters more than it looks:
++how it resolves decides how much of the issuer apparatus above is
++load-bearing.
++
++### The outbound hop: what the harness actually presents
++
++There are **two** boundaries here, not one, and conflating them is the main
++way this design goes wrong. The MCP servers in scope are ToolHive vMCPs, and
++vMCP is a *gateway*. So hop 1 is mecatl to vMCP, where both ends are ours and
++we choose the protocol. Hop 2 is vMCP to each backend MCP server, where each
++backend has its own idea of a valid credential and **most will not trust vMCP
++as an issuer**. That is the normal case, not the exception. What we choose at
++hop 1 constrains what is available at hop 2.
++
++At hop 1 there is one credential and two options.
++
++**Option 1: present at vMCP's own token endpoint.** mecatl authenticates as a
++registered OAuth client and exchanges the user's token for a vMCP-minted one.
++One client-authentication path covers both grants the harness needs:
++`client_credentials` when there is no user (which is what a scheduled fire
++needs, since it has no user by construction), and `token-exchange` when there
++is. The delegated branch is ordinary RFC 8693 into the hardened handler
++ToolHive already ships, which checks consent fail-closed, intersects scopes,
++narrows the audience and caps `act` nesting depth. Nothing here needs the
++front-door IdP to know about SPIFFE, because the AS checking the credential
++is ours.
++
++The precondition is a feature: the consent check requires the subject token
++to carry a `may_act.sub` naming mecatl or a matching `client_id`, and rejects
++an unbound token outright. So it works when the token was minted *for* mecatl
++and not when mecatl merely holds someone's token. RFC 9068 §2.2 makes
++`client_id` REQUIRED in conformant JWT access tokens, so that arm needs no
++vendor feature and no `may_act`, which is just as well since `may_act` is
++close to dead in deployment.
++
++**Option 2: ID-JAG at the front-door IdP,** for callers whose token does not
++name mecatl at all. The harness holds the user's ID token, does ID-JAG Step A
++to get an assertion scoped to vMCP's AS, and redeems it there. The IdP decides
++whether mecatl may act, out of cross-app consent.
++
++**What separates them is who else has to cooperate,** not how much code it
++takes. Option 1 needs nothing from any party outside ToolHive. Option 2 needs
++the front-door IdP to implement ID-JAG Step A, which Okta does and others do
++not, so its availability is not ours to decide. Option 1 also rests on a
++ratified RFC where Option 2 rests on a draft. So: **Option 1 as the default,
++Option 2 as an addition.** Both land at the same endpoint and the issued token
++is identical either way, so the gateway policy rules and the subagent story
++get written once.
++
++**Three blockers, all on the ToolHive side, and none of them the one you would
++expect.** Verified against `main`:
++
++1. **No client that may use the exchange grant can be provisioned.** The
++   handler rejects public clients and requires the grant registered. Dynamic
++   registration is the only provisioning path, and it hardcodes clients as
++   public, rejects any `token_endpoint_auth_method` other than `none`, and
++   permits only `authorization_code` and `refresh_token`. There is no
++   static-client config. These gates are identical on every branch, so the
++   shipped delegation path is reachable today only through a test seam.
++   Fixing it is small: relax registration, or add a static client.
++2. **The subject token must be issued by ToolHive's own AS.** Only a
++   self-issued validator is wired; the multi-issuer validator in the tree has
++   no callers and an open TODO. So an Okta or Keycloak access token cannot
++   currently be the `subject_token`, which is what Option 1 assumes it is.
++   This is the harder of the two and gates the whole flow.
++3. **Client authentication is not the blocker.** ToolHive's AS advertises only
++   `none` and its OAuth library does not implement `tls_client_auth`, so the
++   mTLS shape needs new code. But `client_secret_basic` already works with no
++   new code, because a confidential client is not an OpenID Connect client and
++   the method switch is skipped. A first cut needs neither SPIFFE nor mTLS.
++
++### What the SVID buys at this hop, stated narrowly
++
++Under Option 2 the SVID does nothing at hop 1: Step B skips client
++authentication, and using it at Step A would need the IdP to speak
++`jwt-spiffe`, which Okta and Entra do not implement. And it is not the case
++that the alternative is a static secret, since ID-JAG permits
++`private_key_jwt` at Step A. What would sit idle is the SPIFFE machinery
++specifically: trust domain, bundle distribution, Workload-API rotation.
++
++Under Option 1 it buys two things, both real and both smaller than "the
++harness's identity":
++
++- **No static `client_secret` in mecatl's environment.** This is concrete
++  rather than theoretical: `envscrub` exists precisely because under posture
++  `auto` or `yolo` the model can read the harness's own environment.
++- **Per-pod attestation,** so a compromised image inherits no shared secret.
++
++And one thing it buys that nothing else does, which is the strongest argument
++for it: **`client_id` becomes the SPIFFE URI.** The shipped mint puts the
++OAuth `client_id` in `act.sub` and does no SPIFFE parsing, so whether
++`act.sub` holds a SPIFFE ID depends entirely on whether `client_id` is one.
++With `client_secret_basic` it is not. This is the only mechanism that makes a
++SPIFFE-shaped authorization policy real, so the SPIFFE client-auth path is an
++enhancement over a working exchange rather than a precondition for one.
++
++Worth recording that no SPIFFE-awareness exists in the gateway's policy layer
++today. Cedar is claim-generic, and the SPIFFE IDs in its test fixtures are
++matched by a string glob that would treat any other prefix identically.
+ 
+ ## Threat model and trust boundaries
+ 
+@@ -647,11 +772,22 @@ harness:
+ 
+ - **Prompt injection at the *main* agent (P1).** Strictly more dangerous
+   than at a child: the main agent holds the full tool set, spawns children,
+-  sets their mode and prompts. Cryptographic identity does not help here;
+-  the attacker is driving the harness's own prompt, inside the pod. The
+-  containment is the harness's existing defenses (guardrails, the
+-  deny-dominant fold, the plan-mode gate), which live at this boundary, not
+-  the identity layer. Named so nobody expects the SVID to save them here.
++  sets their mode and prompts. The attacker is driving the harness's own
++  prompt, inside the pod, so the containment is mostly the harness's existing
++  defenses (guardrails, the deny-dominant fold, the plan-mode gate), which live
++  at this boundary rather than in the identity layer. Named so nobody expects
++  the SVID to save them here.
++
++  Two qualifications, one in each direction. "Cryptographic identity does not
++  help" overshoots: `constraints.posture_ceiling` is precisely an
++  identity-carried ceiling on what an injected main agent can grant a child,
++  and the Entra hard-block pattern cited earlier is stronger than issuer
++  correctness for exactly this reason. So the identity layer does bound the
++  *blast radius* of a compromised main agent, even though it cannot prevent
++  the compromise. Cutting the other way: the existing defenses this leans on
++  are posture-conditional — guardrails demote to advisory under `yolo` — so the
++  containment is weaker at the top of the posture ladder than this bullet
++  implies.
+ - **A malicious tenant (P2).** A user with legitimate authority is the
+   relevant multi-tenant threat: valid credentials, can create sessions and
+   run agents. The identity layer makes their actions *attributable* but
+@@ -662,10 +798,21 @@ harness:
+ - **A mis-binding edge (P3).** A compromised or misconfigured edge
+   interceptor could bind a session to `user/alice` when the OIDC token was
+   Bob's, and every SVID minted under the wrong principal inherits the
+-  error, undetectably downstream. Mitigation: the edge writes a signed
+-  binding claim, the session store records it, and audit cross-checks the
+-  two. The binding must be independently verifiable, not trusted because
+-  the edge asserted it.
++  error, undetectably downstream.
++
++  The mitigation has to be chosen carefully, because the obvious one does not
++  work. Having the edge write a signed binding claim, the store record it, and
++  audit cross-check the two does nothing against the threat as stated: a
++  *compromised* edge holds the binding key and signs Bob-as-Alice consistently
++  in both places, so the cross-check agrees with itself. That construction
++  mitigates store tampering and some misconfiguration, and only detectably
++  after the fact.
++
++  What does bite is anchoring to evidence the edge cannot forge: persist the
++  originating IdP assertion's issuer and `jti` — or the assertion itself — so
++  an auditor re-verifies against the IdP's own keys, independently of anything
++  the edge signed. The binding must be verifiable against the party that
++  actually authenticated the human, not against the component under suspicion.
+ - **A compromised downstream credential store (P4).** Scenario B has
+   ToolHive storing Alice's upstream credentials. A compromised ToolHive
+   leaks the credential itself. The identity layer limits *attribution* (you
+@@ -676,7 +823,39 @@ harness:
+   JSON (prompts, pre-compaction conversations, verdicts). An attacker with
+   Redis read access reconstructs every delegation tree. The log carries no
+   MAC; Rekor-style transparency anchoring (Phase 3) is a future integrity
+-  measure, not a current defense.
++  measure, not a current defense. Two clauses this needs: the confidentiality
++  half is answered by the Redis auth/TLS prerequisite below, and transparency
++  anchoring must be **over digests only** — anchoring prompt content to a
++  public log is an exfiltration channel, not a defense.
++
++Three more that follow from this architecture and were missing:
++
++- **A delegated token that carries the credential-store reference (P6).** The
++  sharpest of the set. A token carrying `act` must not also carry the
++  session reference that dereferences to the user's whole upstream credential
++  set, and **nothing enforces that today** — the handler simply passes an empty
++  value and no check rejects a token holding both. If one does, a narrowed
++  child reaches the *full* credential store, so attenuation over tools,
++  resources and posture is bypassed entirely at the credential layer. This is
++  distinct from P4: P4 is the store being compromised, this is legitimate
++  delegation over-reaching by construction. It is the concrete threat
++  Scenario B's design has to answer.
++- **A Redis-write adversary, distinct from a compromised pod (P7).** These are
++  currently merged under "the pod that can sign is the pod that can
++  impersonate any session", which understates the mitigation's value. A leaked
++  Redis credential against a store that is presently unauthenticated is far
++  likelier than pod compromise, and such an adversary **cannot sign** — which
++  is exactly the adversary that issuer-signed chain integrity defeats. Split
++  the row and the mitigation looks as valuable as it is.
++- **Bundle or JWKS poisoning (P8).** For a design whose value is *offline*
++  verification, a substituted bundle means every external verifier accepts
++  forged chains, with no session-liveness backstop to catch it. The costs
++  section raises that endpoint's availability; nothing yet raises its
++  integrity. High impact, and cheap to name.
++
++*(Minor, same family: single-audience is stated as preferred rather than
++required. A downstream that re-presents a child SVID to a sibling backend is
++the classic confused deputy, and requiring it closes that.)*
+ 
+ What the design does **not** defend: a malicious or confused *user* acting
+ within legitimately granted authority (that is policy, not identity); the
+@@ -689,14 +868,27 @@ defense).
+ 
+ These walk the model through a real downstream: **ToolHive's vMCP**, which
+ has already implemented most of the delegation/identity constructs this
+-design must interface with: an embedded authorization server that mints
+-nested-`act` delegation tokens, an outgoing-strategy registry, an
+-XAA/ID-JAG strategy, and a Cedar authorization layer that already evaluates
+-SPIFFE IDs in `act.sub`. ToolHive is the example **not** because it is the
+-only way. The same shape applies to any downstream that supports these
++design must interface with: an embedded authorization server with a hardened
++RFC 8693 token-exchange handler that nests `act` and caps its depth, an
++outgoing-strategy registry, an XAA/ID-JAG strategy, and a Cedar authorization
++layer that evaluates nested claims. ToolHive is the example **not** because it
++is the only way. The same shape applies to any downstream that supports these
+ constructs, such as a memory service or the filesystem abstraction from
+-`docs/scoped-resource-grants.md`. It is the example because it is a live,
+-code-complete testing ground where the integration points already exist.
++`docs/scoped-resource-grants.md`. It is the example because the integration
++points exist in code and can be walked concretely.
++
++Two honest qualifications, because these scenarios were drafted against a more
++optimistic reading of that codebase and the corrections matter for sequencing.
++**Cedar is claim-generic, not SPIFFE-aware**: it evaluates whatever claim it is
++handed, `act` arrives as an ordinary nested claim, and the SPIFFE IDs in its
++test fixtures are matched by a string glob that would treat any other prefix
++identically. Teaching it SPIFFE-shaped actors, and teaching it to subset-check
++`authorization_details`, is work to be done rather than art to reuse. And the
++delegation mint, while it exists and is hardened, is **not currently
++reachable**: client registration hardcodes public clients with auth method
++`none` and permits only `authorization_code` and `refresh_token`, so no client
++that may use the exchange grant can be provisioned. The code path exists; the
++deployable configuration does not.
+ 
+ The cast for both: **Alice** (user) → **her mecatl agent** (session
+ instance `agent/main/inst/<sid>`) → **a code-reviewer subagent**
+@@ -711,9 +903,11 @@ plain credential-store path genuinely serves).
+ 
+ Here the backend's authorization server does not trust mecatl's trust
+ domain directly, so the delegation crosses domains via the Identity
+-Assertion JWT Authorization Grant. mecatl's chain rides the token the
+-whole way. **The backend must be an enterprise service whose AS implements
+-the ID-JAG target grant**: the canonical case is an internal corporate API
++Assertion JWT Authorization Grant. mecatl's chain rides as far as vMCP,
++where enforcement happens; it does **not** reach the backend, because step 5b
++below has the backend's own AS mint a fresh token and nothing copies the chain
++across that mint. **The backend must be an enterprise service whose AS
++implements the ID-JAG target grant**: the canonical case is an internal corporate API
+ or an Okta-federated enterprise app (ID-JAG,
+ `draft-ietf-oauth-identity-assertion-authz-grant`, is an Okta-authored
+ enterprise-IdP→enterprise-app grant). A public SaaS is *not* a valid
+@@ -771,11 +965,52 @@ What to notice:
+   bridge. mecatl's SVID is what the vMCP validates to know *which* agent
+   instance is calling; the XAA strategy then does what it already does for
+   any caller.
+-- **The attenuation is enforceable by the backend.** The child SVID's
+-  `authorization_details` is a strict subset of the parent's, signed at the
+-  mint seam. The backend (or vMCP's Cedar layer, which already evaluates
+-  SPIFFE IDs in actor claims) can check that the acting agent holds only
+-  narrowed authority. It does not have to trust mecatl's say-so.
++
++- **Two steps of this scenario cannot run today, and both are earlier than the
++  one the prose predicts.** Worth stating precisely, because they set the
++  sequencing.
++
++  *Step 4 fails first.* vMCP validates inbound tokens with a self-issued
++  validator only, and the multi-issuer validator in that tree has no callers
++  and an open TODO. So a mecatl-minted JWT-SVID is not a validatable inbound
++  token at all — "mecatl's SVID is what the vMCP validates" is the thing to
++  build, not a thing to use. This gates both scenarios, not just this one.
++
++  *Step 5a fails next, and structurally.* The XAA strategy does not read the
++  inbound token's claims. It reads the stored upstream ID token, which only a
++  session-keyed (`tsid`) load populates, and it hard-fails without it. This
++  scenario shows `identity.UpstreamIDTokens[alice]` populated with no `tsid`
++  prerequisite stated anywhere, while Scenario B states that prerequisite
++  explicitly. So XAA is, of the seven strategies, the one that structurally
++  cannot work from a foreign-issuer inbound token.
++
++  The constructive route: `token_exchange` survives in its
++  no-subject-provider mode by exchanging the inbound token itself, so it is
++  the strategy this scenario should walk if the goal is a cross-domain path
++  driven by a mecatl-issued credential. That would also make Scenario A
++  independent of the `tsid` conflict described under Scenario B.
++- **The attenuation is enforceable at the gateway, and only there.** The child
++  SVID's `authorization_details` is a strict subset of the parent's, signed at
++  the mint seam, and vMCP can check that without trusting mecatl's say-so.
++  The *backend* cannot, and this is a correction to an earlier draft of this
++  section. The XAA strategy derives its ID-JAG from the stored upstream ID
++  token and never reads the inbound token's claims map, so nothing mecatl put
++  in a claim — `delegation_chain`, `authorization_details`, anything — crosses
++  to the backend. "The chain rides the token the whole way" is not true of the
++  code; it rides as far as vMCP.
++
++  That is the right place for it anyway, since a backend has no policy about
++  mecatl's subagents that it could meaningfully apply. But it means the
++  verifiable-by-a-third-party claim has to be scoped to the gateway, not the
++  ultimate resource server.
++
++  Two related things to keep honest. Cedar today is **claim-generic**: it has
++  no SPIFFE-awareness, `act` reaches it as an ordinary nested claim, and the
++  SPIFFE IDs in its test fixtures are matched by a string glob that would
++  treat any other prefix identically. And the shipped mint puts the OAuth
++  `client_id` in `act.sub` with no SPIFFE parsing, so a SPIFFE ID only appears
++  there if `client_id` *is* one — which requires the SPIFFE client-auth path
++  discussed above. The policy story is buildable, not built.
+ 
+ ### Scenario B: ToolHive with a credential store keyed off the user
+ 
+@@ -840,12 +1075,46 @@ What to notice:
+   against those fields (`ErrInvalidBinding` is declared, never returned on
+   this path). And under this design's own tier model the inbound `sub` is
+   the *acting instance*, not Alice; she rides `delegation_chain`. So
+-  "the right user's credential" is a property **mecatl must guarantee
+-  unilaterally**: bind the `tsid` it emits to Alice-rooted chains only, and
+-  never re-issue a `tsid` to a chain rooted at a different user. The cleaner
+-  fix is on ToolHive's side: re-check the inbound `sub` (or the chain's
+-  root user) against `stored.UserID` at the read seam. That is a gap to
+-  file, not a property already present. Naming it beats overclaiming it.
++  "the right user's credential" is not a property either side currently
++  enforces.
++
++  And mecatl cannot supply it unilaterally, which is worth stating plainly
++  because an earlier draft of this bullet asked it to. Only ToolHive's AS mints
++  a `tsid`; mecatl never emits one, so it has nothing to bind. That leaves the
++  fix squarely on ToolHive's read seam: re-check the inbound `sub`, or the
++  chain's root user, against `stored.UserID`. What mecatl can contribute is the
++  chain that makes the check answerable — without a root user in the token
++  there is nothing for the seam to compare against. A gap to file jointly,
++  then, rather than a property already present. Naming it beats overclaiming
++  it.
++- **This scenario currently requires a combination ToolHive's own
++  least-privilege rule forbids, and that is the sharpest open problem in this
++  design.** ToolHive's analysis holds that a delegated token carrying `act`
++  must not also carry a `tsid`, because a `tsid` dereferences to the user's
++  *entire* stored credential set. But this scenario needs exactly that: an
++  inbound token that both names the acting agent and carries the `tsid` the
++  read path keys off. The rule is presently an omission rather than an
++  enforcement (the handler passes an empty session link for delegated tokens
++  and nothing rejects a token carrying both), so the scenario runs today. It
++  runs on the strength of a missing check.
++
++  It is also worse than ToolHive's own consequence table states. That table
++  lists `xaa` as surviving without the `tsid`; verified against the strategy
++  implementations it does not, because `xaa` reads the stored upstream ID
++  token, which only the `tsid`-keyed load populates. So a delegated token
++  keeps `header_injection` and `unauthenticated` and loses everything else,
++  which means "confine delegation to XAA-capable backends" is not an
++  available escape hatch. Scenario A is affected as much as Scenario B.
++
++  Three ways out, and the second is the one to engage with. The
++  `token_exchange` and `aws_sts` strategies *do* survive in their
++  no-subject-provider mode, exchanging the delegated token itself: a shipped
++  path that works. ToolHive's own proposal is a two-leg exchange keeping the
++  `tsid` inside the AS so it is never a claim in a token mecatl holds. And a
++  reference narrowed to one backend or scope set would not carry the
++  whole-credential-set problem in the first place, though whether the storage
++  layer can express that is unverified.
++
+ - **The audit trail closes the loop.** mecatl's event log records the
+   chain (Alice → agent → subagent) with `txn`; ToolHive's audit captures
+   the delegation chain from the inbound token. The `txn` correlation id is
+@@ -857,8 +1126,10 @@ What to notice:
+ Both scenarios lean on constructs ToolHive already ships: the embedded AS's
+ nested-`act` delegation minting, the outgoing-strategy registry (XAA,
+ upstream_inject, token_exchange), the user-keyed upstream credential store,
+-and Cedar's SPIFFE-aware actor evaluation. That makes it the shortest path
+-to a working proof. But nothing in the design is ToolHive-specific: any
++and a Cedar layer that can evaluate a nested actor claim once it is taught
++what to look for. That makes it the shortest path to a working proof, with the
++two qualifications above: the mint needs a provisionable confidential client,
++and Cedar needs the SPIFFE-shaped actor and subset-checking written. But nothing in the design is ToolHive-specific: any
+ downstream that (a) validates a JWT-SVID against the bundle, (b) carries a
+ delegation chain, and (c) enforces an authorization decision from the actor
+ plus a structured scope can play the same role: a memory service, the
+@@ -1037,6 +1308,13 @@ after something has been learned about whether the novel parts work.
+   trust-domain renaming has a migration story or is a one-time choice best
+   locked early. A rename orphans every SPIFFE ID in the historical audit log.
+   Standard issuer-operator concerns; none novel.
++
++  One consequence of that last point reaches further than audit, and is worth
++  deciding early: **whether gateway policy should name the SPIFFE ID or a
++  stable alias.** An SVID path encodes the deployment, so if Cedar rules match
++  on it directly, a trust-domain rename or a cluster move rewrites every rule.
++  Naming an alias that resolves to the current SPIFFE ID keeps policy stable
++  across both.
+ - **Claim-name drift**: `delegation_chain`/`depth` are pre-standard (URI-named
+   to mark that); `txn` is *not*, it is registered in RFC 8417 §2.2.
+   `delegation_chain` is structurally RFC 8693 `act`-shaped by design and the
+@@ -1103,6 +1381,14 @@ after something has been learned about whether the novel parts work.
+   `jkt`), RFC 3820 (X.509 proxy certificates: `pCPathLenConstraint` §3.8.1 +
+   rights-intersection §3.8.2, prior art for `depth`/`max_depth` and for the
+   attenuation itself)
++- For the outbound hop: RFC 8705 (mutual-TLS client authentication; §2
++  requires the client to *send* `client_id`, §2.1.2 URI-SAN matching, §3
++  certificate-bound tokens), RFC 9068 §2.2 (`client_id` REQUIRED in
++  conformant JWT access tokens, which is what makes the consent check
++  reachable without `may_act`), RFC 7523 (JWT assertion grants),
++  `draft-ietf-oauth-spiffe-client-auth` (§3.1 the `jwt-spiffe` assertion type
++  and its trust-bundle requirement; the X.509 method is RFC 8705 with SPIFFE
++  trust anchors)
+ - IETF drafts: `draft-ietf-wimse-arch` (§3.4.11 AI intermediaries; Identity
+   Proxy; egress generalization), `draft-ietf-wimse-wpt`,
+   `draft-ietf-oauth-transaction-tokens` (`txn`, MUST-narrow replacement

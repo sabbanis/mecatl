@@ -1,0 +1,530 @@
+<title>Two agent-identity flows, compared</title>
+
+<style>
+  :root {
+    --ink:        #14171d;
+    --ink-2:      #3d434f;
+    --ink-3:      #6a7280;
+    --ground:     #f6f7f8;
+    --card:       #ffffff;
+    --rule:       #dfe2e6;
+    --rule-soft:  #ebeef1;
+    --a:          #3f47a0;   /* their doc  */
+    --a-wash:     #eceef8;
+    --b:          #0d6f68;   /* my doc     */
+    --b-wash:     #e6f2f0;
+    --flag:       #9a5a20;   /* contested  */
+    --flag-wash:  #f8efe4;
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
+    --sans: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --ink:#e8eaed; --ink-2:#b3b9c4; --ink-3:#868d9a;
+      --ground:#0f1216; --card:#171b21; --rule:#2b313a; --rule-soft:#20252c;
+      --a:#9aa2ee; --a-wash:#1c2036; --b:#5cc4ba; --b-wash:#11282a;
+      --flag:#d69a5c; --flag-wash:#2a2015;
+    }
+  }
+  :root[data-theme="dark"] {
+    --ink:#e8eaed; --ink-2:#b3b9c4; --ink-3:#868d9a;
+    --ground:#0f1216; --card:#171b21; --rule:#2b313a; --rule-soft:#20252c;
+    --a:#9aa2ee; --a-wash:#1c2036; --b:#5cc4ba; --b-wash:#11282a;
+    --flag:#d69a5c; --flag-wash:#2a2015;
+  }
+  :root[data-theme="light"] {
+    --ink:#14171d; --ink-2:#3d434f; --ink-3:#6a7280;
+    --ground:#f6f7f8; --card:#ffffff; --rule:#dfe2e6; --rule-soft:#ebeef1;
+    --a:#3f47a0; --a-wash:#eceef8; --b:#0d6f68; --b-wash:#e6f2f0;
+    --flag:#9a5a20; --flag-wash:#f8efe4;
+  }
+
+  .wrap {
+    background: var(--ground); color: var(--ink);
+    font-family: var(--sans); line-height: 1.55;
+    padding: clamp(1.5rem, 4vw, 4rem) clamp(1rem, 4vw, 3rem) 5rem;
+    -webkit-font-smoothing: antialiased;
+  }
+  .col { max-width: 66rem; margin: 0 auto; display: flex; flex-direction: column; gap: 3rem; }
+
+  .eyebrow {
+    font-family: var(--mono); font-size: .7rem; letter-spacing: .14em;
+    text-transform: uppercase; color: var(--ink-3); margin: 0 0 .75rem;
+  }
+  h1 {
+    font-family: var(--mono); font-weight: 600;
+    font-size: clamp(1.5rem, 3.6vw, 2.35rem); letter-spacing: -.02em;
+    line-height: 1.12; margin: 0 0 .9rem; text-wrap: balance;
+  }
+  h2 {
+    font-family: var(--mono); font-weight: 600; font-size: 1.02rem;
+    letter-spacing: -.01em; margin: 0 0 1.1rem;
+    padding-bottom: .5rem; border-bottom: 1px solid var(--rule);
+  }
+  h3 { font-size: .95rem; font-weight: 650; margin: 0 0 .4rem; }
+  p  { margin: 0 0 .8rem; max-width: 62ch; color: var(--ink-2); }
+  p.lede { font-size: 1.06rem; color: var(--ink-2); max-width: 60ch; }
+  strong { color: var(--ink); font-weight: 650; }
+  code {
+    font-family: var(--mono); font-size: .85em;
+    background: var(--rule-soft); padding: .1em .34em; border-radius: 3px;
+  }
+  section > :last-child { margin-bottom: 0; }
+
+  /* ---- hop-aligned comparison ---- */
+  .hops { display: flex; flex-direction: column; gap: .5rem; }
+  .hoprow {
+    display: grid; grid-template-columns: 2.2rem 1fr 1fr; gap: .5rem;
+    align-items: stretch;
+  }
+  .hopnum {
+    font-family: var(--mono); font-size: .78rem; font-variant-numeric: tabular-nums;
+    color: var(--ink-3); display: flex; align-items: center; justify-content: center;
+    border-right: 1px solid var(--rule-soft);
+  }
+  .cell {
+    background: var(--card); border: 1px solid var(--rule);
+    border-radius: 4px; padding: .7rem .8rem;
+    display: flex; flex-direction: column; gap: .3rem;
+  }
+  .cell.a { border-left: 3px solid var(--a); }
+  .cell.b { border-left: 3px solid var(--b); }
+  .cell .who {
+    font-family: var(--mono); font-size: .72rem; color: var(--ink-3);
+    letter-spacing: .02em;
+  }
+  .cell .what { font-size: .87rem; color: var(--ink-2); }
+  .cell .what code { font-size: .8em; }
+  .unspec { color: var(--flag); font-style: italic; }
+
+  .colhead {
+    display: grid; grid-template-columns: 2.2rem 1fr 1fr; gap: .5rem;
+    margin-bottom: .25rem;
+  }
+  .colhead div:nth-child(2), .colhead div:nth-child(3) {
+    font-family: var(--mono); font-size: .74rem; letter-spacing: .06em;
+    text-transform: uppercase; padding: 0 .8rem;
+  }
+  .colhead div:nth-child(2) { color: var(--a); }
+  .colhead div:nth-child(3) { color: var(--b); }
+
+  /* ---- divergence list ---- */
+  .divs { display: flex; flex-direction: column; gap: .1rem; }
+  .div {
+    display: grid; grid-template-columns: 4.6rem 1fr; gap: .9rem;
+    padding: .7rem 0; border-top: 1px solid var(--rule-soft); align-items: start;
+  }
+  .kind {
+    font-family: var(--mono); font-size: .66rem; letter-spacing: .05em;
+    text-transform: uppercase; padding: .2rem .35rem; border-radius: 3px;
+    text-align: center; line-height: 1.3;
+  }
+  .kind.real { background: var(--flag-wash); color: var(--flag); }
+  .kind.same { background: var(--rule-soft); color: var(--ink-3); }
+  .kind.both { background: var(--b-wash); color: var(--b); }
+  .kind.settled { background: var(--a-wash); color: var(--a); }
+  .blockers { display: flex; flex-direction: column; gap: .8rem; }
+  .blocker {
+    display: grid; grid-template-columns: 1.7rem 1fr; gap: .7rem;
+    background: var(--card); border: 1px solid var(--rule);
+    border-left: 3px solid var(--flag); border-radius: 4px; padding: .8rem .9rem;
+  }
+  .blocker .bn {
+    font-family: var(--mono); font-size: .8rem; color: var(--flag);
+    font-variant-numeric: tabular-nums;
+  }
+  .blocker p { margin: .25rem 0 0; font-size: .87rem; }
+  .blocker h3 { font-size: .89rem; }
+  .div p { margin: 0; font-size: .89rem; }
+  .div h3 { font-family: var(--mono); font-size: .84rem; font-weight: 600; }
+
+  /* ---- verdict panel ---- */
+  .verdict {
+    background: var(--flag-wash); border: 1px solid var(--flag);
+    border-radius: 4px; padding: 1.15rem 1.25rem;
+  }
+  .verdict h2 { border-color: color-mix(in srgb, var(--flag) 35%, transparent); }
+  .verdict p { color: var(--ink-2); }
+
+  /* ---- only-in lists ---- */
+  .split { display: grid; grid-template-columns: 1fr 1fr; gap: 1.5rem; }
+  .onlylist { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: .45rem; }
+  .onlylist li {
+    font-size: .87rem; color: var(--ink-2); padding-left: .85rem; position: relative;
+  }
+  .onlylist li::before {
+    content: ""; position: absolute; left: 0; top: .52em;
+    width: 4px; height: 4px; border-radius: 50%;
+  }
+  .onlylist.a li::before { background: var(--a); }
+  .onlylist.b li::before { background: var(--b); }
+  .onlylist .hot { color: var(--ink); font-weight: 600; }
+
+  /* ---- boundaries strip ---- */
+  .bounds {
+    display: grid; grid-template-columns: 1fr auto 1fr auto 1fr; gap: .6rem;
+    align-items: center; overflow-x: auto; padding-bottom: .3rem;
+  }
+  .node {
+    background: var(--card); border: 1px solid var(--rule); border-radius: 4px;
+    padding: .7rem .8rem; min-width: 8rem;
+  }
+  .node .n { font-family: var(--mono); font-size: .8rem; color: var(--ink); }
+  .node .s { font-size: .76rem; color: var(--ink-3); margin-top: .15rem; }
+  .arrow {
+    font-family: var(--mono); font-size: .68rem; color: var(--ink-3);
+    text-align: center; letter-spacing: .04em; white-space: nowrap;
+  }
+  .arrow b { display: block; color: var(--ink-2); font-weight: 600; }
+
+  footer {
+    border-top: 1px solid var(--rule); padding-top: 1.1rem;
+    font-size: .82rem; color: var(--ink-3);
+  }
+  footer p { color: var(--ink-3); font-size: .82rem; }
+
+  a { color: var(--b); }
+  a:focus-visible, [tabindex]:focus-visible { outline: 2px solid var(--b); outline-offset: 2px; }
+
+  @media (max-width: 46rem) {
+    .hoprow, .colhead { grid-template-columns: 1.6rem 1fr; }
+    .colhead div:nth-child(3) { display: none; }
+    .cell.b { margin-left: 1.6rem; }
+    .split { grid-template-columns: 1fr; }
+    .hopnum { border-right: none; }
+  }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+</style>
+
+<div class="wrap">
+<div class="col">
+
+  <header>
+    <p class="eyebrow">mecatl · PR #321 vs PR #324 · 30 Jul 2026</p>
+    <h1>Two agent-identity flows, compared</h1>
+    <p class="lede">Four agents traced both documents hop by hop, checked them against the
+    specs, and mapped the overlap. Neither document was treated as authoritative. This is
+    what they found.</p>
+  </header>
+
+  <section>
+    <h2>The shape both documents are describing</h2>
+    <p>vMCP is a gateway, not an endpoint, so a tool call crosses two boundaries with
+    different problems. Both documents cover both hops. They disagree about what travels
+    across the first one.</p>
+    <div class="bounds">
+      <div class="node"><div class="n">user</div><div class="s">access token, or ID token</div></div>
+      <div class="arrow"><b>edge</b>binds principal</div>
+      <div class="node"><div class="n">mecatl</div><div class="s">holds the pod SVID; subagents are goroutines and hold no keys</div></div>
+      <div class="arrow"><b>hop 1</b>contested</div>
+      <div class="node"><div class="n">vMCP</div><div class="s">gateway + its own authorization server; policy enforced here</div></div>
+      <div class="arrow"><b>hop 2</b>per backend</div>
+      <div class="node"><div class="n">backends</div><div class="s">most will not trust vMCP as an issuer</div></div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Hop by hop, aligned</h2>
+    <div class="colhead">
+      <div></div>
+      <div>#321 · agent-identity-model</div>
+      <div>#324 · agent-identity-outbound</div>
+    </div>
+    <div class="hops">
+
+      <div class="hoprow">
+        <div class="hopnum">1</div>
+        <div class="cell a">
+          <div class="who">user → mecatl edge</div>
+          <div class="what">OIDC bearer from the corporate IdP, or an mTLS client cert. Edge
+          interceptor validates and binds <code>user/&lt;uid&gt;</code>.</div>
+        </div>
+        <div class="cell b">
+          <div class="who">user → mecatl</div>
+          <div class="what">Access token or ID token. Edge validation
+          <span class="unspec">unspecified</span> — named as a missing prerequisite rather
+          than designed.</div>
+        </div>
+      </div>
+
+      <div class="hoprow">
+        <div class="hopnum">2</div>
+        <div class="cell a">
+          <div class="who">mecatl issuer → itself · no network hop</div>
+          <div class="what">Local signing over a KMS-backed intermediate. Mints an instance
+          JWT-SVID with <code>delegation_chain</code>, <code>authorization_details</code>,
+          <code>txn</code>. RFC 8693's wire protocol <em>never runs</em>.</div>
+        </div>
+        <div class="cell b">
+          <div class="who">mecatl → vMCP's AS <code>/token</code></div>
+          <div class="what">mTLS, client cert = the X.509-SVID. Two grants under one
+          client-auth path: <code>client_credentials</code> when there's no user,
+          <code>token-exchange</code> when there is. Returns a <em>vMCP-minted</em> token.</div>
+        </div>
+      </div>
+
+      <div class="hoprow">
+        <div class="hopnum">3</div>
+        <div class="cell a">
+          <div class="who">child mint at the spawn seam</div>
+          <div class="what">Issuer refuses unless the child's
+          <code>authorization_details</code> is a strict subset. Chain becomes
+          <code>[user, agent]</code>. Keyed per <em>instance</em>.</div>
+        </div>
+        <div class="cell b">
+          <div class="who">subagent identity</div>
+          <div class="what">Rides <code>act</code> in the vMCP-minted token, keyed per
+          <em>definition</em> so concurrent siblings share one token.</div>
+        </div>
+      </div>
+
+      <div class="hoprow">
+        <div class="hopnum">4</div>
+        <div class="cell a">
+          <div class="who">mecatl → vMCP</div>
+          <div class="what">Presents "child SVID + harness proof-of-possession". What the
+          receiver validates is <span class="unspec">unspecified</span> — no endpoint, grant
+          type, client-auth method or bundle-trust arrangement named.</div>
+        </div>
+        <div class="cell b">
+          <div class="who">mecatl → vMCP MCP endpoint</div>
+          <div class="what">Presents the token minted at step 2. Nothing of mecatl's own
+          issuance crosses this hop.</div>
+        </div>
+      </div>
+
+      <div class="hoprow">
+        <div class="hopnum">5</div>
+        <div class="cell a">
+          <div class="who">vMCP → backend · two scenarios</div>
+          <div class="what">Scenario A: token exchange at the org IdP → ID-JAG → RFC 7523 at
+          the backend AS. Scenario B: <code>tsid</code> → load the user's stored upstream
+          tokens → inject the user's real backend token.</div>
+        </div>
+        <div class="cell b">
+          <div class="who">vMCP → backend</div>
+          <div class="what">A strategy chosen per backend: header pass-through, plain 3LO,
+          STS exchange, a cloud path, or XAA. Which ones remain available depends on what
+          hop 1 chose.</div>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section class="verdict">
+    <h2>The finding that decides the disposition</h2>
+    <p><strong>#321's Scenario B is built on a combination its own dependency forbids.</strong>
+    That scenario needs a <code>tsid</code> claim to reach the user's stored credentials — and
+    #321 concedes only ToolHive's authorization server can mint one, so a token minted by
+    mecatl's own issuer cannot carry it. The exchange that would produce such a token is
+    described only in #324.</p>
+    <p>Meanwhile #324 finds that a delegated token carrying <code>act</code> must not carry
+    that same upstream reference, on least-privilege grounds — which breaks exactly the
+    <code>upstream_inject</code> strategy Scenario B walks through.</p>
+    <p>So the two documents are not duplicating each other. One contains a worked example;
+    the other contains both the mechanism that example presupposes and the rule that
+    invalidates it. A contradiction like that has to sit next to the scenario it concerns.</p>
+  </section>
+
+  <section>
+    <h2>Three blockers the code turned up, none of which either document had</h2>
+    <p>Verification against four ToolHive branches found that the flow #324 proposes cannot
+    run today — and for reasons other than the one #324 names.</p>
+    <div class="blockers">
+      <div class="blocker">
+        <div class="bn">1</div>
+        <div>
+          <h3>No client that may use the exchange grant can be provisioned</h3>
+          <p>The handler rejects public clients and requires the grant registered. Dynamic
+          registration is the only provisioning path and it hardcodes clients as public,
+          rejects any auth method but <code>none</code>, and permits only
+          <code>authorization_code</code> and <code>refresh_token</code>. No static-client
+          config exists. Identical on all four branches — so the shipped delegation path is
+          reachable only through a test seam. Small fix: 50 to 100 lines.</p>
+        </div>
+      </div>
+      <div class="blocker">
+        <div class="bn">2</div>
+        <div>
+          <h3>The subject token must be issued by ToolHive's own server</h3>
+          <p>Only a self-issued validator is wired; the multi-issuer validator has no callers
+          and an open TODO. So an Okta or Keycloak access token cannot be the
+          <code>subject_token</code> — which is precisely what #324's flow assumes it is.
+          The harder of the two, and it has to be resolved first.</p>
+        </div>
+      </div>
+      <div class="blocker">
+        <div class="bn">3</div>
+        <div>
+          <h3>A delegated token keeps only the two trivial strategies</h3>
+          <p>ToolHive's own consequence table lists XAA as surviving without the upstream
+          session reference. It does not — XAA reads the stored upstream ID token and fails
+          without it, exactly as the 3LO path does. So "confine delegation to XAA-capable
+          backends" is not an available escape hatch, and the conflict #324 identified is
+          sharper than it wrote. The genuine hatch, which neither document mentions: the
+          STS-exchange and cloud strategies survive in their no-subject-provider mode by
+          exchanging the delegated token itself.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Where they diverge, and what kind of divergence it is</h2>
+    <div class="divs">
+
+      <div class="div">
+        <div class="kind real">disagree</div>
+        <div>
+          <h3>What hop 1 actually presents</h3>
+          <p>#321: mecatl's own child SVID is the inbound credential. #324: the SVID is only
+          client authentication at a token endpoint, and the request carries a vMCP-minted
+          token. Genuine, and #321 is underspecified here — it names no endpoint, grant type
+          or client-auth method.</p>
+        </div>
+      </div>
+
+      <div class="div">
+        <div class="kind real">disagree</div>
+        <div>
+          <h3>JWT-SVID or X.509-SVID</h3>
+          <p>#321 scopes to JWT-SVIDs and calls X.509 "a real addition". #324 requires mTLS
+          with the X.509-SVID. The specs favour #324 here: the X.509 path is ratified
+          (RFC 8705), needs nothing from any external party, and makes issued tokens
+          certificate-bound for free.</p>
+        </div>
+      </div>
+
+      <div class="div">
+        <div class="kind settled">settled</div>
+        <div>
+          <h3>Does the chain survive to hop 2 — no</h3>
+          <p>#321 says mecatl's chain "rides the token the whole way". The code disagrees: the
+          XAA strategy touches the identity at four points and never reads the claims map, so
+          nothing mecatl puts in a claim reaches a backend. #324 is right. What survives is
+          that the chain reaches vMCP, which is where enforcement belongs.</p>
+        </div>
+      </div>
+
+      <div class="div">
+        <div class="kind settled">settled</div>
+        <div>
+          <h3>Does the gateway already check SPIFFE IDs — no</h3>
+          <p>#321's scenarios say the policy layer "already evaluates SPIFFE IDs in
+          <code>act.sub</code>". The shipped mint puts the OAuth <code>client_id</code> there
+          and does no SPIFFE parsing. SPIFFE appears in two files, both tests, matched by a
+          string glob that would treat <code>"banana*"</code> the same way.</p>
+        </div>
+      </div>
+
+      <div class="div">
+        <div class="kind real">disagree</div>
+        <div>
+          <h3>What SPIFFE buys</h3>
+          <p>#321 adopts the identity half wholesale. #324 argues it buys two narrower
+          things — no static client secret on disk, plus per-pod attestation — and that the
+          trust-domain and rotation machinery may sit idle under the ID-JAG option.</p>
+        </div>
+      </div>
+
+      <div class="div">
+        <div class="kind both">both work</div>
+        <div>
+          <h3>Where ID-JAG sits</h3>
+          <p>#321 puts it at hop 2, vMCP to backend. #324's second option puts it at hop 1,
+          mecatl to IdP to vMCP. Different hops, both coherent, same draft cited. Not a
+          conflict.</p>
+        </div>
+      </div>
+
+      <div class="div">
+        <div class="kind both">both work</div>
+        <div>
+          <h3>Instance or definition keying</h3>
+          <p>They key different objects — #321 an SVID it mints itself, #324 a token vMCP
+          mints. It only becomes a real conflict if the SVID is what gets presented, which
+          is the first divergence above.</p>
+        </div>
+      </div>
+
+      <div class="div">
+        <div class="kind same">agree</div>
+        <div>
+          <h3>Unattended work</h3>
+          <p>Both land on <code>client_credentials</code>, and on an audit log that says the
+          schedule did it rather than naming a user who was asleep. #324 states it as a
+          grant, #321 as an owner record.</p>
+        </div>
+      </div>
+
+    </div>
+  </section>
+
+  <section>
+    <h2>What exists in only one of them</h2>
+    <div class="split">
+      <div>
+        <h3 style="font-family:var(--mono);color:var(--a);font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;margin-bottom:.7rem">Only #321</h3>
+        <ul class="onlylist a">
+          <li>Issuer construction: KMS root, in-memory intermediate, HA, JWKS, federation profiles</li>
+          <li>The definition / instance / run tiers and the SPIFFE ID path scheme</li>
+          <li>Parked-credential lifecycle and re-mint on resume</li>
+          <li>Full threat model, P1 through P5</li>
+          <li>Phasing, and build versus buy</li>
+          <li>Why SPIRE cannot attest a goroutine</li>
+          <li class="hot">A ToolHive bug #324 missed: the <code>tsid</code>-keyed read never re-checks inbound <code>sub</code> against the stored user</li>
+        </ul>
+      </div>
+      <div>
+        <h3 style="font-family:var(--mono);color:var(--b);font-size:.8rem;letter-spacing:.05em;text-transform:uppercase;margin-bottom:.7rem">Only #324</h3>
+        <ul class="onlylist b">
+          <li class="hot">A delegated token breaks the plain-3LO, STS and cloud strategies — the ones serving most ordinary backends</li>
+          <li class="hot">Three competing values for <code>act.sub</code> are in flight, so no policy can be written yet</li>
+          <li>The two-hop decomposition itself, which makes #321's own scenarios legible</li>
+          <li>Hop-1 client-auth mechanics, and the ingress certificate-forwarding consequence</li>
+          <li>The fail-closed consent precondition, and why RFC 9068 §2.2 makes it reachable without <code>may_act</code></li>
+          <li>Token caching as the reason to key on the definition</li>
+          <li>What the outbound path does today: a static header map baked in at dial time</li>
+        </ul>
+      </div>
+    </div>
+  </section>
+
+  <section>
+    <h2>Two corrections that came back at the author of #324</h2>
+    <p><strong>The <code>client_id</code> direction was wrong.</strong> #324 said the
+    authorization server reads the SPIFFE ID out of the certificate. Both RFC 8705 §2 and the
+    SPIFFE draft require the client to send <code>client_id</code>, with the server checking
+    it against the certificate's URI SAN. Same resulting string, so the argument built on it
+    survives; the sentence is fixed.</p>
+    <p><strong>#321's case for a private chain claim is stronger than #324 credited.</strong>
+    RFC 8693 §4.1 also restricts <code>act</code> contents to identity — non-identity claims
+    "are not meaningful when used within an <code>act</code> claim". That forbids a per-hop
+    scope snapshot inside <code>act</code> outright, which is a firmer reason than the one
+    #321 argued for itself.</p>
+  </section>
+
+  <section>
+    <h2>Still open, and worth more than either document settles</h2>
+    <p>Joe Beda's review comment argues the root principal is authorizable, with rate-limit
+    fan-out and user-store cases behind it. #321 still holds prior actors as audit-only. That
+    sits on the same axis as #324's finding that the outermost actor slot holds exactly one
+    party, so harness-level bounds must fold into scope at mint time. Neither document
+    resolves it, and it is probably the most interesting question on the PR.</p>
+  </section>
+
+  <footer>
+    <p>Sources: <code>docs/agent-identity-model.md</code> at <code>b726aa53</code> (1135 lines)
+    and <code>docs/agent-identity-outbound.md</code> (230 lines). Traced by four agents working
+    independently — flow comparison, spec conformance against RFC 8693 / 8705 / 9068 / 7523 and
+    the SPIFFE and ID-JAG drafts, overlap mapping, and code verification against ToolHive at
+    <code>main</code> 3d44435d7, <code>token-delegation</code> 254ae9126,
+    <code>xaa-spike-1</code> 222d402cb and <code>spiffee-authserver</code> c71c35a17.</p>
+    <p>Neither document was treated as authoritative, and both turned out to be wrong about
+    something. Two claims in #324 were corrected by the specs; two claims in #321 were
+    corrected by the code; and the three blockers above were in neither.</p>
+  </footer>
+
+</div>
+</div>
