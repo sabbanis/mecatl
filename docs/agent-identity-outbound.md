@@ -309,11 +309,25 @@ and tested — the composed catalog, the deny-dominant evaluator pinned to an au
 but it runs entirely inside the process. That stops the harness doing the wrong thing by
 accident. It does not let anyone else confirm it didn't.
 
-> **Today.** The narrowing works, in-process. Nothing carries the reach-changing part
-> outward.
+> **Today, and this is worse than it reads.** The narrowing does not work per spawn. A
+> child's tool set is resolved *statically, per definition, at Build time*, against the
+> shared process-wide catalog. Nothing reads the parent's current authority, because there
+> is no authority value in scope to read. The per-call knobs a caller can set are limits
+> and a selector for which pre-built catalog tier to use — there is no field for narrowing
+> tools or resources on a particular spawn.
 >
-> **Change.** That part has to reach whatever decides at hops 5 and 6. How much travels
-> in a credential and how much a policy already knows is open — see the end.
+> The audience tag on permission rules does not fill the gap either. It is a
+> config-parse-time main-or-subagent label on *rules*, identical for every child of a
+> session, so it can express "children get this rule" and not "this child gets three of
+> the eight tools its definition allows".
+>
+> **Change.** Two things, not one. **Invent authority as a runtime value** — something a
+> parent holds, a spawn subtracts from, and a child carries. Then carry the reach-changing
+> part of it outward. The first has no existing counterpart to extend.
+>
+> An earlier version of this doc said the narrowing worked and only failed to travel. That
+> was the most consequential wrong claim in it: it made hop 2 sound like plumbing when it
+> is the prerequisite for anything the gateway can enforce against.
 
 **What an attacker gets.** Prompt injection at the *parent* is worse than at a child,
 because the parent picks the child's tools, mode and prompt. Identity cannot prevent
@@ -446,6 +460,43 @@ than an invented one means it works against any authorization server that implem
 > bundle. The workload API is now on the credential path, so a pod that cannot reach it at
 > startup obtains no credential for any session.
 
+**Reuse buys a staleness window, and it should be stated rather than discovered.** A
+credential minted for one combination of user, definition, authority and audience is reused
+until it expires. If authority narrows mid-session — a guardrail trips to enforcing, a
+posture changes, an operator tightens something — the already-minted credential still carries
+the wider authority for the remainder of its lifetime.
+
+The bound is the credential's TTL, which is minutes. Worth naming because this doc argues
+elsewhere that a stored record is never the authority and the live check is, and that
+argument applies here too: for the length of one TTL, a cached credential *is* the authority
+for outbound calls, whatever the evaluator now thinks. Shortening TTLs trades it for round
+trips and a revocation list trades it for a new distributed dependency; neither is obviously
+better than accepting a bounded window and saying so.
+
+**A definition name is not yet safe to authorize on, and this design currently assumes it
+is.** `act.sub` carries a definition name, and policy keys on it. But agent definitions come
+from sources of different trust — an operator-managed one and a project-tier one read from a
+mutable workspace — and nothing stops both defining `tdd-worker`. The codebase already
+treats those tiers differently, which is why definitions carry an origin label at all.
+
+So a repository someone can push to could define an agent whose name matches one an operator
+granted broad policy to, and policy keyed on the bare name cannot tell them apart. That is
+definition-spoofing through untrusted content, and it defeats the actor claim rather than
+bypassing it.
+
+Two ways to close it, and they are a real choice rather than an obvious one:
+
+- **Put the tier in the identifier** — `agent/operator/tdd-worker` against
+  `agent/project/tdd-worker` — so a rule naming one cannot match the other. Rules get more
+  verbose and the path shape becomes a decision that is awkward to change later.
+- **Only operator-tier definitions get an identity.** A project-tier definition runs under a
+  generic one and cannot be named in policy at all. Simpler and safer, and it removes a
+  capability someone may want, since per-project specialists stop being separately
+  authorizable.
+
+Unresolved here deliberately. The first preserves a capability, the second removes a class of
+risk, and which matters more is not something the properties decide.
+
 **What an attacker gets.** Whoever holds this credential can act as that agent definition,
 for that user, within that scope, until it expires — which is the argument for it naming
 little and expiring fast. An attacker inside the process gets what the model gets, which
@@ -468,6 +519,21 @@ was fixed when the harness minted the credential, before it ran.
 > **Today.** The inbound path reads only `MCP-Protocol-Version` and `Accept`, and the
 > identity struct has no header-populated field, so this already holds. Worth keeping
 > when the outbound path stops baking a static header map into a client at dial time.
+
+**Why this is a header and not the run identifier the companion doc defines.** That doc
+carries a signed per-run identifier inside the credential mecatl issues, and uses it as the
+join key between its audit trail and a downstream one. It cannot serve that role here, for
+the same reason the subject claim differs at this hop: **the credential crossing it is not
+one mecatl issued.** It is minted by the gateway's authorization server, so mecatl has no
+claim to put anything in.
+
+So there are two join keys, in two domains. The signed run identifier joins records about
+credentials mecatl issued. This correlation value joins mecatl's log to the gateway's, and
+is unsigned because nothing is granted by it and only mecatl could forge it — and mecatl is
+already trusted to name the actor in the request that obtained the credential.
+
+Worth stating because the two look like one mechanism described twice, and a reader who
+assumes that will expect the outbound join to carry the guarantees the signed one has.
 
 **What an attacker gets.** An attacker who controls the subagent's reasoning — the
 expected case — gets to choose the tool name and the arguments on this call, and nothing
@@ -828,6 +894,7 @@ not for reading the design.
 | 3 | Publish the trust bundle to the authorization server and the gateway | vMCP + mecatl — two consumers, one artifact | 3, 5 |
 | 4 | An owner on session creation, and on schedules with offline access captured | mecatl — new | 1 |
 | 4a | An immutable internal user id, mapped from (tenant, issuer, subject) at link time | mecatl — new. Email is mutable and not unique across issuers | 1 |
+| 4c | **Invent authority as a runtime value** — held by a parent, subtracted from at spawn, carried by a child. No counterpart exists to extend: today a child's tool set is resolved statically per definition at Build time, and nothing reads a parent's current authority | mecatl — new, and the prerequisite for anything the gateway can enforce against | 2 |
 | 4b | **Enforce the owner on every object operation**, not only listing — get, resume, close, delete, event and archive reads, approvals, schedule read/update/pause/delete, child and team inspection | mecatl — new. An owner field nobody checks is decoration, and this is the whole multi-user isolation story | 1 |
 
 **The design itself**
@@ -841,8 +908,8 @@ not for reading the design.
 | 8a | Key the credential read on the user rather than `tsid` | vMCP — the enterprise user-keyed decorator does this; a port, not new work | 6 |
 | 8c | Enforce that a route resolves to exactly one credential, at configuration time | vMCP — otherwise an allow permits a class and the fetch silently picks a member | 6 |
 | 8b | Decide what happens to the `tsid`-keyed path | vMCP — see below | 6 |
-| 9 | Split authority from limits so only the first can travel | mecatl — new | 2 |
-| 10 | Mint in composition, never behind a port the loop calls | mecatl — `TeamMemberEngineFactory` is the existing shape | 3 |
+| 9 | Split authority from limits so only the first can travel, once the value exists | mecatl — follows 4c | 2 |
+| 10 | Mint in composition, never behind a port the loop calls | mecatl — `Deps.ChildAskReviewer` is the shape to copy: a Build-scoped optional interface owned by `engine/agent`, consumed per-run inside `parentCaps`. It needed no `engine/port` type, which answers the question a reviewer will ask first. The engine factories are the wrong precedent — they bind once at Build with no session access | 3 |
 | 11 | A per-call correlation value | mecatl — the MCP adapter bakes static headers at dial | 4 |
 | 11a | Mint and sign the actor token; the AS validates it | both — [#5815](https://github.com/stacklok/toolhive/issues/5815) is building the AS half with the client-binding check | 3 |
 | 11b | Certificate-bound access tokens, and the gateway validating the binding on every call | vMCP — RFC 8705 §3. The SVID is already there; the binding is not | 3, 5 |
@@ -860,7 +927,9 @@ not for reading the design.
 
 ### Order
 
-Rows 1 to 4 gate everything. Row 4 is mecatl-side and independent, so it runs in parallel.
+Rows 1 to 4 gate everything. The mecatl-side rows (4, 4a, 4b, 4c) are independent of the
+vMCP ones and run in parallel with them — but 4c gates the mecatl side internally, since
+there is nothing to narrow, carry or enforce until a runtime authority value exists.
 
 Then rows 5 to 7, which make the gate correct before anything depends on it — row 5 in
 particular, since it is what makes an allow mean enough to justify a credential.
