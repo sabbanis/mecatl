@@ -574,7 +574,7 @@ identity — that converts Alice's job into somebody else's and makes the audit 
 
 | Adversary | Can | Cannot | Caught at |
 |---|---|---|---|
-| Prompt-injected subagent | choose tool and arguments within the credential's authority | change whose authority is presented, which definition is named, or what it permits — fixed before it ran | the gate |
+| Prompt-injected subagent | choose tool and arguments within the credential's authority, which for now is everything the user granted the provider | change whose authority is presented, which definition is named, or what it permits — fixed before it ran | the gate |
 | Prompt-injected parent | choose a child's authority up to its own | exceed its own; a credential-carried ceiling bounds what it hands out | mint |
 | Stolen access token | attempt replay | use it without the pod's certificate | the gateway |
 | Store writer, no signing key | rewrite mutable rows | forge a schedule envelope, or obtain an agent token — that needs the pod's key and a registration | verification |
@@ -735,6 +735,34 @@ authorization-detail requests unspecified, which makes the narrowing rule at the
 server ours to define and defend rather than adopt. And phase 1 is provable without it, on the
 narrower claim above.
 
+**Per-agent credentials.** The credential this design reads is Alice's, shared by every agent
+acting for her. Three levels of per-agent isolation sit above that, and they differ in who
+decides, not in how much work they are.
+
+| | Who decides | What binds the agent | Have it |
+|---|---|---|---|
+| Gate a shared credential on the agent | the operator, in policy | the `act` claim, read at hop 5 | yes |
+| Consent per agent | the user | a record of which agents she authorized | no |
+| A separate credential per agent | the user, at connect time | the stored credential itself | no |
+
+The first is already in this design — hop 5's rule tests `act.sub`, so an operator can say which
+agents may call which tools against a credential all of them share. What is missing is the
+user's say. Alice never states that code-reviewer may use her GitHub connection, and no
+provider-side limit applies: if the gate is wrong, GitHub sees a token with everything she
+granted.
+
+The second and third both need the same missing thing — a record of the user consenting to a
+named agent. That is the un-defer gate. Without it there is no set to check against, and
+per-agent storage keys would partition credentials by an agent nobody authorized.
+
+Both large platforms bind the agent in, by different means. Bedrock AgentCore stores vault
+entries under the agent identity and the user together, so a token is scoped to that pair.
+Entra Agent ID has no shared vault: the agent identity is a service principal holding its own
+delegated permissions, which the user consents to per agent. Atrium reaches the same place and
+records the same prerequisite, naming the consent record `ConnectorBinding` and deferring all
+three of its isolation models behind it. So one-credential-per-user is a phase, not a property
+of the model.
+
 Schedules, caching and stronger attribution follow.
 
 ---
@@ -775,11 +803,14 @@ assertion and therefore owed the server a trust bundle; splitting the exchange r
 4. Whether leg 1's `sub` is the agent or the pod. RFC 9068 §2.2 says a client-credentials
    token SHOULD carry the client; naming the agent is what makes `act` legible to policy.
 5. Definition-based or instance-based external authorization.
-6. The exact credential selector, and how uniqueness is enforced.
-7. Whether the access token is a profiled JWT or opaque plus introspection.
-8. Whether signed per-call instance attribution is a product requirement.
-9. How ownerless legacy sessions and schedules are handled.
-10. Who owns the schedule grant broker.
+6. Whether per-agent consent is a product requirement, and if so who holds the record. Until
+   one exists, per-agent credentials cannot be built and the user has no say in which agents
+   use her connections.
+7. The exact credential selector, and how uniqueness is enforced.
+8. Whether the access token is a profiled JWT or opaque plus introspection.
+9. Whether signed per-call instance attribution is a product requirement.
+10. How ownerless legacy sessions and schedules are handled.
+11. Who owns the schedule grant broker.
 
 ---
 
