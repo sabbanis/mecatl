@@ -121,9 +121,11 @@ never both, and code that consumes one has to handle each.
 **Actor** — the party exercising it. In a delegated credential these are different, which
 is what distinguishes delegation from impersonation.
 
-**Owner** — who is recorded as responsible for a session or a schedule. Usually the
-principal, but not always: a scheduled run is owned by whoever created it and acts as
-itself.
+**Owner** — who is accountable for a persisted session or schedule, and the identity every
+operation on that object is authorized against. Usually the same person as the principal,
+but a distinct axis: owner is about the stored object, principal is about whose authority a
+call spends. A scheduled run has an owner *and* runs as that owner's principal — see the
+two schedule types below.
 
 **Authority** — what a credential permits: which tools, which operations, which resources.
 Distinct from **limits**, which bound what a run costs — turns, tool calls, timeouts.
@@ -134,7 +136,21 @@ stable enough for a policy to reference. An instance is one running occurrence, 
 and unnamed in advance. Policy keys on definitions. Audit records instances.
 
 **Workload** — in the WIMSE sense, something independently addressable and executable. A
-mecatl pod is one. A subagent is not, which is the reason it has an identity but no key.
+mecatl pod is one. A subagent is not, which is the reason it has an identity but no key. A
+subagent would become one only if deployed as its own execution unit with its own key.
+
+**What this design is and is not, in WIMSE terms.** It is SPIFFE X.509-SVID client
+authentication to an OAuth authorization server, followed by token exchange and
+presentation of an access token to a resource server. It is *not* WIMSE WIT/WPT
+authentication, and this doc previously used that vocabulary more loosely than the protocol
+warrants. Likewise, an authorization server consuming mecatl's bundle one-way is trust
+establishment, not SPIFFE federation — reserve "federation" for a deployment actually
+running the federation protocol between trust domains.
+
+**OAuth resource and internal backend are different things.** The `resource` in a token
+request names the service the token is *for* — the gateway. Which provider credential the
+gateway then reaches for internally is a separate identifier. Requiring exactly one OAuth
+resource is a local invariant of this design, not something RFC 8693 imposes.
 
 **Attenuation** — issuing a credential strictly weaker than the one it derives from. Not
 the same as *revocation*, which withdraws one already issued.
@@ -172,8 +188,15 @@ opposite.
   long-lived and widely presented; what-you-may-do changes per call. Folding the second into
   the first means reissuing on every permission change and showing every recipient a list
   most have no business seeing.
-- **Sharing a credential and attributing an action do not conflict.** One credential reused
-  across siblings, with a logged correlation value naming which one acted.
+- **Sharing a credential and attributing an action do not conflict — but attribution is
+  operational, not cryptographic.** One credential is reused across siblings and a logged
+  correlation value names which one acted. That is enough to reconcile two audit trails and
+  not enough to prove to a third party which goroutine caused a call. The companion doc's
+  claim that every subagent is a distinct cryptographic principal should be read as scoped
+  to the tiers that hold keys; below the pod it is operational correlation. Making it
+  cryptographic would need a request-bound signed assertion per call, and even then a
+  compromised pod could lie about which goroutine acted — so it would buy protection
+  against network tampering, not against a malicious issuer.
 
 ## A worked example
 
@@ -197,45 +220,46 @@ token could be read. If reading an inbound token is the only way an owner ever g
 scheduled work has no owner at all, and no amount of key or issuer machinery fixes that,
 because the work never passes the place where identity is attached.
 
-**A scheduled run acts as the user, not as itself.** Alice said "check CI at 3am and fix
-what is broken." That work is hers: her intent, her repositories, her authority. A run that
-authenticates as itself loses her entirely, which is one of the two bad options epic
-[#5194](https://github.com/stacklok/toolhive/issues/5194) opens with. So the credential
-carries Alice as principal and the agent as actor, exactly as it does when she is present.
+**There are two kinds of schedule and they must be separate types.** Collapsing them is
+how a user grant silently becomes a service identity, or the reverse.
 
-**Which requires capturing offline access when the schedule is created.** There is no way
-to mint a credential naming Alice out of nothing at 3am, and no specification offers one.
-Every shipped system does one of two things: replay something captured at consent time, or
-give up and use a service identity. So the schedule stores a refresh token, obtained with
-Alice's consent at creation, and the fire exchanges it for a short-lived credential.
+A **user-delegated schedule** — "check CI at 3am and fix what is broken" — runs as Alice.
+Its owner is Alice, its subject is Alice's immutable principal, its actor is the schedule
+plus the agent definition, and it holds an explicit offline grant scoped to that schedule.
 
-That is not the stored-credential problem this design removes. **The agent still never
-holds anything of Alice's** — the refresh token lives in the gateway's vault, scoped to one
-user and one provider, and is revocable. AWS AgentCore and Auth0 both ship exactly this,
-binding stored tokens to an agent identity and a user id and refreshing automatically. It
-is `offline_access`, not a novel mechanism.
+A **service-owned schedule** — a nightly index rebuild that touches nobody's data — runs as
+itself, with `client_credentials` and no subject. Its owner is a service or administrative
+principal.
 
-**And it is safer than the alternative that avoids storage.** Google's domain-wide
-delegation mints a user-principal token from nothing, with no stored token at all — and is
-documented as a critical privilege-escalation risk, because the grant is domain-wide and
-cannot be scoped to one user. A revocable per-user refresh token is the *less* dangerous
-of the two. What makes something dangerous here is the ability to mint Alice's credential
-at will, not the existence of a token that can be taken away.
+Neither may degrade into the other. If a user-delegated schedule's grant is expired,
+revoked or missing, the fire **fails and surfaces reauthorization**. It does not fall back
+to a service identity, because that silently converts Alice's job into somebody else's and
+the audit record stops being true.
 
-**When the credential is gone, fail and say how to fix it.** Refresh tokens expire, and a
-provider can revoke one without telling us. The run then fails — it does not fall back to a
-service identity, because that silently converts Alice's job into somebody else's. AgentCore's
-pattern is worth copying: emit an authorization URL so Alice can re-consent, delivered by
-whatever channel the deployment has. A job that stops and explains itself beats one that
-keeps running as the wrong principal.
+**Offline access is the exception, not the shape of the design.** The interactive path
+presents Alice's access token and exchanges it — no stored anything. A stored grant exists
+only for the user-delegated schedule, and only because at 3am there is no token to present
+and no way to mint one from nothing. Every shipped system either replays something captured
+at consent time or degrades to a service identity; there is no third mechanism.
 
-> **The obvious counter-example, and why not.** GitHub Actions goes the other way: a
-> scheduled workflow gets an app installation token, which is a service identity, and its
-> record of who caused the run resolves to whoever last edited the cron expression. So it
-> splits attribution from authority. Microsoft Graph recommends the same shape, calling
-> delegated access interactive by design. Both are defensible for CI. Neither fits here,
-> because last-cron-editor is a poor proxy for whose authority is being spent, and this
-> design's whole purpose is to keep that answer accurate.
+**Consent has to happen outside anything the model wrote.** Scheduling is model-facing, so
+a prompt-injected agent can create recurring work. "Captured with Alice's consent" means
+nothing if the model can cause the consent. So creating a user-delegated schedule produces
+a *pending* authorization request, and a separate interaction — one the model cannot
+author or approve — confirms the provider account, the resources, the cadence, and an
+absolute expiry.
+
+What the schedule stores is a signed envelope, not a refresh token. The token lives in the
+gateway's vault; the envelope names a grant, the authority it covers, and when it dies. It
+is verified before every fire, so mutating the stored row without re-signing invalidates
+it, and widening a schedule needs fresh consent rather than an edit.
+
+> **The counter-example, and why not.** GitHub Actions goes the other way: a scheduled
+> workflow gets an app installation token, a service identity, and its record of who caused
+> the run resolves to whoever last edited the cron expression. Microsoft Graph recommends
+> the same shape, calling delegated access interactive by design. Both are defensible for
+> CI. Neither fits, because last-cron-editor is a poor proxy for whose authority is being
+> spent, and keeping that answer accurate is the point of this design.
 
 > **Today.** Session creation has no owner field, on either the session or the team
 > request. `makeFireFunc` calls `CreateSessionWithProfile` in-process from a
@@ -306,35 +330,75 @@ authenticates with its SVID rather than a secret.
 
 ```http
 POST /token HTTP/1.1
-Host: vmcp.example.com
+Host: as.vmcp.example.com
 Content-Type: application/x-www-form-urlencoded
-                         # mTLS: client cert is the pod's X.509-SVID,
-                         # spiffe://mecatl.example.com/pod/mecatl-7f4c
+                    # mTLS. Client certificate is the pod's X.509-SVID,
+                    # spiffe://mecatl.example.com/pod/mecatl-7f4c
 
 grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&client_id=spiffe://mecatl.example.com/pod/mecatl-7f4c
 &subject_token=<Alice's access token>
 &subject_token_type=urn:ietf:params:oauth:token-type:access_token
-&scope=repo:read
-&audience=https://vmcp.example.com
+&actor_token=<a mecatl-signed JWT, below>
+&actor_token_type=urn:ietf:params:oauth:token-type:jwt
+&resource=https://vmcp.example.com
+&authorization_details=[{"type":"mecatl_tool",
+                         "locations":["github"],
+                         "actions":["read"],
+                         "identifier":"acme/widgets"}]
 ```
 
+**Three inputs, three identities, none of them inferred.** This is the part an earlier
+version of this doc got wrong: it presented Alice's token and the pod's certificate and
+then expected an agent definition to appear in the response. Nothing proved it.
+
+| Identity | How it is proven |
+|---|---|
+| Alice, whose authority is spent | `subject_token` |
+| The agent definition acting for her | `actor_token`, signed by mecatl |
+| The pod that authenticates and holds the result | X.509-SVID client authentication |
+
+The actor token is short-lived, minted locally, and says only what it must:
+
 ```jsonc
-// the credential that comes back, decoded
 {
-  "iss": "https://vmcp.example.com",
-  "sub": "alice@example.com",                       // whose authority
+  "iss": "https://mecatl.example.com",
+  "sub": "spiffe://mecatl.example.com/agent/code-reviewer",  // the definition
+  "aud": "https://as.vmcp.example.com",
+  "mecatl_instance": "sess-9a3f/subagent-call_01H8",         // audit, not authorization
+  "exp": 1785311820
+}
+```
+
+The authorization server verifies it against mecatl's bundle and rejects a missing,
+expired, wrong-audience, unknown-issuer or client-mismatched actor. Without that check an
+unauthenticated caller could request the policy identity of a more privileged definition,
+which is a confused deputy at the mint.
+
+What comes back:
+
+```jsonc
+{
+  "iss": "https://as.vmcp.example.com",
+  "sub": "u_01HQ8Z...",                        // Alice, by immutable internal id
   "act": { "sub": "spiffe://mecatl.example.com/agent/code-reviewer" },
-  "scope": "repo:read",                             // narrowed at the mint
+  "authorization_details": [ { "type": "mecatl_tool",
+                               "locations": ["github"],
+                               "actions": ["read"],
+                               "identifier": "acme/widgets" } ],
   "aud": "https://vmcp.example.com",
+  "cnf": { "x5t#S256": "..." },                // bound to the pod's certificate
   "exp": 1785312000
 }
 ```
 
-Three things to notice. **`sub` is Alice**, because this is an ordinary access token and
-not an SVID — the JWT-SVID rule that forces `sub` to be the holder applies to credentials
-mecatl issues, not to this one. **`act.sub` is the agent definition**, not the individual
-subagent, which is what lets eight siblings share this. And **`scope` carries the
-narrowing**, so nothing else has to travel.
+Four things to notice. **`sub` is Alice** by an immutable internal identifier rather than
+an email, because email is mutable and not unique across issuers. **`act.sub` is the
+definition**, not the individual subagent, which is what lets eight siblings share this and
+what policy names. **The authority names a resource** — `acme/widgets` — because a scope of
+`repo:read` says nothing about *which* repository, and without it a reviewer scoped to one
+pull request reaches every repository the credential can. And **`cnf` binds the token to
+the pod's certificate**, so a copy lifted from memory or a log is useless without the key.
 
 Each call then adds a correlation value that is logged and never authorized on:
 
@@ -421,8 +485,8 @@ and refusing stops the call.
 This is what the rule looks like once the gate has the backend:
 
 ```cedar
-// A code-reviewer subagent may read from GitHub, on behalf of any user,
-// but only tools the backend has declared read-only.
+// A code-reviewer may read from GitHub — but only the repository its own
+// credential names, and only tools the backend declared read-only.
 permit (
     principal,
     action == Action::"call_tool",
@@ -430,15 +494,23 @@ permit (
 )
 when {
     context.claim_act.sub == "spiffe://mecatl.example.com/agent/code-reviewer" &&
-    resource.readOnlyHint == true
+    resource.readOnlyHint == true &&
+    context.claim_authorization_details.contains(resource.canonical_target)
 };
 ```
 
-Two of those four conditions are unavailable today. `resource in MCP::"github"` needs the
-backend identifier, which exists on the tool object and is never passed. And
+Three of those four conditions are unavailable today. `resource in MCP::"github"` needs
+the backend identifier, which exists on the tool object and is never passed.
 `resource.readOnlyHint` is absent unless the backend declared it, with no classifier to
-fall back on — so a rule that omits the `== true` check silently permits unannotated
-tools.
+fall back on, so a rule omitting the `== true` silently permits unannotated tools. And the
+last line needs the call's target canonicalized into a form the credential's authority can
+be compared against — without it the rule permits *any* GitHub read, which is the hole the
+resource axis in hop 3 exists to close.
+
+That last condition is the only comparison this design asks policy to make. It is a
+containment check over one axis, not a general subset algorithm over a structured authority
+schema — the definition and the operation are named directly, so only the resource has to
+be compared.
 
 **Why one gate rather than several.** A check that lives in each outbound path can be left
 out of one of them, and the omission is invisible until someone finds it. A single gate can
@@ -670,22 +742,25 @@ Hop 1   BindPrincipal(inbound Request)            -> (Principal, error)
 
 Hop 2   Narrow(parent Authority, spec SpawnSpec)  -> (Authority, Limits, error)
 
-Hop 3   DelegatedCredential(
-            subject UserToken, def DefinitionID,
-            a Authority, aud Audience)            -> (Credential, error)
-        // unattended: same output, different input
+Hop 3   ActorAssertion(def DefinitionID,
+            inst InstanceID, aud Audience)        -> (ActorToken, error)
+        DelegatedCredential(
+            subject UserToken, actor ActorToken,
+            a Authority, res OAuthResource)       -> (Credential, error)
+        // unattended: same output, subject from a verified grant
+        VerifyScheduleGrant(spec ScheduleSpec)    -> (OfflineGrant, error)
         DelegatedFromStored(
-            u UserID, def DefinitionID,
-            a Authority, aud Audience)            -> (Credential, error)
+            g OfflineGrant, actor ActorToken,
+            a Authority, res OAuthResource)       -> (Credential, error)
 
 Hop 4   Call(c Credential, corr Correlation,
              tool ToolName, args Args)            -> (Result, error)
 
-Hop 4/5 Verify(c Credential)                      -> (Claims, error)
-Hop 5   Decide(claims Claims, tool ToolName,
-               backend BackendID, op Operation)   -> (Decision, error)
+Hop 4/5 Verify(c Credential, proof HolderProof)   -> (Claims, error)
+Hop 5   Resolve(call Call)                        -> (Target, error)
+        Decide(claims Claims, t Target)           -> (Decision, error)
 
-Hop 6   Fetch(u UserID, backend BackendID)        -> (StoredCredential, error)
+Hop 6   Fetch(u UserID, sel CredentialSelector)  -> (StoredCredential, error)
 
 Hop 8   Rederive(s Session, prior Authority,
                  caller *Principal)                -> (Credential, error)
@@ -734,6 +809,8 @@ not for reading the design.
 | 2 | Accept subject tokens from an external issuer | vMCP — validator exists unwired, [#5989](https://github.com/stacklok/toolhive/issues/5989) gates it on a consent model | 3 |
 | 3 | Publish the trust bundle to the authorization server and the gateway | vMCP + mecatl — two consumers, one artifact | 3, 5 |
 | 4 | An owner on session creation, and on schedules with offline access captured | mecatl — new | 1 |
+| 4a | An immutable internal user id, mapped from (tenant, issuer, subject) at link time | mecatl — new. Email is mutable and not unique across issuers | 1 |
+| 4b | **Enforce the owner on every object operation**, not only listing — get, resume, close, delete, event and archive reads, approvals, schedule read/update/pause/delete, child and team inspection | mecatl — new. An owner field nobody checks is decoration, and this is the whole multi-user isolation story | 1 |
 
 **The design itself**
 
@@ -748,16 +825,19 @@ not for reading the design.
 | 9 | Split authority from limits so only the first can travel | mecatl — new | 2 |
 | 10 | Mint in composition, never behind a port the loop calls | mecatl — `TeamMemberEngineFactory` is the existing shape | 3 |
 | 11 | A per-call correlation value | mecatl — the MCP adapter bakes static headers at dial | 4 |
+| 11a | Mint and sign the actor token; the AS validates it | both — [#5815](https://github.com/stacklok/toolhive/issues/5815) is building the AS half with the client-binding check | 3 |
+| 11b | Certificate-bound access tokens, and the gateway validating the binding on every call | vMCP — RFC 8705 §3. The SVID is already there; the binding is not | 3, 5 |
+| 11c | Carry a resource in the credential's authority, and compare the call's canonical target against it | both — this is the one comparison policy has to make | 3, 5 |
+| 11d | The offline consent ceremony and signed schedule envelope | mecatl — model-facing scheduling means consent must be unforgeable by the model | 1 |
 
 **Correctness and hygiene, not blocking**
 
 | # | What | Where | Hop |
 |---|---|---|---|
 | 12 | Check a stored credential against the identity that stored it | vMCP — the error is declared and never returned | 6 |
-| 13 | Owner-scoped session listing | mecatl — the owner field makes filtering possible, nothing applies it | 1 |
-| 14 | Derive from the live caller on resume | mecatl — persisted labels are trusted verbatim today | 8 |
-| 15 | Wire the token cache | vMCP — declared in `pkg/vmcp/cache`, referenced nowhere | 3 |
-| 16 | Advertise the grant, and a client-auth method, in discovery | vMCP — fix | 3 |
+| 13 | Derive from the live caller on resume | mecatl — persisted labels are trusted verbatim today | 8 |
+| 14 | Wire the token cache | vMCP — declared in `pkg/vmcp/cache`, referenced nowhere | 3 |
+| 15 | Advertise the grant, and a client-auth method, in discovery | vMCP — fix | 3 |
 
 ### Order
 
@@ -843,8 +923,8 @@ backends. It is what lets an allow *identify* a credential rather than permit a 
 them. Recorded because it fails quietly if it ever stops holding: the policy engine would
 still return allow, and the fetch would simply have no way to choose. Hop 6.
 
-**Owner-scoped reads are required** and are a listing change rather than an identity one.
-Row 13.
+**Owner enforcement is blocking, not hygiene.** An owner field nobody checks is
+decoration. Rows 4a and 4b.
 
 ## References
 
