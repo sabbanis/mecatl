@@ -109,24 +109,39 @@ sequenceDiagram
     participant S as code-reviewer subagent
     participant AS as vMCP authorization server
     participant G as vMCP gateway
+    participant V as credential store
     participant B as GitHub
 
-    Note over M: holds an X.509-SVID from the Workload API
-    Note over S: a goroutine inside that pod, with no key of its own
+    Note over M: at startup, fetches an X.509-SVID from the Workload API.<br/>The subagent cannot reach that socket.
 
     Alice->>M: OIDC access token, and "review PR 42"
-    M->>S: spawn with reduced authority
-    M->>AS: POST /token over mTLS. subject is Alice's token,<br/>actor is a mecatl-signed assertion
-    AS-->>M: access token. sub is Alice, act is the definition,<br/>bound to the pod certificate
-    S-->>M: needs the diff
-    M->>G: tool call, bearer that token, plus a correlation header
-    Note over G: verify, resolve once, decide over that resolution
-    alt denied, or an input is missing
-        G--xM: refuse before any credential is touched
+    Note over M: store the owner on the session
+
+    M->>S: spawn. fewer tools, one repository
+    Note over S: a goroutine in this pod. no key of its own.
+
+    rect rgba(128,128,128,0.07)
+    Note over M,AS: three inputs, three identities
+    M->>AS: POST /token<br/>subject_token = Alice's access token<br/>actor_token = mecatl-signed, names the definition<br/>client cert = the pod's X.509-SVID
+    Note over AS: verify all three, then narrow
+    AS-->>M: access token. sub = Alice, act = the definition,<br/>cnf bound to the pod certificate
     end
-    G->>B: the resolved credential, and only that one
+
+    S-->>M: needs the diff
+    M->>G: tools/call for github.read_file
+    Note right of M: Authorization: Bearer, the access token above<br/>X-Correlation-Id names this subagent and this call
+
+    Note over G: verify token and certificate binding<br/>resolve the call to one target
+    alt denied, or any decision input missing
+        G--xM: refuse. no credential is read.
+    end
+
+    G->>V: fetch, keyed on Alice and that target
+    V-->>G: one credential
+    G->>B: GET the diff, using Alice's GitHub token
     B-->>G: the diff
     G-->>M: tool result
+    M-->>S: the diff
 ```
 
 | Hop | Input | Action | Output | Invariant |
