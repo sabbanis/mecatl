@@ -433,11 +433,26 @@ This is the hop where the narrowing either takes effect or does not. Everything 
 token confined to `repo:read`. If the gateway then reads every credential the user holds and
 hands the backend a full-scope token, the constraint bought nothing at the point it mattered.
 
-**The key is the user**, not a login session. A session pointer describes an episode; the
-question is whose credential this is. And an agent can never have one — nothing mints a
-pointer for a flow with no browser login, and the exchange drops any inherited one. So
-forwarding the user's token keeps the pointer and loses the actor, while exchanging keeps the
-actor and kills the lookup. The exchange exists for the actor, so the lookup keys on the user.
+**The key is the user, not the token session id.** vMCP keys stored credentials on a `tsid`
+claim — a login-session pointer. An agent can never carry one, for two independent reasons,
+either of which alone is fatal: the claim is minted at the start of an authorization-code
+flow, so a browser login produces one and an agent never walks that path; and the
+token-exchange handler passes an empty session link, so any inherited one is dropped.
+
+That gives a choice with no third option:
+
+| | `tsid` | actor | credential lookup |
+|---|---|---|---|
+| Forward the user's token unchanged | present | **lost** | works |
+| Exchange it for a delegated token | **dropped** | present | **dead** |
+
+You can have the actor or the `tsid` lookup, never both. This design exists for the actor, so
+the lookup keys on the user — which is also where the enterprise user-keyed work already
+points.
+
+This is not a preference. `tsid`-keyed credential injection cannot serve agents in OSS vMCP by
+construction, and [#5194](https://github.com/stacklok/toolhive/issues/5194) ends it as a side
+effect of getting the actor.
 
 > **Today.** Authentication middleware validates the token, takes the session pointer out of
 > it, and loads **every** credential stored under that pointer into a map — before the
@@ -447,6 +462,11 @@ actor and kills the lookup. The exchange exists for the actor, so the lookup key
 >
 > So a subagent narrowed to one repository can trigger a call to another service and nothing
 > in the credential path objects, because by then that credential is already loaded.
+>
+> And when the `tsid` claim is absent the loader returns no credentials and **no error**. An
+> agent presenting a delegated token therefore gets an empty map rather than a refusal, and
+> what happens next is whatever the outbound strategy does with one — which differs per
+> strategy and is nowhere stated as a contract.
 >
 > **Change.** Move the fetch to where the target is known. There is a real interface at the
 > load point a filtering implementation could replace.
