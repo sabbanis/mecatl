@@ -12,33 +12,38 @@ premise and does not restate. Same tier as
 sequenceDiagram
     autonumber
     actor Alice
-    participant M as mecatl pod<br/>(holds an X.509-SVID)
-    participant S as code-reviewer subagent<br/>(goroutine in that pod)
+    participant M as mecatl pod
+    participant S as code-reviewer subagent
     participant AS as vMCP authorization server
     participant G as vMCP gateway
     participant B as GitHub
 
-    Alice->>M: OIDC access token + "review PR #42"
-    Note over M: store owner on the session:<br/>iss + sub from the validated token
+    Note over M: holds an X.509-SVID from the Workload API
+    Note over S: a goroutine inside that pod, with no key of its own
 
-    M->>S: spawn with a reduced tool set<br/>(Read, Grep; no Write; one repo)
+    Alice->>M: OIDC access token, and "review PR 42"
+    Note over M: session stores the owner, iss and sub from the validated token
 
-    rect rgba(128,128,128,0.08)
-    Note over M,AS: once per (user, agent definition, tool set, audience)
-    M->>AS: POST /token over mTLS, client cert = the SVID<br/>grant_type=token-exchange<br/>subject_token=Alice's access token
-    AS-->>M: JWT: sub=Alice, act.sub=the SVID's SPIFFE ID,<br/>scope narrowed, aud=the gateway
+    M->>S: spawn with a reduced tool set. Read and Grep only, one repository
+
+    rect rgba(128,128,128,0.07)
+    Note over M,AS: once per user, agent definition, tool set and audience
+    M->>AS: POST /token over mTLS, client certificate is the SVID
+    Note right of M: grant_type is token-exchange<br/>subject_token is Alice's access token
+    AS-->>M: JWT. sub is Alice, act.sub is the SVID SPIFFE ID, scope narrowed
     end
 
-    S-->>M: needs the diff for PR #42
-    M->>G: MCP tools/call github.read_file<br/>Authorization: Bearer <that JWT><br/>X-Correlation-Id: <child session id>:<call id>
+    S-->>M: needs the diff for PR 42
+    M->>G: MCP tools/call for github.read_file
+    Note right of M: Authorization header carries that JWT<br/>X-Correlation-Id names the subagent and the call
 
-    Note over G: Cedar evaluates:<br/>principal from sub, claim_act.sub,<br/>Tool::github.read_file, readOnlyHint,<br/>and the backend the call routes to
+    Note over G: Cedar reads sub, claim_act.sub, the tool name,<br/>the read-only hint, and the backend this call routes to
     alt Cedar denies, or no policy is configured at all
-        G--xM: refuse before any credential is touched
+        G--xM: refuse, before any credential is touched
     end
 
-    Note over G: resolve the credential:<br/>1. Alice's stored credentials are the candidates<br/>2. the GitHub one, because that is where this call routes<br/>   and Cedar allowed a read against it
-    G->>B: GET /repos/.../pulls/42 with Alice's GitHub token
+    Note over G: resolve one credential.<br/>Alice is the lookup key.<br/>The GitHub one, because that is where this routes<br/>and Cedar allowed a read against it
+    G->>B: GET the pull request diff, using Alice's GitHub token
     B-->>G: the diff
     G-->>M: tool result
     M-->>S: the diff
@@ -141,10 +146,20 @@ defeats the delegation.
 
 One test, then what it rules out.
 
-**A binding should constrain, never grant.** The test is whether removing it increases
-what the holder can reach. Take away a session pointer and the holder reaches less, so
-the pointer grants. Take away a holder key and a stolen copy becomes usable, so the key
-constrains. Anything that increases reach is a key with the word "binding" on it.
+**A binding should constrain, never grant.** The test: does this claim let the holder
+reach anything the credential's own stated authority does not already cover?
+
+A session pointer does. The credential might say "read one repository", and the pointer
+still resolves to every credential the user owns, because the store never consults the
+scope. A holder key does the opposite — it narrows who may use the credential and adds
+nothing to what the credential permits.
+
+Stated more carefully than "removing it reduces reach", because that test is too blunt: it
+also condemns the user identifier a credential lookup legitimately needs. Removing that
+would reduce reach too, but it grants nothing beyond the authority already written in the
+credential — it identifies whose authority is being exercised. The distinction is between
+a claim that *carries* authority and one that *names the subject of* authority already
+stated.
 
 From that, and from what mecatl is:
 
@@ -162,8 +177,9 @@ From that, and from what mecatl is:
   external should be asked to verify it, and the pod is where proof of possession lives.
 - **It survives rehydration.** Sessions park for hours and resume elsewhere.
 - **It works with no user.** A scheduled run has none.
-- **Missing means nothing.** A credential with no limits attached gets the least access,
-  not the most.
+- **When something needed for a decision is absent, refuse.** A credential arriving with
+  no limits attached, or a gateway with credentials configured and no policy written, gets
+  the least access rather than the most.
 
 Two more that came out of the standards rather than from mecatl:
 
@@ -353,11 +369,27 @@ deployment, so a trust-domain rename rewrites every rule. That is largely avoida
 avoiding it is a path-design decision worth making early: **put the agent definition in
 its own path segment** so a rule can match the suffix and never name the trust domain.
 
-**None of this is required.** An ordinary confidential client reaches the same credential
-and the design runs. What SVID authentication buys is three things at once — no secret for
-the model to read, per-pod attestation instead of "whoever holds the secret", and a
-namespaced policy subject for free — using a registered mechanism rather than an invented
-one, so it works against any authorization server that implements it.
+**Strictly, no hop below requires this** — an ordinary confidential client reaches the
+same credential and the flow runs. It is on the critical path anyway, as a decision rather
+than a derivation: the alternative is a shared secret sitting in an environment the
+adversary in this threat model can read, and it is work that gets thrown away when the
+SVID path lands later.
+
+What SVID authentication buys is three things at once: no secret for the model to read,
+per-pod attestation rather than "whoever holds the secret", and a namespaced policy
+subject. It uses a registered mechanism rather than an invented one, so it works against
+any authorization server implementing it.
+
+Two prerequisites that are easy to miss, because they are not about the harness. TLS has
+to terminate at the authorization server, or the ingress has to forward the client
+certificate. And the authorization server is in a **different trust domain** from the pod,
+so it needs mecatl's trust bundle to validate the SVID at all — which is a federation
+relationship to establish, not a config flag. The companion doc is explicit that federation
+is bilateral and not free; that applies here.
+
+A third worth stating: this puts the workload API on the credential path. If it is
+unavailable at startup the pod cannot authenticate and no session can obtain a credential.
+That is a new dependency with no degradation story yet.
 
 > **Today.** No client that may use the exchange grant can be provisioned at all:
 > registration hardcodes clients as public, permits only `authorization_code` and
@@ -396,9 +428,15 @@ was fixed when the harness minted the credential, before it ran.
 > identity struct has no header-populated field, so this already holds. Worth keeping
 > when the outbound path stops baking a static header map into a client at dial time.
 
-**What an attacker gets.** Prompt injection reaching the subagent is expected, not
-exceptional. What it buys is bounded by what the credentials permit, which is why hop 3's
-narrowing carries the weight.
+**What an attacker gets.** An attacker who controls the subagent's reasoning — the
+expected case — gets to choose the tool name and the arguments on this call, and nothing
+else. They cannot change whose authority is presented, which agent definition is named, or
+what that definition may do, because all three were fixed when the pod obtained the
+credential, before the subagent ran and outside its reach.
+
+So the capability gained is exactly "issue any call the credential already permits." That
+is a real capability and the reason hop 5 has to be able to distinguish among those calls.
+What it is not is escalation: no sequence of tool calls widens the credential.
 
 ---
 
@@ -463,11 +501,23 @@ the question here is whose credential this is.
 **Second, which one may be used for this call.** That takes the backend being routed to
 and the decision from hop 5. The result is one credential or none.
 
-**Why the first stage cannot key on a login session.** A pointer minted when a human
-logged in through a browser describes an episode, not an entitlement. An agent has no
-such episode: nothing mints one for it, and where a user's token carried one, exchanging
-it for a delegated credential drops it. So a design that looks up credentials by login
-session cannot serve an agent. There is nothing to manage here, nothing to keep fresh.
+**Why the lookup cannot key on a login session.** A pointer minted when a human logged in
+through a browser describes an episode, not an entitlement. An agent has no such episode:
+nothing mints one for it, and where a user's token carried one, exchanging it for a
+delegated credential drops it. So a design that looks up credentials by login session
+cannot serve an agent at all.
+
+**But something does hang off that episode, and moving the key does not move it.** The
+stored GitHub credential has a refresh lifecycle. Today it is tied to the login session
+that obtained it, and the login path is what renews it. Key the lookup on the user and the
+question becomes: who refreshes Alice's GitHub token when Alice has not logged in for a
+week and only her scheduled agent is using it?
+
+The options are not equivalent. Refreshing on use makes an agent's activity indefinitely
+extend a credential the user has stopped supervising. Not refreshing means agent access
+silently expires on the provider's schedule. Refreshing only during a real login means the
+same, with a clearer explanation. This design does not choose, and it should — it is a
+consequence of the lookup change rather than a pre-existing problem, so it belongs here.
 
 **And the user has to be somewhere the lookup can read.** If the credential names the
 acting agent as its subject, the user sits one level in. Whatever holds it has to be
@@ -479,8 +529,8 @@ the user has. The first stage narrows to a person; the second narrows to a purpo
 Without it, every delegated credential reaches every credential its user owns, and the
 narrowing from hop 2 stops at the gateway's front door.
 
-**Missing anything means nothing is used.** No decision, no backend, no user — no
-credential.
+**If any input to that decision is absent, no credential is used.** No allow from the
+gate, no backend identified, no user resolved — nothing is handed over.
 
 > **Today, and this is worth spelling out because it is the design's central problem.**
 >
@@ -604,10 +654,16 @@ the boundary should be stated rather than implied to extend further.
 > tokens or an exchange, and none read the inbound claims. No change; the deliverable is
 > accuracy.
 
-**What an attacker gets.** The backend cannot tell the agent from the user, so attribution
-there is only as good as the gateway's audit record. That puts the gateway inside the
-trust boundary for attribution, which is fine and worth saying, because "verifiable by
-anyone with the bundle" reads as though it were not.
+**What an attacker gets.** Someone who compromises the gateway can make a backend call
+that is indistinguishable, at the backend, from one Alice made herself — the backend sees
+an ordinary GitHub token and has no way to learn an agent was involved. The gateway's audit
+record is the only place that distinction exists, so the same attacker can also remove the
+evidence.
+
+That is the honest cost of stopping the chain at the gateway, and it is worth stating
+because "verifiable by anyone holding the bundle" implies otherwise. The mitigation is not
+at this hop: it is that the gateway's audit and mecatl's own log are separate records that
+can be reconciled, so an attacker needs both.
 
 ---
 
@@ -822,9 +878,23 @@ cluster rather than one large object.
 **What an unannotated tool means.** No fallback classifier exists, so this is a default
 somebody chooses.
 
-**Whether SPIFFE is on the critical path.** It is required for no hop above. It is
-required for one thing: an agent identifier a policy can name as a SPIFFE ID. Whether
-that is worth the port is a judgement about where policy is heading.
+**Who refreshes a stored third-party credential once the lookup keys on the user.** See
+hop 6. Refresh-on-use lets unsupervised agent activity extend a credential indefinitely;
+refresh-only-on-login means agent access expires on the provider's schedule. Both are
+defensible and the design currently picks neither.
+
+**Whether an owner on the session is enough to close the enumeration leak.** The companion
+doc records that session listing returns every session with a title drawn from its first
+prompt. Adding an owner field makes a filter *possible*; it does not apply one. Reads have
+to become owner-scoped or the field is decoration, and that is a change to the listing
+surface rather than to identity.
+
+**Whether the trust-domain federation for SVID authentication is cheap in practice.** The
+port itself is settled and on the critical path. What is not settled is the deployment
+side: the authorization server needs mecatl's trust bundle, and TLS has to terminate at
+the authorization server or the ingress has to forward the client certificate. In some
+clusters that is configuration and in others it is a project. That determines schedule,
+not design.
 
 ---
 
