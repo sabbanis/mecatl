@@ -21,21 +21,28 @@ selected credential after allow.
 
 **The decisions:**
 
-1. Subject, actor, holder and owner are four separate identities and never collapse.
-2. A child's authority is a strict subset of its parent's.
-3. Authority may cross the process boundary; execution limits never do.
-4. Routing resolves one target; admission and credential fetch consume that same one.
-5. Stored credentials are never ambient — nothing is loaded before allow.
-6. Correlation values are audit-only and no decision reads them.
-7. Provider backends receive their own native credentials and learn nothing of mecatl.
-8. Neither resume nor scheduled execution can widen prior authority.
+1. Four questions get four separate answers, and one answer never stands in for another:
+   whose authority is being spent, which agent is spending it, which process holds the key,
+   and who is accountable for the stored session or schedule.
+2. A subagent can do less than the agent that spawned it, and never more.
+3. What a subagent may reach has to be legible outside mecatl. How many turns it may take
+   does not, and stays inside the process.
+4. The gateway works out what a call resolves to once. The policy decision and the
+   credential lookup both use that result, and neither works it out again.
+5. No credential is read out of storage until the call has been allowed.
+6. The correlation value is written to mecatl's log and the gateway's, and is read by
+   nothing that makes a decision.
+7. GitHub receives an ordinary GitHub token. It is never asked to understand agents,
+   delegation, or anything else specific to mecatl.
+8. A resumed session and a scheduled run each get authority no wider than what was granted
+   before.
 
 **Non-goals:** giving in-process children their own workload keys; making a provider verify
 mecatl's delegation chain; carrying runtime budgets in access tokens; specifying OAuth
 behaviour beyond the mecatl/vMCP profile.
 
 **How to read the status notes.** Quoted blocks say what exists today. They are cost
-signals, never constraints — these codebases are built by one team and everything in them is
+signals rather than constraints. These codebases are built by one team and everything in them is
 changeable. They stay inline rather than moving to an implementation doc because they are
 what makes this checkable: two review rounds found false claims in them, and both times the
 claim sounded like plumbing and was a prerequisite.
@@ -78,11 +85,12 @@ resolution and credential selection consumes it. Nothing re-resolves in between.
 credential already states. A session pointer fails this; a holder key satisfies it.
 
 **No key below the pod.** The pod is the workload and the key holder. A subagent gets an
-identity from mecatl — real inside mecatl's trust domain — and no private key, because
+identity from mecatl, real inside mecatl's trust domain, and no private key, because
 siblings share a process and cannot hold one separately.
 
-**Missing input, no result.** When anything a decision needs is absent, refuse. Absent
-metadata counts as the dangerous case.
+**Refuse on a missing input.** When something a decision needs is absent, whether that is a policy, a
+resolved target, or an annotation saying whether a tool writes, deny rather than guess. Absent
+metadata is treated as the dangerous case.
 
 **Correlation is not authority.** Correlation values are read by logging and nothing else.
 
@@ -127,7 +135,7 @@ sequenceDiagram
 | 2 Narrow | parent authority | compute a subset | child authority + limits | only authority travels |
 | 3 Exchange | subject token, actor assertion, pod SVID | validate and exchange | sender-bound access token | three identities, each authenticated |
 | 4 Call | access token, holder proof | send the tool call | gateway request | correlation is not authority |
-| 5 Decide | verified claims, resolved target | admission | allow or deny | missing input, no result |
+| 5 Decide | verified claims, resolved target | admission | allow or deny | refuse on a missing input |
 | 6 Fetch | subject, credential selector | read one credential | provider credential | target binding |
 | 7 Serve | provider credential | call the backend | result | chain stops at the gateway |
 | 8 Resume | live principal or offline grant | re-derive | access token | authority never widens |
@@ -139,7 +147,7 @@ The rest need detail.
 > session in-process from a leader-elected goroutine, so it never reaches anything that
 > could assign one. Session listing takes no principal at all.
 >
-> **Hop 2 today, and this is worse than it reads.** There is no per-spawn narrowing. A
+> **Hop 2 today.** There is no per-spawn narrowing at all. A
 > child's tool set is resolved *statically, per definition, at build time* against the
 > shared catalog; nothing reads the parent's current authority because no such value exists.
 > The per-call knobs are limits and a selector for which pre-built tier to use. The audience
@@ -180,9 +188,9 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 }
 ```
 
-**Three inputs, three identities, none inferred.** The subject token proves Alice. The actor
-assertion proves the definition — client authentication cannot, because the client is the
-*pod*. The SVID proves the pod. An authorization server accepting an unauthenticated actor
+**Each of the three identities is proved by a separate input.** The subject token proves
+Alice. The actor assertion proves which agent definition is acting — client authentication
+cannot, because the client is the pod. The SVID proves the pod. An authorization server accepting an unauthenticated actor
 would let a caller request the policy identity of a more privileged definition.
 
 **`sub` is the user**, by immutable internal identifier rather than an email, which is
@@ -199,23 +207,24 @@ without one a reviewer scoped to a single pull request reaches everything the cr
 **`cnf` binds the token to the pod's certificate.** mTLS at the token endpoint does not do
 this by itself, so without it a copy from memory or a log replays until expiry.
 
-**One credential, reused** per user, definition, authority and audience. Minting per call
-puts a round trip in front of every tool use.
+**One credential covers many calls.** It is obtained once per user, definition, authority
+and audience, and reused. Minting per call would put a network round trip in front of every
+tool use.
 
-**Which buys a staleness window, stated rather than discovered.** If authority narrows
-mid-session the already-minted credential carries the wider authority until it expires. The
+**Reuse means a narrowing can take effect late.** If authority is reduced mid-session, a
+credential minted before that still carries the wider authority until it expires. The
 bound is the TTL. This doc argues elsewhere that a stored record is never the authority; for
 one TTL, a cached credential is exactly that for outbound calls. Shorter TTLs trade it for
 round trips, revocation lists for a distributed dependency — neither clearly beats a bounded
 window named out loud.
 
-**A definition name is not yet safe to authorize on.** Definitions come from sources of
-different trust, and nothing stops a project-tier one, read from a mutable workspace, taking
+**A definition name can be forged by anyone who can write to the repository.** Definitions
+come from sources of different trust, and nothing stops a project-tier one, read from a mutable workspace, taking
 the name of an operator-managed one. The codebase already tiers those sources. Policy on a
 bare name cannot tell them apart, so untrusted content defeats the actor claim rather than
-bypassing it. Either put the tier in the identifier, or let only operator-tier definitions be
-nameable in policy — the first keeps a capability, the second removes a risk class.
-Unresolved.
+bypassing it. Two ways to close it. Put the tier in the identifier, which keeps per-project
+specialists nameable in policy. Or let only operator-tier definitions be named at all, which
+removes the risk class and the capability together. Unresolved.
 
 > **Today.** No client that may use this grant can be provisioned. Registration hardcodes
 > clients public and permits only `authorization_code` and `refresh_token`, there is no
@@ -244,8 +253,9 @@ credential selector, but as something the fetch consumes rather than something p
 over. A deployment wanting backend-level rules can have them; the design does not depend on
 it.
 
-**One gate, not several.** A check living in each outbound path can be omitted from one of
-them, invisibly. A single gate can be wrong; it cannot be absent.
+**One gate rather than one per outbound path.** A check that lives in each path can be left
+out of one of them, and nothing reveals the omission until someone looks. A single gate can
+be wrong, but it cannot be missing from a path that has only it.
 
 **The last condition is the only comparison policy makes** — containment over one axis, not
 a subset algorithm over a schema, because definition and operation are named directly.
@@ -285,8 +295,8 @@ case errors.Is(err, ErrUnknownSelector):  // routing produced something unknown 
 Two distinct errors on purpose: collapsing them makes a missing integration look like a
 routing bug.
 
-**No decision parameter.** The gate was asked about a resolved target and said yes; the call
-only arrives here because it did. The authorization for using this credential already
+**The fetch takes no decision, and does not need one.** The gate was asked about a resolved
+target and said yes; the call only arrives here because it did. The authorization for using this credential already
 happened — target binding is what makes that true, and if anything re-resolved in between,
 the allow described something else.
 
@@ -308,7 +318,8 @@ actor and kills the lookup. The exchange exists for the actor, so the lookup key
 > **Change.** Move the fetch to where the target is known. There is a real interface at the
 > load point a filtering implementation could replace.
 
-**We are the outlier.** Every comparable system fetches against a target it knows. RFC 8693
+**Every comparable system already fetches against a target it knows, so this is a fix
+rather than an invention.** RFC 8693
 settles it in its request grammar — an exchange carries `resource` and `audience`, so it
 cannot precede knowing them. Envoy runs external authorization after route matching for this
 reason, and treats a later filter clearing the route cache as a privilege-escalation class,
@@ -317,7 +328,7 @@ and indexing is ambient authority; the failure is a confused deputy.
 
 ---
 
-### Hop 7 — the backend, and one exception
+### Hop 7 — the backend
 
 The backend receives a credential it already understands, for a call already authorized, and
 learns nothing about agents. That is a goal: a provider has no policy about mecatl's
@@ -382,8 +393,8 @@ because the failure mode is one silently becoming the other.
 **A user-delegated schedule runs as Alice.** The work is hers. A run acting as itself loses
 her, which is one of the two bad options the delegation epic exists to avoid.
 
-**Which requires capturing offline access at creation.** Nothing can mint a credential naming
-Alice from nothing at 3am, and no specification offers a way — every shipped system either
+**That requires capturing offline access when the schedule is created.** Nothing can mint a
+credential naming Alice from nothing at 3am, and no specification offers a way — every shipped system either
 replays something captured at consent time or degrades to a service identity. The agent still
 holds nothing of hers: the refresh token lives in the vault, scoped to one user and one
 provider, revocable. That is *safer* than the alternative that avoids storage, since a system
@@ -419,7 +430,7 @@ identity — that converts Alice's job into somebody else's and makes the audit 
 | Compromised gateway | use stored credentials; alter its own audit | be distinguished from Alice by the backend | reconciliation with mecatl's log |
 | Compromised pod | anything the pod may do; lie about which goroutine acted | — | accepted boundary |
 
-**Limits, stated once.** Providers cannot verify the agent chain in the stored-credential
+**What this does not protect against.** Providers cannot verify the agent chain in the stored-credential
 path. Correlation gives operational attribution, not cryptographic proof. A compromised
 gateway can both abuse credentials and rewrite its own record of doing so. A compromised pod
 sits inside the accepted workload boundary.
