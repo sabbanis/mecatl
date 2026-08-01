@@ -68,7 +68,7 @@ credential — so no second decision is needed at the fetch.
 | 2 · spawn | Which tools the child may call has to be known outside mecatl. How many turns it may take does not, and should not leave. |
 | 3 · get credential | One JWT, reused across sibling subagents, obtained by exchanging Alice's token. The pod authenticates with its SVID rather than a secret. |
 | 4 · call | Already correct: the JWT decides everything, and the correlation header is only ever logged. |
-| 5 · gate | Give Cedar the backend identifier. Refuse when credentials are configured but no policy is. **This is the substantive piece** — it is what makes the allow strong enough to justify a credential. |
+| 5 · gate | Give Cedar the backend identifier. **This is the substantive piece** — it is what makes an allow strong enough to justify a credential. Configuring a policy at all is a deployment requirement, not a code change. |
 | 6 · fetch | Key on Alice rather than a login session, and move the fetch to the far side of routing so it uses the backend the gate saw. Plumbing, once hop 5 is right. |
 | 7 · backend | No change. GitHub sees an ordinary GitHub token and learns nothing about agents. |
 | 8 · park/resume | On resume, mint from whoever is asking now rather than from a stored row. |
@@ -444,9 +444,19 @@ tools.
 out of one of them, and the omission is invisible until someone finds it. A single gate can
 be wrong; it cannot be absent.
 
-**Missing must mean refusal.** A gateway with credentials attached and no policy written
-should serve nothing. Allow-all is a reasonable default for a proxy with nothing to hand
-out and the wrong one the moment there is something.
+**A policy is a deployment requirement, not something the product should enforce.** With
+no `authz` block configured the admission check returns allow unconditionally — which is a
+reasonable default for a gateway with nothing to hand out, and the wrong posture once
+credential injection is on. Those two configuration decisions are independent and nothing
+links them.
+
+That is ours to get right when we deploy, not a default to argue about upstream: other
+deployments legitimately want allow-all for development or single-user use. So it belongs
+in the deployment requirements below rather than in the change list.
+
+Worth being honest that a runbook item is weaker than a product guarantee. Nothing stops
+someone standing up a gateway with credentials and no policy; the invariant holds because
+we hold it.
 
 > **Today, and what changes.** Admission is already the single gate and already always in
 > the path, which is the part that is right. It receives the acting agent as a nested claim
@@ -705,34 +715,63 @@ not for reading the design.
 | # | What | Where | Hop |
 |---|---|---|---|
 | 5 | Pass the backend identifier to the gate | vMCP — exists on the tool, dropped | 5 |
-| 6 | Refuse when credentials are configured and no policy is | vMCP — fix | 5 |
-| 7 | Stop discarding the issued token's claims when a primary upstream provider is pinned | vMCP — fix | 5 |
-| 8 | Treat an unannotated tool as mutating | vMCP — policy default | 5 |
-| 9 | Move the credential fetch past routing, keyed on the backend | vMCP — new, and the user-keyed half is a port | 6 |
-| 10 | Split authority from limits so only the first can travel | mecatl — new | 2 |
-| 11 | Mint in composition, never behind a port the loop calls | mecatl — `TeamMemberEngineFactory` is the existing shape | 3 |
-| 12 | A per-call correlation value | mecatl — the MCP adapter bakes static headers at dial | 4 |
+| 6 | Stop discarding the issued token's claims when a primary upstream provider is pinned | vMCP — fix | 5 |
+| 7 | Treat an unannotated tool as mutating | vMCP — policy default | 5 |
+| 8 | Move the credential fetch past routing, keyed on the backend | vMCP — new, and the user-keyed half is a port | 6 |
+| 9 | Split authority from limits so only the first can travel | mecatl — new | 2 |
+| 10 | Mint in composition, never behind a port the loop calls | mecatl — `TeamMemberEngineFactory` is the existing shape | 3 |
+| 11 | A per-call correlation value | mecatl — the MCP adapter bakes static headers at dial | 4 |
 
 **Correctness and hygiene, not blocking**
 
 | # | What | Where | Hop |
 |---|---|---|---|
-| 13 | Check a stored credential against the identity that stored it | vMCP — the error is declared and never returned | 6 |
-| 14 | Owner-scoped session listing | mecatl — the owner field makes filtering possible, nothing applies it | 1 |
-| 15 | Derive from the live caller on resume | mecatl — persisted labels are trusted verbatim today | 8 |
-| 16 | Wire the token cache | vMCP — declared in `pkg/vmcp/cache`, referenced nowhere | 3 |
-| 17 | Advertise the grant, and a client-auth method, in discovery | vMCP — fix | 3 |
+| 12 | Check a stored credential against the identity that stored it | vMCP — the error is declared and never returned | 6 |
+| 13 | Owner-scoped session listing | mecatl — the owner field makes filtering possible, nothing applies it | 1 |
+| 14 | Derive from the live caller on resume | mecatl — persisted labels are trusted verbatim today | 8 |
+| 15 | Wire the token cache | vMCP — declared in `pkg/vmcp/cache`, referenced nowhere | 3 |
+| 16 | Advertise the grant, and a client-auth method, in discovery | vMCP — fix | 3 |
 
 ### Order
 
 Rows 1 to 4 gate everything. Row 4 is mecatl-side and independent, so it runs in parallel.
 
-Then rows 5 to 8, which make the gate correct before anything depends on it — row 5 in
+Then rows 5 to 7, which make the gate correct before anything depends on it — row 5 in
 particular, since it is what makes an allow mean enough to justify a credential.
 
-Then row 9, which follows from row 5 and is plumbing once it lands.
+Then row 8, which follows from row 5 and is plumbing once it lands.
 
 Caching matters before fan-out is usable but not before it is correct.
+
+## Deployment requirements
+
+Things this design needs from how vMCP is configured and run, rather than from code. They
+are listed separately because a runbook item is weaker than a product guarantee, and it is
+worth being honest about which of these is which.
+
+**An authorization policy must be configured wherever credential providers are.** With no
+`authz` block the admission check returns allow unconditionally, and the same path then
+injects a caller's stored credentials. Allow-all is a legitimate default for a gateway with
+nothing to hand out, and other deployments want it for development and single-user use, so
+this is not a default to change upstream. It is ours to get right. Nothing enforces it: the
+invariant holds because we hold it.
+
+**TLS terminates at the authorization server, or the ingress forwards the client
+certificate.** An mTLS client certificate that a proxy terminates and drops is the failure
+that reads as configuration and is really topology.
+
+**Both the authorization server and the gateway hold mecatl's trust bundle** — the first to
+validate the SVID used as client authentication, the second to verify the minted credential
+before any claim reaches policy. Missing either fails loudly, but at different hops and
+with different errors, so they will be diagnosed as unrelated.
+
+**The workload API is reachable at pod startup.** It is now on the credential path, so a
+pod that cannot reach it obtains no credential for any session. There is no degradation
+story for this yet, and deciding one beats discovering it.
+
+**One credential per backend per user.** Structural in the current model, since two accounts
+are two backends. If a deployment ever configures otherwise, credential selection stops
+being able to choose and does so silently, because the policy engine still returns allow.
 
 ## Decisions
 
@@ -763,29 +802,7 @@ them. Recorded because it fails quietly if it ever stops holding: the policy eng
 still return allow, and the fetch would simply have no way to choose. Hop 6.
 
 **Owner-scoped reads are required** and are a listing change rather than an identity one.
-Row 14.
-
-### Trust distribution: who needs what
-
-Federation is workable in the target deployments, so what matters is what has to be where.
-Two consumers need mecatl's trust bundle for different reasons, and it is easy to see one
-and miss the other.
-
-| Who | Needs it to | Failure without it |
-|---|---|---|
-| The authorization server | Validate the SVID presented as client authentication | No credential obtainable. Fails at the token endpoint. |
-| The gateway | Verify the minted credential before any claim reaches policy | Every call fails verification — different hop, different error, diagnosed as unrelated. |
-| mecatl | Obtain and rotate its own SVID from the workload API | The pod cannot authenticate and nothing runs. |
-
-Two prerequisites alongside. An mTLS client certificate that a proxy terminates and drops
-is the failure that looks like configuration and is really topology. And the workload API is
-now on the credential path, so a pod that cannot reach it at startup obtains no credential
-for any session — a new runtime dependency with no degradation story, better decided than
-discovered.
-
-Distributing a bundle to two in-cluster consumers is the ordinary case. The companion doc's
-warning that federation is bilateral and not free is about cross-organisation federation and
-does not make this expensive.
+Row 13.
 
 ## References
 
