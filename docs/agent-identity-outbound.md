@@ -2,11 +2,96 @@
 
 *Status: strawman / working draft. Speculative scoping, not a design record under
 [ADR 0002](adr/0002-documentation-lifecycle.md). Companion to
-[`docs/agent-identity-model.md`](agent-identity-model.md), which this takes as its
-premise and does not restate. Same tier as
+[`docs/agent-identity-model.md`](agent-identity-model.md), which this takes as its premise
+and does not restate. Same tier as
 [`docs/scoped-resource-grants.md`](scoped-resource-grants.md).*
 
-## The flow at a glance
+## What this decides
+
+The companion doc models identity from the user down to the subagent and stops at the
+boundary. This covers the boundary: how the harness reaches a tool, what the gateway
+decides, and how a user's stored third-party credential gets used without handing an agent
+more than it was given.
+
+The gateway must authorize the use of a **concrete credential** for a **concrete resolved
+target**. mecatl presents a short-lived delegated access token in which the user is the
+subject, the agent is the actor, and the pod is the authenticated holder. The gateway
+verifies it, resolves the call once, decides over that resolution, and fetches only the
+selected credential after allow.
+
+**The decisions:**
+
+1. Subject, actor, holder and owner are four separate identities and never collapse.
+2. A child's authority is a strict subset of its parent's.
+3. Authority may cross the process boundary; execution limits never do.
+4. Routing resolves one target; admission and credential fetch consume that same one.
+5. Stored credentials are never ambient — nothing is loaded before allow.
+6. Correlation values are audit-only and no decision reads them.
+7. Provider backends receive their own native credentials and learn nothing of mecatl.
+8. Neither resume nor scheduled execution can widen prior authority.
+
+**Non-goals:** giving in-process children their own workload keys; making a provider verify
+mecatl's delegation chain; carrying runtime budgets in access tokens; specifying OAuth
+behaviour beyond the mecatl/vMCP profile.
+
+**How to read the status notes.** Quoted blocks say what exists today. They are cost
+signals, never constraints — these codebases are built by one team and everything in them is
+changeable. They stay inline rather than moving to an implementation doc because they are
+what makes this checkable: two review rounds found false claims in them, and both times the
+claim sounded like plumbing and was a prerequisite.
+
+---
+
+## Identity and token profiles
+
+| Artifact | Subject | Actor | Holder | Verified by | Purpose |
+|---|---|---|---|---|---|
+| Actor assertion | agent definition | — | mecatl pod | vMCP authorization server | Prove which agent is acting |
+| Outbound access token | the user | agent definition | mecatl pod | vMCP gateway | Authorize the gateway call |
+| Provider credential | provider account | — | vMCP | the provider | Execute the backend operation |
+| Schedule grant | the user | schedule + definition | vault | mecatl and the AS | Permit unattended re-derivation |
+| Correlation value | — | instance label | — | nobody | Join two audit records |
+
+Terms whose outbound meaning differs from the companion model:
+
+**Owner** — who is accountable for a persisted session or schedule, and the identity every
+operation on that object is authorized against. A distinct axis from subject: owner is about
+the stored object, subject is about whose authority a call spends.
+
+**Definition and instance** — a definition is a kind of agent, named in configuration and
+stable enough for policy to reference. An instance is one running occurrence, ephemeral and
+unnamed in advance. Policy keys on definitions; audit records instances.
+
+**Resolved target** — what routing determines a call to be: tool, operation, canonical
+resource, and enough to select exactly one credential.
+
+Authority, attenuation, limits and the internal tier model are defined in the companion doc.
+
+### Named invariants
+
+Referenced by name below rather than re-argued.
+
+**Target binding.** Routing produces one resolution. Admission decides about that
+resolution and credential selection consumes it. Nothing re-resolves in between.
+
+**Constrain, never grant.** A binding may not let a holder reach past the authority the
+credential already states. A session pointer fails this; a holder key satisfies it.
+
+**No key below the pod.** The pod is the workload and the key holder. A subagent gets an
+identity from mecatl — real inside mecatl's trust domain — and no private key, because
+siblings share a process and cannot hold one separately.
+
+**Missing input, no result.** When anything a decision needs is absent, refuse. Absent
+metadata counts as the dangerous case.
+
+**Correlation is not authority.** Correlation values are read by logging and nothing else.
+
+---
+
+## The flow
+
+Alice asks her agent to review a pull request. It spawns a code-reviewer subagent, which
+needs the diff from GitHub. GitHub sits behind vMCP, which holds Alice's GitHub credential.
 
 ```mermaid
 sequenceDiagram
@@ -22,547 +107,130 @@ sequenceDiagram
     Note over S: a goroutine inside that pod, with no key of its own
 
     Alice->>M: OIDC access token, and "review PR 42"
-    Note over M: session stores the owner, iss and sub from the validated token
-
-    M->>S: spawn with a reduced tool set. Read and Grep only, one repository
-
-    rect rgba(128,128,128,0.07)
-    Note over M,AS: once per user, agent definition, tool set and audience
-    M->>AS: POST /token over mTLS, client certificate is the SVID
-    Note right of M: grant_type is token-exchange<br/>subject_token is Alice's access token
-    AS-->>M: JWT. sub is Alice, act.sub is the SVID SPIFFE ID, scope narrowed
+    M->>S: spawn with reduced authority
+    M->>AS: POST /token over mTLS. subject is Alice's token,<br/>actor is a mecatl-signed assertion
+    AS-->>M: access token. sub is Alice, act is the definition,<br/>bound to the pod certificate
+    S-->>M: needs the diff
+    M->>G: tool call, bearer that token, plus a correlation header
+    Note over G: verify, resolve once, decide over that resolution
+    alt denied, or an input is missing
+        G--xM: refuse before any credential is touched
     end
-
-    S-->>M: needs the diff for PR 42
-    M->>G: MCP tools/call for github.read_file
-    Note right of M: Authorization header carries that JWT<br/>X-Correlation-Id names the subagent and the call
-
-    Note over G: Cedar reads sub, claim_act.sub, the tool name,<br/>the read-only hint, and the backend this call routes to
-    alt Cedar denies, or no policy is configured at all
-        G--xM: refuse, before any credential is touched
-    end
-
-    Note over G: resolve one credential.<br/>Alice is the lookup key.<br/>The GitHub one, because that is where this routes<br/>and Cedar allowed a read against it
-    G->>B: GET the pull request diff, using Alice's GitHub token
+    G->>B: the resolved credential, and only that one
     B-->>G: the diff
     G-->>M: tool result
-    M-->>S: the diff
 ```
 
-**The whole design is one idea: resolve the call to a target once, decide about that
-target, and fetch using that same target.**
+| Hop | Input | Action | Output | Invariant |
+|---|---|---|---|---|
+| 1 Bind | authenticated caller | resolve to an immutable principal | owned session | owner persisted and enforced |
+| 2 Narrow | parent authority | compute a subset | child authority + limits | only authority travels |
+| 3 Exchange | subject token, actor assertion, pod SVID | validate and exchange | sender-bound access token | three identities, each authenticated |
+| 4 Call | access token, holder proof | send the tool call | gateway request | correlation is not authority |
+| 5 Decide | verified claims, resolved target | admission | allow or deny | missing input, no result |
+| 6 Fetch | subject, credential selector | read one credential | provider credential | target binding |
+| 7 Serve | provider credential | call the backend | result | chain stops at the gateway |
+| 8 Resume | live principal or offline grant | re-derive | access token | authority never widens |
 
-Today nothing does. Credentials are loaded in HTTP authentication middleware, before the
-JSON-RPC body is parsed — so at that moment there is no tool, no arguments and no target at
-all. The code loads every credential the user has, and a later step indexes into the map
-using a name from static configuration. The decision and the credential end up describing
-different things because nothing carries a resolution between them.
+Hops 1, 2 and 4 are fully stated by that table, with one exception each recorded below.
+The rest need detail.
 
-Fix that and the rest follows: the decision is *about* the thing the credential will be
-used for, so no second decision is needed at the fetch.
-
-Note what this does **not** require. Policy does not have to name backends. Routing
-produces a target carrying whatever the fetch needs to select a credential; policy reads
-the fields it cares about — actor, tool, operation, resource — and the selector travels
-alongside without being a policy input. That keeps the gateway an opaque toolset from the
-caller's side and keeps deployment topology out of policy.
-
-| Hop | What changes |
-|---|---|
-| 1 · authenticate | The session stores who owns it. A scheduled run has no inbound request to read a user from, so it captures offline access at creation and still runs as that user. |
-| 2 · spawn | Which tools the child may call has to be known outside mecatl. How many turns it may take does not, and should not leave. |
-| 3 · get credential | One JWT, reused across sibling subagents, obtained by exchanging Alice's token. The pod authenticates with its SVID rather than a secret. |
-| 4 · call | Already correct: the JWT decides everything, and the correlation header is only ever logged. |
-| 5 · gate | Decide about a resolved target rather than a bare tool name. **This is the substantive piece** — it is what makes an allow specific enough to justify one credential. Configuring a policy at all is a deployment requirement, not a code change. |
-| 6 · fetch | Key on Alice rather than a login session, and consume the same target the gate decided about. Plumbing, once hop 5 is right. |
-| 7 · backend | No change. GitHub sees an ordinary GitHub token and learns nothing about agents. |
-| 8 · park/resume | On resume, mint from whoever is asking now rather than from a stored row. |
-
----
-
-## What this decides
-
-[`agent-identity-model.md`](agent-identity-model.md) models identity from the user down
-to the subagent and stops at the boundary. This doc covers what happens at that boundary
-and beyond it: how the harness reaches a tool, what a gateway decides, and how a user's
-stored third-party credential gets used without handing the agent more than it was
-given.
-
-It also lists what has to change, in which repository, in what order. A design that says
-what should happen without saying what to build is not actionable.
-
-**What it takes as given.** The three-tier model, subagents not being network entities,
-mecatl as its own issuer, and the parkable-credential lifecycle. Those are settled in the
-companion doc.
-
-**How to read the annotations.** Each step says what should happen and why. A quoted
-block then says what happens today and what the difference costs. Those blocks are a cost
-signal, never a constraint: mecatl, vMCP and ToolHive are built by the same team, and two
-branches already exist because someone decided a change was needed. A missing interface
-is a thing to build.
-
----
-
-## Vocabulary
-
-Several words in this area cover more than one thing, and the ambiguity does real damage —
-"binding" alone covers four distinct mechanisms with opposite properties. Definitions used
-consistently below.
-
-**Binding** — four things share this word.
-*Holder binding*: only whoever holds this key may use this credential.
-*Context binding*: this credential can read what is filed under some session.
-*Authority binding*: this credential may perform these operations.
-*Principal binding*: this is Alice's authority, exercised by some agent.
-The test that separates them: does the claim let the holder reach past the authority the
-credential already states? A session pointer does — the credential may say "read one
-repository" and the pointer still resolves to everything the user owns. A holder key does
-not; it narrows who may use the credential and adds nothing. **A binding should constrain,
-never grant.**
-
-**Principal** — the party whose authority is being exercised. Either a user or a client,
-never both, and code that consumes one has to handle each.
-
-**Actor** — the party exercising it. In a delegated credential these are different, which
-is what distinguishes delegation from impersonation.
-
-**Owner** — who is accountable for a persisted session or schedule, and the identity every
-operation on that object is authorized against. Usually the same person as the principal,
-but a distinct axis: owner is about the stored object, principal is about whose authority a
-call spends. A scheduled run has an owner *and* runs as that owner's principal — see the
-two schedule types below.
-
-**Authority** — what a credential permits: which tools, which operations, which resources.
-Distinct from **limits**, which bound what a run costs — turns, tool calls, timeouts.
-Authority may need to travel outside the process; limits never do.
-
-**Definition and instance** — a definition is a kind of agent, named in configuration and
-stable enough for a policy to reference. An instance is one running occurrence, ephemeral
-and unnamed in advance. Policy keys on definitions. Audit records instances.
-
-**Workload** — in the WIMSE sense, something independently addressable and executable. A
-mecatl pod is one. A subagent is not, which is the reason it has an identity but no key. A
-subagent would become one only if deployed as its own execution unit with its own key.
-
-**What this design is and is not, in WIMSE terms.** It is SPIFFE X.509-SVID client
-authentication to an OAuth authorization server, followed by token exchange and
-presentation of an access token to a resource server. It is *not* WIMSE WIT/WPT
-authentication, and this doc previously used that vocabulary more loosely than the protocol
-warrants. Likewise, an authorization server consuming mecatl's bundle one-way is trust
-establishment, not SPIFFE federation — reserve "federation" for a deployment actually
-running the federation protocol between trust domains.
-
-**OAuth resource and internal backend are different things.** The `resource` in a token
-request names the service the token is *for* — the gateway. Which provider credential the
-gateway then reaches for internally is a separate identifier. Requiring exactly one OAuth
-resource is a local invariant of this design, not something RFC 8693 imposes.
-
-**Attenuation** — issuing a credential strictly weaker than the one it derives from. Not
-the same as *revocation*, which withdraws one already issued.
-
-**Credential and capability** — a credential states what its holder may do. A capability
-*is* the permission: holding it is sufficient. A pointer into a credential store is a
-capability wearing a credential's clothes, which is why one inside a delegated credential
-defeats the delegation.
-
----
-
-## The properties this is built on
-
-One test, then what it rules out. The hops argue each of these where it applies; this is
-the list to check a change against.
-
-**A binding should constrain, never grant.** Does the claim let the holder reach past the
-authority the credential already states? A session pointer does. A holder key does the
-opposite.
-
-- **Safe in hostile hands.** The holder is driven by a language model reading untrusted
-  input. Everything the credential can cause must already be permitted.
-- **A pointer must not widen.** A reference is fine when following it is limited by what the
-  credential says, and unsafe when the read ignores it.
-- **The limits must be visible where the credential is used**, or every narrowing stops at
-  the harness boundary.
-- **A subagent gets an identity, not a key.** mecatl issues it and it is real inside
-  mecatl's trust domain. Nothing below the pod can hold a key privately, so nothing outside
-  should be asked to attest one.
-- **It survives rehydration.** Sessions park for hours and resume elsewhere.
-- **It works with no user present**, because a scheduled run has none — though it still
-  runs *as* a user.
-- **When an input to a decision is absent, refuse.** Least access, not most.
-- **One credential says who you are, a different one says what you may do.** Who-you-are is
-  long-lived and widely presented; what-you-may-do changes per call. Folding the second into
-  the first means reissuing on every permission change and showing every recipient a list
-  most have no business seeing.
-- **Sharing a credential and attributing an action do not conflict — but attribution is
-  operational, not cryptographic.** One credential is reused across siblings and a logged
-  correlation value names which one acted. That is enough to reconcile two audit trails and
-  not enough to prove to a third party which goroutine caused a call. The companion doc's
-  claim that every subagent is a distinct cryptographic principal should be read as scoped
-  to the tiers that hold keys; below the pod it is operational correlation. Making it
-  cryptographic would need a request-bound signed assertion per call, and even then a
-  compromised pod could lie about which goroutine acted — so it would buy protection
-  against network tampering, not against a malicious issuer.
-
-## A worked example
-
-Alice asks her agent to review an open pull request. The agent spawns a code-reviewer
-subagent, which needs the diff from GitHub. GitHub is reached through vMCP, and vMCP
-holds Alice's GitHub credential.
-
-One path, eight steps. Where it genuinely forks, the fork is marked. Two parallel
-narratives are how a prerequisite gets stated in one and silently assumed in the other.
-
----
-
-### Hop 1 — Alice authenticates and the session records who owns it
-
-**What should happen.** Alice authenticates once, and the session stores who owns it. The
-owner is a property of the session, not of the request that created it.
-
-That distinction matters because some work has no request behind it. A scheduled run
-starts itself, from a timer inside the process, so there is no inbound HTTP request whose
-token could be read. If reading an inbound token is the only way an owner ever gets set,
-scheduled work has no owner at all, and no amount of key or issuer machinery fixes that,
-because the work never passes the place where identity is attached.
-
-**There are two kinds of schedule and they must be separate types.** Collapsing them is
-how a user grant silently becomes a service identity, or the reverse.
-
-A **user-delegated schedule** — "check CI at 3am and fix what is broken" — runs as Alice.
-Its owner is Alice, its subject is Alice's immutable principal, its actor is the schedule
-plus the agent definition, and it holds an explicit offline grant scoped to that schedule.
-
-A **service-owned schedule** — a nightly index rebuild that touches nobody's data — runs as
-itself, with `client_credentials` and no subject. Its owner is a service or administrative
-principal.
-
-Neither may degrade into the other. If a user-delegated schedule's grant is expired,
-revoked or missing, the fire **fails and surfaces reauthorization**. It does not fall back
-to a service identity, because that silently converts Alice's job into somebody else's and
-the audit record stops being true.
-
-**Offline access is the exception, not the shape of the design.** The interactive path
-presents Alice's access token and exchanges it — no stored anything. A stored grant exists
-only for the user-delegated schedule, and only because at 3am there is no token to present
-and no way to mint one from nothing. Every shipped system either replays something captured
-at consent time or degrades to a service identity; there is no third mechanism.
-
-**Consent has to happen outside anything the model wrote.** Scheduling is model-facing, so
-a prompt-injected agent can create recurring work. "Captured with Alice's consent" means
-nothing if the model can cause the consent. So creating a user-delegated schedule produces
-a *pending* authorization request, and a separate interaction — one the model cannot
-author or approve — confirms the provider account, the resources, the cadence, and an
-absolute expiry.
-
-What the schedule stores is a signed envelope, not a refresh token. The token lives in the
-gateway's vault; the envelope names a grant, the authority it covers, and when it dies. It
-is verified before every fire, so mutating the stored row without re-signing invalidates
-it, and widening a schedule needs fresh consent rather than an edit.
-
-> **The counter-example, and why not.** GitHub Actions goes the other way: a scheduled
-> workflow gets an app installation token, a service identity, and its record of who caused
-> the run resolves to whoever last edited the cron expression. Microsoft Graph recommends
-> the same shape, calling delegated access interactive by design. Both are defensible for
-> CI. Neither fits, because last-cron-editor is a poor proxy for whose authority is being
-> spent, and keeping that answer accurate is the point of this design.
-
-> **Today.** Session creation has no owner field, on either the session or the team
-> request. `makeFireFunc` calls `CreateSessionWithProfile` in-process from a
-> leader-elected goroutine, so a scheduled fire never reaches the interceptor that would
-> assign one.
+> **Hop 1 today.** Session creation has no owner field, and a scheduled fire constructs its
+> session in-process from a leader-elected goroutine, so it never reaches anything that
+> could assign one. Session listing takes no principal at all.
 >
-> **Change.** An owner on session creation; an owner on the schedule; the fire path reads
-> it. New, small, mecatl-side. Everything downstream needs it.
-
-**What an attacker gets.** If whatever validates the inbound token records the wrong user,
-every credential minted under that session is minted for the wrong person, and nothing
-downstream can tell.
-
-The obvious defence does not work. If that component signs its binding and the store
-records it and audit compares the two, a compromised component holds the signing key and
-writes the same wrong answer in both places, so the comparison agrees with itself. What
-works is anchoring to something it cannot forge: keep the issuer and identifier of the
-original assertion from the identity provider, so an auditor re-checks against the
-provider rather than against the component under suspicion.
+> **Hop 2 today, and this is worse than it reads.** There is no per-spawn narrowing. A
+> child's tool set is resolved *statically, per definition, at build time* against the
+> shared catalog; nothing reads the parent's current authority because no such value exists.
+> The per-call knobs are limits and a selector for which pre-built tier to use. The audience
+> tag on permission rules is a config-parse-time label on *rules*, identical for every child.
+> So `Narrow` is not wiring an existing computation outward — **authority has to be invented
+> as a runtime type first**, and that gates everything the gateway could enforce against.
+>
+> **Hop 4 today.** Correct already: the inbound path reads only protocol headers, and the
+> identity struct has no header-populated field. Worth keeping when the outbound path stops
+> baking a static header map into a client at dial time.
 
 ---
 
-### Hop 2 — the parent spawns a subagent and narrows what it may do
-
-**What should happen.** The child gets a strict subset of the parent's authority, chosen
-at spawn, and cannot widen it. It holds no key. Its identity is a claim the parent caused
-to be minted.
-
-**Only some of the narrowing needs to leave the harness.** Which tools the child may call,
-and whether it may write, determine what it can reach outside the process — so a gateway
-deciding whether to use Alice's GitHub token needs to know them. How many turns it may
-take, how many tool calls, how long before it times out: those bound what it costs and
-have no bearing on any decision made elsewhere. They stay inside.
-
-Keeping them apart matters in both directions. A limit that should have travelled and
-didn't means the gateway allows something the parent forbade. A limit that travels
-needlessly ends up as a claim in a credential, where it is one more thing to version and
-one more thing a policy might accidentally depend on.
-
-**Narrowing that nobody outside can check is a convention.** mecatl's containment is real
-and tested — the composed catalog, the deny-dominant evaluator pinned to an audience —
-but it runs entirely inside the process. That stops the harness doing the wrong thing by
-accident. It does not let anyone else confirm it didn't.
-
-> **Today, and this is worse than it reads.** The narrowing does not work per spawn. A
-> child's tool set is resolved *statically, per definition, at Build time*, against the
-> shared process-wide catalog. Nothing reads the parent's current authority, because there
-> is no authority value in scope to read. The per-call knobs a caller can set are limits
-> and a selector for which pre-built catalog tier to use — there is no field for narrowing
-> tools or resources on a particular spawn.
->
-> The audience tag on permission rules does not fill the gap either. It is a
-> config-parse-time main-or-subagent label on *rules*, identical for every child of a
-> session, so it can express "children get this rule" and not "this child gets three of
-> the eight tools its definition allows".
->
-> **Change.** Two things, not one. **Invent authority as a runtime value** — something a
-> parent holds, a spawn subtracts from, and a child carries. Then carry the reach-changing
-> part of it outward. The first has no existing counterpart to extend.
->
-> An earlier version of this doc said the narrowing worked and only failed to travel. That
-> was the most consequential wrong claim in it: it made hop 2 sound like plumbing when it
-> is the prerequisite for anything the gateway can enforce against.
-
-**What an attacker gets.** Prompt injection at the *parent* is worse than at a child,
-because the parent picks the child's tools, mode and prompt. Identity cannot prevent
-that; the attacker is driving the harness's own reasoning from inside the pod.
-
-It does bound it. A ceiling carried in the credential limits what a compromised parent
-can hand out, which is the difference between a bad turn and an unbounded one. Cutting
-the other way, the harness defences this leans on are posture-conditional — guardrails
-drop to advisory at the top of the posture ladder — so containment is weakest where the
-model is trusted most.
-
----
-
-### Hop 3 — the harness gets a credential
-
-**What should happen.** One credential per user, agent definition, scope and audience,
-reused across every sibling subagent, obtained by exchanging the user's token. The pod
-authenticates with its SVID rather than a secret.
+### Hop 3 — the exchange
 
 ```http
 POST /token HTTP/1.1
 Host: as.vmcp.example.com
-Content-Type: application/x-www-form-urlencoded
-                    # mTLS. Client certificate is the pod's X.509-SVID,
-                    # spiffe://mecatl.example.com/pod/mecatl-7f4c
+                    # mTLS. Client certificate is the pod's X.509-SVID.
 
 grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 &client_id=spiffe://mecatl.example.com/pod/mecatl-7f4c
 &subject_token=<Alice's access token>
-&subject_token_type=urn:ietf:params:oauth:token-type:access_token
-&actor_token=<a mecatl-signed JWT, below>
-&actor_token_type=urn:ietf:params:oauth:token-type:jwt
+&actor_token=<a mecatl-signed JWT naming the definition>
 &resource=https://vmcp.example.com
-&authorization_details=[{"type":"mecatl_tool",
-                         "locations":["github"],
-                         "actions":["read"],
-                         "identifier":"acme/widgets"}]
+&authorization_details=[{"type":"mecatl_tool","locations":["github"],
+                         "actions":["read"],"identifier":"acme/widgets"}]
 ```
-
-**Three inputs, three identities, none of them inferred.** This is the part an earlier
-version of this doc got wrong: it presented Alice's token and the pod's certificate and
-then expected an agent definition to appear in the response. Nothing proved it.
-
-| Identity | How it is proven |
-|---|---|
-| Alice, whose authority is spent | `subject_token` |
-| The agent definition acting for her | `actor_token`, signed by mecatl |
-| The pod that authenticates and holds the result | X.509-SVID client authentication |
-
-The actor token is short-lived, minted locally, and says only what it must:
 
 ```jsonc
 {
-  "iss": "https://mecatl.example.com",
-  "sub": "spiffe://mecatl.example.com/agent/code-reviewer",  // the definition
-  "aud": "https://as.vmcp.example.com",
-  "mecatl_instance": "sess-9a3f/subagent-call_01H8",         // audit, not authorization
-  "exp": 1785311820
-}
-```
-
-The authorization server verifies it against mecatl's bundle and rejects a missing,
-expired, wrong-audience, unknown-issuer or client-mismatched actor. Without that check an
-unauthenticated caller could request the policy identity of a more privileged definition,
-which is a confused deputy at the mint.
-
-What comes back:
-
-```jsonc
-{
-  "iss": "https://as.vmcp.example.com",
-  "sub": "u_01HQ8Z...",                        // Alice, by immutable internal id
+  "sub": "u_01HQ8Z...",                       // Alice, immutable internal id
   "act": { "sub": "spiffe://mecatl.example.com/agent/code-reviewer" },
-  "authorization_details": [ { "type": "mecatl_tool",
-                               "locations": ["github"],
-                               "actions": ["read"],
-                               "identifier": "acme/widgets" } ],
+  "authorization_details": [ /* as requested, or narrower */ ],
   "aud": "https://vmcp.example.com",
-  "cnf": { "x5t#S256": "..." },                // bound to the pod's certificate
+  "cnf": { "x5t#S256": "..." },               // bound to the pod certificate
   "exp": 1785312000
 }
 ```
 
-Four things to notice. **`sub` is Alice** by an immutable internal identifier rather than
-an email, because email is mutable and not unique across issuers. **`act.sub` is the
-definition**, not the individual subagent, which is what lets eight siblings share this and
-what policy names. **The authority names a resource** — `acme/widgets` — because a scope of
-`repo:read` says nothing about *which* repository, and without it a reviewer scoped to one
-pull request reaches every repository the credential can. And **`cnf` binds the token to
-the pod's certificate**, so a copy lifted from memory or a log is useless without the key.
+**Three inputs, three identities, none inferred.** The subject token proves Alice. The actor
+assertion proves the definition — client authentication cannot, because the client is the
+*pod*. The SVID proves the pod. An authorization server accepting an unauthenticated actor
+would let a caller request the policy identity of a more privileged definition.
 
-Each call then adds a correlation value that is logged and never authorized on:
+**`sub` is the user**, by immutable internal identifier rather than an email, which is
+mutable and not unique across issuers. The JWT-SVID rule forcing `sub` to be the holder
+governs credentials *mecatl* issues; this one is minted by the gateway's authorization
+server, so the standard shape applies and nothing traverses a chain to find the user.
 
-```
-X-Correlation-Id: sess-9a3f/subagent-call_01H8/2
-```
+**`act` is the definition, not the instance** — what policy names, and what lets concurrent
+siblings share one credential.
 
-**Why no second credential for the individual.** A subagent never holds one. The pod holds
-the credential and calls on its children's behalf, so there is no per-subagent token to
-steal, replay or revoke — containing a misbehaving subagent means cancelling a goroutine
-the parent already owns. Signing the correlation value would only matter if the gateway
-authorized on the individual instance, and it cannot usefully: instances are ephemeral and
-unnamed in advance, so no policy could reference one.
+**The authority names a resource.** `repo:read` says nothing about *which* repository, and
+without one a reviewer scoped to a single pull request reaches everything the credential can.
 
-**And a subagent is not a workload,** which is the underlying reason. A workload is
-independently addressable and executable; a goroutine shares an address, a process and a
-memory space with its siblings. No attestor can attest it, so a per-subagent credential
-would ask an external authorization server to accept an assertion in place of an
-attestation. mecatl issues the subagent an identity — real inside its own trust domain —
-but no key exists below the pod, because nothing down there could hold one privately.
+**`cnf` binds the token to the pod's certificate.** mTLS at the token endpoint does not do
+this by itself, so without it a copy from memory or a log replays until expiry.
 
-**Why the SVID rather than a secret.** Three things at once, and they are not separable:
-no secret in an environment the model can read, per-pod attestation instead of
-"whoever holds the secret", and `client_id` becoming a SPIFFE URI, which is what puts a
-namespaced identifier in `act.sub` for policy to name. Using a registered mechanism rather
-than an invented one means it works against any authorization server that implements it.
+**One credential, reused** per user, definition, authority and audience. Minting per call
+puts a round trip in front of every tool use.
 
-> **Today, and what changes.** No client that may use this grant can be provisioned at
-> all: registration hardcodes clients public, permits only `authorization_code` and
-> `refresh_token`, and there is no static-client config, so the path is reachable only
-> through a test seam. **This blocks everything downstream.**
->
-> The fix is the `spiffe-authserver` branch, which auto-registers a confidential client
-> with both required grant types and authenticates it with the SVID. A static client with
-> a shared secret would also work and is rejected: it ships the credential-in-the-
-> environment problem this design removes, and gets thrown away when the SVID path lands.
->
-> Deployment prerequisites: TLS terminates at the authorization server or the ingress
-> forwards the client certificate, and the authorization server holds mecatl's trust
-> bundle. The workload API is now on the credential path, so a pod that cannot reach it at
-> startup obtains no credential for any session.
+**Which buys a staleness window, stated rather than discovered.** If authority narrows
+mid-session the already-minted credential carries the wider authority until it expires. The
+bound is the TTL. This doc argues elsewhere that a stored record is never the authority; for
+one TTL, a cached credential is exactly that for outbound calls. Shorter TTLs trade it for
+round trips, revocation lists for a distributed dependency — neither clearly beats a bounded
+window named out loud.
 
-**Reuse buys a staleness window, and it should be stated rather than discovered.** A
-credential minted for one combination of user, definition, authority and audience is reused
-until it expires. If authority narrows mid-session — a guardrail trips to enforcing, a
-posture changes, an operator tightens something — the already-minted credential still carries
-the wider authority for the remainder of its lifetime.
+**A definition name is not yet safe to authorize on.** Definitions come from sources of
+different trust, and nothing stops a project-tier one, read from a mutable workspace, taking
+the name of an operator-managed one. The codebase already tiers those sources. Policy on a
+bare name cannot tell them apart, so untrusted content defeats the actor claim rather than
+bypassing it. Either put the tier in the identifier, or let only operator-tier definitions be
+nameable in policy — the first keeps a capability, the second removes a risk class.
+Unresolved.
 
-The bound is the credential's TTL, which is minutes. Worth naming because this doc argues
-elsewhere that a stored record is never the authority and the live check is, and that
-argument applies here too: for the length of one TTL, a cached credential *is* the authority
-for outbound calls, whatever the evaluator now thinks. Shortening TTLs trades it for round
-trips and a revocation list trades it for a new distributed dependency; neither is obviously
-better than accepting a bounded window and saying so.
-
-**A definition name is not yet safe to authorize on, and this design currently assumes it
-is.** `act.sub` carries a definition name, and policy keys on it. But agent definitions come
-from sources of different trust — an operator-managed one and a project-tier one read from a
-mutable workspace — and nothing stops both defining `tdd-worker`. The codebase already
-treats those tiers differently, which is why definitions carry an origin label at all.
-
-So a repository someone can push to could define an agent whose name matches one an operator
-granted broad policy to, and policy keyed on the bare name cannot tell them apart. That is
-definition-spoofing through untrusted content, and it defeats the actor claim rather than
-bypassing it.
-
-Two ways to close it, and they are a real choice rather than an obvious one:
-
-- **Put the tier in the identifier** — `agent/operator/tdd-worker` against
-  `agent/project/tdd-worker` — so a rule naming one cannot match the other. Rules get more
-  verbose and the path shape becomes a decision that is awkward to change later.
-- **Only operator-tier definitions get an identity.** A project-tier definition runs under a
-  generic one and cannot be named in policy at all. Simpler and safer, and it removes a
-  capability someone may want, since per-project specialists stop being separately
-  authorizable.
-
-Unresolved here deliberately. The first preserves a capability, the second removes a class of
-risk, and which matters more is not something the properties decide.
-
-**What an attacker gets.** Whoever holds this credential can act as that agent definition,
-for that user, within that scope, until it expires — which is the argument for it naming
-little and expiring fast. An attacker inside the process gets what the model gets, which
-is the argument against a static secret. An attacker who can make the harness request a
-credential naming a user it is not acting for defeats everything downstream, which is what
-the consent check on the subject token exists to stop.
-
-### Hop 4 — the harness calls a tool
-
-**What should happen.** The call carries the credential and the correlation value, and
-nothing else that matters. No header the gateway reads for identity. Everything *decided
-on* travels in the credential, because anything else cannot be verified at the far end;
-the correlation value is logged, never authorized on, which is why it does not need to
-be.
-
-This is what makes the subagent tier safe. A subagent cannot talk its way into a stronger
-identity by manipulating a header, because there is no header to manipulate. Its identity
-was fixed when the harness minted the credential, before it ran.
-
-> **Today.** The inbound path reads only `MCP-Protocol-Version` and `Accept`, and the
-> identity struct has no header-populated field, so this already holds. Worth keeping
-> when the outbound path stops baking a static header map into a client at dial time.
-
-**Why this is a header and not the run identifier the companion doc defines.** That doc
-carries a signed per-run identifier inside the credential mecatl issues, and uses it as the
-join key between its audit trail and a downstream one. It cannot serve that role here, for
-the same reason the subject claim differs at this hop: **the credential crossing it is not
-one mecatl issued.** It is minted by the gateway's authorization server, so mecatl has no
-claim to put anything in.
-
-So there are two join keys, in two domains. The signed run identifier joins records about
-credentials mecatl issued. This correlation value joins mecatl's log to the gateway's, and
-is unsigned because nothing is granted by it and only mecatl could forge it — and mecatl is
-already trusted to name the actor in the request that obtained the credential.
-
-Worth stating because the two look like one mechanism described twice, and a reader who
-assumes that will expect the outbound join to carry the guarantees the signed one has.
-
-**What an attacker gets.** An attacker who controls the subagent's reasoning — the
-expected case — gets to choose the tool name and the arguments on this call, and nothing
-else. They cannot change whose authority is presented, which agent definition is named, or
-what that definition may do, because all three were fixed when the pod obtained the
-credential, before the subagent ran and outside its reach.
-
-So the capability gained is exactly "issue any call the credential already permits." That
-is a real capability and the reason hop 5 has to be able to distinguish among those calls.
-What it is not is escalation: no sequence of tool calls widens the credential.
+> **Today.** No client that may use this grant can be provisioned. Registration hardcodes
+> clients public and permits only `authorization_code` and `refresh_token`, there is no
+> static-client configuration, and that handler is the only route to registration. **This
+> blocks everything downstream.** The `spiffe-authserver` branch auto-registers a
+> confidential client with both required grants and authenticates it with the SVID. A static
+> client with a shared secret would also work and is rejected: it ships the
+> credential-in-the-environment problem this design removes, and is discarded later anyway.
 
 ---
 
-### Hop 5 — the gateway decides
-
-**What should happen.** One gate, always in the path, that sees the whole question: who is
-acting, for whom, on what, at which backend. It decides before any credential is touched,
-and refusing stops the call.
-
-This is what the rule looks like once the gate has the backend:
+### Hop 5 — the gate
 
 ```cedar
-// A code-reviewer may read — but only the repository its own credential
-// names, and only tools declared read-only.
-permit (
-    principal,
-    action == Action::"call_tool",
-    resource
-)
+permit ( principal, action == Action::"call_tool", resource )
 when {
     context.claim_act.sub == "spiffe://mecatl.example.com/agent/code-reviewer" &&
     resource.readOnlyHint == true &&
@@ -570,495 +238,326 @@ when {
 };
 ```
 
-**Notice what the rule does not mention: a backend.** It names the actor, the operation and
-the resource, and nothing about where the call routes. That is deliberate. Policy naming
-backends would couple it to deployment topology and work against the gateway presenting as
-an opaque toolset. The target the decision is made about *does* carry a credential selector,
-but as something the fetch consumes rather than something policy reasons over.
+**The rule names no backend.** Policy naming backends couples it to deployment topology and
+works against the gateway presenting as an opaque toolset. The resolved target carries a
+credential selector, but as something the fetch consumes rather than something policy reasons
+over. A deployment wanting backend-level rules can have them; the design does not depend on
+it.
 
-Two of the three conditions are unavailable today. `resource.readOnlyHint` is absent unless
-the backend declared it, with no classifier to fall back on, so a rule omitting the
-`== true` silently permits unannotated tools. And the last line needs the call's target
-canonicalized into a form the credential's authority can be compared against — without it
-the rule permits *any* read, which is the hole the resource axis in hop 3 closes.
+**One gate, not several.** A check living in each outbound path can be omitted from one of
+them, invisibly. A single gate can be wrong; it cannot be absent.
 
-That last condition is the only comparison this design asks policy to make: a containment
-check over one axis, not a subset algorithm over a structured schema. The definition and
-the operation are named directly, so only the resource has to be compared.
+**The last condition is the only comparison policy makes** — containment over one axis, not
+a subset algorithm over a schema, because definition and operation are named directly.
 
-A deployment that *wants* backend-level rules can have them — the field is in the target.
-The point is that the design does not depend on it.
-
-**Why one gate rather than several.** A check that lives in each outbound path can be left
-out of one of them, and the omission is invisible until someone finds it. A single gate can
-be wrong; it cannot be absent.
-
-**A policy is a deployment requirement, not something the product should enforce.** With
-no `authz` block configured the admission check returns allow unconditionally — which is a
-reasonable default for a gateway with nothing to hand out, and the wrong posture once
-credential injection is on. Those two configuration decisions are independent and nothing
-links them.
-
-That is ours to get right when we deploy, not a default to argue about upstream: other
-deployments legitimately want allow-all for development or single-user use. So it belongs
-in the deployment requirements below rather than in the change list.
-
-Worth being honest that a runbook item is weaker than a product guarantee. Nothing stops
-someone standing up a gateway with credentials and no policy; the invariant holds because
-we hold it.
-
-> **Today, and what changes.** Admission is already the single gate and already always in
-> the path, which is the part that is right. It receives the acting agent as a nested claim
-> and a read/write hint from the backend's tool annotation.
+> **Today.** Admission is the single gate and runs before routing; the HTTP authz middleware
+> is vestigial. `act` reaches policy as a nested claim.
 >
-> Four changes, all fixes to an existing gate rather than new components. **Resolve the
-> call once and decide about that resolution** — today the gate receives a tool name and
-> nothing that identifies what it resolves to, so its allow cannot be specific enough to
-> justify a particular credential. **Refuse when credentials
-> are configured and no policy is** — today the authz factory returns nil, which becomes an
-> allow-all admission whose check returns true unconditionally, so a fresh deployment
-> serves any advertised tool to any authenticated caller. **Stop discarding the issued
-> token's claims** when a primary upstream provider is pinned, or `claim_act` vanishes and
-> a rule written about it stops matching rather than failing. **Choose the unannotated
-> default** — treat an absent hint as mutating, so the rule above refuses rather than
-> permits.
+> Three gaps. **The backend reaches the admission seam and is dropped before policy** — the
+> tool carries it, the seam receives it, and only the name goes onward; a call to an
+> unadvertised name gets a synthesised tool with no backend at all. **The read/write hint is
+> absent by default** with no classifier to derive one, so a rule omitting `== true` silently
+> permits unannotated tools — though per-tool operator overrides already exist in config,
+> which is a cheaper lever than a new policy default. And **the resolved target does not
+> exist as a value** for policy to compare against.
+>
+> One thing that is not simply a gap. When a primary upstream provider is pinned, the issued
+> token's claims are deliberately not a claim source: in a multi-upstream chain the presented
+> token's name and email belong to the first configured upstream, and using them would
+> attribute one provider's identity to another. So `act` vanishes there by design. Restoring
+> it reverses a provenance decision rather than fixing a bug, and needs arguing on those
+> terms. An opaque upstream token falls back to request claims with a warning, so `act` does
+> survive on some providers.
 
-**What an attacker gets.** This is where a confused deputy is caught or not. The agent
-cannot read Alice's credentials, but it can ask the gateway to use them, and the gate is
-the only thing between the request and that use. A gate that cannot see the backend can be
-talked into using the wrong credential for a call it was willing to allow. A gate that is
-absent can be talked into anything.
+---
 
-One rule worth taking verbatim from the credential-broker draft: *"The PDP MUST NOT
-evaluate justification text for approval decisions."* Agent-authored prose must never
-influence the decision. In an agent deployment that is the entire injection surface.
-
-### Hop 6 — the gateway uses one of Alice's credentials
-
-**What should happen.** One operation, after the gate allowed the call, keyed on the
-backend the gate saw:
+### Hop 6 — credential resolution
 
 ```go
-cred, err := vault.Fetch(ctx, "alice@example.com", BackendID("github"))
+cred, err := vault.Fetch(ctx, subject, target.CredentialSelector)
 
 switch {
-case errors.Is(err, ErrNoCredential):
-    // Alice has never connected GitHub. A missing integration,
-    // surfaced to her as "connect GitHub to use this".
-case errors.Is(err, ErrUnknownBackend):
-    // routing produced a backend the vault has never heard of.
-    // A configuration bug, not a user-facing one. Distinct on purpose:
-    // collapsing the two makes a routing fault look like a missing account.
+case errors.Is(err, ErrNoCredential):     // no such integration for this user
+case errors.Is(err, ErrUnknownSelector):  // routing produced something unknown — a config fault
 }
 ```
 
-**No decision parameter, and that is the point.** Cedar was asked about a resolved target
-and said yes. The call only reaches here because it said yes. So the authorization for
-using this credential already happened — it is what the allow meant. There is no second
-predicate.
+Two distinct errors on purpose: collapsing them makes a missing integration look like a
+routing bug.
 
-That holds only while the target is the *same* target. If anything re-resolves the call
-between the decision and the fetch, the allow was about something else — which is exactly
-the class Envoy documents, where a filter clearing the route cache after authorization
-means the decision described a different destination than the one served.
+**No decision parameter.** The gate was asked about a resolved target and said yes; the call
+only arrives here because it did. The authorization for using this credential already
+happened — target binding is what makes that true, and if anything re-resolved in between,
+the allow described something else.
 
-**So hop 5 carries the weight and this hop is plumbing:** get the fetch past routing, and
-have it consume the resolution rather than perform one.
+**The key is the user**, not a login session. A session pointer describes an episode; the
+question is whose credential this is. And an agent can never have one — nothing mints a
+pointer for a flow with no browser login, and the exchange drops any inherited one. So
+forwarding the user's token keeps the pointer and loses the actor, while exchanging keeps the
+actor and kills the lookup. The exchange exists for the actor, so the lookup keys on the user.
 
-**Why the key is the user, and why the current key cannot work at all.** The credential is
-Alice's, so the lookup keys on Alice.
-
-Today it keys on `tsid`, a token-session identifier. That is not a small difference of
-opinion about naming — **an agent can never have one**, for two independent reasons.
-
-It is generated as `rand.Text()` at the start of an authorization-code flow
-(`pkg/authserver/server/handlers/authorize.go:93`) and picked up on the callback
-(`handlers/callback.go:108`) to key the stored upstream credentials. So it is minted when
-a human begins a browser login. An agent never traverses that flow, so nothing mints one
-for it.
-
-And where the user's own token *does* carry one, the exchange drops it: the delegation
-handler passes an empty session link, commented "No IDP session link for delegated
-tokens" (`server/tokenexchange/handler.go:142-144`).
-
-That produces a dichotomy the epic does not name:
-
-| | `tsid` | actor | credential lookup |
-|---|---|---|---|
-| Forward the user's token verbatim | present | **lost** | works |
-| Exchange it for a delegated token | **dropped** | present | **dead** |
-
-You can have the actor or the credential lookup, not both.
-[#5194](https://github.com/stacklok/toolhive/issues/5194) exists to get the actor, so it
-kills `tsid`-keyed credential injection for agents as a side effect.
-
-A pointer minted at browser login describes an episode; the question here is whose
-credential this is, which is an entitlement. Keying on the user is not a workaround for
-the agent case — it is the correct key, and the agent case is what makes that obvious.
-
-> **Today, and what changes.** The request arrives, authentication middleware validates the
-> token, takes the login-session pointer out of it, and loads **every** credential stored
-> under that pointer — GitHub, Slack, AWS, everything Alice has connected — into a map.
-> This happens before the JSON-RPC body is parsed, so nothing there knows the call is
-> `github.read_file` or where it routes. The code says so: a per-backend check would need
-> routing context this layer does not have. Afterwards the outbound strategy indexes that
-> map by a provider name from static configuration.
+> **Today.** Authentication middleware validates the token, takes the session pointer out of
+> it, and loads **every** credential stored under that pointer into a map — before the
+> JSON-RPC body is parsed, so nothing there knows what is being called. The code says as
+> much: a per-backend check would need routing context this layer does not have. Afterwards
+> the outbound strategy indexes that map by a provider name from static configuration.
 >
-> So a subagent narrowed to read-only on one repository can trigger `slack.post_message`
-> and nothing in the credential path objects, because by then the Slack token is already
-> loaded and the only question left is which key to read.
+> So a subagent narrowed to one repository can trigger a call to another service and nothing
+> in the credential path objects, because by then that credential is already loaded.
 >
-> **Change.** Move the fetch to where the backend is known. The user-keyed half already
-> exists as an enterprise decorator and is a port. The interface it replaces sits in
-> authentication middleware, which is the right place for authentication and the wrong one
-> for this.
+> **Change.** Move the fetch to where the target is known. There is a real interface at the
+> load point a filtering implementation could replace.
 
-**We are the outlier, which is the useful thing to know.** Every comparable system fetches
-against a target it already knows. RFC 8693 settles it in its request grammar — an exchange
-carries `resource` and `audience`, so it cannot precede knowing them. Vault has no map to
-index; its policy check and its credential production are one operation on one path. AWS's
-agent gateway fetches one credential per invocation against a named target. Envoy runs
-external authorization after route matching for exactly this reason, and documents a later
-filter clearing the route cache as a privilege-escalation vector, because the decision was
-then made about a different target than the one served. Same failure, named as a security
-bug by someone else.
-
-Preloading and indexing has a classical name: ambient authority, failing as a confused
-deputy, because the later stage never had to prove entitlement to what it reaches.
-
-**One assumption, and it should be enforced rather than assumed.** A resolved target must
-select exactly one credential. That holds in the current model, where two accounts are two
-backends — but as a convention it fails silently: an allow would still be returned, and the
-fetch would quietly pick a member of a set. Enforce uniqueness where routes and credentials
-are configured, so the failure happens at configuration time and is loud.
-
-**Something hangs off the login session that moving the key does not move.** The stored
-credential has a refresh lifecycle. Bound it to the schedule rather than the token: a
-schedule has an expiry Alice set, its grant is refreshed only while the schedule is live,
-and when it lapses the next run surfaces a re-authorization prompt. Unsupervised extension
-is then limited by something she chose and can see.
-
-**What an attacker gets.** Today, anyone who can reach one allowed tool call reaches every
-credential Alice owns, because they are all in memory and the remaining step is a map
-lookup. After the change, they reach the one credential for the one backend the gate
-approved. The blast radius goes from her whole connected-account set to a single provider.
-
-### Hop 7 — the backend serves the call
-
-**What should happen.** The backend gets a credential it already understands, for a call
-already authorized, and verifies what it always verifies. It learns nothing about agents
-or delegation.
-
-That is a goal, not a shortfall. A backend has no policy about mecatl's subagents it
-could apply, and making it understand our vocabulary would turn every integration into a
-negotiation.
-
-**The chain does not reach here.** Whatever the gateway minted or injected is what the
-backend sees. RFC 8693 §2.1 is explicit that an exchange *"is a one-time event and does
-not create a tight linkage between the input and output tokens"*, so a backend cannot
-walk it back. Any claim that a third party can verify the chain has to be scoped to **the
-gateway**, not the resource server.
-
-That is the right place — the gateway is where the claimed authority and the credential
-about to be used are both visible, and the only hop where refusing prevents anything. But
-the boundary should be stated rather than implied to extend further.
-
-> **Today.** This already holds. The outbound strategies derive a credential from stored
-> tokens or an exchange, and none read the inbound claims. No change; the deliverable is
-> accuracy.
-
-**What an attacker gets.** Someone who compromises the gateway can make a backend call
-that is indistinguishable, at the backend, from one Alice made herself — the backend sees
-an ordinary GitHub token and has no way to learn an agent was involved. The gateway's audit
-record is the only place that distinction exists, so the same attacker can also remove the
-evidence.
-
-That is the honest cost of stopping the chain at the gateway, and it is worth stating
-because "verifiable by anyone holding the bundle" implies otherwise. The mitigation is not
-at this hop: it is that the gateway's audit and mecatl's own log are separate records that
-can be reconciled, so an attacker needs both.
+**We are the outlier.** Every comparable system fetches against a target it knows. RFC 8693
+settles it in its request grammar — an exchange carries `resource` and `audience`, so it
+cannot precede knowing them. Envoy runs external authorization after route matching for this
+reason, and treats a later filter clearing the route cache as a privilege-escalation class,
+because the decision then described a different destination than the one served. Preloading
+and indexing is ambient authority; the failure is a confused deputy.
 
 ---
 
-### Hop 8 — the session parks, then resumes somewhere else
+### Hop 7 — the backend, and one exception
 
-**What should happen.** The credential expires. The authority does not. On resume the
-credential is re-derived, never wider than before.
+The backend receives a credential it already understands, for a call already authorized, and
+learns nothing about agents. That is a goal: a provider has no policy about mecatl's
+subagents it could apply.
 
-**Where there is a live caller, derive from that caller.** Someone who just authenticated
-is a stronger statement than a row saying they once did. This covers more cases than it
-seems: approve-after-restart comes from an inbound request, so a human clicking approve
-is authenticated; a resumed subagent runs under a live parent turn; a background child is
-run-scoped with a live parent. The only case with nobody present is the scheduled run
-from hop 1 — which already has its own stored owner and its own no-user credential.
+**Where the chain stops.** RFC 8693 §2.1 is explicit that an exchange "is a one-time event
+and does not create a tight linkage between the input and output tokens", so a backend cannot
+walk it back. Verifiability is scoped to **the gateway** — the only place where the claimed
+authority and the credential are both visible, and the only hop where refusing prevents
+anything.
 
-**Authority must not be read out of a row that anything can write.** If the stored record
-is the authority, whatever can write the store can grant authority, and the identity
-layer is decoration on a database.
-
-> **Today.** Sessions park and resume on other pods, and the persisted labels have no
-> integrity protection — rehydration trusts them verbatim, including the permission
-> posture. So monotonic attenuation across resume is one write away from false, and the
-> store is currently unauthenticated.
+> **Today, with one strategy that breaks the rule.** Four of five outbound strategies derive
+> a credential without reading the inbound claims. **The AWS STS strategy reads them, and the
+> read is authority-bearing**: the inbound token's claims select which IAM role the outbound
+> credential assumes, and it hard-fails when claims are absent. Two strategies also forward
+> the raw inbound token as the subject token when no provider is pinned.
 >
-> **Change.** Derive from the live caller where there is one, which covers nearly every
-> path and costs almost nothing. Sign the chain at mint and verify before re-minting for
-> the one path where nobody is present. Much smaller than signing for all of them.
-
-**What an attacker gets.** Someone who can write the store but cannot sign is a distinct
-and likelier adversary than one who has compromised a pod — a leaked database credential
-rather than code execution. That adversary is precisely who chain integrity defeats, and
-folding the two together into "the pod that can sign can impersonate anything" makes the
-mitigation look less valuable than it is.
+> So this is not uniformly a boundary where nothing of ours crosses, and an earlier version
+> of this document asserting "no change needed" here was wrong. On that path a discarded or
+> forged actor claim changes the outbound authority directly, which ties it straight to the
+> claims-provenance behaviour in hop 5. Any design for `act` has to account for a consumer
+> that already authorizes on claims.
 
 ---
 
-## The steps as interfaces
+### Hop 8 — resume
 
-Signatures rather than prose, because prose let several things stay vague that a type does
-not. Shapes, not literal Go, and they span two codebases. Each step's output has to be the
-next step's input; where it is not, that is a finding.
+The credential expires; the authority does not. On resume it is re-derived, never wider.
+
+**Prefer the live caller.** Someone who just authenticated is a stronger statement than a
+stored row. That covers more paths than it seems: approve-after-restart arrives on an inbound
+request, a resumed subagent runs under a live parent turn, a background child is run-scoped.
+The only case with nobody present is a scheduled fire, which has its own grant.
+
+**Authority must not come from a row anything can write.** If the stored record is the
+authority, whatever writes the store grants authority.
+
+> **Today.** Sessions park and resume on another pod when a shared store is configured —
+> flag-gated, with the default falling back to in-memory even in the Kubernetes binary.
+> Persisted state is plain JSON with no signature or MAC.
+>
+> The posture ladder is **not** session state and is not restored; it is applied at build
+> time. What is persisted and restored verbatim is the session mode, one value of which
+> relaxes edit prompting. So a permission-relevant label is trusted verbatim — the posture
+> ladder is simply not that label.
+
+---
+
+## Scheduled execution
+
+Alice says "check CI at 3am and fix what is broken." Two kinds of schedule, separate types,
+because the failure mode is one silently becoming the other.
+
+| | User-delegated | Service-owned |
+|---|---|---|
+| Owner | Alice | a service or admin principal |
+| Subject | Alice | none |
+| Actor | schedule + definition | schedule + definition |
+| Holder | firing pod | firing pod |
+| Grant | offline grant scoped to this schedule | client credentials |
+
+**A user-delegated schedule runs as Alice.** The work is hers. A run acting as itself loses
+her, which is one of the two bad options the delegation epic exists to avoid.
+
+**Which requires capturing offline access at creation.** Nothing can mint a credential naming
+Alice from nothing at 3am, and no specification offers a way — every shipped system either
+replays something captured at consent time or degrades to a service identity. The agent still
+holds nothing of hers: the refresh token lives in the vault, scoped to one user and one
+provider, revocable. That is *safer* than the alternative that avoids storage, since a system
+able to mint a user's credential at will is more dangerous than one holding a token that can
+be taken away.
+
+**Consent must happen outside anything the model wrote.** Scheduling is model-facing, so a
+prompt-injected agent can create recurring work, and "captured with consent" means nothing if
+the model can cause the consent. Creation produces a pending authorization; a separate
+interaction the model cannot author confirms account, resources, cadence and an absolute
+expiry.
+
+**The schedule stores a signed envelope, not a token.** Verified before every fire, so
+mutating the row without re-signing invalidates it, and widening needs fresh consent.
+
+**Refresh is bounded by the schedule, not the token.** Refresh-on-use lets an unsupervised
+agent extend a credential forever; refresh-on-login stops a working schedule for invisible
+reasons. A schedule has an expiry its owner set, and its grant refreshes only while it lives.
+
+**When the grant is gone, fail and surface reauthorization.** Never fall back to a service
+identity — that converts Alice's job into somebody else's and makes the audit record false.
+
+---
+
+## What an adversary gets
+
+| Adversary | Can | Cannot | Caught at |
+|---|---|---|---|
+| Prompt-injected subagent | choose tool and arguments within the credential's authority | change whose authority is presented, which definition is named, or what it permits — fixed before it ran | the gate |
+| Prompt-injected parent | choose a child's authority up to its own | exceed its own; a credential-carried ceiling bounds what it hands out | mint |
+| Stolen access token | attempt replay | use it without the pod's certificate | the gateway |
+| Store writer, no signing key | rewrite mutable rows | forge a signed actor assertion or schedule envelope | verification |
+| Compromised gateway | use stored credentials; alter its own audit | be distinguished from Alice by the backend | reconciliation with mecatl's log |
+| Compromised pod | anything the pod may do; lie about which goroutine acted | — | accepted boundary |
+
+**Limits, stated once.** Providers cannot verify the agent chain in the stored-credential
+path. Correlation gives operational attribution, not cryptographic proof. A compromised
+gateway can both abuse credentials and rewrite its own record of doing so. A compromised pod
+sits inside the accepted workload boundary.
+
+One rule adopted verbatim from the credential-broker draft: *the PDP must not evaluate
+justification text for approval decisions.* Agent-authored prose must never influence a
+decision — in an agent deployment that is the whole injection surface.
+
+---
+
+## Interfaces
+
+Every output is the next input. Where it is not, that is a finding.
 
 ```
-Hop 1   BindPrincipal(inbound Request)            -> (Principal, error)
-        OwnerOf(spec ScheduleSpec)                -> (Principal, error)
-        RootAuthority(p Principal)                -> (Authority, error)
+Hop 1   BindPrincipal(inbound)                     -> PrincipalID
+        OwnerOf(schedule)                          -> PrincipalID
+        AuthorizeObject(principal, object, action) -> Decision
+        RootAuthority(principal)                   -> Authority
 
-Hop 2   Narrow(parent Authority, spec SpawnSpec)  -> (Authority, Limits, error)
+Hop 2   Narrow(parent Authority, spawn)            -> (Authority, Limits)
 
-Hop 3   ActorAssertion(def DefinitionID,
-            inst InstanceID, aud Audience)        -> (ActorToken, error)
-        DelegatedCredential(
-            subject UserToken, actor ActorToken,
-            a Authority, res OAuthResource)       -> (Credential, error)
-        // unattended: same output, subject from a verified grant
-        VerifyScheduleGrant(spec ScheduleSpec)    -> (OfflineGrant, error)
-        DelegatedFromStored(
-            g OfflineGrant, actor ActorToken,
-            a Authority, res OAuthResource)       -> (Credential, error)
+Hop 3   ActorAssertion(definition, instance, aud)  -> ActorToken
+        Exchange(subjectToken, actorToken,
+                 clientSVID, authority, resource)  -> AccessToken
+        VerifyScheduleGrant(schedule)              -> OfflineGrant
 
-Hop 4   Call(c Credential, corr Correlation,
-             tool ToolName, args Args)            -> (Result, error)
+Hop 4/5 Verify(accessToken, holderProof)           -> Claims
+        Resolve(call)                              -> Target
+        Decide(claims, target)                     -> Decision
 
-Hop 4/5 Verify(c Credential, proof HolderProof)   -> (Claims, error)
-Hop 5   Resolve(call Call)                        -> (Target, error)
-        Decide(claims Claims, t Target)           -> (Decision, error)
+Hop 6   Fetch(subject, target.selector)            -> StoredCredential
 
-Hop 6   Fetch(u UserID, sel CredentialSelector)  -> (StoredCredential, error)
-
-Hop 8   Rederive(s Session, prior Authority,
-                 caller *Principal)                -> (Credential, error)
+Hop 8   Rederive(prior Authority,
+                 livePrincipal | offlineGrant)     -> AccessToken
 ```
 
-Six things the signatures caught that the prose had hidden.
+`Fetch` takes no decision: the call only arrives if the gate allowed it, and target binding
+means it allowed *this* target. `Narrow` returns two values because only the first travels.
+`Verify` is a step of its own because issuer, audience, expiry, algorithm and holder binding
+must all be checked before any claim reaches policy. `Correlation` appears in no signature —
+logged, never read by a decision, which is the point.
 
-**`Principal` is a sum type that mostly should not be.** Every path here carries a user,
-including the unattended one. The client branch is what a run *degrades* to when a stored
-grant is gone, and the answer there is to fail. It exists to be rejected, not handled
-evenhandedly.
+---
 
-**`Narrow` returns two values and only one travels.** Authority crosses the boundary;
-limits never leave. Separating them in the type is what stops turn counts becoming claims.
+## The work
 
-**Two constructors, both producing a credential that names the user.** They differ only in
-where the subject comes from — a presented token, or a grant stored when a schedule was
-created. Neither names the harness.
+Status verified against code except where marked unknown.
 
-**`DelegatedCredential`'s parameters are exactly the cache key,** which fell out rather
-than being designed. Adding a parameter later silently fragments the cache.
-
-**`Fetch` takes no decision.** An earlier version split this in two and passed the gate's
-verdict into the second half. The candidate list was the preload this design removes,
-written back in as a step; and the verdict is unnecessary, because the call only arrives if
-the gate allowed it and the gate saw the backend. Two seams in the current code produced a
-two-stage signature the properties never asked for.
-
-**Four missing arrows,** found by checking outputs against inputs. Nothing produced
-`Claims`, so `Verify` is now explicit — which surfaces that the gateway needs the trust
-bundle too, the same requirement as the authorization server. Nothing produced the root
-`Authority` that `Narrow` reduces. `Rederive` promised a credential never wider than before
-while taking nothing describing before. And `Correlation` appears in no later signature,
-which is correct rather than missing: it is logged, never read by a decision.
-
-## The work, as an index
-
-Detail is in the hop each row names. This view exists for planning across two repositories,
-not for reading the design.
-
-**Blocking — nothing runs until these do**
-
-| # | What | Where | Hop |
+| Capability | Owner | State | Blocks |
 |---|---|---|---|
-| 1 | A confidential client that may use the exchange grant, authenticated by SVID | vMCP — port `spiffe-authserver` | 3 |
-| 2 | Accept subject tokens from an external issuer | vMCP — validator exists unwired, [#5989](https://github.com/stacklok/toolhive/issues/5989) gates it on a consent model | 3 |
-| 3 | Publish the trust bundle to the authorization server and the gateway | vMCP + mecatl — two consumers, one artifact | 3, 5 |
-| 4 | An owner on session creation, and on schedules with offline access captured | mecatl — new | 1 |
-| 4a | An immutable internal user id, mapped from (tenant, issuer, subject) at link time | mecatl — new. Email is mutable and not unique across issuers | 1 |
-| 4c | **Invent authority as a runtime value** — held by a parent, subtracted from at spawn, carried by a child. No counterpart exists to extend: today a child's tool set is resolved statically per definition at Build time, and nothing reads a parent's current authority | mecatl — new, and the prerequisite for anything the gateway can enforce against | 2 |
-| 4b | **Enforce the owner on every object operation**, not only listing — get, resume, close, delete, event and archive reads, approvals, schedule read/update/pause/delete, child and team inspection | mecatl — new. An owner field nobody checks is decoration, and this is the whole multi-user isolation story | 1 |
-
-**The design itself**
-
-| # | What | Where | Hop |
-|---|---|---|---|
-| 5 | Resolve the call once into a target, and pass that target to the gate. The target carries the credential selector; policy need not read it | vMCP — routing already knows this and discards it | 5 |
-| 6 | Stop discarding the issued token's claims when a primary upstream provider is pinned | vMCP — fix | 5 |
-| 7 | Treat an unannotated tool as mutating | vMCP — policy default | 5 |
-| 8 | Move the credential fetch past routing, consuming the same target the gate decided about — no second resolution | vMCP — new | 6 |
-| 8a | Key the credential read on the user rather than `tsid` | vMCP — the enterprise user-keyed decorator does this; a port, not new work | 6 |
-| 8c | Enforce that a route resolves to exactly one credential, at configuration time | vMCP — otherwise an allow permits a class and the fetch silently picks a member | 6 |
-| 8b | Decide what happens to the `tsid`-keyed path | vMCP — see below | 6 |
-| 9 | Split authority from limits so only the first can travel, once the value exists | mecatl — follows 4c | 2 |
-| 10 | Mint in composition, never behind a port the loop calls | mecatl — `Deps.ChildAskReviewer` is the shape to copy: a Build-scoped optional interface owned by `engine/agent`, consumed per-run inside `parentCaps`. It needed no `engine/port` type, which answers the question a reviewer will ask first. The engine factories are the wrong precedent — they bind once at Build with no session access | 3 |
-| 11 | A per-call correlation value | mecatl — the MCP adapter bakes static headers at dial | 4 |
-| 11a | Mint and sign the actor token; the AS validates it | both — [#5815](https://github.com/stacklok/toolhive/issues/5815) is building the AS half with the client-binding check | 3 |
-| 11b | Certificate-bound access tokens, and the gateway validating the binding on every call | vMCP — RFC 8705 §3. The SVID is already there; the binding is not | 3, 5 |
-| 11c | Carry a resource in the credential's authority, and compare the call's canonical target against it | both — this is the one comparison policy has to make | 3, 5 |
-| 11d | The offline consent ceremony and signed schedule envelope | mecatl — model-facing scheduling means consent must be unforgeable by the model | 1 |
-
-**Correctness and hygiene, not blocking**
-
-| # | What | Where | Hop |
-|---|---|---|---|
-| 12 | Check a stored credential against the identity that stored it | vMCP — the error is declared and never returned | 6 |
-| 13 | Derive from the live caller on resume | mecatl — persisted labels are trusted verbatim today | 8 |
-| 14 | Wire the token cache | vMCP — declared in `pkg/vmcp/cache`, referenced nowhere | 3 |
-| 15 | Advertise the grant, and a client-auth method, in discovery | vMCP — fix | 3 |
+| Provisionable confidential client | ToolHive | **missing** — only the registration handler exists and it hardcodes public clients | everything |
+| External-issuer subject tokens | ToolHive | partial — validator exists unwired; consent model open | any real IdP |
+| Authority as a runtime value | mecatl | **missing** — tool sets are static per definition at build time; nothing reads a parent's current authority | narrowing, and anything the gate can enforce |
+| Canonical user principal | mecatl | missing | multi-user anything |
+| Owner enforcement on every object operation | mecatl | missing — listing takes no principal | shared deployment |
+| Signed actor assertion | both | missing both sides | a trustworthy actor claim |
+| SVID client authentication | ToolHive + deployment | on a branch | the exchange |
+| Sender-bound tokens | ToolHive | missing | replay resistance |
+| Resolved target as a value | ToolHive | partial — backend reaches the admission seam, dropped before policy | target binding |
+| Post-admission credential fetch | ToolHive | **missing** — the load happens in auth middleware | least privilege |
+| User-keyed credential read | ToolHive + enterprise | partial, and **not a port**. A decorator exists but targets a wider interface one layer down, double-writes a composite key to keep a secondary index consistent, and translates user ids on every read. Its authors warn that re-keying without first establishing a session-to-user binding could reintroduce a cross-user token path | agents using stored credentials |
+| Credential-ownership recheck | ToolHive | missing — the error is declared and returned by no implementation | multi-user safety |
+| Signed schedule grant | undecided | unknown | unattended work |
+| Token cache | ToolHive | exists, unwired — zero importers | fan-out cost |
 
 ### Order
 
-Rows 1 to 4 gate everything. The mecatl-side rows (4, 4a, 4b, 4c) are independent of the
-vMCP ones and run in parallel with them — but 4c gates the mecatl side internally, since
-there is nothing to narrow, carry or enforce until a runtime authority value exists.
+**Agree the shared contract first** — principal, actor assertion, authority, target,
+selector, trust relationships. Neither repository should invent these separately.
 
-Then rows 5 to 7, which make the gate correct before anything depends on it — row 5 in
-particular, since it is what makes an allow mean enough to justify a credential.
+**Then the two blocking gaps, in parallel.** ToolHive: a provisionable confidential client.
+mecatl: authority as a runtime value, which gates everything on that side because there is
+nothing to narrow or carry until it exists.
 
-Then rows 8, 8a and 8b, which follow from row 5 and are mostly plumbing once it lands.
+**Then local correctness, still in parallel.** mecatl adds canonical ownership and object
+authorization. vMCP resolves one target, passes it to policy, preserves verified claims, and
+treats absent metadata as mutating.
 
-Row 8b needs a decision before anyone writes code, and it is not ours alone. The enterprise
-user-keyed decorator does not sit alongside the `tsid`-keyed read — it substitutes a
-composite of gateway and user into the slot the existing code calls a session id, and
-ignores the session id it is passed. So it replaces rather than coexists.
+**Then the exchange.** Actor assertion, SVID client authentication, and an authorization
+server validating subject, actor, client, authority and holder binding.
 
-That is fine for the agent path, which has no `tsid` to offer. It is a change in behaviour
-for the browser path, which does: a stolen token for one login session currently reaches
-only that session's credentials, and after the change reaches everything that user has
-connected. The enterprise design accepts that trade deliberately, on the grounds that
-upstream tokens are a per-user resource and per-session scoping would force re-consent on
-every new session, with revocation as the remedy.
+**Then move the credential fetch behind the gate**, rechecking ownership at the read.
 
-Worth confirming that reasoning holds for our deployments rather than inheriting it,
-because it widens a blast radius on a path that is not the one we are trying to fix.
+**Then prove one slice:** Alice, one code-reviewer, one GitHub read tool, one repository.
+Complete when a call *outside* that repository is denied before any credential is read — not
+when the exchange succeeds.
 
-Caching matters before fan-out is usable but not before it is correct.
+Schedules, caching and stronger attribution follow.
+
+---
 
 ## Deployment requirements
 
-Things this design needs from how vMCP is configured and run, rather than from code. They
-are listed separately because a runbook item is weaker than a product guarantee, and it is
-worth being honest about which of these is which.
+What this needs from how the system is run rather than from its code. A runbook item is
+weaker than a product guarantee, and it is worth being explicit about which these are.
 
-**An authorization policy must be configured wherever credential providers are.** With no
-`authz` block the admission check returns allow unconditionally, and the same path then
-injects a caller's stored credentials. Allow-all is a legitimate default for a gateway with
-nothing to hand out, and other deployments want it for development and single-user use, so
-this is not a default to change upstream. It is ours to get right. Nothing enforces it: the
-invariant holds because we hold it.
+| Requirement | Provider | Consumer | Failure |
+|---|---|---|---|
+| Workload API reachable at startup | SPIFFE deployment | mecatl | no credential for any session |
+| mecatl's trust bundle | mecatl | vMCP AS | SVID and actor assertion unverifiable; exchange rejected |
+| AS issuer metadata and keys | vMCP AS | vMCP gateway | every call fails verification |
+| TLS terminating at the AS, or the ingress forwarding the client certificate | deployment | AS | client authentication impossible; reads as configuration, is topology |
+| An authorization policy wherever credentials are configured | operator | vMCP admission | every authenticated caller gets every credential |
+| One credential per resolved target | configuration | vMCP | an allow permits a class and the fetch picks a member, silently |
+| Authenticated, encrypted state transport | deployment | mecatl | signed objects still required; state alone grants nothing |
 
-**TLS terminates at the authorization server, or the ingress forwards the client
-certificate.** An mTLS client certificate that a proxy terminates and drops is the failure
-that reads as configuration and is really topology.
+**The gateway needs the authorization server's keys, not mecatl's bundle.** The token is
+minted by the AS; mecatl's bundle is what the *AS* needs, to verify client authentication.
+Two trust relationships, easy to conflate, and an earlier version of this document did.
 
-**Both the authorization server and the gateway hold mecatl's trust bundle** — the first to
-validate the SVID used as client authentication, the second to verify the minted credential
-before any claim reaches policy. Missing either fails loudly, but at different hops and
-with different errors, so they will be diagnosed as unrelated.
+---
 
-**The workload API is reachable at pod startup.** It is now on the credential path, so a
-pod that cannot reach it obtains no credential for any session. There is no degradation
-story for this yet, and deciding one beats discovering it.
+## Open questions
 
-**One credential per backend per user.** Structural in the current model, since two accounts
-are two backends. If a deployment ever configures otherwise, credential selection stops
-being able to choose and does so silently, because the policy engine still returns allow.
+1. Definition-based or instance-based external authorization.
+2. Whether definition identities carry a trust tier, or only operator-tier definitions are
+   nameable in policy.
+3. The exact credential selector, and how uniqueness is enforced.
+4. Whether the access token is a profiled JWT or opaque plus introspection.
+5. Whether signed per-call instance attribution is a product requirement.
+6. How ownerless legacy sessions and schedules are handled.
+7. Who owns the schedule grant broker.
 
-## Decisions
-
-Questions this doc previously left open, and where each is argued.
-
-**The user goes in `sub`.** The companion doc inverts this because JWT-SVID requires `sub`
-to be the credential holder — but that constrains credentials *mecatl issues as SVIDs*, and
-the outbound credential is an ordinary access token minted by the gateway. So the standard
-RFC 8693 shape applies, and nothing has to traverse a chain to find the user. Two
-credentials, two conventions, each correct in its own domain. Hop 3.
-
-**The credential's scope carries the narrowing; policy names the definition.** A child's
-tool set follows from its definition, which policy reads from `act.sub`. What varies beyond
-that is scope, already a standard claim. No structured authority vocabulary, no
-subset-checking, no new claim. Hops 3 and 5.
-
-**An unannotated tool is treated as mutating**, so it is refused to a read-only agent. That
-follows from refusing when a decision input is missing, and puts the cost of annotating on
-the backend that wants the looser treatment. Hop 5.
-
-**Refresh is bounded by the schedule, not the token.** Refresh-on-use lets an unsupervised
-agent extend a credential forever; refresh-on-login stops a working schedule for reasons
-its owner never sees. Bounding the schedule makes the limit something she set. Hop 6.
-
-**One credential per backend per user is structural,** not incidental — two accounts are two
-backends. It is what lets an allow *identify* a credential rather than permit a class of
-them. Recorded because it fails quietly if it ever stops holding: the policy engine would
-still return allow, and the fetch would simply have no way to choose. Hop 6.
-
-**Owner enforcement is blocking, not hygiene.** An owner field nobody checks is
-decoration. Rows 4a and 4b.
+---
 
 ## References
 
-### Relied on, and checked against the current text
+- **RFC 8693** — §1.1 delegation versus impersonation; §2.1 an exchange creates no linkage
+  between input and output tokens; §4.1 the closed set of top-level claims plus the current
+  actor, and `act` contents restricted to identity.
+- **RFC 9396** — §2.2 the field model, and that fields within one object combine as a
+  product; §6.1 no standardized way to compare two authorization detail requests.
+- **RFC 8705** §3 certificate-bound tokens; **`draft-ietf-oauth-spiffe-client-auth`** for the
+  client-authentication shape.
+- **`draft-ietf-wimse-arch`** §2 a workload is independently addressable and executable, which
+  is why a goroutine is not one; §4.5 avoid treating authentication as implicit authorization.
+- **`draft-hartman-credential-broker-4-agents`** §4.2 the justification-text rule, adopted
+  verbatim.
 
-Each of these supports a specific claim above. Section numbers were verified by reading
-the document, not from memory — an earlier draft of this work carried three that did not
-resolve.
-
-- **RFC 8693** (token exchange) — §1.1 delegation versus impersonation; §2.1 *"the
-  exchange is a one-time event and does not create a tight linkage between the input and
-  output tokens"*, which is why the chain stops at the gateway; §4.1 the closed set of
-  top-level claims plus the current actor, and the restriction of `act` contents to
-  identity.
-- **RFC 9396** (`authorization_details`) — §2.2 the common data fields, and that fields
-  within one object combine as a product; §6.1 *"there is no standardized mechanism to
-  compare two arbitrary authorization detail requests"*.
-- **`draft-ietf-wimse-arch`** — §2 a workload is "an independently addressable and
-  executable software entity", which is why a goroutine is not one; §4.3 workload identity
-  incorporated into a token to *constrain* its use; §4.5 *"avoid treating successful
-  authentication as implicit authorization"*.
-- **`draft-ietf-wimse-workload-creds`** — §5.1 the identity claim set (`iss`, `sub`, `exp`,
-  `jti`, `cnf`, and nothing about authority); §5.3 authority carried separately in a
-  context token.
-- **`draft-hartman-credential-broker-4-agents`** — §4.2 *"The PDP MUST NOT evaluate
-  justification text for approval decisions"*, adopted verbatim; and the absence of any
-  mechanism for choosing among several credentials for one user and service.
-- **RFC 8705** (mTLS client authentication) and **`draft-ietf-oauth-spiffe-client-auth`**
-  for the client-authentication shape at hop 3.
-
-### Read, and not relied on
-
-Consulted while working this out, and cited by name rather than by section because nothing
-above depends on them. Recorded so the ground covered is visible and nobody re-treads it.
-
-- **`draft-ietf-oauth-transaction-tokens`** — per-call context inside a trust domain. Would
-  be the mechanism if a second per-call credential were ever wanted; the design uses an
-  unsigned correlation value instead.
-- **`draft-mcguinness-oauth-ai-agent-instance`** — per-instance identity and revocation.
-  Written for agents as independent processes holding their own credentials, which is not
-  this architecture.
-- **`draft-mcguinness-oauth-actor-profile`** — actor semantics, and the useful detail that
-  it operates at the representation layer rather than the policy layer.
-- **`draft-liu-oauth-chain-delegation`** and
-  **`draft-niyikiza-oauth-attenuating-agent-tokens`** — in-token narrowing with a
-  containment algorithm. Relevant only if authority ever travels in the credential, which
-  this design decided against.
-- **`draft-ietf-oauth-identity-chaining`**, **ID-JAG**, **RFC 9068**, **RFC 7523** — read
-  during earlier rounds; the claims that depended on them did not survive revision.
+Material read but not relied on is recorded in the review notes rather than here.
