@@ -511,11 +511,36 @@ read something", which justifies reaching for nothing in particular. **So hop 5 
 weight and this hop is plumbing** — get the fetch past routing and key it on the same
 backend the gate was given. Decide and fetch resolve the target once, together.
 
-**Why the key is the user.** The credential is Alice's. Not a login session: a pointer
-minted when a human logged in through a browser describes an episode, not an entitlement.
-An agent has no such episode — nothing mints one for it, and where a user's token carried
-one, exchanging it drops it. A design that looks up credentials by login session cannot
-serve an agent at all.
+**Why the key is the user, and why the current key cannot work at all.** The credential is
+Alice's, so the lookup keys on Alice.
+
+Today it keys on `tsid`, a token-session identifier. That is not a small difference of
+opinion about naming — **an agent can never have one**, for two independent reasons.
+
+It is generated as `rand.Text()` at the start of an authorization-code flow
+(`pkg/authserver/server/handlers/authorize.go:93`) and picked up on the callback
+(`handlers/callback.go:108`) to key the stored upstream credentials. So it is minted when
+a human begins a browser login. An agent never traverses that flow, so nothing mints one
+for it.
+
+And where the user's own token *does* carry one, the exchange drops it: the delegation
+handler passes an empty session link, commented "No IDP session link for delegated
+tokens" (`server/tokenexchange/handler.go:142-144`).
+
+That produces a dichotomy the epic does not name:
+
+| | `tsid` | actor | credential lookup |
+|---|---|---|---|
+| Forward the user's token verbatim | present | **lost** | works |
+| Exchange it for a delegated token | **dropped** | present | **dead** |
+
+You can have the actor or the credential lookup, not both.
+[#5194](https://github.com/stacklok/toolhive/issues/5194) exists to get the actor, so it
+kills `tsid`-keyed credential injection for agents as a side effect.
+
+A pointer minted at browser login describes an episode; the question here is whose
+credential this is, which is an entitlement. Keying on the user is not a workaround for
+the agent case — it is the correct key, and the agent case is what makes that obvious.
 
 > **Today, and what changes.** The request arrives, authentication middleware validates the
 > token, takes the login-session pointer out of it, and loads **every** credential stored
@@ -717,7 +742,9 @@ not for reading the design.
 | 5 | Pass the backend identifier to the gate | vMCP — exists on the tool, dropped | 5 |
 | 6 | Stop discarding the issued token's claims when a primary upstream provider is pinned | vMCP — fix | 5 |
 | 7 | Treat an unannotated tool as mutating | vMCP — policy default | 5 |
-| 8 | Move the credential fetch past routing, keyed on the backend | vMCP — new, and the user-keyed half is a port | 6 |
+| 8 | Move the credential fetch past routing, keyed on the backend | vMCP — new | 6 |
+| 8a | Key the credential read on the user rather than `tsid` | vMCP — the enterprise user-keyed decorator does this; a port, not new work | 6 |
+| 8b | Decide what happens to the `tsid`-keyed path | vMCP — see below | 6 |
 | 9 | Split authority from limits so only the first can travel | mecatl — new | 2 |
 | 10 | Mint in composition, never behind a port the loop calls | mecatl — `TeamMemberEngineFactory` is the existing shape | 3 |
 | 11 | A per-call correlation value | mecatl — the MCP adapter bakes static headers at dial | 4 |
@@ -739,7 +766,22 @@ Rows 1 to 4 gate everything. Row 4 is mecatl-side and independent, so it runs in
 Then rows 5 to 7, which make the gate correct before anything depends on it — row 5 in
 particular, since it is what makes an allow mean enough to justify a credential.
 
-Then row 8, which follows from row 5 and is plumbing once it lands.
+Then rows 8, 8a and 8b, which follow from row 5 and are mostly plumbing once it lands.
+
+Row 8b needs a decision before anyone writes code, and it is not ours alone. The enterprise
+user-keyed decorator does not sit alongside the `tsid`-keyed read — it substitutes a
+composite of gateway and user into the slot the existing code calls a session id, and
+ignores the session id it is passed. So it replaces rather than coexists.
+
+That is fine for the agent path, which has no `tsid` to offer. It is a change in behaviour
+for the browser path, which does: a stolen token for one login session currently reaches
+only that session's credentials, and after the change reaches everything that user has
+connected. The enterprise design accepts that trade deliberately, on the grounds that
+upstream tokens are a per-user resource and per-session scoping would force re-consent on
+every new session, with revocation as the remedy.
+
+Worth confirming that reasoning holds for our deployments rather than inheriting it,
+because it widens a blast radius on a path that is not the one we are trying to fix.
 
 Caching matters before fan-out is usable but not before it is correct.
 
