@@ -774,6 +774,7 @@ these are cost signals, not constraints.
 | `Narrow` | Split the returned authority from the limits, so only the reach-changing part can travel | today both are internal — catalog composition plus the audience-pinned evaluator |
 | `DelegatedCredential`, `DelegatedFromStored` | Mint in composition, never behind a port the loop calls | the loop must stay identity-agnostic. `TeamMemberEngineFactory` and `WithSubagentEngineFactory` are the existing shape: composition-supplied closures, with `engine/agent` carrying only an opaque string on `parentCaps`, following the `forkHistory` precedent |
 | `Call` | A per-call correlation value | the MCP adapter bakes a static header map into a client at dial time; nothing is per-call today |
+| — | Publish the trust bundle, and get it to both the authorization server and the gateway. Two consumers, one artifact; missing either fails loudly but at different hops |
 | — | Owner-scoped session listing. The owner field makes filtering possible; something has to apply it, or the field is decoration and the enumeration leak the companion doc records stays open |
 | `Rederive` | Derive from the live caller where there is one | the rehydration seam exists; it currently trusts persisted labels verbatim, including the permission posture |
 
@@ -841,9 +842,10 @@ anyway.
 
 ---
 
-## Decisions, and what is still open
+## Decisions
 
-Five questions this doc previously left open now have answers. Two do not.
+Every question this doc previously left open now has an answer. Two were settled by
+judgement rather than derivation and are marked as such.
 
 ### The user goes in `sub`, and the collision does not apply here
 
@@ -901,19 +903,43 @@ listing surface, not to identity, and it does not block anything in this design.
 
 ---
 
-### Still open
+### Trust distribution: who needs what
 
-**Whether the trust-domain federation for SVID authentication is cheap in practice.** The
-port is settled and on the critical path. The deployment side is not: the authorization
-server needs mecatl's trust bundle, and TLS has to terminate there or the ingress has to
-forward the client certificate. In some clusters that is configuration and in others it is
-a project. It determines schedule, not design.
+Federation is assumed workable in the target deployments, so the remaining question is
+only what has to be where. Two consumers need mecatl's trust bundle, for different
+reasons, and it is easy to see one and miss the other.
 
-**What happens the first time a backend needs two credentials for one user.** The design
-assumes one credential per backend per user, which holds today because a second account
-would be a second backend. It is worth knowing in advance whether that is a property of
-the model or an accident of current deployments, because Cedar's allow stops identifying a
-credential the moment it breaks.
+| Who | Needs | To do what | When it is missing |
+|---|---|---|---|
+| The authorization server | mecatl's trust bundle | Validate the X.509-SVID presented as client authentication, so it can identify the client and mint a credential | No credential can be obtained at all. Fails at the token endpoint, loudly. |
+| The gateway | the same bundle | Verify the minted credential's signature before any claim reaches policy | Every call fails verification. Also loud, but at a different hop and with a different error. |
+| mecatl | the workload API | Obtain and rotate its own SVID | The pod cannot authenticate. Nothing runs. |
+
+Two deployment prerequisites beyond the bundle. TLS has to terminate at the authorization
+server, or the ingress in front of it has to forward the client certificate — an mTLS
+client certificate that a proxy terminates and drops is the failure that looks like a
+configuration bug and is really a topology one. And the workload API is now on the
+credential path, so a pod that cannot reach it at startup cannot obtain a credential for
+any session. That is a new runtime dependency and the design has no degradation story for
+it yet, which is worth deciding before it is discovered.
+
+The bundle itself is published by mecatl as its own trust domain, so distributing it to
+two in-cluster consumers is the ordinary case rather than cross-organisation federation.
+Worth stating because the companion doc's warning that federation is bilateral and not
+free is about the harder case, and does not make this one expensive.
+
+### One credential per backend per user is a property of the model
+
+Taken as structural rather than incidental. A backend is a configured MCP server with one
+credential per user, so two accounts against the same provider are two backends. That is
+what lets Cedar's allow *identify* a credential rather than merely permit a class of them,
+which is the whole reason hop 6 needs no second decision.
+
+Recorded here because the dependency runs the wrong way to be safe implicitly: if the
+model ever admits two credentials for one user at one backend, hop 6 stops being able to
+choose and does so quietly, since Cedar would still return allow. Anything extending the
+backend model should treat this as a constraint to preserve or a decision to revisit
+deliberately.
 
 ## References
 
