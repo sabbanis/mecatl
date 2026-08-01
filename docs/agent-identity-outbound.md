@@ -49,18 +49,23 @@ sequenceDiagram
     M-->>S: the diff
 ```
 
-**The whole design is one idea: the decision and the credential fetch must see the same
-target, resolved once.**
+**The whole design is one idea: resolve the call to a target once, decide about that
+target, and fetch using that same target.**
 
-Today neither sees it. Cedar is never told which backend the call routes to, even though
-the tool object carries that identifier. And credentials are loaded in HTTP authentication
-middleware, before the JSON-RPC body is parsed — so at that moment there is no tool name,
-no arguments and no backend, and the code loads every credential Alice has and lets a later
-step index into the map by a name from static config.
+Today nothing does. Credentials are loaded in HTTP authentication middleware, before the
+JSON-RPC body is parsed — so at that moment there is no tool, no arguments and no target at
+all. The code loads every credential the user has, and a later step indexes into the map
+using a name from static configuration. The decision and the credential end up describing
+different things because nothing carries a resolution between them.
 
-Fix both and everything else follows. Cedar's allow then means "this actor may call this
-tool at this backend", which is exactly what justifies reaching for that backend's
-credential — so no second decision is needed at the fetch.
+Fix that and the rest follows: the decision is *about* the thing the credential will be
+used for, so no second decision is needed at the fetch.
+
+Note what this does **not** require. Policy does not have to name backends. Routing
+produces a target carrying whatever the fetch needs to select a credential; policy reads
+the fields it cares about — actor, tool, operation, resource — and the selector travels
+alongside without being a policy input. That keeps the gateway an opaque toolset from the
+caller's side and keeps deployment topology out of policy.
 
 | Hop | What changes |
 |---|---|
@@ -68,8 +73,8 @@ credential — so no second decision is needed at the fetch.
 | 2 · spawn | Which tools the child may call has to be known outside mecatl. How many turns it may take does not, and should not leave. |
 | 3 · get credential | One JWT, reused across sibling subagents, obtained by exchanging Alice's token. The pod authenticates with its SVID rather than a secret. |
 | 4 · call | Already correct: the JWT decides everything, and the correlation header is only ever logged. |
-| 5 · gate | Give Cedar the backend identifier. **This is the substantive piece** — it is what makes an allow strong enough to justify a credential. Configuring a policy at all is a deployment requirement, not a code change. |
-| 6 · fetch | Key on Alice rather than a login session, and move the fetch to the far side of routing so it uses the backend the gate saw. Plumbing, once hop 5 is right. |
+| 5 · gate | Decide about a resolved target rather than a bare tool name. **This is the substantive piece** — it is what makes an allow specific enough to justify one credential. Configuring a policy at all is a deployment requirement, not a code change. |
+| 6 · fetch | Key on Alice rather than a login session, and consume the same target the gate decided about. Plumbing, once hop 5 is right. |
 | 7 · backend | No change. GitHub sees an ordinary GitHub token and learns nothing about agents. |
 | 8 · park/resume | On resume, mint from whoever is asking now rather than from a stored row. |
 
@@ -485,12 +490,12 @@ and refusing stops the call.
 This is what the rule looks like once the gate has the backend:
 
 ```cedar
-// A code-reviewer may read from GitHub — but only the repository its own
-// credential names, and only tools the backend declared read-only.
+// A code-reviewer may read — but only the repository its own credential
+// names, and only tools declared read-only.
 permit (
     principal,
     action == Action::"call_tool",
-    resource in MCP::"github"
+    resource
 )
 when {
     context.claim_act.sub == "spiffe://mecatl.example.com/agent/code-reviewer" &&
@@ -499,18 +504,24 @@ when {
 };
 ```
 
-Three of those four conditions are unavailable today. `resource in MCP::"github"` needs
-the backend identifier, which exists on the tool object and is never passed.
-`resource.readOnlyHint` is absent unless the backend declared it, with no classifier to
-fall back on, so a rule omitting the `== true` silently permits unannotated tools. And the
-last line needs the call's target canonicalized into a form the credential's authority can
-be compared against — without it the rule permits *any* GitHub read, which is the hole the
-resource axis in hop 3 exists to close.
+**Notice what the rule does not mention: a backend.** It names the actor, the operation and
+the resource, and nothing about where the call routes. That is deliberate. Policy naming
+backends would couple it to deployment topology and work against the gateway presenting as
+an opaque toolset. The target the decision is made about *does* carry a credential selector,
+but as something the fetch consumes rather than something policy reasons over.
 
-That last condition is the only comparison this design asks policy to make. It is a
-containment check over one axis, not a general subset algorithm over a structured authority
-schema — the definition and the operation are named directly, so only the resource has to
-be compared.
+Two of the three conditions are unavailable today. `resource.readOnlyHint` is absent unless
+the backend declared it, with no classifier to fall back on, so a rule omitting the
+`== true` silently permits unannotated tools. And the last line needs the call's target
+canonicalized into a form the credential's authority can be compared against — without it
+the rule permits *any* read, which is the hole the resource axis in hop 3 closes.
+
+That last condition is the only comparison this design asks policy to make: a containment
+check over one axis, not a subset algorithm over a structured schema. The definition and
+the operation are named directly, so only the resource has to be compared.
+
+A deployment that *wants* backend-level rules can have them — the field is in the target.
+The point is that the design does not depend on it.
 
 **Why one gate rather than several.** A check that lives in each outbound path can be left
 out of one of them, and the omission is invisible until someone finds it. A single gate can
@@ -534,8 +545,10 @@ we hold it.
 > the path, which is the part that is right. It receives the acting agent as a nested claim
 > and a read/write hint from the backend's tool annotation.
 >
-> Four changes, all fixes to an existing gate rather than new components. **Pass the
-> backend identifier** — it exists on the tool and is dropped. **Refuse when credentials
+> Four changes, all fixes to an existing gate rather than new components. **Resolve the
+> call once and decide about that resolution** — today the gate receives a tool name and
+> nothing that identifies what it resolves to, so its allow cannot be specific enough to
+> justify a particular credential. **Refuse when credentials
 > are configured and no policy is** — today the authz factory returns nil, which becomes an
 > allow-all admission whose check returns true unconditionally, so a fresh deployment
 > serves any advertised tool to any authenticated caller. **Stop discarding the issued
@@ -573,15 +586,18 @@ case errors.Is(err, ErrUnknownBackend):
 }
 ```
 
-**No decision parameter, and that is the point.** Cedar was asked whether this actor may
-call `github.read_file` at the GitHub backend, and said yes. The call only reaches here
-because it said yes. So the authorization for using Alice's GitHub credential already
-happened — it is what the allow meant. There is no second predicate.
+**No decision parameter, and that is the point.** Cedar was asked about a resolved target
+and said yes. The call only reaches here because it said yes. So the authorization for
+using this credential already happened — it is what the allow meant. There is no second
+predicate.
 
-That holds only if the gate saw the backend. If it did not, its allow means "this actor may
-read something", which justifies reaching for nothing in particular. **So hop 5 carries the
-weight and this hop is plumbing** — get the fetch past routing and key it on the same
-backend the gate was given. Decide and fetch resolve the target once, together.
+That holds only while the target is the *same* target. If anything re-resolves the call
+between the decision and the fetch, the allow was about something else — which is exactly
+the class Envoy documents, where a filter clearing the route cache after authorization
+means the decision described a different destination than the one served.
+
+**So hop 5 carries the weight and this hop is plumbing:** get the fetch past routing, and
+have it consume the resolution rather than perform one.
 
 **Why the key is the user, and why the current key cannot work at all.** The credential is
 Alice's, so the lookup keys on Alice.
@@ -644,9 +660,11 @@ bug by someone else.
 Preloading and indexing has a classical name: ambient authority, failing as a confused
 deputy, because the later stage never had to prove entitlement to what it reaches.
 
-**One assumption.** A user has at most one credential per backend — structural in the
-current model, where two accounts are two backends. If that ever changes, Cedar's allow
-stops identifying a credential and does so quietly, since it would still return allow.
+**One assumption, and it should be enforced rather than assumed.** A resolved target must
+select exactly one credential. That holds in the current model, where two accounts are two
+backends — but as a convention it fails silently: an allow would still be returned, and the
+fetch would quietly pick a member of a set. Enforce uniqueness where routes and credentials
+are configured, so the failure happens at configuration time and is loud.
 
 **Something hangs off the login session that moving the key does not move.** The stored
 credential has a refresh lifecycle. Bound it to the schedule rather than the token: a
@@ -816,11 +834,12 @@ not for reading the design.
 
 | # | What | Where | Hop |
 |---|---|---|---|
-| 5 | Pass the backend identifier to the gate | vMCP — exists on the tool, dropped | 5 |
+| 5 | Resolve the call once into a target, and pass that target to the gate. The target carries the credential selector; policy need not read it | vMCP — routing already knows this and discards it | 5 |
 | 6 | Stop discarding the issued token's claims when a primary upstream provider is pinned | vMCP — fix | 5 |
 | 7 | Treat an unannotated tool as mutating | vMCP — policy default | 5 |
-| 8 | Move the credential fetch past routing, keyed on the backend | vMCP — new | 6 |
+| 8 | Move the credential fetch past routing, consuming the same target the gate decided about — no second resolution | vMCP — new | 6 |
 | 8a | Key the credential read on the user rather than `tsid` | vMCP — the enterprise user-keyed decorator does this; a port, not new work | 6 |
+| 8c | Enforce that a route resolves to exactly one credential, at configuration time | vMCP — otherwise an allow permits a class and the fetch silently picks a member | 6 |
 | 8b | Decide what happens to the `tsid`-keyed path | vMCP — see below | 6 |
 | 9 | Split authority from limits so only the first can travel | mecatl — new | 2 |
 | 10 | Mint in composition, never behind a port the loop calls | mecatl — `TeamMemberEngineFactory` is the existing shape | 3 |
