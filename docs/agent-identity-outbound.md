@@ -53,8 +53,8 @@ claim sounded like plumbing and was a prerequisite.
 
 | Artifact | Subject | Actor | Holder | Verified by | Purpose |
 |---|---|---|---|---|---|
-| Actor assertion | agent definition | — | mecatl pod | vMCP authorization server | Prove which agent is acting |
-| Outbound access token | the user | agent definition | mecatl pod | vMCP gateway | Authorize the gateway call |
+| Agent token (leg 1) | agent definition | — | mecatl pod | vMCP authorization server, which also mints it | Prove which agent is acting |
+| Outbound access token (leg 2) | the user | agent definition | mecatl pod | vMCP gateway | Authorize the gateway call |
 | Provider credential | provider account | — | vMCP | the provider | Execute the backend operation |
 | Schedule grant | the user | schedule + definition | credential store | mecatl and the AS | Permit unattended re-derivation |
 | Correlation value | — | instance label | — | nobody | Join two audit records |
@@ -121,13 +121,20 @@ sequenceDiagram
     Note over S: a goroutine in this pod. no key of its own.
 
     rect rgba(128,128,128,0.07)
-    Note over M,AS: three inputs, three identities
-    M->>AS: POST /token<br/>subject_token = Alice's access token<br/>actor_token = mecatl-signed, names the definition<br/>client cert = the pod's X.509-SVID
-    Note over AS: verify all three, then narrow
-    AS-->>M: access token. sub = Alice, act = the definition,<br/>cnf bound to the pod certificate
+    Note over M,AS: leg 1. cached per pod and definition
+    M->>AS: POST /token, client cert = the pod's X.509-SVID<br/>subject_token = the pod's JWT-SVID<br/>asks for the code-reviewer agent token
+    Note over AS: is that definition registered?
+    AS-->>M: agent token. sub = the definition, cnf bound to the pod.<br/>audience is the AS, so it opens nothing on its own.
     end
 
     S-->>M: needs the diff
+
+    rect rgba(128,128,128,0.07)
+    Note over M,AS: leg 2. per user and definition
+    M->>AS: POST /token, same client cert<br/>subject_token = Alice's access token<br/>actor_token = the agent token above
+    AS-->>M: access token. sub = Alice, act = the definition,<br/>cnf bound to the pod
+    end
+
     M->>G: tools/call for github.read_file
     Note right of M: the access token above, plus proof the pod holds the bound key<br/>X-Correlation-Id names this subagent and this call
 
@@ -148,7 +155,7 @@ sequenceDiagram
 |---|---|---|---|---|
 | 1 Bind | authenticated caller | resolve to an immutable principal | owned session | owner persisted and enforced |
 | 2 Narrow | parent authority | compute a subset | child authority + limits | only authority travels |
-| 3 Exchange | subject token, actor assertion, pod SVID | validate and exchange | sender-bound access token | three identities, each authenticated |
+| 3 Exchange | pod SVID, then subject token + agent token | two legs: mint the agent token, then exchange | sender-bound access token | three identities, each authenticated |
 | 4 Call | access token, holder proof over the same connection | send the tool call | gateway request | correlation is not authority |
 | 5 Decide | verified claims, resolved target | admission | allow or deny | refuse on a missing input |
 | 6 Fetch | subject, credential selector | read one credential | provider credential | target binding |
@@ -176,18 +183,58 @@ The rest need detail.
 
 ---
 
-### Hop 3 — the exchange
+### Hop 3 — the exchange, in two legs
+
+Two calls to the authorization server, not one. The pod proves itself once and receives a
+token naming the agent; that token is then the actor input to the exchange that brings in the
+user. Splitting them is what puts the authorization server, rather than mecatl, in charge of
+which agents may exist.
+
+**Leg 1 — the pod asks for an agent token.**
 
 ```http
 POST /token HTTP/1.1
 Host: as.vmcp.example.com
-                    # Client authenticates with the pod's X.509-SVID over mTLS.
-                    # One of three options — see below, mTLS is not required.
+                    # Client authenticates with the pod's X.509-SVID.
+                    # One of three methods — see below.
+
+grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+&client_id=spiffe://mecatl.example.com/pod/mecatl-7f4c
+&subject_token=<the pod's JWT-SVID>
+&subject_token_type=urn:ietf:params:oauth:token-type:jwt
+&scope=agent:code-reviewer
+```
+
+```jsonc
+{
+  "sub": "spiffe://mecatl.example.com/agent/code-reviewer",
+  "aud": "https://as.vmcp.example.com",  // input to leg 2, not a gateway credential
+  "cnf": { "x5t#S256": "..." },          // this pod holds it, and only this pod
+  "exp": 1785298000
+}
+```
+
+Cached per pod and definition. It names no user and is useless alone — presented to the
+gateway it gets nothing, because its audience is the authorization server.
+
+Logically this is a client-credentials request: an authenticated client asking for a token for
+itself, narrowed to one definition. That grant does not exist in the authorization server,
+and an exchange with the pod's own JWT-SVID as subject reaches the same place through the
+handler that already shipped. Slightly odd — the pod exchanges a credential for one it just
+proved — and cheaper than a new grant. Either is fine; the shape of the output is what
+matters.
+
+**Leg 2 — the user's authority is added.**
+
+```http
+POST /token HTTP/1.1
+Host: as.vmcp.example.com
 
 grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 &client_id=spiffe://mecatl.example.com/pod/mecatl-7f4c
 &subject_token=<Alice's access token>
-&actor_token=<a mecatl-signed JWT naming the definition>
+&actor_token=<the agent token from leg 1>
+&actor_token_type=urn:ietf:params:oauth:token-type:access_token
 &resource=https://vmcp.example.com
 &scope=repo:read
 ```
@@ -203,24 +250,47 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 }
 ```
 
-**This is delegation, not impersonation.** One token carries both parties — Alice in `sub`,
-the agent in `act`. RFC 8693 §1.1 draws that line, and it is the premise of everything here:
-an impersonation token would spend Alice's authority while leaving nothing in the token that
-says what was acting, so the gateway would have nothing to constrain and the log nothing to
-record.
+**The authorization server decides which agents may exist.** In a single call mecatl asserts
+its own actor claim and the server believes it — which makes mecatl both the asserter and the
+attack surface, because definitions come from configuration a repository can write. Leg 1
+moves minting to the server, which issues an agent token only for a definition it was
+configured to know. A definition invented in a pull request cannot be named, because nothing
+registered it.
 
-**Each of the three identities is proved by a separate input.** The subject token proves
-Alice. The actor assertion proves which agent definition is acting — client authentication
-cannot, because the client is the pod. The SVID proves the pod. An authorization server accepting an unauthenticated actor
-would let a caller request the policy identity of a more privileged definition.
+That settles a question a single call leaves open: only registered definitions are nameable in
+policy. Per-project specialists still run. They run *under* a registered definition rather
+than *as* one, and lose only the ability to be named in a rule.
 
-**`sub` is the user**, by immutable internal identifier rather than an email, which is
-mutable and not unique across issuers. The JWT-SVID rule forcing `sub` to be the holder
-governs credentials *mecatl* issues; this one is minted by the gateway's authorization
+What remains is that mecatl still chooses which registered definition to request per spawn, so
+a prompt-injected parent picks among the operator's own agents. That is the ordinary
+attenuation problem the rest of this design handles, not a forgery.
+
+**mecatl signs nothing.** The server verifies the SVID, which client authentication requires
+of it anyway, and signs what it issues. No keys of mecatl's cross the boundary, and the
+deployment loses a trust relationship rather than gaining one.
+
+**Two tokens, two lifetimes.** Leg 1 is per pod and definition, leg 2 per user and definition.
+The workload proof happens rarely, and off the user's path.
+
+**This is delegation, not impersonation.** Leg 2 carries both parties — Alice in `sub`, the
+agent in `act`. RFC 8693 §1.1 draws that line, and it is the premise of everything here: an
+impersonation token would spend Alice's authority while leaving nothing to say what was
+acting, so the gateway would have nothing to constrain and the log nothing to record.
+
+**Three identities, each proved by its own input.** The SVID proves the pod, at both legs.
+Leg 1 turns that into proof of which agent is acting — client authentication cannot do that
+by itself, because the client is the pod and one pod runs many agents. Leg 2 adds the user. A
+server accepting an unauthenticated actor would let a caller request the policy identity of a
+more privileged agent.
+
+**`sub` is the user**, by immutable internal identifier rather than an email, which is mutable
+and not unique across issuers. The JWT-SVID rule forcing `sub` to be the holder governs
+credentials *mecatl* issues; both tokens here are minted by the gateway's authorization
 server, so the standard shape applies and nothing traverses a chain to find the user.
 
 **`act` is the definition, not the instance** — what policy names, and what lets concurrent
-siblings share one credential.
+siblings share one credential. The pod is not in `act`: it is the holder, and `cnf` already
+says so.
 
 **Attenuation is by scope, and the exchange enforces it downward.** The issued scope set is
 the intersection of what the client is registered for and what the subject token was granted,
@@ -231,7 +301,7 @@ Scope cannot name a repository. So a reviewer confined to one pull request can r
 repository the credential reaches — a real residual, bounded by the credential's own scope,
 accepted here and closed in [later phases](#later-phases).
 
-**`cnf` binds the token to a key the pod holds.** Authenticating the client and constraining
+**`cnf` binds each token to a key the pod holds.** Authenticating the client and constraining
 the holder are separate decisions over separate connections, and conflating them is easy:
 
 | Decision | Options | Connection |
@@ -244,7 +314,7 @@ the three, so mTLS is a choice rather than an obligation — and a JWT-SVID asse
 form parameter, survives an L7 ingress that would strip a client certificate. Either holder
 binding works; without one, a token copied from memory or a log replays until it expires.
 
-**One credential covers many calls.** It is obtained once per user, definition, authority
+**One leg-2 credential covers many calls.** It is obtained once per user, definition, authority
 and audience, and reused. Minting per call would put a network round trip in front of every
 tool use.
 
@@ -255,41 +325,31 @@ one TTL, a cached credential is exactly that for outbound calls. Shorter TTLs tr
 round trips, revocation lists for a distributed dependency — neither clearly beats a bounded
 window named out loud.
 
-**A definition name can be forged by anyone who can write to the repository.** Definitions
-come from sources of different trust, and nothing stops a project-tier one, read from a mutable workspace, taking
-the name of an operator-managed one. The codebase already tiers those sources. Policy on a
-bare name cannot tell them apart, so untrusted content defeats the actor claim rather than
-bypassing it. Two ways to close it. Put the tier in the identifier, which keeps per-project
-specialists nameable in policy. Or let only operator-tier definitions be named at all, which
-removes the risk class and the capability together. Unresolved.
-
 > **Today.** No client that may use this grant can be provisioned: registration hardcodes
 > clients public and permits only `authorization_code` and `refresh_token`, and discovery
 > advertises neither the grant nor secret-based client authentication, so even a
-> hand-provisioned client is invisible to any library that reads metadata. **This blocks
-> everything downstream.** Both halves are
-> [#6082](https://github.com/stacklok/toolhive/issues/6082), which also carries the
-> non-secret option: authenticate the client from a verified X.509-SVID and auto-register it
-> with no secret, making the client id the SPIFFE ID. A shared secret would also work and is
-> rejected — it ships the credential-in-the-environment problem this design removes.
+> hand-provisioned client is invisible to any library that reads metadata. **This blocks both
+> legs.** Both halves are [#6082](https://github.com/stacklok/toolhive/issues/6082), which
+> also carries the non-secret option: authenticate the client from a verified X.509-SVID and
+> auto-register it with no secret, making the client id the SPIFFE ID. A shared secret would
+> also work and is rejected — it ships the credential-in-the-environment problem this design
+> removes.
 >
-> That option has a weakness which lands directly on the paragraph above: every
-> auto-registered client receives **all** supported scopes and audiences. That makes the
-> client half of the scope intersection vacuous and leaves attenuation resting entirely on
-> what the subject token was granted. Phase 1 needs per-identity client scopes to mean
-> anything.
+> That option has a weakness which lands on the scope paragraph above: every auto-registered
+> client receives **all** supported scopes and audiences. That makes the client half of the
+> intersection vacuous and leaves attenuation resting entirely on what the subject token was
+> granted. Phase 1 needs per-identity client scopes to mean anything.
 >
-> **The actor half is [#5815](https://github.com/stacklok/toolhive/issues/5815), and its
-> proposed shape contradicts this design.** It validates the actor token against the
-> authorization server's own keys and requires the token's `sub` to equal the authenticated
-> `client_id`. Here mecatl signs the assertion, and `act.sub` is deliberately *not*
-> `client_id` — the client is the pod, the actor is the definition. Under that rule the
-> request above is rejected twice over. Both readings are coherent and answer different
-> questions: theirs treats the actor token as a chain link the server itself minted, where
-> binding it to the client stops a leaked one being replayed elsewhere; ours needs to assert
-> a definition the server has never issued anything for. Worth noting that under their rule
-> an actor token conveys nothing the client id did not already. Settle on #5815 before
-> either side builds.
+> **Leg 1 needs one change on [#5815](https://github.com/stacklok/toolhive/issues/5815).**
+> That issue requires an actor token to be self-issued — which two legs satisfies, since the
+> server mints it — and additionally requires `actor_token.sub` to equal the authenticated
+> `client_id`. Here `sub` is the definition and the client is the pod, so the check still
+> rejects. The replay attack it defends against is real: a leaked actor token must not be
+> usable by a different client. But `cnf` defends it better. Leg 1's token is already bound
+> to the pod's key, so checking the binding against the presenting client is both stronger
+> than subject equality — a leaked token is useless without the key, not merely
+> attributable — and frees `sub` to name the agent. That is the ask: keep self-issued, bind
+> by `cnf` rather than by `sub`.
 
 ---
 
@@ -485,7 +545,7 @@ identity — that converts Alice's job into somebody else's and makes the audit 
 | Prompt-injected subagent | choose tool and arguments within the credential's authority | change whose authority is presented, which definition is named, or what it permits — fixed before it ran | the gate |
 | Prompt-injected parent | choose a child's authority up to its own | exceed its own; a credential-carried ceiling bounds what it hands out | mint |
 | Stolen access token | attempt replay | use it without the pod's certificate | the gateway |
-| Store writer, no signing key | rewrite mutable rows | forge a signed actor assertion or schedule envelope | verification |
+| Store writer, no signing key | rewrite mutable rows | forge a schedule envelope, or obtain an agent token — that needs the pod's key and a registration | verification |
 | Compromised gateway | use stored credentials; alter its own audit | be distinguished from Alice by the backend | reconciliation with mecatl's log |
 | Compromised pod | anything the pod may do; lie about which goroutine acted | — | accepted boundary |
 
@@ -512,9 +572,9 @@ Hop 1   BindPrincipal(inbound)                     -> PrincipalID
 
 Hop 2   Narrow(parent Authority, spawn)            -> (Authority, Limits)
 
-Hop 3   ActorAssertion(definition, instance, aud)  -> ActorToken
+Hop 3   AgentToken(clientSVID, definition)         -> ActorToken   // leg 1, AS-issued
         Exchange(subjectToken, actorToken,
-                 clientSVID, authority, resource)  -> AccessToken
+                 clientSVID, authority, resource)  -> AccessToken  // leg 2
         VerifyScheduleGrant(schedule)              -> OfflineGrant
 
 Hop 4/5 Verify(accessToken, holderProof)           -> Claims
@@ -546,7 +606,8 @@ Status verified against code except where marked unknown.
 | Authority as a runtime value | mecatl | **missing** — tool sets are static per definition at build time; nothing reads a parent's current authority | narrowing, and anything the gate can enforce |
 | Canonical user principal | mecatl | missing | multi-user anything |
 | Owner enforcement on every object operation | mecatl | missing — listing takes no principal | shared deployment |
-| Signed actor assertion | both | ToolHive side proposed on [#5815](https://github.com/stacklok/toolhive/issues/5815) and **contradicts this design** (self-issued, `sub` must equal `client_id`); mecatl side missing | a trustworthy actor claim |
+| Agent token (leg 1) | ToolHive | proposed on [#5815](https://github.com/stacklok/toolhive/issues/5815), which binds `actor_token.sub` to `client_id` and so rejects a token naming the definition. Needs `cnf` binding instead. mecatl side is a call, not a signing key | a trustworthy actor claim |
+| Definition registration at the AS | ToolHive + operator | missing — nothing registers which definitions a client may be issued a token for | leg 1 meaning anything |
 | Client authentication without a secret | ToolHive + deployment | prior art exists, unmerged; carried as an option on [#6082](https://github.com/stacklok/toolhive/issues/6082). Which of the three SPIFFE methods is undecided | the exchange |
 | Sender-bound tokens | ToolHive | missing, **no tracker**; method undecided (mTLS binding or DPoP) | replay resistance |
 | Resolved target as a value | ToolHive | partial — backend reaches the admission seam, dropped before policy | target binding |
@@ -560,7 +621,7 @@ Status verified against code except where marked unknown.
 
 ### Order
 
-**Agree the shared contract first** — principal, actor assertion, authority, target,
+**Agree the shared contract first** — principal, agent token, authority, target,
 selector, trust relationships. Neither repository should invent these separately.
 
 **Then the two blocking gaps, in parallel.** ToolHive: a provisionable confidential client.
@@ -571,8 +632,11 @@ nothing to narrow or carry until it exists.
 authorization. vMCP resolves one target, passes it to policy, preserves verified claims, and
 treats absent metadata as mutating.
 
-**Then the exchange.** Actor assertion, SVID client authentication, and an authorization
-server validating subject, actor, client, authority and holder binding.
+**Then the exchange, leg 1 before leg 2.** Client authentication from the SVID, a
+registration saying which definitions a client may be issued a token for, and agent tokens
+bound by `cnf`. Leg 2 then adds subject validation and the scope intersection. Leg 1 is
+testable on its own — an unregistered definition must be refused — and leg 2 cannot be built
+before it, since the agent token is its actor input.
 
 **Then move the credential fetch behind the gate**, rechecking ownership at the read.
 
@@ -605,7 +669,7 @@ weaker than a product guarantee, and it is worth being explicit about which thes
 | Requirement | Provider | Consumer | Failure |
 |---|---|---|---|
 | Workload API reachable at startup | SPIFFE deployment | mecatl | no credential for any session |
-| mecatl's trust bundle | mecatl | vMCP AS | SVID and actor assertion unverifiable; exchange rejected |
+| A registration naming every definition that may be acted as | operator | vMCP AS | leg 1 refuses, and the agent cannot act at all |
 | AS issuer metadata and keys | vMCP AS | vMCP gateway | every call fails verification |
 | A client authentication method the deployment can carry — mTLS needs TLS terminating at the AS or the ingress forwarding the certificate; a JWT-SVID assertion needs neither | deployment | AS | client authentication impossible; reads as configuration, is topology |
 | An mTLS path to the gateway, if holder binding is by certificate | deployment | vMCP gateway | `cnf` cannot be checked, and the token is a bearer token in practice |
@@ -614,9 +678,10 @@ weaker than a product guarantee, and it is worth being explicit about which thes
 | One credential per resolved target | configuration | vMCP | an allow permits a class and the fetch picks a member, silently |
 | Authenticated, encrypted state transport | deployment | mecatl | signed objects still required; state alone grants nothing |
 
-**The gateway needs the authorization server's keys, not mecatl's bundle.** The token is
-minted by the AS; mecatl's bundle is what the *AS* needs, to verify client authentication.
-Two trust relationships, easy to conflate, and an earlier version of this document did.
+**The gateway needs the authorization server's keys.** Both tokens are minted by that
+server, and with two legs mecatl signs nothing, so there is no second trust relationship to
+conflate with the first. An earlier version of this document had mecatl self-signing the actor
+assertion and therefore owed the server a trust bundle; splitting the exchange removed it.
 
 ---
 
@@ -626,17 +691,15 @@ Two trust relationships, easy to conflate, and an earlier version of this docume
    WIT-SVID. The deployment cost differs; the standard requires only one of them.
 2. Whether the holder is bound by certificate thumbprint or DPoP, which is a separate choice
    from the one above and lands on a different connection.
-3. Whether the actor assertion is self-issued by the authorization server or signed by mecatl
-   — [#5815](https://github.com/stacklok/toolhive/issues/5815) assumes the first, this design
-   needs the second.
+3. Whether [#5815](https://github.com/stacklok/toolhive/issues/5815) will bind the agent token
+   by `cnf` rather than by subject equality. Two legs depends on it, and nothing else in this
+   design substitutes.
 4. Definition-based or instance-based external authorization.
-5. Whether definition identities carry a trust tier, or only operator-tier definitions are
-   nameable in policy.
-6. The exact credential selector, and how uniqueness is enforced.
-7. Whether the access token is a profiled JWT or opaque plus introspection.
-8. Whether signed per-call instance attribution is a product requirement.
-9. How ownerless legacy sessions and schedules are handled.
-10. Who owns the schedule grant broker.
+5. The exact credential selector, and how uniqueness is enforced.
+6. Whether the access token is a profiled JWT or opaque plus introspection.
+7. Whether signed per-call instance attribution is a product requirement.
+8. How ownerless legacy sessions and schedules are handled.
+9. Who owns the schedule grant broker.
 
 ---
 
