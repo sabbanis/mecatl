@@ -56,7 +56,7 @@ claim sounded like plumbing and was a prerequisite.
 | Actor assertion | agent definition | — | mecatl pod | vMCP authorization server | Prove which agent is acting |
 | Outbound access token | the user | agent definition | mecatl pod | vMCP gateway | Authorize the gateway call |
 | Provider credential | provider account | — | vMCP | the provider | Execute the backend operation |
-| Schedule grant | the user | schedule + definition | vault | mecatl and the AS | Permit unattended re-derivation |
+| Schedule grant | the user | schedule + definition | credential store | mecatl and the AS | Permit unattended re-derivation |
 | Correlation value | — | instance label | — | nobody | Join two audit records |
 
 Terms whose outbound meaning differs from the companion model:
@@ -129,7 +129,7 @@ sequenceDiagram
 
     S-->>M: needs the diff
     M->>G: tools/call for github.read_file
-    Note right of M: Authorization: Bearer, the access token above<br/>X-Correlation-Id names this subagent and this call
+    Note right of M: the access token above, plus proof the pod holds the bound key<br/>X-Correlation-Id names this subagent and this call
 
     Note over G: verify token and certificate binding<br/>resolve the call to one target
     alt denied, or any decision input missing
@@ -149,7 +149,7 @@ sequenceDiagram
 | 1 Bind | authenticated caller | resolve to an immutable principal | owned session | owner persisted and enforced |
 | 2 Narrow | parent authority | compute a subset | child authority + limits | only authority travels |
 | 3 Exchange | subject token, actor assertion, pod SVID | validate and exchange | sender-bound access token | three identities, each authenticated |
-| 4 Call | access token, holder proof | send the tool call | gateway request | correlation is not authority |
+| 4 Call | access token, holder proof over the same connection | send the tool call | gateway request | correlation is not authority |
 | 5 Decide | verified claims, resolved target | admission | allow or deny | refuse on a missing input |
 | 6 Fetch | subject, credential selector | read one credential | provider credential | target binding |
 | 7 Serve | provider credential | call the backend | result | chain stops at the gateway |
@@ -181,27 +181,33 @@ The rest need detail.
 ```http
 POST /token HTTP/1.1
 Host: as.vmcp.example.com
-                    # mTLS. Client certificate is the pod's X.509-SVID.
+                    # Client authenticates with the pod's X.509-SVID over mTLS.
+                    # One of three options — see below, mTLS is not required.
 
 grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 &client_id=spiffe://mecatl.example.com/pod/mecatl-7f4c
 &subject_token=<Alice's access token>
 &actor_token=<a mecatl-signed JWT naming the definition>
 &resource=https://vmcp.example.com
-&authorization_details=[{"type":"mecatl_tool","locations":["github"],
-                         "actions":["read"],"identifier":"acme/widgets"}]
+&scope=repo:read
 ```
 
 ```jsonc
 {
   "sub": "u_01HQ8Z...",                       // Alice, immutable internal id
   "act": { "sub": "spiffe://mecatl.example.com/agent/code-reviewer" },
-  "authorization_details": [ /* as requested, or narrower */ ],
+  "scope": "repo:read",                       // intersected down, never widened
   "aud": "https://vmcp.example.com",
   "cnf": { "x5t#S256": "..." },               // bound to the pod certificate
   "exp": 1785312000
 }
 ```
+
+**This is delegation, not impersonation.** One token carries both parties — Alice in `sub`,
+the agent in `act`. RFC 8693 §1.1 draws that line, and it is the premise of everything here:
+an impersonation token would spend Alice's authority while leaving nothing in the token that
+says what was acting, so the gateway would have nothing to constrain and the log nothing to
+record.
 
 **Each of the three identities is proved by a separate input.** The subject token proves
 Alice. The actor assertion proves which agent definition is acting — client authentication
@@ -216,11 +222,27 @@ server, so the standard shape applies and nothing traverses a chain to find the 
 **`act` is the definition, not the instance** — what policy names, and what lets concurrent
 siblings share one credential.
 
-**The authority names a resource.** `repo:read` says nothing about *which* repository, and
-without one a reviewer scoped to a single pull request reaches everything the credential can.
+**Attenuation is by scope, and the exchange enforces it downward.** The issued scope set is
+the intersection of what the client is registered for and what the subject token was granted,
+so no client can request more than the user authorized, and a subject token with no scope
+claim grants none. `repo:read` denies writes.
 
-**`cnf` binds the token to the pod's certificate.** mTLS at the token endpoint does not do
-this by itself, so without it a copy from memory or a log replays until expiry.
+Scope cannot name a repository. So a reviewer confined to one pull request can read any
+repository the credential reaches — a real residual, bounded by the credential's own scope,
+accepted here and closed in [later phases](#later-phases).
+
+**`cnf` binds the token to a key the pod holds.** Authenticating the client and constraining
+the holder are separate decisions over separate connections, and conflating them is easy:
+
+| Decision | Options | Connection |
+|---|---|---|
+| Authenticate the client | JWT-SVID assertion, X.509-SVID over mTLS, or WIT-SVID | to the token endpoint |
+| Constrain the holder | certificate binding (`x5t#S256`) or DPoP (`jkt`) | to the gateway |
+
+`draft-ietf-oauth-spiffe-client-auth` §4 requires an authorization server to support one of
+the three, so mTLS is a choice rather than an obligation — and a JWT-SVID assertion, being a
+form parameter, survives an L7 ingress that would strip a client certificate. Either holder
+binding works; without one, a token copied from memory or a log replays until it expires.
 
 **One credential covers many calls.** It is obtained once per user, definition, authority
 and audience, and reused. Minting per call would put a network round trip in front of every
@@ -241,13 +263,33 @@ bypassing it. Two ways to close it. Put the tier in the identifier, which keeps 
 specialists nameable in policy. Or let only operator-tier definitions be named at all, which
 removes the risk class and the capability together. Unresolved.
 
-> **Today.** No client that may use this grant can be provisioned. Registration hardcodes
-> clients public and permits only `authorization_code` and `refresh_token`, there is no
-> static-client configuration, and that handler is the only route to registration. **This
-> blocks everything downstream.** The `spiffe-authserver` branch auto-registers a
-> confidential client with both required grants and authenticates it with the SVID. A static
-> client with a shared secret would also work and is rejected: it ships the
-> credential-in-the-environment problem this design removes, and is discarded later anyway.
+> **Today.** No client that may use this grant can be provisioned: registration hardcodes
+> clients public and permits only `authorization_code` and `refresh_token`, and discovery
+> advertises neither the grant nor secret-based client authentication, so even a
+> hand-provisioned client is invisible to any library that reads metadata. **This blocks
+> everything downstream.** Both halves are
+> [#6082](https://github.com/stacklok/toolhive/issues/6082), which also carries the
+> non-secret option: authenticate the client from a verified X.509-SVID and auto-register it
+> with no secret, making the client id the SPIFFE ID. A shared secret would also work and is
+> rejected — it ships the credential-in-the-environment problem this design removes.
+>
+> That option has a weakness which lands directly on the paragraph above: every
+> auto-registered client receives **all** supported scopes and audiences. That makes the
+> client half of the scope intersection vacuous and leaves attenuation resting entirely on
+> what the subject token was granted. Phase 1 needs per-identity client scopes to mean
+> anything.
+>
+> **The actor half is [#5815](https://github.com/stacklok/toolhive/issues/5815), and its
+> proposed shape contradicts this design.** It validates the actor token against the
+> authorization server's own keys and requires the token's `sub` to equal the authenticated
+> `client_id`. Here mecatl signs the assertion, and `act.sub` is deliberately *not*
+> `client_id` — the client is the pod, the actor is the definition. Under that rule the
+> request above is rejected twice over. Both readings are coherent and answer different
+> questions: theirs treats the actor token as a chain link the server itself minted, where
+> binding it to the client stops a leaked one being replayed elsewhere; ours needs to assert
+> a definition the server has never issued anything for. Worth noting that under their rule
+> an actor token conveys nothing the client id did not already. Settle on #5815 before
+> either side builds.
 
 ---
 
@@ -258,7 +300,7 @@ permit ( principal, action == Action::"call_tool", resource )
 when {
     context.claim_act.sub == "spiffe://mecatl.example.com/agent/code-reviewer" &&
     resource.readOnlyHint == true &&
-    context.claim_authorization_details.contains(resource.canonical_target)
+    context.claimset_scope.contains("repo:read")
 };
 ```
 
@@ -272,8 +314,16 @@ it.
 out of one of them, and nothing reveals the omission until someone looks. A single gate can
 be wrong, but it cannot be missing from a path that has only it.
 
-**The last condition is the only comparison policy makes** — containment over one axis, not
-a subset algorithm over a schema, because definition and operation are named directly.
+**Set membership, not substring.** Claims reach Cedar twice over: `claim_scope` is a
+space-delimited string, so `like "*repo:read*"` would also match `repo:readwrite`, while
+`claimset_scope` is a set with exact-element matching. Use the set. It requires naming `scope`
+in the authorizer's multi-valued claims, and a rule referencing a set that was never built
+errors and denies — refuse-on-a-missing-input, working as designed.
+
+**The scope test is the only comparison policy makes** — one axis, not a subset algorithm
+over a schema, because definition and operation are named directly. In [later
+phases](#later-phases) this becomes containment over the resolved target, which is what lets
+the rule constrain *which* repository.
 
 > **Today.** Admission is the single gate and runs before routing; the HTTP authz middleware
 > is vestigial. `act` reaches policy as a nested claim.
@@ -299,7 +349,7 @@ a subset algorithm over a schema, because definition and operation are named dir
 ### Hop 6 — credential resolution
 
 ```go
-cred, err := vault.Fetch(ctx, subject, target.CredentialSelector)
+cred, err := creds.Fetch(ctx, subject, target.CredentialSelector)
 
 switch {
 case errors.Is(err, ErrNoCredential):     // no such integration for this user
@@ -411,7 +461,7 @@ her, which is one of the two bad options the delegation epic exists to avoid.
 **That requires capturing offline access when the schedule is created.** Nothing can mint a
 credential naming Alice from nothing at 3am, and no specification offers a way — every shipped system either
 replays something captured at consent time or degrades to a service identity. The agent still
-holds nothing of hers: the refresh token lives in the vault, scoped to one user and one
+holds nothing of hers: the refresh token lives in the credential store, scoped to one user and one
 provider, revocable. That is *safer* than the alternative that avoids storage, since a system
 able to mint a user's credential at will is more dangerous than one holding a token that can
 be taken away.
@@ -497,20 +547,22 @@ Status verified against code except where marked unknown.
 
 | Capability | Owner | State | Blocks |
 |---|---|---|---|
-| Provisionable confidential client | ToolHive | **missing** — only the registration handler exists and it hardcodes public clients | everything |
-| External-issuer subject tokens | ToolHive | partial — validator exists unwired; consent model open | any real IdP |
+| Provisionable confidential client | ToolHive | **missing** — registration hardcodes public clients, and discovery advertises neither the grant nor secret auth ([#6082](https://github.com/stacklok/toolhive/issues/6082)) | everything |
+| External-issuer subject tokens | ToolHive | partial — validator landed ([#5814](https://github.com/stacklok/toolhive/issues/5814)) but unwired; consent model open ([#5989](https://github.com/stacklok/toolhive/issues/5989)) | any real IdP |
 | Authority as a runtime value | mecatl | **missing** — tool sets are static per definition at build time; nothing reads a parent's current authority | narrowing, and anything the gate can enforce |
 | Canonical user principal | mecatl | missing | multi-user anything |
 | Owner enforcement on every object operation | mecatl | missing — listing takes no principal | shared deployment |
-| Signed actor assertion | both | missing both sides | a trustworthy actor claim |
-| SVID client authentication | ToolHive + deployment | on a branch | the exchange |
-| Sender-bound tokens | ToolHive | missing | replay resistance |
+| Signed actor assertion | both | ToolHive side proposed on [#5815](https://github.com/stacklok/toolhive/issues/5815) and **contradicts this design** (self-issued, `sub` must equal `client_id`); mecatl side missing | a trustworthy actor claim |
+| Client authentication without a secret | ToolHive + deployment | prior art exists, unmerged; carried as an option on [#6082](https://github.com/stacklok/toolhive/issues/6082). Which of the three SPIFFE methods is undecided | the exchange |
+| Sender-bound tokens | ToolHive | missing, **no tracker**; method undecided (mTLS binding or DPoP) | replay resistance |
 | Resolved target as a value | ToolHive | partial — backend reaches the admission seam, dropped before policy | target binding |
 | Post-admission credential fetch | ToolHive | **missing** — the load happens in auth middleware | least privilege |
 | User-keyed credential read | ToolHive + enterprise | partial, and **not a port**. A decorator exists but targets a wider interface one layer down, double-writes a composite key to keep a secondary index consistent, and translates user ids on every read. Its authors warn that re-keying without first establishing a session-to-user binding could reintroduce a cross-user token path | agents using stored credentials |
 | Credential-ownership recheck | ToolHive | missing — the error is declared and returned by no implementation | multi-user safety |
+| Upstream subject on the identity | ToolHive | missing ([#6053](https://github.com/stacklok/toolhive/issues/6053)) — so an OAuth-only upstream cannot produce a correct Cedar principal | policy naming the user |
 | Signed schedule grant | undecided | unknown | unattended work |
 | Token cache | ToolHive | exists, unwired — zero importers | fan-out cost |
+| Resource-level authority | ToolHive | missing, **no tracker** — `authorization_details` appears nowhere. Later phase | constraining a call to one repository |
 
 ### Order
 
@@ -530,9 +582,22 @@ server validating subject, actor, client, authority and holder binding.
 
 **Then move the credential fetch behind the gate**, rechecking ownership at the read.
 
-**Then prove one slice:** Alice, one code-reviewer, one GitHub read tool, one repository.
-Complete when a call *outside* that repository is denied before any credential is read — not
-when the exchange succeeds.
+**Then prove one slice:** Alice, one code-reviewer, one GitHub read tool. Complete when a
+*write* call is denied before any credential is read — not when the exchange succeeds.
+Denying a call to a different repository is the phase-2 proof; phase 1 cannot express it,
+which is the honest cost of deferring resource-level authority.
+
+### Later phases
+
+**Resource-level authority.** RFC 9396 `authorization_details` carries the structured fields
+that name a resource, so hop 5 can test containment over the resolved target rather than a
+scope string, and the residual stated in hop 3 closes.
+
+Deferred rather than dropped, for three reasons. Nothing in vMCP implements it on any branch,
+so this is new surface rather than wiring. §6.1 leaves the comparison of two
+authorization-detail requests unspecified, which makes the narrowing rule at the authorization
+server ours to define and defend rather than adopt. And phase 1 is provable without it, on the
+narrower claim above.
 
 Schedules, caching and stronger attribution follow.
 
@@ -548,8 +613,10 @@ weaker than a product guarantee, and it is worth being explicit about which thes
 | Workload API reachable at startup | SPIFFE deployment | mecatl | no credential for any session |
 | mecatl's trust bundle | mecatl | vMCP AS | SVID and actor assertion unverifiable; exchange rejected |
 | AS issuer metadata and keys | vMCP AS | vMCP gateway | every call fails verification |
-| TLS terminating at the AS, or the ingress forwarding the client certificate | deployment | AS | client authentication impossible; reads as configuration, is topology |
+| A client authentication method the deployment can carry — mTLS needs TLS terminating at the AS or the ingress forwarding the certificate; a JWT-SVID assertion needs neither | deployment | AS | client authentication impossible; reads as configuration, is topology |
+| An mTLS path to the gateway, if holder binding is by certificate | deployment | vMCP gateway | `cnf` cannot be checked, and the token is a bearer token in practice |
 | An authorization policy wherever credentials are configured | operator | vMCP admission | every authenticated caller gets every credential |
+| `scope` listed in the authorizer's multi-valued claims | operator | vMCP admission | the set form is absent, and a rule naming it denies every call |
 | One credential per resolved target | configuration | vMCP | an allow permits a class and the fetch picks a member, silently |
 | Authenticated, encrypted state transport | deployment | mecatl | signed objects still required; state alone grants nothing |
 
@@ -561,14 +628,21 @@ Two trust relationships, easy to conflate, and an earlier version of this docume
 
 ## Open questions
 
-1. Definition-based or instance-based external authorization.
-2. Whether definition identities carry a trust tier, or only operator-tier definitions are
+1. Which SPIFFE client authentication method: JWT-SVID assertion, X.509-SVID over mTLS, or
+   WIT-SVID. The deployment cost differs; the standard requires only one of them.
+2. Whether the holder is bound by certificate thumbprint or DPoP, which is a separate choice
+   from the one above and lands on a different connection.
+3. Whether the actor assertion is self-issued by the authorization server or signed by mecatl
+   — [#5815](https://github.com/stacklok/toolhive/issues/5815) assumes the first, this design
+   needs the second.
+4. Definition-based or instance-based external authorization.
+5. Whether definition identities carry a trust tier, or only operator-tier definitions are
    nameable in policy.
-3. The exact credential selector, and how uniqueness is enforced.
-4. Whether the access token is a profiled JWT or opaque plus introspection.
-5. Whether signed per-call instance attribution is a product requirement.
-6. How ownerless legacy sessions and schedules are handled.
-7. Who owns the schedule grant broker.
+6. The exact credential selector, and how uniqueness is enforced.
+7. Whether the access token is a profiled JWT or opaque plus introspection.
+8. Whether signed per-call instance attribution is a product requirement.
+9. How ownerless legacy sessions and schedules are handled.
+10. Who owns the schedule grant broker.
 
 ---
 
@@ -578,9 +652,14 @@ Two trust relationships, easy to conflate, and an earlier version of this docume
   between input and output tokens; §4.1 the closed set of top-level claims plus the current
   actor, and `act` contents restricted to identity.
 - **RFC 9396** — §2.2 the field model, and that fields within one object combine as a
-  product; §6.1 no standardized way to compare two authorization detail requests.
-- **RFC 8705** §3 certificate-bound tokens; **`draft-ietf-oauth-spiffe-client-auth`** for the
-  client-authentication shape.
+  product; §6.1 no standardized way to compare two authorization detail requests. Relevant to
+  later phases, not phase 1.
+- **RFC 8707** the `resource` parameter, which binds the issued token to one resource server.
+- **RFC 8705** §3 certificate-bound tokens. **RFC 9449** DPoP, the alternative holder binding
+  where mTLS is not available.
+- **`draft-ietf-oauth-spiffe-client-auth`** — §3.1 JWT-SVID as a client assertion, §3.2
+  X.509-SVID over mTLS, §3.3 WIT-SVID; §4 an authorization server must support at least one,
+  which is why mTLS is a deployment choice rather than a requirement.
 - **`draft-ietf-wimse-arch`** §2 a workload is independently addressable and executable, which
   is why a goroutine is not one; §4.5 avoid treating authentication as implicit authorization.
 - **`draft-hartman-credential-broker-4-agents`** §4.2 the justification-text rule, adopted
