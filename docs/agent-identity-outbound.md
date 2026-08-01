@@ -122,7 +122,7 @@ sequenceDiagram
 
     rect rgba(128,128,128,0.07)
     Note over M,AS: leg 1. cached per pod and definition
-    M->>AS: POST /token, client cert = the pod's X.509-SVID<br/>subject_token = the pod's JWT-SVID<br/>asks for the code-reviewer agent token
+    M->>AS: POST /token, grant_type = client_credentials<br/>client authenticates with the pod's SVID<br/>scope = agent:code-reviewer
     Note over AS: is that definition registered?
     AS-->>M: agent token. sub = the definition, cnf bound to the pod.<br/>audience is the AS, so it opens nothing on its own.
     end
@@ -192,18 +192,25 @@ which agents may exist.
 
 **Leg 1 — the pod asks for an agent token.**
 
+This is `client_credentials` — a client asking for a token for itself, narrowed by scope to
+one agent. The SVID is how the client authenticates, and
+`draft-ietf-oauth-spiffe-client-auth` §3.1.2 is this exact request:
+
 ```http
 POST /token HTTP/1.1
 Host: as.vmcp.example.com
-                    # Client authenticates with the pod's X.509-SVID.
-                    # One of three methods — see below.
+Content-Type: application/x-www-form-urlencoded
 
-grant_type=urn:ietf:params:oauth:grant-type:token-exchange
+grant_type=client_credentials
 &client_id=spiffe://mecatl.example.com/pod/mecatl-7f4c
-&subject_token=<the pod's JWT-SVID>
-&subject_token_type=urn:ietf:params:oauth:token-type:jwt
+&client_assertion_type=urn:ietf:params:oauth:client-assertion-type:jwt-spiffe
+&client_assertion=<the pod's JWT-SVID, audienced to this server>
 &scope=agent:code-reviewer
 ```
+
+With the X.509 method (§3.2.1) the two assertion parameters disappear and the same request
+goes over mTLS carrying the SVID as the client certificate. Nothing else changes, which is the
+point of the draft: the method is swappable and the grant is unaffected.
 
 ```jsonc
 {
@@ -217,12 +224,12 @@ grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 Cached per pod and definition. It names no user and is useless alone — presented to the
 gateway it gets nothing, because its audience is the authorization server.
 
-Logically this is a client-credentials request: an authenticated client asking for a token for
-itself, narrowed to one definition. That grant does not exist in the authorization server,
-and an exchange with the pod's own JWT-SVID as subject reaches the same place through the
-handler that already shipped. Slightly odd — the pod exchanges a credential for one it just
-proved — and cheaper than a new grant. Either is fine; the shape of the output is what
-matters.
+**Whose identity is `sub` here** is a genuine question, not a detail. RFC 9068 §2.2 says a
+client-credentials token SHOULD carry the client in `sub`, which would make it the pod, with
+the agent named in a separate claim. Putting the definition there instead is what makes
+leg 2's `act.sub` the thing policy names, and it reads as the server asserting an identity
+the pod is registered to run. The SHOULD is not a MUST and the second reading is more useful,
+but it is a deviation and should be argued rather than assumed.
 
 **Leg 2 — the user's authority is added.**
 
@@ -232,6 +239,8 @@ Host: as.vmcp.example.com
 
 grant_type=urn:ietf:params:oauth:grant-type:token-exchange
 &client_id=spiffe://mecatl.example.com/pod/mecatl-7f4c
+                    # client authenticates exactly as in leg 1 — the method is
+                    # a property of the client, not of the grant
 &subject_token=<Alice's access token>
 &actor_token=<the agent token from leg 1>
 &actor_token_type=urn:ietf:params:oauth:token-type:access_token
@@ -325,7 +334,12 @@ one TTL, a cached credential is exactly that for outbound calls. Shorter TTLs tr
 round trips, revocation lists for a distributed dependency — neither clearly beats a bounded
 window named out loud.
 
-> **Today.** No client that may use this grant can be provisioned: registration hardcodes
+> **Today.** Leg 1's grant does not exist. The server composes authorization-code, refresh
+> and PKCE handlers plus the token-exchange factory — no `client_credentials`. Adding it is
+> the smaller half of leg 1; the registration that says which agents a client may ask for is
+> the larger half, and nothing like it exists either.
+>
+> **And no client that may use either grant can be provisioned:** registration hardcodes
 > clients public and permits only `authorization_code` and `refresh_token`, and discovery
 > advertises neither the grant nor secret-based client authentication, so even a
 > hand-provisioned client is invisible to any library that reads metadata. **This blocks both
@@ -607,6 +621,7 @@ Status verified against code except where marked unknown.
 | Canonical user principal | mecatl | missing | multi-user anything |
 | Owner enforcement on every object operation | mecatl | missing — listing takes no principal | shared deployment |
 | Agent token (leg 1) | ToolHive | proposed on [#5815](https://github.com/stacklok/toolhive/issues/5815), which binds `actor_token.sub` to `client_id` and so rejects a token naming the definition. Needs `cnf` binding instead. mecatl side is a call, not a signing key | a trustworthy actor claim |
+| `client_credentials` grant | ToolHive | missing — the server composes authorization-code, refresh, PKCE and token-exchange only | leg 1 |
 | Definition registration at the AS | ToolHive + operator | missing — nothing registers which definitions a client may be issued a token for | leg 1 meaning anything |
 | Client authentication without a secret | ToolHive + deployment | prior art exists, unmerged; carried as an option on [#6082](https://github.com/stacklok/toolhive/issues/6082). Which of the three SPIFFE methods is undecided | the exchange |
 | Sender-bound tokens | ToolHive | missing, **no tracker**; method undecided (mTLS binding or DPoP) | replay resistance |
@@ -694,12 +709,14 @@ assertion and therefore owed the server a trust bundle; splitting the exchange r
 3. Whether [#5815](https://github.com/stacklok/toolhive/issues/5815) will bind the agent token
    by `cnf` rather than by subject equality. Two legs depends on it, and nothing else in this
    design substitutes.
-4. Definition-based or instance-based external authorization.
-5. The exact credential selector, and how uniqueness is enforced.
-6. Whether the access token is a profiled JWT or opaque plus introspection.
-7. Whether signed per-call instance attribution is a product requirement.
-8. How ownerless legacy sessions and schedules are handled.
-9. Who owns the schedule grant broker.
+4. Whether leg 1's `sub` is the agent or the pod. RFC 9068 §2.2 says a client-credentials
+   token SHOULD carry the client; naming the agent is what makes `act` legible to policy.
+5. Definition-based or instance-based external authorization.
+6. The exact credential selector, and how uniqueness is enforced.
+7. Whether the access token is a profiled JWT or opaque plus introspection.
+8. Whether signed per-call instance attribution is a product requirement.
+9. How ownerless legacy sessions and schedules are handled.
+10. Who owns the schedule grant broker.
 
 ---
 
@@ -716,7 +733,10 @@ assertion and therefore owed the server a trust bundle; splitting the exchange r
   where mTLS is not available.
 - **`draft-ietf-oauth-spiffe-client-auth`** — §3.1 JWT-SVID as a client assertion, §3.2
   X.509-SVID over mTLS, §3.3 WIT-SVID; §4 an authorization server must support at least one,
-  which is why mTLS is a deployment choice rather than a requirement.
+  which is why mTLS is a deployment choice rather than a requirement. Leg 1 is §3.1.2's
+  example verbatim; the mTLS variant is §3.2.1.
+- **RFC 6749** §4.4 the client-credentials grant. **RFC 9068** §2.2 on what `sub` carries in
+  a token issued by it.
 - **`draft-ietf-wimse-arch`** §2 a workload is independently addressable and executable, which
   is why a goroutine is not one; §4.5 avoid treating authentication as implicit authorization.
 - **`draft-hartman-credential-broker-4-agents`** §4.2 the justification-text rule, adopted
