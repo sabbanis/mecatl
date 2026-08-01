@@ -806,20 +806,49 @@ Row 13.
 
 ## References
 
-- RFC 8693 (token exchange: §1.1 delegation versus impersonation, §2.1 no linkage between
-  input and output tokens, §4.1 the current actor and identity-only `act` contents),
-  RFC 9396 (`authorization_details`; §2.2 the field model, §6.1 no standardized
-  comparison), RFC 8705 (mTLS client authentication), RFC 9068 §2.2 (`client_id` in
-  conformant JWT access tokens), RFC 7523 (JWT assertion grants)
-- Adopted drafts: `draft-ietf-oauth-transaction-tokens` (per-call context inside a trust
-  domain), `draft-ietf-oauth-identity-chaining` (§2.5 no higher privilege than the subject
-  token), `draft-ietf-oauth-identity-assertion-authz-grant` (ID-JAG),
-  `draft-ietf-oauth-spiffe-client-auth`
-- Individual drafts: `draft-mcguinness-oauth-ai-agent-instance` (per-instance identity and
-  revocation), `draft-mcguinness-oauth-actor-profile` (actor semantics, layer scope),
-  `draft-liu-oauth-chain-delegation` (in-token subset), 
-  `draft-niyikiza-oauth-attenuating-agent-tokens` (§4.5, §7 containment algorithm),
-  `draft-hartman-credential-broker-4-agents` (broker model; the justification-text rule)
-- WIMSE: `draft-ietf-wimse-arch` (§2 the workload floor, §4.3 constrain, §4.5 authentication
-  is not authorization), `draft-ietf-wimse-workload-creds` (§5.1, §7 identity and authority
-  are separate)
+### Relied on, and checked against the current text
+
+Each of these supports a specific claim above. Section numbers were verified by reading
+the document, not from memory — an earlier draft of this work carried three that did not
+resolve.
+
+- **RFC 8693** (token exchange) — §1.1 delegation versus impersonation; §2.1 *"the
+  exchange is a one-time event and does not create a tight linkage between the input and
+  output tokens"*, which is why the chain stops at the gateway; §4.1 the closed set of
+  top-level claims plus the current actor, and the restriction of `act` contents to
+  identity.
+- **RFC 9396** (`authorization_details`) — §2.2 the common data fields, and that fields
+  within one object combine as a product; §6.1 *"there is no standardized mechanism to
+  compare two arbitrary authorization detail requests"*.
+- **`draft-ietf-wimse-arch`** — §2 a workload is "an independently addressable and
+  executable software entity", which is why a goroutine is not one; §4.3 workload identity
+  incorporated into a token to *constrain* its use; §4.5 *"avoid treating successful
+  authentication as implicit authorization"*.
+- **`draft-ietf-wimse-workload-creds`** — §5.1 the identity claim set (`iss`, `sub`, `exp`,
+  `jti`, `cnf`, and nothing about authority); §5.3 authority carried separately in a
+  context token.
+- **`draft-hartman-credential-broker-4-agents`** — §4.2 *"The PDP MUST NOT evaluate
+  justification text for approval decisions"*, adopted verbatim; and the absence of any
+  mechanism for choosing among several credentials for one user and service.
+- **RFC 8705** (mTLS client authentication) and **`draft-ietf-oauth-spiffe-client-auth`**
+  for the client-authentication shape at hop 3.
+
+### Read, and not relied on
+
+Consulted while working this out, and cited by name rather than by section because nothing
+above depends on them. Recorded so the ground covered is visible and nobody re-treads it.
+
+- **`draft-ietf-oauth-transaction-tokens`** — per-call context inside a trust domain. Would
+  be the mechanism if a second per-call credential were ever wanted; the design uses an
+  unsigned correlation value instead.
+- **`draft-mcguinness-oauth-ai-agent-instance`** — per-instance identity and revocation.
+  Written for agents as independent processes holding their own credentials, which is not
+  this architecture.
+- **`draft-mcguinness-oauth-actor-profile`** — actor semantics, and the useful detail that
+  it operates at the representation layer rather than the policy layer.
+- **`draft-liu-oauth-chain-delegation`** and
+  **`draft-niyikiza-oauth-attenuating-agent-tokens`** — in-token narrowing with a
+  containment algorithm. Relevant only if authority ever travels in the credential, which
+  this design decided against.
+- **`draft-ietf-oauth-identity-chaining`**, **ID-JAG**, **RFC 9068**, **RFC 7523** — read
+  during earlier rounds; the claims that depended on them did not survive revision.
