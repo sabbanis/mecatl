@@ -64,7 +64,7 @@ credential — so no second decision is needed at the fetch.
 
 | Hop | What changes |
 |---|---|
-| 1 · authenticate | The session stores who owns it. A scheduled run is not started by an incoming request, so it has no user to read; it stores an owner at creation instead. |
+| 1 · authenticate | The session stores who owns it. A scheduled run has no inbound request to read a user from, so it captures offline access at creation and still runs as that user. |
 | 2 · spawn | Which tools the child may call has to be known outside mecatl. How many turns it may take does not, and should not leave. |
 | 3 · get credential | One JWT, reused across sibling subagents, obtained by exchanging Alice's token. The pod authenticates with its SVID rather than a secret. |
 | 4 · call | Already correct: the JWT decides everything, and the correlation header is only ever logged. |
@@ -222,19 +222,45 @@ token could be read. If reading an inbound token is the only way an owner ever g
 scheduled work has no owner at all, and no amount of key or issuer machinery fixes that,
 because the work never passes the place where identity is attached.
 
-**A scheduled run has an owner, but does not act as that owner.** Alice creates the
-schedule and is recorded as its owner. When it fires at 3am, it authenticates as itself,
-using its own client credentials, and the audit record says the schedule did this — which
-is true, where "Alice did this at 3am" is not.
+**A scheduled run acts as the user, not as itself.** Alice said "check CI at 3am and fix
+what is broken." That work is hers: her intent, her repositories, her authority. A run that
+authenticates as itself loses her entirely, which is one of the two bad options epic
+[#5194](https://github.com/stacklok/toolhive/issues/5194) opens with. So the credential
+carries Alice as principal and the agent as actor, exactly as it does when she is present.
 
-**And it fails if it needs a credential it cannot get.** A run authenticating as itself
-has no user in its token, so it cannot reach anything requiring one of Alice's stored
-credentials. That is the right outcome. The alternatives are all worse: storing a
-long-lived token for Alice reintroduces exactly what this design removes, and having the
-authorization server accept mecatl's word that this is Alice replaces an attested identity
-with an asserted one. So the run fails, visibly, with a reason. A scheduled job that needs
-Alice's GitHub token is a job that needs Alice, and the honest answer is to say so rather
-than to manufacture her.
+**Which requires capturing offline access when the schedule is created.** There is no way
+to mint a credential naming Alice out of nothing at 3am, and no specification offers one.
+Every shipped system does one of two things: replay something captured at consent time, or
+give up and use a service identity. So the schedule stores a refresh token, obtained with
+Alice's consent at creation, and the fire exchanges it for a short-lived credential.
+
+That is not the stored-credential problem this design removes. **The agent still never
+holds anything of Alice's** — the refresh token lives in the gateway's vault, scoped to one
+user and one provider, and is revocable. AWS AgentCore and Auth0 both ship exactly this,
+binding stored tokens to an agent identity and a user id and refreshing automatically. It
+is `offline_access`, not a novel mechanism.
+
+**And it is safer than the alternative that avoids storage.** Google's domain-wide
+delegation mints a user-principal token from nothing, with no stored token at all — and is
+documented as a critical privilege-escalation risk, because the grant is domain-wide and
+cannot be scoped to one user. A revocable per-user refresh token is the *less* dangerous
+of the two. What makes something dangerous here is the ability to mint Alice's credential
+at will, not the existence of a token that can be taken away.
+
+**When the credential is gone, fail and say how to fix it.** Refresh tokens expire, and a
+provider can revoke one without telling us. The run then fails — it does not fall back to a
+service identity, because that silently converts Alice's job into somebody else's. AgentCore's
+pattern is worth copying: emit an authorization URL so Alice can re-consent, delivered by
+whatever channel the deployment has. A job that stops and explains itself beats one that
+keeps running as the wrong principal.
+
+> **The obvious counter-example, and why not.** GitHub Actions goes the other way: a
+> scheduled workflow gets an app installation token, which is a service identity, and its
+> record of who caused the run resolves to whoever last edited the cron expression. So it
+> splits attribution from authority. Microsoft Graph recommends the same shape, calling
+> delegated access interactive by design. Both are defensible for CI. Neither fits here,
+> because last-cron-editor is a poor proxy for whose authority is being spent, and this
+> design's whole purpose is to keep that answer accurate.
 
 > **Today.** Session creation has no owner field, on either the session or the team
 > request. `makeFireFunc` calls `CreateSessionWithProfile` in-process from a
@@ -644,8 +670,9 @@ Hop 2   Narrow(parent Authority, spec SpawnSpec)  -> (Authority, Limits, error)
 Hop 3   DelegatedCredential(
             subject UserToken, def DefinitionID,
             a Authority, aud Audience)            -> (Credential, error)
-        ClientCredential(
-            def DefinitionID,
+        // unattended: same output, different input
+        DelegatedFromStored(
+            u UserID, def DefinitionID,
             a Authority, aud Audience)            -> (Credential, error)
 
 Hop 4   Call(c Credential, corr Correlation,
@@ -661,20 +688,22 @@ Hop 8   Rederive(s Session, caller *Principal)    -> (Credential, error)
 
 Six things the signatures expose that the prose hid.
 
-**`Principal` is a sum type, not one thing.** Hop 1 produces either a user or a client,
-and hop 3 has a different constructor for each. Writing "the principal" throughout let
-that stay invisible. Anything consuming a `Principal` has to handle both, and the audit
-record differs.
+**`Principal` is a sum type, and mostly should not be.** Hop 1 can produce a user or a
+client, but every path this design cares about carries a user — including the unattended
+one. A client principal is what a run degrades to when the user's stored grant is gone,
+and the design's answer there is to fail rather than degrade. So the sum type exists to be
+rejected in one branch, not to be handled evenhandedly in both.
 
 **`Narrow` returns two values, and only one of them travels.** `Authority` is the
 reach-changing part — tools, mutation, resources — and crosses the boundary. `Limits` is
 turns, tool calls and timeouts, and never leaves the process. Separating them in the type
 is what stops the second kind accidentally becoming a claim.
 
-**Two credential constructors, not one with a nullable subject.** They are different
-grants and different trust models: one exchanges a user's token, the other authenticates
-as the harness. A single function with an optional user is how the unattended path ends up
-sharing validation it should not.
+**Two constructors, and both produce a credential naming the user.** They differ only in
+where the subject comes from — a token the caller presented, or a stored grant captured
+when a schedule was created. Neither produces a credential naming the harness. An earlier
+version had the unattended path authenticate as the harness itself, which loses the user
+and is the failure mode this whole design exists to avoid.
 
 **`DelegatedCredential`'s parameters are exactly the cache key.** That falls out rather
 than being designed, which is a good sign. It also means adding a parameter later silently
@@ -717,10 +746,10 @@ these are cost signals, not constraints.
 | Interface | Change | Where |
 |---|---|---|
 | `BindPrincipal` | A principal field on session creation, on both the session and team requests | proto contract, `session` aggregate, server adapter |
-| `OwnerOf` | An owner on `ScheduleSpec`, read by the fire path | `makeFireFunc` calls `CreateSessionWithProfile` in-process, so it never crosses the interceptor that would assign one |
+| `OwnerOf` | An owner on `ScheduleSpec`, plus offline access captured at creation, both read by the fire path | `makeFireFunc` calls `CreateSessionWithProfile` in-process, so it never crosses the interceptor that would assign one |
 | `BindPrincipal` | Labels must reach children, and empty must be rejected rather than compared | `buildChildSession`, `runBranch` and `Supervisor.sessionID` call `session.New` with no labels; the only writer lives in the server adapter, off every child-spawn path |
 | `Narrow` | Split the returned authority from the limits, so only the reach-changing part can travel | today both are internal — catalog composition plus the audience-pinned evaluator |
-| `DelegatedCredential`, `ClientCredential` | Mint in composition, never behind a port the loop calls | the loop must stay identity-agnostic. `TeamMemberEngineFactory` and `WithSubagentEngineFactory` are the existing shape: composition-supplied closures, with `engine/agent` carrying only an opaque string on `parentCaps`, following the `forkHistory` precedent |
+| `DelegatedCredential`, `DelegatedFromStored` | Mint in composition, never behind a port the loop calls | the loop must stay identity-agnostic. `TeamMemberEngineFactory` and `WithSubagentEngineFactory` are the existing shape: composition-supplied closures, with `engine/agent` carrying only an opaque string on `parentCaps`, following the `forkHistory` precedent |
 | `Call` | A per-call correlation value | the MCP adapter bakes a static header map into a client at dial time; nothing is per-call today |
 | `Rederive` | Derive from the live caller where there is one | the rehydration seam exists; it currently trusts persisted labels verbatim, including the permission posture |
 
