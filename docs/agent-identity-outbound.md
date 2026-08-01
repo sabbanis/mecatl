@@ -664,6 +664,7 @@ Each step's output has to be the next step's input. Where it is not, that is a f
 ```
 Hop 1   BindPrincipal(inbound Request)            -> (Principal, error)
         OwnerOf(spec ScheduleSpec)                -> (Principal, error)
+        RootAuthority(p Principal)                -> (Authority, error)
 
 Hop 2   Narrow(parent Authority, spec SpawnSpec)  -> (Authority, Limits, error)
 
@@ -678,12 +679,14 @@ Hop 3   DelegatedCredential(
 Hop 4   Call(c Credential, corr Correlation,
              tool ToolName, args Args)            -> (Result, error)
 
+Hop 4/5 Verify(c Credential)                      -> (Claims, error)
 Hop 5   Decide(claims Claims, tool ToolName,
                backend BackendID, op Operation)   -> (Decision, error)
 
 Hop 6   Fetch(u UserID, backend BackendID)        -> (StoredCredential, error)
 
-Hop 8   Rederive(s Session, caller *Principal)    -> (Credential, error)
+Hop 8   Rederive(s Session, prior Authority,
+                 caller *Principal)                -> (Credential, error)
 ```
 
 Six things the signatures expose that the prose hid.
@@ -726,10 +729,30 @@ unknown" are different conditions, and collapsing them makes a missing integrati
 like a routing bug.
 
 And one thing the signatures make obvious that was easy to miss in prose: **`Decide` takes
-`backend`, and `Select` takes the `Decision`.** Today the gate is not given the backend,
-and selection happens before routing so it cannot receive a decision at all. The two
-missing arrows are the design's actual work, and they are visible here as parameters that
-have nowhere to come from.
+`backend`, and today the gate is not given one.** That single missing parameter is the
+design's actual work, visible here as an input with nowhere to come from.
+
+Four more gaps, found by checking each output against the next input rather than by
+reading the prose:
+
+**Nothing produced `Claims`.** A credential arrives at hop 4 and a decision needs claims at
+hop 5, with no step in between. `Verify` is where signature checking, expiry and audience
+validation live, and leaving it implicit hid the fact that the gateway has to hold
+mecatl's trust bundle to do it — the same federation requirement hop 3 names for the
+authorization server.
+
+**Nothing produced the root `Authority`** that `Narrow` reduces. Hop 1 yields a principal;
+the first narrowing needs something to narrow *from*. `RootAuthority` is where a user's
+entitlements enter, and its absence made the top of the chain look like it came from
+nowhere.
+
+**`Rederive` could not enforce its own rule.** It promised a credential "never wider than
+before" while taking nothing describing what came before. It now takes the prior authority
+to bound against.
+
+**`Correlation` still appears in no signature after `Call`,** and that is correct rather
+than a gap: it is logged at both ends and never read by a decision. Worth stating, because
+a value that enters and never returns usually means something is missing.
 
 `Rederive`'s caller is a pointer on purpose. Non-nil is the common path and the cheap one.
 Nil is the scheduled run, and the only case that needs the signed chain.
@@ -751,6 +774,7 @@ these are cost signals, not constraints.
 | `Narrow` | Split the returned authority from the limits, so only the reach-changing part can travel | today both are internal — catalog composition plus the audience-pinned evaluator |
 | `DelegatedCredential`, `DelegatedFromStored` | Mint in composition, never behind a port the loop calls | the loop must stay identity-agnostic. `TeamMemberEngineFactory` and `WithSubagentEngineFactory` are the existing shape: composition-supplied closures, with `engine/agent` carrying only an opaque string on `parentCaps`, following the `forkHistory` precedent |
 | `Call` | A per-call correlation value | the MCP adapter bakes a static header map into a client at dial time; nothing is per-call today |
+| — | Owner-scoped session listing. The owner field makes filtering possible; something has to apply it, or the field is decoration and the enumeration leak the companion doc records stays open |
 | `Rederive` | Derive from the live caller where there is one | the rehydration seam exists; it currently trusts persisted labels verbatim, including the permission posture |
 
 ### vMCP and ToolHive — fixes on `main`
@@ -817,48 +841,79 @@ anyway.
 
 ---
 
-## Deliberately open
+## Decisions, and what is still open
 
-**Where the user is carried, given the subject names the agent.** The lookup needs it
-legible. Which claim holds it is a naming decision with a caching consequence, because it
-becomes part of the key.
+Five questions this doc previously left open now have answers. Two do not.
 
-**How much narrowing travels in a credential versus living in policy.** The drafts
-genuinely disagree, so this is not a settled question we are ducking.
-`draft-mcguinness-oauth-actor-profile-00` says it *"operates at the representation and
-propagation layer, not at the authorization policy layer"*.
-`draft-liu-oauth-chain-delegation-00` puts it in the token with a MUST-subset the
-resource server verifies. Since a child's tool set is largely determined by its
-definition, policy can name most of it directly, and only what genuinely varies per spawn
-needs to travel. Read-versus-write is the clear case; whether anything else qualifies is
-worth settling before committing to a structured authority claim.
+### The user goes in `sub`, and the collision does not apply here
 
-One shape constraint if we do carry it: fields inside a single `authorization_details`
-object combine as a cartesian product, so this needs one object per backend-and-operation
-cluster rather than one large object.
+The companion doc inverts the usual shape — its `sub` is the acting instance, because
+JWT-SVID requires `sub` to be the credential holder, and the user therefore lives in the
+chain. That is a real constraint on credentials **mecatl issues as SVIDs**.
 
-**What an unannotated tool means.** No fallback classifier exists, so this is a default
-somebody chooses.
+The outbound credential is not one. It is an ordinary OAuth access token minted by the
+gateway's authorization server; the SVID only authenticates the request that obtains it.
+So the JWT-SVID rule does not reach it, and it can use the standard RFC 8693 shape:
+`sub` is Alice, `act.sub` is the agent.
 
-**Who refreshes a stored third-party credential once the lookup keys on the user.** See
-hop 6. Refresh-on-use lets unsupervised agent activity extend a credential indefinitely;
-refresh-only-on-login means agent access expires on the provider's schedule. Both are
-defensible and the design currently picks neither.
+That dissolves the problem rather than solving it. The user sits where every reader looks
+first, so nothing has to traverse a chain, and the friction with actor-profile — whose
+default for a resource server is the outermost actor — disappears. Two credentials with
+two conventions, each correct in its own domain.
 
-**Whether an owner on the session is enough to close the enumeration leak.** The companion
-doc records that session listing returns every session with a title drawn from its first
-prompt. Adding an owner field makes a filter *possible*; it does not apply one. Reads have
-to become owner-scoped or the field is decoration, and that is a change to the listing
-surface rather than to identity.
+### The credential's scope carries the narrowing; policy names the definition
 
-**Whether the trust-domain federation for SVID authentication is cheap in practice.** The
-port itself is settled and on the critical path. What is not settled is the deployment
-side: the authorization server needs mecatl's trust bundle, and TLS has to terminate at
-the authorization server or the ingress has to forward the client certificate. In some
-clusters that is configuration and in others it is a project. That determines schedule,
-not design.
+Almost nothing needs to travel. A child's tool set follows from its definition, and policy
+can name the definition directly from `act.sub`. What varies per spawn beyond that is the
+scope, and scope is already part of what the credential is keyed on, so it travels for
+free in a standard claim.
+
+No structured authority vocabulary, no subset-checking at the gateway, no new claim. The
+`authorization_details` machinery stays unused unless something later needs to express
+authority that is neither definition-shaped nor scope-shaped, and nothing does yet.
+
+### An unannotated tool is treated as mutating
+
+The read-only hint comes from the backend's own tool annotation and is absent by default,
+with no classifier to fall back on. Absent means mutating, so an unannotated tool is
+refused to a read-only agent. That follows from refusing when an input to a decision is
+missing, and it puts the cost of annotating on the backend that benefits from the looser
+treatment.
+
+### Refresh is bounded by the schedule, not by the token
+
+Refresh-on-use lets an unsupervised agent extend a credential forever. Refresh-only-on-login
+means a working schedule stops for reasons Alice never sees. Neither is good, and the
+choice is a false one: bound the **schedule**.
+
+A schedule has an expiry — set by Alice or defaulted — and its stored grant is refreshed
+only while the schedule is live and unexpired. Unsupervised extension is then bounded by
+something Alice chose and can see, rather than by a token lifetime she never set. When the
+schedule lapses, the grant stops being refreshed and the next run surfaces a
+re-authorization prompt.
+
+### Owner-scoped reads are required, and are a separate change
+
+This was listed as an open question and is not one. An owner field makes filtering
+possible; it does not filter. Session listing has to become owner-scoped or the field is
+decoration. That belongs in the change list rather than here — it is a change to the
+listing surface, not to identity, and it does not block anything in this design.
 
 ---
+
+### Still open
+
+**Whether the trust-domain federation for SVID authentication is cheap in practice.** The
+port is settled and on the critical path. The deployment side is not: the authorization
+server needs mecatl's trust bundle, and TLS has to terminate there or the ingress has to
+forward the client certificate. In some clusters that is configuration and in others it is
+a project. It determines schedule, not design.
+
+**What happens the first time a backend needs two credentials for one user.** The design
+assumes one credential per backend per user, which holds today because a second account
+would be a second backend. It is worth knowing in advance whether that is a property of
+the model or an accident of current deployments, because Cedar's allow stops identifying a
+credential the moment it breaks.
 
 ## References
 
