@@ -485,6 +485,11 @@ The backend receives a credential it already understands, for a call already aut
 learns nothing about agents. That is a goal: a provider has no policy about mecatl's
 subagents it could apply.
 
+It is also where the narrowing stops. The credential is whatever the user granted at connect
+time, so GitHub applies its own limits and none of ours. Every constraint this design adds
+sits upstream of the only party that could enforce one against the actual API call — see
+[later phases](#later-phases).
+
 **Where the chain stops.** RFC 8693 §2.1 is explicit that an exchange "is a one-time event
 and does not create a tight linkage between the input and output tokens", so a backend cannot
 walk it back. Verifiability is scoped to **the gateway** — the only place where the claimed
@@ -725,45 +730,50 @@ call fails instead of continuing with whatever the strategy makes of an empty re
 
 ### Later phases
 
+Each entry says what would un-defer it. A deferral with no stated trigger is a decision nobody
+revisits.
+
 **Resource-level authority.** RFC 9396 `authorization_details` carries the structured fields
-that name a resource, so hop 5 can test containment over the resolved target rather than a
-scope string, and the residual stated in hop 3 closes.
+that name a resource, so hop 5 tests containment over the resolved target rather than a scope
+string, and the residual stated in hop 3 closes. Deferred because nothing in vMCP implements
+it, because §6.1 leaves the comparison of two authorization-detail requests unspecified so the
+narrowing rule would be ours to define rather than adopt, and because phase 1 is provable
+without it.
 
-Deferred rather than dropped, for three reasons. Nothing in vMCP implements it on any branch,
-so this is new surface rather than wiring. §6.1 leaves the comparison of two
-authorization-detail requests unspecified, which makes the narrowing rule at the authorization
-server ours to define and defend rather than adopt. And phase 1 is provable without it, on the
-narrower claim above.
+*Un-defers when* a deployment needs one agent confined to a subset of a backend that another
+agent may reach in full. Scope cannot express that.
 
-**Per-agent credentials.** The credential this design reads is Alice's, shared by every agent
-acting for her. Three levels of per-agent isolation sit above that, and they differ in who
-decides, not in how much work they are.
+**Per-agent credential isolation.** Three ways to stop agents sharing one credential. They are
+alternatives, not steps — a deployment picks one — and they differ in who decides.
 
-| | Who decides | What binds the agent | Have it |
+| | Who decides | Where the agent binds | Have it |
 |---|---|---|---|
-| Gate a shared credential on the agent | the operator, in policy | the `act` claim, read at hop 5 | yes |
-| Consent per agent | the user | a record of which agents she authorized | no |
-| A separate credential per agent | the user, at connect time | the stored credential itself | no |
+| Gate a shared credential | the operator, in policy | `act.sub`, tested at hop 5 | **yes** |
+| Narrow what the provider sees | the operator, per backend | the credential handed to GitHub | no |
+| One credential per agent | the user, at connect time | the stored credential | no |
 
-The first is already in this design — hop 5's rule tests `act.sub`, so an operator can say which
-agents may call which tools against a credential all of them share. What is missing is the
-user's say. Alice never states that code-reviewer may use her GitHub connection, and no
-provider-side limit applies: if the gate is wrong, GitHub sees a token with everything she
-granted.
+The first is already here. An operator can say which agents may call which tools against a
+credential all of them share.
 
-The second and third both need the same missing thing — a record of the user consenting to a
-named agent. That is the un-defer gate. Without it there is no set to check against, and
-per-agent storage keys would partition credentials by an agent nobody authorized.
+The second is the gap worth naming plainly: **this design narrows every token except the one
+that reaches the provider.** Leg 2 narrows what mecatl presents to vMCP, and hop 5 decides what
+mecatl may ask for — but GitHub receives whatever Alice granted at connect time. Every
+constraint sits upstream of the only party that could enforce one.
 
-Both large platforms bind the agent in, by different means. Bedrock AgentCore stores vault
-entries under the agent identity and the user together, so a token is scoped to that pair.
-Entra Agent ID has no shared vault: the agent identity is a service principal holding its own
-delegated permissions, which the user consents to per agent. Atrium reaches the same place and
-records the same prerequisite, naming the consent record `ConnectorBinding` and deferring all
-three of its isolation models behind it. So one-credential-per-user is a phase, not a property
-of the model.
+The third is where AWS and Azure both are. Bedrock AgentCore stores vault entries under the
+agent identity and the user together, so a token is scoped to that pair. Entra Agent ID has no
+shared vault: the agent identity is a service principal with its own delegated permissions,
+consented to per agent. Atrium reaches the same place and calls the consent record a
+`ConnectorBinding`. One credential per user is where we stop, not a property of the model.
 
-Schedules, caching and stronger attribution follow.
+*Un-defers when* two conditions hold together: a second agent that needs different authority
+from its siblings, and a record of the user consenting to a named agent. The second is the
+hard one. Without it there is nothing to check, and a per-agent storage key would partition
+credentials by an agent nobody authorized.
+
+**Schedules, caching and stronger attribution.** *Un-defers when* unattended work is a
+requirement, when fan-out makes the per-call exchange measurable, and when an auditor needs to
+attribute a call to an instance rather than a definition.
 
 ---
 
