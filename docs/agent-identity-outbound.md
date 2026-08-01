@@ -49,16 +49,18 @@ sequenceDiagram
     M-->>S: the diff
 ```
 
-Two boxes in that diagram are where the design does real work, and they ask different
-questions. Cedar asks whether this call is allowed. The credential resolution asks which
-of Alice's stored credentials, if any, this particular call justifies using.
+**The whole design is one idea: the decision and the credential fetch must see the same
+target, resolved once.**
 
-Today neither can do its job, for the same underlying reason: **the information each
-needs arrives after the point where it runs.** Cedar is never told which backend the call
-routes to, even though the tool object carries that identifier. And the credentials are
-loaded in HTTP authentication middleware, before the JSON-RPC body is parsed — so at that
-moment there is no tool name, no arguments and no backend, and the code loads every
-credential Alice has and lets a later step index into the map.
+Today neither sees it. Cedar is never told which backend the call routes to, even though
+the tool object carries that identifier. And credentials are loaded in HTTP authentication
+middleware, before the JSON-RPC body is parsed — so at that moment there is no tool name,
+no arguments and no backend, and the code loads every credential Alice has and lets a later
+step index into the map by a name from static config.
+
+Fix both and everything else follows. Cedar's allow then means "this actor may call this
+tool at this backend", which is exactly what justifies reaching for that backend's
+credential — so no second decision is needed at the fetch.
 
 | Hop | What changes |
 |---|---|
@@ -66,8 +68,8 @@ credential Alice has and lets a later step index into the map.
 | 2 · spawn | Which tools the child may call has to be known outside mecatl. How many turns it may take does not, and should not leave. |
 | 3 · get credential | One JWT, reused across sibling subagents, obtained by exchanging Alice's token. The pod authenticates with its SVID rather than a secret. |
 | 4 · call | Already correct: the JWT decides everything, and the correlation header is only ever logged. |
-| 5 · gate | Give Cedar the backend identifier. Refuse when credentials are configured but no policy is. |
-| 6 · select | Key the lookup on Alice rather than on a login session, then narrow to one credential using the backend and Cedar's answer. **The substantive piece.** |
+| 5 · gate | Give Cedar the backend identifier. Refuse when credentials are configured but no policy is. **This is the substantive piece** — it is what makes the allow strong enough to justify a credential. |
+| 6 · fetch | Key on Alice rather than a login session, and move the fetch to the far side of routing so it uses the backend the gate saw. Plumbing, once hop 5 is right. |
 | 7 · backend | No change. GitHub sees an ordinary GitHub token and learns nothing about agents. |
 | 8 · park/resume | On resume, mint from whoever is asking now rather than from a stored row. |
 
@@ -107,9 +109,11 @@ consistently below.
 *Context binding*: this credential can read what is filed under some session.
 *Authority binding*: this credential may perform these operations.
 *Principal binding*: this is Alice's authority, exercised by some agent.
-The test that separates them: does removing it increase what the holder can reach? Remove
-a session pointer and the holder reaches less, so it grants. Remove a holder key and a
-stolen copy works, so it constrains. **A binding should constrain, never grant.**
+The test that separates them: does the claim let the holder reach past the authority the
+credential already states? A session pointer does — the credential may say "read one
+repository" and the pointer still resolves to everything the user owns. A holder key does
+not; it narrows who may use the credential and adds nothing. **A binding should constrain,
+never grant.**
 
 **Principal** — the party whose authority is being exercised. Either a user or a client,
 never both, and code that consumes one has to handle each.
@@ -307,42 +311,32 @@ token cache in the gateway's proxy path today.
 a credential and is not signed. Both sides log it, and joining the two logs answers
 "which subagent did this".
 
-**Why not a second credential for the individual.** Because a subagent never holds one.
-The harness holds the credential and makes calls on behalf of its children, so there is
-no per-subagent token that could be stolen, replayed, or revoked. Containing a misbehaving
-subagent is cancelling a goroutine the parent already owns, not revoking a token.
+**Why not a second credential for the individual.** A subagent never holds one. The pod
+holds the credential and makes calls on its children's behalf, so there is no per-subagent
+token to steal, replay or revoke, and containing a misbehaving subagent means cancelling a
+goroutine the parent already owns. Signing the correlation value would only matter if the
+gateway needed to *authorize* on the individual instance, and it cannot usefully: instances
+are ephemeral and unnamed in advance, so no policy could reference one.
 
-A signed second credential would only be worth it if the gateway needed to *authorize* on
-the individual instance, and it cannot usefully: instances are ephemeral and unnamed in
-advance, so no policy could reference one. The harness is also the only thing that could
-forge the value, and it is already trusted to name the actor in the shared credential —
-so signing it adds nothing.
+> An earlier version of this analysis proposed two credentials, on the strength of a draft
+> requiring per-instance revocation. That draft assumes agents are independent processes
+> holding their own credentials, which is not this architecture.
 
-> Recorded because this went back and forth. An earlier version of this analysis proposed
-> two credentials, on the strength of `draft-mcguinness-oauth-ai-agent-instance` requiring
-> per-instance revocation. That draft is written for agents as independent processes
-> holding their own credentials. Our subagents hold nothing, so the requirement does not
-> transfer. If the gateway ever needs to attribute without reading our logs, the
-> second-credential shape is available and `draft-ietf-oauth-transaction-tokens` is the
-> mechanism — but that is a credential on every call to save a log join.
+**The subagent is not a party to this exchange, because a subagent is not a workload.** A
+workload, in the WIMSE sense, is independently addressable and executable. A goroutine is
+neither — it shares an address, a process and a memory space with its siblings, and nothing
+outside can tell them apart. No attestor can attest it, so asking an external authorization
+server to accept a per-subagent credential would mean asking it to accept an assertion in
+place of an attestation.
 
-**The subagent is not a party to this exchange, because a subagent is not a workload.**
-WIMSE defines a workload as independently addressable and executable. A goroutine is
-neither: it shares an address, a process and a memory space with its siblings, and nothing
-outside can distinguish one from another. So no attestor can attest it, and asking an
-external authorization server to accept a per-subagent credential would mean asking it to
-accept an assertion in place of an attestation.
-
-That is why the pod obtains the credential and the subagent's identity travels as a claim
-inside it. mecatl issues that identity — it is a real identity in mecatl's own trust
-domain — and no key sits below the pod, because there is nothing below the pod that could
+So the pod obtains the credential and the subagent's identity travels as a claim inside it.
+mecatl issues that identity, and it is a real identity in mecatl's own trust domain. What
+does not exist below the pod is a *key*, because there is nothing down there that could
 hold one privately.
 
-Worth knowing the standards are moving away from this shape rather than toward it. The
-newest agent-specific drafts raise the floor: one requires every agent to generate its own
-keypair at instantiation with no provision for agents lacking private keys, another
-defines an agent as a workload in the WIMSE sense. So the sub-workload tier is ours to
-handle permanently, and we should not plan on a standard growing into it.
+Worth knowing the standards are moving away from this shape rather than toward it: the
+newest agent-specific drafts assume every agent generates its own keypair, or define an
+agent as a workload outright. The sub-workload tier is ours permanently.
 
 **Nothing here may be a pointer.** A claim that dereferences to a credential set is a key
 by the test above. These credentials state their authority rather than referring to
@@ -490,145 +484,79 @@ prompt-injection surface, not a refinement.
 
 ---
 
-### Hop 6 — the gateway picks a credential and uses it
+### Hop 6 — the gateway uses one of Alice's credentials
 
-**What should happen.** Two stages, in order.
+**What should happen.** One operation, after the gate has allowed the call, keyed on the
+backend the gate saw: `Fetch(user, backend) -> credential`.
 
-**First, which credentials are candidates.** The credential belongs to the user, so this
-keys on the user. Not on a session, not on a login — those describe a browser visit, and
-the question here is whose credential this is.
+**Why the key is the user.** The credential belongs to Alice, so the lookup keys on Alice.
+Not on a login session — a pointer minted when a human logged in through a browser
+describes an episode, not an entitlement. An agent has no such episode: nothing mints one
+for it, and where a user's token carried one, exchanging it for a delegated credential
+drops it. A design that looks up credentials by login session cannot serve an agent at all.
 
-**Second, which one may be used for this call.** That takes the backend being routed to
-and the decision from hop 5. The result is one credential or none.
+**Why no second decision.** Cedar was asked whether this actor may call `github.read_file`
+at the GitHub backend, and said yes. The call only reaches this point because it said yes.
+So the authorization for using Alice's GitHub credential already happened — it is what the
+allow meant. There is no further predicate to evaluate here, and nothing for the narrowing
+to be re-checked against, because the gate is where it was checked.
 
-**Why the lookup cannot key on a login session.** A pointer minted when a human logged in
-through a browser describes an episode, not an entitlement. An agent has no such episode:
-nothing mints one for it, and where a user's token carried one, exchanging it for a
-delegated credential drops it. So a design that looks up credentials by login session
-cannot serve an agent at all.
+That only holds if the gate saw the backend. If it did not, its allow means "this actor may
+read something", which does not justify reaching for any particular credential. **So hop 5
+carries the weight, and this hop is plumbing** — get the fetch to the far side of routing
+and key it on the same backend the gate was given. Decide and fetch resolve the target
+once, together.
 
-**But something does hang off that episode, and moving the key does not move it.** The
-stored GitHub credential has a refresh lifecycle. Today it is tied to the login session
-that obtained it, and the login path is what renews it. Key the lookup on the user and the
-question becomes: who refreshes Alice's GitHub token when Alice has not logged in for a
-week and only her scheduled agent is using it?
+**One assumption this depends on:** a given user has at most one credential per backend.
+That holds in the current model, where a backend is a configured MCP server and its
+credential is configured per user per backend — two accounts would be two backends. If that
+ever stops being true, Cedar's allow no longer identifies which credential, and something
+more is needed.
 
-The options are not equivalent. Refreshing on use makes an agent's activity indefinitely
-extend a credential the user has stopped supervising. Not refreshing means agent access
-silently expires on the provider's schedule. Refreshing only during a real login means the
-same, with a clearer explanation. This design does not choose, and it should — it is a
-consequence of the lookup change rather than a pre-existing problem, so it belongs here.
+**Something does hang off the login session, and moving the key does not move it.** The
+stored GitHub credential has a refresh lifecycle, currently tied to the session that
+obtained it and renewed by the login path. Key the lookup on the user and the question
+becomes: who refreshes Alice's token when she has not logged in for a week and only her
+scheduled agent is using it? Refreshing on use lets unsupervised agent activity extend a
+credential indefinitely. Not refreshing means agent access expires on the provider's
+schedule. This is a consequence of the change and the design should pick one.
 
-**And the user has to be somewhere the lookup can read.** If the credential names the
-acting agent as its subject, the user sits one level in. Whatever holds it has to be
-legible at this hop. A design that puts the user only in a structure declared unreadable
-has made the lookup impossible.
-
-**Why the second stage cannot be skipped.** Keying on the user alone returns everything
-the user has. The first stage narrows to a person; the second narrows to a purpose.
-Without it, every delegated credential reaches every credential its user owns, and the
-narrowing from hop 2 stops at the gateway's front door.
-
-**If any input to that decision is absent, no credential is used.** No allow from the
-gate, no backend identified, no user resolved — nothing is handed over.
-
-> **Today, and this is worth spelling out because it is the design's central problem.**
+> **Today.** The request arrives, authentication middleware validates the token, takes the
+> login-session pointer out of it, and loads **every** credential stored under that pointer
+> — Alice's GitHub token, her Slack token, her AWS credentials — into a map. This happens
+> before the JSON-RPC body is parsed, so nothing there knows the call is `github.read_file`
+> or where it routes. The code says so: a per-backend check would need routing context this
+> layer does not have. Afterwards the outbound strategy indexes that map by a provider name
+> from static configuration.
 >
-> The HTTP request arrives. Authentication middleware runs, validates the token, takes the
-> login-session pointer out of it, and loads **every** credential stored under that
-> pointer into a map on the identity: Alice's GitHub token, her Slack token, her AWS
-> credentials, everything she has connected. This happens *before* the JSON-RPC body is
-> parsed, so nothing at that point knows the call is `github.read_file`, or that it routes
-> to the GitHub backend, or what its arguments are. The code says as much: a per-backend
-> check would need routing context this layer does not have.
+> So the credential is chosen by config written before the request existed. A subagent
+> narrowed to read-only on one repository can trigger `slack.post_message` and nothing in
+> the credential path objects, because by then the Slack token is already loaded and the
+> only question left is which key to read.
 >
-> Later, after routing, the outbound strategy for the GitHub backend reads the GitHub
-> entry out of that map, using a provider name written in static configuration.
->
-> So the credential is chosen by config authored before the request existed, and the
-> request itself contributes nothing to the choice. There is a real interface at the load
-> point that a filtering implementation could replace, but filtering there can only key on
-> the token — which is why the enterprise user-keyed decorator, which sits below that same
-> interface, is stage one and cannot be stage two.
->
-> **What this costs, concretely.** A subagent narrowed to read-only on one repository can
-> trigger `slack.post_message`, and nothing in the credential path objects, because by the
-> time anyone knows the call is Slack the Slack token is already loaded and the only
-> remaining question is which key to read from the map. The narrowing exists; nothing
-> downstream consults it. Separately, every request pulls the user's entire credential set
-> into memory whether or not the call needs any of it.
->
-> **Change.** Stage one is largely a port of work that already exists. Stage two means the
-> credential fetch has to happen somewhere that knows the tool and the backend, and has
-> Cedar's answer in hand. Two shapes: move the load after routing, or split it — keep a
-> cheap identity resolution early and defer the fetch to where the outbound strategy runs.
-> Neither is much code. Both cross a layer boundary that exists for a good reason, since
-> authentication middleware is where authentication belongs, which is why this is the
-> substantive piece rather than a patch.
+> **Change.** Move the fetch to where the backend is known, and key it there. The interface
+> that exists today sits in authentication middleware, which is the right place for
+> authentication and the wrong one for this.
 
-**The ordering is not an open question. We are the outlier.**
+**We are the outlier here, which is the useful thing to know.** Every comparable system
+already fetches against a target it knows. RFC 8693 settles it in its request grammar: an
+exchange carries `resource` and `audience`, so it cannot precede knowing them. Vault has no
+map to index — its policy check and its credential production are one operation on one
+path. AWS's agent gateway fetches one credential per invocation against a named target.
+Envoy runs external authorization after route matching for exactly this reason, and
+documents a later filter clearing the route cache as a privilege-escalation vector, because
+the decision was then made about a different target than the one served. Same failure,
+named as a security bug by someone else.
 
-Every comparable system fetches a credential against a target it already knows. RFC 8693
-settles it in the request grammar rather than in advice: a token-exchange request carries
-`resource`, `audience` and `scope`, so the downstream call has to be known before the
-downstream credential can be minted. Vault has no map to index at all — its policy check
-and its credential production are one operation against one named path. AWS's agent
-gateway configures outbound auth per target and fetches one credential per invocation
-against a named provider. CyberArk's secretless broker selects a provider from the
-connection. The MCP gateway `agentgateway` authorises per tool and target.
+Preloading and indexing has a classical name too: ambient authority, and the failure is a
+confused deputy, because the later stage never had to prove entitlement to what it reaches.
 
-So "load everything the user has, then index by static config" is not a design anyone
-argued for. It is a consequence of the fetch sitting in authentication middleware, which
-is a reasonable place for authentication and the wrong place for this.
+**What an attacker gets.** Today, an attacker who can reach any allowed tool call reaches
+every credential Alice owns, because they are all already in memory and the only remaining
+step is a map lookup. After the change, they reach the one credential for the one backend
+the gate approved. The blast radius goes from Alice's whole connected-account set to a
+single provider.
 
-**Envoy states our exact failure mode as a security bug.** Its external authorization
-filter runs after route matching precisely so the decision sees the resolved target, and
-its documentation warns that a later filter clearing the route cache is a
-privilege-escalation vector — because the decision was then made about a different target
-than the one served. Same shape as ours: **the decision and the fetch have to see the same
-target, resolved once.** That is the argument to make, and it comes from a Tier-1
-implementation rather than from us.
-
-**The hazard has a classical name.** Preloading every credential and letting a later stage
-index into the map is ambient authority, and the failure is a confused deputy — the later
-stage never had to prove entitlement to what it reaches. AWS says the same thing about its
-own gateway in plainer terms: the execution role's permissions are the upper bound of what
-any authorized caller can exercise through it. What nobody appears to have written up is
-this specific pattern — a multi-user gateway preloading one user's whole third-party
-credential set per request. That framing is ours to make, grounded in the general
-principle.
-
-**What is genuinely unspecified is the containment algorithm, not the ordering.** RFC 9396
-says there is no standard way to compare two authorization detail requests and puts it out
-of scope; the drafts that approach credential selection hand the remainder to an
-unspecified policy point. That only matters if we carry authority in the credential. With
-narrowing in policy, the ordering fix is the whole job.
-
-**No good name exists for the target.** "Just-in-time credential issuance" and "credential
-broker" are the closest established terms; "late binding" and "deferred credential
-resolution" are not established in this space and would have to be defined anyway. Use
-*just-in-time, target-scoped credential resolution*, or borrow RFC 8693's framing
-directly.
-
-One calibration point worth keeping: `agentgateway` authorises on tool name and target but
-does **not** expose tool arguments to its policy language. If this design wants arguments
-in the decision, that is ahead of shipped MCP prior art rather than behind it — which is a
-reason to be careful, not a reason to be pleased.
-
-**One friction worth naming.** The actor-profile draft permits reading an inner chain
-entry as an authorization input, but a resource server's default is the outermost actor.
-Our authorization-relevant identity is the user, which sits inner. So traversal is
-allowed and is not what a conformant reader does first — an argument for carrying the
-user where the reader already looks, rather than relying on it walking the chain.
-
-**What an attacker gets.** Reaching stage one as the wrong user gets that user's whole
-credential set, which is why the key has to be an entitlement rather than an episode.
-Reaching stage two unchecked gets the right user's whole set, which is the confused
-deputy one layer lower. And a stored credential never checked against the identity that
-stored it lets a chain rooted at one user reach another's — worth naming because that
-check is declared in the code and never performed.
-
----
 
 ### Hop 7 — the backend serves the call
 
@@ -726,9 +654,7 @@ Hop 4   Call(c Credential, corr Correlation,
 Hop 5   Decide(claims Claims, tool ToolName,
                backend BackendID, op Operation)   -> (Decision, error)
 
-Hop 6   Candidates(u UserID)                      -> ([]StoredCredential, error)
-        Select(cands []StoredCredential,
-               backend BackendID, d Decision)     -> (StoredCredential, error)
+Hop 6   Fetch(u UserID, backend BackendID)        -> (StoredCredential, error)
 
 Hop 8   Rederive(s Session, caller *Principal)    -> (Credential, error)
 ```
@@ -759,10 +685,16 @@ hint comes from the backend's own tool annotation and is absent by default. Poli
 handle unknown explicitly. A two-valued type here is how an unannotated tool quietly gets
 treated as safe.
 
-**`Select` needs two distinct errors.** "This user has no credential for that backend" and
-"this caller may not use it" are different conditions. Collapsing them makes a permission
-failure indistinguishable from a missing integration, which is both a bad diagnostic and a
-small information leak.
+**`Fetch` takes no decision, and that is the point.** An earlier version split this into
+"which credentials are candidates" and "which one may be used", and passed the gate's
+verdict into the second. Both were wrong. The candidate list is the preload this design
+removes, written back in as a design step; and the verdict is not needed, because the call
+only reaches here if the gate allowed it and the gate saw the backend. Two seams in the
+current code produced a two-stage signature that the properties never asked for.
+
+It still needs two distinct errors: "no credential for that backend" and "the backend is
+unknown" are different conditions, and collapsing them makes a missing integration look
+like a routing bug.
 
 And one thing the signatures make obvious that was easy to miss in prose: **`Decide` takes
 `backend`, and `Select` takes the `Decision`.** Today the gate is not given the backend,
@@ -821,8 +753,7 @@ these are cost signals, not constraints.
 
 | Interface | Change |
 |---|---|
-| `Candidates` | Key the credential read on the user rather than a login session. The enterprise user-keyed decorator already does this and is a port rather than new work |
-| `Select` | **Stage two.** The decision from the gate has to reach the point of selection. The credential read has a real interface behind it, but it runs in HTTP middleware before routing, so there is no tool, no backend and no arguments at that point. Moving or splitting it is the substantive piece of this design. Note this is a fix rather than an invention: every comparable system already fetches against a known target, and Envoy treats decide-and-fetch disagreeing about the target as a privilege-escalation class |
+| `Fetch` | Key the credential read on the user rather than a login session, and move it to the far side of routing so it can use the backend the gate saw. The enterprise user-keyed decorator does the first half already and is a port. The second half is the new work, and it is smaller than it looks: no new predicate, no subset-checking, no authority vocabulary — the gate's allow is the authorization, so the fetch only has to happen somewhere that knows the backend. Note this is a fix rather than an invention: every comparable system already fetches against a known target, and Envoy treats decide-and-fetch disagreeing about the target as a privilege-escalation class |
 
 One design analogue worth reading before building this, with a caveat. The `nono` agent
 sandbox uses a credential-injection proxy that routes by service prefix and then resolves
@@ -843,7 +774,9 @@ independently, so it can proceed in parallel.
 Then the gate's two missing inputs and its fail-closed default, since those are small and
 make the gate correct before anything depends on it.
 
-Then stage two, which is the design's real work.
+Then giving the gate the backend it is missing, which is the design's real work — not
+because it is much code, but because it is what makes an allow mean enough to justify a
+credential. Moving the fetch to the far side of routing follows from it and is plumbing.
 
 Caching matters before fan-out is usable, but not before it is correct.
 
