@@ -679,31 +679,49 @@ two changes and an interface addition, not a plugin — see below.
 Denying a call to a different repository is the phase-2 proof; phase 1 cannot express it,
 which is the honest cost of deferring resource-level authority.
 
-### The credential read is not a plugin
+### What has to be true of the credential read
 
-The enterprise deployment already reads credentials per user, so the obvious move is to copy
-its shape. That gets one of the two things this design needs, and not the harder one.
+Six statements about the resulting logic in vMCP. They are what hop 6 requires; how they are
+built is the next section.
 
-Enterprise wraps the storage behind `upstreamtoken.TokenReader` with a decorator that keys
-tokens by user. The caller does not change: auth middleware still calls
-`GetAllUpstreamCredentials` while validating the token, before the JSON-RPC body is parsed.
-So the result is user-keyed credentials that are still all loaded before anything knows what
-is being called. It fixes the key. It does not move the read.
+1. The read takes a user and a resolved target, and returns at most one credential.
+2. It runs after admission allowed the call, and uses the same target admission decided on.
+3. The user comes from the subject of the verified token, not from a session pointer and not
+   from a header.
+4. A credential stored for one user is never returned for another. Checked at the read, not
+   assumed from the key.
+5. A refused call reads no credential at all.
+6. A missing credential fails the call. The backend is never called without one.
 
-The interface is also the wrong shape. It has one method, it takes a session id, and it
-returns every credential for that session. There is no method that takes a user and a target
-and returns one credential, so even after the call moves there is nothing to call.
+Today none of the six holds. The read takes a session id and returns everything under it, it
+runs in auth middleware before the body is parsed, the ownership check exists as a declared
+error that no implementation returns, and an absent session id yields an empty map and no
+error, so what reaches the backend depends on which outbound strategy runs.
 
-Three pieces, then:
+### Getting there
 
-1. A method that takes a user and a resolved target and returns one credential.
-2. That call moved out of auth middleware to after the admission decision.
-3. A storage layer that keys on the user, which is the part enterprise has already built and
-   the part a decorator is a reasonable shape for.
+**Statements 1 and 3 are an interface change.** `upstreamtoken.TokenReader` has one method: it
+takes a session id and returns every credential for that session. Nothing takes a user and a
+target. That method has to exist before anything else can be arranged around it.
 
-Only the third is a plugin. Its authors warn that re-keying without first establishing how a
-session maps to a user could reintroduce a cross-user token path, so the binding has to be
-settled before the decorator is trusted to be the whole answer — which it is not.
+**Statement 4 is the storage layer**, and it is the piece the enterprise deployment has
+already built — a decorator that keys tokens by user. Reusable as-is for what it does. Its
+authors' warning applies: how a session maps to a user has to be settled first, or re-keying
+can reintroduce a cross-user path.
+
+**Statement 2 is the one that needs a decision.** Moving the call from auth middleware to
+after admission satisfies it, and leaves nothing preventing a second call site from being
+added later that reads early again. That is how the current behaviour arose — the read was put
+where the token was validated, which was reasonable in isolation.
+
+The cheap way to make the ordering hold is to make the resolved target a value that only
+admission can produce. If the read's signature demands one, a caller in auth middleware has
+nothing to pass and the early read stops being expressible. No new machinery, and it converts
+target binding from a rule someone has to remember into one the compiler applies.
+
+**Statements 5 and 6 follow from where the read sits**, once it sits there. A refused call
+returns before reaching it, and a read that returns nothing has no map to fall through — the
+call fails instead of continuing with whatever the strategy makes of an empty result.
 
 ### Later phases
 
