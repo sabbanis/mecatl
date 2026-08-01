@@ -422,16 +422,16 @@ the rule constrain *which* repository.
 
 ### Hop 6 — credential resolution
 
-How vMCP stores and keys credentials is its own business. Two properties are not, because
-this design fails without them.
+This doc does not say how vMCP stores credentials. It requires two things of the read.
 
-**One credential is read, and only after the allow.** The gate was asked about a resolved
-target and said yes; the call arrives here only because it did. Target binding is what makes
-that sound — if anything re-resolved in between, the allow described something else.
+**Read one credential, and read it only after the gate has allowed the call.** The gateway
+allowed a specific call against a specific target. The credential it reads is the one that
+target needs. If the target were worked out a second time after the decision, the credential
+could belong to a backend the gate never saw.
 
-This is the hop where the narrowing either takes effect or does not. Everything above buys a
-token confined to `repo:read`. If the gateway then reads every credential the user holds and
-hands the backend a full-scope token, the constraint bought nothing at the point it mattered.
+This is where the scope limit either applies or does not. Leg 2 issued a token confined to
+`repo:read`. If the gateway loads every credential the user has and sends GitHub a full-scope
+token, that limit changed nothing about what GitHub was asked to do.
 
 **The key is the user, not the token session id.** vMCP keys stored credentials on a `tsid`
 claim — a login-session pointer. An agent can never carry one, for two independent reasons,
@@ -446,13 +446,12 @@ That gives a choice with no third option:
 | Forward the user's token unchanged | present | **lost** | works |
 | Exchange it for a delegated token | **dropped** | present | **dead** |
 
-You can have the actor or the `tsid` lookup, never both. This design exists for the actor, so
-the lookup keys on the user — which is also where the enterprise user-keyed work already
-points.
+You get the actor or the `tsid` lookup, never both. This design needs the actor, so the read
+keys on the user. The enterprise deployment already keys on the user, for its own reasons.
 
-This is not a preference. `tsid`-keyed credential injection cannot serve agents in OSS vMCP by
-construction, and [#5194](https://github.com/stacklok/toolhive/issues/5194) ends it as a side
-effect of getting the actor.
+That is a consequence, not a choice. `tsid`-keyed credential injection cannot serve agents in
+OSS vMCP at all, and [#5194](https://github.com/stacklok/toolhive/issues/5194) ends it for
+everyone as a side effect of adding the actor.
 
 > **Today.** Authentication middleware validates the token, takes the session pointer out of
 > it, and loads **every** credential stored under that pointer into a map — before the
@@ -468,16 +467,15 @@ effect of getting the actor.
 > what happens next is whatever the outbound strategy does with one — which differs per
 > strategy and is nowhere stated as a contract.
 >
-> **Change.** Move the fetch to where the target is known. There is a real interface at the
-> load point a filtering implementation could replace.
+> **Change.** Move the read to where the target is known, and key it on the user. What that
+> takes is in [the work](#the-work).
 
-**Every comparable system already fetches against a target it knows, so this is a fix
-rather than an invention.** RFC 8693
-settles it in its request grammar — an exchange carries `resource` and `audience`, so it
-cannot precede knowing them. Envoy runs external authorization after route matching for this
-reason, and treats a later filter clearing the route cache as a privilege-escalation class,
-because the decision then described a different destination than the one served. Preloading
-and indexing is ambient authority; the failure is a confused deputy.
+**Other systems read credentials against a target they already know.** RFC 8693 requires an
+exchange to carry `resource` or `audience`, so the request cannot be built before the target
+is known. Envoy runs external authorization after route matching, and treats a later filter
+changing the route as a privilege-escalation bug, because the decision then applied to a
+different destination than the one served. Loading everything up front and picking later is
+the same mistake: the component that picks is not the component that decided.
 
 ---
 
@@ -647,7 +645,7 @@ Status verified against code except where marked unknown.
 | Sender-bound tokens | ToolHive | missing, **no tracker**; method undecided (mTLS binding or DPoP) | replay resistance |
 | Resolved target as a value | ToolHive | partial — backend reaches the admission seam, dropped before policy | target binding |
 | Post-admission credential fetch | ToolHive | **missing** — the load happens in auth middleware | least privilege |
-| User-keyed credential read | ToolHive + enterprise | partial, and **not a port**. A decorator exists but targets a wider interface one layer down, double-writes a composite key to keep a secondary index consistent, and translates user ids on every read. Its authors warn that re-keying without first establishing a session-to-user binding could reintroduce a cross-user token path | agents using stored credentials |
+| User-keyed credential read | ToolHive + enterprise | partial — see below | agents using stored credentials |
 | Credential-ownership recheck | ToolHive | missing — the error is declared and returned by no implementation | multi-user safety |
 | Upstream subject on the identity | ToolHive | missing ([#6053](https://github.com/stacklok/toolhive/issues/6053)) — so an OAuth-only upstream cannot produce a correct Cedar principal | policy naming the user |
 | Signed schedule grant | undecided | unknown | unattended work |
@@ -673,12 +671,39 @@ bound by `cnf`. Leg 2 then adds subject validation and the scope intersection. L
 testable on its own — an unregistered definition must be refused — and leg 2 cannot be built
 before it, since the agent token is its actor input.
 
-**Then move the credential fetch behind the gate**, rechecking ownership at the read.
+**Then move the credential read behind the gate**, rechecking ownership at the read. This is
+two changes and an interface addition, not a plugin — see below.
 
 **Then prove one slice:** Alice, one code-reviewer, one GitHub read tool. Complete when a
 *write* call is denied before any credential is read — not when the exchange succeeds.
 Denying a call to a different repository is the phase-2 proof; phase 1 cannot express it,
 which is the honest cost of deferring resource-level authority.
+
+### The credential read is not a plugin
+
+The enterprise deployment already reads credentials per user, so the obvious move is to copy
+its shape. That gets one of the two things this design needs, and not the harder one.
+
+Enterprise wraps the storage behind `upstreamtoken.TokenReader` with a decorator that keys
+tokens by user. The caller does not change: auth middleware still calls
+`GetAllUpstreamCredentials` while validating the token, before the JSON-RPC body is parsed.
+So the result is user-keyed credentials that are still all loaded before anything knows what
+is being called. It fixes the key. It does not move the read.
+
+The interface is also the wrong shape. It has one method, it takes a session id, and it
+returns every credential for that session. There is no method that takes a user and a target
+and returns one credential, so even after the call moves there is nothing to call.
+
+Three pieces, then:
+
+1. A method that takes a user and a resolved target and returns one credential.
+2. That call moved out of auth middleware to after the admission decision.
+3. A storage layer that keys on the user, which is the part enterprise has already built and
+   the part a decorator is a reasonable shape for.
+
+Only the third is a plugin. Its authors warn that re-keying without first establishing how a
+session maps to a user could reintroduce a cross-user token path, so the binding has to be
+settled before the decorator is trusted to be the whole answer — which it is not.
 
 ### Later phases
 
