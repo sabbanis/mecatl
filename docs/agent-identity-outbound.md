@@ -348,22 +348,16 @@ the rule constrain *which* repository.
 
 ### Hop 6 — credential resolution
 
-```go
-cred, err := creds.Fetch(ctx, subject, target.CredentialSelector)
+How vMCP stores and keys credentials is its own business. Two properties are not, because
+this design fails without them.
 
-switch {
-case errors.Is(err, ErrNoCredential):     // no such integration for this user
-case errors.Is(err, ErrUnknownSelector):  // routing produced something unknown — a config fault
-}
-```
+**One credential is read, and only after the allow.** The gate was asked about a resolved
+target and said yes; the call arrives here only because it did. Target binding is what makes
+that sound — if anything re-resolved in between, the allow described something else.
 
-Two distinct errors on purpose: collapsing them makes a missing integration look like a
-routing bug.
-
-**The fetch takes no decision, and does not need one.** The gate was asked about a resolved
-target and said yes; the call only arrives here because it did. The authorization for using this credential already
-happened — target binding is what makes that true, and if anything re-resolved in between,
-the allow described something else.
+This is the hop where the narrowing either takes effect or does not. Everything above buys a
+token confined to `repo:read`. If the gateway then reads every credential the user holds and
+hands the backend a full-scope token, the constraint bought nothing at the point it mattered.
 
 **The key is the user**, not a login session. A session pointer describes an episode; the
 question is whose credential this is. And an agent can never have one — nothing mints a
