@@ -22,15 +22,15 @@ that nobody re-derives on the way to implementing. It changes how someone design
 at the top of the epic, not a checkbox. Every hazard below is verified against code; the long form
 carries the citations.
 
-`[M]` mecatl · `[T]` ToolHive · `[M+T]` both · `[OPS]` deployment · `[S]` spike
-
 ---
 
 ## Eleven things to file
 
 Seven behaviour epics, three standalone, one tracker.
 
-### EP1 · A caller has an identity, and objects have owners `[M]` `wave 1`
+### EP1 · A caller has an identity, and objects have owners
+
+*mecatl. First — nothing else starts without it.*
 
 Every session and schedule records who owns it. A deployment with no verifier wired behaves
 exactly as today, to the byte.
@@ -59,9 +59,11 @@ exactly as today, to the byte.
 - A session persisted before this shipped is refused rather than adopted by whoever touches it
   first.
 
-**Seams.** A1 verifier · A2 identity type and carriage · A3 schedule owner.
+**Inside.** Verify an inbound token and derive a principal · the identity type and how it travels · the schedule owner, captured at create.
 
-### EP2 · One caller cannot reach another's work `[M]` `wave 2`
+### EP2 · One caller cannot reach another's work
+
+*mecatl. After EP1.*
 
 Bob is refused on Alice's sessions, events, memory and live runs.
 
@@ -89,9 +91,11 @@ Bob is refused on Alice's sessions, events, memory and live runs.
   refusal, not the transcript.
 - A developer widens a store port, forgets to classify the method, and the **build** fails.
 
-**Seams.** A4 the shared seam · A6 the five bypasses.
+**Inside.** The one shared check, called from the store boundary · the five paths that do not go through it.
 
-### EP3 · Sensitivity is a label that survives delegation `[M]` `wave 3`
+### EP3 · Sensitivity is a label that survives delegation
+
+*mecatl. After EP1.*
 
 A labelled session's children carry the label, and the four labels that exist today stop silently
 dropping.
@@ -112,9 +116,11 @@ dropping.
 - Revoking a caller's group takes effect on the next request, with no store rewrite.
 - The model cannot lower a label, and cannot author the text a human approves a release with.
 
-**Seams.** L1 the label and its propagation · L2 the non-session transitions.
+**Inside.** The label itself, propagated at every creation seam · the transitions that are not session creation.
 
-### EP4 · Work can be shared deliberately `[M]` `wave 3`
+### EP4 · Work can be shared deliberately
+
+*mecatl. Needs EP2 and EP3 both — this is the last one.*
 
 Alice adds Bob as an observer, then hands off.
 
@@ -129,14 +135,16 @@ converged on independently.
 - Alice hands off: Bob prompts, Alice's access follows the recorded decision rather than vanishing.
 - Bob cannot add himself.
 
-**Seams.** S1 observers then handoff.
+**Inside.** Read-only observers first, then explicit handoff.
 
-### EP5 · An agent cannot widen its own authority `[M]` `wave 2–3`
+### EP5 · An agent cannot widen its own authority
+
+*mecatl. After EP1, independent of EP2.*
 
 Spawn narrows, resume never widens.
 
 **Hazards.** Authority is re-derived from the session store on resume, which makes the store the
-root of trust (see A5). A project-tier definition taking an operator definition's name is a
+root of trust — see the store-hardening item below. A project-tier definition taking an operator definition's name is a
 privilege swap with no wire involved.
 
 **Criteria.**
@@ -144,9 +152,11 @@ privilege swap with no wire involved.
 - A resumed child re-derives authority and cannot come back wider, including across a restart.
 - A project definition cannot claim an operator definition's name.
 
-**Seams.** B1 authority as a runtime value · B2 the three spawn seams · B3 resume · B4 name collision.
+**Inside.** Authority as a runtime value · narrowing at the three spawn seams · re-derivation on resume · the definition name collision.
 
-### EP6 · The harness acts for a user against an external system `[M]` `[OPS]` `blocked`
+### EP6 · The harness acts for a user against an external system
+
+*mecatl, with deployment work. Blocked — see below.*
 
 The broker holds the key at its own uid; a model-spawned shell cannot reach it.
 
@@ -160,11 +170,15 @@ result body reaches the model.
 - One user-scoped credential is read per authorized call, behind the gate, counted.
 - The broker survives a restart without re-consenting the user.
 
-**Gated on** the E1 spike below, and on toolhive D3 + D5 + F1, which **are not filed**.
+**Gated on** the key-reachability spike below, and on three pieces of ToolHive enforcement that
+**are not filed** — scope intersection, sender-constrained binding, and an unforgeable resolved
+target.
 
-**Seams.** Track E2 broker and SPIRE selectors · Track E3 mecatl's broker client and cache.
+**Inside.** The broker at its own uid with its attestation selectors · mecatl's broker client and token cache.
 
-### EP7 · A scheduled run acts with bounded, consented authority `[M+T]` `wave 3`
+### EP7 · A scheduled run acts with bounded, consented authority
+
+*mecatl and ToolHive. After EP1 and EP6.*
 
 3am work carries its creator's owner and a grant that expires with the schedule.
 
@@ -176,21 +190,21 @@ expiry into an escalation. The model must not be able to author the consent reco
 - The model cannot author or widen the consent envelope.
 - `FireNow` inherits the same bound without its own code path.
 
-**Seams.** G1 schedule types and the signed envelope · G2 grant lifetime.
+**Inside.** The two schedule types and the signed consent envelope · the grant's lifetime bound.
 
-### Standalone: A5 store hardening `[M]` `[OPS]`
+### Standalone · Store hardening
 
 Redis dials with no auth, no TLS and no keyspace scoping, and `sessnap` is plain JSON with no MAC.
 Independent of every epic, and it should land before any multi-tenant deployment, because it
 absorbs the one property the deferred SPIFFE issuer was going to provide: an adversary holding a
 leaked store credential cannot forge a MAC.
 
-### Standalone: the Track E1 spike `[M]` `[S]`
+### Standalone · Spike: can a model-spawned shell reach the key?
 
-Can a model-spawned shell reach the pod's key? Output is a decision, throw the code away. Cheap,
-unblocked, and it gates EP6 — so run it now rather than discovering the answer during EP6.
+Output is a decision, throw the code away. Cheap, unblocked, and it gates EP6 — so run it now
+rather than discovering the answer partway through EP6.
 
-### Standalone: X1 the escalation proof `[M+T]`
+### Standalone · The escalation proof
 
 File first as the north star, complete last. An injected parent calls `Subagent(agent: "deployer")`,
 the scope shrinks between two shown token payloads, the gateway refuses the write, and **the twin**
@@ -206,7 +220,7 @@ rots.
 
 Not an epic, and it must not be distributed into the epics or it is lost. The long form's three
 non-issue sections: the deferred rows and their triggers, the issuer sequencing, and six open
-questions each blocking a named wave.
+questions, each blocking work named there.
 
 Two of those need an answer before anything else moves. **Pick and record the trust-domain name
 now, mint nothing** — that is a condition on deferring the issuer, and deferring it is only safe
@@ -219,19 +233,19 @@ EP2.
 
 Checked against all open and closed issues in `stacklok/toolhive`.
 
-| Long-form issue | Existing toolhive issue | Verdict |
+| What we need there | Existing issue | Verdict |
 |---|---|---|
-| D1 land the delegation branches | #5194 (8693 token exchange) | covered |
-| D2 registration says what a client may hold | #6113, #5321, #5359 | **partial** — the definition-allowlist half is absent |
-| D3 intersect requested scope against the subject token | — | **missing** |
-| D4 nest `act` instead of overwriting | #6113; #6035 closed (audit captures the chain) | covered |
-| D5 bind by `cnf`, sender-constrained end to end | — (#6176 is adjacent, different bug) | **missing** |
-| F1 resolved target only admission can construct | — (the admission *seam* shipped: #5438, #5430) | **missing** |
-| F2 Cedar evaluates the right things | #6081, #6053, #6049, #6048, #5845, #5582 | covered, well |
-| F3 the credential read | #2045, #3877, #3869 | **partial** — the gating half is absent |
+| Token exchange lands at all | #5194 | covered |
+| Registration says which definitions a client may act as | #6113, #5321, #5359 | **partial** — the definition-allowlist half is absent |
+| Requested scope is intersected against the subject token | — | **missing** |
+| `act` nests instead of overwriting | #6113; #6035 closed (audit captures the chain) | covered |
+| Tokens are sender-constrained end to end | — (#6176 is adjacent, a different bug) | **missing** |
+| The resolved target is a value only admission can construct | — (the admission seam itself shipped: #5438, #5430) | **missing** |
+| Cedar evaluates the right things, safely | #6081, #6053, #6049, #6048, #5845, #5582 | covered, well |
+| The credential read happens behind the gate | #2045, #3877, #3869 | **partial** — the gating half is absent |
 
-Zero SPIFFE/SPIRE issues in toolhive on any search term. That is fine: EP6's selectors are
-mecatl-side.
+Zero SPIFFE or SPIRE issues there on any search term. That is fine — EP6's attestation selectors
+are mecatl-side.
 
 **The three missing ones are the enforcement ones.** Intersection, binding and an unforgeable
 target are exactly what separates delegation that constrains from attribution that describes.
@@ -239,7 +253,8 @@ Without them the chain is a log field.
 
 Two open toolhive issues strengthen this plan rather than duplicating it, and one should worry us:
 **#5293**, the proxy forwarding upstream credential tokens in tool result bodies unchanged; and
-**#6081**, Cedar taking its principal from an unverified `id_token` — F2's premise, already broken.
+**#6081**, Cedar taking its principal from an unverified `id_token`, which is the premise of the
+whole gate, already broken.
 
 ---
 
@@ -249,16 +264,17 @@ Two open toolhive issues strengthen this plan rather than duplicating it, and on
 EP1 ─┬─→ EP2 ─┬─→ EP4
      │        │
      ├─→ EP3 ─┘
-     ├─→ EP5 ──────────────→ X1
+     ├─→ EP5 ─────────────→ the escalation proof
      └─→ EP7 ←── EP6 ←── spike
-                 ↑
-    toolhive D3 + D5 + F1  ← file first
-A5, spike: unblocked, any time
+                  ↑
+     the three missing ToolHive pieces  ← file first
+
+store hardening, spike: unblocked, any time
 ```
 
 EP1 is the only unblocked mecatl epic, and everything waits on its owner field. EP5 branches off
 EP1 without needing EP2. EP4 needs both EP2 and EP3.
 
-**X1 cannot be demoed until D3 lands in toolhive**, because scope shrinking between two token
-payloads *is* the intersection. So the first action is filing the three missing toolhive issues —
-otherwise the mecatl side runs ahead of the thing that proves it works.
+**The escalation proof cannot be demoed until scope intersection exists in ToolHive**, because the
+scope shrinking between two token payloads *is* the intersection. So the first action there is
+filing those three — otherwise the mecatl side runs ahead of the thing that proves it works.
