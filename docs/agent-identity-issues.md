@@ -125,26 +125,45 @@ type Caller struct {
 ```
 
 `Owner` lives in `engine/session` and that is **free**: the `core-domain-leaf` depguard rule
-already covers it with `allow: [$gostd]`, so there are no depguard edits, no DAG-table edits, no
-`CorePackages` entry and no new api baseline — one line in the existing `engine/api/session.txt`
-plus a CHANGELOG note, exactly as `Profile`/`ProviderID`/`ModelID`/`Title` each cost. It rides
-`setSessionLabels`, the single existing writer, which already runs at create and at
-`ForkSession`, so a fork inherits the source's owner for free.
+already covers it with `allow: [$gostd]`, so there are no depguard edits, no DAG-table edits and
+no `CorePackages` entry — `engine/arch/layering_test.go` declares `engine/session` with no
+allowed imports and stays unchanged. It rides `setSessionLabels`, the single existing writer,
+which already runs at create and at `ForkSession`.
 
 Carriage is a ctx value for **one function's width** and an explicit parameter thereafter. The
 interceptor signature gives no other option at the wire, and `authn.go` is already the single
-named tested transport boundary. The accessor stays **unexported** in
-`internal/adapter/server`, which the module boundary enforces better than any depguard rule
-could: `engine/` cannot import that package at all, so a stray ctx read is a compile error and
-breaks the `GOWORK=off` standalone build.
+named tested transport boundary — today there is no ctx-value carriage anywhere in this repo at
+all (`context.WithValue` and `ctx.Value` have zero non-test occurrences under `engine/` and
+`internal/`), so this introduces the first one and gets to set the discipline.
 
-**The identity does not enter `engine/agent`, and that is the biggest simplification available.**
-Child sessions are already classified by id prefix (`isChildSession`), so they are never
-enumerated to a caller, and a child transcript is reachable only through `InspectSubagent` /
-`InspectMember`, which run inside a run whose ownership the caller already proved. A child is
-not a separate principal. So `buildChildSession`, `Deps` and `parentCaps` all stay untouched,
-and the fork / background-child / detached-goroutine / remote-process survival questions
-dissolve rather than needing answers.
+**The module boundary does not enforce that discipline, and an earlier draft of this issue
+claimed it did.** The boundary stops `engine/`, which is not where the risk is: `*server.Service`
+has ~60 methods in the *same package* as the accessor and every one of them already takes `ctx`
+first, so "unexported" buys nothing against a future `Service` method reading ctx instead of its
+parameter. That is exactly how the sibling project ended up with its ctx accessor read in 27+
+packages, down to a backend-telemetry leaf. Depguard cannot express an intra-package rule. The
+cheapest thing that works is a source-level test asserting `callerFromContext` is referenced only
+in the wire files — the same discipline as `internal/adapter/soul/store_test.go`'s
+`TestStoreExposesOnlyReadMethods`, which A4 already cites for a different property.
+
+**The identity does not enter `engine/agent`, and that is the biggest simplification available —
+but the reason given in an earlier draft was wrong.** That draft said a child transcript is
+reachable only through `InspectSubagent`/`InspectMember`, which run inside a run whose ownership
+the caller already proved. Owning your run scopes nothing about the id you pass. The real gate on
+all three store-reading tools is an **id-prefix family check, not an ownership check**:
+`engine/agent/subagentinspect.go`'s `hasAnyPrefix(id, t.allowedPrefixes)`, `teaminspect.go`'s
+`team_id`+`member` framing, and the `resume:` path's `strings.HasPrefix` in `subagent.go`. Ids are
+derived, not secret (`subagent-<providerToolCallID>`, `parallel-<callID>-<i>`,
+`team-<teamID>-<member>`), so possession of a child id is read access to **any** principal's child
+transcript. That is a live cross-tenant read, and it is A6's to close.
+
+The conclusion survives because the fix is a **narrower store, not a wider `Deps`**: scope those
+tools to the ids this run actually minted — which the child registry already tracks as
+`parentCaps.children` for `SubagentStatus` — or hand `engine/agent` a per-session-wrapped store
+from composition. Both are authority narrowing (Track B) or the A4 decorator, neither is identity
+plumbing. Injecting an `Owner` into `Deps` would buy the same outcome at the cost of the largest
+simplification here. So `buildChildSession`, `Deps` and `parentCaps` stay untouched, and the
+fork / background-child / detached-goroutine / remote-process survival questions dissolve.
 
 **Acceptance criteria.**
 - [ ] `session.Owner` as above, with `String()` returning only the subject. **No** custom `MarshalJSON` on `Owner` — it has nothing to redact and would fight sessnap's plain `json.Marshal`. Redaction belongs on `Caller`, which holds the claims.
@@ -154,11 +173,18 @@ dissolve rather than needing answers.
 - [ ] **`jsonlstore`'s `metaSnapshot` gains it too**, because it is a hand-mirrored subset of the snapshot tags serving the fast `ListSessions` path. Miss it and the fast and slow paths disagree.
 - [ ] `CreateSessionRequest` and the HTTP body gain `principal`; the handler prefers the verified `Caller` and rejects a body that contradicts it. The response echoes the resolved owner. **No proto change for the store** — the driver envelope is opaque.
 - [ ] `authn.go`'s `authGRPC` returns a `*Caller` rather than a token string; the three wire entry points place it in ctx; each handler pulls it once at the top and passes it explicitly.
-- [ ] Empty `Subject` means no check and is byte-identical to today's behaviour. **Reuse the existing `authEnabled()` predicate** rather than inventing a second "empty disables" rule.
+- [ ] `callerFromContext` returns `(*Caller, bool)` and guards `ok && c != nil`. A public key plus a bare pointer let a **typed nil** past the setter in the sibling project, which now carries a test for that bypass; an unexported key makes it unlikely, not impossible, and the guard is one line.
+- [ ] A source-level test asserting `callerFromContext` is referenced **only** in the wire files, per the intra-package argument above. Roughly 20 lines.
+- [ ] **The identity-disable predicate is its own, derived from whether A1's verifier is wired — NOT `SecurityConfig.authEnabled()`.** That predicate is `AuthToken != ""`, which answers "is a static shared token configured": wrong in both directions, since a shared-token deployment has one credential and *zero* subjects, while an OIDC deployment may have subjects and no static token. Reusing it is a latent fail-open. Disabled means `authorize` allows unconditionally at that one site, byte-identical to today.
 - [ ] Every appended event carries the owner, identity only. No child content, no prompt text, no arguments added by this change.
 - [ ] `txn`-style run correlation lands here as a log field, not as a claim.
-- [ ] ACP, `mecatequi` and the embedded socket each get a named principal, since each has no caller by construction. The scheduler fire is A3.
-- [ ] A defined answer for ownerless legacy sessions, not a default to somebody.
+- [ ] ACP and `mecatequi` get a named principal, since each acts *for* someone at a *later* time and a blank in the log is a real gap. The scheduler fire is A3.
+- [ ] **The mecatui embedded socket gets no principal, and that is deliberate.** It has exactly one principal — the invoking OS user — for the process lifetime, already enforced one layer down: the socket lives in a randomised `os.MkdirTemp` dir at 0700 and `cmd/mecatui/embed/embed.go` already writes down that rationale. A `subject: "local"` would record an unverified fact and make single-user snapshots differ from pre-identity ones for nothing.
+- [ ] **No `SO_PEERCRED` read.** It re-derives what the kernel guaranteed before the first byte reached the listener, and it does not generalise: mecated's default bind is loopback TCP, which has no peer uid.
+- [ ] **Anonymous means nil `*Caller` and a zero `Owner` — never a fabricated one.** The sibling project's `AnonymousMiddleware` mints `sub: "anonymous"`, `iss: "toolhive-local"`, and **forged `exp`/`iat`/`nbf`** so any policy inspecting freshness sees a valid 24-hour token no IdP issued; `"anonymous"` then appears in audit records and an external webhook contract looking like a user who named themselves that. Worth copying from it: its Cedar authorizer **fails closed** on a missing principal (`ErrMissingPrincipal`) rather than choosing one.
+- [ ] **Ownerless legacy sessions are refused**, with the disable switch as the escape hatch. Adopt-on-first-touch is ownership laundering — whoever touches it first owns it, so a prompt-injected agent or anyone who guesses a derived id takes it, silently and irreversibly. Treat-as-public re-adopts A4's sharpest leak as policy and never converges, since `jsonlstore` has no rewrite pass. Refuse is the only failure mode a human notices and can undo, and it does not touch the single-user case at all, where the switch is off.
+- [ ] `setSessionLabels` widens to take the owner (it takes none today), and **a fork inherits the *source's* owner**, authorized by an A4 `write` check on the source. The forking caller's own owner must never overwrite it, or fork becomes an ownership-laundering path. `ForkSession` takes no `*Caller` today, so this is a signature change, not a free ride.
+- [ ] **The api-compat cost is three lines in `engine/api/session.txt`, not one** — the `Owner` type, the `Session` struct line (the baseline inlines full struct shapes), and `Owner.String()` — plus the `engine/CHANGELOG.md` note, all **Added = minor**. `engine/adapter/eventsource` is not baselined, so `SessionMeta` is free.
 - [ ] Test: the owner survives reopen, interrupt, recover, a pod migration, and a fork.
 - [ ] **Not built, with triggers recorded:** no credential, token, expiry or refresh on either type (trigger: mecatl grows an upstream-token flow, which it has none of — provider credentials are operator-held and `envscrub`'d out of every agent-facing shell); no `Metadata map[string]string` escape hatch; no pre-parsed structured claim; no `port.AuthorizationPolicy` interface until a second implementation exists, because the check is `slices.Contains` in the service layer; no delegation-chain type (trigger in S1).
 
@@ -168,7 +194,9 @@ dissolve rather than needing answers.
 - As an auditor, when I load any session from the store, then it tells me who owns it.
 - As an auditor with no keys and no verifier, when I read the event log, then I can already tell who did what.
 - As a developer in `engine/agent` who reaches for the caller, then the import does not compile.
+- As a developer adding a `Service` method that reads the caller from ctx instead of its parameter, then the source test fails, because the module boundary cannot see me.
 - As an operator on the default single-token deployment, when I upgrade, then my snapshots are byte-identical and nothing changes.
+- As a developer running mecatui locally with no token, when I open a session, then no principal is invented for me and the log says unauthenticated rather than naming a user who does not exist.
 
 ## A3 Schedule owner captured at create, replayed at fire
 
@@ -176,13 +204,29 @@ dissolve rather than needing answers.
 (`internal/app/scheduler_fire.go`) is a Go closure invoked by the leader's tick loop; it calls
 `*server.Service` methods directly, crossing no interceptor and holding no `ctx` metadata. It
 has nobody to ask at 3am, so the owner must be captured when the schedule is created and
-replayed at every fire. Good news: the chain of custody **already exists** as
-`ScheduleSpec.OriginSessionID`, stamped unconditionally by `agent.SessionOriginScheduleManager`.
-The gap is that the fire never reads it.
+replayed at every fire.
+
+**An earlier draft said the one-line half was "read `OriginSessionID` at fire time." That has a
+lifetime bug.** `OriginSessionID` is a session id, not an owner, so deriving from it means a
+`store.Load` at fire — and the origin session can be **gone**, because `internal/app/childgc.go`
+sweeps top-level sessions on `mainRetention`/`mainMaxTotal`. A cron schedule that outlives its
+origin then fires ownerless, which is the exact failure this issue exists to prevent. The cheap
+correct version instead: `validateScheduleOrigin` in `internal/adapter/server/schedule_manager.go`
+**already loads the origin session at create time**. Take the owner off that already-loaded
+session, at the one moment the session provably exists. Still one assignment, at a Load that
+already happens.
+
+**There are also two create seams, not one, and they differ in identity access.** The model-facing
+`agent.SessionOriginScheduleManager.CreateSchedule` overwrites `spec.OriginSessionID`
+unconditionally with the bound session id and has **no** verified caller; the wire path in
+`schedule_manager.go` does. Keeping identity out of `engine/agent` means the wrapper keeps
+stamping only the session id, and the Service-layer manager resolves the owner from it.
 
 **Acceptance criteria.**
-- [ ] `ScheduleSpec` carries an owner, written from the verified principal at schedule creation.
-- [ ] `makeFireFunc` passes it through; no path creates an ownerless session. **The one-line half of this is reading the `OriginSessionID` that is already on the spec** and is currently read only by the delivery renderer.
+- [ ] `ScheduleSpec` carries an owner, written from the verified principal at schedule creation. It lives in `engine/port/schedule.go` — `engine/port` already imports `engine/session` so this is legal, but it is **in the baselined engine module**, so it costs a line in `engine/api/port.txt` that an earlier draft of this issue did not mention.
+- [ ] The owner is captured in `validateScheduleOrigin` off the session it already loads, **not** re-derived at fire from `OriginSessionID`.
+- [ ] `makeFireFunc` passes the captured owner through; no path creates an ownerless session.
+- [ ] Both create seams are covered, and the model-facing one gains no identity access.
 - [ ] A service-owned schedule's owner is an explicit service principal ("the schedule did this"), never a fabricated user.
 - [ ] `FireNow` inherits the fix rather than needing its own.
 - [ ] Test: a fire's session carries the schedule creator's owner, verified across a restart and a leadership change.
@@ -194,17 +238,64 @@ The gap is that the fire never reads it.
 - As an auditor reading a 3am run's log, then it names who the work belongs to, and never blank.
 - As a prompt-injected agent creating a schedule, then I cannot make it run as someone else.
 
-## A4 One shared access seam: `authorize(principal, verb, objectRef)`
+## A4 One shared access seam: `authz.Check(ctx, verb, objectRef)`
 
 **Description.** The requirement is that mecatl not have several subsystems governed in
-different ways, so this is one decision function shared across every governed kind, with the
-call site at each port's own read or write seam. Object kinds are sessions, schedules, teams
-and memory; verbs are `read`, `write`, `administer`, `delete`, interpreted per kind, where
-`write` on a session means **prompt it** (which makes "may Bob prompt this?" an ordinary verb
-check and makes observers fall out as read-without-write). Filtering stays a service concern:
-`port.MetaLister` and `port.PrunableStore` both say in their doc-comments that they apply no
-filtering, and `storeconformance`'s `assertSessionEqual` fails any store that drops or alters
-a message.
+different ways, so this is one decision function shared across every governed kind. Object kinds
+are sessions, schedules, teams and memory; verbs are `read`, `write` and `delete`, interpreted per
+kind, where `write` on a session means **prompt it** (which makes "may Bob prompt this?" an
+ordinary verb check and makes observers fall out as read-without-write).
+
+**The seam is not a Service funnel, and an earlier draft of this issue got that wrong in a way
+that would have shipped an off switch instead of a check.** Two findings force the shape:
+
+*One.* `acquireLease` cannot hold the check. It returns early when `s.cfg.SessionLease == nil` —
+**the default in both binaries**, per the SessionLease gotcha — so a check there does not execute
+in the shipped configuration. It returns early again on `s.leaseDisabled`, which one
+`ErrLeaseUnsupported` from a storage backend sets stickily for process life. And it returns early
+on `heldLeases[id]`, which is fatal *even when a lease is wired*: the lease is session-scoped for
+the session's life by deliberate design, its doc-comment warning future readers not to "fix" that,
+so the check would run on the **first** run-entry only. Alice creates a session; Bob's second
+prompt short-circuits and is never checked. Authorization is per-request, the lease is
+per-session. The draft's *diagnosis* was right — `resumeFromAwaiting` genuinely bypasses
+`loadAndReopen`, calling `GetSession` because `loadAndReopen` would drive back to idle exactly the
+terminal states this seam must reject — but it then picked a funnel that cannot carry a decision.
+
+*Two.* No Service-layer chokepoint can reach `engine/agent`, which reads the shared session store
+directly from **model-facing** tools: `InspectSubagent`, `InspectMember`, and the `resume:` load,
+each gated by an id-prefix family check rather than ownership (A2 has the detail). `engine/agent`
+must never import a Service, so a funnel there governs zero of it.
+
+So: **one leaf package `internal/authz` exporting `Check(ctx, Verb, ObjectRef) error`, called from
+port decorators built in `internal/app`** over `port.SessionStore`, `port.PrunableStore`,
+`port.MetaLister`, `port.EventLog` and `tool.MemoryStore` — plus Service-level calls for the verbs
+that touch no store (A6). The decorator construction is what makes the primitive genuinely shared,
+and it is the only shape that reaches all four bypass families at once: `Service`, whose every
+store touch is `s.cfg.Store`; the `grpcdriver` servers, which take the port interfaces as
+constructor args, so handing them the decorated value closes A6's worst hole with **zero proto
+change**; `childgc`, same; and `engine/agent`'s inspect tools, which hold whatever store
+composition injected. `internal/app` already imports `engine/port` and `engine/tool` and is the
+only package allowed to meet ports with adapters, so there is no depguard edit, no DAG entry, no
+api baseline and no CHANGELOG.
+
+**Not a new `port.AuthorizationPolicy`.** The loop consumes nothing from it — `engine/agent` is
+storage-agnostic by policy and must not learn about principals, the `port.SessionLease` precedent
+exactly — and a new port costs an api baseline plus a CHANGELOG entry per ADR 0037 for zero engine
+consumers.
+
+**Do not merge this with `port.PermissionPolicy`.** That one takes `(sessionID, mode, ToolCall,
+workspace)` and returns a three-valued decision resolved deny-dominant over six config scopes,
+where `ask` means "surface to a human"; its subject is the agent inside a session and its question
+is whether a tool call may run. `authz.Check` takes `(principal, verb, objectRef)` and returns
+allow or deny — **no `ask` tier, because on a cross-user object read there is nobody to ask** — and
+no mode. Merging them would let a project-tier `settings.yaml` Allow widen an object ACL, since the
+tighten-only project gate does not cover ownership, and would hand the model an `ask` path to a
+cross-tenant read. They compose in series: `authz` gates entry to the object, `PermissionPolicy`
+gates tools once inside.
+
+Filtering stays a service concern: `port.MetaLister` and `port.PrunableStore` both say in their
+doc-comments that they apply no filtering, and `storeconformance`'s `assertSessionEqual` fails any
+store that drops or alters a message.
 
 The reason this is one issue rather than per-port work is drift. The per-session-catalog-drift
 class fired three times and the third fix was structural: one registration path plus a test
@@ -212,27 +303,34 @@ asserting exact equality. The same discipline applies here or the primitive is s
 agreement only.
 
 **Acceptance criteria.**
-- [ ] A `(kind, id)` object reference type exists. **This does not exist today and is the piece that makes a single seam possible at all** — without something generic to pass, every port necessarily writes its own check.
-- [ ] The four verbs are a closed set with a per-kind interpretation table.
-- [ ] **The verb set's known hole is resolved:** `CreateSession` maps to no verb, because read/write/administer/delete are all verbs on an *existing* object and creation authorizes against a container with no `(kind, id)`. Either a fifth verb or a parent reference; pick one and record it.
-- [ ] The write funnel is **`acquireLease`**, not `loadAndReopen`. `loadAndReopen` misses `resumeFromAwaiting`, the fourth run-entry seam, which deliberately does not call it; `acquireLease` catches both and its doc-comment already names exactly those two callers.
-- [ ] The read seams: `relayEvent` already returns `forward bool` and all four live relays already read it as `if !relayEvent(...) { continue }`, so one edit governs all four. `StreamSessionEvents` returns a single `iter.Seq2`, so one wrap covers both read-back surfaces.
-- [ ] **The events read-back decision is explicitly reversed.** `grpc.go` and `http.go` carry comments saying "Do NOT copy the live-relay filter here" — a deliberate single-user choice that relays `EvUserPrompt` and `EvApproval` in full for any session id a caller names. That is the sharpest live leak in the repo.
+- [ ] `internal/authz` exists: `Verb` (a closed set of **three**), `ObjectRef{Kind, ID}` with kinds session/schedule/team/memoryScope, `Check(ctx, Verb, ObjectRef) error`, `PrincipalFrom(ctx)`. One per-kind interpretation table, in the package doc-comment. **The objectRef does not exist today and is the piece that makes a single seam possible at all** — without something generic to pass, every port necessarily writes its own check.
+- [ ] **`administer` is cut.** It had zero call sites: sharing and ACL mutation are Track S and do not exist yet. An untestable column in the interpretation table is worse than the `ungoverned` bucket the anti-drift test already needs. Add it when S1 lands member lists.
+- [ ] **`delete` stays distinct from `write`** for a real reason — an owner may prompt their session without being the only gate on destroying it — and has exactly two sites: `childgc` and the driver server.
+- [ ] **The verb set's known hole dissolves; record the resolution.** `CreateSession*` authorizes the *caller*, which A1's principal already decides, and creation's job is to **stamp** `Owner = principal` — a write to the new object, not a check against an old one. No fifth verb, no parent reference. "Who may create at all" is a deployment-level principal allowlist, never an objectRef verb.
+- [ ] **`acquireLease` is not the funnel, and a comment inside it says why** — nil by default, sticky-disable, session-scoped-once — so no reviewer re-proposes it.
+- [ ] The decorators **implement every method explicitly and embed no interface**, so adding `MetaList` to `port.MetaLister` fails the *build* until someone classifies it. That is a real gate covering exactly the surface reflection over `*server.Service` cannot reach, and it costs only boilerplate.
+- [ ] **`StreamSessionEvents` is checked at stream open, not per event.** An earlier draft put this on `relayEvent`'s `forward bool`: the four relay sites are real, but `relayEvent` fires per event on a run whose entry already decided ownership — per-event cost for a per-stream constant — and it does not cover the read-back at all. `StreamSessionEvents` returns `EventLog.Read(ctx, id)` for **any id the caller names**, unchecked. That is the leak.
+- [ ] **The events read-back decision is explicitly reversed.** `grpc.go` and `http.go` carry comments saying "Do NOT copy the live-relay filter here" — a deliberate single-user choice that relays `EvUserPrompt` and `EvApproval` in full for any session id a caller names. Rewrite them to say the ownership gate is upstream while the log-only-kind relay decision stands.
 - [ ] Bob's `ListSessions` returns only Bob's sessions, and Alice's first prompt never appears. **Twin:** Alice's own call still returns hers, so this cannot be fixed by returning nothing.
 - [ ] `GetSession` and the SSE read-back refuse a session the caller does not own, with a response that does not leak existence.
 - [ ] **`DeriveTitle` alone is not sufficient.** It has three callers, but `listSessionsMeta` reads the title straight off `MetaList` and never calls it, so a redaction there is bypassed on any store implementing `MetaLister`. Cover both paths, or collapse to one.
 - [ ] `SessionSummary` and its proto mirror carry the owner.
 - [ ] An explicit operator-principal path exists for fleet views, rather than the absence of a check standing in for one.
 - [ ] **The anti-drift test.** Reflection over `*server.Service`'s exported methods against a `method → (kind, verb)` table with an explicit `ungoverned` bucket, so a new exported method fails until it is classified. Precedent: `internal/adapter/soul/store_test.go`'s `TestStoreExposesOnlyReadMethods` does exactly this, one type smaller. Plus the catalog-drift vacuity guard so emptying the table cannot pass. Failure text in the tone of `engine/port/llm_neutral_test.go`.
-- [ ] The test's limits are documented in the test: it cannot see whether a method body calls `authorize`, and it cannot reach the paths in A6.
+- [ ] The test's limits are documented in the test: it cannot see whether a method body calls `authorize`, it cannot reach the paths in A6, and it cannot reach the decorated ports — those are compile-gated instead.
+- [ ] **Memory's governed object is the *scope*, not the entry.** `tool.MemoryEntry` is `{Key, Value, Description, UpdatedAt}` — no owner, no label — and composition builds **one** project store per deployment, shared by every session, so a check can only be all-or-nothing per scope. Listing memory beside sessions implies a granularity the port cannot express. Per-entry authz is deferred to L1/L2 with the `tool.MemoryEntry` widening named as its prerequisite. The six memory tools' floor-scoped Allows are the orthogonal tool-permission axis and are untouched.
+- [ ] **The background actors get an explicit system principal in their ctx**, or they die silently the day a decorator lands: `childgc.sweep` and both consolidators (`startMemoryConsolidation`, `startUserModelConsolidation`) run on goroutines with no caller.
+- [ ] **This does not ride the posture ladder and must not fold into it.** `internal/app/posture.go` governs what the **model** may do; authorization governs what a **human caller** may reach. Fold them and `--posture auto`, documented as the recommended unattended default, silently disables cross-user checks — the recommended production setting becomes the insecure one. There are exactly two states, decided once in composition from whether A1's verifier is wired: identity disabled, where `Check` allows at that one site; and identity enabled, where a nil `*Caller` is refused at the wire and never reaches an ownership comparison at all. That last part is the point — an empty-`Subject` `Owner` comparing equal to an unowned session is the classic fail-open, and this shape means the question never arises.
 
-**Deliverable.** The objectRef type, the verb table, the funnel wiring at `acquireLease` and the read seams, proto changes for the filter and the owner echo, and the anti-drift test.
+**Deliverable.** The `internal/authz` package, the verb table, the port decorators built in `internal/app`, the Service-level calls for the store-free verbs, the stream-open check, proto changes for the owner echo, and the anti-drift test.
 
 **User stories.**
 - As Bob, when I list sessions, then I see only mine.
 - As Bob guessing Alice's session id, when I request her events, then I am refused.
 - As a developer adding a governed subsystem, when I forget to route it through the seam, then CI fails instead of a reviewer maybe noticing.
+- As a developer widening a store port, when I add a method and forget to classify it, then the **build** fails, because the decorator embeds no interface.
 - As a reviewer, when I ask how memory is governed versus how sessions are governed, then the answer is one function and a table rather than two subsystems.
+- As an operator who deliberately runs single-user, when I upgrade, then nothing is checked and nothing changes, because the verifier is not wired.
 
 ## A5 Store hardening: auth, TLS, snapshot integrity `[OPS]`
 
@@ -258,26 +356,45 @@ for a fraction of the cost.
 - As someone with write access to the store and no key, when I widen a stored authority row or lower a label, then the resume refuses.
 - As an operator pointing mecak8s at a shared store with no auth, then I am told at startup rather than in an incident.
 
-## A6 Close the three paths that bypass the seam
+## A6 Close the five paths that bypass the seam
 
-**Description.** A4's funnel governs `*server.Service`. Three paths do not go through it, and
-two of them are worse than the hole A4 closes. `internal/adapter/grpcdriver` wraps the **raw
-ports**: `NewSessionStoreServer` exposes `Save`/`Load`/`List`/**`Delete`** and
-`NewMemoryStoreServer` exposes all six memory methods, over the network, with zero Service
-involvement. There is **no session-delete method on the Service at all** — the only delete is
-`internal/app/childgc.go`, a background sweeper. And team member sessions pass neither
-`StartRunContent` nor `loadAndReopen`, so a session-run funnel governs zero team-member runs.
+**Description.** A4's decorators govern every store touch. Five paths still need their own answer,
+and the two an earlier draft of this issue missed are the model-reachable ones.
+
+The three already known: `internal/adapter/grpcdriver` wraps the **raw ports** —
+`NewSessionStoreServer` exposes `Save`/`Load`/`List`/**`Delete`** and `NewMemoryStoreServer` all
+six memory methods, over the network, with zero Service involvement (A4's decorators close this by
+construction, since both take the port interface as a constructor arg). There is **no
+session-delete method on the Service at all** — the only delete is `internal/app/childgc.go`, a
+background sweeper. And team member sessions pass neither `StartRunContent` nor `loadAndReopen`.
+
+**Fourth: the live-run verbs, which touch no store and so no decorator sees them.** `ApproveRun`
+takes a lock-free fast path — `if run, ok := s.LookupRun(id); ok { run.Approve(askID, verdict);
+return nil, nil }` — reaching no funnel at all. Same shape in `Cancel`, `CancelChild`, `SetMode`'s
+live branch, `ApprovePlan` and `Persist`. **Today Bob can approve a tool call on Alice's live run,
+cancel her run, and flip her permission mode.**
+
+**Fifth: `engine/agent`'s direct store reads from model-facing tools.** `InspectSubagent`'s only
+gate is `hasAnyPrefix(id, t.allowedPrefixes)` — a family check, not parentage — then
+`t.store.Load`. `InspectMember` and the `resume:` path are the same shape. Ids are derived, not
+secret, so a prompt-injected model handed or guessing another tenant's child id reads that
+transcript verbatim. This is the one live cross-tenant read reachable by the model rather than by a
+caller, and no Service-layer seam can reach it.
 
 **Acceptance criteria.**
+- [ ] The live-run verbs get a Service-level `Check`: `ApproveRun`'s fast path, `Cancel`, `CancelChild`, `SetMode`'s live branch, `ApprovePlan`, `Persist`. Test: Bob cannot approve, cancel, or re-mode Alice's live run.
+- [ ] `InspectSubagent` cannot read a `sub-*` session outside the caller's ownership — via the A4 decorator, or by scoping the tool to the ids this run minted (`parentCaps.children` already tracks them for `SubagentStatus`). Same for `InspectMember` and `resume:`. **No identity enters `engine/agent`** to achieve it.
 - [ ] The driver protocol either carries a principal and label on the wire and enforces them, or the driver servers are documented as an explicitly trusted in-cluster transport with a deployment requirement that says so. Not silence.
 - [ ] If enforced, the principal and label are on `contracts/proto/mecatl/driver/v1/` (regenerated with `task generate`, never hand-edited) — otherwise they are dropped at the process boundary and the round-trip silently lowers.
 - [ ] Team member runs get their own answer. `AddMember` takes no parent session and the gRPC `RunTeam` path has zero parent caps, so this is not a wiring oversight.
-- [ ] Session deletion gets a governed surface, or `childgc` is documented as a system-principal actor with the `childSessionPrefixes` scope caveat restated (overriding a family prefix de-scopes those children from GC, and would de-scope them from enforcement too).
+- [ ] Session deletion gets a governed surface, or `childgc` is documented as a system-principal actor with the `childSessionPrefixes` scope caveat restated (overriding a family prefix de-scopes those children from GC, and would de-scope them from enforcement too) **and with its real blast radius stated: it deletes top-level sessions too, on `mainRetention`/`mainMaxTotal`, so it is not merely a child sweeper.**
 - [ ] A sibling structural test covers the driver servers, since reflection over `*server.Service` cannot reach them.
 
-**Deliverable.** Proto changes or a documented trust boundary, the team-member answer, a governed delete or an explicit exemption, one sibling test.
+**Deliverable.** Proto changes or a documented trust boundary, the Service-level checks on the six live-run verbs, the narrowed child-inspect store, the team-member answer, a governed delete or an explicit exemption, one sibling test.
 
 **User stories.**
+- As Bob holding Alice's session id, when I approve a tool call on her live run, cancel it, or flip her permission mode, then I am refused — today all three succeed.
+- As a prompt-injected agent that has been handed another tenant's subagent id, when I call `InspectSubagent` on it, then I get a refusal rather than the transcript.
 - As an operator running a remote driver, when I ask whether it enforces the same rules as the API, then the answer is written down rather than assumed.
 - As a security reviewer, when I read the anti-drift test, then it tells me what it does not cover instead of implying completeness.
 
