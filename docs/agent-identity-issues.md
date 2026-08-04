@@ -14,6 +14,10 @@ is a decision, throw the code away)
 deferred row carries a trigger, because a deferral with no stated trigger is a decision nobody
 revisits.
 
+This is the **long form** — the reasoning, the citations and the per-seam detail.
+[`docs/agent-identity-epics.md`](agent-identity-epics.md) is what would actually go in a tracker:
+seven behaviour epics, three standalone items, one tracker, and the ToolHive coverage check.
+
 ---
 
 ## The reframe that shapes Track L
