@@ -4,7 +4,10 @@
 [ADR 0002](adr/0002-documentation-lifecycle.md) (no frozen decision here). Same
 tier as [`docs/scoped-resource-grants.md`](scoped-resource-grants.md). If this
 direction is ever committed, it becomes one or more ADRs and this doc gets
-superseded.*
+superseded. Part 2, the outbound boundary, is
+[`docs/agent-identity-outbound.md`](agent-identity-outbound.md); the issue
+breakdown covering both is
+[`docs/agent-identity-issues.md`](agent-identity-issues.md).*
 
 This doc proposes how mecatl identifies **who is acting** in a multi-user,
 multi-session, autoscaled deployment: a user spawns an agent, the agent spawns
