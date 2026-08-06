@@ -6,7 +6,6 @@ import (
 	"net/http"
 	"strings"
 	"sync"
-	"sync/atomic"
 	"time"
 
 	"github.com/stacklok/mecatl/engine/port"
@@ -40,8 +39,7 @@ type sseHealthTracker struct {
 
 	mu                     sync.Mutex
 	consecutiveEarlyCloses int
-
-	hostile atomic.Bool
+	hostile                bool
 }
 
 func newSSEHealthTracker(serverName string, diag port.Diagnostics) *sseHealthTracker {
@@ -52,7 +50,9 @@ func newSSEHealthTracker(serverName string, diag port.Diagnostics) *sseHealthTra
 // hostile. dial reads it on every call (initial connect + every reconnect)
 // to decide whether to suppress the stream.
 func (t *sseHealthTracker) Hostile() bool {
-	return t.hostile.Load()
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	return t.hostile
 }
 
 // observe records one standalone-GET response's outcome: bytesRead is the
@@ -63,28 +63,49 @@ func (t *sseHealthTracker) Hostile() bool {
 // so a single blip on an otherwise healthy gateway never trips the verdict.
 //
 // On the earlyCloseThreshold-th consecutive hostile observation it flips the
-// verdict via a CompareAndSwap so the transition WARN logs exactly once, no
-// matter how many further hostile GETs this (already-tripped) tracker sees
-// before the next dial picks up the flag.
+// sticky verdict and selects the one transition WARN while holding the same
+// mutex as the streak update, so a concurrent progress reset cannot act on a
+// stale threshold decision.
 func (t *sseHealthTracker) observe(ctx context.Context, bytesRead int64, elapsed time.Duration) {
-	hostile := bytesRead == 0 && elapsed < earlyCloseWindow
+	t.recordOutcome(ctx, bytesRead == 0 && elapsed < earlyCloseWindow)
+}
 
+// observeFailure records that a standalone-GET RoundTrip itself failed
+// (a transport-level error — connection refused, TCP reset, EOF before any
+// response was ever received) rather than returning a response whose body
+// could be observed. This is unconditionally treated as hostile: unlike a
+// slow-but-eventually-successful response, a request that never completed at
+// all carries no ambiguity that could be a legitimate long-lived stream, so
+// there is no elapsed-time grace period to check. Excludes the caller's own
+// cancellation (ctx already done) — that is a controlled shutdown, not a
+// gateway behaving badly.
+func (t *sseHealthTracker) observeFailure(ctx context.Context) {
+	t.recordOutcome(ctx, true)
+}
+
+// recordOutcome is the shared consecutive-streak/trip/log logic behind both
+// observe (a response was received) and observeFailure (the request never
+// completed). hostile decides whether this one outcome extends or resets the
+// streak; the trip-at-threshold and log-once-on-transition behavior is
+// identical either way.
+func (t *sseHealthTracker) recordOutcome(ctx context.Context, hostile bool) {
 	t.mu.Lock()
 	if hostile {
 		t.consecutiveEarlyCloses++
 	} else {
 		t.consecutiveEarlyCloses = 0
 	}
-	tripped := hostile && t.consecutiveEarlyCloses >= earlyCloseThreshold
 	streak := t.consecutiveEarlyCloses
-	t.mu.Unlock()
-
-	if !tripped {
+	if !hostile || streak < earlyCloseThreshold || t.hostile {
+		t.mu.Unlock()
 		return
 	}
-	if !t.hostile.CompareAndSwap(false, true) {
-		return // already tripped; a later dial has not yet picked it up
-	}
+	// Keep the streak decision, sticky transition, and once-only warning gate
+	// under the same lock. In particular, a progress reset cannot race a
+	// threshold observation and leave a stale hostile decision behind.
+	t.hostile = true
+	t.mu.Unlock()
+
 	diag := t.diag
 	if diag == nil {
 		diag = port.NopDiagnostics{}
@@ -109,11 +130,27 @@ func (m *sseMonitorRoundTripper) RoundTrip(req *http.Request) (*http.Response, e
 		strings.Contains(req.Header.Get("Accept"), "text/event-stream")
 
 	resp, err := m.base.RoundTrip(req)
-	if err != nil || !isStandaloneGET || resp == nil {
+	if err != nil {
+		// A transport-level failure (connection refused, TCP reset, EOF before
+		// any response) is exactly the shape a GET-hostile gateway can take —
+		// not just "200 then closed immediately" (see observe). Exclude the
+		// caller's own cancellation: req.Context().Err() != nil means this
+		// failure is a controlled shutdown, not the gateway behaving badly.
+		if isStandaloneGET && req.Context().Err() == nil {
+			m.tracker.observeFailure(req.Context())
+		}
+		return resp, err
+	}
+	if !isStandaloneGET || resp == nil {
 		return resp, err
 	}
 	if resp.StatusCode != http.StatusOK ||
 		!strings.Contains(resp.Header.Get("Content-Type"), "text/event-stream") {
+		// A completed standalone GET that is rejected or returns a non-SSE
+		// representation cannot become the notification stream. Count it as
+		// hostile immediately, but leave its body untouched: the SDK remains
+		// responsible for reading and closing the response exactly as before.
+		m.tracker.recordOutcome(req.Context(), true)
 		return resp, err
 	}
 	resp.Body = &sseObservingBody{

@@ -43,6 +43,50 @@ func newGetHostileServer(t *testing.T) *getHostileServer {
 	return &getHostileServer{url: httpSrv.URL, gets: gets}
 }
 
+// newPreHeaderCloseServer is a DIFFERENT GET-hostile shape than
+// newGetHostileServer: rather than every GET completing a 200 response with
+// an empty body, only the FIRST GET does (so the initial synchronous
+// standalone-SSE handshake inside Connect succeeds and a live Server comes
+// back, exactly like an ordinary GET-hostile gateway's opening move) — every
+// GET AFTER that hijacks the raw connection and closes it before writing any
+// HTTP response at all, so the client sees a transport-level failure
+// (EOF/connection reset), not a response. This is the shape a gateway that
+// starts hard-resetting mid-session takes, and is what
+// sseMonitorRoundTripper.RoundTrip's error branch (not its response-body
+// branch) must observe — the bug being characterized is that, before that
+// branch existed, none of these later failures ever counted toward
+// hostility, so Hostile() never tripped and every reconnect reopened the
+// doomed GET indefinitely.
+func newPreHeaderCloseServer(t *testing.T) *getHostileServer {
+	t.Helper()
+	mcpHandler := newMCPHandler()
+	gets := new(atomic.Int32)
+	wrapped := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method == http.MethodGet {
+			n := gets.Add(1)
+			if n == 1 {
+				w.Header().Set("Content-Type", "text/event-stream")
+				w.WriteHeader(http.StatusOK)
+				return
+			}
+			hj, ok := w.(http.Hijacker)
+			if !ok {
+				t.Fatal("ResponseWriter does not support Hijack")
+			}
+			conn, _, err := hj.Hijack()
+			if err != nil {
+				t.Fatalf("Hijack: %v", err)
+			}
+			_ = conn.Close()
+			return
+		}
+		mcpHandler.ServeHTTP(w, r)
+	})
+	httpSrv := httptest.NewServer(wrapped)
+	t.Cleanup(httpSrv.Close)
+	return &getHostileServer{url: httpSrv.URL, gets: gets}
+}
+
 // TestGetHostileGatewayReconnectsTransparently is the CHARACTERIZATION test
 // for the issue's claim (ADR 0326): against a GET-hostile gateway with the
 // standalone SSE stream ENABLED (the ADR 0057 default), the SDK's SSE
@@ -171,5 +215,62 @@ func TestDisableNotificationsOptsOutOfStandaloneGET(t *testing.T) {
 	}
 	if got := diag.count("mcp server reconnecting"); got != 0 {
 		t.Errorf("reconnecting lines = %d, want 0 (no kill → no churn)", got)
+	}
+}
+
+// TestAutoDisablesOnPreHeaderConnectionClose is the characterization test for
+// the OTHER GET-hostile shape (a transport-level failure — EOF/connection
+// reset before any response, per newPreHeaderCloseServer): auto-detection
+// (ADR 0327) must observe THIS shape too, not only a completed 200-then-
+// empty-body response. Without sseMonitorRoundTripper's error branch
+// recording it, Hostile() would never trip and every reconnect would reopen
+// the doomed GET indefinitely.
+func TestAutoDisablesOnPreHeaderConnectionClose(t *testing.T) {
+	diag := &recordingDiag{}
+	h := newPreHeaderCloseServer(t)
+
+	ctx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+	defer cancel()
+	s, err := Connect(ctx, ServerConfig{Name: "rs", URL: h.url, Timeout: 2 * time.Second}, diag)
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Close() })
+
+	res := callEcho(context.Background(), t, s, "first")
+	if res.IsError || res.Content != "echo:first" {
+		t.Fatalf("baseline echo = %+v, want echo:first", res)
+	}
+
+	// The tracker trips within a few consecutive attempts (earlyCloseThreshold),
+	// well before the SDK's own retry budget exhausts — same timing shape as
+	// the 200-then-close case. Tripping does not, by itself, cut the SDK's own
+	// in-flight retry loop short (ADR 0327's rejected alternative); it only
+	// changes what the NEXT dial does.
+	eventually(t, 10*time.Second, func() bool { return s.sseHealth.Hostile() },
+		"sseHealth never tripped against a pre-header-closing gateway")
+
+	// The SDK's own connectSSE retry loop absorbs all 5 retries for this ONE
+	// failing reconnect attempt internally (1 initial success + 5 failing
+	// retries = 6 GETs total) before reporting failure and poisoning the
+	// connection — mirroring TestGetHostileGatewayReconnectsTransparently's
+	// budget-exhaustion wait.
+	eventually(t, 30*time.Second, func() bool { return h.gets.Load() >= 6 },
+		"the SSE reconnect budget never exhausted (want >= 6 GETs)")
+
+	// A subsequent call transparently reconnects once it observes the drop —
+	// c.fail() runs asynchronously in the SDK's own goroutine, so give a short
+	// window rather than assuming the very first post-exhaustion call races
+	// ahead of it (an earlier call may still complete on the not-yet-failed
+	// session; that's fine, it just means the drop surfaces on the next one).
+	eventually(t, 10*time.Second, func() bool {
+		res := callEcho(context.Background(), t, s, "second")
+		return !res.IsError && res.Content == "echo:second" && diag.count("mcp server reconnecting") == 1
+	}, "post-kill echo never triggered exactly one transparent reconnect")
+
+	afterReconnect := h.gets.Load()
+	time.Sleep(3 * time.Second)
+	if got := h.gets.Load(); got != afterReconnect {
+		t.Errorf("GET attempt count grew after reconnect (%d -> %d); auto-detect should have suppressed further attempts", afterReconnect, got)
 	}
 }

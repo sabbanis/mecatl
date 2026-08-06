@@ -54,11 +54,13 @@ runtime, from outside the SDK — no operator action required.
 
 1. **`sseHealthTracker`** (`internal/adapter/mcp/ssehealth.go`): one instance
    per `mcp.Server`, created once in `Connect` and never replaced across
-   reconnects. It counts **consecutive** standalone-GET observations that
-   delivered zero bytes and closed within 5 seconds. Any other outcome — a
-   byte delivered (a real event, or an ordinary SSE keepalive comment), or
-   the stream simply staying open past 5 seconds — resets the streak to
-   zero, so a single blip on an otherwise-healthy gateway can never trip the
+   reconnects. It counts **consecutive hostile standalone-GET observations**.
+   A 200 `text/event-stream` response counts only when it delivers zero bytes
+   and closes within 5 seconds; a non-200 response, a response with a non-SSE
+   content type, or a transport-level failure counts immediately. A byte
+   delivered (a real event, or an ordinary SSE keepalive comment), or a valid
+   SSE stream simply staying open past 5 seconds, resets the streak to zero,
+   so a single blip on an otherwise-healthy gateway can never trip the
    verdict.
 2. **Threshold: 3 consecutive hostile closes.** This is deliberately below
    the SDK's own retry budget (5 retries, i.e. 6 GETs, over an exponential
@@ -67,13 +69,27 @@ runtime, from outside the SDK — no operator action required.
    is chosen to rule out a single transient network blip (the false-positive
    risk any consecutive-failure heuristic carries) while not waiting out the
    SDK's full budget before reaching a verdict.
-3. **Observation is via a RoundTripper wrapping the response body**
-   (`sseMonitorRoundTripper`/`sseObservingBody`), installed on *every*
-   server's `http.Client.Transport` (not only header-bearing ones — the
-   existing conditional install was widened to unconditional). It counts
-   bytes read and elapsed time up to `Close`, then reports once to the
-   tracker. This runs entirely independent of, and ahead of, the SDK's own
-   internal retry accounting — it never touches or shortens the SDK's retry
+3. **Observation covers every standalone GET failure shape**, via
+   `sseMonitorRoundTripper` installed on *every* server's
+   `http.Client.Transport` (not only header-bearing ones — the existing
+   conditional install was widened to unconditional):
+   - a **valid SSE response** — wrapping the body (`sseObservingBody`) counts
+     bytes read and elapsed time up to `Close`, then reports once to the
+     tracker's `observe`; this detects the "200, then closed empty" shape;
+   - a **completed invalid response** — a non-200 status or a response whose
+     `Content-Type` is not `text/event-stream` reports immediately as hostile.
+     Its body is deliberately not wrapped or closed by the monitor; the SDK
+     retains its normal response/body lifecycle;
+   - a **transport-level failure** — connection refused, TCP reset, EOF
+     before any response ever arrives (`RoundTrip` itself returning a non-nil
+     error) — reports immediately as hostile, excluding the caller's own
+     context cancellation. This is the shape a gateway that hard-resets
+     instead of soft-closing takes; missing it would mean the tracker never
+     trips against exactly that kind of gateway, and every reconnect would
+     reopen the doomed GET forever.
+   These paths share ONE consecutive-hostility streak, not independent
+   counters. They run entirely independent of, and ahead of, the SDK's own
+   internal retry accounting — neither touches or shortens the SDK's retry
    loop (see Rejected alternatives).
 4. **Action: `dial` ORs the tracker's verdict into the existing knob** —
    `DisableStandaloneSSE: s.cfg.DisableNotifications || s.sseHealth.Hostile()`.
@@ -86,10 +102,11 @@ runtime, from outside the SDK — no operator action required.
    learn nothing, since gateway behavior does not change mid-process; an
    operator who redeploys a fixed gateway restarts mecatl anyway.
 6. **The manual opt-out (ADR 0326) is unchanged and stays the outer layer.**
-   It skips the ~3-GET detection window entirely (zero hostile GETs, ever)
-   for an operator who already knows, and it remains the escape hatch if
-   this heuristic ever needs to be forced independent of what the tracker
-   observes.
+   Setting it to `true` skips the ~3-GET detection window entirely (zero
+   standalone GETs) for an operator who already knows the gateway is hostile.
+   It is not a tri-state override: `false` or an unset value leaves the
+   automatic verdict in force once it has tripped; neither can force-enable
+   the stream again before restart.
 7. **Exactly one WARN on the false→true transition** (mirroring the existing
    discipline in `handleListChanged`): `"mcp: standalone SSE stream
    auto-disabled (GET-hostile server); list-changed notifications will no
@@ -133,11 +150,14 @@ runtime, from outside the SDK — no operator action required.
   what makes an automatic heuristic acceptable here at all — a heuristic
   that could misjudge something safety- or correctness-relevant would not
   meet this bar.
-- **The verdict does not survive a restart** (no new persisted or leased
-  resource — see the ADR 0027 List 1 addendum on row 28). A process that
-  restarts against a gateway it already learned was hostile re-detects it
-  within the same few-second window, every time, until the manual flag is
-  set. This is an accepted, bounded, recurring cost — not a correctness gap.
+- **The automatic verdict does not survive a restart** (no new persisted or
+  leased resource — see the ADR 0027 List 1 addendum on row 28). It is sticky
+  for the current process lifetime: after it trips, setting the manual flag
+  to `false` (or leaving it unset) cannot force-enable the stream. A restarted
+  process starts with no automatic verdict and re-detects a still-hostile
+  gateway within the same few-second window unless the manual `true` opt-out
+  is set. This is an accepted, bounded, recurring cost — not a correctness
+  gap.
 - **The header-conditional transport wrap became unconditional**: every
   connected server, headers or not, now carries one extra RoundTripper
   wrapper. This is process-local, allocation-free on the hot POST path (only
