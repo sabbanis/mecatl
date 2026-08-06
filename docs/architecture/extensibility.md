@@ -63,7 +63,7 @@ the WHOLE connection, and ADR 0056 heals it as a fresh `Mcp-Session-Id` with
 churn per cycle) can opt out per-server via
 `ServerConfig.DisableNotifications` / `MCP_<NAME>_DISABLE_NOTIFICATIONS`,
 trading list-changed notifications for a stable POST-only session — see
-[ADR 0083](../adr/0083-mcp-standalone-sse-opt-out.md).
+[ADR 0326](../adr/0326-mcp-standalone-sse-opt-out.md).
 
 A dedicated debug session can borrow only direct tools from explicitly named, already
 connected server-global MCP servers. It persists the names and the exact initial tool-name

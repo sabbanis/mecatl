@@ -503,6 +503,12 @@ type Server struct {
 	toolsGen       uint64 // generation counter for concurrent-refresh guard
 	resourcesGen   uint64
 	promptsGen     uint64
+	// sseHealth observes the standalone SSE GET stream's behavior and decides
+	// whether this server's gateway is GET-hostile (ADR 0327), independent of
+	// and ahead of the manual cfg.DisableNotifications opt-out (ADR 0326).
+	// Created once in Connect; persists across every reconnect so the verdict
+	// stays sticky for the Server's whole lifetime.
+	sseHealth *sseHealthTracker
 }
 
 // HasCredentialHeaders reports whether headers contain a credential-bearing
@@ -671,17 +677,29 @@ func connect(ctx context.Context, cfg ServerConfig, diag port.Diagnostics) (*Ser
 		return nil, err
 	}
 
+	// The SSE health monitor wraps EVERY server's transport, header-bearing or
+	// not (ADR 0327): it observes the standalone GET stream so a GET-hostile
+	// gateway can be auto-detected regardless of whether the server needs auth.
+	sseHealth := newSSEHealthTracker(cfg.Name, diag)
 	httpClient := newMCPHTTPClient(cfg, oauthController)
+	base := httpClient.Transport
+	if base == nil {
+		base = http.DefaultTransport
+	}
+	httpClient.Transport = &sseMonitorRoundTripper{base: base, tracker: sseHealth}
 
 	// srv is constructed early so dial can populate its session field; the config,
-	// diag, and httpClient are retained here because reconnect (reconnect.go) needs
-	// them to re-establish a dropped session later.
+	// diag, httpClient, and sseHealth are retained here because reconnect
+	// (reconnect.go) needs them to re-establish a dropped session later, and dial
+	// reads sseHealth on every call (initial + every reconnect) to decide whether
+	// to suppress the standalone SSE stream.
 	srv := &Server{
 		name:       cfg.Name,
 		cfg:        cfg,
 		diag:       diag,
 		httpClient: httpClient,
 		oauth:      oauthController,
+		sseHealth:  sseHealth,
 	}
 
 	sess, err := srv.dial(connectCtx)
@@ -752,14 +770,22 @@ func (s *Server) dial(ctx context.Context) (*mcpsdk.ClientSession, error) {
 		// persistent goroutine per connected server is owned by the session and
 		// unwinds on Close (inventoried in ADR 0027 List 1).
 		//
-		// A server may opt OUT via ServerConfig.DisableNotifications (ADR 0083):
+		// A server may opt OUT via ServerConfig.DisableNotifications (ADR 0326):
 		// a GET-hostile gateway that closes/rejects the standalone GET while
 		// keeping POST healthy would otherwise exhaust the SDK's SSE reconnect
 		// budget, whose terminal c.fail() poisons the connection POST rides on
 		// too — a kill→reconnect→kill churn cycle with a fresh Mcp-Session-Id
 		// (lost server-side session state) every round. The opt-out keeps POST
 		// stable at the cost of list-changed notifications on this server.
-		DisableStandaloneSSE: s.cfg.DisableNotifications,
+		//
+		// s.sseHealth.Hostile() (ADR 0327) is the AUTOMATIC sibling: it observes
+		// the standalone GET's own behavior (see ssehealth.go) and reaches the
+		// same verdict without an operator setting the env var ahead of time.
+		// Both flow into the same knob; either one suppresses the stream on the
+		// next dial (this call runs on both the initial Connect and every
+		// reconnect, so a verdict reached mid-connection takes effect on the
+		// very next dial that already happens on a drop).
+		DisableStandaloneSSE: s.cfg.DisableNotifications || s.sseHealth.Hostile(),
 	}
 	if s.oauth != nil {
 		transport.OAuthHandler = s.oauth

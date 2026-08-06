@@ -521,7 +521,7 @@ func TestMCPServerListServersNilSafe(t *testing.T) {
 	}
 }
 
-// TestMCPServerListDisableNotificationsEnv pins the ADR 0083 GET-hostile
+// TestMCPServerListDisableNotificationsEnv pins the ADR 0326 GET-hostile
 // gateway opt-out: MCP_<NAME>_DISABLE_NOTIFICATIONS (the same name-derived env
 // convention as the token) sets ServerConfig.DisableNotifications on that
 // server only. Unset = default (stream on); a value that does not parse as a

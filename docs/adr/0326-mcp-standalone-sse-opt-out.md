@@ -1,4 +1,4 @@
-# ADR 0083 — MCP client: per-server opt-out of the standalone SSE stream
+# ADR 0326 — MCP client: per-server opt-out of the standalone SSE stream
 
 - Status: Accepted
 - Date: 2026-08-05

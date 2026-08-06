@@ -262,6 +262,16 @@ notifications: its tool/resource/prompt snapshot stays as connected until a
 reconnect (the pre-notification behavior). The default (stream on) is
 unchanged for every server that doesn't set it.
 
+**mecatl also notices this on its own.** After 3 consecutive standalone GETs
+that come back empty and close within a few seconds, mecatl concludes that
+server's gateway is GET-hostile and disables the stream for it automatically
+— no env var required. This self-heals within seconds of the first
+encounter with such a gateway, at the cost of the same trade-off as the
+manual flag (no more `list_changed` notifications for that server). Setting
+`MCP_<NAME>_DISABLE_NOTIFICATIONS=true` yourself still skips this short
+detection window entirely and remains the way to force the behavior either
+way.
+
 ---
 
 ## Authentication and credentials

@@ -44,15 +44,24 @@ func newGetHostileServer(t *testing.T) *getHostileServer {
 }
 
 // TestGetHostileGatewayReconnectsTransparently is the CHARACTERIZATION test
-// for the issue's claim (ADR 0083): against a GET-hostile gateway with the
+// for the issue's claim (ADR 0326): against a GET-hostile gateway with the
 // standalone SSE stream ENABLED (the ADR 0057 default), the SDK's SSE
 // reconnect loop exhausts its retry budget and fails the WHOLE connection —
 // POST included — so the next tool call rides the ADR 0056 withSession →
 // reconnect path and succeeds transparently, with exactly one reconnecting/
 // reconnected diagnostic pair. The session is recovered, not permanently
 // lost, but the reconnect pays a fresh initialize (a new Mcp-Session-Id:
-// server-side session state is lost) and, against a still-hostile gateway,
-// the cycle repeats (chronic churn + one unlucky call paying the dial).
+// server-side session state is lost).
+//
+// As of ADR 0327 the churn does NOT repeat forever: sseHealthTracker observes
+// the SAME consecutive zero-byte GET closes this test drives (it trips at
+// earlyCloseThreshold, well before the SDK's own 6-GET retry budget
+// exhausts), so by the time this reconnect's dial runs, the verdict is
+// already hostile and the reconnected session never reopens the standalone
+// GET. That is the intended behavior change ADR 0327 exists to produce — the
+// "churn repeats" residual cost this test used to characterize is exactly
+// what auto-detection removes. The GET count therefore PLATEAUS instead of
+// growing past the initial round.
 func TestGetHostileGatewayReconnectsTransparently(t *testing.T) {
 	diag := &recordingDiag{}
 	h := newGetHostileServer(t)
@@ -93,14 +102,35 @@ func TestGetHostileGatewayReconnectsTransparently(t *testing.T) {
 		t.Errorf("reconnect-failed lines = %d, want 0", got)
 	}
 
-	// The reconnected session re-opens the GET (the stream is still enabled),
-	// so against a still-hostile gateway the churn repeats — the honest
-	// residual cost ADR 0083's opt-out exists to stop.
-	eventually(t, 5*time.Second, func() bool { return h.gets.Load() >= 7 },
-		"the reconnected session never re-opened the standalone GET")
+	// ADR 0327: auto-detection has already tripped by this point (it needs
+	// only earlyCloseThreshold consecutive hostile GETs, far fewer than the
+	// 6 the SDK's own budget required), so the reconnected session's dial
+	// suppresses the standalone GET. Give any would-be GET a generous window,
+	// then assert the count never grew past what round 1 produced.
+	afterReconnect := h.gets.Load()
+	time.Sleep(3 * time.Second)
+	if got := h.gets.Load(); got != afterReconnect {
+		t.Errorf("GET count grew after reconnect (%d -> %d); auto-detect (ADR 0327) should have suppressed the reopened stream", afterReconnect, got)
+	}
+	if !s.sseHealth.Hostile() {
+		t.Error("sseHealth.Hostile() = false, want true after the observed churn")
+	}
+	if got := diag.count("mcp: standalone SSE stream auto-disabled"); got != 1 {
+		t.Errorf("auto-disabled WARN lines = %d, want exactly 1", got)
+	}
+
+	// The suppressed stream must not affect ordinary POST traffic going
+	// forward — a further call still succeeds, with no more reconnect churn.
+	res = callEcho(context.Background(), t, s, "third")
+	if res.IsError || res.Content != "echo:third" {
+		t.Fatalf("post-trip echo = %+v, want echo:third", res)
+	}
+	if got := diag.count("mcp server reconnecting"); got != 1 {
+		t.Errorf("reconnecting lines after the post-trip call = %d, want still exactly 1", got)
+	}
 }
 
-// TestDisableNotificationsOptsOutOfStandaloneGET is the ADR 0083 fix test:
+// TestDisableNotificationsOptsOutOfStandaloneGET is the ADR 0326 fix test:
 // connected with ServerConfig.DisableNotifications against the SAME
 // GET-hostile gateway, the client NEVER opens the standalone GET (zero GETs
 // observed across calls), the tool call succeeds on the first try, and no
