@@ -232,45 +232,15 @@ supported yet. If a server drops a tool an existing session still has
 registered, calling it surfaces an error the model can react to, rather than
 the tool silently vanishing.
 
-### GET-hostile gateways: opting out of the notification stream
+### GET-hostile gateways
 
-The notification stream is a persistent HTTP GET opened alongside the normal
-POST request/response channel. Some authenticated gateways handle it badly:
-they accept the GET and then close it immediately (or reject it after
-initialization) while POST traffic keeps working. The MCP Go SDK retries the
-dropped stream a bounded number of times and then fails the **whole**
-connection — POST included — so the next tool call transparently reconnects
-(the [reconnect behavior](#reconnect-behavior) above). The call succeeds, but
-the reconnect is a fresh handshake with a new `Mcp-Session-Id`, so any
-server-side session state is lost, and against a still-hostile gateway the
-kill → reconnect → kill cycle repeats, adding latency to one unlucky call per
-cycle.
-
-If a server sits behind such a gateway, disable just that server's
-notification stream:
-
-```sh
-export MCP_GITHUB_DISABLE_NOTIFICATIONS=true
-mecated --mcp-server github=https://gateway.example.com/github …
-```
-
-The variable uses the same name-derived convention as `MCP_<NAME>_TOKEN` and
-is honored by all three headless binaries. With the stream disabled the
-server's session is a stable POST-only channel — no churn, no reconnect
-latency spikes — at the cost of no longer receiving its `list_changed`
-notifications: its tool/resource/prompt snapshot stays as connected until a
-reconnect (the pre-notification behavior). The default (stream on) is
-unchanged for every server that doesn't set it.
-
-**mecatl also notices this on its own.** After 3 consecutive standalone GETs
-that come back empty and close within a few seconds, mecatl concludes that
-server's gateway is GET-hostile and disables the stream for it automatically
-— no env var required. This self-heals within seconds of the first
-encounter with such a gateway, at the cost of the same trade-off as the
-manual flag (no more `list_changed` notifications for that server). Setting
-`MCP_<NAME>_DISABLE_NOTIFICATIONS=true` yourself still skips this short
-detection window entirely and remains the way to force the behavior either
-way.
+Some gateways close the notification connection right after it opens while
+still handling normal tool calls fine. mecatl notices this itself within
+seconds and falls back to request/response only for that server — the only
+effect is that server's tool/prompt/resource list stops auto-refreshing on
+change. If you'd rather skip that detection step for a server you already
+know behaves this way, set `MCP_<NAME>_DISABLE_NOTIFICATIONS=true` (same
+naming convention as `MCP_<NAME>_TOKEN`) before starting mecatl.
 
 ---
 
