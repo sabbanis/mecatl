@@ -93,6 +93,20 @@ type ServerConfig struct {
 	// operator-configured servers, so the operator path keeps Go's default
 	// behaviour byte-for-byte. See newMCPHTTPClient for why the two differ.
 	NoRedirects bool
+	// DisableNotifications opts this server OUT of the standalone SSE GET
+	// notification stream (ADR 0057's stream, the SDK's
+	// StreamableClientTransport.DisableStandaloneSSE knob). Default false:
+	// the stream is on, carrying notifications/{tools,prompts,resources}/
+	// list_changed so cached snapshots invalidate. Set it ONLY for a
+	// GET-hostile gateway (one that closes/rejects the standalone GET while
+	// keeping POST healthy): the go-sdk's SSE reconnect loop, once its retry
+	// budget exhausts, fails the WHOLE connection — POST included — which the
+	// ADR 0056 reconnect then heals with a fresh initialize (a new
+	// Mcp-Session-Id, so server-side session state is lost) and the churn
+	// repeats. With the stream disabled the trade is that this server's
+	// list-changed notifications no longer arrive (the pre-0057 snapshot
+	// contract) in exchange for a stable POST session.
+	DisableNotifications bool
 }
 
 // ValidateClientURL validates a CLIENT-PROVIDED Streamable HTTP MCP endpoint
@@ -732,11 +746,20 @@ func (s *Server) dial(ctx context.Context) (*mcpsdk.ClientSession, error) {
 	transport := &mcpsdk.StreamableClientTransport{
 		Endpoint:   s.cfg.URL,
 		HTTPClient: s.httpClient,
-		// The standalone SSE GET stream is ENABLED (ADR 0057) so the server can
-		// push notifications/* (tools|prompts|resources/list_changed). The SDK
-		// opens it after initialize and drains it on session.Close(), so a
+		// The standalone SSE GET stream is ENABLED by default (ADR 0057) so the
+		// server can push notifications/* (tools|prompts|resources/list_changed).
+		// The SDK opens it after initialize and drains it on session.Close(), so a
 		// persistent goroutine per connected server is owned by the session and
 		// unwinds on Close (inventoried in ADR 0027 List 1).
+		//
+		// A server may opt OUT via ServerConfig.DisableNotifications (ADR 0083):
+		// a GET-hostile gateway that closes/rejects the standalone GET while
+		// keeping POST healthy would otherwise exhaust the SDK's SSE reconnect
+		// budget, whose terminal c.fail() poisons the connection POST rides on
+		// too — a kill→reconnect→kill churn cycle with a fresh Mcp-Session-Id
+		// (lost server-side session state) every round. The opt-out keeps POST
+		// stable at the cost of list-changed notifications on this server.
+		DisableStandaloneSSE: s.cfg.DisableNotifications,
 	}
 	if s.oauth != nil {
 		transport.OAuthHandler = s.oauth
