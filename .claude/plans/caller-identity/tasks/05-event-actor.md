@@ -2,7 +2,7 @@
 id: 05-event-actor
 title: Event.Actor — log-only attribution stamped at appendEvent only
 blocked_by: [03-session-owner]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "367"
