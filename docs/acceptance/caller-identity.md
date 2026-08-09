@@ -1,7 +1,7 @@
 # Caller identity — acceptance plan
 
 **Phase:** capability — caller identity, threaded end to end
-**Status:** draft, 2026-08-07. Track A of the agent-identity model: accept a verified principal at the edge, thread it everywhere, and durably record who owns each session and schedule — no enforcement, no signing.
+**Status:** in-progress, 2026-08-07. Track A of the agent-identity model: accept a verified principal at the edge, thread it everywhere, and durably record who owns each session and schedule — no enforcement, no signing.
 **Issue:** [stacklok/mecatl#367](https://github.com/stacklok/mecatl/issues/367) (the threading half; isolation #368, labels #369, sharing #370, Redis transport #374 deferred).
 **ADR:** [ADR-0100](../adr/0100-caller-identity-threading.md) — the principal model, write-once owner, log-only event annotation, system principal, and the `toolhive-core/authn` validator.
 **Accumulator branch:** `acc/caller-identity` (off `main`).
