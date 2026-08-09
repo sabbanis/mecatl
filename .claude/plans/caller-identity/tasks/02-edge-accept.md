@@ -2,8 +2,8 @@
 id: 02-edge-accept
 title: Accept a verified principal at the authn.go edge (OIDC, behind its own predicate)
 blocked_by: [01-principal-context]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-caller-identity/02-edge-accept"
 worktree: ""
 issue: "367"
 retries: 0

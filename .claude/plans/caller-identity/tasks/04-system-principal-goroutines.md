@@ -2,7 +2,7 @@
 id: 04-system-principal-goroutines
 title: Internal goroutines run under an explicit system principal
 blocked_by: [02-edge-accept, 03-session-owner]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "367"
