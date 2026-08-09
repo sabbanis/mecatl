@@ -50,6 +50,20 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
   an ownerless session — a store that cannot decode an owner renders it as
   unowned, never as somebody else. A new struct field: Added (a minor bump).
 
+- **`session.Event.Actor`** (issue #367,
+  [ADR 0100](../docs/adr/0100-caller-identity-threading.md) decision 5) — the
+  verified caller a durable-log event is attributed to, so an event read in
+  isolation names its actor. It is LOG-ONLY and DERIVE-AT-APPEND: every emit
+  site — the agent loop included — leaves it nil (the loop is storage- and
+  identity-agnostic), and the server relay's single `appendEvent` chokepoint
+  stamps it from the LOADED SESSION'S OWNER just before the durable
+  `port.EventLog.Append`. It never reaches the client wire (no proto field maps
+  it) and it is NOT a reconstruction input: `eventsource.Fold` ignores it, so a
+  folded session keeps the owner its caller restored from the snapshot. The
+  session owner stays the identity of record; an ownerless (pre-ship) session
+  records a nil actor, never a fabricated one. A new struct field: Added (a
+  minor bump).
+
 - **`session.WithPrincipal` / `session.PrincipalFromContext`** (issue #367,
   [ADR 0100](../docs/adr/0100-caller-identity-threading.md) decision 2) — the
   context seam the verified caller rides on. No port interface gains a principal
