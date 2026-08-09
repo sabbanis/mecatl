@@ -42,6 +42,16 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
   All of the above are new exported identifiers and new struct fields —
   classified Added per COMPATIBILITY.md (a minor bump). (issue #367)
 
+- **`session.WithPrincipal` / `session.PrincipalFromContext`** (issue #367,
+  [ADR 0100](../docs/adr/0100-caller-identity-threading.md) decision 2) — the
+  context seam the verified caller rides on. No port interface gains a principal
+  parameter; the principal travels in the `context.Context` under an unexported
+  empty-struct key. Absent identity reads back as a nil `*Principal`, never a
+  fabricated anonymous one — and `WithPrincipal(ctx, nil)` returns `ctx`
+  unchanged, so "no identity" can never be laundered into a present-but-empty
+  principal. The stored principal is a copy, so a caller cannot mutate what the
+  context reports. Added (a minor bump).
+
 - **`session.ToValidUTF8` and `session.RepairToolResult`** (issue #402) — the
   UTF-8 repair primitives that close the Converse-stream kill. A tool can hand
   back arbitrary bytes (a command's stdout, a file's contents, an MCP server's
