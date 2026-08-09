@@ -280,6 +280,11 @@ func (m *scheduleManager) CreateSchedule(ctx context.Context, spec port.Schedule
 		return port.Schedule{}, lerr
 	}
 	applyScheduleDefaults(&spec)
+	// Capture the owner ONCE, here (ADR 0100 decision 6). A caller can never
+	// name it in the request body (protoToScheduleSpec drops any inbound owner,
+	// the same discipline that keeps an owner field off CreateSessionRequest) —
+	// it is derived from the create SURFACE.
+	spec.Owner = m.captureScheduleOwner(ctx, spec)
 	// Compute the first NextFireAt. A cron trigger's next fire was ALREADY
 	// computed by validateScheduleSpec (it must parse the expression to
 	// validate the grammar, so that parse is reused here rather than calling
@@ -483,6 +488,34 @@ func (m *scheduleManager) validateCronTrigger(spec port.ScheduleSpec, now time.T
 	return next, nil
 }
 
+// captureScheduleOwner resolves the owner a schedule is created with (ADR 0100
+// decision 6), by CREATE SURFACE:
+//
+//   - the Schedule-TOOL path runs inside a session, and the origin binder has
+//     already stamped OriginSessionID with it — so the owner is that EXECUTING
+//     session's owner. The tool's caller context belongs to whoever prompted the
+//     run, which is not necessarily the session's owner, so the session wins.
+//   - an OUT-OF-BAND create (REST/CLI: no origin session) reads the verified
+//     principal riding the context.
+//
+// It NEVER fabricates one: an ownerless origin session, an unauthenticated
+// out-of-band create, and (defensively) an origin that cannot be loaded all
+// yield nil. The origin was Loaded moments earlier by validateScheduleOrigin,
+// which rejects a missing one fail-closed, so the load here is a re-read of a
+// session known to exist — the second read costs one store hit on a
+// low-frequency human action and keeps the validation seam's signature intact.
+func (m *scheduleManager) captureScheduleOwner(ctx context.Context, spec port.ScheduleSpec) *session.Principal {
+	if spec.OriginSessionID == "" {
+		return session.PrincipalFromContext(ctx)
+	}
+	origin, err := m.store.Load(ctx, spec.OriginSessionID)
+	if err != nil || origin == nil || origin.Owner == nil {
+		return nil
+	}
+	owner := *origin.Owner
+	return &owner
+}
+
 // validateScheduleOrigin rejects (fail-closed) a non-empty OriginSessionID that
 // names a session not in the held store. An empty OriginSessionID is always
 // valid (delivery is OFF). This is extracted from validateScheduleSpec to keep the
@@ -560,6 +593,10 @@ func (m *scheduleManager) UpdateSchedule(ctx context.Context, spec port.Schedule
 	// to the zero value (which the reconcile update path would otherwise do on
 	// every restart, destroying the audit trail).
 	spec.CreatedAt = existing.Spec.CreatedAt
+	// The owner is WRITE-ONCE (ADR 0100 decision 4/6): an Update carries the
+	// captured owner forward verbatim, so editing a schedule can never re-own it
+	// to the updating caller.
+	spec.Owner = existing.Spec.Owner
 	updated := port.Schedule{Spec: spec, State: existing.State}
 	if err := m.schedStore.Save(ctx, updated); err != nil {
 		return port.Schedule{}, err

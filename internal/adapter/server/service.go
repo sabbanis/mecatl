@@ -3286,6 +3286,18 @@ func (s *Service) eventActor(id session.SessionID) *session.Principal {
 	return &owner
 }
 
+// AppendRunEvent durably records one event of an in-process run through the
+// SINGLE appendEvent path — the same durability, best-effort and Actor-stamping
+// contract (never a second stamping path). It exists for the IN-PROCESS
+// consumers of a run that are not wire relays: the scheduler's fire loop
+// (internal/app) drives its "sched--" session's events itself, so without this
+// seam a scheduled fire would be the one run whose events never reach the
+// durable log. Pass a cancel-detached ctx (context.WithoutCancel), exactly as
+// the relays do, so a finished run cannot abort the write.
+func (s *Service) AppendRunEvent(ctx context.Context, id session.SessionID, ev session.Event) {
+	s.appendEvent(ctx, id, ev)
+}
+
 // relayEvent applies the SHARED per-event relay discipline (cloud-native Phase
 // 3a/3b + the plan-mode auto-approve observer, issue #206 Wave 6a) that every
 // event-relay loop (gRPC Converse, gRPC ApprovePlan, HTTP relayRunSSE, HTTP
