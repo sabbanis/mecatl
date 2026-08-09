@@ -2,8 +2,8 @@
 id: 03-session-owner
 title: The session records its owner, durably (write-once, never backfilled)
 blocked_by: [01-principal-context]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-caller-identity/03-session-owner"
 worktree: ""
 issue: "367"
 retries: 0
