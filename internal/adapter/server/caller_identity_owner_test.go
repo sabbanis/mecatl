@@ -66,7 +66,7 @@ func TestCallerIdentity_Scenario3_OwnerRecordedAndListed(t *testing.T) {
 			}
 			return st
 		},
-		"Load-per-row slow path (memstore)": func(t *testing.T) port.SessionStore {
+		"Load-per-row slow path (memstore)": func(*testing.T) port.SessionStore {
 			return memstore.New()
 		},
 	}
@@ -367,7 +367,7 @@ func TestCallerIdentity_Scenario3_ListRowOwnerIsDisplayOnly(t *testing.T) {
 			}
 			return st
 		},
-		"Load-per-row slow path (memstore)": func(t *testing.T) port.SessionStore {
+		"Load-per-row slow path (memstore)": func(*testing.T) port.SessionStore {
 			return memstore.New()
 		},
 	} {
