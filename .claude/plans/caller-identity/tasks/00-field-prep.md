@@ -2,8 +2,8 @@
 id: 00-field-prep
 title: Principal value object + Session Owner/Authority labels + snapshot round-trip
 blocked_by: []
-status: pending
-branch: ""
+status: done
+branch: "plan-caller-identity/00-field-prep"
 worktree: ""
 issue: "367"
 retries: 0
