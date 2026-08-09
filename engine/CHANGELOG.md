@@ -13,6 +13,35 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
 
 ### Added
 
+- **Caller-identity labels on the session aggregate** (issue #367,
+  [ADR 0100](../docs/adr/0100-caller-identity-threading.md)) — the joint
+  field-prep addition for the caller-identity track (`Owner`) and Track C
+  (`Authority`), landed together so the generated-surface regeneration is paid
+  once:
+  - `session.Principal` — the verified-caller value object
+    (`{Issuer, Subject, GrantType, Name}`). Identity is the `(Issuer, Subject)`
+    PAIR, never `Subject` alone (two IdPs collide on `sub`). It carries no
+    scopes, no authority, no credentials, no claims map. Absent identity is a
+    nil `*Principal`, never a fabricated anonymous one.
+  - `session.GrantType` + `GrantTypeUser` / `GrantTypeClientCredentials` /
+    `GrantTypeSystem` + `GrantType.Valid` — the closed three-value enum; the
+    zero value is deliberately not a member.
+  - `session.Authority` — Track C's label, shipped INERT (nothing reads or
+    writes it beyond the snapshot round-trip). Zero value means unset.
+  - `session.Session.Owner` / `session.Session.Authority` — the additive labels,
+    stamped through the new WRITE-ONCE `Session.RestoreLabels(owner, authority)`
+    (a different owner over a set one returns the new
+    `session.ErrOwnerAlreadySet`; a nil owner is the ownerless no-auth path and
+    does not burn the slot). `sessnap.Snapshot` gains matching `owner` /
+    `authority` fields, both `omitempty`, restored through that aggregate method
+    — `sessnap.RestoreState`'s signature is deliberately UNCHANGED (a trailing
+    parameter would be Changed/breaking; a direct-assignment field is
+    Added/minor). A pre-ship snapshot with no `owner`/`authority` key restores
+    to a nil owner and a zero authority.
+
+  All of the above are new exported identifiers and new struct fields —
+  classified Added per COMPATIBILITY.md (a minor bump). (issue #367)
+
 - **`session.ToValidUTF8` and `session.RepairToolResult`** (issue #402) — the
   UTF-8 repair primitives that close the Converse-stream kill. A tool can hand
   back arbitrary bytes (a command's stdout, a file's contents, an MCP server's
