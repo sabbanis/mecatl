@@ -50,8 +50,16 @@ func serve(ctx context.Context, cfg config, svc *server.Service, obs observabili
 		return err
 	}
 
+	// The validator owns background JWKS refresh, so it is constructed with the
+	// SERVER-ROOT ctx. A misconfigured OIDC setup is FATAL: the pod refuses to
+	// start rather than silently serving unauthenticated (ADR 0100).
+	validator, err := cliconfig.OIDCValidator(ctx, cfg.oidc)
+	if err != nil {
+		return err
+	}
 	auth := server.NewAuthenticator(server.SecurityConfig{
 		AuthToken: cfg.authToken,
+		Validator: validator,
 		// No rate limiting on a pod: it is fronted by the Service/mesh, not a
 		// raw public port. RateBurst 0 leaves the authenticator's rate limiter
 		// disabled.
@@ -113,7 +121,9 @@ func serve(ctx context.Context, cfg config, svc *server.Service, obs observabili
 		TLSConfig:         tlsCfg,
 	}
 
-	authed := cfg.authToken != "" || tlsCfg != nil
+	// Caller identity counts as authentication: an OIDC deployment may carry no
+	// static token at all.
+	authed := cfg.authToken != "" || cfg.oidc.Enabled() || tlsCfg != nil
 	warnIfNonLoopback("grpc-addr", cfg.grpcAddr, authed)
 	warnIfNonLoopback("http-addr", cfg.httpAddr, authed)
 
