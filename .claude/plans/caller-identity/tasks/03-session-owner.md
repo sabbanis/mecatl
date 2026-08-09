@@ -2,7 +2,7 @@
 id: 03-session-owner
 title: The session records its owner, durably (write-once, never backfilled)
 blocked_by: [01-principal-context]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "367"

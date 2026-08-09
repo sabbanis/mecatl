@@ -2,8 +2,8 @@
 id: 01-principal-context
 title: WithPrincipal/PrincipalFromContext — the no-fabricated-principal seam
 blocked_by: [00-field-prep]
-status: pending
-branch: ""
+status: done
+branch: "plan-caller-identity/01-principal-context"
 worktree: ""
 issue: "367"
 retries: 0
