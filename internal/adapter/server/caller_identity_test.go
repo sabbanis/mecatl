@@ -45,9 +45,9 @@ func (f fakeValidator) Validate(_ context.Context, bearer string) (*session.Prin
 	return nil, fmt.Errorf("token rejected: %w", server.ErrInvalidToken)
 }
 
-// alice is the principal the good tokens below vouch for. Identity is the
+// edgeAlice is the principal the good tokens below vouch for. Identity is the
 // (iss, sub) PAIR — the tests assert both.
-var alice = session.Principal{
+var edgeAlice = session.Principal{
 	Issuer:    "https://idp.example.com",
 	Subject:   "alice",
 	GrantType: session.GrantTypeUser,
@@ -107,9 +107,9 @@ func TestCallerIdentity_Scenario1_ValidTokenYieldsPrincipal(t *testing.T) {
 	// One bearer per signature algorithm the validator accepts. The algorithm is
 	// the validator's business; what mecatl must do is identical for all three.
 	v := fakeValidator{ok: map[string]session.Principal{
-		"tok-rs256": alice,
-		"tok-es256": alice,
-		"tok-ps256": alice,
+		"tok-rs256": edgeAlice,
+		"tok-es256": edgeAlice,
+		"tok-ps256": edgeAlice,
 	}}
 	auth := oidcOnly(t, v, 0, 0)
 
@@ -126,8 +126,8 @@ func TestCallerIdentity_Scenario1_ValidTokenYieldsPrincipal(t *testing.T) {
 			if got == nil {
 				t.Fatal("handler context carries no principal")
 			}
-			if *got != alice {
-				t.Fatalf("principal = %+v, want %+v", *got, alice)
+			if *got != edgeAlice {
+				t.Fatalf("principal = %+v, want %+v", *got, edgeAlice)
 			}
 		})
 		t.Run("http/"+tok, func(t *testing.T) {
@@ -139,8 +139,8 @@ func TestCallerIdentity_Scenario1_ValidTokenYieldsPrincipal(t *testing.T) {
 				t.Fatal("handler did not run")
 			}
 			got := session.PrincipalFromContext(ctx)
-			if got == nil || *got != alice {
-				t.Fatalf("principal = %v, want %+v", got, alice)
+			if got == nil || *got != edgeAlice {
+				t.Fatalf("principal = %v, want %+v", got, edgeAlice)
 			}
 		})
 	}
@@ -155,7 +155,7 @@ func TestCallerIdentity_Scenario1_ValidTokenYieldsPrincipal(t *testing.T) {
 func TestCallerIdentity_Scenario1_BadTokensRejected(t *testing.T) {
 	t.Parallel()
 
-	auth := oidcOnly(t, fakeValidator{ok: map[string]session.Principal{"good": alice}}, 0, 0)
+	auth := oidcOnly(t, fakeValidator{ok: map[string]session.Principal{"good": edgeAlice}}, 0, 0)
 
 	bad := []string{
 		"wrong-issuer",
@@ -248,7 +248,7 @@ func TestCallerIdentity_Scenario1_NoAuthByteIdentical(t *testing.T) {
 func TestCallerIdentity_Scenario1_IdentityPredicateIndependent(t *testing.T) {
 	t.Parallel()
 
-	v := fakeValidator{ok: map[string]session.Principal{"good": alice}}
+	v := fakeValidator{ok: map[string]session.Principal{"good": edgeAlice}}
 
 	t.Run("static token only: authenticated, zero subjects", func(t *testing.T) {
 		auth := server.NewAuthenticator(server.SecurityConfig{AuthToken: "shared"})
@@ -271,8 +271,8 @@ func TestCallerIdentity_Scenario1_IdentityPredicateIndependent(t *testing.T) {
 		if err != nil {
 			t.Fatalf("valid token rejected: %v", err)
 		}
-		if p := session.PrincipalFromContext(ctx); p == nil || *p != alice {
-			t.Fatalf("principal = %v, want %+v", p, alice)
+		if p := session.PrincipalFromContext(ctx); p == nil || *p != edgeAlice {
+			t.Fatalf("principal = %v, want %+v", p, edgeAlice)
 		}
 		// The identity gate bites with NO static token configured — proof it is
 		// not gated on authEnabled().
@@ -291,7 +291,7 @@ func TestCallerIdentity_Scenario1_JWKSDownIsTransientNotUnauthorized(t *testing.
 	t.Parallel()
 
 	auth := oidcOnly(t, fakeValidator{
-		ok:        map[string]session.Principal{"good": alice},
+		ok:        map[string]session.Principal{"good": edgeAlice},
 		transient: map[string]bool{"jwks-down": true},
 	}, 0, 0)
 
@@ -334,9 +334,9 @@ func TestCallerIdentity_Scenario1_RateLimitKeyedOnPrincipal(t *testing.T) {
 	t.Parallel()
 
 	v := fakeValidator{ok: map[string]session.Principal{
-		"alice-old": alice,
-		"alice-new": alice, // same subject, rotated credential
-		"bob":       {Issuer: alice.Issuer, Subject: "bob", GrantType: session.GrantTypeUser},
+		"alice-old": edgeAlice,
+		"alice-new": edgeAlice, // same subject, rotated credential
+		"bob":       {Issuer: edgeAlice.Issuer, Subject: "bob", GrantType: session.GrantTypeUser},
 	}}
 
 	t.Run("rotation shares one bucket", func(t *testing.T) {
@@ -359,7 +359,7 @@ func TestCallerIdentity_Scenario1_RateLimitKeyedOnPrincipal(t *testing.T) {
 					t.Fatalf("limiter key %q embeds the raw token %q", k, tok)
 				}
 			}
-			if !strings.Contains(k, alice.Subject) || !strings.Contains(k, alice.Issuer) {
+			if !strings.Contains(k, edgeAlice.Subject) || !strings.Contains(k, edgeAlice.Issuer) {
 				t.Fatalf("limiter key %q is not keyed on (iss, sub)", k)
 			}
 		}
@@ -368,7 +368,7 @@ func TestCallerIdentity_Scenario1_RateLimitKeyedOnPrincipal(t *testing.T) {
 	t.Run("a different subject gets its own bucket", func(t *testing.T) {
 		auth := oidcOnly(t, v, 1, 1)
 		if _, err := callUnary(auth, "alice-old"); err != nil {
-			t.Fatalf("alice err = %v, want nil", err)
+			t.Fatalf("edgeAlice err = %v, want nil", err)
 		}
 		// bob is over the GLOBAL budget here (burst 1), but he must still land in
 		// his OWN bucket — two subjects never share one.
@@ -384,7 +384,7 @@ func TestCallerIdentity_Scenario1_RateLimitKeyedOnPrincipal(t *testing.T) {
 
 	t.Run("a rejected token is never keyed", func(t *testing.T) {
 		auth := oidcOnly(t, fakeValidator{
-			ok:        map[string]session.Principal{"good": alice},
+			ok:        map[string]session.Principal{"good": edgeAlice},
 			transient: map[string]bool{"jwks-down": true},
 		}, 1, 1)
 		for _, tok := range []string{"nope", "also-nope", "jwks-down", ""} {
@@ -400,9 +400,9 @@ func TestCallerIdentity_Scenario1_RateLimitKeyedOnPrincipal(t *testing.T) {
 			t.Fatalf("valid request after rejections err = %v, want nil", err)
 		}
 		if keys := auth.TrackedClientKeysForTest(); !slices.ContainsFunc(keys, func(k string) bool {
-			return strings.Contains(k, alice.Subject)
+			return strings.Contains(k, edgeAlice.Subject)
 		}) {
-			t.Fatalf("tracked keys = %v, want alice's bucket", keys)
+			t.Fatalf("tracked keys = %v, want edgeAlice's bucket", keys)
 		}
 	})
 }
