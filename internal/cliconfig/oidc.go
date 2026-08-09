@@ -16,6 +16,7 @@ import (
 	"fmt"
 
 	"github.com/stacklok/mecatl/internal/adapter/server"
+	"github.com/stacklok/mecatl/internal/syscaller"
 )
 
 // OIDCConfig carries the caller-identity flags. The zero value is identity OFF
@@ -80,7 +81,9 @@ func OIDCValidator(ctx context.Context, c OIDCConfig) (server.PrincipalValidator
 	if c.NewValidator == nil {
 		return nil, fmt.Errorf("%w: no OIDC token validator is available in this build", ErrOIDCMisconfigured)
 	}
-	v, err := c.NewValidator(ctx, c)
+	// The validator's background JWKS refresh has no caller: it runs as the
+	// explicit system principal (ADR 0100 decision 7).
+	v, err := c.NewValidator(syscaller.Context(ctx, syscaller.RootJWKSRefresh), c)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrOIDCMisconfigured, err)
 	}

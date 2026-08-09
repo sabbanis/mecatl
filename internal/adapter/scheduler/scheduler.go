@@ -36,6 +36,7 @@ import (
 	"github.com/stacklok/mecatl/engine/adapter/cronparse"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/internal/syscaller"
 )
 
 // FireFunc is the composition-supplied callback a scheduler invokes for each
@@ -501,6 +502,12 @@ func (s *Scheduler) Start(ctx context.Context) error {
 	if !s.started.CompareAndSwap(false, true) {
 		return nil
 	}
+	// The lifecycle root has no caller: every context the tick, fire, delivery
+	// and reconcile paths use descends from here (context.WithoutCancel keeps
+	// values), so this ONE wrap runs them all as the explicit system principal
+	// (ADR 0100 decision 7). FireNow is deliberately NOT wrapped — a manual fire
+	// keeps its requester's identity.
+	ctx = syscaller.Context(ctx, syscaller.RootScheduler)
 	if s.cfg.Fire == nil {
 		s.started.Store(false)
 		panic("scheduler: Start called before SetFire (Fire is nil)")
