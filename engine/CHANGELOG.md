@@ -42,6 +42,14 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
   All of the above are new exported identifiers and new struct fields —
   classified Added per COMPATIBILITY.md (a minor bump). (issue #367)
 
+- **`port.SessionMeta.Owner`** (issue #367,
+  [ADR 0100](../docs/adr/0100-caller-identity-threading.md) decision 4) — the
+  session owner on the cheap picker projection, so a `MetaLister` listing (which
+  skips `Load` entirely) renders the owner column IDENTICALLY to the
+  `Load`-per-row fallback instead of leaving it empty on the fast path. Nil for
+  an ownerless session — a store that cannot decode an owner renders it as
+  unowned, never as somebody else. A new struct field: Added (a minor bump).
+
 - **`session.WithPrincipal` / `session.PrincipalFromContext`** (issue #367,
   [ADR 0100](../docs/adr/0100-caller-identity-threading.md) decision 2) — the
   context seam the verified caller rides on. No port interface gains a principal
