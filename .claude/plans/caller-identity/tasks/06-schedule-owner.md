@@ -2,7 +2,7 @@
 id: 06-schedule-owner
 title: Schedule owner captured at create; fires run as the owner (client_credentials)
 blocked_by: [05-event-actor, 04-system-principal-goroutines]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "367"
