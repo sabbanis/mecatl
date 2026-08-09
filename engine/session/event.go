@@ -1158,6 +1158,19 @@ type Event struct {
 	// metadata-only observability projection of a Parallel fork-join run (group-level
 	// join/winner facts + per-branch metadata + fork paths, never branch content).
 	Parallel *ParallelPayload
+	// Actor is the verified caller this event is attributed to (ADR 0100 decision
+	// 5). It is LOG-ONLY and DERIVE-AT-APPEND: every emit site — the loop included —
+	// leaves it nil (the loop is storage-agnostic and knows nothing about
+	// principals), and the server relay's single appendEvent chokepoint stamps it
+	// from the LOADED SESSION'S OWNER just before the durable Append. It never
+	// reaches the client wire (toProto has no field for it) and it is not a
+	// reconstruction input: eventsource.Fold ignores it, so a folded session keeps
+	// the owner its caller restored from the snapshot.
+	//
+	// The denormalization is deliberate — an event read in isolation names its
+	// actor — but the session owner remains the identity of record. An ownerless
+	// (pre-ship) session records a nil Actor; absence is never fabricated.
+	Actor *Principal
 	// Schedule is set on the schedule.* events (fired / skipped / failed): the
 	// scheduler lifecycle projection emitted from composition (the scheduler), NOT
 	// the loop. Client-visible (unlike the log-only EvApproval /
