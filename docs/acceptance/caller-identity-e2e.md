@@ -93,16 +93,26 @@ no Go dependency and is the only one that merges before the tag.
 `deploy/mecak8s/` is the storage-free k8s deployment ([ADR
 0048](../adr/0048-mecak8s.md)); its agent Deployment carries no auth arguments
 today. Adding `--oidc-*` to the **base** would change what every user of that
-example deploys, so identity lands as a kustomize overlay plus a minimal static
-JWKS workload for it to point at.
+example deploys, so identity lands as a kustomize overlay.
+
+**The overlay points at a REAL external IdP over HTTPS, and carries no test
+scaffolding.** That is not a simplification, it is the security-correct shape:
+the library rejects `http://` and private/in-cluster addresses by default
+(`InsecureAllowHTTP` and `AllowPrivateIP` both false — the latter is what blocks
+a `jwks_uri` resolving to `169.254.169.254`), so a public HTTPS issuer is the
+only configuration that works with those defaults intact. It also needs **no
+NetworkPolicy change**: the base egress already allows DNS and TCP 443 to any
+destination IP, which is exactly what an external IdP needs.
+
+The in-cluster static JWKS and the flag that permits reaching it are **test
+fixtures**, and live with the e2e suite in Scenario 3 — never in `deploy/`. A
+published example that disables SSRF protection is the wrong artifact to ship.
 
 **Work:**
 - `deploy/mecak8s/overlays/oidc/`: a patch adding `--oidc-issuer`,
-  `--oidc-jwks-uri`, `--oidc-audience` to the agent Deployment, plus a static
-  JWKS Deployment + Service.
-- `deploy/README.md`: the overlay, and a by-hand local bring-up (a `mecated`
-  invocation against a static JWKS) for debugging — explicitly noting it fails
-  closed until the validator ships.
+  `--oidc-jwks-uri`, `--oidc-audience` to the agent Deployment. Nothing else.
+- `deploy/README.md`: the overlay, and a by-hand local bring-up for debugging —
+  explicitly noting it fails closed until the validator ships.
 
 **Acceptance:**
 - AC1.1: the OIDC overlay renders an agent Deployment carrying all three
@@ -120,6 +130,11 @@ JWKS workload for it to point at.
   cannot mistake the fail-closed refusal for a bug.
   - verify: inspection — `deploy/README.md`, cross-checked against
     `internal/cliconfig/oidc.go`'s `ErrOIDCMisconfigured` path.
+- AC1.4: the overlay carries no flag that relaxes issuer-URL or private-address
+  policy, and no in-cluster IdP workload — a published example must not ship SSRF
+  relaxation. Those are Scenario 3's test fixtures.
+  - verify: demonstration — `kustomize build deploy/mecak8s/overlays/oidc` greps
+    clean for `insecure` and for any JWKS workload kind.
 
 ---
 
@@ -136,6 +151,15 @@ construction path can.
 Tokens are signed **in-test** against an `httptest` static-JWKS server — no new
 module dependency (`golang-jwt/jwt/v5` is already in mecatl's graph, promoted
 from indirect to direct).
+
+**Reaching that server needs no production flag.** `httptest` binds `127.0.0.1`,
+which the library's `AllowPrivateIP: false` default rejects — but `AllowPrivateIP`
+and `CACertPath` govern only the library's *default* HTTP client, and a
+caller-supplied `HTTPClient` brings its own dial policy. So the test injects a
+client and reaches loopback while every production default stays intact. The
+library still enforces its 1 MiB body cap, redirect refusal and timeout on a
+supplied client, so the protections that matter are not traded away. This is the
+reason Scenario 2 needs no new operator surface and Scenario 3 does.
 
 Scope discipline: this scenario asserts **wiring**, not token mechanics. Three
 assertions, not a rejection matrix.
@@ -173,9 +197,27 @@ existing kind harness ([`e2e/k8s/`](../../e2e/k8s), build tag `kind_e2e`, ko
 resolve + ginkgo, a Redis StatefulSet and two storage-free agent replicas), so
 this scenario adds specs rather than infrastructure.
 
+**Unlike Scenario 2, this one needs a real operator-visible flag.** The agent is
+a separate process reaching an in-cluster JWKS Service — a private address — so
+there is no test-only injection point: `AllowPrivateIP` must be set on the
+validator the binary itself constructs. That is a new flag which relaxes an SSRF
+defence, so it carries safety obligations of its own (AC3.3–AC3.5) and is the
+reason this scenario is scoped to two assertions rather than a suite: the flag
+must be justified by what it buys, not the reverse.
+
+Two further consequences of the private-address path, both easy to miss until
+the deployment silently fails closed:
+- the base NetworkPolicy's egress allows only DNS, TCP 443 to any IP, and
+  Redis 6379 — an in-cluster JWKS on another port needs an explicit egress rule
+  in the **fixture** overlay;
+- the flag must permit `http://` as well as the private address, or the JWKS
+  endpoint needs a private CA and `CACertPath` plumbing that is out of scope.
+
 **Work:**
-- OIDC-enabled variants of the existing suite's fixtures (the Scenario 1
-  overlay + the static JWKS workload), per-caller tokens in the harness.
+- a `--oidc-insecure-allow-private-issuer` flag (name deliberately loud) setting
+  `AllowPrivateIP` + `InsecureAllowHTTP` together, defaulting off.
+- e2e fixtures: a static JWKS Deployment + Service, an egress rule for it, the
+  Scenario 1 overlay, and per-caller tokens in the harness.
 
 **Acceptance:**
 - AC3.1: a session created with Alice's token retains Alice as its owner across a
@@ -189,6 +231,19 @@ this scenario adds specs rather than infrastructure.
   IdP outage against a genuinely unreachable IdP, which the fake validator can
   only simulate.
   - verify: `TestCallerIdentityE2E_Scenario3_JWKSOutageIsTransient`
+- AC3.3: `--oidc-insecure-allow-private-issuer` defaults to **off**, and with it
+  off a private or `http://` issuer is refused — so the SSRF defence the library
+  provides is intact in every deployment that does not explicitly opt out.
+  - verify: `TestCallerIdentityE2E_Scenario3_PrivateIssuerRefusedByDefault`
+- AC3.4: enabling the flag emits a startup WARN naming it as test-only, so an
+  operator who copy-pastes it into a real deployment is told, in the logs, what
+  they have turned off. Silence here is how a test flag becomes a production
+  vulnerability.
+  - verify: `TestCallerIdentityE2E_Scenario3_InsecureIssuerFlagWarns`
+- AC3.5: the flag is absent from `deploy/mecak8s/` and its published overlay —
+  it exists for the e2e fixture only, and nothing an operator copies contains it.
+  - verify: demonstration — grep over `deploy/`, exit non-zero on a match (the
+    same check as AC1.4, asserted from the flag's side).
 
 ## Out of scope
 
@@ -199,6 +254,8 @@ this scenario adds specs rather than infrastructure.
 | A live-`mecated` local e2e layer | — | Its assertions are covered deterministically by Scenario 2 or better by Scenario 3 |
 | Keycloak in the automated suite | a manual demo path | Realm state and the dev-file DB caveat make it flaky; a static JWKS is deterministic |
 | Multi-audience / repeatable `--oidc-audience` | a later, backward-compatible change | Recorded at the injection point; no consumer yet |
+| A private-CA JWKS endpoint (`CACertPath` / an `--oidc-ca-cert` flag) | an operator need, when one appears | The insecure-issuer flag covers the test case; cert plumbing is real scope with no consumer today |
+| A posture gate on the insecure-issuer flag | revisit if it is ever seen outside a test | Posture governs agent tool permissions, not server networking, so gating there would be a category error; the loud name + startup WARN + absence from `deploy/` are the guards |
 | Discharging AC1.2 of [`caller-identity.md`](caller-identity.md) | the follow-up that takes the tag | Scenario 2 narrows the residual to the library's own contract, but the AC's wording stands until the dep is real |
 
 ## Cross-cutting deliverables
