@@ -2,8 +2,8 @@
 id: 10-authn-library-readiness
 title: Ready the edge for toolhive-core/authn — GrantType derivation, validator teardown, config pinning
 blocked_by: [09-actor-is-the-caller]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-caller-identity/10-authn-library-readiness"
 worktree: ""
 issue: "367"
 retries: 0
