@@ -192,7 +192,9 @@ func makeFireFunc(svc *server.Service, store port.ScheduleStore, defaultTimeout 
 			// The fire loop is this run's only consumer, so it owns the durable
 			// append the gRPC/HTTP relays do for a client-driven run. It routes
 			// through the ONE stamping path (Service.appendEvent), which attributes
-			// each event to the fire session's owner — the schedule's owner.
+			// each event to the caller on this ctx — the scheduler's SYSTEM
+			// principal, the thing that actually acted. The schedule's owner stays
+			// on the fire SESSION (ADR 0100 decisions 5 + 6).
 			svc.AppendRunEvent(logCtx, sess.ID, ev)
 			// RecordFireProgress on turn-boundary / activity events (issue #386):
 			// NOT every chunk — once per EvToolCall / EvTurnEnd / EvResult, so a

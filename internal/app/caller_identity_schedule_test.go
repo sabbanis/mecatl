@@ -227,12 +227,17 @@ func TestCallerIdentity_Scenario4_OutOfBandScheduleOwnerFromContext(t *testing.T
 // TestCallerIdentity_Scenario4_FireRunsAsOwnerClientCredentials pins AC4.4: a
 // scheduled fire's "sched--" session records the SCHEDULE's owner subject with
 // GrantType client_credentials — injected via the explicit WithOwner
-// CreateSessionOption — and its durable events carry the same actor.
+// CreateSessionOption — while its durable EVENTS name the acting principal: the
+// scheduler's SYSTEM principal.
+//
+// That split is the point. The owner is accountable ("whose is this?"); the
+// scheduler is what acted ("who did this?"). Alice is still named on the session,
+// but the events no longer claim she personally acted at 3am.
 //
 // The fire runs under the scheduler's SYSTEM principal (syscaller.Context), so
 // without the injection the create-seam's resolveOwner would stamp
-// mecatl:internal/scheduler as the fire session's owner. The test asserts that
-// system principal does NOT leak through.
+// mecatl:internal/scheduler as the fire session's OWNER. The test asserts that
+// system principal does NOT leak onto the session.
 func TestCallerIdentity_Scenario4_FireRunsAsOwnerClientCredentials(t *testing.T) {
 	t.Parallel()
 	storeDir := t.TempDir()
@@ -292,14 +297,16 @@ func TestCallerIdentity_Scenario4_FireRunsAsOwnerClientCredentials(t *testing.T)
 		t.Errorf("fire session owner issuer = %q: the scheduler's system principal leaked through", fired.Owner.Issuer)
 	}
 
-	// The fire's durable events carry the same actor (the appendEvent stamp).
+	// The fire's durable events name the ACTING principal — the scheduler's system
+	// principal — not the accountable owner on the session.
 	var events int
 	for ev, err := range store.Read(context.Background(), rec.SessionID) {
 		if err != nil {
 			t.Fatalf("EventLog.Read: %v", err)
 		}
 		events++
-		assertOwner(t, "event "+string(ev.Type)+" actor", ev.Actor, owner.Issuer, owner.Subject, session.GrantTypeClientCredentials)
+		assertOwner(t, "event "+string(ev.Type)+" actor", ev.Actor,
+			syscaller.Issuer, string(syscaller.RootScheduler), session.GrantTypeSystem)
 	}
 	if events == 0 {
 		t.Fatal("the fire session's durable log is empty; the actor assertion never ran")

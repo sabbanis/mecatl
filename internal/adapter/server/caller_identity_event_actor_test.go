@@ -29,15 +29,20 @@ import (
 // eventActorService builds a Service over the supplied EventLog whose engine runs
 // ONE allowed read-only tool call and then answers — enough to produce a full
 // lifecycle stream (session.init → turn.start → tool.call → tool.result →
-// user_prompt → result) in the durable log without parking on an ask.
+// user_prompt → result) in the durable log without parking on an ask. The script
+// carries FOUR such runs so one service can drive several sessions.
 func eventActorService(t *testing.T, log port.EventLog) *server.Service {
 	t.Helper()
 	cat := tool.NewCatalog()
 	cat.MustRegister(&scriptTool{name: "Read", readOnly: true, content: "file body"})
-	llm := mockllm.New(
-		mockllm.ToolCallTurn(call("c1", "Read", `{"path":"a.go"}`)),
-		mockllm.TextTurn("done"),
-	)
+	var turns []mockllm.Turn
+	for range 4 {
+		turns = append(turns,
+			mockllm.ToolCallTurn(call("c1", "Read", `{"path":"a.go"}`)),
+			mockllm.TextTurn("done"),
+		)
+	}
+	llm := mockllm.New(turns...)
 	engine := agent.NewEngine(agent.Deps{
 		LLM:     llm,
 		Catalog: cat,
@@ -64,7 +69,16 @@ func driveConverse(t *testing.T, svc *server.Service, id session.SessionID) []*m
 	t.Helper()
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	return driveConverseOn(t, client, context.Background(), id)
+}
+
+// driveConverseOn runs one prompt over an EXISTING Converse client on the given
+// outgoing context (which may carry an Authorization bearer, so the server-side
+// handler context carries the verified caller). It returns the proto events the
+// client saw.
+func driveConverseOn(t *testing.T, client mecatlv1.HarnessServiceClient, callCtx context.Context, id session.SessionID) []*mecatlv1.Event {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(callCtx, 10*time.Second)
 	defer cancel()
 	stream, err := client.Converse(ctx)
 	if err != nil {
@@ -90,46 +104,88 @@ func driveConverse(t *testing.T, svc *server.Service, id session.SessionID) []*m
 	return out
 }
 
-// TestCallerIdentity_Scenario4_EventActorStampedAtAppendOnly pins AC4.1: an event
-// appended for a session owned by Alice is recorded with Actor == Alice's
-// principal, and the STAMP HAPPENS ONLY AT appendEvent — the loop-side emit leaves
-// Actor nil.
+// TestCallerIdentity_Scenario4_EventActorStampedAtAppendOnly pins AC4.1: an
+// appended event is attributed to the caller who ACTED — read from the CONTEXT
+// PRINCIPAL, never from the session's owner — and the STAMP HAPPENS ONLY AT
+// appendEvent (the loop-side emit leaves Actor nil).
 //
-// The two halves run over the SAME service:
-//   - the relayed session (driven through gRPC Converse, which calls appendEvent
-//     for every event) → every logged event names Alice;
-//   - a second owned session driven through Service.StartRunContent and drained
-//     DIRECTLY (bypassing the relay, so appendEvent never runs) → every event the
-//     loop emitted carries a nil Actor.
+// Three halves, all over sessions OWNED BY ALICE:
+//   - Alice drives her own session: owner and actor coincide (the single-caller
+//     deployment, where the distinction is invisible);
+//   - BOB drives Alice's session — which this phase PERMITS, since it ships no
+//     authorization — and every logged event must name BOB while the session's
+//     owner stays Alice. Stamping from the loaded session's owner puts Alice on
+//     Bob's actions: repudiation in both directions, worst on the approval record;
+//   - a session driven through Service.StartRunContent and drained DIRECTLY
+//     (bypassing the relay, so appendEvent never runs) → every event the loop
+//     emitted carries a nil Actor.
 //
 // MUTATION-KILL: stamping in the loop (any e.emit site) makes the direct-drain half
-// fail; dropping the appendEvent stamp makes the log half fail.
+// fail; dropping the appendEvent stamp makes the log halves fail; reading the
+// session owner instead of the context principal makes the divergent half fail.
 func TestCallerIdentity_Scenario4_EventActorStampedAtAppendOnly(t *testing.T) {
 	ctx := session.WithPrincipal(context.Background(), alice)
 	log := memstore.NewEventLog()
 	svc := eventActorService(t, log)
 
-	relayed, err := svc.CreateSession(ctx, "/ws", session.ModeDefault, session.Limits{MaxTurns: 4})
+	// A wired verifier is what puts a caller on the handler context; the two
+	// bearers below are the two callers.
+	auth := server.NewAuthenticator(server.SecurityConfig{Validator: fakeValidator{ok: map[string]session.Principal{
+		"alice-tok": *alice,
+		"bob-tok":   *bob,
+	}}})
+	client, cleanup := dialGRPCSecure(t, svc, auth)
+	defer cleanup()
+
+	newAliceSession := func() *session.Session {
+		t.Helper()
+		s, err := svc.CreateSession(ctx, "/ws", session.ModeDefault, session.Limits{MaxTurns: 4})
+		if err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+		if got := ownerOf(s.Owner); got != *alice {
+			t.Fatalf("fixture session owner = %+v, want %+v", got, *alice)
+		}
+		return s
+	}
+
+	assertActor := func(id session.SessionID, want *session.Principal) {
+		t.Helper()
+		logged := readEventLog(t, log, id)
+		if len(logged) == 0 {
+			t.Fatalf("no events recorded in the durable log for %q", id)
+		}
+		for i, ev := range logged {
+			if ev.Actor == nil {
+				t.Fatalf("logged[%d] (%s): Actor is nil, want %q — appendEvent must stamp the acting caller", i, ev.Type, want.Subject)
+			}
+			if *ev.Actor != *want {
+				t.Fatalf("logged[%d] (%s): Actor = %+v, want %+v (the ACTING caller, not the session owner)", i, ev.Type, *ev.Actor, *want)
+			}
+		}
+	}
+
+	// (a) Alice acts on her own session.
+	own := newAliceSession()
+	driveConverseOn(t, client, bearerCtx(context.Background(), "alice-tok"), own.ID)
+	assertActor(own.ID, alice)
+
+	// (b) BOB acts on ALICE's session — the case the owner-derived stamp got wrong.
+	shared := newAliceSession()
+	driveConverseOn(t, client, bearerCtx(context.Background(), "bob-tok"), shared.ID)
+	assertActor(shared.ID, bob)
+	// The OWNER is untouched: the session is still Alice's ("whose is this?"),
+	// only the events name who acted ("who did this?").
+	loaded, err := svc.GetSession(context.Background(), shared.ID)
 	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
+		t.Fatalf("GetSession: %v", err)
 	}
-	driveConverse(t, svc, relayed.ID)
-
-	logged := readEventLog(t, log, relayed.ID)
-	if len(logged) == 0 {
-		t.Fatalf("no events recorded in the durable log")
-	}
-	for i, ev := range logged {
-		if ev.Actor == nil {
-			t.Fatalf("logged[%d] (%s): Actor is nil, want Alice — appendEvent must stamp the loaded session's owner", i, ev.Type)
-		}
-		if *ev.Actor != *alice {
-			t.Fatalf("logged[%d] (%s): Actor = %+v, want %+v", i, ev.Type, *ev.Actor, *alice)
-		}
+	if got := ownerOf(loaded.Owner); got != *alice {
+		t.Fatalf("session owner after Bob's run = %+v, want %+v (the actor must not rewrite ownership)", got, *alice)
 	}
 
-	// The loop half: a second owned session, drained straight off Run.Events() so
-	// no relay (and therefore no appendEvent) is involved.
+	// (c) The loop half: a session drained straight off Run.Events() so no relay
+	// (and therefore no appendEvent) is involved.
 	direct, err := svc.CreateSession(ctx, "/ws", session.ModeDefault, session.Limits{MaxTurns: 4})
 	if err != nil {
 		t.Fatalf("CreateSession (direct): %v", err)
@@ -170,7 +226,10 @@ func TestCallerIdentity_Scenario4_EventActorLogOnly(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	wire := driveConverse(t, svc, sess.ID)
+	auth := server.NewAuthenticator(server.SecurityConfig{Validator: fakeValidator{ok: map[string]session.Principal{"alice-tok": *alice}}})
+	client, cleanup := dialGRPCSecure(t, svc, auth)
+	defer cleanup()
+	wire := driveConverseOn(t, client, bearerCtx(context.Background(), "alice-tok"), sess.ID)
 	if len(wire) == 0 {
 		t.Fatalf("no events on the client wire; the omission half is vacuous")
 	}
@@ -231,8 +290,14 @@ func TestCallerIdentity_Scenario4_EventActorLogOnly(t *testing.T) {
 	}
 }
 
-// TestCallerIdentity_Scenario4_OwnerlessEventActorAbsent pins AC4.5: an event for a
-// pre-ship (ownerless) session records a NIL actor — never a fabricated one.
+// TestCallerIdentity_Scenario4_OwnerlessEventActorAbsent pins AC4.5: with NO
+// VERIFIED CALLER on the context, an appended event records a NIL actor — never a
+// fabricated one. Both no-caller shapes are covered:
+//
+//   - the unauthenticated path over a pre-ship, ownerless session;
+//   - an OWNED session driven with no caller on the context, which additionally
+//     proves the stamp reads the CONTEXT and not the owner: an owner-derived stamp
+//     would name Alice here even though nobody verified acted.
 func TestCallerIdentity_Scenario4_OwnerlessEventActorAbsent(t *testing.T) {
 	log := memstore.NewEventLog()
 	svc := eventActorService(t, log)
@@ -246,13 +311,25 @@ func TestCallerIdentity_Scenario4_OwnerlessEventActorAbsent(t *testing.T) {
 	}
 	driveConverse(t, svc, sess.ID)
 
-	logged := readEventLog(t, log, sess.ID)
-	if len(logged) == 0 {
-		t.Fatalf("no events recorded for the ownerless session")
+	// An OWNED session driven with no verified caller on the context.
+	owned, err := svc.CreateSession(session.WithPrincipal(context.Background(), alice), "/ws", session.ModeDefault, session.Limits{MaxTurns: 4})
+	if err != nil {
+		t.Fatalf("CreateSession (owned): %v", err)
 	}
-	for i, ev := range logged {
-		if ev.Actor != nil {
-			t.Fatalf("logged[%d] (%s): ownerless session got a FABRICATED actor %+v; absence must stay absent", i, ev.Type, *ev.Actor)
+	if got := ownerOf(owned.Owner); got != *alice {
+		t.Fatalf("owned fixture session owner = %+v, want %+v", got, *alice)
+	}
+	driveConverse(t, svc, owned.ID)
+
+	for _, id := range []session.SessionID{sess.ID, owned.ID} {
+		logged := readEventLog(t, log, id)
+		if len(logged) == 0 {
+			t.Fatalf("no events recorded for session %q", id)
+		}
+		for i, ev := range logged {
+			if ev.Actor != nil {
+				t.Fatalf("logged[%d] (%s) of %q: no verified caller acted, yet the actor is %+v; absence must stay absent", i, ev.Type, id, *ev.Actor)
+			}
 		}
 	}
 }

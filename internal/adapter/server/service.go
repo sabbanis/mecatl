@@ -3255,35 +3255,29 @@ func (s *Service) Persist(ctx context.Context, id session.SessionID) {
 // durable log must not break the live stream).
 //
 // It is ALSO the SINGLE site that stamps session.Event.Actor (ADR 0100 decision
-// 5): the attribution is derive-at-append, read from the LOADED session's owner,
-// so the loop stays storage- and identity-agnostic and every emit site leaves
-// Actor nil. An ownerless (pre-ship) session leaves it nil — absence is never
-// fabricated. Do not add a second stamping path.
+// 5): the attribution is derive-at-append, read from the CONTEXT PRINCIPAL — the
+// verified caller who drove this request — so the loop stays storage- and
+// identity-agnostic and every emit site leaves Actor nil. Callers pass a
+// cancel-detached ctx (context.WithoutCancel), which preserves the context VALUES
+// and therefore the caller. A request with no verified caller leaves it nil —
+// absence is never fabricated. Do not add a second stamping path.
 func (s *Service) appendEvent(ctx context.Context, id session.SessionID, ev session.Event) {
 	if s.cfg.EventLog == nil {
 		return
 	}
-	ev.Actor = s.eventActor(id)
+	// The actor is the verified caller who ACTED, NOT the session's owner. The two
+	// are different questions and routinely different values: this phase ships no
+	// authorization, so any authenticated caller may act on any session, and an
+	// owner-derived stamp would put caller A on every event of a run caller B drove
+	// (worst on EvApproval, where the record IS a human granting a tool
+	// permission). The owner stays the identity of record for "whose is this?"; the
+	// actor answers "who did this?". PrincipalFromContext returns a COPY, so a
+	// later mutation cannot rewrite an already-recorded event.
+	ev.Actor = session.PrincipalFromContext(ctx)
 	if err := s.cfg.EventLog.Append(ctx, id, ev); err != nil {
 		s.cfg.Diagnostics.Log(ctx, port.LevelWarn, "event log append failed",
 			"session", string(id), "event", string(ev.Type), "err", err.Error())
 	}
-}
-
-// eventActor resolves the principal an appended event is attributed to: the owner
-// of the in-flight run's LOADED session (the same registry Persist reads). It
-// returns a COPY so a later mutation of the session's owner cannot rewrite an
-// already-recorded event, and nil when the session is ownerless or no run is
-// registered — absence, never a fabricated principal.
-func (s *Service) eventActor(id session.SessionID) *session.Principal {
-	s.mu.Lock()
-	st, ok := s.runs[id]
-	s.mu.Unlock()
-	if !ok || st.sess == nil || st.sess.Owner == nil {
-		return nil
-	}
-	owner := *st.sess.Owner
-	return &owner
 }
 
 // AppendRunEvent durably records one event of an in-process run through the
