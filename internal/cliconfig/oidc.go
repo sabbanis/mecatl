@@ -14,6 +14,7 @@ import (
 	"errors"
 	"flag"
 	"fmt"
+	"net/http"
 
 	"github.com/stacklok/mecatl/internal/adapter/server"
 	"github.com/stacklok/mecatl/internal/syscaller"
@@ -95,6 +96,19 @@ type OIDCConfig struct {
 	// behind two names needs — but a single required audience is the safe
 	// default to ship, and adding it later breaks no existing invocation.
 	NewValidator func(ctx context.Context, c OIDCConfig) (server.PrincipalValidator, error)
+
+	// httpClient overrides the HTTP client the default validator fetches JWKS and
+	// discovery with. It is a TEST seam, unexported so no deployment can reach it.
+	//
+	// It exists because the library's AllowPrivateIP defaults to FALSE — the check
+	// that stops a jwks_uri resolving to a private, loopback or link-local address,
+	// e.g. cloud instance metadata at 169.254.169.254 — and that check applies only
+	// to the library's OWN client. A test serving JWKS from an httptest server on
+	// 127.0.0.1 therefore supplies a client instead of relaxing the production
+	// default. The library still enforces its 1 MiB body cap, redirect refusal and
+	// timeout on a supplied client, so the protections that matter are not traded
+	// away for the test's convenience.
+	httpClient *http.Client
 }
 
 // Enabled reports whether the operator asked for caller identity.
