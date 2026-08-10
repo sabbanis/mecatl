@@ -70,7 +70,7 @@ when the code that satisfies the plan has landed.
   surface on two tiers (Team-unique structures stay Team-only). Status: landed.
 - [Caller identity](caller-identity.md) — accept a verified principal at the edge,
   thread it through every port caller, and durably record the session/schedule owner
-  (agent-identity Track A; audit-trail phase, no enforcement). Status: draft.
+  (agent-identity Track A; audit-trail phase, no enforcement). Status: landed.
 
 ## See also
 
