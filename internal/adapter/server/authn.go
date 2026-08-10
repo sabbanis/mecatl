@@ -18,6 +18,7 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/internal/syscaller"
 )
 
 // PrincipalValidator verifies a bearer credential and returns the caller it
@@ -263,9 +264,10 @@ func tokenFromMetadata(ctx context.Context) (string, bool) {
 // identify runs the caller-identity step: when a verifier is wired the bearer is
 // validated and the verified principal returned; when it is not, it returns
 // (nil, nil) — absent identity, never a fabricated caller. A missing bearer,
-// a rejected token and a nil-principal verdict are all ErrInvalidToken; an
-// unreachable IdP surfaces as ErrIdentityUnavailable. There is no fallback
-// branch: a non-nil error means the request stops here.
+// a rejected token, a nil-principal verdict and an UNUSABLE principal (see
+// admissiblePrincipal) are all ErrInvalidToken; an unreachable IdP surfaces as
+// ErrIdentityUnavailable. There is no fallback branch: a non-nil error means the
+// request stops here, before any rate-limit bucket is created for it.
 func (a *Authenticator) identify(ctx context.Context, bearer string, present bool) (*session.Principal, error) {
 	if !a.cfg.identityConfigured() {
 		return nil, nil
@@ -277,10 +279,38 @@ func (a *Authenticator) identify(ctx context.Context, bearer string, present boo
 	if err != nil {
 		return nil, err
 	}
-	if p == nil {
+	if !admissiblePrincipal(p) {
 		return nil, ErrInvalidToken
 	}
 	return p, nil
+}
+
+// admissiblePrincipal reports whether a validator's verdict is a principal the
+// edge may admit. A non-nil principal is not automatically trustworthy — the
+// validator is an injected dependency, so the edge enforces the shape it
+// promises rather than trusting it:
+//
+//   - Identity is the (Issuer, Subject) PAIR; a principal missing either half
+//     cannot be attributed to anyone. A wholly empty one is exactly the
+//     fabricated-anonymous caller ADR 0100 decision 2 rejects, arriving through
+//     the front door.
+//   - GrantType must be inside the closed enum: an out-of-enum value would flow
+//     to every downstream consumer as an unrecognised, unhandled case.
+//   - The INTERNAL namespace is off limits to an external caller. A token
+//     presenting mecatl:internal as its issuer, or the system grant, is
+//     byte-identical to a syscaller-stamped harness goroutine at every consumer
+//     — including the isolation track (#368), which will read it to decide.
+//     Only internal/syscaller mints those, and it never goes through this edge.
+func admissiblePrincipal(p *session.Principal) bool {
+	switch {
+	case p == nil, p.Issuer == "", p.Subject == "":
+		return false
+	case !p.GrantType.Valid(), p.GrantType == session.GrantTypeSystem:
+		return false
+	case p.Issuer == syscaller.Issuer:
+		return false
+	}
+	return true
 }
 
 // identityStatus maps an identify error onto a gRPC status: a transient IdP

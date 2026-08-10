@@ -17,6 +17,7 @@ import (
 
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/server"
+	"github.com/stacklok/mecatl/internal/syscaller"
 )
 
 // --- the offline fake verifier ----------------------------------------------
@@ -405,6 +406,77 @@ func TestCallerIdentity_Scenario1_RateLimitKeyedOnPrincipal(t *testing.T) {
 			t.Fatalf("tracked keys = %v, want edgeAlice's bucket", keys)
 		}
 	})
+}
+
+// TestCallerIdentityEdgeRejectsMalformedPrincipal pins the edge's own guard on
+// the validator's verdict (AC1.2): a non-nil principal is not automatically
+// trustworthy. A principal missing either half of its (iss, sub) identity, one
+// carrying a grant type outside the closed enum, and one presenting the INTERNAL
+// namespace (mecatl:internal, or the system grant) are all 401-class rejections.
+//
+// Why each matters: an empty principal is exactly the fabricated-anonymous
+// caller ADR 0100 decision 2 rejects, arriving through the front door; and an
+// external token presenting the internal issuer is byte-identical to a system
+// caller at every downstream consumer — including the isolation track (#368),
+// which will read it to make decisions.
+func TestCallerIdentityEdgeRejectsMalformedPrincipal(t *testing.T) {
+	t.Parallel()
+
+	bad := map[string]session.Principal{
+		"no issuer":           {Subject: "alice", GrantType: session.GrantTypeUser},
+		"no subject":          {Issuer: edgeAlice.Issuer, GrantType: session.GrantTypeUser},
+		"wholly empty":        {},
+		"unset grant type":    {Issuer: edgeAlice.Issuer, Subject: "alice"},
+		"bogus grant type":    {Issuer: edgeAlice.Issuer, Subject: "alice", GrantType: session.GrantType("anonymous")},
+		"internal issuer":     {Issuer: syscaller.Issuer, Subject: "childgc", GrantType: session.GrantTypeUser},
+		"system grant":        {Issuer: edgeAlice.Issuer, Subject: "alice", GrantType: session.GrantTypeSystem},
+		"internal issuer sys": {Issuer: syscaller.Issuer, Subject: "scheduler", GrantType: session.GrantTypeSystem},
+	}
+
+	v := fakeValidator{ok: map[string]session.Principal{"good": edgeAlice}}
+	for name, p := range bad {
+		v.ok[name] = p
+	}
+
+	for name := range bad {
+		t.Run("grpc/"+name, func(t *testing.T) {
+			auth := oidcOnly(t, v, 1, 1)
+			ctx, err := callUnary(auth, name)
+			if code := status.Code(err); code != codes.Unauthenticated {
+				t.Fatalf("code = %v, want Unauthenticated (401-class, never a 503) (err=%v)", code, err)
+			}
+			if ctx != nil {
+				t.Fatal("handler RAN with a malformed principal")
+			}
+			if keys := auth.TrackedClientKeysForTest(); len(keys) != 0 {
+				t.Fatalf("tracked keys = %v, want none (a rejected principal must not create a bucket)", keys)
+			}
+		})
+		t.Run("http/"+name, func(t *testing.T) {
+			auth := oidcOnly(t, v, 1, 1)
+			ctx, rec := callHTTP(auth, name)
+			if rec.Code != http.StatusUnauthorized {
+				t.Fatalf("status = %d, want 401", rec.Code)
+			}
+			if ctx != nil {
+				t.Fatal("handler RAN with a malformed principal")
+			}
+			if keys := auth.TrackedClientKeysForTest(); len(keys) != 0 {
+				t.Fatalf("tracked keys = %v, want none", keys)
+			}
+		})
+	}
+
+	// The guard is narrow: a well-formed principal on the SAME authenticator is
+	// still accepted, so the rejections above are not a blanket deny.
+	auth := oidcOnly(t, v, 0, 0)
+	ctx, err := callUnary(auth, "good")
+	if err != nil {
+		t.Fatalf("valid token rejected: %v", err)
+	}
+	if p := session.PrincipalFromContext(ctx); p == nil || *p != edgeAlice {
+		t.Fatalf("principal = %v, want %+v", p, edgeAlice)
+	}
 }
 
 // TestCallerIdentityErrorSentinels pins the small error taxonomy the edge maps
