@@ -341,8 +341,10 @@ tasks:
     desc: |
       Render a deploy/ kustomize root with the ko-built image ref, on stdout.
       ROOT defaults to deploy/mecak8s (set ROOT=deploy/mecak8s-oidc for the
-      caller-identity overlay). Honours KO_DOCKER_REPO; set KO_DOCKER_REPO=ko.local
-      for a local/kind image. This is the composition to use for a kustomize root:
+      caller-identity overlay). Honours KO_DOCKER_REPO. NOTE: KO_DOCKER_REPO=ko.local
+      renders a ref no cluster can PULL (ko.local is not a registry) — fine for
+      inspecting the output, not for deploying; see deploy:apply.
+      This is the composition to use for a kustomize root:
       `ko resolve -f <dir>` does NOT run kustomize (it globs the directory as
       plain YAML and even emits kustomization.yaml as a resource), so the
       kustomize build must come first and ko must read it on stdin.
@@ -364,6 +366,13 @@ tasks:
       to deploy/mecak8s. Honours KO_DOCKER_REPO and the CURRENT kubectl context —
       it deploys to whatever `kubectl config current-context` points at, so check
       that first.
+      REQUIRES A REGISTRY THE CLUSTER CAN PULL FROM. This task does not distribute
+      images: with KO_DOCKER_REPO=ko.local the pods get ErrImagePull, because
+      ko.local lives in the local Docker daemon and is not a registry the node can
+      resolve. For kind, either push to a real registry, or build+load first (the
+      way e2e/k8s does it: save the ref to a tarball and `kind load
+      image-archive`, which survives daemons where `kind load docker-image`
+      fails).
     vars:
       ROOT: '{{.ROOT | default "deploy/mecak8s"}}'
     preconditions:
@@ -372,7 +381,10 @@ tasks:
       - sh: command -v kustomize >/dev/null 2>&1
         msg: "kustomize is not installed"
       - sh: '[ -n "${KO_DOCKER_REPO:-}" ]'
-        msg: "KO_DOCKER_REPO is required (e.g. export KO_DOCKER_REPO=ko.local for a local image)"
+        msg: "KO_DOCKER_REPO is required (a registry the CLUSTER can pull from; ko.local is not one — see the task description)"
+      # Refuse the footgun rather than deploying pods that can only ErrImagePull.
+      - sh: '[ "${KO_DOCKER_REPO:-}" != "ko.local" ]'
+        msg: "KO_DOCKER_REPO=ko.local cannot be pulled by a cluster node (it is the local Docker daemon, not a registry). Push to a real registry, or build+load the image into the node first (see e2e/k8s saveAndLoadImage)."
     cmds:
       # Two-phase apply. kubectl processes documents in order, but the namespace
       # controller marks a new namespace Active ASYNCHRONOUSLY, so namespaced
