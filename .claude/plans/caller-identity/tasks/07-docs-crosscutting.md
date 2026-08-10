@@ -6,8 +6,8 @@ status: in-progress
 branch: ""
 worktree: ""
 issue: "367"
-retries: 0
-last_error: ""
+retries: 1
+last_error: "worker stalled (watchdog, 600s no progress) before creating its branch; zero commits"
 accumulator: acc/caller-identity
 ---
 
