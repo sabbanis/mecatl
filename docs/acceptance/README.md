@@ -71,6 +71,10 @@ when the code that satisfies the plan has landed.
 - [Caller identity](caller-identity.md) — accept a verified principal at the edge,
   thread it through every port caller, and durably record the session/schedule owner
   (agent-identity Track A; audit-trail phase, no enforcement). Status: landed.
+- [Caller identity — deployment verification](caller-identity-e2e.md) — prove the
+  threaded identity survives a real IdP, a real cluster and a real restart: an
+  opt-in k8s overlay, the validator-construction assertions a fake cannot reach,
+  and owner-survives-failover / IdP-down-is-503 in kind. Status: draft.
 
 ## See also
 
