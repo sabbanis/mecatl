@@ -2,8 +2,8 @@
 id: 06-schedule-owner
 title: Schedule owner captured at create; fires run as the owner (client_credentials)
 blocked_by: [05-event-actor, 04-system-principal-goroutines]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-caller-identity/06-schedule-owner"
 worktree: ""
 issue: "367"
 retries: 0

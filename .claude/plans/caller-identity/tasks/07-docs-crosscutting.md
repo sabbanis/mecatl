@@ -2,7 +2,7 @@
 id: 07-docs-crosscutting
 title: Cross-cutting docs — ADR 0027 inventory rows, user-docs flags, architecture note
 blocked_by: [04-system-principal-goroutines, 06-schedule-owner]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "367"
