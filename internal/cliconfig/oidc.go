@@ -40,6 +40,60 @@ type OIDCConfig struct {
 	//
 	// ponytail: one field instead of a registry; when the real validator lands
 	// it becomes a default here and this comment goes away.
+	//
+	// --- WHAT THE FOLLOW-UP ADAPTER MUST DO (decided here, up front) ---------
+	//
+	// toolhive-core/authn is not yet released (the API below lives on an
+	// unmerged branch), so mecatl takes no dependency on it and this field stays
+	// nil. The decisions the adapter would otherwise improvise are recorded here
+	// rather than left to whoever writes it:
+	//
+	// SHAPE. `authn.NewValidator(ctx, cfg) (*authn.Validator, error)`;
+	// `(*Validator).Validate(ctx, token) (authn.Principal, error)` returns a
+	// VALUE; `(*Validator).Close()` stops the background JWKS refresh and is
+	// idempotent. The adapter must therefore also implement io.Closer, which
+	// server.Authenticator.Close type-asserts (teardown is an optional
+	// capability; server.PrincipalValidator stays single-method).
+	//
+	// GRANT TYPE. `authn.Principal` has NO grant type and the library has no
+	// azp/cid/client_id/grant handling at all, while session.Principal requires
+	// one and the edge REJECTS an out-of-enum value — a field-copy adapter would
+	// 401 every valid token. Derive it with
+	// server.GrantTypeFromClaims(p.Claims); do not re-derive the rules.
+	//
+	// ERROR MAPPING. authn errors are a struct (`authn.Error` with a `Code`),
+	// not errors.Is-able sentinels, so the adapter switches on the CODE and
+	// wraps mecatl's sentinel — the 401-vs-503 split is load-bearing at the edge
+	// (an IdP outage must not be reported as an authn failure):
+	//
+	//	authn.CodeInvalidToken   (401) → server.ErrInvalidToken
+	//	authn.CodeInvalidRequest (400) → server.ErrInvalidToken
+	//	authn.CodeUnavailable    (503) → server.ErrIdentityUnavailable
+	//	anything unrecognised          → server.ErrInvalidToken (fail CLOSED)
+	//
+	// ponytail: a table, not a helper — a code→sentinel switch that cannot yet
+	// type-assert the error it switches on is untestable scaffolding, and the
+	// real switch is three lines inside the adapter.
+	//
+	// CONFIG DEFAULTS mecatl PINS rather than inherits. `authn.Config` is much
+	// richer than these three flags (Audiences, AllowAnyAudience, Leeway,
+	// MaxJWKSStaleness, AcceptedTokenTypes, MaxTokenLifetime, HTTPClient,
+	// InsecureAllowHTTP, AllowPrivateIP, CACertPath, KeyProvider). No flags are
+	// added for the rest until an operator asks; these two are pinned because
+	// either one flipped defeats the exercise:
+	//
+	//	AllowAnyAudience: false  — an audience-less verifier accepts tokens
+	//	                           minted for another service; Audience is
+	//	                           already REQUIRED here for the same reason.
+	//	InsecureAllowHTTP: false — a plaintext JWKS fetch lets anyone on the
+	//	                           path substitute the signing keys.
+	//
+	// Audience maps to Audiences[0] (the library's field is plural). Making
+	// --oidc-audience REPEATABLE is a deliberate LATER change, not an oversight:
+	// it is a superset of today's behaviour (a flag.Value collecting into a
+	// []string, one element in the common case) and it is what a deployment
+	// behind two names needs — but a single required audience is the safe
+	// default to ship, and adding it later breaks no existing invocation.
 	NewValidator func(ctx context.Context, c OIDCConfig) (server.PrincipalValidator, error)
 }
 
