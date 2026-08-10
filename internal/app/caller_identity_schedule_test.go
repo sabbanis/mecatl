@@ -143,6 +143,62 @@ func TestCallerIdentity_Scenario4_ScheduleOwnerCapturedAtCreate(t *testing.T) {
 	assertOwner(t, "schedule after update", updated.Spec.Owner, alicePrincipal.Issuer, alicePrincipal.Subject, session.GrantTypeUser)
 }
 
+// vanishingStore serves the origin session on its FIRST Load and reports it
+// gone on every later one, reproducing the childgc sweep landing between the
+// create-seam's origin validation and its owner capture. It is a legal
+// port.SessionStore: a deleted session is exactly ErrSessionNotFound.
+type vanishingStore struct {
+	inner *memstore.Store
+	id    session.SessionID
+	loads int
+}
+
+func (v *vanishingStore) Save(ctx context.Context, s *session.Session) error {
+	return v.inner.Save(ctx, s)
+}
+
+func (v *vanishingStore) Load(ctx context.Context, id session.SessionID) (*session.Session, error) {
+	if id == v.id {
+		v.loads++
+		if v.loads > 1 {
+			return nil, port.ErrSessionNotFound
+		}
+	}
+	return v.inner.Load(ctx, id)
+}
+
+// TestCallerIdentity_Scenario4_ScheduleOwnerSurvivesOriginDeletionRace pins the
+// race half of AC4.3: the captured owner comes from the load the create-seam
+// ALREADY validated, not from a second read of the origin session. A childgc
+// sweep landing between the two reads must not turn a validated, owned create
+// into a silently OWNERLESS schedule — an ownerless schedule can never be
+// attributed, and validation had already passed.
+func TestCallerIdentity_Scenario4_ScheduleOwnerSurvivesOriginDeletionRace(t *testing.T) {
+	t.Parallel()
+	const originID = session.SessionID("origin-alice-racing")
+	sessions := memstore.New()
+	store := &vanishingStore{inner: sessions, id: originID}
+	mgr := server.NewScheduleManager(server.ScheduleManagerConfig{
+		Store:         store,
+		ScheduleStore: memschedulestore.New(),
+		Diagnostics:   port.NopDiagnostics{},
+	})
+	if mgr == nil {
+		t.Fatal("NewScheduleManager returned nil")
+	}
+	saveOwnedSession(t, sessions, originID, &alicePrincipal)
+
+	created, err := mgr.CreateSchedule(context.Background(), ownedScheduleSpec("racing", originID))
+	if err != nil {
+		t.Fatalf("CreateSchedule: %v", err)
+	}
+	if store.loads != 1 {
+		t.Errorf("origin session Loaded %d times, want 1 (the validated load is threaded, not re-read)", store.loads)
+	}
+	assertOwner(t, "schedule created across an origin sweep", created.Spec.Owner,
+		alicePrincipal.Issuer, alicePrincipal.Subject, session.GrantTypeUser)
+}
+
 // TestCallerIdentity_Scenario4_OutOfBandScheduleOwnerFromContext pins AC4.6: a
 // schedule created out of band (REST/CLI — no origin session) under a verified
 // principal records the CONTEXT principal as its owner, not an origin lookup.

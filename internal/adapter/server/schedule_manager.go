@@ -263,7 +263,7 @@ func (m *scheduleManager) scheduleStore() port.ScheduleStore {
 // schedule.
 func (m *scheduleManager) CreateSchedule(ctx context.Context, spec port.ScheduleSpec) (port.Schedule, error) {
 	now := m.now()
-	cronNextFire, err := m.validateScheduleSpec(ctx, spec, now)
+	cronNextFire, originOwner, err := m.validateScheduleSpec(ctx, spec, now)
 	if err != nil {
 		return port.Schedule{}, err
 	}
@@ -283,8 +283,10 @@ func (m *scheduleManager) CreateSchedule(ctx context.Context, spec port.Schedule
 	// Capture the owner ONCE, here (ADR 0100 decision 6). A caller can never
 	// name it in the request body (protoToScheduleSpec drops any inbound owner,
 	// the same discipline that keeps an owner field off CreateSessionRequest) —
-	// it is derived from the create SURFACE.
-	spec.Owner = m.captureScheduleOwner(ctx, spec)
+	// it is derived from the create SURFACE. The origin session's owner comes
+	// from the load validateScheduleSpec ALREADY did, so a sweep deleting the
+	// origin between the two reads cannot silently produce an ownerless schedule.
+	spec.Owner = m.captureScheduleOwner(ctx, spec, originOwner)
 	// Compute the first NextFireAt. A cron trigger's next fire was ALREADY
 	// computed by validateScheduleSpec (it must parse the expression to
 	// validate the grammar, so that parse is reused here rather than calling
@@ -372,15 +374,15 @@ func scheduleSingletonExplicit(_ port.ScheduleSpec) bool { return false }
 // ListModels advertises) and the cadence floor against the composition-
 // injected scheduler MinInterval — two deployment-level inputs the spec alone
 // cannot carry.
-func (m *scheduleManager) validateScheduleSpec(ctx context.Context, spec port.ScheduleSpec, now time.Time) (time.Time, error) {
+func (m *scheduleManager) validateScheduleSpec(ctx context.Context, spec port.ScheduleSpec, now time.Time) (time.Time, *session.Principal, error) {
 	if spec.Name == "" {
-		return time.Time{}, fmt.Errorf("%w: schedule name is required", ErrInvalidArgument)
+		return time.Time{}, nil, fmt.Errorf("%w: schedule name is required", ErrInvalidArgument)
 	}
 	if spec.Prompt == "" && len(spec.Parts) == 0 {
-		return time.Time{}, fmt.Errorf("%w: prompt or parts is required", ErrInvalidArgument)
+		return time.Time{}, nil, fmt.Errorf("%w: prompt or parts is required", ErrInvalidArgument)
 	}
 	if err := spec.Trigger.Validate(); err != nil {
-		return time.Time{}, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+		return time.Time{}, nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
 	}
 	// OriginSessionID validation: a non-empty OriginSessionID must name an
 	// existing session in the store (the session the fire's terminal result
@@ -389,18 +391,19 @@ func (m *scheduleManager) validateScheduleSpec(ctx context.Context, spec port.Sc
 	// rather than surfacing hours later as a fire-time failure. An empty
 	// OriginSessionID is always valid (delivery is OFF — the v1 pre-delivery
 	// posture).
-	if err := m.validateScheduleOrigin(ctx, spec); err != nil {
-		return time.Time{}, err
+	originOwner, err := m.validateScheduleOrigin(ctx, spec)
+	if err != nil {
+		return time.Time{}, nil, err
 	}
 	// OneShotRetry is one-shot-ONLY: a cron self-heals via misfire already
 	// (decision #1), so a retry budget on a cron is a misconfiguration the
 	// create-seam rejects fail-closed. CarryContext is allowed on either trigger
 	// (a cron carrying its prior fire's context is a valid use case).
 	if spec.OneShotRetry && spec.Trigger.Kind() != port.TriggerOneShot {
-		return time.Time{}, fmt.Errorf("%w: one_shot_retry is one-shot-only (a cron self-heals via misfire — no retry budget)", ErrInvalidArgument)
+		return time.Time{}, nil, fmt.Errorf("%w: one_shot_retry is one-shot-only (a cron self-heals via misfire — no retry budget)", ErrInvalidArgument)
 	}
 	if spec.OneShotMaxRetries < 0 {
-		return time.Time{}, fmt.Errorf("%w: one_shot_max_retries must be >= 0 (got %d)", ErrInvalidArgument, spec.OneShotMaxRetries)
+		return time.Time{}, nil, fmt.Errorf("%w: one_shot_max_retries must be >= 0 (got %d)", ErrInvalidArgument, spec.OneShotMaxRetries)
 	}
 	// Reject a read-leaning schedule (Mutating=false) with a write-capable Mode
 	// (the scheduler_fire.go:54-55 TODO — a read-leaning schedule must not carry
@@ -415,7 +418,7 @@ func (m *scheduleManager) validateScheduleSpec(ctx context.Context, spec port.Sc
 		mode = session.ModeDefault
 	}
 	if !spec.Mutating && mode != session.ModePlan {
-		return time.Time{}, fmt.Errorf("%w: a non-mutating schedule must use plan mode (got %q)", ErrInvalidArgument, mode)
+		return time.Time{}, nil, fmt.Errorf("%w: a non-mutating schedule must use plan mode (got %q)", ErrInvalidArgument, mode)
 	}
 	// Validate the workspace PROFILE-AWARE, mirroring the session create-seam
 	// (service.go createSession): a default-profile schedule REQUIRES a workspace
@@ -426,14 +429,14 @@ func (m *scheduleManager) validateScheduleSpec(ctx context.Context, spec port.Sc
 	switch SessionProfile(spec.Profile) {
 	case ProfileDefault:
 		if spec.Workspace == "" {
-			return time.Time{}, fmt.Errorf("%w: a default-profile schedule requires a workspace (the fire mints a filesystem session)", ErrInvalidArgument)
+			return time.Time{}, nil, fmt.Errorf("%w: a default-profile schedule requires a workspace (the fire mints a filesystem session)", ErrInvalidArgument)
 		}
 	case ProfileNoFS:
 		if spec.Workspace != "" {
-			return time.Time{}, fmt.Errorf("%w: a %q schedule must not carry a workspace (a no-FS fire has no filesystem to root); got %q", ErrInvalidArgument, ProfileNoFS, spec.Workspace)
+			return time.Time{}, nil, fmt.Errorf("%w: a %q schedule must not carry a workspace (a no-FS fire has no filesystem to root); got %q", ErrInvalidArgument, ProfileNoFS, spec.Workspace)
 		}
 	default:
-		return time.Time{}, fmt.Errorf("%w: unknown schedule profile %q (supported: \"\" (default) and %q)", ErrInvalidArgument, spec.Profile, ProfileNoFS)
+		return time.Time{}, nil, fmt.Errorf("%w: unknown schedule profile %q (supported: \"\" (default) and %q)", ErrInvalidArgument, spec.Profile, ProfileNoFS)
 	}
 	// Selector validation (ADR 0073, AC1.2c): a non-empty selector must name a
 	// provider+model pair the deployment actually serves — resolved against the
@@ -443,17 +446,18 @@ func (m *scheduleManager) validateScheduleSpec(ctx context.Context, spec port.Sc
 	// the deployment never configured, surfacing hours later as a fire-time
 	// failure. An empty selector (the deployment default) is ALWAYS valid.
 	if err := m.validateScheduleSelector(spec.Selector); err != nil {
-		return time.Time{}, err
+		return time.Time{}, nil, err
 	}
 	switch spec.Trigger.Kind() {
 	case port.TriggerOneShot:
 		if !spec.Trigger.OneShot.After(now) {
-			return time.Time{}, fmt.Errorf("%w: one-shot trigger time must be in the future", ErrInvalidArgument)
+			return time.Time{}, nil, fmt.Errorf("%w: one-shot trigger time must be in the future", ErrInvalidArgument)
 		}
 	case port.TriggerCron:
-		return m.validateCronTrigger(spec, now)
+		next, cerr := m.validateCronTrigger(spec, now)
+		return next, originOwner, cerr
 	}
-	return time.Time{}, nil
+	return time.Time{}, originOwner, nil
 }
 
 // validateCronTrigger validates the cron arm of the trigger switch: the
@@ -498,36 +502,41 @@ func (m *scheduleManager) validateCronTrigger(spec port.ScheduleSpec, now time.T
 //   - an OUT-OF-BAND create (REST/CLI: no origin session) reads the verified
 //     principal riding the context.
 //
-// It NEVER fabricates one: an ownerless origin session, an unauthenticated
-// out-of-band create, and (defensively) an origin that cannot be loaded all
-// yield nil. The origin was Loaded moments earlier by validateScheduleOrigin,
-// which rejects a missing one fail-closed, so the load here is a re-read of a
-// session known to exist — the second read costs one store hit on a
-// low-frequency human action and keeps the validation seam's signature intact.
-func (m *scheduleManager) captureScheduleOwner(ctx context.Context, spec port.ScheduleSpec) *session.Principal {
+// It NEVER fabricates one: an ownerless origin session and an unauthenticated
+// out-of-band create both yield nil.
+//
+// originOwner is the owner read off the load validateScheduleOrigin ALREADY did
+// (nil for an ownerless or absent origin). It is threaded in rather than re-read
+// here: a childgc sweep landing between the two reads would turn a validated,
+// owned create into a silently OWNERLESS schedule — the exact deletion hazard
+// ADR 0100 decision 6 exists for.
+func (m *scheduleManager) captureScheduleOwner(ctx context.Context, spec port.ScheduleSpec, originOwner *session.Principal) *session.Principal {
 	if spec.OriginSessionID == "" {
 		return session.PrincipalFromContext(ctx)
 	}
-	origin, err := m.store.Load(ctx, spec.OriginSessionID)
-	if err != nil || origin == nil || origin.Owner == nil {
-		return nil
-	}
-	owner := *origin.Owner
-	return &owner
+	return originOwner.Clone()
 }
 
 // validateScheduleOrigin rejects (fail-closed) a non-empty OriginSessionID that
 // names a session not in the held store. An empty OriginSessionID is always
 // valid (delivery is OFF). This is extracted from validateScheduleSpec to keep the
 // cyclomatic complexity below the gocyclo threshold of 20.
-func (m *scheduleManager) validateScheduleOrigin(ctx context.Context, spec port.ScheduleSpec) error {
+//
+// It also RETURNS the validated session's owner (nil when there is no origin, or
+// the origin is ownerless), so the create-seam captures the owner from THIS load
+// instead of re-reading a session a concurrent sweep may already have deleted.
+func (m *scheduleManager) validateScheduleOrigin(ctx context.Context, spec port.ScheduleSpec) (*session.Principal, error) {
 	if spec.OriginSessionID == "" {
-		return nil
+		return nil, nil
 	}
-	if _, lerr := m.store.Load(ctx, spec.OriginSessionID); lerr != nil {
-		return fmt.Errorf("%w: origin_session_id %q must reference an existing session: %w", ErrInvalidArgument, spec.OriginSessionID, lerr)
+	origin, lerr := m.store.Load(ctx, spec.OriginSessionID)
+	if lerr != nil {
+		return nil, fmt.Errorf("%w: origin_session_id %q must reference an existing session: %w", ErrInvalidArgument, spec.OriginSessionID, lerr)
 	}
-	return nil
+	if origin == nil {
+		return nil, nil
+	}
+	return origin.Owner.Clone(), nil
 }
 
 // validateScheduleSelector rejects (fail-closed) a non-empty
@@ -579,7 +588,7 @@ func (m *scheduleManager) UpdateSchedule(ctx context.Context, spec port.Schedule
 	// The computed cron next-fire is not needed here (Update preserves the
 	// existing State, including NextFireAt); the call is still made for its
 	// validation side effect (the shared create-seam checks).
-	if _, err := m.validateScheduleSpec(ctx, spec, now); err != nil {
+	if _, _, err := m.validateScheduleSpec(ctx, spec, now); err != nil {
 		return port.Schedule{}, err
 	}
 	applyScheduleDefaults(&spec)
