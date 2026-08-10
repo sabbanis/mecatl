@@ -249,7 +249,13 @@ and written through its methods, never by poking the struct
 Every event in the durable log names its actor, and a schedule records its owner.
 The event principal is stamped **only at `appendEvent`**
 ([`internal/adapter/server/service.go`](../../internal/adapter/server/service.go)),
-read from the loaded session's owner — the loop and every emit site leave it nil, it
+read from the **context principal — the caller who drove the request, not the
+session's owner**. Those are different questions: this phase ships no
+authorization, so any authenticated caller may act on any session, and deriving the
+actor from the owner would stamp Alice onto every event of a run Bob drove (worst on
+`EvApproval`, which records a human granting a tool permission). The owner answers
+"whose is this?" and remains the identity of record; the actor answers "who did
+this?". The loop and every emit site leave it nil, it
 is log-only (`toProto` skips it, the event-sourced `Fold` ignores it), and no proto
 change is needed **for the event path** (the `SessionSummary.owner` wire change is
 Scenario 3's, called out there). A schedule's owner is captured at **create** time —
@@ -257,12 +263,16 @@ never derived at fire time, because `childgc` may sweep the origin session on
 retention while the schedule lives on. The capture rule depends on the create
 surface: the Schedule-tool path reads the *executing session's* owner via the origin
 binder; an out-of-band REST/CLI create (no origin session) reads the *context
-principal*; ownerless/none stays empty (never fabricated). A fire's session and
-events carry the schedule's owner with `GrantType: client_credentials` — the fire
-mints its `sched--` session under the scheduler's system-principal context, so an
-explicit owner-injection seam (a `WithOwner` CreateSessionOption sibling of
-`WithSessionID`) overrides the stamp; attribution collapses to the accountable
-person, and the grant type honestly signals automated-not-interactive.
+principal*; ownerless/none stays empty (never fabricated). A fire's **session**
+carries the schedule's owner with `GrantType: client_credentials` — the fire mints
+its `sched--` session under the scheduler's system-principal context, so an explicit
+owner-injection seam (a `WithOwner` CreateSessionOption sibling of `WithSessionID`)
+overrides the stamp; accountability collapses to the person, and the grant type
+honestly signals automated-not-interactive. Its **events** name the acting principal
+by the same rule as every other event — the scheduler's system principal — so the
+owner stays on the session and the events do not claim she personally acted. Every
+durable append path stamps through the one chokepoint, the schedule lifecycle
+(`fired`/`failed`) events included.
 
 **Work:**
 - engine domain (`engine/session/event.go`): the `Event.Actor` field (nil at emit).
@@ -275,9 +285,13 @@ person, and the grant type honestly signals automated-not-interactive.
   scheduler's system principal), with `client_credentials`.
 
 **Acceptance:**
-- AC4.1: An event appended for a session owned by Alice is recorded with
-  `Actor == Alice's principal`; the loop-side emit leaves it nil and only
-  `appendEvent` stamps it.
+- AC4.1: An event appended during a run driven by Bob is recorded with
+  `Actor == Bob's principal` — the caller who **acted**, read from the context
+  principal, NOT the session's owner. The two differ whenever one caller acts on
+  another's session, which this phase permits (no authorization), so a session owned
+  by Alice and driven by Bob records Bob. The loop-side emit leaves it nil and only
+  `appendEvent` stamps it — and EVERY durable append path goes through that one
+  chokepoint, including the schedule lifecycle (`fired`/`failed`) events.
   - verify: `TestCallerIdentity_Scenario4_EventActorStampedAtAppendOnly`
 - AC4.2: The event annotation is log-only — it does not appear on the client wire
   (`toProto` omits it) and does not perturb event-sourced rehydration: a session
@@ -289,11 +303,15 @@ person, and the grant type honestly signals automated-not-interactive.
   - verify: `TestCallerIdentity_Scenario4_ScheduleOwnerCapturedAtCreate`
 - AC4.4: A scheduled fire's `sched--` session records `Owner.Subject ==` the schedule
   owner's subject with `GrantType == client_credentials` (injected via the explicit
-  CreateSessionOption, not the scheduler's system principal), and its events carry
-  the same actor.
+  CreateSessionOption, not the scheduler's system principal). Its **events** carry
+  the acting principal — the scheduler's **system** principal — so the record
+  separates the accountable owner (on the session) from the mechanism that acted (on
+  the events). Alice is still named; the events no longer claim she personally acted
+  at 3am.
   - verify: `TestCallerIdentity_Scenario4_FireRunsAsOwnerClientCredentials`
-- AC4.5: An event for an ownerless (pre-ship) session records a nil/absent actor —
-  never a fabricated one.
+- AC4.5: An event appended with **no verified caller** on the context — the
+  unauthenticated path, and a pre-ship ownerless session — records a nil/absent
+  actor, never a fabricated one.
   - verify: `TestCallerIdentity_Scenario4_OwnerlessEventActorAbsent`
 - AC4.6: A schedule created out-of-band (REST/CLI, no origin session) under a
   verified principal records the context principal as its owner — not an

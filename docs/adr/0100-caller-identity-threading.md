@@ -88,12 +88,29 @@ and stop.** No enforcement, no per-user keying changes, no signing.
    `Load`) populates the row identically to the slow path. Display-only — no
    filtering (that is the isolation track's).
 
-5. **The event annotation is log-only, stamped only at `appendEvent`.**
-   `session.Event.Actor` is nil at every emit site; the relay's `appendEvent` reads
-   the loaded session's owner and stamps it. `toProto` omits it (the log-only sibling
-   of `EvApproval`/`EvCompactionArchive`); the event-sourced `Fold` ignores it (a
-   Fold-rebuilt session keeps the snapshot-restored owner; the fold neither requires
-   nor re-derives `Event.Actor`). No proto change on the event path.
+5. **The event annotation is log-only, stamped only at `appendEvent`, and names the
+   caller who ACTED — not the session's owner.** `session.Event.Actor` is nil at
+   every emit site; the relay's `appendEvent` reads the **context principal** (the
+   verified caller driving this request) and stamps it. `toProto` omits it (the
+   log-only sibling of `EvApproval`/`EvCompactionArchive`); the event-sourced `Fold`
+   ignores it (a Fold-rebuilt session keeps the snapshot-restored owner; the fold
+   neither requires nor re-derives `Event.Actor`). No proto change on the event path.
+
+   The owner and the actor are **different questions and routinely different
+   values**: this phase deliberately ships no authorization, so any authenticated
+   caller may act on any session (see Consequences). Deriving `Actor` from the
+   session's owner would therefore stamp caller A onto every event of a run that
+   caller B drove — repudiation in both directions, and worst on `EvApproval`, where
+   the record *is* a human granting a tool permission. The session owner answers
+   "whose is this?" and stays the identity of record; `Actor` answers "who did
+   this?". A run with no verified caller stamps nil — absence is never fabricated.
+
+   A scheduled fire follows the same rule and therefore names the **scheduler's
+   system principal** on its events, while the fire's session still carries the
+   schedule owner (decision 6). That is the honest reading: the owner is
+   accountable, the scheduler is what acted. Every durable append path stamps
+   through the one chokepoint — including the schedule lifecycle events
+   (`fired`/`failed`), which must not reach the log unstamped.
 
 6. **A schedule's owner is captured at create time,** never derived at fire time
    (the origin may be swept). The capture rule depends on the create surface: the
@@ -124,8 +141,10 @@ audit trail names a real, verified actor. Token validation is shared with ToolHi
 and hardened once for both.
 
 **Harder / costs.** The `Event.Actor` field is nil almost everywhere (stamped only at
-one site) and denormalizes the owner onto every event — deliberate, so an event read
-in isolation names its actor. The owner is duplicated per event. `Authority` (Track
+one site) and denormalizes the acting principal onto every event — deliberate, so an
+event read in isolation names who acted. The actor is duplicated per event, and a
+reader must hold two identities in mind (the session's owner and the event's actor)
+which agree in the single-caller deployment and diverge in the multi-caller one. `Authority` (Track
 C) ships inert until that track lands — a dead additive field, accepted to kill a
 recurring three-way conflict on generated files. Building against a sibling-developed
 `toolhive-core/authn` risks doc/impl divergence; mitigated by a fake-verifier seam.
