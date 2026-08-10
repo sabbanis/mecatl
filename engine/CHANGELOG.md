@@ -42,6 +42,15 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
   All of the above are new exported identifiers and new struct fields —
   classified Added per COMPATIBILITY.md (a minor bump). (issue #367)
 
+- **`session.(*Principal).Clone`** (issue #367) — the ONE place the "copy a
+  `*Principal` across a boundary, nil stays nil" rule lives. It is
+  nil-receiver-safe (a nil principal clones to nil), and every site that hands a
+  principal out of, or into, a structure it does not own routes through it
+  instead of hand-rolling the nil check and the deref. `Principal` is all-strings
+  today so a shallow copy IS a deep copy; the method exists so that the day it
+  gains a slice or map field, every site stays correct together rather than
+  silently becoming an aliasing bug. A new exported method: Added (a minor bump).
+
 - **`port.SessionMeta.Owner`** (issue #367,
   [ADR 0100](../docs/adr/0100-caller-identity-threading.md) decision 4) — the
   session owner on the cheap picker projection, so a `MetaLister` listing (which

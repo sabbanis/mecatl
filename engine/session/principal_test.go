@@ -76,6 +76,50 @@ func TestRestoreLabelsNilOwnerLeavesOwnerUnset(t *testing.T) {
 	}
 }
 
+// TestPrincipalClone pins the shared "copy a *Principal across a boundary, nil
+// stays nil" rule the ownership sites route through. Principal is all-strings
+// today so a shallow copy is a deep copy; the method exists so the day it gains
+// a slice or map field every site stays correct together instead of drifting
+// into a silent aliasing bug.
+func TestPrincipalClone(t *testing.T) {
+	t.Parallel()
+
+	for _, tc := range []struct {
+		name string
+		in   *session.Principal
+	}{
+		{"nil stays nil", nil},
+		{"zero value", &session.Principal{}},
+		{"populated", &session.Principal{
+			Issuer: "https://idp", Subject: "alice", GrantType: session.GrantTypeUser, Name: "Ada",
+		}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			t.Parallel()
+			got := tc.in.Clone()
+			if tc.in == nil {
+				if got != nil {
+					t.Fatalf("Clone of nil: got %+v, want nil", *got)
+				}
+				return
+			}
+			if got == nil {
+				t.Fatal("Clone returned nil for a non-nil principal")
+			}
+			if got == tc.in {
+				t.Fatal("Clone returned the SAME pointer — not a copy")
+			}
+			if *got != *tc.in {
+				t.Fatalf("Clone value mismatch: got %+v, want %+v", *got, *tc.in)
+			}
+			got.Subject = "attacker"
+			if tc.in.Subject == "attacker" {
+				t.Fatal("mutating the clone changed the original")
+			}
+		})
+	}
+}
+
 // TestPrincipalGrantTypesAreTheThreeValues pins ADR 0100 decision 1: the grant
 // type is a small closed enum of exactly user / client_credentials / system.
 func TestPrincipalGrantTypesAreTheThreeValues(t *testing.T) {

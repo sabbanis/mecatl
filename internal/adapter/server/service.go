@@ -4287,7 +4287,9 @@ func (s *Service) ListSessions(ctx context.Context) ([]SessionSummary, error) {
 				summary.ModelID = sess.ModelID
 			}
 			summary.Title = DeriveTitle(sess)
-			summary.Owner = sess.Owner
+			// Clone: the row must not carry a live pointer into the loaded
+			// session, or a consumer of the row can rewrite the recorded owner.
+			summary.Owner = sess.Owner.Clone()
 		}
 		out = append(out, summary)
 	}

@@ -155,12 +155,9 @@ func Of(s *session.Session) (Snapshot, error) {
 		Title:           s.Title,
 		Authority:       s.Authority,
 		CreatedAt:       s.CreatedAt,
-	}
-	// Owner is a pointer for true omitempty; copy it so the snapshot cannot alias
-	// (and later mutate) the aggregate's own principal.
-	if s.Owner != nil {
-		o := *s.Owner
-		snap.Owner = &o
+		// Owner is a pointer for true omitempty; Clone so the snapshot cannot
+		// alias (and later mutate) the aggregate's own principal.
+		Owner: s.Owner.Clone(),
 	}
 	// Usage is a pointer for true omitempty: only emit the key when there is spend
 	// to persist, so a zero-usage snapshot stays byte-identical to a pre-Usage one.

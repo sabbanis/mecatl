@@ -52,6 +52,22 @@ type Principal struct {
 	Name string
 }
 
+// Clone returns a copy of p, or nil when p is nil. It is the ONE place the
+// "copy a *Principal across a boundary, nil stays nil" rule lives — every site
+// that hands a principal out of, or into, a structure it does not own routes
+// through it instead of hand-rolling the nil check and the deref.
+//
+// Principal is all-strings today, so a shallow copy IS a deep copy. The method
+// exists so that the day it gains a slice or map field, every site stays correct
+// together rather than silently becoming an aliasing bug.
+func (p *Principal) Clone() *Principal {
+	if p == nil {
+		return nil
+	}
+	c := *p
+	return &c
+}
+
 // Authority is Track C's placeholder label on the Session aggregate. It is
 // INERT in the caller-identity plan: nothing reads or writes it beyond the
 // snapshot round-trip. It ships now so the contended engine/api/*.txt
@@ -79,8 +95,7 @@ func (s *Session) RestoreLabels(owner *Principal, authority Authority) error {
 		if s.Owner != nil && *s.Owner != *owner {
 			return ErrOwnerAlreadySet
 		}
-		o := *owner
-		s.Owner = &o
+		s.Owner = owner.Clone()
 	}
 	if authority != "" {
 		s.Authority = authority

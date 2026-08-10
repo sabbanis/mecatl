@@ -409,6 +409,88 @@ func TestCallerIdentity_Scenario3_ListRowOwnerIsDisplayOnly(t *testing.T) {
 	}
 }
 
+// liveSessionStore is a SessionStore whose Load hands back the SAME
+// *session.Session on every call (a legal implementation — the port requires a
+// reconstruction, not a fresh copy per Load; a caching or in-process store looks
+// exactly like this). It is the fixture that makes an aliasing bug in a
+// Load-per-row consumer OBSERVABLE: a consumer that hands a caller a live
+// pointer into the loaded session lets that caller corrupt the store.
+type liveSessionStore struct {
+	sessions map[session.SessionID]*session.Session
+	saved    []port.StoredSession
+	now      time.Time
+}
+
+func (s *liveSessionStore) Save(_ context.Context, sess *session.Session) error {
+	if s.sessions == nil {
+		s.sessions = map[session.SessionID]*session.Session{}
+	}
+	if _, ok := s.sessions[sess.ID]; !ok {
+		s.saved = append(s.saved, port.StoredSession{ID: sess.ID, ModifiedAt: s.now})
+	}
+	s.sessions[sess.ID] = sess
+	return nil
+}
+
+func (s *liveSessionStore) Load(_ context.Context, id session.SessionID) (*session.Session, error) {
+	sess, ok := s.sessions[id]
+	if !ok {
+		return nil, port.ErrSessionNotFound
+	}
+	return sess, nil
+}
+
+func (s *liveSessionStore) List(_ context.Context) ([]port.StoredSession, error) {
+	return s.saved, nil
+}
+
+// Delete completes port.PrunableStore, which is what ListSessions type-asserts
+// for on the Load-per-row path.
+func (s *liveSessionStore) Delete(_ context.Context, id session.SessionID) error {
+	delete(s.sessions, id)
+	return nil
+}
+
+// TestListSessionsRowOwnerIsNotAliased pins the copy half of AC3.5: a
+// ListSessions row's owner is a COPY, not a live pointer into the loaded
+// session. Handing out the live pointer lets any consumer of the row (a mapper,
+// a UI, a later plan's isolation check) rewrite the session's recorded owner —
+// the aliasing class the shared Principal.Clone exists to close.
+func TestListSessionsRowOwnerIsNotAliased(t *testing.T) {
+	store := &liveSessionStore{now: time.Unix(0, 0)}
+	svc := newServiceWithStore(t, store)
+
+	sess, err := svc.CreateSession(session.WithPrincipal(context.Background(), alice), "/ws", session.ModeDefault, session.Limits{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	rows, err := svc.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("ListSessions: %v", err)
+	}
+	row := rowFor(t, rows, sess.ID)
+	if row.Owner == nil {
+		t.Fatal("row owner is nil; the fixture did not exercise the Load-per-row path")
+	}
+	row.Owner.Subject = "attacker"
+
+	stored, err := store.Load(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("store.Load: %v", err)
+	}
+	if got := ownerOf(stored.Owner); got != *alice {
+		t.Fatalf("mutating the list row rewrote the session's owner: got %+v, want %+v", got, *alice)
+	}
+	rows2, err := svc.ListSessions(context.Background())
+	if err != nil {
+		t.Fatalf("second ListSessions: %v", err)
+	}
+	if got := ownerOf(rowFor(t, rows2, sess.ID).Owner); got != *alice {
+		t.Fatalf("second listing owner = %+v, want %+v", got, *alice)
+	}
+}
+
 // newServiceWithEngineOverStore is newServiceWithStore with a scripted LLM, so a
 // test can drive a real run through the run-entry funnel over a caller-supplied
 // store.

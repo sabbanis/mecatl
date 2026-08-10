@@ -272,12 +272,12 @@ func makeFireFunc(svc *server.Service, store port.ScheduleStore, defaultTimeout 
 // context principal: an ownerless schedule's fire stays ownerless rather than
 // being adopted by the harness.
 func fireSessionOwner(owner *session.Principal) *session.Principal {
-	if owner == nil {
+	out := owner.Clone()
+	if out == nil {
 		return nil
 	}
-	out := *owner
 	out.GrantType = session.GrantTypeClientCredentials
-	return &out
+	return out
 }
 
 // newFireID mints a per-fire identifier: "sched--<name>-<UTC compact>-<randhex>".

@@ -451,10 +451,7 @@ func cloneSpec(spec port.ScheduleSpec) port.ScheduleSpec {
 		out.Parts = make([]session.Content, len(spec.Parts))
 		copy(out.Parts, spec.Parts)
 	}
-	if spec.Owner != nil {
-		owner := *spec.Owner
-		out.Owner = &owner
-	}
+	out.Owner = spec.Owner.Clone()
 	return out
 }
 

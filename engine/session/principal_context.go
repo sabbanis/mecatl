@@ -18,8 +18,7 @@ func WithPrincipal(ctx context.Context, p *Principal) context.Context {
 	if p == nil {
 		return ctx
 	}
-	c := *p
-	return context.WithValue(ctx, principalKey{}, &c)
+	return context.WithValue(ctx, principalKey{}, p.Clone())
 }
 
 // PrincipalFromContext returns the verified caller carried by ctx, or nil when
@@ -32,9 +31,5 @@ func WithPrincipal(ctx context.Context, p *Principal) context.Context {
 // copy-on-store promise.
 func PrincipalFromContext(ctx context.Context) *Principal {
 	p, _ := ctx.Value(principalKey{}).(*Principal)
-	if p == nil {
-		return nil
-	}
-	c := *p
-	return &c
+	return p.Clone()
 }
