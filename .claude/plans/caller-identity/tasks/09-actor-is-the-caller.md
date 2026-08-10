@@ -2,8 +2,8 @@
 id: 09-actor-is-the-caller
 title: Event.Actor names the acting caller; every durable append path stamps
 blocked_by: [08-repair-panel-findings]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-caller-identity/09-actor-is-the-caller"
 worktree: ""
 issue: "367"
 retries: 0
