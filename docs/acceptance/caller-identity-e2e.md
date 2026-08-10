@@ -341,14 +341,26 @@ reshapes the scenario if it fails.
   to make cheaper, not the assertions.
 - **Token expiry must come from in-test signing, never a fixture file.** A
   committed token rots and the suite starts failing on a calendar date.
-- **Scenario 2 was verified WITHOUT `-race`, and that debt is owed.** `-race`
-  needs cgo, cgo needs a working `clang`, and the toolchain was broken on the
-  machine the spike was written on (an Xcode/CLT failure unrelated to this work,
-  which also stops `task test` entirely). Everything was run under
-  `CGO_ENABLED=0`. These three ACs are wiring assertions rather than concurrency
-  tests, so the loss is small — but "passes without the race detector" is a
-  weaker claim than the repo's gate makes, and re-running them under `-race` is a
-  precondition for landing the spike, not an optional extra.
+- **Scenario 2's `-race` debt: RESOLVED.** The spike was first written on a machine
+  whose `clang` was broken, so it could only be verified under `CGO_ENABLED=0`
+  (`-race` needs cgo). That was recorded here as a landing precondition rather
+  than waved away, and it has since been paid: the three ACs pass under `-race`
+  on the ordinary toolchain, with no `CC`/`SDKROOT` override, so the claim now
+  rests on the same footing as the repo's own gate.
+
+  Kept as a note because the root cause is a trap worth recognising again: an
+  Xcode *app* upgrade does not reinstall the `XcodeSystemResources` package, so a
+  `CoreDevice.framework` from an older Xcode can persist and reference a symbol
+  the current macOS no longer exports (`dlopen … Symbol not found: _XPCTypeBool`).
+  `sudo installer -pkg /Applications/Xcode.app/Contents/Resources/Packages/XcodeSystemResources.pkg -target /`
+  fixes it; `xcodebuild -runFirstLaunch` is the sanctioned route but cannot run,
+  because `xcodebuild` is itself broken by the same fault.
+- **One pre-existing flaky test will show up in any full-suite run here.**
+  `TestRunStreamingDefaultTimeoutWhenNoDeadline`
+  ([`internal/adapter/osfs`](../../internal/adapter/osfs)) asserts a 5s
+  process-group-kill unwind and fails under load. It reproduces on `main` in
+  isolation and is unrelated to caller identity; do not spend time attributing it
+  to this work.
 
 ## Exit criteria
 
