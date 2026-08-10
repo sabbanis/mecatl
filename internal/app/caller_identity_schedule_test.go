@@ -297,19 +297,37 @@ func TestCallerIdentity_Scenario4_FireRunsAsOwnerClientCredentials(t *testing.T)
 		t.Errorf("fire session owner issuer = %q: the scheduler's system principal leaked through", fired.Owner.Issuer)
 	}
 
+	// The schedule LIFECYCLE event ("fired") is what the scheduler emits after the
+	// FireFunc returns, on the same system-principal context. It must reach the log
+	// through the ONE stamping chokepoint — not as an unstamped direct Append.
+	svc.EmitScheduleEvent(ctx, session.SchedulePayload{
+		ScheduleName: sched.Spec.Name,
+		FireID:       rec.ID,
+		SessionID:    rec.SessionID,
+		Kind:         "fired",
+		Stop:         rec.Stop,
+	})
+
 	// The fire's durable events name the ACTING principal — the scheduler's system
 	// principal — not the accountable owner on the session.
 	var events int
+	var sawFired bool
 	for ev, err := range store.Read(context.Background(), rec.SessionID) {
 		if err != nil {
 			t.Fatalf("EventLog.Read: %v", err)
 		}
 		events++
+		if ev.Type == session.EvScheduleFired {
+			sawFired = true
+		}
 		assertOwner(t, "event "+string(ev.Type)+" actor", ev.Actor,
 			syscaller.Issuer, string(syscaller.RootScheduler), session.GrantTypeSystem)
 	}
 	if events == 0 {
 		t.Fatal("the fire session's durable log is empty; the actor assertion never ran")
+	}
+	if !sawFired {
+		t.Fatal("no schedule.fired event in the durable log; the lifecycle-stamp assertion never ran")
 	}
 }
 

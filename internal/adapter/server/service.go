@@ -1007,7 +1007,6 @@ func NewService(cfg Config) (*Service, error) {
 			Store:       cfg.Store,
 			Now:         cfg.Now,
 			Models:      &svc.models,
-			EventLog:    cfg.EventLog,
 			Diagnostics: cfg.Diagnostics,
 		})
 	}

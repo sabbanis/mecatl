@@ -20,11 +20,11 @@ import (
 // *Service exists. The manager holds the ScheduleStore (either an explicit
 // override passed via ScheduleManagerConfig.ScheduleStore — the
 // --schedule-store-url composition path — or type-asserted off the session
-// store via the scheduleStoreProvider accessor), the cadence floor, the
-// durable EventLog, diagnostics, the shared model-inventory pointer
+// store via the scheduleStoreProvider accessor), the cadence floor, the shared
+// model-inventory pointer
 // (selector validation reads *models.Load()), and the late-set in-process
 // scheduler (FireNow). *server.Service delegates its nine port.ScheduleManager
-// methods + EmitScheduleEvent + GetFire to this manager — the RPC surface
+// methods + GetFire to this manager — the RPC surface
 // (grpc_schedule.go, the REST /v1/schedules handlers, the mecatui /schedule
 // overlay) is byte-identical; the create-seam (validateScheduleSpec +
 // applyScheduleDefaults + the origin/selector/cadence checks) moved verbatim
@@ -51,10 +51,8 @@ import (
 // Now is the now-func (the same clock the Service uses). Models is the SHARED
 // model-inventory pointer (selector validation reads *models.Load()); the
 // Service passes its own pointer so SetModels keeps working with no second
-// copy. EventLog + Diagnostics are the durable-log + diagnostic seams
-// EmitScheduleEvent rides; nil-safe (a nil EventLog is a no-op, a nil
-// Diagnostics tolerates an append failure silently). A store that backs no
-// ScheduleStore yields a nil manager (NewScheduleManager returns nil).
+// copy. Diagnostics is the operational diagnostic seam; nil-safe. A store that
+// backs no ScheduleStore yields a nil manager (NewScheduleManager returns nil).
 type ScheduleManagerConfig struct {
 	// Store is the port.SessionStore the schedule's origin validation reads
 	// (validateScheduleOrigin). It is also the ScheduleStore discovery source
@@ -69,16 +67,15 @@ type ScheduleManagerConfig struct {
 	ScheduleStore port.ScheduleStore
 	Now           func() time.Time
 	Models        *atomic.Pointer[[]*mecatlv1.ModelInfo]
-	EventLog      port.EventLog
 	Diagnostics   port.Diagnostics
 }
 
 // scheduleManager is the store-shaped schedule create/read/update/fire seam
 // (ADR 0076). It is the single truth the *Service delegates to: the nine
-// port.ScheduleManager verbs + EmitScheduleEvent + GetFire. It holds the
+// port.ScheduleManager verbs + GetFire. It holds the
 // ScheduleStore (type-asserted at construction), the session store (origin
 // validation reads store.Load), a now-func, the cadence floor, the late-set
-// in-process scheduler, the durable EventLog, diagnostics, and the shared
+// in-process scheduler, diagnostics, and the shared
 // model-inventory pointer. A nil scheduler (the byte-identical default) means
 // FireNow distinguishes ErrNoScheduleStore (no store) from
 // ErrSchedulerNotRunning (store present, no tick loop). The cadence floor
@@ -116,13 +113,7 @@ type scheduleManager struct {
 	// scheduler is wired (the byte-identical default — FireNow distinguishes
 	// ErrNoScheduleStore from ErrSchedulerNotRunning).
 	scheduler atomic.Pointer[scheduler.Scheduler]
-	// eventLog is the durable EventLog EmitScheduleEvent appends to. nil-safe:
-	// a nil EventLog makes EmitScheduleEvent a no-op (byte-identical to the
-	// no-emit path).
-	eventLog port.EventLog
-	// diag is the operational diagnostics sink EmitScheduleEvent WARNs to on
-	// an Append failure. nil-safe: a nil Diagnostics tolerates the failure
-	// silently (the durability gap is the only effect).
+	// diag is the operational diagnostics sink. nil-safe.
 	diag port.Diagnostics
 	// models is the SHARED selectable-model inventory pointer (the SAME
 	// atomic.Pointer the Service holds and SetModels swaps). Selector
@@ -189,7 +180,7 @@ type ScheduleManagerImpl = scheduleManager
 // Models is OPTIONAL: a standalone-constructed manager (no Models pointer)
 // admits only the empty selector (an empty inventory) — composition passes
 // the Service's own pointer so SetModels keeps working with no second copy.
-// EventLog + Diagnostics are OPTIONAL and nil-safe.
+// Diagnostics is OPTIONAL and nil-safe.
 //
 //nolint:revive // intentional unexported return: the manager is an adapter-internal type (ADR 0076); callers consume it via the port.ScheduleManager interface, and the *Service embeds + delegates to it. The unexported type keeps the schedule surface from leaking into the server adapter's public API.
 func NewScheduleManager(cfg ScheduleManagerConfig) *scheduleManager {
@@ -211,7 +202,6 @@ func NewScheduleManager(cfg ScheduleManagerConfig) *scheduleManager {
 		store:      cfg.Store,
 		schedStore: schedStore,
 		now:        now,
-		eventLog:   cfg.EventLog,
 		diag:       cfg.Diagnostics,
 		models:     cfg.Models,
 	}
@@ -679,44 +669,6 @@ func (m *scheduleManager) FireNow(ctx context.Context, name string) (port.Schedu
 		}
 	}
 	return fire, nil
-}
-
-// EmitScheduleEvent appends a SchedulePayload as an EvSchedule* event to the
-// fire session's durable EventLog. It is the composition-injected emit callback
-// the scheduler invokes (via Config.EmitScheduleEvent) for fired/failed/skipped
-// fires. For v1 delivery is durable-log-only (pull-only via GetFire/ListFires);
-// a live broadcast stream is a future phase. A skipped fire (no session id) is
-// dropped from the durable log (the log is session-keyed) and surfaces only via
-// the operator diagnostic. A nil EventLog is a no-op (byte-identical to the
-// no-emit path). An Append failure WARNs, never aborts (a broken durable log
-// must not break the fire).
-func (m *scheduleManager) EmitScheduleEvent(payload session.SchedulePayload) {
-	m.emitScheduleEvent(payload)
-}
-
-func (m *scheduleManager) emitScheduleEvent(payload session.SchedulePayload) {
-	if m.eventLog == nil {
-		return
-	}
-	if payload.SessionID == "" {
-		// A skipped fire has no session to log under; the live client wire (the
-		// next chunk's handlers) is the channel for skip events. The durable
-		// log is session-keyed, so a sessionless event has nowhere to land.
-		return
-	}
-	ev := session.Event{
-		Type:     scheduleEventType(payload.Kind),
-		Schedule: &payload,
-	}
-	// Cancel-detached so a fire's ctx (which may be cancelled when the run
-	// ends) cannot abort the durable append (the appendEvent precedent).
-	ctx := context.WithoutCancel(context.Background())
-	if err := m.eventLog.Append(ctx, payload.SessionID, ev); err != nil {
-		if m.diag != nil {
-			m.diag.Log(ctx, port.LevelWarn, "schedule event log append failed",
-				"session", string(payload.SessionID), "kind", payload.Kind, "err", err.Error())
-		}
-	}
 }
 
 // SetScheduler wires a scheduler onto the manager. It is the late-bind seam for

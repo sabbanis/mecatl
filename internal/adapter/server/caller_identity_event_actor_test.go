@@ -69,14 +69,14 @@ func driveConverse(t *testing.T, svc *server.Service, id session.SessionID) []*m
 	t.Helper()
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
-	return driveConverseOn(t, client, context.Background(), id)
+	return driveConverseOn(context.Background(), t, client, id)
 }
 
 // driveConverseOn runs one prompt over an EXISTING Converse client on the given
 // outgoing context (which may carry an Authorization bearer, so the server-side
 // handler context carries the verified caller). It returns the proto events the
 // client saw.
-func driveConverseOn(t *testing.T, client mecatlv1.HarnessServiceClient, callCtx context.Context, id session.SessionID) []*mecatlv1.Event {
+func driveConverseOn(callCtx context.Context, t *testing.T, client mecatlv1.HarnessServiceClient, id session.SessionID) []*mecatlv1.Event {
 	t.Helper()
 	ctx, cancel := context.WithTimeout(callCtx, 10*time.Second)
 	defer cancel()
@@ -167,12 +167,12 @@ func TestCallerIdentity_Scenario4_EventActorStampedAtAppendOnly(t *testing.T) {
 
 	// (a) Alice acts on her own session.
 	own := newAliceSession()
-	driveConverseOn(t, client, bearerCtx(context.Background(), "alice-tok"), own.ID)
+	driveConverseOn(bearerCtx(context.Background(), "alice-tok"), t, client, own.ID)
 	assertActor(own.ID, alice)
 
 	// (b) BOB acts on ALICE's session — the case the owner-derived stamp got wrong.
 	shared := newAliceSession()
-	driveConverseOn(t, client, bearerCtx(context.Background(), "bob-tok"), shared.ID)
+	driveConverseOn(bearerCtx(context.Background(), "bob-tok"), t, client, shared.ID)
 	assertActor(shared.ID, bob)
 	// The OWNER is untouched: the session is still Alice's ("whose is this?"),
 	// only the events name who acted ("who did this?").
@@ -229,7 +229,7 @@ func TestCallerIdentity_Scenario4_EventActorLogOnly(t *testing.T) {
 	auth := server.NewAuthenticator(server.SecurityConfig{Validator: fakeValidator{ok: map[string]session.Principal{"alice-tok": *alice}}})
 	client, cleanup := dialGRPCSecure(t, svc, auth)
 	defer cleanup()
-	wire := driveConverseOn(t, client, bearerCtx(context.Background(), "alice-tok"), sess.ID)
+	wire := driveConverseOn(bearerCtx(context.Background(), "alice-tok"), t, client, sess.ID)
 	if len(wire) == 0 {
 		t.Fatalf("no events on the client wire; the omission half is vacuous")
 	}
