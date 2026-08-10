@@ -95,3 +95,64 @@ Both the pod- and container-level `securityContext` satisfy the PSS
 **restricted** profile: `runAsNonRoot` (UID/GID 65532, matching the chainguard
 static base), `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`,
 `seccompProfile: RuntimeDefault`, and `capabilities.drop: [ALL]`.
+
+## Caller identity (OIDC) — the opt-in overlay
+
+`deploy/mecak8s-oidc/` is a kustomize overlay over `deploy/mecak8s/` that turns
+on **caller identity**: a real IdP authenticates each caller, and every session
+and schedule records the verified `(issuer, subject)` that owns it.
+
+```sh
+kubectl apply -k deploy/mecak8s-oidc     # edit the three flag values first
+```
+
+It appends three flags to the agent — `--oidc-issuer`, `--oidc-audience`
+(required whenever the issuer is set) and the optional `--oidc-jwks-uri` (pin the
+signing-key endpoint and skip discovery, for an air-gapped or pinned-key
+deployment). The base deploys with identity **off**, byte-identically to a mecatl
+without it, so nothing changes for existing users of these manifests.
+
+**This is attribution, not isolation.** It records who acted; it refuses nothing.
+Any authenticated caller can still list and act on any session — per-caller
+access control is separate, later work. Do not deploy it as a tenancy boundary.
+
+**Point it at a real external IdP over HTTPS.** That is the only shape that works
+with the token validator's security defaults intact: it refuses an `http://`
+issuer, and refuses a `jwks_uri` that resolves to a private, loopback or
+link-local address — which is what stops a `jwks_uri` aimed at cloud instance
+metadata (`169.254.169.254`). An **in-cluster** IdP needs a flag that relaxes
+both checks; that flag exists for the end-to-end test fixtures only and is
+deliberately absent from these manifests, because a published example must not
+ship SSRF relaxation. No `NetworkPolicy` patch is needed either: the base egress
+already allows DNS plus TCP 443 to any destination IP, exactly what an external
+IdP requires.
+
+### Current build: the flags fail closed
+
+The token validator lives in a shared library that is **not yet part of this
+build**, so a process started with `--oidc-issuer` set exits non-zero with:
+
+```
+oidc: misconfigured: no OIDC token validator is available in this build
+```
+
+That is deliberate. A verifier that cannot be constructed must never degrade
+silently to unauthenticated — the classic misconfigured-verifier fail-open — so
+mecated and mecak8s refuse to start instead. It is not a bug in the overlay, and
+it resolves when the validator library lands.
+
+### Trying it locally by hand
+
+Once the validator ships, the same three flags work on a plain `mecated` and are
+the quickest way to see attribution end to end:
+
+```sh
+bin/mecated --grpc-addr=127.0.0.1:8080 \
+  --oidc-issuer=https://idp.example.com/realms/mecatl \
+  --oidc-audience=mecatl \
+  --oidc-jwks-uri=https://idp.example.com/realms/mecatl/protocol/openid-connect/certs
+```
+
+Then create a session with a bearer token from that issuer and list sessions: the
+row names the caller. Until the validator lands this exits with the message
+above, which is the expected result rather than a misconfiguration on your side.

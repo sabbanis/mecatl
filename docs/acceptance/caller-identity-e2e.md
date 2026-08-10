@@ -109,22 +109,32 @@ fixtures**, and live with the e2e suite in Scenario 3 — never in `deploy/`. A
 published example that disables SSRF protection is the wrong artifact to ship.
 
 **Work:**
-- `deploy/mecak8s/overlays/oidc/`: a patch adding `--oidc-issuer`,
+- `deploy/mecak8s-oidc/`: a patch adding `--oidc-issuer`,
   `--oidc-jwks-uri`, `--oidc-audience` to the agent Deployment. Nothing else.
 - `deploy/README.md`: the overlay, and a by-hand local bring-up for debugging —
   explicitly noting it fails closed until the validator ships.
 
 **Acceptance:**
 - AC1.1: the OIDC overlay renders an agent Deployment carrying all three
-  `--oidc-*` flags, and the rendered manifests are accepted by a client-side
-  dry-run.
-  - verify: demonstration — `kustomize build deploy/mecak8s/overlays/oidc` piped
-    through `kubectl apply --dry-run=client -f -`, exit 0.
+  `--oidc-*` flags **appended to** the base args — every base flag
+  (`--redis-url`, `--session-lease-k8s-namespace`, …) survives — and the
+  rendered manifests are schema-valid.
+  - verify: demonstration — `kustomize build deploy/mecak8s-oidc` shows the 7
+    base args plus the 3 new ones, and pipes through
+    `kubeconform -strict -summary -` with `Valid: 12, Invalid: 0, Errors: 0`.
+    The args half is not incidental: a container's `args` is an ATOMIC list, so a
+    strategic-merge patch mentioning `args` would REPLACE the base list and
+    silently drop the storage and lease flags. The overlay uses a JSON6902
+    append for that reason, and this AC is what would catch a regression to a
+    merge patch. Schema validation is `kubeconform` rather than
+    `kubectl apply --dry-run=client`: the latter needs a reachable API server
+    even with `--validate=false` (it maps kinds against the server), so it
+    cannot run in CI or on a laptop with no cluster.
 - AC1.2: the **base** `deploy/mecak8s/` renders no `--oidc-*` argument at all —
   the default deployment is byte-unchanged, and identity is opt-in in the
   cluster exactly as it is locally.
   - verify: demonstration — `kustomize build deploy/mecak8s` greps clean for
-    `oidc`.
+    `oidc` (0 matches) and stays schema-valid.
 - AC1.3: the documented by-hand bring-up states plainly that `--oidc-issuer`
   currently exits non-zero because no validator ships in this build, so a reader
   cannot mistake the fail-closed refusal for a bug.
@@ -133,8 +143,10 @@ published example that disables SSRF protection is the wrong artifact to ship.
 - AC1.4: the overlay carries no flag that relaxes issuer-URL or private-address
   policy, and no in-cluster IdP workload — a published example must not ship SSRF
   relaxation. Those are Scenario 3's test fixtures.
-  - verify: demonstration — `kustomize build deploy/mecak8s/overlays/oidc` greps
-    clean for `insecure` and for any JWKS workload kind.
+  - verify: demonstration — `kustomize build deploy/mecak8s-oidc` greps clean
+    (0 matches) for `insecure`, `allow-private` and any JWKS workload. Note
+    `--oidc-jwks-uri` is a URL to an external endpoint, not a relaxation, and is
+    expected to be present.
 
 ---
 
