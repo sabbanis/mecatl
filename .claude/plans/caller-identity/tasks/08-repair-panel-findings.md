@@ -2,8 +2,8 @@
 id: 08-repair-panel-findings
 title: Repair the mechanical panel + MoE review findings (identity copy, owner race, aliasing, test gaps)
 blocked_by: [07-docs-crosscutting]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-caller-identity/08-repair-panel-findings"
 worktree: ""
 issue: "367"
 retries: 0
