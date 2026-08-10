@@ -587,7 +587,11 @@ through `--oidc-issuer` / `--oidc-jwks-uri` / `--oidc-audience`
 (`internal/cliconfig/oidc.go` (`OIDCConfig`, `OIDCValidator`)), and a validator
 that cannot be constructed is a **fatal** startup error, never a silent degrade to
 unauthenticated. With no validator wired the whole path is byte-identical to a
-mecatl without identity. Caller identity is deliberately independent of the static
+mecatl without identity. **No validator ships in this build yet** — the seam, the
+flags and the fail-closed startup decision are in place, but the implementation
+(`toolhive-core/authn`) lands separately, so `--oidc-issuer` is currently a fatal
+startup error rather than a working deployment mode. Caller identity is
+deliberately independent of the static
 `--auth-token`: `SecurityConfig.identityConfigured()` gates neither on nor off
 `authEnabled()`, because a shared-token deployment has one credential and zero
 subjects.
