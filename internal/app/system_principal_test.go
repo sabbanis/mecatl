@@ -2,6 +2,7 @@ package app_test
 
 import (
 	"context"
+	"sync"
 	"testing"
 	"time"
 
@@ -18,14 +19,21 @@ import (
 	"github.com/stacklok/mecatl/internal/syscaller"
 )
 
-// observe records the context a port actually saw, from whatever goroutine the
-// production wiring ran it on.
-type observe func(context.Context)
+// observe records the context a port actually saw on the named path, from
+// whatever goroutine the production wiring ran it on. The path label is what
+// lets a root with SEVERAL boundary-crossing paths (the scheduler: tick, fire,
+// delivery, reconcile) be asserted on EACH of them rather than on whichever one
+// happens to report first.
+type observe func(path string, ctx context.Context)
 
 // starter drives ONE registered internal goroutine root through its REAL
-// production entry point, wired to a port probe that hands back the context the
-// goroutine crossed the boundary with.
-type starter func(t *testing.T, ctx context.Context, seen observe)
+// production entry point, wired to port probes that hand back the context the
+// goroutine crossed each boundary with. paths enumerates every path the root
+// MUST be observed on; the harness waits for all of them and asserts each.
+type starter struct {
+	paths []string
+	run   func(t *testing.T, ctx context.Context, seen observe)
+}
 
 // TestCallerIdentity_Scenario2_InternalGoroutinesRunAsSystem pins AC2.2: every
 // internal goroutine root runs under an EXPLICIT system principal, never an
@@ -39,53 +47,46 @@ func TestCallerIdentity_Scenario2_InternalGoroutinesRunAsSystem(t *testing.T) {
 	t.Parallel()
 
 	starters := map[syscaller.Root]starter{
-		syscaller.RootChildGC: func(_ *testing.T, ctx context.Context, seen observe) {
+		syscaller.RootChildGC: {paths: []string{"store.List"}, run: func(_ *testing.T, ctx context.Context, seen observe) {
 			// The sweeper's first act is a store List — the port boundary.
 			app.StartChildGCForTest(ctx, app.Config{ChildRetention: time.Hour},
 				&probeSessionStore{Store: memstore.New(), seen: seen},
 				func(session.SessionID) bool { return false })
-		},
-		syscaller.RootMemoryConsolidation: func(_ *testing.T, ctx context.Context, seen observe) {
+		}},
+		syscaller.RootMemoryConsolidation: {paths: []string{"memory.List"}, run: func(_ *testing.T, ctx context.Context, seen observe) {
 			app.StartMemoryConsolidationForTest(ctx,
 				app.Config{MemoryConsolidateInterval: time.Millisecond},
 				probeMemoryStore{seen: seen}, nil)
-		},
-		syscaller.RootUserModelConsolidation: func(_ *testing.T, ctx context.Context, seen observe) {
+		}},
+		syscaller.RootUserModelConsolidation: {paths: []string{"memory.List"}, run: func(_ *testing.T, ctx context.Context, seen observe) {
 			app.StartUserModelConsolidationForTest(ctx,
 				app.Config{UserModelConsolidateInterval: time.Millisecond},
 				probeMemoryStore{seen: seen}, nil)
+		}},
+		// The scheduler root fans out into FOUR boundary-crossing paths, all
+		// descending from Start's one syscaller wrap. Every one is asserted: the
+		// tick's Due poll alone would leave fire, delivery and reconcile resting
+		// on an inheritance argument, so a stray context.Background() in any of
+		// them would pass.
+		syscaller.RootScheduler: {
+			paths: []string{"store.Due", "fire", "delivery", "reconcile"},
+			run:   startProbedScheduler,
 		},
-		syscaller.RootScheduler: func(t *testing.T, ctx context.Context, seen observe) {
-			// tick, fire, delivery and reconcile all descend from Start's ctx;
-			// the tick loop's Due poll is where that ctx first crosses a port.
-			s := scheduler.New(scheduler.Config{
-				Store:        &probeScheduleStore{Store: memschedulestore.New(), seen: seen},
-				Clock:        wallclock.Clock{},
-				TickInterval: time.Millisecond,
-			})
-			s.SetFire(func(context.Context, port.Schedule, time.Time) (port.ScheduleFire, error) {
-				return port.ScheduleFire{}, nil
-			})
-			if err := s.Start(ctx); err != nil {
-				t.Fatalf("scheduler.Start: %v", err)
-			}
-			t.Cleanup(func() { _ = s.Stop() })
-		},
-		syscaller.RootJWKSRefresh: func(t *testing.T, ctx context.Context, seen observe) {
+		syscaller.RootJWKSRefresh: {paths: []string{"validator.New"}, run: func(t *testing.T, ctx context.Context, seen observe) {
 			// The validator owns background key rotation, so the ctx it is
 			// CONSTRUCTED with is the refresh goroutine's root.
 			_, err := cliconfig.OIDCValidator(ctx, cliconfig.OIDCConfig{
 				Issuer:   "https://idp.example",
 				Audience: "mecatl",
 				NewValidator: func(ctx context.Context, _ cliconfig.OIDCConfig) (server.PrincipalValidator, error) {
-					seen(ctx)
+					seen("validator.New", ctx)
 					return probeValidator{}, nil
 				},
 			})
 			if err != nil {
 				t.Fatalf("OIDCValidator: %v", err)
 			}
-		},
+		}},
 	}
 
 	// The registry and the table are ONE set: a new root with no driver here is
@@ -106,30 +107,132 @@ func TestCallerIdentity_Scenario2_InternalGoroutinesRunAsSystem(t *testing.T) {
 			defer cancel()
 			// The root context carries NO principal: whatever the port sees is
 			// what the production wiring stamped, nothing inherited from here.
-			ch := make(chan context.Context, 1)
-			starters[root](t, ctx, func(c context.Context) {
-				select {
-				case ch <- c:
-				default:
-				}
-			})
+			st := starters[root]
+			rec := &pathRecorder{want: st.paths, got: map[string]context.Context{}, done: make(chan struct{})}
+			st.run(t, ctx, rec.observe)
 			select {
-			case got := <-ch:
-				p := session.PrincipalFromContext(got)
+			case <-rec.done:
+			case <-time.After(10 * time.Second):
+				t.Fatalf("%s: never crossed these port boundaries: %v", root, rec.missing())
+			}
+			for _, path := range st.paths {
+				p := session.PrincipalFromContext(rec.contextFor(path))
 				if p == nil {
-					t.Fatalf("%s: port observed an ABSENT principal; the root context is not wrapped with the system principal", root)
+					t.Fatalf("%s (%s): port observed an ABSENT principal; that path's context is not wrapped with the system principal", root, path)
 				}
 				if p.GrantType != session.GrantTypeSystem {
-					t.Errorf("%s: grant type = %q, want %q", root, p.GrantType, session.GrantTypeSystem)
+					t.Errorf("%s (%s): grant type = %q, want %q", root, path, p.GrantType, session.GrantTypeSystem)
 				}
 				if p.Subject != string(root) {
-					t.Errorf("%s: subject = %q, want %q (the root must stamp its OWN identity)", root, p.Subject, root)
+					t.Errorf("%s (%s): subject = %q, want %q (the root must stamp its OWN identity)", root, path, p.Subject, root)
 				}
-			case <-time.After(10 * time.Second):
-				t.Fatalf("%s: never crossed a port boundary", root)
 			}
 		})
 	}
+}
+
+// pathRecorder collects the FIRST context observed on each declared path and
+// closes done once every one has reported. Observations arrive from the
+// production goroutines, so it is mutex-guarded.
+type pathRecorder struct {
+	mu     sync.Mutex
+	want   []string
+	got    map[string]context.Context
+	done   chan struct{}
+	closed bool
+}
+
+func (r *pathRecorder) observe(path string, ctx context.Context) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if _, seen := r.got[path]; !seen {
+		r.got[path] = ctx
+	}
+	if r.closed || len(r.got) < len(r.want) {
+		return
+	}
+	for _, p := range r.want {
+		if _, seen := r.got[p]; !seen {
+			return
+		}
+	}
+	r.closed = true
+	close(r.done)
+}
+
+func (r *pathRecorder) contextFor(path string) context.Context {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.got[path]
+}
+
+func (r *pathRecorder) missing() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	var out []string
+	for _, p := range r.want {
+		if _, seen := r.got[p]; !seen {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
+// startProbedScheduler drives the REAL scheduler through Start (the one place
+// the syscaller wrap happens) with its store pre-seeded so all four paths fire:
+// a DUE cron schedule drives the fire path and, through RecordFire, the delivery
+// callback; a stale claimed-but-never-started fire drives the reconcile scan;
+// and the tick's own Due poll is observed by the store probe.
+func startProbedScheduler(t *testing.T, ctx context.Context, seen observe) {
+	store := memschedulestore.New()
+	now := time.Now()
+	if err := store.Save(context.Background(), port.Schedule{
+		Spec: port.ScheduleSpec{
+			Name:    "due-cron",
+			Prompt:  "x",
+			Trigger: port.TriggerSpec{Cron: "* * * * *"},
+		},
+		State: port.ScheduleState{NextFireAt: now.Add(-time.Second), Enabled: true},
+	}); err != nil {
+		t.Fatalf("Save(due-cron): %v", err)
+	}
+	// Claimed (NextFireAt already advanced) but never started, and old enough to
+	// be past the reconciler's stale window.
+	if err := store.Save(context.Background(), port.Schedule{
+		Spec: port.ScheduleSpec{
+			Name:    "crashed-claim",
+			Prompt:  "x",
+			Trigger: port.TriggerSpec{Cron: "* * * * *"},
+		},
+		State: port.ScheduleState{
+			NextFireAt:        now.Add(time.Hour),
+			Enabled:           true,
+			LastFireAt:        now.Add(-2 * time.Hour),
+			LastFireSessionID: port.PendingFireSessionID,
+		},
+	}); err != nil {
+		t.Fatalf("Save(crashed-claim): %v", err)
+	}
+
+	s := scheduler.New(scheduler.Config{
+		Store:        &probeScheduleStore{Store: store, seen: seen},
+		Clock:        wallclock.Clock{},
+		TickInterval: time.Millisecond,
+	})
+	s.SetFire(func(fctx context.Context, _ port.Schedule, _ time.Time) (port.ScheduleFire, error) {
+		seen("fire", fctx)
+		return port.ScheduleFire{ID: "fire-1", SessionID: "sched--due-cron", Stop: "end_turn"}, nil
+	})
+	s.SetDeliverFireResult(func(dctx context.Context, _ port.Schedule, _ port.ScheduleFire) {
+		seen("delivery", dctx)
+	})
+	s.SetReconcileStaleFire(func(rctx context.Context, _ port.Schedule) {
+		seen("reconcile", rctx)
+	})
+	if err := s.Start(ctx); err != nil {
+		t.Fatalf("scheduler.Start: %v", err)
+	}
+	t.Cleanup(func() { _ = s.Stop() })
 }
 
 // --- port probes: real reference adapters, wrapped to report the ctx ---------
@@ -140,7 +243,7 @@ type probeSessionStore struct {
 }
 
 func (p *probeSessionStore) List(ctx context.Context) ([]port.StoredSession, error) {
-	p.seen(ctx)
+	p.seen("store.List", ctx)
 	return p.Store.List(ctx)
 }
 
@@ -150,7 +253,7 @@ type probeScheduleStore struct {
 }
 
 func (p *probeScheduleStore) Due(ctx context.Context, now time.Time) ([]port.Schedule, error) {
-	p.seen(ctx)
+	p.seen("store.Due", ctx)
 	return p.Store.Due(ctx, now)
 }
 
@@ -163,7 +266,7 @@ type probeMemoryStore struct {
 }
 
 func (p probeMemoryStore) List(ctx context.Context, _ string) ([]tool.MemoryEntry, error) {
-	p.seen(ctx)
+	p.seen("memory.List", ctx)
 	return nil, nil
 }
 
