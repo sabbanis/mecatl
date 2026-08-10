@@ -24,7 +24,7 @@ import (
 // lets a root with SEVERAL boundary-crossing paths (the scheduler: tick, fire,
 // delivery, reconcile) be asserted on EACH of them rather than on whichever one
 // happens to report first.
-type observe func(path string, ctx context.Context)
+type observe func(ctx context.Context, path string)
 
 // starter drives ONE registered internal goroutine root through its REAL
 // production entry point, wired to port probes that hand back the context the
@@ -32,7 +32,7 @@ type observe func(path string, ctx context.Context)
 // MUST be observed on; the harness waits for all of them and asserts each.
 type starter struct {
 	paths []string
-	run   func(t *testing.T, ctx context.Context, seen observe)
+	run   func(ctx context.Context, t *testing.T, seen observe)
 }
 
 // TestCallerIdentity_Scenario2_InternalGoroutinesRunAsSystem pins AC2.2: every
@@ -47,18 +47,18 @@ func TestCallerIdentity_Scenario2_InternalGoroutinesRunAsSystem(t *testing.T) {
 	t.Parallel()
 
 	starters := map[syscaller.Root]starter{
-		syscaller.RootChildGC: {paths: []string{"store.List"}, run: func(_ *testing.T, ctx context.Context, seen observe) {
+		syscaller.RootChildGC: {paths: []string{"store.List"}, run: func(ctx context.Context, _ *testing.T, seen observe) {
 			// The sweeper's first act is a store List — the port boundary.
 			app.StartChildGCForTest(ctx, app.Config{ChildRetention: time.Hour},
 				&probeSessionStore{Store: memstore.New(), seen: seen},
 				func(session.SessionID) bool { return false })
 		}},
-		syscaller.RootMemoryConsolidation: {paths: []string{"memory.List"}, run: func(_ *testing.T, ctx context.Context, seen observe) {
+		syscaller.RootMemoryConsolidation: {paths: []string{"memory.List"}, run: func(ctx context.Context, _ *testing.T, seen observe) {
 			app.StartMemoryConsolidationForTest(ctx,
 				app.Config{MemoryConsolidateInterval: time.Millisecond},
 				probeMemoryStore{seen: seen}, nil)
 		}},
-		syscaller.RootUserModelConsolidation: {paths: []string{"memory.List"}, run: func(_ *testing.T, ctx context.Context, seen observe) {
+		syscaller.RootUserModelConsolidation: {paths: []string{"memory.List"}, run: func(ctx context.Context, _ *testing.T, seen observe) {
 			app.StartUserModelConsolidationForTest(ctx,
 				app.Config{UserModelConsolidateInterval: time.Millisecond},
 				probeMemoryStore{seen: seen}, nil)
@@ -72,14 +72,14 @@ func TestCallerIdentity_Scenario2_InternalGoroutinesRunAsSystem(t *testing.T) {
 			paths: []string{"store.Due", "fire", "delivery", "reconcile"},
 			run:   startProbedScheduler,
 		},
-		syscaller.RootJWKSRefresh: {paths: []string{"validator.New"}, run: func(t *testing.T, ctx context.Context, seen observe) {
+		syscaller.RootJWKSRefresh: {paths: []string{"validator.New"}, run: func(ctx context.Context, t *testing.T, seen observe) {
 			// The validator owns background key rotation, so the ctx it is
 			// CONSTRUCTED with is the refresh goroutine's root.
 			_, err := cliconfig.OIDCValidator(ctx, cliconfig.OIDCConfig{
 				Issuer:   "https://idp.example",
 				Audience: "mecatl",
 				NewValidator: func(ctx context.Context, _ cliconfig.OIDCConfig) (server.PrincipalValidator, error) {
-					seen("validator.New", ctx)
+					seen(ctx, "validator.New")
 					return probeValidator{}, nil
 				},
 			})
@@ -109,7 +109,7 @@ func TestCallerIdentity_Scenario2_InternalGoroutinesRunAsSystem(t *testing.T) {
 			// what the production wiring stamped, nothing inherited from here.
 			st := starters[root]
 			rec := &pathRecorder{want: st.paths, got: map[string]context.Context{}, done: make(chan struct{})}
-			st.run(t, ctx, rec.observe)
+			st.run(ctx, t, rec.observe)
 			select {
 			case <-rec.done:
 			case <-time.After(10 * time.Second):
@@ -142,7 +142,7 @@ type pathRecorder struct {
 	closed bool
 }
 
-func (r *pathRecorder) observe(path string, ctx context.Context) {
+func (r *pathRecorder) observe(ctx context.Context, path string) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if _, seen := r.got[path]; !seen {
@@ -183,7 +183,7 @@ func (r *pathRecorder) missing() []string {
 // a DUE cron schedule drives the fire path and, through RecordFire, the delivery
 // callback; a stale claimed-but-never-started fire drives the reconcile scan;
 // and the tick's own Due poll is observed by the store probe.
-func startProbedScheduler(t *testing.T, ctx context.Context, seen observe) {
+func startProbedScheduler(ctx context.Context, t *testing.T, seen observe) {
 	store := memschedulestore.New()
 	now := time.Now()
 	if err := store.Save(context.Background(), port.Schedule{
@@ -220,14 +220,14 @@ func startProbedScheduler(t *testing.T, ctx context.Context, seen observe) {
 		TickInterval: time.Millisecond,
 	})
 	s.SetFire(func(fctx context.Context, _ port.Schedule, _ time.Time) (port.ScheduleFire, error) {
-		seen("fire", fctx)
+		seen(fctx, "fire")
 		return port.ScheduleFire{ID: "fire-1", SessionID: "sched--due-cron", Stop: "end_turn"}, nil
 	})
 	s.SetDeliverFireResult(func(dctx context.Context, _ port.Schedule, _ port.ScheduleFire) {
-		seen("delivery", dctx)
+		seen(dctx, "delivery")
 	})
 	s.SetReconcileStaleFire(func(rctx context.Context, _ port.Schedule) {
-		seen("reconcile", rctx)
+		seen(rctx, "reconcile")
 	})
 	if err := s.Start(ctx); err != nil {
 		t.Fatalf("scheduler.Start: %v", err)
@@ -243,7 +243,7 @@ type probeSessionStore struct {
 }
 
 func (p *probeSessionStore) List(ctx context.Context) ([]port.StoredSession, error) {
-	p.seen("store.List", ctx)
+	p.seen(ctx, "store.List")
 	return p.Store.List(ctx)
 }
 
@@ -253,7 +253,7 @@ type probeScheduleStore struct {
 }
 
 func (p *probeScheduleStore) Due(ctx context.Context, now time.Time) ([]port.Schedule, error) {
-	p.seen("store.Due", ctx)
+	p.seen(ctx, "store.Due")
 	return p.Store.Due(ctx, now)
 }
 
@@ -266,7 +266,7 @@ type probeMemoryStore struct {
 }
 
 func (p probeMemoryStore) List(ctx context.Context, _ string) ([]tool.MemoryEntry, error) {
-	p.seen("memory.List", ctx)
+	p.seen(ctx, "memory.List")
 	return nil, nil
 }
 

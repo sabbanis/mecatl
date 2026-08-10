@@ -286,7 +286,7 @@ func (m *scheduleManager) CreateSchedule(ctx context.Context, spec port.Schedule
 	// it is derived from the create SURFACE. The origin session's owner comes
 	// from the load validateScheduleSpec ALREADY did, so a sweep deleting the
 	// origin between the two reads cannot silently produce an ownerless schedule.
-	spec.Owner = m.captureScheduleOwner(ctx, spec, originOwner)
+	spec.Owner = captureScheduleOwner(ctx, spec, originOwner)
 	// Compute the first NextFireAt. A cron trigger's next fire was ALREADY
 	// computed by validateScheduleSpec (it must parse the expression to
 	// validate the grammar, so that parse is reused here rather than calling
@@ -510,7 +510,7 @@ func (m *scheduleManager) validateCronTrigger(spec port.ScheduleSpec, now time.T
 // here: a childgc sweep landing between the two reads would turn a validated,
 // owned create into a silently OWNERLESS schedule — the exact deletion hazard
 // ADR 0100 decision 6 exists for.
-func (m *scheduleManager) captureScheduleOwner(ctx context.Context, spec port.ScheduleSpec, originOwner *session.Principal) *session.Principal {
+func captureScheduleOwner(ctx context.Context, spec port.ScheduleSpec, originOwner *session.Principal) *session.Principal {
 	if spec.OriginSessionID == "" {
 		return session.PrincipalFromContext(ctx)
 	}
