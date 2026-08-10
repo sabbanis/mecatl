@@ -53,6 +53,9 @@ func serve(ctx context.Context, cfg config, svc *server.Service, obs observabili
 	// The validator owns background JWKS refresh, so it is constructed with the
 	// SERVER-ROOT ctx. A misconfigured OIDC setup is FATAL: the pod refuses to
 	// start rather than silently serving unauthenticated (ADR 0100).
+	// Logged BEFORE construction so it appears even if the validator then fails
+	// to build.
+	warnInsecureIssuer(cfg.oidc)
 	validator, err := cliconfig.OIDCValidator(ctx, cfg.oidc)
 	if err != nil {
 		return err
@@ -303,4 +306,14 @@ func warnIfNonLoopback(flagName, addr string, authed bool) {
 // signal boundary (mecak8s reacts to SIGTERM by draining + bounded-stopping).
 func signalCtx() (context.Context, context.CancelFunc) {
 	return signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
+}
+
+// warnInsecureIssuer logs the SSRF-relaxation warning when the operator enabled
+// it, and is silent otherwise. It is a function rather than an inline branch so
+// the caller does not grow another decision point (gocyclo), and so both server
+// mains surface the warning identically.
+func warnInsecureIssuer(c cliconfig.OIDCConfig) {
+	if w := c.InsecureIssuerWarning(); w != "" {
+		slog.Warn(w)
+	}
 }

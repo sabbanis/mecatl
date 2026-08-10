@@ -109,6 +109,48 @@ type OIDCConfig struct {
 	// timeout on a supplied client, so the protections that matter are not traded
 	// away for the test's convenience.
 	httpClient *http.Client
+
+	// InsecureAllowPrivateIssuer relaxes TWO of the validator's SSRF defences at
+	// once: it permits an `http://` issuer/JWKS URL, and permits those URLs to
+	// resolve to a private, loopback or link-local address.
+	//
+	// BOTH are required together for its one consumer — the end-to-end suite,
+	// whose IdP is a plaintext JWKS pod at an in-cluster address. They are checks
+	// at different layers (a Config-level scheme check; an address check at dial
+	// time, re-applied per redirect hop), so relaxing one still refuses that pod.
+	//
+	// There is no test-only injection point for this case the way there is
+	// in-process: the agent binary constructs its own validator, so the relaxation
+	// has to be a real flag on a real deployment.
+	//
+	// It is OFF by default and must stay so. With it off, the default that blocks
+	// a jwks_uri resolving to cloud instance metadata (169.254.169.254) is intact.
+	// Turning it on is what makes an SSRF against the JWKS fetch possible — hence
+	// `insecure` in the flag's own name, the warning below, and `task
+	// deploy:check` failing if the string appears in any published manifest.
+	InsecureAllowPrivateIssuer bool
+}
+
+// InsecureIssuerWarning returns the operator-facing warning for a configuration
+// that has relaxed the issuer-URL and private-address checks, or "" when it has
+// not.
+//
+// It is a returned STRING rather than a log call because cliconfig owns no logger
+// — the same shape as ResolvedKeys.AuthFileWarning, which the cmd/ mains surface
+// with slog.Warn. Both server mains log this one too.
+//
+// Silence here is how a test flag becomes a production vulnerability: an operator
+// who copy-pastes it out of a test fixture gets no other signal that they have
+// switched off an SSRF defence.
+func (c OIDCConfig) InsecureIssuerWarning() string {
+	if !c.Enabled() || !c.InsecureAllowPrivateIssuer {
+		return ""
+	}
+	return "SECURITY: --oidc-insecure-allow-private-issuer is set. " +
+		"The token validator will accept an http:// issuer and a jwks_uri resolving to a " +
+		"private, loopback or link-local address, which disables the check that blocks a " +
+		"jwks_uri aimed at cloud instance metadata (169.254.169.254). This flag exists for " +
+		"end-to-end tests against an in-cluster IdP and must NOT be used in a real deployment."
 }
 
 // Enabled reports whether the operator asked for caller identity.
@@ -121,6 +163,8 @@ func RegisterOIDCFlags(fs *flag.FlagSet, c *OIDCConfig) {
 		"OIDC issuer URL (the `iss` claim, byte-exact) whose tokens identify callers. Setting it turns caller identity ON: every request must present a bearer the IdP vouches for, and the verified (iss, sub) is recorded as the session owner. Empty (default) disables it — requests are processed unauthenticated exactly as before. Requires --oidc-audience; a validator that cannot be constructed is FATAL, never a silent fall-back to unauthenticated")
 	fs.StringVar(&c.JWKSURI, "oidc-jwks-uri", "",
 		"STATIC JWKS endpoint for --oidc-issuer; short-circuits OIDC discovery (the air-gapped / pinned-key deployment). Empty derives it from the issuer's discovery document")
+	fs.BoolVar(&c.InsecureAllowPrivateIssuer, "oidc-insecure-allow-private-issuer", false,
+		"TEST ONLY. Permit an http:// OIDC issuer/JWKS URL and permit those URLs to resolve to a private, loopback or link-local address. It disables the check that blocks a jwks_uri aimed at cloud instance metadata (169.254.169.254), so it makes an SSRF against the key fetch possible. It exists for the end-to-end suite, whose IdP is a JWKS pod inside the cluster; enabling it logs a SECURITY warning. Never set it in a real deployment")
 	fs.StringVar(&c.Audience, "oidc-audience", "",
 		"audience (`aud`) this deployment accepts, REQUIRED with --oidc-issuer: an audience-less verifier would accept tokens minted for a different service")
 }

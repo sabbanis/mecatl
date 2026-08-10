@@ -1870,6 +1870,9 @@ func buildEdge(ctx context.Context, cfg config) (*tls.Config, *server.Authentica
 	if err != nil {
 		return nil, nil, err
 	}
+	// Logged BEFORE construction so it appears even if the validator then fails
+	// to build.
+	warnInsecureIssuer(cfg.oidc)
 	validator, err := cliconfig.OIDCValidator(ctx, cfg.oidc)
 	if err != nil {
 		return nil, nil, err
@@ -2018,4 +2021,14 @@ func shutdown(grpcSrv *grpc.Server, httpSrv, metricsSrv *http.Server) {
 		}
 	}
 	grpcSrv.GracefulStop()
+}
+
+// warnInsecureIssuer logs the SSRF-relaxation warning when the operator enabled
+// it, and is silent otherwise. It is a function rather than an inline branch so
+// the caller does not grow another decision point (gocyclo), and so both server
+// mains surface the warning identically.
+func warnInsecureIssuer(c cliconfig.OIDCConfig) {
+	if w := c.InsecureIssuerWarning(); w != "" {
+		slog.Warn(w)
+	}
 }

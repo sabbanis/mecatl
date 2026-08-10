@@ -79,6 +79,9 @@ var flagMetaByFlag = map[string]flagMeta{
 	"oidc-issuer":   {group: groupSecurity, common: false, acp: acpExclude},
 	"oidc-jwks-uri": {group: groupSecurity, common: false, acp: acpExclude},
 	"oidc-audience": {group: groupSecurity, common: false, acp: acpExclude},
+	// TEST-ONLY SSRF relaxation (see cliconfig.OIDCConfig): not common, and
+	// acpExclude like its siblings — an ACP client has no business setting it.
+	"oidc-insecure-allow-private-issuer": {group: groupSecurity, common: false, acp: acpExclude},
 
 	// ── Observability (serve-only) ────────────────────────────────────────
 	"otlp-endpoint":            {group: groupObservability, common: false, acp: acpExclude},

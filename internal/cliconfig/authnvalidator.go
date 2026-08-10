@@ -97,11 +97,17 @@ func errToSentinel(err error) error {
 // than relaxing a production default. Nothing in a real deployment sets it.
 func defaultNewValidator(ctx context.Context, c OIDCConfig) (server.PrincipalValidator, error) {
 	cfg := authn.Config{
-		Issuer:            c.Issuer,
-		Audiences:         []string{c.Audience},
-		JWKSURL:           c.JWKSURI,
-		AllowAnyAudience:  false,
-		InsecureAllowHTTP: false,
+		Issuer:           c.Issuer,
+		Audiences:        []string{c.Audience},
+		JWKSURL:          c.JWKSURI,
+		AllowAnyAudience: false,
+		// Both default false, and only the explicitly-named test flag moves them.
+		// InsecureAllowHTTP is a scheme check on the issuer URL; AllowPrivateIP is
+		// an address check at dial time (re-applied per redirect hop). The e2e
+		// suite needs BOTH because its IdP is a plaintext JWKS pod at an
+		// in-cluster address — one without the other still refuses it.
+		InsecureAllowHTTP: c.InsecureAllowPrivateIssuer,
+		AllowPrivateIP:    c.InsecureAllowPrivateIssuer,
 	}
 	if c.httpClient != nil {
 		cfg.HTTPClient = c.httpClient
@@ -112,4 +118,3 @@ func defaultNewValidator(ctx context.Context, c OIDCConfig) (server.PrincipalVal
 	}
 	return authnValidator{v: v}, nil
 }
-
