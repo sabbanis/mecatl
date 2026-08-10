@@ -132,10 +132,22 @@ verifier is an adapter wired at composition — the loop and domain never see it
   the configured issuer+audience yields the `(iss, sub)` principal on the handler's
   context.
   - verify: `TestCallerIdentity_Scenario1_ValidTokenYieldsPrincipal`
-- AC1.2: A token from the wrong issuer, wrong audience, expired, not-yet-valid
-  (`nbf` in the future beyond leeway), bad signature, `alg=none`, or HS\*-confused
-  is rejected; a non-JWT is a clean malformed error, never a fallback branch.
-  - verify: `TestCallerIdentity_Scenario1_BadTokensRejected`
+- AC1.2: **The edge honours a rejection absolutely.** Whatever the validator
+  rejects — wrong issuer, wrong audience, expired, not-yet-valid (`nbf` beyond
+  leeway), bad signature, `alg=none`, HS\*-confused, a non-JWT — becomes a clean
+  401-class error on BOTH surfaces and the handler NEVER runs: there is no fallback
+  branch, no swallowed error, and a rejected token is never rate-limit-keyed. A
+  validator that returns a nil principal with a nil error is also a rejection, and
+  one that returns an unusable principal (empty `Issuer`/`Subject`, an invalid
+  `GrantType`, or the internal `mecatl:internal` namespace) is refused at the seam.
+  **Scope limit, stated plainly:** the token MECHANICS above are the validator's
+  contract, not mecatl's, and `toolhive-core/authn` does not exist yet — so this AC
+  is pinned with a FAKE validator over opaque bearer strings. It verifies mecatl's
+  half (no fail-open, no fallthrough); it does NOT verify that a real `alg=none` or
+  HS-confused JWT is detected. That verification is deferred to the library and must
+  be re-established when it lands (see *Deferred decisions and known risks*).
+  - verify: `TestCallerIdentity_Scenario1_BadTokensRejected` +
+    `TestCallerIdentityEdgeRejectsMalformedPrincipal`
 - AC1.3: With OIDC **not** configured, a request with no token is processed
   unauthenticated — the handler sees a nil principal, the log says unauthenticated,
   and no user is invented. The behaviour is byte-identical to today (the TUI's
@@ -184,8 +196,14 @@ concerns, not loop concerns).
 - AC2.2: Every composition/server goroutine that crosses a port boundary — `childgc`,
   both dream consolidators, the scheduler tick/fire/delivery/reconcile loops, the
   fire goroutine, and the validator's JWKS background refresh — observes a non-nil
-  principal with `GrantType == system`. The set is enumerated once in the test, not
-  hard-coded per-call-site, so a new goroutine that forgets the principal fails.
+  principal with `GrantType == system`, asserted at the point that context actually
+  crosses a port (the tick's `Due` poll, the fire, the delivery, the reconcile claim,
+  each driven through the real `Scheduler.Start` rather than a test shortcut). The
+  registry (`syscaller.Roots`) is enumerated ONCE and the test fails on
+  registry↔table drift in either direction, so a REGISTERED root whose wrap is
+  removed goes red. **Residual, stated plainly:** the registry is manual opt-in, so a
+  brand-new goroutine that never registers a `Root` is not caught by this test — the
+  gate is against silently DROPPING a wrap, not against never adding one.
   - verify: `TestCallerIdentity_Scenario2_InternalGoroutinesRunAsSystem`
 - AC2.3: No port interface signature gains a principal parameter — the principal
   rides the context.
@@ -401,6 +419,25 @@ before it can be threaded to the goroutines' edge counterparts).
   (`/tmp/toolhive-core-authn-api-shape.md`) and covers all four hardening fixes; the
   risk is divergence between the doc and the merged module. Mitigated by building
   Scenario 1 behind a fake verifier and flipping to real on merge.
+- **No OIDC deployment is possible from this plan alone, and token mechanics are
+  UNVERIFIED here.** `OIDCConfig.NewValidator` is nil in both server mains, so
+  `--oidc-issuer` is a fatal startup error today (deliberately fail-closed, never a
+  silent degrade). Everything behind `PrincipalValidator.Validate` is therefore
+  untested in this tree: algorithm pinning and `alg: none` rejection (CWE-347),
+  HMAC/RSA key confusion, `kid` handling and JWKS rotation, negative caching of
+  unknown kids, byte-exact issuer canonicalization, `aud` enforcement,
+  `exp`/`nbf`/`iat` and clock leeway, TLS verification and timeouts on the JWKS
+  fetch, and JWKS response size bounds. **Treat RFC 7519 §7.2, RFC 8725 (JWT BCP)
+  and RFC 9700 conformance as entirely deferred**, and gate the first real
+  `--oidc-issuer` deployment on a review of `toolhive-core/authn` itself plus a
+  re-run of AC1.2 against genuine JWTs. What this plan DOES verify is mecatl's half:
+  no fail-open, no fallthrough, and a rejection honoured absolutely.
+- **`Principal.Name` is PII on the durable record.** It is a display label from the
+  token (in practice a full name or email), denormalized onto every event in
+  `.events.jsonl`, the session snapshot, and the schedule file (all `0600`, dirs
+  `0700`). No redaction, no retention policy tied to it. `session.Principal` carries
+  no JSON tags, so it serializes with Go-cased keys. Worth a conscious
+  GDPR/retention decision before an OIDC deployment; not a defect.
 - **`Authority` ships inert until Track C.** Accepted per the joint-prep decision: a
   dead additive field is cheaper than a recurring three-way conflict on generated
   files. If Track C's field shape is unsettled, this is the one assumption to
