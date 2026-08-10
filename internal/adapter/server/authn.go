@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/subtle"
 	"errors"
+	"io"
 	"net"
 	"net/http"
 	"strings"
@@ -236,6 +237,30 @@ func clientKeyFromAddr(addr string) string {
 type Authenticator struct {
 	cfg      SecurityConfig
 	limiters *limiterSet
+	// closeOnce guards the optional validator teardown so a defer plus an
+	// explicit shutdown call cannot double-close.
+	closeOnce sync.Once
+}
+
+// Close releases the edge's own long-lived resources at shutdown. Today that is
+// exactly one thing: the configured validator's teardown, when it has one.
+//
+// Teardown is an OPTIONAL CAPABILITY, type-asserted (the port.HookApprovalLearner
+// idiom), never a method on PrincipalValidator — widening that single-method
+// interface would break every fake and every test that scripts the seam. A
+// validator without a Close needs none.
+//
+// It exists because the real validator (toolhive-core/authn) owns a BACKGROUND
+// JWKS refresh that its Close() stops, and cancelling the root context does NOT
+// call Close(). Both server mains defer Authenticator.Close.
+//
+// Safe to call more than once and on the identity-OFF zero value.
+func (a *Authenticator) Close() {
+	a.closeOnce.Do(func() {
+		if c, ok := a.cfg.Validator.(io.Closer); ok {
+			_ = c.Close()
+		}
+	})
 }
 
 // NewAuthenticator builds an Authenticator from cfg. When rate limiting is

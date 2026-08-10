@@ -1721,6 +1721,9 @@ func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus
 	if err != nil {
 		return err
 	}
+	// The caller-identity validator owns a background JWKS refresh that only its
+	// own Close() stops — cancelling ctx does not. No-op when identity is off.
+	defer auth.Close()
 	logSecurityPosture(cfg, tlsCfg)
 
 	// --- gRPC: auth+rate interceptors, standard health service ---

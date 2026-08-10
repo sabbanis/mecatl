@@ -64,6 +64,9 @@ func serve(ctx context.Context, cfg config, svc *server.Service, obs observabili
 		// raw public port. RateBurst 0 leaves the authenticator's rate limiter
 		// disabled.
 	})
+	// The validator owns a background JWKS refresh that only its own Close()
+	// stops — cancelling ctx does not. No-op when identity is off.
+	defer auth.Close()
 
 	// --- gRPC: auth interceptors, standard health service ---
 	grpcOpts := []grpc.ServerOption{
