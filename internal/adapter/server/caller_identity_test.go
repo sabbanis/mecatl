@@ -82,6 +82,34 @@ func callUnary(a *server.Authenticator, bearer string) (handlerCtx context.Conte
 	return handlerCtx, err
 }
 
+// fakeServerStream is the minimal grpc.ServerStream the StreamInterceptor needs:
+// it only ever reads Context() before delegating, and principalStream wraps it.
+type fakeServerStream struct {
+	grpc.ServerStream
+	ctx context.Context
+}
+
+func (s fakeServerStream) Context() context.Context { return s.ctx }
+
+// callStream drives the gRPC STREAM interceptor with an Authorization bearer
+// (when non-empty) and reports the stream context the handler saw (nil when the
+// handler never ran) plus the interceptor error. The StreamInterceptor has its
+// own principalStream wrapping path, distinct from the unary one — so it needs
+// its own coverage, not an inference from callUnary.
+func callStream(a *server.Authenticator, bearer string) (handlerCtx context.Context, err error) {
+	ctx := context.Background()
+	if bearer != "" {
+		ctx = metadata.NewIncomingContext(ctx, metadata.Pairs("authorization", "Bearer "+bearer))
+	}
+	err = a.StreamInterceptor()(nil, fakeServerStream{ctx: ctx},
+		&grpc.StreamServerInfo{FullMethod: "/mecatl.v1.HarnessService/Converse"},
+		func(_ any, ss grpc.ServerStream) error {
+			handlerCtx = ss.Context()
+			return nil
+		})
+	return handlerCtx, err
+}
+
 // callHTTP drives the HTTP middleware and reports the handler context it saw
 // (nil when the handler never ran) plus the recorded response.
 func callHTTP(a *server.Authenticator, bearer string) (handlerCtx context.Context, rec *httptest.ResponseRecorder) {
@@ -404,6 +432,72 @@ func TestCallerIdentity_Scenario1_RateLimitKeyedOnPrincipal(t *testing.T) {
 			return strings.Contains(k, edgeAlice.Subject)
 		}) {
 			t.Fatalf("tracked keys = %v, want edgeAlice's bucket", keys)
+		}
+	})
+}
+
+// TestCallerIdentityStreamInterceptor covers the STREAM half of the gRPC edge.
+// StreamInterceptor owns its own principalStream wrapping — it overrides the
+// stream's Context so the handler sees the verified principal, and hands the
+// handler the ORIGINAL stream when identity is off. None of that is exercised by
+// the unary interceptor, so a regression there would ship silently: a stream RPC
+// (Converse, the main prompt surface) would run with no identity at all.
+func TestCallerIdentityStreamInterceptor(t *testing.T) {
+	t.Parallel()
+
+	v := fakeValidator{
+		ok:        map[string]session.Principal{"good": edgeAlice},
+		transient: map[string]bool{"jwks-down": true},
+	}
+
+	t.Run("valid token reaches the handler stream", func(t *testing.T) {
+		ctx, err := callStream(oidcOnly(t, v, 0, 0), "good")
+		if err != nil {
+			t.Fatalf("interceptor err = %v, want nil", err)
+		}
+		if ctx == nil {
+			t.Fatal("handler did not run")
+		}
+		got := session.PrincipalFromContext(ctx)
+		if got == nil {
+			t.Fatal("handler stream context carries no principal (principalStream did not wrap)")
+		}
+		if *got != edgeAlice {
+			t.Fatalf("principal = %+v, want %+v", *got, edgeAlice)
+		}
+	})
+
+	t.Run("bad token never reaches the handler", func(t *testing.T) {
+		auth := oidcOnly(t, v, 0, 0)
+		for _, tok := range []string{"rubbish", "not.a.jwt at all", ""} {
+			ctx, err := callStream(auth, tok)
+			if code := status.Code(err); code != codes.Unauthenticated {
+				t.Errorf("token %q: code = %v, want Unauthenticated", tok, code)
+			}
+			if ctx != nil {
+				t.Errorf("token %q: handler RAN on a rejected token", tok)
+			}
+		}
+		// A transient IdP outage stays a 503-class Unavailable on streams too.
+		ctx, err := callStream(auth, "jwks-down")
+		if code := status.Code(err); code != codes.Unavailable {
+			t.Errorf("code = %v, want Unavailable", code)
+		}
+		if ctx != nil {
+			t.Error("handler RAN while the IdP was unreachable")
+		}
+	})
+
+	t.Run("no identity configured: handler runs with a nil principal", func(t *testing.T) {
+		ctx, err := callStream(server.NewAuthenticator(server.SecurityConfig{}), "")
+		if err != nil {
+			t.Fatalf("interceptor err = %v, want nil", err)
+		}
+		if ctx == nil {
+			t.Fatal("handler did not run")
+		}
+		if p := session.PrincipalFromContext(ctx); p != nil {
+			t.Fatalf("principal = %+v, want nil (no user may be invented)", *p)
 		}
 	})
 }
