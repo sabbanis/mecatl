@@ -164,14 +164,32 @@ Tokens are signed **in-test** against an `httptest` static-JWKS server — no ne
 module dependency (`golang-jwt/jwt/v5` is already in mecatl's graph, promoted
 from indirect to direct).
 
-**Reaching that server needs no production flag.** `httptest` binds `127.0.0.1`,
-which the library's `AllowPrivateIP: false` default rejects — but `AllowPrivateIP`
-and `CACertPath` govern only the library's *default* HTTP client, and a
-caller-supplied `HTTPClient` brings its own dial policy. So the test injects a
-client and reaches loopback while every production default stays intact. The
-library still enforces its 1 MiB body cap, redirect refusal and timeout on a
-supplied client, so the protections that matter are not traded away. This is the
-reason Scenario 2 needs no new operator surface and Scenario 3 does.
+**Reaching that server needs no production flag, but it takes TWO measures, not
+one.** The two defaults that block a loopback fixture are enforced at *different
+layers*, and an earlier draft of this plan got that wrong by assuming one hatch
+covered both:
+
+- `AllowPrivateIP: false` rejects the loopback ADDRESS. It governs only the
+  library's *default* HTTP client, so a caller-supplied `HTTPClient` — which
+  brings its own dial policy — is enough. The library still enforces its 1 MiB
+  body cap, redirect refusal and timeout on a supplied client, so the protections
+  that matter are not traded away.
+- `InsecureAllowHTTP: false` rejects an `http://` issuer URL. This is a
+  **Config-level scheme check and fires regardless of which client is supplied**
+  (observed: `authn: issuer must use https scheme … http://127.0.0.1:50928`). An
+  injected client does nothing for it.
+
+So the fixture serves over **TLS** (`httptest.NewTLSServer`), which keeps BOTH
+pinned production defaults intact: the scheme check passes, and `srv.Client()`
+carries the test CA so the supplied client trusts it. The alternative — relaxing
+`InsecureAllowHTTP` for the test — would have meant a test seam on a default
+pinned precisely because a plaintext JWKS fetch lets anyone on the path
+substitute the signing keys. Serving TLS is strictly better and costs one
+constructor.
+
+This is still the reason Scenario 2 needs no new operator surface and Scenario 3
+does: a supplied client and a TLS fixture are both available in-process, while
+the agent binary reaching an in-cluster Service has neither.
 
 Scope discipline: this scenario asserts **wiring**, not token mechanics. Three
 assertions, not a rejection matrix.
@@ -323,6 +341,14 @@ reshapes the scenario if it fails.
   to make cheaper, not the assertions.
 - **Token expiry must come from in-test signing, never a fixture file.** A
   committed token rots and the suite starts failing on a calendar date.
+- **Scenario 2 was verified WITHOUT `-race`, and that debt is owed.** `-race`
+  needs cgo, cgo needs a working `clang`, and the toolchain was broken on the
+  machine the spike was written on (an Xcode/CLT failure unrelated to this work,
+  which also stops `task test` entirely). Everything was run under
+  `CGO_ENABLED=0`. These three ACs are wiring assertions rather than concurrency
+  tests, so the loss is small — but "passes without the race detector" is a
+  weaker claim than the repo's gate makes, and re-running them under `-race` is a
+  precondition for landing the spike, not an optional extra.
 
 ## Exit criteria
 
