@@ -64,6 +64,17 @@ The covered surface is the seven core packages (`session`, `governance`, `tool`,
   records a nil actor, never a fabricated one. A new struct field: Added (a
   minor bump).
 
+- **`port.ScheduleSpec.Owner`** (issue #367,
+  [ADR 0100](../docs/adr/0100-caller-identity-threading.md) decision 6) — the
+  verified caller a schedule is attributed to, captured ONCE at create time and
+  never derived at fire time (retention sweeps the origin session while the
+  schedule lives on, so a fire-time lookup would read a session that no longer
+  exists). The store is identity-blind: it round-trips the value verbatim on
+  every transport, which the schedule conformance suite now pins along with
+  pointer isolation (a loaded spec must not alias the stored record). Nil means
+  an ownerless schedule — never a fabricated principal. A new struct field:
+  Added (a minor bump).
+
 - **`session.WithPrincipal` / `session.PrincipalFromContext`** (issue #367,
   [ADR 0100](../docs/adr/0100-caller-identity-threading.md) decision 2) — the
   context seam the verified caller rides on. No port interface gains a principal
