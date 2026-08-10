@@ -18,7 +18,7 @@ type closingValidator struct {
 	closes int
 }
 
-func (v *closingValidator) Validate(context.Context, string) (*session.Principal, error) {
+func (*closingValidator) Validate(context.Context, string) (*session.Principal, error) {
 	return nil, server.ErrInvalidToken
 }
 
