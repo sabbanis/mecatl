@@ -78,4 +78,15 @@ func TestInvariant_no_fabricated_principal(t *testing.T) {
 			t.Fatalf("context principal mutated through the caller's pointer: %+v", *got)
 		}
 	})
+
+	t.Run("read hands back a copy, not the stored pointer", func(t *testing.T) {
+		t.Parallel()
+		ctx := session.WithPrincipal(context.Background(),
+			&session.Principal{Issuer: "https://idp.example", Subject: "user-1", GrantType: session.GrantTypeUser})
+		first := session.PrincipalFromContext(ctx)
+		first.Subject = "attacker"
+		if got := session.PrincipalFromContext(ctx); got.Subject != "user-1" {
+			t.Fatalf("a reader mutated what the context reports for every later reader: %+v", *got)
+		}
+	})
 }

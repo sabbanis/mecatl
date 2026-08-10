@@ -25,7 +25,16 @@ func WithPrincipal(ctx context.Context, p *Principal) context.Context {
 // PrincipalFromContext returns the verified caller carried by ctx, or nil when
 // there is none. Callers MUST handle nil as "no verified identity" — this
 // function never fabricates an anonymous principal.
+//
+// The returned principal is a COPY: a reader that mutates it cannot change what
+// the context reports for every later reader (which would corrupt ownership and
+// audit attribution downstream). This is the read half of WithPrincipal's
+// copy-on-store promise.
 func PrincipalFromContext(ctx context.Context) *Principal {
 	p, _ := ctx.Value(principalKey{}).(*Principal)
-	return p
+	if p == nil {
+		return nil
+	}
+	c := *p
+	return &c
 }
