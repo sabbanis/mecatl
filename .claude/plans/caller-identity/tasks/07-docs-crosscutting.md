@@ -2,8 +2,8 @@
 id: 07-docs-crosscutting
 title: Cross-cutting docs — ADR 0027 inventory rows, user-docs flags, architecture note
 blocked_by: [04-system-principal-goroutines, 06-schedule-owner]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-caller-identity/07-docs-crosscutting"
 worktree: ""
 issue: "367"
 retries: 1
