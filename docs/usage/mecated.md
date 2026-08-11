@@ -404,6 +404,22 @@ non-loopback bind — see the trust note below.
 | `--client-ca` | `""` | PEM client-CA bundle; enables **mutual TLS** (require + verify client certs). |
 | `--rate-limit` | `0` | sustained per-client request rate in req/s (`0` disables rate limiting). |
 | `--rate-burst` | `0` | rate-limit token-bucket burst size (`0` derives a sane default from `--rate-limit`). |
+| `--oidc-issuer` | `""` | OIDC issuer URL (the `iss` claim, byte-exact) whose tokens identify callers. Setting it turns **caller identity** on: every request must present a bearer the IdP vouches for, and the verified `(iss, sub)` is recorded as the session owner. Empty processes requests unauthenticated exactly as before. |
+| `--oidc-jwks-uri` | `""` | static JWKS endpoint for `--oidc-issuer`, short-circuiting OIDC discovery (the air-gapped / pinned-key deployment). Empty derives it from the issuer's discovery document. |
+| `--oidc-audience` | `""` | audience (`aud`) this deployment accepts. **Required** with `--oidc-issuer` — an audience-less verifier would accept tokens minted for a different service. |
+
+The three OIDC flags are identical on `mecak8s`. Two things to be clear about
+([ADR 0100](../adr/0100-caller-identity-threading.md)):
+
+- **Attribution, not isolation.** Sessions, schedules and durable event-log
+  records gain an owner; **nothing is refused** on identity grounds. Any
+  authenticated caller can still act on any session. Per-caller access control is
+  separate, later work — do not deploy these as a tenancy boundary.
+- **They currently fail closed.** The token validator ships with a shared library
+  that is not part of this build yet, so starting with `--oidc-issuer` set exits
+  with `no OIDC token validator is available in this build`. That is deliberate: a
+  deployment that asked for authentication must never silently degrade to an
+  unauthenticated one. Leave the flags unset until the validator lands.
 
 ### Observability (the loopback admin listener)
 

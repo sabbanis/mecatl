@@ -291,6 +291,156 @@ tasks:
       # the outer bound only matters when the live variant runs.
       - go test -tags kind_e2e -count=1 -timeout 30m ./e2e/k8s/...
 
+  e2e:k8s:authn:
+    desc: |
+      Run the kind e2e suite INCLUDING the caller-identity stories (Dex as a real
+      in-cluster OIDC provider). SPIKE-ONLY: the identity specs need an agent
+      image carrying the toolhive-core/authn adapter, which is in no tagged
+      release, so this target generates a throwaway go.work pointing at a local
+      checkout at a compatible authn revision. Set THV_AUTHN_DIR to it. When authn
+      tags, this target and the generated workspace both DELETE — it becomes a go.mod bump
+      and plain `task e2e:k8s`. See docs/acceptance/caller-identity-e2e.md.
+    preconditions:
+      - sh: command -v kind >/dev/null 2>&1
+        msg: "kind is not installed (https://kind.sigs.k8s.io/docs/user/quick-start/#installation)"
+      - sh: command -v ko >/dev/null 2>&1
+        msg: "ko is not installed (https://ko.build/install/)"
+      - sh: command -v kubectl >/dev/null 2>&1
+        msg: "kubectl is not installed"
+      - sh: test -n "$THV_AUTHN_DIR"
+        msg: |-
+          THV_AUTHN_DIR is not set. Point it at a toolhive-core checkout containing
+          authn/ at the compatible revision, e.g.:
+            git clone https://github.com/stacklok/toolhive-core "$HOME/devel/toolhive-core"
+            git -C "$HOME/devel/toolhive-core" checkout be59776
+            THV_AUTHN_DIR="$HOME/devel/toolhive-core" task e2e:k8s:authn
+      - sh: test -d "$THV_AUTHN_DIR/authn"
+        msg: "THV_AUTHN_DIR=$THV_AUTHN_DIR has no authn/ package — wrong directory or wrong branch"
+    cmds:
+      # Generated, never committed: it pins absolute paths, so it is per-machine
+      # by construction. .scratch/ is gitignored.
+      - mkdir -p .scratch
+      - |
+        {
+          grep -m1 '^go ' go.mod
+          echo
+          for m in . ./engine ./provider/anthropic ./provider/openai ./provider/openaichat ./provider/ssefilter; do
+            echo "use $(cd "$m" && pwd)"
+          done
+          echo "use $(cd "$THV_AUTHN_DIR" && pwd)"
+        } > .scratch/go.work.authn
+      - GOWORK={{.ROOT_DIR}}/.scratch/go.work.authn go test -tags kind_e2e -count=1 -timeout 30m ./e2e/k8s/...
+
+  deploy:check:
+    desc: |
+      Validate every deploy/ kustomize root WITHOUT a cluster: schema-check the
+      rendered manifests and assert the caller-identity boundaries (ADR 0100).
+      Needs kustomize + kubeconform; needs NO cluster and NO KO_DOCKER_REPO, so
+      it runs in CI and on a laptop.
+    preconditions:
+      - sh: command -v kustomize >/dev/null 2>&1
+        msg: "kustomize is not installed (https://kubectl.docs.kubernetes.io/installation/kustomize/)"
+      - sh: command -v kubeconform >/dev/null 2>&1
+        msg: "kubeconform is not installed (go install github.com/yannh/kubeconform/cmd/kubeconform@latest)"
+    cmds:
+      # Schema validation is kubeconform, NOT `kubectl apply --dry-run=client`:
+      # kubectl maps kinds against the API server even with --validate=false, so
+      # it needs a reachable cluster and cannot run here.
+      - for root in deploy/mecak8s deploy/mecak8s-oidc; do echo "== $root"; kustomize build "$root" | kubeconform -strict -summary -; done
+      # The base must stay identity-OFF: caller identity is opt-in, and the
+      # published example must keep deploying what operators already expect.
+      - cmd: |
+          if kustomize build deploy/mecak8s | grep -qi 'oidc'; then
+            echo "deploy/mecak8s (the BASE) mentions oidc — caller identity must stay opt-in"; exit 1
+          fi
+        silent: true
+      # A published example must never ship SSRF relaxation: the flag that lets
+      # the validator reach a private/in-cluster or http:// issuer exists for the
+      # e2e fixtures ONLY. (--oidc-jwks-uri is a URL, not a relaxation.)
+      - cmd: |
+          if kustomize build deploy/mecak8s-oidc | grep -qiE 'insecure|allow-private'; then
+            echo "deploy/mecak8s-oidc ships an SSRF relaxation flag — that belongs to the e2e fixtures only"; exit 1
+          fi
+        silent: true
+      # The overlay APPENDS its flags (JSON6902 add) — a strategic-merge patch
+      # mentioning `args` would REPLACE the atomic list and silently drop the
+      # storage + lease flags while every schema check still passed. This is the
+      # regression guard for that.
+      - cmd: |
+          missing=""
+          rendered=$(kustomize build deploy/mecak8s-oidc)
+          for arg in --redis-url --session-lease-k8s-namespace --headless --posture --grpc-addr --http-addr; do
+            echo "$rendered" | grep -q -- "$arg" || missing="$missing $arg"
+          done
+          if [ -n "$missing" ]; then
+            echo "deploy/mecak8s-oidc DROPPED base args:$missing — the patch must be a JSON6902 append, not a strategic merge"; exit 1
+          fi
+        silent: true
+
+  deploy:render:
+    desc: |
+      Render a deploy/ kustomize root with the ko-built image ref, on stdout.
+      ROOT defaults to deploy/mecak8s (set ROOT=deploy/mecak8s-oidc for the
+      caller-identity overlay). Honours KO_DOCKER_REPO. NOTE: KO_DOCKER_REPO=ko.local
+      renders a ref no cluster can PULL (ko.local is not a registry) — fine for
+      inspecting the output, not for deploying; see deploy:apply.
+      This is the composition to use for a kustomize root:
+      `ko resolve -f <dir>` does NOT run kustomize (it globs the directory as
+      plain YAML and even emits kustomization.yaml as a resource), so the
+      kustomize build must come first and ko must read it on stdin.
+    vars:
+      ROOT: '{{.ROOT | default "deploy/mecak8s"}}'
+    preconditions:
+      - sh: command -v kustomize >/dev/null 2>&1
+        msg: "kustomize is not installed"
+      - sh: command -v ko >/dev/null 2>&1
+        msg: "ko is not installed (https://ko.build/install/)"
+      - sh: '[ -n "${KO_DOCKER_REPO:-}" ]'
+        msg: "KO_DOCKER_REPO is required (e.g. export KO_DOCKER_REPO=ko.local for a local image)"
+    cmds:
+      - kustomize build {{.ROOT}} | ko resolve -f -
+
+  deploy:apply:
+    desc: |
+      Render a deploy/ kustomize root and apply it, namespace FIRST. ROOT defaults
+      to deploy/mecak8s. Honours KO_DOCKER_REPO and the CURRENT kubectl context —
+      it deploys to whatever `kubectl config current-context` points at, so check
+      that first.
+      REQUIRES A REGISTRY THE CLUSTER CAN PULL FROM. This task does not distribute
+      images: with KO_DOCKER_REPO=ko.local the pods get ErrImagePull, because
+      ko.local lives in the local Docker daemon and is not a registry the node can
+      resolve. For kind, either push to a real registry, or build+load first (the
+      way e2e/k8s does it: save the ref to a tarball and `kind load
+      image-archive`, which survives daemons where `kind load docker-image`
+      fails).
+    vars:
+      ROOT: '{{.ROOT | default "deploy/mecak8s"}}'
+    preconditions:
+      - sh: command -v kubectl >/dev/null 2>&1
+        msg: "kubectl is not installed"
+      - sh: command -v kustomize >/dev/null 2>&1
+        msg: "kustomize is not installed"
+      - sh: '[ -n "${KO_DOCKER_REPO:-}" ]'
+        msg: "KO_DOCKER_REPO is required (a registry the CLUSTER can pull from; ko.local is not one — see the task description)"
+      # Refuse the footgun rather than deploying pods that can only ErrImagePull.
+      - sh: '[ "${KO_DOCKER_REPO:-}" != "ko.local" ]'
+        msg: "KO_DOCKER_REPO=ko.local cannot be pulled by a cluster node (it is the local Docker daemon, not a registry). Push to a real registry, or build+load the image into the node first (see e2e/k8s saveAndLoadImage)."
+    cmds:
+      # Two-phase apply. kubectl processes documents in order, but the namespace
+      # controller marks a new namespace Active ASYNCHRONOUSLY, so namespaced
+      # resources in the SAME invocation fail with "namespaces not found".
+      # e2e/k8s/helpers_test.go splits the same way for the same reason.
+      - cmd: |
+          set -eu
+          rendered=$(kustomize build {{.ROOT}} | ko resolve -f -)
+          nsdoc=$(printf '%s\n' "$rendered" | awk 'BEGIN{RS="\n---\n"} /^kind: Namespace$|\nkind: Namespace$/ {print; exit}')
+          if [ -n "$nsdoc" ]; then
+            printf '%s\n' "$nsdoc" | kubectl apply -f -
+            ns=$(printf '%s\n' "$nsdoc" | awk '/^  name:/ {print $2; exit}')
+            kubectl wait --for=jsonpath='{.status.phase}'=Active "namespace/$ns" --timeout=60s
+          fi
+          printf '%s\n' "$rendered" | kubectl apply -f -
+
   fuzz:
     desc: |
       Run the native Go fuzzers against the security-critical parsers for a

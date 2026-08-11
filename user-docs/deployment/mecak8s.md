@@ -269,6 +269,139 @@ For the scripted version of exactly this (plus the case above), see `task e2e:k8
 
 ---
 
+## Multi-user: caller identity (opt-in)
+
+By default mecak8s has no user concept: one shared deployment, no subjects, and
+whoever can reach the API is "the caller". Caller identity changes that — a real
+IdP authenticates each request, and every session and schedule records the
+verified `(issuer, subject)` that owns it.
+
+### Read this before you enable it
+
+**This is attribution, not a tenancy boundary.** It records who acted. It refuses
+nothing. Specifically, with identity on and two callers sharing a deployment:
+
+- either caller can prompt, cancel, fork or delete **the other's** sessions
+- either caller can **approve the other's pending permission ask**, which is a
+  human authorising a tool call
+- all sessions run in the **same pod filesystem at the same workspace path**, so
+  one caller's files are readable by the other's session
+- listing is unfiltered: everyone sees everyone's sessions and their owners
+
+If you need callers separated from each other, this is not that feature and
+deploying it as one would be a mistake. Per-caller access control is later work.
+
+### Current build: the flags fail closed
+
+The token validator ships in a shared library that is not yet part of this build,
+so a pod started with `--oidc-issuer` set exits non-zero with:
+
+```
+oidc: misconfigured: no OIDC token validator is available in this build
+```
+
+That is deliberate — a verifier that cannot be constructed must never degrade
+silently to unauthenticated — and it resolves when the library lands. Everything
+below describes the configuration that then applies.
+
+### Turning it on
+
+Use the opt-in overlay, which appends three flags to the agent:
+
+```sh
+kubectl apply -k deploy/mecak8s-oidc     # edit the three values first
+```
+
+| Flag | Meaning |
+|---|---|
+| `--oidc-issuer` | your IdP's issuer URL, compared **byte-exact** against the token's `iss` |
+| `--oidc-audience` | the audience this deployment accepts. **Required** — an audience-less verifier accepts tokens minted for a different service |
+| `--oidc-jwks-uri` | *optional.* Pin the signing-key endpoint and skip discovery. Only for an air-gapped or pinned-key deployment; leave it out and the issuer's discovery document is used |
+
+Point it at a **real IdP over HTTPS**. That is the only configuration that works
+with the validator's defaults intact: it refuses an `http://` issuer, and refuses
+a `jwks_uri` that resolves to a private, loopback or link-local address — the
+check that stops a `jwks_uri` aimed at cloud instance metadata
+(`169.254.169.254`). An **in-cluster** IdP needs a flag that relaxes both, which
+exists for our end-to-end tests only and is deliberately absent from these
+manifests.
+
+No `NetworkPolicy` change is needed for an external IdP: the base egress already
+allows DNS and TCP 443 to any destination. An in-cluster IdP on another port
+**does** need its own egress rule — the namespace default-deny is real, and a
+missing rule shows up as the agent failing to fetch the JWKS and the pod
+CrashLoopBackOff'ing at startup.
+
+### Seeing who owns what
+
+`GET /v1/sessions` carries the owner, so `curl` is enough:
+
+```json
+{ "session_id": "9bfb79d9…",
+  "state": "completed",
+  "owner": { "issuer": "https://idp.example.com",
+             "subject": "CglhbGljZS11aWQSBWxvY2Fs",
+             "grant_type": "user",
+             "name": "alice" } }
+```
+
+`(issuer, subject)` is the durable identity. `subject` is whatever your IdP uses
+— often an opaque id rather than a username — and `name` is a **cosmetic snapshot
+of the token's `name` claim**, which your IdP may change later. Match on
+`(issuer, subject)`, display `name`.
+
+An owner is written **once**, at session creation, from the verified token and
+never from the request body. Children (subagents, parallel branches, team members,
+scheduled fires) inherit their parent's owner; a fork inherits the **source's**
+owner. Nothing backfills: sessions created before you enabled identity stay
+unowned and render as such.
+
+### Who *did* something, versus who owns it
+
+These are different questions and the answers routinely differ, because any
+authenticated caller can act on any session. If Bob prompts Alice's session, the
+session still belongs to Alice and each durable event records **Bob** as the actor.
+
+That per-event actor is written only to the **durable event log** — it is not on
+any API response, gRPC or HTTP. Today the only way to read it is out of the store
+directly, e.g. `redis-cli LRANGE mecatl:events:<session-id> 0 -1`, where each
+record is `{"v":"redisstore-eventlog/1","ev":{…,"Actor":{…}}}`. If "who did what"
+needs to be queryable for you, say so — it is a known gap, not a design intent.
+
+### Troubleshooting: start here
+
+Two IdP misconfigurations account for most first-deployment 401s, and neither
+produces a helpful error:
+
+1. **The audience is not in the token.** Keycloak, for example, puts only
+   `account` in `aud` by default; your client id appears only if you attach an
+   Audience protocol mapper. Then `--oidc-audience=<your-client-id>` never
+   matches and **every** caller gets 401. Decode a token and check `aud` before
+   anything else.
+2. **The issuer string does not match.** `iss` is compared byte-exact, and an IdP
+   stamps whatever external hostname it is configured to advertise — regardless of
+   how your pods reach it. Take `--oidc-issuer` from the IdP's
+   `/.well-known/openid-configuration`, never from the in-cluster Service URL.
+
+Beyond that: a **401** means the credential was rejected; a **503** means the
+validator could not reach your IdP's keys and the verdict is unknown. Note that
+authn failures are **not currently logged**, so neither is visible in the agent's
+output — you will see the status code and nothing else.
+
+### What this does not give you
+
+Stated plainly so it is not inferred:
+
+| | |
+|---|---|
+| **Isolation** | None. Any authenticated caller reaches any session and any workspace file. |
+| **Revocation** | None before token expiry. Revoking at the IdP takes effect when the token expires — and while the IdP is unreachable, a cached key set keeps being trusted, so the trust window is the outage length. |
+| **Rate limiting / quotas** | mecak8s registers no rate-limit flags at all; a pod is assumed to sit behind a Service or mesh. One caller can exhaust the shared Redis, lease namespace and provider budget. |
+| **Store confidentiality** | `--redis-url` takes a bare `host:port`: no password, no TLS. Conversations and owner labels sit in plaintext, protected only by the NetworkPolicy. |
+| **PII controls** | `name` (often an email) is copied onto every durable event, the session snapshot and schedule records, unredacted, with no retention or erasure hook. |
+| **Audit signals** | Telemetry is opt-in and off by default (`--metrics-addr` to expose `/metrics`, `--otlp-*` to push to a collector), and **no authn metric exists at all** — the emitted set covers runs, events, permission asks and process stats, not authentication outcomes. Combined with failures not being logged, an authn problem is invisible: you see the caller's status code and nothing on the server side. |
+| **Machine-vs-human grant** | `grant_type` is best-effort and IdP-dependent. A token with no grant hint resolves to `user`, which includes most IdPs' service accounts. |
+
 ## Scaling
 
 Add replicas freely. The `coordination.k8s.io` Lease backend enforces single-writer per session: when two pods both try to start a run on the same session, the second gets `ErrSessionLeasedElsewhere` (HTTP 409 / gRPC `FAILED_PRECONDITION`). The acquiring pod renews its lease on a background goroutine; the interval defaults to `--session-lease-ttl / 3`.
