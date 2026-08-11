@@ -119,6 +119,8 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0095 — Root-aware project trust](./0095-root-aware-project-trust.md) *(the authoritative #359 trust decision; supersedes 0092 + 0094)*
 - [0096 — Diagnostic-only posture reporting](./0096-diagnostic-only-posture-reporting.md) *(orthogonal reporting surface; relates to 0095)*
 - [0100 — Caller identity: accept a principal, thread it everywhere, record the owner](./0100-caller-identity-threading.md) *(agent-identity Track A; audit-trail phase)*
+- [0102 — Enforce caller ownership at every application access path](./0102-caller-ownership-enforcement.md) *(agent-identity Track A; application isolation)*
+- [0103 — Enforce caller ownership at remote driver boundaries](./0103-driver-caller-ownership.md) *(B-lite follow-up to application isolation)*
 - [0024 — System-prompt research](./0024-system-prompt-research.md) *(research)*
 - [0041 — Output-economy default prompt](./0041-output-economy-default-prompt.md)
 - [0054 — Reasoning rebalance of the default-tone prompt](./0054-reasoning-rebalance-default-prompt.md)
