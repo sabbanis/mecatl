@@ -291,6 +291,39 @@ tasks:
       # the outer bound only matters when the live variant runs.
       - go test -tags kind_e2e -count=1 -timeout 30m ./e2e/k8s/...
 
+  e2e:k8s:authn:
+    desc: |
+      Run the kind e2e suite INCLUDING the caller-identity stories (Dex as a real
+      in-cluster OIDC provider). SPIKE-ONLY: the identity specs need an agent
+      image carrying the toolhive-core/authn adapter, which is in no tagged
+      release, so this target generates a throwaway go.work pointing at a local
+      checkout of that branch. Set THV_AUTHN_DIR to it. When authn tags, this
+      target and the generated workspace both DELETE — it becomes a go.mod bump
+      and plain `task e2e:k8s`. See docs/acceptance/caller-identity-e2e.md.
+    preconditions:
+      - sh: test -n "$THV_AUTHN_DIR"
+        msg: |-
+          THV_AUTHN_DIR is not set. Point it at a checkout of toolhive-core's
+          authn branch, e.g.:
+            git clone -b authn https://github.com/stacklok/toolhive-core /tmp/thv-authn
+            THV_AUTHN_DIR=/tmp/thv-authn task e2e:k8s:authn
+      - sh: test -d "$THV_AUTHN_DIR/authn"
+        msg: "THV_AUTHN_DIR=$THV_AUTHN_DIR has no authn/ package — wrong directory or wrong branch"
+    cmds:
+      # Generated, never committed: it pins absolute paths, so it is per-machine
+      # by construction. .scratch/ is gitignored.
+      - mkdir -p .scratch
+      - |
+        {
+          grep -m1 '^go ' go.mod
+          echo
+          for m in . ./engine ./provider/anthropic ./provider/openai ./provider/openaichat ./provider/ssefilter; do
+            echo "use $(cd "$m" && pwd)"
+          done
+          echo "use $(cd "$THV_AUTHN_DIR" && pwd)"
+        } > .scratch/go.work.authn
+      - GOWORK={{.ROOT_DIR}}/.scratch/go.work.authn go test -tags kind_e2e -count=1 -timeout 30m ./e2e/k8s/...
+
   deploy:check:
     desc: |
       Validate every deploy/ kustomize root WITHOUT a cluster: schema-check the
