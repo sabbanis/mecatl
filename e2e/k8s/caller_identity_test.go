@@ -201,179 +201,208 @@ func listSessionIDs(ctx context.Context, addr, bearer string) []string {
 // --- the stories -------------------------------------------------------------
 
 var _ = ginkgo.Describe("caller identity, from the caller's and operator's view", ginkgo.Serial, ginkgo.Ordered, func() {
-	var (
-		dex          *idp
-		alice, bob   string
-		aliceSubject string
-	)
+	ginkgo.Context("authenticated caller journey", ginkgo.Ordered, func() {
+		var (
+			dex   *idp
+			alice string
+		)
 
-	ginkgo.BeforeAll(func() {
-		ctx := ginkgoSuiteCtx()
-		dex = deployDex(ctx)
-		// Enabling identity is itself Story 1: a validator that cannot be built is
-		// a FATAL startup error, so a completed rollout IS the assertion that the
-		// composed binary — flags, discovery, validator, middleware — works. This
-		// is the layer that was green in every unit test while both mains shipped a
-		// nil validator and no real deployment could start.
-		patchAgentToOIDC(ctx)
-		alice = dex.token(ctx, aliceEmail)
-		bob = dex.token(ctx, bobEmail)
+		ginkgo.BeforeAll(func() {
+			ctx := ginkgoSuiteCtx()
+			dex = deployDex(ctx)
+			// Enabling identity is itself Story 1: a validator that cannot be built is
+			// a FATAL startup error, so a completed rollout IS the assertion that the
+			// composed binary — flags, discovery, validator, middleware — works. This
+			// is the layer that was green in every unit test while both mains shipped a
+			// nil validator and no real deployment could start.
+			patchAgentToOIDC(ctx)
+			alice = dex.token(ctx, aliceEmail)
+		})
+
+		ginkgo.AfterAll(func() {
+			restoreAgentFromOIDC(ginkgoSuiteCtx())
+			if dex != nil {
+				dex.stop()
+			}
+		})
+
+		// Story 2 — "I authenticate, and the work I do is mine."
+		ginkgo.It("attributes an authenticated run to the caller who made it", func() {
+			ctx := ginkgoSuiteCtx()
+			addr, stop := portForward(agentPods[0])
+			defer stop()
+
+			st, sess := createSessionAs(ctx, addr, alice)
+			gomega.Expect(st).To(gomega.Equal(http.StatusCreated),
+				"a real IdP-issued token was refused — identity is not working in the cluster")
+
+			// The RUN is the point. Session creation alone never exercises the prompt
+			// path through the authenticated edge, and three scenarios of coverage
+			// existed before any authenticated run had been driven.
+			gomega.Expect(promptAs(ctx, addr, sess, alice, "hello from alice")).
+				To(gomega.Equal(http.StatusOK), "an authenticated run was refused")
+
+			sub, name := sessionOwner(ctx, addr, alice, sess)
+			gomega.Expect(sub).NotTo(gomega.BeEmpty(), "the session recorded no owner")
+			gomega.Expect(name).To(gomega.Equal("alice"),
+				"the owner's display name did not come from the token's name claim")
+		})
+
+		// Story 5 — "A caller without a valid token gets nothing."
+		ginkgo.It("refuses a forged signature and a missing credential", func() {
+			ctx := ginkgoSuiteCtx()
+			addr, stop := portForward(agentPods[0])
+			defer stop()
+
+			// A real `kid` signed with a key the IdP never published: the validator finds
+			// the named key and must reject on the SIGNATURE. Without this, an edge that
+			// parsed a JWT without verifying it would pass every other assertion here.
+			forged := dex.forgedToken(ctx, "alice-impostor")
+			st, _ := createSessionAs(ctx, addr, forged)
+			gomega.Expect(st).To(gomega.Equal(http.StatusUnauthorized),
+				"a token signed by an unpublished key was ACCEPTED — signature verification is not happening")
+
+			st, _ = createSessionAs(ctx, addr, "")
+			gomega.Expect(st).To(gomega.Equal(http.StatusUnauthorized),
+				"an unauthenticated request was accepted while identity is on")
+		})
 	})
 
-	ginkgo.AfterAll(func() {
-		// Shared cluster state: identity stays on for every later spec unless it is
-		// put back.
-		restoreAgentFromOIDC(ginkgoSuiteCtx())
-		if dex != nil {
-			dex.stop()
-		}
-	})
+	ginkgo.Context("shared deployment attribution and durability journey", ginkgo.Ordered, func() {
+		var (
+			dex        *idp
+			alice, bob string
+		)
 
-	// Story 2 — "I authenticate, and the work I do is mine."
-	ginkgo.It("attributes an authenticated run to the caller who made it", func() {
-		ctx := ginkgoSuiteCtx()
-		addr, stop := portForward(agentPods[0])
-		defer stop()
+		ginkgo.BeforeAll(func() {
+			ctx := ginkgoSuiteCtx()
+			dex = deployDex(ctx)
+			patchAgentToOIDC(ctx)
+			alice = dex.token(ctx, aliceEmail)
+			bob = dex.token(ctx, bobEmail)
+		})
 
-		st, sess := createSessionAs(ctx, addr, alice)
-		gomega.Expect(st).To(gomega.Equal(http.StatusCreated),
-			"a real IdP-issued token was refused — identity is not working in the cluster")
+		ginkgo.AfterAll(func() {
+			restoreAgentFromOIDC(ginkgoSuiteCtx())
+			if dex != nil {
+				dex.stop()
+			}
+		})
 
-		// The RUN is the point. Session creation alone never exercises the prompt
-		// path through the authenticated edge, and three scenarios of coverage
-		// existed before any authenticated run had been driven.
-		gomega.Expect(promptAs(ctx, addr, sess, alice, "hello from alice")).
-			To(gomega.Equal(http.StatusOK), "an authenticated run was refused")
+		// Story 3 — "I can see who owns what."
+		ginkgo.It("shows the owner on the list row over plain HTTP", func() {
+			ctx := ginkgoSuiteCtx()
+			addr, stop := portForward(agentPods[0])
+			defer stop()
 
-		sub, name := sessionOwner(ctx, addr, alice, sess)
-		gomega.Expect(sub).NotTo(gomega.BeEmpty(), "the session recorded no owner")
-		gomega.Expect(name).To(gomega.Equal("alice"),
-			"the owner's display name did not come from the token's name claim")
-		aliceSubject = sub
-	})
-
-	// Story 3 — "I can see who owns what."
-	ginkgo.It("shows the owner on the list row over plain HTTP", func() {
-		ctx := ginkgoSuiteCtx()
-		addr, stop := portForward(agentPods[0])
-		defer stop()
-
-		st, sess := createSessionAs(ctx, addr, bob)
-		gomega.Expect(st).To(gomega.Equal(http.StatusCreated))
-
-		sub, name := sessionOwner(ctx, addr, bob, sess)
-		gomega.Expect(name).To(gomega.Equal("bob"))
-		gomega.Expect(sub).NotTo(gomega.Equal(aliceSubject),
-			"two different callers produced the same subject — identity is not per-caller")
-
-		// Bob's listing shows ALICE's session too: attribution, NOT isolation.
-		// Asserted so the absence of scoping cannot be mistaken for a bug. When #368
-		// lands this becomes a scoping test — FLIP it, do not delete it.
-		_, aliceSess := createSessionAs(ctx, addr, alice)
-		gomega.Expect(listSessionIDs(ctx, addr, bob)).To(gomega.ContainElement(aliceSess),
-			"bob's session list omitted alice's session — this phase ships NO isolation, "+
-				"so scoping here is a behaviour change, not a fix")
-	})
-
-	// Story 4 — "I can tell who did something, even when it wasn't the owner."
-	ginkgo.It("records the acting caller as the actor, not the session's owner", func() {
-		ctx := ginkgoSuiteCtx()
-		addr, stop := portForward(agentPods[0])
-		defer stop()
-
-		st, aliceSess := createSessionAs(ctx, addr, alice)
-		gomega.Expect(st).To(gomega.Equal(http.StatusCreated))
-
-		// Permitted: this phase ships no isolation. When #368 lands, FLIP this to
-		// expect a refusal — do not delete the spec.
-		gomega.Expect(promptAs(ctx, addr, aliceSess, bob, "bob acting on alice's session")).
-			To(gomega.Equal(http.StatusOK),
-				"bob was refused on alice's session — this phase ships NO isolation, so a "+
-					"refusal is a behaviour change, not a fix")
-
-		ownerSub, ownerName := sessionOwner(ctx, addr, alice, aliceSess)
-		gomega.Expect(ownerName).To(gomega.Equal("alice"),
-			"acting on a session re-owned it — ownership laundering")
-		gomega.Expect(ownerSub).To(gomega.Equal(aliceSubject))
-
-		// The ship-blocker both reviews found: owner answers "whose is this", actor
-		// answers "who did this", and here they differ.
-		gomega.Eventually(func() []string {
-			return eventActors(aliceSess)
-		}, 90*time.Second, 3*time.Second).ShouldNot(gomega.BeEmpty(),
-			"no durable event recorded an actor at all")
-		actors := eventActors(aliceSess)
-		gomega.Expect(actors).NotTo(gomega.ContainElement(aliceSubject),
-			"an event on the run BOB drove was attributed to ALICE — the audit trail names the wrong caller")
-	})
-
-	// Story 5 — "A caller without a valid token gets nothing."
-	ginkgo.It("refuses a forged signature and a missing credential", func() {
-		ctx := ginkgoSuiteCtx()
-		addr, stop := portForward(agentPods[0])
-		defer stop()
-
-		// A real `kid` signed with a key the IdP never published: the validator finds
-		// the named key and must reject on the SIGNATURE. Without this, an edge that
-		// parsed a JWT without verifying it would pass every other assertion here.
-		forged := dex.forgedToken(ctx, "alice-impostor")
-		st, _ := createSessionAs(ctx, addr, forged)
-		gomega.Expect(st).To(gomega.Equal(http.StatusUnauthorized),
-			"a token signed by an unpublished key was ACCEPTED — signature verification is not happening")
-
-		st, _ = createSessionAs(ctx, addr, "")
-		gomega.Expect(st).To(gomega.Equal(http.StatusUnauthorized),
-			"an unauthenticated request was accepted while identity is on")
-	})
-
-	// Story 6 — "My session is still mine after the pod that took it dies."
-	//
-	// This is the ONLY story here that genuinely needs a cluster. Every other
-	// assertion could in principle be made against one in-process server; this one
-	// asks whether ownership is DURABLE STATE (in Redis, readable by any replica) or
-	// merely in-process bookkeeping that happens to look right while one pod lives.
-	// It was written, passed, and then LOST when this file was reorganised around
-	// user stories — restored deliberately, and placed last because it destroys a
-	// pod and reshuffles the roster the earlier specs port-forward to.
-	// ponytail: no SpecTimeout — that decorator requires a SpecContext-taking body,
-	// and every slow step here is already bounded by its own shortCtx.
-	ginkgo.It("keeps the owner after the pod that recorded it is replaced",
-		func() {
-			refreshPods()
-			podA, podB := agentPods[0], agentPods[1]
-
-			addrA, stopA := portForward(podA)
-			defer stopA()
-			addrB, stopB := portForward(podB)
-			defer stopB()
-
-			cCtx, cCancel := shortCtx(30 * time.Second)
-			st, sess := createSessionAs(cCtx, addrA, alice)
-			cCancel()
+			st, bobSess := createSessionAs(ctx, addr, bob)
 			gomega.Expect(st).To(gomega.Equal(http.StatusCreated))
 
-			// Drive a run so the session has durable events, not just a create.
-			rCtx, rCancel := shortCtx(60 * time.Second)
-			gomega.Expect(promptAs(rCtx, addrA, sess, alice, "alice before failover")).
-				To(gomega.Equal(http.StatusOK))
-			rCancel()
+			bobSub, name := sessionOwner(ctx, addr, bob, bobSess)
+			gomega.Expect(name).To(gomega.Equal("bob"))
 
-			// Snapshot the roster BEFORE deleting, so waitReplacementReady waits for
-			// the genuinely-new pod rather than being satisfied by survivor pod-B —
-			// the trap called out in failover_test.go.
-			preDelete := podNames()
-			kubectlDeletePod(podA, false)
-			waitReplacementReady(preDelete)
-
-			// Read the owner from a replica that never served the create. If ownership
-			// lived in process memory this returns empty; the assertion is that a
-			// DIFFERENT pod answers the same question identically.
-			oCtx, oCancel := shortCtx(60 * time.Second)
-			defer oCancel()
-			sub, name := sessionOwner(oCtx, addrB, alice, sess)
-			gomega.Expect(name).To(gomega.Equal("alice"),
-				"the surviving replica lost the owner's name — ownership is not durable across pods")
-			gomega.Expect(sub).To(gomega.Equal(aliceSubject),
-				"the surviving replica reported a different subject for the same session")
+			// Bob's listing shows ALICE's session too: attribution, NOT isolation.
+			// Asserted so the absence of scoping cannot be mistaken for a bug. When #368
+			// lands this becomes a scoping test — FLIP it, do not delete it.
+			_, aliceSess := createSessionAs(ctx, addr, alice)
+			aliceSub, aliceName := sessionOwner(ctx, addr, alice, aliceSess)
+			gomega.Expect(aliceName).To(gomega.Equal("alice"))
+			gomega.Expect(bobSub).NotTo(gomega.Equal(aliceSub),
+				"two different callers produced the same subject — identity is not per-caller")
+			gomega.Expect(listSessionIDs(ctx, addr, bob)).To(gomega.ContainElement(aliceSess),
+				"bob's session list omitted alice's session — this phase ships NO isolation, "+
+					"so scoping here is a behaviour change, not a fix")
 		})
+
+		// Story 4 — "I can tell who did something, even when it wasn't the owner."
+		ginkgo.It("records the acting caller as the actor, not the session's owner", func() {
+			ctx := ginkgoSuiteCtx()
+			addr, stop := portForward(agentPods[0])
+			defer stop()
+
+			st, aliceSess := createSessionAs(ctx, addr, alice)
+			gomega.Expect(st).To(gomega.Equal(http.StatusCreated))
+			aliceSubject, ownerName := sessionOwner(ctx, addr, alice, aliceSess)
+			gomega.Expect(ownerName).To(gomega.Equal("alice"))
+			gomega.Expect(aliceSubject).NotTo(gomega.BeEmpty())
+
+			// Permitted: this phase ships no isolation. When #368 lands, FLIP this to
+			// expect a refusal — do not delete the spec.
+			gomega.Expect(promptAs(ctx, addr, aliceSess, bob, "bob acting on alice's session")).
+				To(gomega.Equal(http.StatusOK),
+					"bob was refused on alice's session — this phase ships NO isolation, so a "+
+						"refusal is a behaviour change, not a fix")
+
+			ownerSub, ownerName := sessionOwner(ctx, addr, alice, aliceSess)
+			gomega.Expect(ownerName).To(gomega.Equal("alice"),
+				"acting on a session re-owned it — ownership laundering")
+			gomega.Expect(ownerSub).To(gomega.Equal(aliceSubject))
+
+			// The ship-blocker both reviews found: owner answers "whose is this", actor
+			// answers "who did this", and here they differ.
+			gomega.Eventually(func() []string {
+				return eventActors(aliceSess)
+			}, 90*time.Second, 3*time.Second).ShouldNot(gomega.BeEmpty(),
+				"no durable event recorded an actor at all")
+			actors := eventActors(aliceSess)
+			gomega.Expect(actors).NotTo(gomega.ContainElement(aliceSubject),
+				"an event on the run BOB drove was attributed to ALICE — the audit trail names the wrong caller")
+		})
+
+		// Story 6 — "My session is still mine after the pod that took it dies."
+		//
+		// This is the ONLY story here that genuinely needs a cluster. Every other
+		// assertion could in principle be made against one in-process server; this one
+		// asks whether ownership is DURABLE STATE (in Redis, readable by any replica) or
+		// merely in-process bookkeeping that happens to look right while one pod lives.
+		// It was written, passed, and then LOST when this file was reorganised around
+		// user stories — restored deliberately, and placed last because it destroys a
+		// pod and reshuffles the roster the earlier specs port-forward to.
+		// ponytail: no SpecTimeout — that decorator requires a SpecContext-taking body,
+		// and every slow step here is already bounded by its own shortCtx.
+		ginkgo.It("keeps the owner after the pod that recorded it is replaced",
+			func() {
+				refreshPods()
+				podA, podB := agentPods[0], agentPods[1]
+
+				addrA, stopA := portForward(podA)
+				defer stopA()
+				addrB, stopB := portForward(podB)
+				defer stopB()
+
+				cCtx, cCancel := shortCtx(30 * time.Second)
+				st, sess := createSessionAs(cCtx, addrA, alice)
+				cCancel()
+				gomega.Expect(st).To(gomega.Equal(http.StatusCreated))
+				oCtx, oCancel := shortCtx(30 * time.Second)
+				aliceSubject, ownerName := sessionOwner(oCtx, addrA, alice, sess)
+				oCancel()
+				gomega.Expect(ownerName).To(gomega.Equal("alice"))
+				gomega.Expect(aliceSubject).NotTo(gomega.BeEmpty())
+
+				// Drive a run so the session has durable events, not just a create.
+				rCtx, rCancel := shortCtx(60 * time.Second)
+				gomega.Expect(promptAs(rCtx, addrA, sess, alice, "alice before failover")).
+					To(gomega.Equal(http.StatusOK))
+				rCancel()
+
+				// Snapshot the roster BEFORE deleting, so waitReplacementReady waits for
+				// the genuinely-new pod rather than being satisfied by survivor pod-B —
+				// the trap called out in failover_test.go.
+				preDelete := podNames()
+				kubectlDeletePod(podA, false)
+				waitReplacementReady(preDelete)
+
+				// Read the owner from a replica that never served the create. If ownership
+				// lived in process memory this returns empty; the assertion is that a
+				// DIFFERENT pod answers the same question identically.
+				oCtx, oCancel = shortCtx(60 * time.Second)
+				defer oCancel()
+				sub, name := sessionOwner(oCtx, addrB, alice, sess)
+				gomega.Expect(name).To(gomega.Equal("alice"),
+					"the surviving replica lost the owner's name — ownership is not durable across pods")
+				gomega.Expect(sub).To(gomega.Equal(aliceSubject),
+					"the surviving replica reported a different subject for the same session")
+			})
+	})
 })

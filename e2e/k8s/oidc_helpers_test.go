@@ -258,11 +258,19 @@ func restoreAgentFromOIDC(ctx context.Context) {
 	waitPodsReady()
 	agentPods = podNames()
 
-	_ = exec.CommandContext(ctx, "kubectl", "delete", "-n", k8sNamespace,
+	deleteOut, err := exec.CommandContext(ctx, "kubectl", "delete", "-n", k8sNamespace,
 		"deployment/dex", "service/dex", "configmap/dex-config",
 		"networkpolicy/dex-allow-agent-ingress",
 		"networkpolicy/mecak8s-agent-allow-dex-egress",
-		"--ignore-not-found").Run()
+		"--ignore-not-found").CombinedOutput()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"remove Dex fixture resources\n--- output ---\n%s", deleteOut)
+	gomega.EventuallyWithOffset(1, func() bool {
+		out, getErr := exec.CommandContext(ctx, "kubectl", "get", "pods", "-n", k8sNamespace,
+			"-l", "app.kubernetes.io/name="+dexName, "-o", "name").Output()
+		return getErr == nil && strings.TrimSpace(string(out)) == ""
+	}, 60*time.Second, time.Second).Should(gomega.BeTrue(),
+		"Dex pods did not terminate before the next caller-identity journey")
 }
 
 // kubectlApplyStdin applies a manifest from stdin.

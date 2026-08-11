@@ -297,16 +297,23 @@ tasks:
       in-cluster OIDC provider). SPIKE-ONLY: the identity specs need an agent
       image carrying the toolhive-core/authn adapter, which is in no tagged
       release, so this target generates a throwaway go.work pointing at a local
-      checkout of that branch. Set THV_AUTHN_DIR to it. When authn tags, this
-      target and the generated workspace both DELETE — it becomes a go.mod bump
+      checkout at a compatible authn revision. Set THV_AUTHN_DIR to it. When authn
+      tags, this target and the generated workspace both DELETE — it becomes a go.mod bump
       and plain `task e2e:k8s`. See docs/acceptance/caller-identity-e2e.md.
     preconditions:
+      - sh: command -v kind >/dev/null 2>&1
+        msg: "kind is not installed (https://kind.sigs.k8s.io/docs/user/quick-start/#installation)"
+      - sh: command -v ko >/dev/null 2>&1
+        msg: "ko is not installed (https://ko.build/install/)"
+      - sh: command -v kubectl >/dev/null 2>&1
+        msg: "kubectl is not installed"
       - sh: test -n "$THV_AUTHN_DIR"
         msg: |-
-          THV_AUTHN_DIR is not set. Point it at a checkout of toolhive-core's
-          authn branch, e.g.:
-            git clone -b authn https://github.com/stacklok/toolhive-core /tmp/thv-authn
-            THV_AUTHN_DIR=/tmp/thv-authn task e2e:k8s:authn
+          THV_AUTHN_DIR is not set. Point it at a toolhive-core checkout containing
+          authn/ at the compatible revision, e.g.:
+            git clone https://github.com/stacklok/toolhive-core "$HOME/devel/toolhive-core"
+            git -C "$HOME/devel/toolhive-core" checkout be59776
+            THV_AUTHN_DIR="$HOME/devel/toolhive-core" task e2e:k8s:authn
       - sh: test -d "$THV_AUTHN_DIR/authn"
         msg: "THV_AUTHN_DIR=$THV_AUTHN_DIR has no authn/ package — wrong directory or wrong branch"
     cmds:

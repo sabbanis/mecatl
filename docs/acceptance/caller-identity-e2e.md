@@ -65,15 +65,14 @@ it named was an untracked file full of one laptop's absolute paths. An agent or
 colleague handed this plan could not have reached a green run. What follows is
 the whole path from an empty machine.
 
-**Prerequisites.** Docker, `kind`, `ko`, `kubectl` (the first three are Taskfile
-preconditions with install links). Plus, for anything past Story 1, a local
-checkout of toolhive-core containing `authn/` — it is on `main`, so:
+**Prerequisites.** A reachable Docker daemon, `kind`, `ko`, and `kubectl`; the
+Task target checks the latter three before it starts. Plus, for anything past
+Story 1, a local checkout of toolhive-core containing `authn/` at the compatible
+revision:
 
 ```sh
-git clone https://github.com/stacklok/toolhive-core /tmp/thv-authn
-# The run this plan was verified against pinned be59776. `main` also works and is
-# what a tag will come from; pin only if you need to reproduce this exact run.
-git -C /tmp/thv-authn checkout be59776
+git clone https://github.com/stacklok/toolhive-core "$HOME/devel/toolhive-core"
+git -C "$HOME/devel/toolhive-core" checkout be59776
 ```
 
 toolhive-core is a **private** module, so the clone needs credentials — and any
@@ -92,7 +91,7 @@ task deploy:check     # renders every deploy/ root, schema-checks it, asserts
 **The spike half** (Stories 2–6 — a real IdP, real tokens, a real cluster):
 
 ```sh
-THV_AUTHN_DIR=/tmp/thv-authn task e2e:k8s:authn
+THV_AUTHN_DIR="$HOME/devel/toolhive-core" task e2e:k8s:authn
 ```
 
 That target generates `.scratch/go.work.authn` from `THV_AUTHN_DIR` and runs the
@@ -108,6 +107,21 @@ Dex as a real in-cluster OIDC provider (an inline manifest in
 committed YAML you have to find) → the stories → cluster teardown in the
 after-hook, including on failure. Budget ~2 minutes of bring-up and a 30-minute
 outer timeout.
+
+**The two executable user journeys.** The caller-identity specs keep the
+journeys separate so a green cluster run proves both the authenticated edge and
+the current attribution contract:
+
+1. **Authenticated caller:** Alice obtains a Dex token, creates a session, drives
+   an SSE prompt, sees herself as its owner over HTTP, and requests without a
+   bearer or with a forged signature receive 401.
+2. **Shared deployment attribution and durability:** Bob can list and prompt
+   Alice's session — intentionally, because this phase is not isolation — while
+   the owner remains Alice, durable events name Bob as actor, and owner data
+   survives replacement of the serving replica.
+
+The second journey is a baseline for #368: when ownership enforcement lands,
+the Bob list/prompt assertions must flip to refusal rather than disappear.
 
 **Two things you will hit that are not this work's fault.**
 
@@ -185,7 +199,7 @@ before any authenticated **run** had been driven.
 - AC2.1: a caller presenting a genuinely-signed token creates a session and drives
   a prompt to completion through the authenticated edge.
   - verify: demonstration — the ginkgo spec "attributes an authenticated run to the
-    caller who made it" (`e2e/k8s/caller_identity_test.go`, `task e2e:k8s`). NOT a Go
+    caller who made it" (`e2e/k8s/caller_identity_test.go`, `task e2e:k8s:authn`). NOT a Go
     test name: the kind suite has ONE entry point (`TestK8sE2E`) and its specs are
     named strings, so a `Test…` name here could never resolve.
 - AC2.2: the session records that caller's `(issuer, subject)` as its owner, with
@@ -203,7 +217,7 @@ already have.*
   owned session and omits it for an unowned one — observable with `curl`, no gRPC
   client required (probe finding 2).
   - verify: demonstration — the ginkgo spec "shows the owner on the list row over
-    plain HTTP" (`task e2e:k8s`).
+    plain HTTP" (`task e2e:k8s:authn`).
 - AC3.2: ownership drives **no** filtering — a request bearing Bob's token still
   lists Alice's session. This phase ships attribution, not isolation, and the
   absence is asserted so it cannot be mistaken for a bug.
@@ -221,14 +235,14 @@ The ship-blocker both reviews found. Owner answers *whose is this*; actor answer
   actor **Bob**, while the session's owner stays **Alice** — acting on a session
   never re-owns it.
   - verify: demonstration — the ginkgo spec "records the acting caller as the actor,
-    not the session's owner" (`task e2e:k8s`).
+    not the session's owner" (`task e2e:k8s:authn`).
 - AC4.2: the actor is log-only — absent from both client relays and ignored by the
   event-sourced fold.
   - verify: `TestCallerIdentity_Scenario4_EventActorLogOnly` (landed)
 - AC4.3: a durable-log consumer must read the **envelope** (`ev`) and **Go-cased**
   keys; a reader that assumes otherwise must fail loudly, never silently skip.
   - verify: demonstration — the ginkgo spec "records the acting caller as the actor,
-    not the session's owner" (`task e2e:k8s`). — its parse
+    not the session's owner" (`task e2e:k8s:authn`). — its parse
     is assertive, and probe finding 5 is why. A fail-silent parse guarding a
     security property is how this AC's first draft could only ever time out.
 
@@ -243,11 +257,11 @@ without verifying it would have passed every earlier AC.
 - AC5.1: a token signed by a key the IdP does not publish is refused 401-class,
   and the handler never runs.
   - verify: demonstration — the ginkgo spec "refuses a forged signature and a missing
-    credential" (`task e2e:k8s`).
+    credential" (`task e2e:k8s:authn`).
 - AC5.2: a request with no `Authorization` header is refused 401-class when
   identity is on.
   - verify: demonstration — the ginkgo spec "refuses a forged signature and a missing
-    credential" (`task e2e:k8s`).
+    credential" (`task e2e:k8s:authn`).
 - AC5.3: a rejected credential is never rate-limit-keyed (token rotation is not a
   limit bypass, and a bad token must not create a bucket).
   - verify: `TestCallerIdentity_Scenario1_RateLimitKeyedOnPrincipal` (landed;
@@ -304,7 +318,7 @@ operator believes callers are separated.
 |---|---|---|
 | Any refusal on ownership grounds | #368 | This phase refuses nothing; a test implying otherwise would oversell it |
 | The token-mechanics matrix (`alg=none`, HS-confusion, expiry) | `toolhive-core/authn`'s own suite | Its contract, 69 tests asserting exact reason codes |
-| OIDC **discovery** (`.well-known`) | a follow-up | Never exercised anywhere: every configuration pins `--oidc-jwks-uri`. See *Known gaps* |
+| Production-shaped OIDC discovery (external HTTPS issuer, public DNS and CA chain) | a follow-up | The Dex kind fixture exercises in-cluster discovery; it cannot prove the external deployment path |
 | A real IdP (Keycloak/Okta/Entra) | a manual, dated transcript | Realm state is fragile in CI; claim shapes belong in a fixture matrix |
 | Per-caller quotas, workspace isolation | — | Do not exist; documenting them would be fiction |
 | Bounding JWKS staleness | a decision, then a flag | See *Known gaps* — currently unbounded by omission |
@@ -331,9 +345,11 @@ operator believes callers are separated.
   this plan asserted an outage yields a 503; it does not, for a warm cache. The
   503 path is reachable only via an unknown `kid` or a cold cache. **Decision
   needed**, with a recommendation of 1h and a flag.
-- **The documented configuration has never been started.** Every test pins the
-  JWKS URI — the air-gap hook — and the published overlay ships that pin too. An
-  external-IdP deployment with discovery is unexercised at every layer.
+- **The published external configuration has never been started.** The Dex kind
+  fixture deliberately omits `--oidc-jwks-uri`, so it exercises OIDC discovery
+  against an in-cluster HTTP/private issuer. The published overlay instead pins
+  JWKS and requires an external HTTPS issuer. That production-shaped discovery
+  path — public DNS, CA chain and redirects — remains unexercised.
 - **`grant_type` is IdP-dependent and effectively `user` for Keycloak.** Keycloak
   emits neither `gty` nor `grant_type`, and its `sub` (a UUID) never equals `azp`
   (the client id), so every Keycloak service account lands as `user`. The label is
