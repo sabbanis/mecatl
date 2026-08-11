@@ -191,7 +191,12 @@ func OIDCValidator(ctx context.Context, c OIDCConfig) (server.PrincipalValidator
 		return nil, fmt.Errorf("%w: --oidc-issuer is set but --oidc-audience is empty", ErrOIDCMisconfigured)
 	}
 	if c.NewValidator == nil {
-		return nil, fmt.Errorf("%w: no OIDC token validator is available in this build", ErrOIDCMisconfigured)
+		// Default to the real adapter (authnvalidator.go). It is defaulted HERE, in
+		// the one place the config is resolved, rather than in each main: a main
+		// that forgot would refuse to start with "no validator available", which is
+		// fail-closed but indistinguishable from the pre-dependency state — the
+		// exact confusion that made a kind rollout look like a validator bug.
+		c.NewValidator = defaultNewValidator
 	}
 	// The validator's background JWKS refresh has no caller: it runs as the
 	// explicit system principal (ADR 0100 decision 7).
