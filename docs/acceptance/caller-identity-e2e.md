@@ -37,13 +37,71 @@ for CI and every other contributor. When it tags, the change is a `go.mod` bump.
 
 | Half | Branch | Constraint |
 |---|---|---|
-| Stories 1 and 6 (manifests, docs) | `acc/caller-identity` | No Go dependency. Merges. |
-| Stories 2–5 (anything needing a real token) | `spike/authn-wiring` | Override-only. Held. |
+| Stories 1 and 7 (manifests, docs) | `acc/caller-identity` | No Go dependency. Merges. |
+| Stories 2–6 (anything needing a real token) | `spike/authn-wiring` | Override-only. Held. |
 
 The override is **not hermetic**: it pulls toolhive-core's dependency versions
 into the workspace (observed: `go-sdk 1.6.1 → 1.7.0`), which can surface lint
 failures in files this work never touches. Gates on the spike are therefore
 scoped to the packages it changes; the authoritative run is after the tag.
+
+## Running this from scratch
+
+Written because the first version of this plan was not reproducible: the
+invocation existed only as a comment in a test file, and the workspace override
+it named was an untracked file full of one laptop's absolute paths. An agent or
+colleague handed this plan could not have reached a green run. What follows is
+the whole path from an empty machine.
+
+**Prerequisites.** Docker, `kind`, `ko`, `kubectl` (the first three are Taskfile
+preconditions with install links). Plus, for anything past Story 1, a local
+checkout of toolhive-core's unmerged `authn` branch — see the dependency wall
+above for why:
+
+```sh
+git clone -b authn https://github.com/stacklok/toolhive-core /tmp/thv-authn
+```
+
+**The mergeable half** (Story 1 and Story 7 — manifests and docs; no Go
+dependency, no cluster):
+
+```sh
+task deploy:check     # renders every deploy/ root, schema-checks it, asserts
+                      # the three caller-identity boundaries
+```
+
+**The spike half** (Stories 2–6 — a real IdP, real tokens, a real cluster):
+
+```sh
+THV_AUTHN_DIR=/tmp/thv-authn task e2e:k8s:authn
+```
+
+That target generates `.scratch/go.work.authn` from `THV_AUTHN_DIR` and runs the
+kind suite under it. The generated workspace is byte-identical to the one this
+work was originally verified against. It is **not committed** — it pins absolute
+paths, so it is per-machine by construction — and both the target and the file
+delete when `authn` tags, at which point plain `task e2e:k8s` covers everything.
+
+**What the suite does for you.** Nothing needs setting up by hand. `kind create
+cluster` → `ko build` → `kind load image-archive` → Redis + two agent replicas →
+Dex as a real in-cluster OIDC provider (an inline manifest in
+[`e2e/k8s/oidc_helpers_test.go`](../../e2e/k8s/oidc_helpers_test.go), not a
+committed YAML you have to find) → the stories → cluster teardown in the
+after-hook, including on failure. Budget ~2 minutes of bring-up and a 30-minute
+outer timeout.
+
+**Two things you will hit that are not this work's fault.**
+
+- `TestRunStreamingDefaultTimeoutWhenNoDeadline`
+  ([`internal/adapter/osfs`](../../internal/adapter/osfs)) is flaky under load:
+  it asserts a 5s process-group-kill unwind. It reproduces on `main` in
+  isolation. Do not spend time attributing it to caller identity.
+- On macOS, `-race` needs cgo, and an Xcode *app* upgrade does not reinstall the
+  `XcodeSystemResources` package — a stale `CoreDevice.framework` then fails with
+  `dlopen … Symbol not found: _XPCTypeBool`. Fix with
+  `sudo installer -pkg /Applications/Xcode.app/Contents/Resources/Packages/XcodeSystemResources.pkg -target /`.
+  The sanctioned `xcodebuild -runFirstLaunch` cannot help, because `xcodebuild`
+  is broken by the same fault.
 
 ## What the cluster probe established
 
@@ -177,7 +235,26 @@ without verifying it would have passed every earlier AC.
     mecated only — mecak8s registers no rate-limit flags at all, see *Do not
     claim*).
 
-## Story 6 — "I know what this does not give me"
+## Story 6 — "My session is still mine after the pod that took it dies"
+
+*As an operator running two replicas, I need ownership to be durable state, not
+in-process bookkeeping that happens to look right while one pod lives.*
+
+This is the only story here that genuinely requires a cluster — every other
+assertion could in principle be made against one in-process server. It also
+records a process failure worth not repeating: this coverage existed and passed,
+and was then **lost** when this plan was reorganised around user stories. Nothing
+caught it; the plan simply stopped mentioning failover and the spec went with it.
+It is restored, and placed last in the suite because it destroys a pod and
+reshuffles the roster the earlier specs port-forward to.
+
+- AC6.1: a session created and run through one replica reports the same owner
+  (subject and name) when read from a replica that never served it, after the
+  original pod has been gracefully deleted and replaced.
+  - verify: demonstration — the ginkgo spec "keeps the owner after the pod that
+    recorded it is replaced" (`task e2e:k8s:authn`).
+
+## Story 7 — "I know what this does not give me"
 
 *As an operator reading the documentation, I am not misled into believing I have
 isolation, revocation, quotas, or a tenancy boundary.*
@@ -185,18 +262,18 @@ isolation, revocation, quotas, or a tenancy boundary.*
 A capability doc that overstates is worse than none: it invites a deployment whose
 operator believes callers are separated.
 
-- AC6.1: the k8s documentation states, before any instructions, that this is
+- AC7.1: the k8s documentation states, before any instructions, that this is
   **attribution and not a tenancy boundary** — any authenticated caller can act on
   any session, approve another caller's pending permission ask, and read the same
   pod filesystem.
   - verify: inspection — `user-docs/deployment/mecak8s.md`.
-- AC6.2: the documentation names each unsupported property explicitly rather than
+- AC7.2: the documentation names each unsupported property explicitly rather than
   omitting it: no isolation, no revocation before token expiry, no per-caller
   quotas or rate limiting on mecak8s, unauthenticated Redis, `Principal.Name` (an
   email) denormalised onto every durable event with no retention hook, and
   metrics reachable only on the loopback admin mux.
   - verify: inspection — the *Do not claim* list below, mirrored in the doc.
-- AC6.3: the two IdP configuration traps that produce a confusing 401 are
+- AC7.3: the two IdP configuration traps that produce a confusing 401 are
   documented as troubleshooting step zero: Keycloak's default `aud` of `account`
   (needs an audience mapper, or every caller 401s), and `iss` byte-exactness (use
   the IdP's advertised external issuer, never the in-cluster Service URL).
@@ -213,7 +290,7 @@ operator believes callers are separated.
 | Per-caller quotas, workspace isolation | — | Do not exist; documenting them would be fiction |
 | Bounding JWKS staleness | a decision, then a flag | See *Known gaps* — currently unbounded by omission |
 
-## Do not claim (mirrored into the docs, AC6.2)
+## Do not claim (mirrored into the docs, AC7.2)
 
 - **Not "multi-tenant"** — attribution without authorization.
 - **Not "auditable"** until authn failures are logged: every 401 and 503 is
@@ -246,6 +323,17 @@ operator believes callers are separated.
   — two requests drain a two-replica deployment. Pre-existing, found here.
 - **NetworkPolicy is enforced in kind but only for the rules we wrote.** No spec
   asserts that a *missing* rule blocks; probe finding 1 is the only evidence.
+- **The spike cannot merge, by construction.** Its value is retiring integration
+  risk and having the adapter ready. If toolhive-core's `authn` branch is rebased
+  or amended before tagging, the spike needs a re-run — the API is frozen, so the
+  exposure is small but not zero.
+- **The kind suite runs on a 30-minute outer timeout**, and this work adds an IdP
+  workload plus five specs to it. If it becomes the bottleneck, make the JWKS
+  workload cheaper rather than weakening assertions.
+- **Tokens must keep coming from in-test signing, never a committed fixture.** A
+  checked-in JWT rots and the suite starts failing on a calendar date. Dex minting
+  live tokens per run is what keeps this honest; do not "speed it up" with a
+  static token.
 
 ## Definition of done
 

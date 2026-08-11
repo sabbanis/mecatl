@@ -325,4 +325,55 @@ var _ = ginkgo.Describe("caller identity, from the caller's and operator's view"
 		gomega.Expect(st).To(gomega.Equal(http.StatusUnauthorized),
 			"an unauthenticated request was accepted while identity is on")
 	})
+
+	// Story 6 — "My session is still mine after the pod that took it dies."
+	//
+	// This is the ONLY story here that genuinely needs a cluster. Every other
+	// assertion could in principle be made against one in-process server; this one
+	// asks whether ownership is DURABLE STATE (in Redis, readable by any replica) or
+	// merely in-process bookkeeping that happens to look right while one pod lives.
+	// It was written, passed, and then LOST when this file was reorganised around
+	// user stories — restored deliberately, and placed last because it destroys a
+	// pod and reshuffles the roster the earlier specs port-forward to.
+	// ponytail: no SpecTimeout — that decorator requires a SpecContext-taking body,
+	// and every slow step here is already bounded by its own shortCtx.
+	ginkgo.It("keeps the owner after the pod that recorded it is replaced",
+		func() {
+			refreshPods()
+			podA, podB := agentPods[0], agentPods[1]
+
+			addrA, stopA := portForward(podA)
+			defer stopA()
+			addrB, stopB := portForward(podB)
+			defer stopB()
+
+			cCtx, cCancel := shortCtx(30 * time.Second)
+			st, sess := createSessionAs(cCtx, addrA, alice)
+			cCancel()
+			gomega.Expect(st).To(gomega.Equal(http.StatusCreated))
+
+			// Drive a run so the session has durable events, not just a create.
+			rCtx, rCancel := shortCtx(60 * time.Second)
+			gomega.Expect(promptAs(rCtx, addrA, sess, alice, "alice before failover")).
+				To(gomega.Equal(http.StatusOK))
+			rCancel()
+
+			// Snapshot the roster BEFORE deleting, so waitReplacementReady waits for
+			// the genuinely-new pod rather than being satisfied by survivor pod-B —
+			// the trap called out in failover_test.go.
+			preDelete := podNames()
+			kubectlDeletePod(podA, false)
+			waitReplacementReady(preDelete)
+
+			// Read the owner from a replica that never served the create. If ownership
+			// lived in process memory this returns empty; the assertion is that a
+			// DIFFERENT pod answers the same question identically.
+			oCtx, oCancel := shortCtx(60 * time.Second)
+			defer oCancel()
+			sub, name := sessionOwner(oCtx, addrB, alice, sess)
+			gomega.Expect(name).To(gomega.Equal("alice"),
+				"the surviving replica lost the owner's name — ownership is not durable across pods")
+			gomega.Expect(sub).To(gomega.Equal(aliceSubject),
+				"the surviving replica reported a different subject for the same session")
+		})
 })
