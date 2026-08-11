@@ -1,369 +1,265 @@
 # Caller identity — deployment verification — acceptance plan
 
-**Phase:** capability verification — caller identity, proven in a real deployment
-**Status:** draft, 2026-08-10. The verification half of agent-identity Track A: prove that the caller identity threaded by [`caller-identity.md`](caller-identity.md) survives a real IdP, a real cluster, and a real restart — and that turning it on is genuinely optional.
+**Phase:** capability verification — caller identity, proven from the caller's and the operator's point of view
+**Status:** draft, 2026-08-11. The verification half of agent-identity Track A: prove that the identity threaded by [`caller-identity.md`](caller-identity.md) does what a user and an operator would expect of it in a real Kubernetes deployment — and state plainly what it does not do.
 **Issue:** [stacklok/mecatl#367](https://github.com/stacklok/mecatl/issues/367) (Track A; isolation #368 owns anything that refuses).
-**ADR:** [ADR-0100](../adr/0100-caller-identity-threading.md) — the principal model, write-once owner, log-only event annotation, the `toolhive-core/authn` validator seam.
-**Accumulator branch:** `acc/caller-identity` for the mergeable half; `spike/authn-wiring` for the half that cannot compile until `toolhive-core/authn` is tagged (see *The dependency wall*).
+**ADR:** [ADR-0100](../adr/0100-caller-identity-threading.md).
+**Accumulator branch:** `acc/caller-identity` for the mergeable half; `spike/authn-wiring` for the half that cannot compile until `toolhive-core/authn` is tagged.
 
-[`caller-identity.md`](caller-identity.md) landed the data layer and verified it
-against a **fake** validator, because the real one did not exist. This plan
-verifies the parts a fake cannot reach: that mecatl *constructs* the validator
-correctly, that attribution survives a cluster restart, and that an IdP outage
-reads as an outage rather than an authentication failure.
+## Why this plan is organised by story, not by layer
 
-The doc is organized scenario-first because acceptance is about what a running
-deployment can demonstrate.
+Its first draft had three scenarios — "the deployment surface", "the validator
+construction", "the cluster" — which are **implementation layers**, not things
+anyone can demonstrate. Organising that way produced two failures worth naming,
+because they are the argument for the rewrite:
 
-## The dependency wall (read this before scheduling anything)
+- Layer thinking let a **green suite hide an unusable product**. Every unit test
+  passed while `OIDCConfig.NewValidator` was nil in both mains, so any real
+  deployment with `--oidc-issuer` set exited at startup. No layer owned "the
+  composed binary serves an authenticated caller", so nothing checked it.
+- Layer thinking let the plan **verify things nobody asked for** while the
+  headline claim went untested. Three scenarios of coverage existed before anyone
+  had driven a single authenticated *run*, which is the first thing a user does.
 
-`toolhive-core/authn` exists but is **in no tagged release** — it is ~13 commits
-past `v0.0.38` on an unmerged branch, and mecatl requires `toolhive-core v0.0.26`
-indirectly. Its API is frozen; only correctness verification is outstanding.
+Each story below is written as an outcome a caller or an operator can observe,
+and every AC cites a fact **observed in a real cluster** (the probe transcript,
+2026-08-11) rather than an assumption about how the code ought to behave. Where a
+story cannot be honestly claimed, it says so instead of asserting a weaker proxy.
 
-Consequently `OIDCConfig.NewValidator` is nil in both server mains
-([`internal/cliconfig/oidc.go`](../../internal/cliconfig/oidc.go)), so
-`--oidc-issuer` is a **fatal startup error today** — deliberately fail-closed,
-never a silent degrade. **No caller-identity deployment can be brought up at
-all until the dependency lands.**
+## The dependency wall (read before scheduling anything)
 
-This splits the work by *mergeability*, not by test layer:
+`toolhive-core/authn` is in **no tagged release** — it lives on an unmerged
+branch. The adapter that consumes it, and every spec that needs a real validator
+in the binary, therefore compiles only under a local `GOWORK` override
+(`.scratch/go.work.authn`, untracked) and **must not merge** to
+`acc/caller-identity`: a committed import of an untagged package breaks the build
+for CI and every other contributor. When it tags, the change is a `go.mod` bump.
 
 | Half | Branch | Constraint |
 |---|---|---|
-| Scenario 1 (deployment surface) | `acc/caller-identity` | No Go dependency. Merges normally. |
-| Scenarios 2–3 (wiring + cluster) | `spike/authn-wiring` | Compiles only under a local `GOWORK` override. **Must not merge** until the tag. |
+| Stories 1 and 6 (manifests, docs) | `acc/caller-identity` | No Go dependency. Merges. |
+| Stories 2–5 (anything needing a real token) | `spike/authn-wiring` | Override-only. Held. |
 
-A committed `replace`, or a `use` line added to the committed `go.work`, would
-make the branch unbuildable for CI and every other contributor. The override
-lives in an untracked `.scratch/go.work.authn` (verified: `.scratch/` is
-gitignored, and `git status` stays clean with it in place). When toolhive-core
-tags, the spike's only change is override → version bump.
+The override is **not hermetic**: it pulls toolhive-core's dependency versions
+into the workspace (observed: `go-sdk 1.6.1 → 1.7.0`), which can surface lint
+failures in files this work never touches. Gates on the spike are therefore
+scoped to the packages it changes; the authoritative run is after the tag.
 
-## Why these scope cuts
+## What the cluster probe established
 
-- **Nothing is refused, so nothing about isolation can be asserted.**
-  [ADR-0100](../adr/0100-caller-identity-threading.md) ships attribution only;
-  [`caller-identity.md`](caller-identity.md) deferred the Alice/Bob demo to #368
-  precisely because it demonstrates refusals that do not exist. A test here that
-  *looked* like it proved tenancy would be worse than no test.
-- **The token-mechanics matrix is not re-tested.** `alg=none`, HS\*-confusion,
-  expired, wrong-issuer, bad-signature and friends are the validator's contract
-  and are covered by its own suite (69 test functions asserting the exact reason
-  codes). Duplicating that here would re-test someone else's contract, drag JWT
-  machinery into mecatl for no gain, and drift. AC1.2 in
-  [`caller-identity.md`](caller-identity.md) already states this boundary.
-- **No local end-to-end layer.** A live-`mecated` layer between the in-process
-  tests and the cluster would assert only what Scenario 2 already covers
-  deterministically, while being the one layer needing the e2e harness's
-  single-shared-credential assumption (`MECATL_E2E_AUTH_TOKEN`,
-  [`e2e/harness/remote.go`](../../e2e/harness/remote.go)) rewritten for
-  per-caller tokens. Scenario 3 needs that change anyway, where multi-caller is
-  the point.
-- **Keycloak is not in the automated suite.** A static JWKS is deterministic and
-  needs no realm configuration; `--oidc-jwks-uri` exists as the offline-test and
-  air-gap hook. Keycloak stays a documented manual path.
+Facts observed on kind cluster `id-probe` against an image containing the real
+validator. Two of them **correct earlier claims in this plan**, which is why they
+are recorded rather than summarised:
 
-## Identity is optional everywhere — including k8s
+1. **NetworkPolicy is enforced in kind** (kindnetd `v20251212-v0.29.0-alpha`). An
+   earlier draft called the policies inert. Without an agent→IdP egress rule the
+   pod CrashLoopBackOff'd on `failed to fetch JWKS … context deadline exceeded`,
+   and a plain pod in the namespace was blocked identically while DNS resolved.
+   The policies in `deploy/mecak8s/` are load-bearing; a new in-cluster
+   dependency needs its own rule.
+2. **The owner is visible over plain HTTP.** `GET /v1/sessions` returns
+   `owner{issuer,subject,grant_type}`. An earlier draft claimed ownership was
+   gRPC-only, from a truncated grep. Assertions belong on the API, not the store.
+3. **Identity is enforced, not merely present**: a token signed by an unpublished
+   key with a matching `kid` → 401; no `Authorization` header → 401.
+4. **Owner and actor differ correctly.** Alice creates a session, Bob prompts it
+   (200 — permitted, no isolation in this phase): the owner stays `alice`, and all
+   six durable events record actor `bob`.
+5. **The durable event record is an envelope with Go-cased keys** —
+   `{"v":"redisstore-eventlog/1","ev":{"Type":…,"Actor":{"Subject":"bob"}}}`.
+   `session.Event` carries no JSON tags. A consumer that assumes either a flat
+   record or snake_case sees nothing and fails silently.
+6. `grant_type` resolves to `user` for a token carrying no grant hints.
 
-`OIDCConfig.Enabled()` is `Issuer != ""`;
-`SecurityConfig.identityConfigured()` is `Validator != nil`
-([`internal/adapter/server/authn.go`](../../internal/adapter/server/authn.go)).
-`cmd/mecak8s` registers the identical flags through the same `cliconfig` helper
-and defaults them off, verbatim as `cmd/mecated` does — nothing makes identity
-k8s-specific or k8s-mandatory.
+## Story 1 — "I turn identity on and my deployment still comes up"
 
-The axis that matters is **single-caller vs multi-caller**, not local vs
-cluster: one human on one machine gets an owner that is always themselves, while
-several callers sharing one harness are the case attribution exists for. A
-cluster is merely where multi-caller deployments usually live.
+*As an operator, I enable caller identity on an existing mecak8s deployment and it
+starts; if I misconfigure it, it fails loudly rather than serving unauthenticated.*
 
-What *is* not optional is the strictness once enabled: misconfiguration is fatal
-at startup, so "optional" describes the decision to switch it on, not a soft
-mode that can be half-configured.
+Needs no Go dependency; merges on the accumulator.
 
-## In scope — 3 scenarios, in implementation order
+- AC1.1: the opt-in overlay renders the three `--oidc-*` flags **appended** to the
+  base args — every base flag survives — and the manifests are schema-valid.
+  A container's `args` is an atomic list, so a strategic-merge patch would replace
+  it and silently drop `--redis-url`; this AC is the guard against that regression.
+  - verify: demonstration — `task deploy:check` (planted red three ways: a merge
+    patch dropping six args, an SSRF flag in the overlay, `oidc` in the base).
+- AC1.2: the **base** renders no `--oidc-*` at all — identity stays opt-in, and an
+  existing deployment is byte-unchanged.
+  - verify: demonstration — `task deploy:check`.
+- AC1.3: a misconfigured verifier is **fatal at startup**, never a silent degrade
+  to unauthenticated; and while no validator ships in the build, the documented
+  flags exit non-zero with a message that says so.
+  - verify: `TestCallerIdentity_Scenario1_MisconfiguredOIDCFailsToStart` (landed)
+    + inspection of `deploy/README.md`.
+- AC1.4: an in-cluster IdP needs an explicit NetworkPolicy egress rule, and the
+  published overlay contains **no** SSRF relaxation — that flag is a test fixture.
+  - verify: demonstration — `task deploy:check` for the absence; probe finding 1
+    for the requirement.
 
-### Scenario 1 — the deployment surface, without turning it on
+## Story 2 — "I authenticate, and the work I do is mine"
 
-The published deployment must keep deploying what operators already expect,
-while an opt-in overlay exists for those who want identity. This scenario needs
-no Go dependency and is the only one that merges before the tag.
+*As a caller, I present a token from my IdP, create a session, run a prompt, and
+the system records that the work was mine.*
 
-`deploy/mecak8s/` is the storage-free k8s deployment ([ADR
-0048](../adr/0048-mecak8s.md)); its agent Deployment carries no auth arguments
-today. Adding `--oidc-*` to the **base** would change what every user of that
-example deploys, so identity lands as a kustomize overlay.
+This is the story no amount of layer coverage reached: three scenarios existed
+before any authenticated **run** had been driven.
 
-**The overlay points at a REAL external IdP over HTTPS, and carries no test
-scaffolding.** That is not a simplification, it is the security-correct shape:
-the library rejects `http://` and private/in-cluster addresses by default
-(`InsecureAllowHTTP` and `AllowPrivateIP` both false — the latter is what blocks
-a `jwks_uri` resolving to `169.254.169.254`), so a public HTTPS issuer is the
-only configuration that works with those defaults intact. It also needs **no
-NetworkPolicy change**: the base egress already allows DNS and TCP 443 to any
-destination IP, which is exactly what an external IdP needs.
+- AC2.1: a caller presenting a genuinely-signed token creates a session and drives
+  a prompt to completion through the authenticated edge.
+  - verify: demonstration — the ginkgo spec "attributes an authenticated run to the
+    caller who made it" (`e2e/k8s/caller_identity_test.go`, `task e2e:k8s`). NOT a Go
+    test name: the kind suite has ONE entry point (`TestK8sE2E`) and its specs are
+    named strings, so a `Test…` name here could never resolve.
+- AC2.2: the session records that caller's `(issuer, subject)` as its owner, with
+  a `GrantType` that satisfies `Valid()` — an underived grant would 401 every
+  valid token at the edge's admissibility guard.
+  - verify: demonstration — same spec; it asserts the owner's subject is non-empty
+    and the display name comes from the token's `name` claim.
 
-The in-cluster static JWKS and the flag that permits reaching it are **test
-fixtures**, and live with the e2e suite in Scenario 3 — never in `deploy/`. A
-published example that disables SSRF protection is the wrong artifact to ship.
+## Story 3 — "I can see who owns what"
 
-**Work:**
-- `deploy/mecak8s-oidc/`: a patch adding `--oidc-issuer`,
-  `--oidc-jwks-uri`, `--oidc-audience` to the agent Deployment. Nothing else.
-- `deploy/README.md`: the overlay, and a by-hand local bring-up for debugging —
-  explicitly noting it fails closed until the validator ships.
+*As an operator, I can list sessions and see each one's owner, with the tools I
+already have.*
 
-**Acceptance:**
-- AC1.1: the OIDC overlay renders an agent Deployment carrying all three
-  `--oidc-*` flags **appended to** the base args — every base flag
-  (`--redis-url`, `--session-lease-k8s-namespace`, …) survives — and the
-  rendered manifests are schema-valid.
-  - verify: demonstration — `kustomize build deploy/mecak8s-oidc` shows the 7
-    base args plus the 3 new ones, and pipes through
-    `kubeconform -strict -summary -` with `Valid: 12, Invalid: 0, Errors: 0`.
-    The args half is not incidental: a container's `args` is an ATOMIC list, so a
-    strategic-merge patch mentioning `args` would REPLACE the base list and
-    silently drop the storage and lease flags. The overlay uses a JSON6902
-    append for that reason, and this AC is what would catch a regression to a
-    merge patch. Schema validation is `kubeconform` rather than
-    `kubectl apply --dry-run=client`: the latter needs a reachable API server
-    even with `--validate=false` (it maps kinds against the server), so it
-    cannot run in CI or on a laptop with no cluster.
-- AC1.2: the **base** `deploy/mecak8s/` renders no `--oidc-*` argument at all —
-  the default deployment is byte-unchanged, and identity is opt-in in the
-  cluster exactly as it is locally.
-  - verify: demonstration — `kustomize build deploy/mecak8s` greps clean for
-    `oidc` (0 matches) and stays schema-valid.
-- AC1.3: the documented by-hand bring-up states plainly that `--oidc-issuer`
-  currently exits non-zero because no validator ships in this build, so a reader
-  cannot mistake the fail-closed refusal for a bug.
-  - verify: inspection — `deploy/README.md`, cross-checked against
-    `internal/cliconfig/oidc.go`'s `ErrOIDCMisconfigured` path.
-- AC1.4: the overlay carries no flag that relaxes issuer-URL or private-address
-  policy, and no in-cluster IdP workload — a published example must not ship SSRF
-  relaxation. Those are Scenario 3's test fixtures.
-  - verify: demonstration — `kustomize build deploy/mecak8s-oidc` greps clean
-    (0 matches) for `insecure`, `allow-private` and any JWKS workload. Note
-    `--oidc-jwks-uri` is a URL to an external endpoint, not a relaxation, and is
-    expected to be present.
+- AC3.1: `GET /v1/sessions` carries `owner{issuer,subject,grant_type}` for an
+  owned session and omits it for an unowned one — observable with `curl`, no gRPC
+  client required (probe finding 2).
+  - verify: demonstration — the ginkgo spec "shows the owner on the list row over
+    plain HTTP" (`task e2e:k8s`).
+- AC3.2: ownership drives **no** filtering — a request bearing Bob's token still
+  lists Alice's session. This phase ships attribution, not isolation, and the
+  absence is asserted so it cannot be mistaken for a bug.
+  - verify: `TestCallerIdentity_Scenario3_ListRowOwnerIsDisplayOnly` (landed)
 
----
+## Story 4 — "I can tell who did something, even when it wasn't the owner"
 
-### Scenario 2 — mecatl constructs the validator correctly
+*As an auditor, when one caller acts on another's session, the record tells me who
+acted — not merely whose session it was.*
 
-The failure this scenario exists to catch: mecatl builds an `authn.Config` that
-is *wrong in a way the library cannot detect*. An empty `Audiences` with
-`AllowAnyAudience` true makes the library accept tokens minted for a different
-service, behaving perfectly correctly while mecatl is insecure. Neither the
-fake-validator tests in [`caller-identity.md`](caller-identity.md) nor the
-library's own suite can see that; only a real token through mecatl's own
-construction path can.
+The ship-blocker both reviews found. Owner answers *whose is this*; actor answers
+*who did this*; in a shared deployment they routinely differ.
 
-Tokens are signed **in-test** against an `httptest` static-JWKS server — no new
-module dependency (`golang-jwt/jwt/v5` is already in mecatl's graph, promoted
-from indirect to direct).
+- AC4.1: when Bob drives a run on Alice's session, every durable event records
+  actor **Bob**, while the session's owner stays **Alice** — acting on a session
+  never re-owns it.
+  - verify: demonstration — the ginkgo spec "records the acting caller as the actor,
+    not the session's owner" (`task e2e:k8s`).
+- AC4.2: the actor is log-only — absent from both client relays and ignored by the
+  event-sourced fold.
+  - verify: `TestCallerIdentity_Scenario4_EventActorLogOnly` (landed)
+- AC4.3: a durable-log consumer must read the **envelope** (`ev`) and **Go-cased**
+  keys; a reader that assumes otherwise must fail loudly, never silently skip.
+  - verify: demonstration — the ginkgo spec "records the acting caller as the actor,
+    not the session's owner" (`task e2e:k8s`). — its parse
+    is assertive, and probe finding 5 is why. A fail-silent parse guarding a
+    security property is how this AC's first draft could only ever time out.
 
-**Reaching that server needs no production flag, but it takes TWO measures, not
-one.** The two defaults that block a loopback fixture are enforced at *different
-layers*, and an earlier draft of this plan got that wrong by assuming one hatch
-covered both:
+## Story 5 — "A caller without a valid token gets nothing"
 
-- `AllowPrivateIP: false` rejects the loopback ADDRESS. It governs only the
-  library's *default* HTTP client, so a caller-supplied `HTTPClient` — which
-  brings its own dial policy — is enough. The library still enforces its 1 MiB
-  body cap, redirect refusal and timeout on a supplied client, so the protections
-  that matter are not traded away.
-- `InsecureAllowHTTP: false` rejects an `http://` issuer URL. This is a
-  **Config-level scheme check and fires regardless of which client is supplied**
-  (observed: `authn: issuer must use https scheme … http://127.0.0.1:50928`). An
-  injected client does nothing for it.
+*As an operator, I need forged and absent credentials refused — the difference
+between identity being present and identity being enforced.*
 
-So the fixture serves over **TLS** (`httptest.NewTLSServer`), which keeps BOTH
-pinned production defaults intact: the scheme check passes, and `srv.Client()`
-carries the test CA so the supplied client trusts it. The alternative — relaxing
-`InsecureAllowHTTP` for the test — would have meant a test seam on a default
-pinned precisely because a plaintext JWKS fetch lets anyone on the path
-substitute the signing keys. Serving TLS is strictly better and costs one
-constructor.
+No spec asserted a rejection before this story existed: an edge that parsed a JWT
+without verifying it would have passed every earlier AC.
 
-This is still the reason Scenario 2 needs no new operator surface and Scenario 3
-does: a supplied client and a TLS fixture are both available in-process, while
-the agent binary reaching an in-cluster Service has neither.
+- AC5.1: a token signed by a key the IdP does not publish is refused 401-class,
+  and the handler never runs.
+  - verify: demonstration — the ginkgo spec "refuses a forged signature and a missing
+    credential" (`task e2e:k8s`).
+- AC5.2: a request with no `Authorization` header is refused 401-class when
+  identity is on.
+  - verify: demonstration — the ginkgo spec "refuses a forged signature and a missing
+    credential" (`task e2e:k8s`).
+- AC5.3: a rejected credential is never rate-limit-keyed (token rotation is not a
+  limit bypass, and a bad token must not create a bucket).
+  - verify: `TestCallerIdentity_Scenario1_RateLimitKeyedOnPrincipal` (landed;
+    mecated only — mecak8s registers no rate-limit flags at all, see *Do not
+    claim*).
 
-Scope discipline: this scenario asserts **wiring**, not token mechanics. Three
-assertions, not a rejection matrix.
+## Story 6 — "I know what this does not give me"
 
-**Work:**
-- the adapter satisfying `server.PrincipalValidator` over `authn.Validator`:
-  field mapping, `GrantType` via the already-landed `server.GrantTypeFromClaims`,
-  error translation per the table recorded at the `NewValidator` injection point,
-  and `Close() error` delegating to `(*authn.Validator).Close()` (the optional
-  `io.Closer` `Authenticator.Close` already type-asserts).
-- an `httptest` static-JWKS fixture + in-test signing helper.
+*As an operator reading the documentation, I am not misled into believing I have
+isolation, revocation, quotas, or a tenancy boundary.*
 
-**Acceptance:**
-- AC2.1: a correctly-signed RS256 token from the configured issuer and audience
-  yields a principal on the handler context whose `(Issuer, Subject)` match the
-  token's `iss`/`sub` and whose `GrantType` satisfies `Valid()` — proving both
-  the `Config` construction and the `authn.Principal` → `session.Principal`
-  mapping, including that the grant is derived (an underived grant would fail
-  `admissiblePrincipal` and 401 every valid token).
-  - verify: `TestCallerIdentityE2E_Scenario2_RealTokenYieldsPrincipal`
-- AC2.2: the same signing key and issuer with a **wrong audience** is rejected
-  401 — proving `Audiences` is actually populated and `AllowAnyAudience` is
-  false. This is the insecure-but-green configuration the scenario exists for.
-  - verify: `TestCallerIdentityE2E_Scenario2_WrongAudienceRejected`
-- AC2.3: with `--oidc-jwks-uri` set, OIDC discovery is never attempted — the
-  static-JWKS short-circuit that makes air-gapped and offline operation possible.
-  - verify: `TestCallerIdentityE2E_Scenario2_StaticJWKSSkipsDiscovery`
+A capability doc that overstates is worse than none: it invites a deployment whose
+operator believes callers are separated.
 
----
-
-### Scenario 3 — attribution survives a real cluster
-
-Two assertions only, both things a single process cannot prove. They reuse the
-existing kind harness ([`e2e/k8s/`](../../e2e/k8s), build tag `kind_e2e`, ko
-resolve + ginkgo, a Redis StatefulSet and two storage-free agent replicas), so
-this scenario adds specs rather than infrastructure.
-
-**Unlike Scenario 2, this one needs a real operator-visible flag.** The agent is
-a separate process reaching an in-cluster JWKS Service — a private address — so
-there is no test-only injection point: `AllowPrivateIP` must be set on the
-validator the binary itself constructs. That is a new flag which relaxes an SSRF
-defence, so it carries safety obligations of its own (AC3.3–AC3.5) and is the
-reason this scenario is scoped to two assertions rather than a suite: the flag
-must be justified by what it buys, not the reverse.
-
-Two further consequences of the private-address path, both easy to miss until
-the deployment silently fails closed:
-- the base NetworkPolicy's egress allows only DNS, TCP 443 to any IP, and
-  Redis 6379 — an in-cluster JWKS on another port needs an explicit egress rule
-  in the **fixture** overlay;
-- the flag must permit `http://` as well as the private address, or the JWKS
-  endpoint needs a private CA and `CACertPath` plumbing that is out of scope.
-
-**Work:**
-- a `--oidc-insecure-allow-private-issuer` flag (name deliberately loud) setting
-  `AllowPrivateIP` + `InsecureAllowHTTP` together, defaulting off.
-- e2e fixtures: a static JWKS Deployment + Service, an egress rule for it, the
-  Scenario 1 overlay, and per-caller tokens in the harness.
-
-**Acceptance:**
-- AC3.1: a session created with Alice's token retains Alice as its owner across a
-  replica failover — the lease holder is killed, the surviving replica serves the
-  same session, and the owner it reports is unchanged. Redis-backed and
-  cross-process, so it proves persistence the two-Build in-process pattern
-  cannot.
-  - verify: `TestCallerIdentityE2E_Scenario3_OwnerSurvivesFailover`
-- AC3.2: with the JWKS workload scaled to zero, a request bearing a
-  previously-valid token fails with the transient 503-class signal, NOT 401 — an
-  IdP outage against a genuinely unreachable IdP, which the fake validator can
-  only simulate.
-  - verify: `TestCallerIdentityE2E_Scenario3_JWKSOutageIsTransient`
-- AC3.3: `--oidc-insecure-allow-private-issuer` defaults to **off**, and with it
-  off a private or `http://` issuer is refused — so the SSRF defence the library
-  provides is intact in every deployment that does not explicitly opt out.
-  - verify: `TestCallerIdentityE2E_Scenario3_PrivateIssuerRefusedByDefault`
-- AC3.4: enabling the flag emits a startup WARN naming it as test-only, so an
-  operator who copy-pastes it into a real deployment is told, in the logs, what
-  they have turned off. Silence here is how a test flag becomes a production
-  vulnerability.
-  - verify: `TestCallerIdentityE2E_Scenario3_InsecureIssuerFlagWarns`
-- AC3.5: the flag is absent from `deploy/mecak8s/` and its published overlay —
-  it exists for the e2e fixture only, and nothing an operator copies contains it.
-  - verify: demonstration — grep over `deploy/`, exit non-zero on a match (the
-    same check as AC1.4, asserted from the flag's side).
+- AC6.1: the k8s documentation states, before any instructions, that this is
+  **attribution and not a tenancy boundary** — any authenticated caller can act on
+  any session, approve another caller's pending permission ask, and read the same
+  pod filesystem.
+  - verify: inspection — `user-docs/deployment/mecak8s.md`.
+- AC6.2: the documentation names each unsupported property explicitly rather than
+  omitting it: no isolation, no revocation before token expiry, no per-caller
+  quotas or rate limiting on mecak8s, unauthenticated Redis, `Principal.Name` (an
+  email) denormalised onto every durable event with no retention hook, and
+  metrics reachable only on the loopback admin mux.
+  - verify: inspection — the *Do not claim* list below, mirrored in the doc.
+- AC6.3: the two IdP configuration traps that produce a confusing 401 are
+  documented as troubleshooting step zero: Keycloak's default `aud` of `account`
+  (needs an audience mapper, or every caller 401s), and `iss` byte-exactness (use
+  the IdP's advertised external issuer, never the in-cluster Service URL).
+  - verify: inspection — `user-docs/deployment/mecak8s.md`.
 
 ## Out of scope
 
 | Item | Defer-to | Why |
 |---|---|---|
-| Any refusal, ownership check, or tenancy assertion | isolation track #368 | Nothing is refused in Track A; a test implying otherwise would oversell it |
-| The token-mechanics rejection matrix (`alg=none`, HS-confusion, expiry, …) | `toolhive-core/authn`'s own suite | Its contract, already covered by 69 test functions asserting exact reason codes |
-| A live-`mecated` local e2e layer | — | Its assertions are covered deterministically by Scenario 2 or better by Scenario 3 |
-| Keycloak in the automated suite | a manual demo path | Realm state and the dev-file DB caveat make it flaky; a static JWKS is deterministic |
-| Multi-audience / repeatable `--oidc-audience` | a later, backward-compatible change | Recorded at the injection point; no consumer yet |
-| A private-CA JWKS endpoint (`CACertPath` / an `--oidc-ca-cert` flag) | an operator need, when one appears | The insecure-issuer flag covers the test case; cert plumbing is real scope with no consumer today |
-| A posture gate on the insecure-issuer flag | revisit if it is ever seen outside a test | Posture governs agent tool permissions, not server networking, so gating there would be a category error; the loud name + startup WARN + absence from `deploy/` are the guards |
-| Discharging AC1.2 of [`caller-identity.md`](caller-identity.md) | the follow-up that takes the tag | Scenario 2 narrows the residual to the library's own contract, but the AC's wording stands until the dep is real |
+| Any refusal on ownership grounds | #368 | This phase refuses nothing; a test implying otherwise would oversell it |
+| The token-mechanics matrix (`alg=none`, HS-confusion, expiry) | `toolhive-core/authn`'s own suite | Its contract, 69 tests asserting exact reason codes |
+| OIDC **discovery** (`.well-known`) | a follow-up | Never exercised anywhere: every configuration pins `--oidc-jwks-uri`. See *Known gaps* |
+| A real IdP (Keycloak/Okta/Entra) | a manual, dated transcript | Realm state is fragile in CI; claim shapes belong in a fixture matrix |
+| Per-caller quotas, workspace isolation | — | Do not exist; documenting them would be fiction |
+| Bounding JWKS staleness | a decision, then a flag | See *Known gaps* — currently unbounded by omission |
 
-## Cross-cutting deliverables
+## Do not claim (mirrored into the docs, AC6.2)
 
-- `deploy/README.md` — the overlay and the by-hand bring-up (Scenario 1).
-- [ADR-0027](../adr/0027-cloud-native.md) row 39 — drop the "nil in both mains
-  today" caveat **only** when the dependency actually lands, not when the spike
-  proves it.
-- `docs/acceptance/README.md` — index this plan (the matlatl gate fails on an
-  unreachable doc).
-- `llms.txt` regeneration + the matlatl strict link gate (`task docs`).
+- **Not "multi-tenant"** — attribution without authorization.
+- **Not "auditable"** until authn failures are logged: every 401 and 503 is
+  currently silent, and the code discards its own outage-vs-bad-token distinction.
+- **No revocation** — revoking at the IdP takes effect only at token expiry, and
+  only while the JWKS cache is fresh.
+- **No fair use** — mecak8s registers no rate-limit flags; one caller can exhaust
+  the shared Redis, lease namespace and provider budget.
+- **Not PII-ready** — `Principal.Name` is denormalised onto every durable event
+  with no erasure path.
+- **Metrics are loopback-only** — nothing is scrapeable as shipped.
 
-## Sequencing recommendation
+## Known gaps and risks
 
-Scenario 1 first and alone: it is mergeable, needs no dependency, and unblocks
-nothing else, so it carries no risk of being stranded. Scenario 2 next under the
-override. Scenario 3 last — it depends on Scenario 2's adapter (the image needs a
-non-nil validator) and Scenario 1's overlay.
-
-**Verify before writing any Scenario 3 spec:** that `ko` propagates `GOWORK` to
-its `go build`. Scenario 3 needs an image built from a tree whose `authn` import
-resolves through the override; if `ko` does not honour it, Scenario 3 is blocked
-until the tag no matter how the specs are written. Establishing that is cheap and
-reshapes the scenario if it fails.
+- **JWKS staleness is unbounded by omission.** The library's cache keeps serving
+  its last good key set after every failed refresh, so a revoked key stays trusted
+  for as long as the IdP is unreachable — the trust window equals the outage
+  length. `MaxJWKSStaleness` exists and mecatl does not set it. An earlier AC in
+  this plan asserted an outage yields a 503; it does not, for a warm cache. The
+  503 path is reachable only via an unknown `kid` or a cold cache. **Decision
+  needed**, with a recommendation of 1h and a flag.
+- **The documented configuration has never been started.** Every test pins the
+  JWKS URI — the air-gap hook — and the published overlay ships that pin too. An
+  external-IdP deployment with discovery is unexercised at every layer.
+- **`grant_type` is IdP-dependent and effectively `user` for Keycloak.** Keycloak
+  emits neither `gty` nor `grant_type`, and its `sub` (a UUID) never equals `azp`
+  (the client id), so every Keycloak service account lands as `user`. The label is
+  best-effort; document it as such or add an IdP-shaped signal.
+- **`/drain` is unauthenticated on the client-facing port** the Service publishes
+  — two requests drain a two-replica deployment. Pre-existing, found here.
+- **NetworkPolicy is enforced in kind but only for the rules we wrote.** No spec
+  asserts that a *missing* rule blocks; probe finding 1 is the only evidence.
 
 ## Definition of done
 
-1. `task lint` and `task test` pass (both modules, `-race`) on the mergeable half.
-2. `task docs` — `llms.txt` regenerated, matlatl strict link gate green.
-3. `task ac-trace` reports this plan structured with every `verify:` annotated
-   (it is a draft, so the strict gate reports rather than fails).
-4. Scenario 1's two demonstrations run green and are recorded.
-5. Scenarios 2–3 demonstrated under the `GOWORK` override on
-   `spike/authn-wiring`, with their commits **not** merged to
-   `acc/caller-identity`.
-6. `go run ./cmd/mecademo` still prints a full offline session — identity off,
-   nil principal, unchanged.
-
-## Deferred decisions and known risks
-
-- **`ko` + `GOWORK` is unverified.** The single technical unknown gating Scenario
-  3. Verify first.
-- **The spike cannot merge, by construction.** Its value is retiring integration
-  risk and having the adapter ready; if toolhive-core's `authn` branch is
-  rebased or amended before tagging, the spike needs a re-run. The API is frozen,
-  so the exposure is small but not zero.
-- **The e2e harness assumes one shared credential.** `MECATL_E2E_AUTH_TOKEN`
-  ([`e2e/harness/remote.go`](../../e2e/harness/remote.go)) is a single token;
-  caller identity is inherently multi-caller. Scenario 3 needs per-caller
-  clients, which is the most invasive change in this plan.
-- **The kind suite already runs on a 30-minute timeout.** Two specs plus an IdP
-  workload grow it; if it becomes the bottleneck, the JWKS workload is the part
-  to make cheaper, not the assertions.
-- **Token expiry must come from in-test signing, never a fixture file.** A
-  committed token rots and the suite starts failing on a calendar date.
-- **Scenario 2's `-race` debt: RESOLVED.** The spike was first written on a machine
-  whose `clang` was broken, so it could only be verified under `CGO_ENABLED=0`
-  (`-race` needs cgo). That was recorded here as a landing precondition rather
-  than waved away, and it has since been paid: the three ACs pass under `-race`
-  on the ordinary toolchain, with no `CC`/`SDKROOT` override, so the claim now
-  rests on the same footing as the repo's own gate.
-
-  Kept as a note because the root cause is a trap worth recognising again: an
-  Xcode *app* upgrade does not reinstall the `XcodeSystemResources` package, so a
-  `CoreDevice.framework` from an older Xcode can persist and reference a symbol
-  the current macOS no longer exports (`dlopen … Symbol not found: _XPCTypeBool`).
-  `sudo installer -pkg /Applications/Xcode.app/Contents/Resources/Packages/XcodeSystemResources.pkg -target /`
-  fixes it; `xcodebuild -runFirstLaunch` is the sanctioned route but cannot run,
-  because `xcodebuild` is itself broken by the same fault.
-- **One pre-existing flaky test will show up in any full-suite run here.**
-  `TestRunStreamingDefaultTimeoutWhenNoDeadline`
-  ([`internal/adapter/osfs`](../../internal/adapter/osfs)) asserts a 5s
-  process-group-kill unwind and fails under load. It reproduces on `main` in
-  isolation and is unrelated to caller identity; do not spend time attributing it
-  to this work.
+1. `task lint` and `task test` green on the mergeable half; spike gates scoped.
+2. `task docs` — `llms.txt` regenerated, matlatl strict gate green.
+3. `task deploy:check` green, and its three guards each demonstrated red.
+4. Stories 2–6 demonstrated in a kind cluster under the override, with the run
+   recorded.
+5. Story 1 and Story 7 merged on `acc/caller-identity`.
+6. `go run ./cmd/mecademo` still prints a full offline session (identity off).
+7. Every *Do not claim* bullet present in the k8s documentation.
 
 ## Exit criteria
 
-When every point under *Definition of done* holds — the mergeable half on
-`acc/caller-identity`, the spike demonstrated and held — this plan is satisfied.
-Landing the spike is the follow-up the tag unblocks, not part of this plan.
+When the mergeable half is on `acc/caller-identity`, the spike's stories are
+demonstrated and held, and the documentation names its limits — this plan is
+satisfied. Landing the spike is what the tag unblocks.
