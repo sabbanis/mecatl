@@ -28,12 +28,24 @@ story cannot be honestly claimed, it says so instead of asserting a weaker proxy
 
 ## The dependency wall (read before scheduling anything)
 
-`toolhive-core/authn` is in **no tagged release** — it lives on an unmerged
-branch. The adapter that consumes it, and every spec that needs a real validator
-in the binary, therefore compiles only under a local `GOWORK` override
+`toolhive-core/authn` is **merged to toolhive-core `main`** but is in **no tagged
+release** (checked: `be59776` is an ancestor of `origin/main`; it is not in
+`v0.0.38`). An earlier draft of this plan said it "lives on an unmerged branch" —
+that was wrong, and it made this plan's own prerequisite un-runnable, since there
+is no `authn` branch to clone.
+
+The adapter that consumes it therefore compiles under a local `GOWORK` override
 (`.scratch/go.work.authn`, untracked) and **must not merge** to
-`acc/caller-identity`: a committed import of an untagged package breaks the build
-for CI and every other contributor. When it tags, the change is a `go.mod` bump.
+`acc/caller-identity` as-is: a committed import of an untagged package breaks the
+build for CI and every other contributor.
+
+Because it is on `main`, there is a **third option this plan had not considered**:
+a pseudo-version (`go get github.com/stacklok/toolhive-core@main`) is a legitimate,
+committable `go.mod` entry — no override needed. The cost is that toolhive-core is
+a **private** module, so CI and every contributor would need `GOPRIVATE` plus
+credentials to build mecatl at all. That is a project-wide decision, not this
+plan's to make; recorded here so the choice is explicit rather than defaulted.
+Waiting for a tag keeps mecatl publicly buildable.
 
 | Half | Branch | Constraint |
 |---|---|---|
@@ -55,12 +67,19 @@ the whole path from an empty machine.
 
 **Prerequisites.** Docker, `kind`, `ko`, `kubectl` (the first three are Taskfile
 preconditions with install links). Plus, for anything past Story 1, a local
-checkout of toolhive-core's unmerged `authn` branch — see the dependency wall
-above for why:
+checkout of toolhive-core containing `authn/` — it is on `main`, so:
 
 ```sh
-git clone -b authn https://github.com/stacklok/toolhive-core /tmp/thv-authn
+git clone https://github.com/stacklok/toolhive-core /tmp/thv-authn
+# The run this plan was verified against pinned be59776. `main` also works and is
+# what a tag will come from; pin only if you need to reproduce this exact run.
+git -C /tmp/thv-authn checkout be59776
 ```
+
+toolhive-core is a **private** module, so the clone needs credentials — and any
+`go` command that fetches it needs `GOPRIVATE='github.com/stacklok/*'` or it will
+try `sum.golang.org` and fail with a confusing 404. (`task docs` hits the same
+wall for `matlatl`; the Taskfile comments say so.)
 
 **The mergeable half** (Story 1 and Story 7 — manifests and docs; no Go
 dependency, no cluster):
