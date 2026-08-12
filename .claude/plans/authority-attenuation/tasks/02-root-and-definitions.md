@@ -2,7 +2,7 @@
 id: 02-root-and-definitions
 title: Compatibility root and operator definition resolution
 blocked_by: [01-authority-domain]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
