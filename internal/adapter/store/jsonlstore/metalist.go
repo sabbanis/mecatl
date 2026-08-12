@@ -4,11 +4,8 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"os"
-	"path/filepath"
-	"strings"
 	"time"
 
 	"github.com/stacklok/mecatl/engine/port"
@@ -91,46 +88,21 @@ var _ port.MetaLister = (*Store)(nil)
 func (st *Store) MetaList(_ context.Context) ([]port.SessionMeta, error) {
 	st.mu.Lock()
 	defer st.mu.Unlock()
-	entries, err := os.ReadDir(st.dir)
+	files, err := st.resolver.snapshotFiles()
 	if err != nil {
-		return nil, fmt.Errorf("jsonlstore: list store dir: %w", err)
+		return nil, err
 	}
-	out := make([]port.SessionMeta, 0, len(entries))
-	for _, e := range entries {
-		if e.IsDir() || !strings.HasSuffix(e.Name(), sessionFileSuffix) {
-			continue
-		}
-		path := filepath.Join(st.dir, e.Name())
-		info, err := e.Info()
-		if err != nil {
-			continue // raced with a concurrent delete; tolerate it
-		}
-		// Read the last snapshot line ONCE (tail-read), then decode. A file with no
-		// decodable id is skipped (consistent with List); a file WITH an id but a
-		// corrupt/unknown-state snapshot surfaces with id/mtime + zeroed snapshot
-		// fields (matching the Load-per-row path's behaviour when Load fails).
-		last, err := readLastLine(path)
-		if err != nil {
-			continue // I/O error or empty file; skip
-		}
+	out := make([]port.SessionMeta, 0, len(files))
+	for _, file := range files {
+		meta := port.SessionMeta{ID: file.id, ModifiedAt: file.modified}
 		var m metaSnapshot
-		if err := json.Unmarshal(last, &m); err != nil || m.ID == "" {
-			continue // no decodable id; skip (consistent with List)
-		}
-		meta := port.SessionMeta{ID: m.ID, ModifiedAt: info.ModTime()}
-		if knownStates[m.State] {
+		if err := json.Unmarshal(file.last, &m); err == nil && knownStates[m.State] {
 			meta.State = m.State
 			meta.Turns = m.Counters.Turns
 			meta.ModelID = m.ModelID
 			meta.Title = m.Title
-			// A zero CreatedAt (a snapshot with no created_at, or the zero time)
-			// must surface as the zero time — NOT .Unix() of the zero time, which
-			// is -62135596800 and would misreport as 0001-01-01. The caller maps
-			// a zero time to CreatedAtUnix=0 (matching the Load-fails zeroed path).
 			meta.CreatedAt = m.CreatedAt
 		}
-		// err != nil or unknown state: the row still surfaces with id/mtime +
-		// zeroed snapshot fields, matching the Load-fails path.
 		out = append(out, meta)
 	}
 	return out, nil

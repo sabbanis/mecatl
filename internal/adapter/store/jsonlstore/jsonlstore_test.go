@@ -3,6 +3,7 @@ package jsonlstore_test
 import (
 	"bufio"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"os"
@@ -30,6 +31,15 @@ func newStore(t *testing.T) (*jsonlstore.Store, string) {
 // TestNewCreatesDirAt0700 pins the privacy posture (issue #79): the store holds
 // raw conversation transcripts in plaintext, so New creates a not-yet-existing
 // store dir owner-only (mode 0700).
+func canonicalFamilyPath(dir string, id session.SessionID, suffix string) string {
+	token := "sid-v1-" + base64.RawURLEncoding.EncodeToString([]byte(id))
+	return filepath.Join(dir, "sid-v1", token+suffix)
+}
+
+func canonicalSnapshotPath(dir string, id session.SessionID) string {
+	return canonicalFamilyPath(dir, id, ".session.jsonl")
+}
+
 func TestNewCreatesDirAt0700(t *testing.T) {
 	dir := filepath.Join(t.TempDir(), "store") // a fresh path New must create
 	if _, err := jsonlstore.New(dir); err != nil {
@@ -41,6 +51,13 @@ func TestNewCreatesDirAt0700(t *testing.T) {
 	}
 	if perm := info.Mode().Perm(); perm != 0o700 {
 		t.Errorf("store dir mode = %o, want 0700 (owner-only; the store holds plaintext transcripts)", perm)
+	}
+	canonicalInfo, err := os.Stat(filepath.Join(dir, "sid-v1"))
+	if err != nil {
+		t.Fatalf("Stat canonical dir: %v", err)
+	}
+	if perm := canonicalInfo.Mode().Perm(); perm != 0o700 {
+		t.Errorf("canonical dir mode = %o, want 0700", perm)
 	}
 }
 
@@ -91,7 +108,7 @@ func TestAppendOnlyLatestWins(t *testing.T) {
 	}
 
 	// Two saves -> two lines.
-	path := filepath.Join(dir, "sess-1.session.jsonl")
+	path := canonicalSnapshotPath(dir, s.ID)
 	if n := countLines(t, path); n != 2 {
 		t.Fatalf("session file has %d lines, want 2 (append-only)", n)
 	}
@@ -152,7 +169,7 @@ func TestToolCallLogParseable(t *testing.T) {
 	st.ToolCall("sess-1", session.NewToolCall("call-8", "Read", nil),
 		session.NewToolError("call-8", "nope"), 0, 42*time.Microsecond)
 
-	path := filepath.Join(dir, "sess-1.tools.jsonl")
+	path := canonicalFamilyPath(dir, "sess-1", ".tools.jsonl")
 	if n := countLines(t, path); n != 2 {
 		t.Fatalf("tools file has %d lines, want 2", n)
 	}
@@ -240,11 +257,8 @@ func readLines(t *testing.T, path string) []string {
 	return lines
 }
 
-// TestListDecodesRealIDAndMtime pins that List returns the REAL session id
-// decoded from the snapshot line — NOT a (non-invertible) reverse of the
-// sanitized filename — and the session file's mtime as ModifiedAt. The id
-// here contains a '/' that safeName flattens to '_', so a filename-derived id
-// would come back mangled.
+// TestListDecodesRealIDAndMtime pins that List returns the logical id from the
+// snapshot and the authoritative snapshot file's mtime.
 func TestListDecodesRealIDAndMtime(t *testing.T) {
 	ctx := context.Background()
 	st, dir := newStore(t)
@@ -263,12 +277,8 @@ func TestListDecodesRealIDAndMtime(t *testing.T) {
 	if entries[0].ID != id {
 		t.Errorf("List id = %q, want the REAL snapshot id %q (filename-derived ids are mangled)", entries[0].ID, id)
 	}
-	// ModifiedAt must be the session file's mtime.
-	matches, err := filepath.Glob(filepath.Join(dir, "*.session.jsonl"))
-	if err != nil || len(matches) != 1 {
-		t.Fatalf("glob session file: %v (matches %v)", err, matches)
-	}
-	info, err := os.Stat(matches[0])
+	path := canonicalSnapshotPath(dir, id)
+	info, err := os.Stat(path)
 	if err != nil {
 		t.Fatalf("Stat: %v", err)
 	}
@@ -316,17 +326,22 @@ func TestDeleteRemovesBothFilesIdempotently(t *testing.T) {
 	if err := st.Append(ctx, s.ID, session.Event{Type: session.EvResult}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	for _, suffix := range []string{".session.jsonl", ".tools.jsonl", ".events.jsonl"} {
-		if _, err := os.Stat(filepath.Join(dir, "sess-1"+suffix)); err != nil {
-			t.Fatalf("precondition: %s missing: %v", suffix, err)
+	paths := []string{
+		canonicalSnapshotPath(dir, s.ID),
+		canonicalFamilyPath(dir, s.ID, ".tools.jsonl"),
+		canonicalFamilyPath(dir, s.ID, ".events.jsonl"),
+	}
+	for _, path := range paths {
+		if _, err := os.Stat(path); err != nil {
+			t.Fatalf("precondition: %s missing: %v", filepath.Base(path), err)
 		}
 	}
 	if err := st.Delete(ctx, s.ID); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	for _, suffix := range []string{".session.jsonl", ".tools.jsonl", ".events.jsonl"} {
-		if _, err := os.Stat(filepath.Join(dir, "sess-1"+suffix)); !os.IsNotExist(err) {
-			t.Errorf("%s still present after Delete (stat err %v)", suffix, err)
+	for _, path := range paths {
+		if _, err := os.Stat(path); !os.IsNotExist(err) {
+			t.Errorf("%s still present after Delete (stat err %v)", filepath.Base(path), err)
 		}
 	}
 	if _, err := st.Load(ctx, s.ID); !errors.Is(err, jsonlstore.ErrNotFound) {
@@ -354,8 +369,8 @@ func TestDeletePartialFailureLeavesSessionVisible(t *testing.T) {
 	if err := st.Save(ctx, s); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
-	sessionFile := filepath.Join(dir, "sess-1.session.jsonl")
-	toolsPath := filepath.Join(dir, "sess-1.tools.jsonl")
+	sessionFile := canonicalSnapshotPath(dir, s.ID)
+	toolsPath := canonicalFamilyPath(dir, s.ID, ".tools.jsonl")
 
 	// Make the tools path unremovable: a non-empty directory under the sidecar's name.
 	if err := os.MkdirAll(filepath.Join(toolsPath, "block"), 0o755); err != nil {
@@ -406,7 +421,7 @@ func TestEventLogAppendReadCumulative(t *testing.T) {
 		}
 	}
 	// The on-disk line carries the format tag.
-	raw, err := os.ReadFile(filepath.Join(dir, "sess-1.events.jsonl"))
+	raw, err := os.ReadFile(canonicalFamilyPath(dir, "sess-1", ".events.jsonl"))
 	if err != nil {
 		t.Fatalf("read events file: %v", err)
 	}
@@ -458,7 +473,7 @@ func TestEventLogReadRejectsUnknownFormat(t *testing.T) {
 	if err := st.Append(context.Background(), "sess-1", session.Event{Type: session.EvResult}); err != nil {
 		t.Fatalf("Append: %v", err)
 	}
-	f, err := os.OpenFile(filepath.Join(dir, "sess-1.events.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+	f, err := os.OpenFile(canonicalFamilyPath(dir, "sess-1", ".events.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
 		t.Fatalf("open events file: %v", err)
 	}
@@ -539,7 +554,7 @@ func TestEventLogReadMalformedRecordPaths(t *testing.T) {
 			if err := st.Append(context.Background(), "sess-1", session.Event{Type: session.EvToolCall}); err != nil {
 				t.Fatalf("Append: %v", err)
 			}
-			f, err := os.OpenFile(filepath.Join(dir, "sess-1.events.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
+			f, err := os.OpenFile(canonicalFamilyPath(dir, "sess-1", ".events.jsonl"), os.O_APPEND|os.O_WRONLY, 0o644)
 			if err != nil {
 				t.Fatalf("open events file: %v", err)
 			}

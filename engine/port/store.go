@@ -80,8 +80,8 @@ type StoredSession struct {
 // session.State verbatim; an invalid/unknown state is left empty (the row still
 // surfaces its id/mtime, matching the Load-fails zeroed-fields behaviour).
 type SessionMeta struct {
-	// ID is the stored session's real id (decoded from the snapshot, not the
-	// filename — safeName is not invertible).
+	// ID is the stored session's opaque logical id, obtained from stored data rather
+	// than a physical filename or backend key.
 	ID session.SessionID
 	// ModifiedAt is the last-write timestamp (file mtime, or the store's
 	// nearest equivalent).
