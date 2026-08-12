@@ -2,8 +2,8 @@
 id: 01-authority-domain
 title: Authority value and durable session bound
 blocked_by: []
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-attenuation/01-authority-domain"
 worktree: ""
 issue: "371"
 retries: 0
