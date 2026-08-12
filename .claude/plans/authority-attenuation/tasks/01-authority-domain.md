@@ -2,7 +2,7 @@
 id: 01-authority-domain
 title: Authority value and durable session bound
 blocked_by: []
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"

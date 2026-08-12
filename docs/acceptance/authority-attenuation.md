@@ -1,7 +1,7 @@
 # Authority attenuation — acceptance plan
 
 **Phase:** capability — in-process delegated authority
-**Status:** draft, 2026-08-12. Synthesized from issue #371, its handover, and the
+**Status:** in-progress, 2026-08-12. Synthesized from issue #371, its handover, and the
 reviewed authority algebra.
 **Issue:** [stacklok/mecatl#371](https://github.com/stacklok/mecatl/issues/371).
 **ADR:** [ADR-0105](../adr/0105-authority-attenuation.md).
