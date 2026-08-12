@@ -55,10 +55,8 @@ func validateDriverSourceConfig(cfg Config) error {
 	if cfg.SoulSourceURL != "" && cfg.SoulPath != "" {
 		return fmt.Errorf("--soul-source-url %q and --soul-file %q are mutually exclusive: the user-slot soul is either the local file or the remote driver, never both (--no-soul still disables either)", cfg.SoulSourceURL, cfg.SoulPath)
 	}
-	// Explicit agent dirs clash with the driver; default conventional discovery
-	// is superseded because it is enabled and inert by default.
-	if cfg.AgentSourceURL != "" && len(cfg.AgentsDirs) > 0 {
-		return fmt.Errorf("--agent-source-url %q and --agents-dir are mutually exclusive: agent definitions come either from the explicit local directories or from the remote driver, never both (the default conventional discovery is superseded, not an error)", cfg.AgentSourceURL)
+	if err := validateAgentSourceConfig(cfg); err != nil {
+		return err
 	}
 	return nil
 }
@@ -108,6 +106,16 @@ func canonicalConfiguredDir(path string) (string, error) {
 		return "", err
 	}
 	return filepath.Join(parent, filepath.Base(abs)), nil
+}
+
+// validateAgentSourceConfig keeps explicit local agent-definition sources
+// mutually exclusive with the remote source. Conventional discovery is
+// default-on but inert and is deliberately superseded by the driver.
+func validateAgentSourceConfig(cfg Config) error {
+	if cfg.AgentSourceURL == "" || (len(cfg.OperatorAgentsDirs) == 0 && len(cfg.AgentsDirs) == 0) {
+		return nil
+	}
+	return fmt.Errorf("--agent-source-url %q and --operator-agents-dir/--agents-dir are mutually exclusive: agent definitions come either from local directories or from the remote driver, never both (the default conventional discovery is superseded, not an error)", cfg.AgentSourceURL)
 }
 
 // driverConns is the per-target driver connection cache: equal URLs share ONE

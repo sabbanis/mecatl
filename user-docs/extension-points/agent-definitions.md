@@ -70,7 +70,8 @@ stdio and non-HTTP transports are rejected outright. Only streamable-HTTP inline
 
 | Constant | Tier |
 |---|---|
-| `AgentOriginExplicit` | Operator-configured path or `--agents-dir` flag |
+| `AgentOriginOperator` | Operator-owned `--operator-agents-dir` source; cannot be shadowed by lower tiers |
+| `AgentOriginExplicit` | Explicit `--agents-dir` flag |
 | `AgentOriginProject` | Workspace-local (trust-gated at source construction) |
 | `AgentOriginUser` | User-global (never trust-gated) |
 | `AgentOriginDriver` | Remote gRPC driver (`--agent-source-url`) |
@@ -131,11 +132,12 @@ The production adapter reads flat `<name>.md` files from one or more directories
 
 `ResolveSources(opts ResolveOptions)` builds the ordered, highest-precedence-first source list from the conventional locations and any explicit paths. Precedence (highest first):
 
-1. `--agents-dir` flags (`AgentOriginExplicit`)
-2. `<workspace>/.mecatl/agents` (`AgentOriginProject`, trust-gated)
-3. `<workspace>/.claude/agents` (`AgentOriginProject`, trust-gated)
-4. `$XDG_CONFIG_HOME/mecatl/agents` (`AgentOriginUser`)
-5. `~/.claude/agents` (`AgentOriginUser`)
+1. `--operator-agents-dir` flags (`AgentOriginOperator`)
+2. `--agents-dir` flags (`AgentOriginExplicit`)
+3. `<workspace>/.mecatl/agents` (`AgentOriginProject`, trust-gated)
+4. `<workspace>/.claude/agents` (`AgentOriginProject`, trust-gated)
+5. `$XDG_CONFIG_HOME/mecatl/agents` (`AgentOriginUser`)
+6. `~/.claude/agents` (`AgentOriginUser`)
 
 The project tier is withheld when the workspace is untrusted (`ResolveOptions.IncludeProjectTier = false`). User-tier sources are never gated.
 
@@ -213,7 +215,8 @@ Any value other than `""`, `"user"`, or `"project"` is a non-fatal diagnostic; t
 
 ```mermaid
 graph TD
-    E["--agents-dir (repeatable)"] -->|AgentOriginExplicit| MS
+    E["--operator-agents-dir (repeatable)"] -->|AgentOriginOperator| MS
+    X["--agents-dir (repeatable)"] -->|AgentOriginExplicit| MS
     P1["&lt;workspace&gt;/.mecatl/agents"] -->|AgentOriginProject<br/>trust-gated| MS
     P2["&lt;workspace&gt;/.claude/agents"] -->|AgentOriginProject<br/>trust-gated| MS
     U1["$XDG_CONFIG_HOME/mecatl/agents"] -->|AgentOriginUser| MS
@@ -290,7 +293,7 @@ To supply agent definitions from a source other than the filesystem (a database,
 4. Apply snapshot semantics: run your resolution once at construction; return the same stable slice on every `ListAgentDefs` call.
 5. Validate with the conformance suite: call `sourceconformance.RunAgentSource(t, newSource)` against your implementation serving `sourceconformance.AgentFixture`.
 
-A remote gRPC driver implements `mecatl.driver.v1.AgentSourceService` and is wired via `--agent-source-url`. It is mutually exclusive with `--agents-dir` and supersedes conventional discovery.
+A remote gRPC driver implements `mecatl.driver.v1.AgentSourceService` and is wired via `--agent-source-url`. It is mutually exclusive with `--operator-agents-dir` and `--agents-dir`, and supersedes conventional discovery.
 
 ---
 

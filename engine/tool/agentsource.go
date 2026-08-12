@@ -22,7 +22,8 @@ type AgentOrigin string
 // The CLOSED admission-tier label set — implementations must never mint a new
 // label (a consumer that does not recognise one normalizes to Driver).
 const (
-	AgentOriginExplicit AgentOrigin = "explicit" // operator-configured location/flag
+	AgentOriginOperator AgentOrigin = "operator" // operator-owned definition source
+	AgentOriginExplicit AgentOrigin = "explicit" // explicitly configured non-operator source
 	AgentOriginProject  AgentOrigin = "project"  // workspace-tier (trust-gated at construction)
 	AgentOriginUser     AgentOrigin = "user"     // user-tier (never trust-gated)
 	AgentOriginDriver   AgentOrigin = "driver"   // operator-configured remote driver

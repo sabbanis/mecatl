@@ -148,10 +148,14 @@ func (e *Engine) runReadBatch(ctx context.Context, r *Run, sess *session.Session
 	for _, c := range batch {
 		c := c // local copy: openCard takes &c, and this loop variable is reused.
 		t, _ := e.lookupTool(r, c.Name)
-		// Open the tool card BEFORE the permission/hook gate so any synthesized
-		// failure (a deny result or a PreToolUse veto) lands on a card the client has
-		// already seen — see openCard.
+		// Open the tool card BEFORE every gate so synthesized authority failures
+		// retain the client card/result pairing invariant.
 		e.openCard(r, turnIdx, c)
+		if e.authorityDeniesCatalogTool(r, c.Name) {
+			out[c.ID] = authorityDenyResult(c)
+			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(out[c.ID])})
+			continue
+		}
 		// Plan-approval gate (issue #206, Wave 2): in plan mode a PresentPlan call is
 		// intercepted by name BEFORE the permission/hook gate and surfaced as a
 		// plan-approval ask (PlanOriginated). It must be sequenced one-at-a-time here
@@ -522,23 +526,19 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 // runOne handles a single (mutating or unknown) tool call serially: authorize,
 // pre-hook, execute, post-hook. It returns the result and a cancelled flag.
 func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall, t tool.Tool, known bool, enqueue time.Time) (session.ToolResult, bool) {
+	// Open the card before the authority gate; stale excluded calls must be visible
+	// to clients but cannot reach either policy or hooks.
+	e.openCard(r, turnIdx, c)
+	if e.authorityDeniesCatalogTool(r, c.Name) {
+		res := authorityDenyResult(c)
+		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+		return res, false
+	}
 	if !known {
-		// Open a card for the unknown tool BEFORE its error result, exactly like the
-		// known-tool path opens one before the gate. A client (ACP/mecatui) keys a
-		// tool.result update to a prior tool.call card; without an open card the failure
-		// for a tool_call the client never saw is droppable (the "ToolCall card before
-		// the gate" invariant). The card carries the unknown name + args so the client
-		// can render it and then mark it failed when the error result arrives.
-		e.openCard(r, turnIdx, c)
 		res := session.NewToolError(c.ID, fmt.Sprintf("unknown tool %q", c.Name))
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
 		return res, false
 	}
-
-	// Open the tool card BEFORE the permission/hook gate so any synthesized failure
-	// (a deny result or a PreToolUse veto) lands on a card the client has already
-	// seen.
-	e.openCard(r, turnIdx, c)
 
 	// Plan-approval gate (issue #206, Wave 2): in plan mode a PresentPlan call is
 	// intercepted by name BEFORE the permission/hook gate and surfaced as a
@@ -1586,6 +1586,13 @@ func denyResult(c session.ToolCall, reason string) session.ToolResult {
 		reason = "denied by permission policy"
 	}
 	return session.NewToolError(c.ID, "permission denied: "+reason)
+}
+
+// authorityDenyResult is deliberately independent of PermissionPolicy: authority
+// is a capability ceiling, not a policy decision, and must reject stale calls
+// before a permissive policy or hook can observe them.
+func authorityDenyResult(c session.ToolCall) session.ToolResult {
+	return session.NewToolError(c.ID, "authority denied tool "+fmt.Sprintf("%q", c.Name))
 }
 
 // ptr returns a pointer to a copy of v (Events carry pointers to value objects).

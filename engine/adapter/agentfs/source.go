@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"sort"
+
+	"github.com/stacklok/mecatl/engine/tool"
 )
 
 // Discovered is one discovered agent definition together with its
@@ -74,7 +76,7 @@ func (e SkipError) Error() string {
 // a def with the same effective name, the one from the earlier source is kept and
 // the later one is SHADOWED — dropped, with a SkipError notice. Callers order the
 // slice highest-precedence-first; ResolveSources builds it as
-// explicit > project > user.
+// operator > explicit > project > user.
 //
 // A fatal error from ANY source is returned immediately (with the diagnostics
 // gathered so far). Output is sorted by name for deterministic, cache-stable
@@ -113,13 +115,20 @@ func (m MultiSource) Agents(ctx context.Context) ([]Discovered, []SkipError, err
 		}
 		for _, d := range got {
 			if prev, taken := winner[d.Def.Name]; taken {
-				skips = append(skips, SkipError{
+				skip := SkipError{
 					Path: d.Detail,
 					Reason: fmt.Sprintf(
 						"agent def %q shadowed by a higher-precedence source (kept %q)",
 						d.Def.Name, prev.Detail),
 					Fatal: true,
-				})
+				}
+				if prev.Def.Origin == tool.AgentOriginOperator {
+					// An operator identity is not a locator: never place either
+					// source detail in its collision diagnostic.
+					skip.Path = ""
+					skip.Reason = fmt.Sprintf("agent definition %q from %s rejected: operator definition takes precedence", d.Def.Name, d.Def.Origin)
+				}
+				skips = append(skips, skip)
 				continue
 			}
 			winner[d.Def.Name] = d

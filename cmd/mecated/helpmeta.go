@@ -202,6 +202,7 @@ var flagMetaByFlag = map[string]flagMeta{
 	"skills-conventional":               {group: groupSkillsAgents, common: false, acp: acpInclude},
 	"skills-draft-dir":                  {group: groupSkillsAgents, common: false, acp: acpInclude},
 	"skills-draft-similarity-threshold": {group: groupSkillsAgents, common: false, acp: acpInclude},
+	"operator-agents-dir":               {group: groupSkillsAgents, common: false, acp: acpInclude},
 	"agents-dir":                        {group: groupSkillsAgents, common: false, acp: acpInclude},
 	"agents-conventional":               {group: groupSkillsAgents, common: false, acp: acpInclude},
 

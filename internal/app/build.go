@@ -518,10 +518,10 @@ type Config struct {
 	SkillsDraftThreshold float64
 
 	// Agent definitions (Tier 1): named subagent specialists (prompt + scoped
-	// read-only catalog + per-def model) discovered from <name>.md files. Mirrors
-	// the Skills fields: explicit dirs (highest precedence) plus the conventional
-	// project/user locations when AgentsConventional is set. Strict opt-in — zero
-	// sources means Subagent keeps only the default explorer (no behaviour change).
+	// read-only catalog + per-def model) discovered from <name>.md files. Operator
+	// directories have an explicit identity and take precedence over configured,
+	// project, and user definitions.
+	OperatorAgentsDirs []string
 	AgentsDirs         []string
 	AgentsConventional bool
 

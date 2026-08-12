@@ -1,10 +1,12 @@
     method func (*Evaluator).Evaluate(tool string, args json.RawMessage, planMode bool) PermissionDecision
     method func (*Evaluator).EvaluateWith(tool string, args json.RawMessage, planMode bool, extra []Rule) PermissionDecision
     method func (*Evaluator).LearnableRule(tool string, args json.RawMessage) (Rule, bool)
+    method func (Authority).AllowsTool(name string) bool
     method func (Authority).Canonical() (string, error)
     method func (Authority).Contains(other Authority) bool
     method func (Authority).Equal(other Authority) bool
     method func (Authority).Intersect(other Authority) (Authority, error)
+    method func (Authority).ToolNames() []string
     method func (Scope).HasHigherPrecedenceThan(other Scope) bool
 const Allow Effect = "allow"
 const Ask Effect = "ask"

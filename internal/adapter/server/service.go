@@ -1320,6 +1320,23 @@ func setSessionLabels(sess *session.Session, sel ProviderSelector, profile Sessi
 	return sess.RestoreLabels(owner, "")
 }
 
+// bindRootAuthority persists the engine's already-effective capability surface
+// before the new session can be saved or run. Session stores the canonical value
+// opaquely, so governance remains outside the aggregate.
+func bindRootAuthority(sess *session.Session, eng *agent.Engine) error {
+	if eng == nil {
+		return fmt.Errorf("server: root authority requires engine")
+	}
+	bound, err := eng.RootAuthority()
+	if err != nil {
+		return fmt.Errorf("server: canonical root authority: %w", err)
+	}
+	if err := sess.BindAuthority(bound, "root"); err != nil {
+		return fmt.Errorf("server: bind root authority: %w", err)
+	}
+	return nil
+}
+
 // seedCarryover seeds the freshly-created (idle) session with an optional
 // carryover snapshot (issue #20). A nil snapshot is a no-op (the byte-identical
 // no-carryover default); a non-nil snapshot is seeded via session.SeedHistory,
@@ -1507,6 +1524,9 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 			return nil, err
 		}
 		stampDefaultEnvironmentRef(sess)
+		if err := bindRootAuthority(sess, s.cfg.Engine); err != nil {
+			return nil, err
+		}
 		if err := seedCarryover(sess, carrySnap); err != nil {
 			return nil, err
 		}
@@ -1562,6 +1582,12 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 		return nil, err
 	}
 	stampDefaultEnvironmentRef(sess)
+	if err := bindRootAuthority(sess, eng); err != nil {
+		if closeFn != nil {
+			_ = closeFn()
+		}
+		return nil, err
+	}
 	if err := seedCarryover(sess, carrySnap); err != nil {
 		if closeFn != nil {
 			_ = closeFn()

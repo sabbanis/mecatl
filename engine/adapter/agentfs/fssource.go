@@ -8,7 +8,7 @@ import (
 
 // FSSource is the FILESYSTEM implementation of the tool.AgentDefSource port: a
 // snapshot of the agent definitions discovered from the composed Source list
-// (explicit dirs + conventional locations). The port carries no path/dir/root
+// (operator dirs + explicit dirs + conventional locations). The port carries no path/dir/root
 // concept; the locator business the composition layer's diagnostics still need
 // is exposed as adapter-public NON-PORT methods (Discovered/Detail), mirroring
 // the skills FSSource's AssetDir/AssetDirs split.

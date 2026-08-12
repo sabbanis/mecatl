@@ -180,6 +180,34 @@ func (a Authority) Contains(other Authority) bool {
 		profileContains(a.spec.Profile, other.spec.Profile)
 }
 
+// AllowsTool reports whether name is within this authority's tool ceiling.
+// An unrestricted authority permits every name; none and malformed values deny.
+func (a Authority) AllowsTool(name string) bool {
+	if _, err := a.Canonical(); err != nil || !authorityName.MatchString(name) {
+		return false
+	}
+	if a.kind == authorityUnrestricted {
+		return true
+	}
+	if a.kind != authorityRestricted {
+		return false
+	}
+	return namesContain(a.spec.Tools, []string{name})
+}
+
+// ToolNames returns a copy of the exact allowed tool-name set. Unrestricted
+// authorities return nil because no finite catalog projection is implied.
+func (a Authority) ToolNames() []string {
+	switch a.kind {
+	case authorityRestricted:
+		return append([]string(nil), a.spec.Tools...)
+	case authorityNone:
+		return []string{}
+	default:
+		return nil
+	}
+}
+
 // Intersect returns the greatest authority bounded by both inputs. None and
 // malformed values fail closed rather than being interpreted as a broad grant.
 func (a Authority) Intersect(other Authority) (Authority, error) {

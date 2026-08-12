@@ -230,8 +230,8 @@ func TestParseFlagsSkillsDraft(t *testing.T) {
 }
 
 // TestParseFlagsAgentDefs asserts the Tier 1b agent-definition flags parse into the
-// config: repeatable --agents-dir, the conventional toggle (default ON), the global
-// --subagent-model, and repeatable key=value --model-alias.
+// config: repeatable --operator-agents-dir/--agents-dir, the conventional toggle
+// (default ON), the global --subagent-model, and repeatable key=value --model-alias.
 func TestParseFlagsAgentDefs(t *testing.T) {
 	// Defaults: conventional discovery ON (inert when absent), no explicit dirs.
 	def, err := parseFlags(nil)
@@ -246,6 +246,8 @@ func TestParseFlagsAgentDefs(t *testing.T) {
 	}
 
 	cfg, err := parseFlags([]string{
+		"--operator-agents-dir", "/operator/one",
+		"--operator-agents-dir", "/operator/two",
 		"--agents-dir", "/a/one",
 		"--agents-dir", "/a/two",
 		"--agents-conventional=false",
@@ -257,6 +259,9 @@ func TestParseFlagsAgentDefs(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
+	}
+	if got := []string(cfg.operatorAgentsDirs); len(got) != 2 || got[0] != "/operator/one" || got[1] != "/operator/two" {
+		t.Errorf("operatorAgentsDirs = %v, want [/operator/one /operator/two]", got)
 	}
 	if got := []string(cfg.agentsDirs); len(got) != 2 || got[0] != "/a/one" || got[1] != "/a/two" {
 		t.Errorf("agentsDirs = %v, want [/a/one /a/two]", got)
@@ -387,6 +392,7 @@ func TestParseFlagsServerDefaultModel(t *testing.T) {
 // shared app.Config.
 func TestAppConfigMapsAgentDefs(t *testing.T) {
 	cfg, err := parseFlags([]string{
+		"--operator-agents-dir", "/operator",
 		"--agents-dir", "/x",
 		"--subagent-model", "sub",
 		"--model-alias", "fast=cheap",
@@ -395,6 +401,9 @@ func TestAppConfigMapsAgentDefs(t *testing.T) {
 		t.Fatalf("parseFlags: %v", err)
 	}
 	ac := appConfig(cfg, nil, nil, nil, nil, nil)
+	if len(ac.OperatorAgentsDirs) != 1 || ac.OperatorAgentsDirs[0] != "/operator" {
+		t.Errorf("OperatorAgentsDirs = %v", ac.OperatorAgentsDirs)
+	}
 	if len(ac.AgentsDirs) != 1 || ac.AgentsDirs[0] != "/x" {
 		t.Errorf("AgentsDirs = %v", ac.AgentsDirs)
 	}

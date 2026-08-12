@@ -84,6 +84,29 @@ func TestParseFlagsK8sDefaults(t *testing.T) {
 	}
 }
 
+// TestOperatorAgentsDirPlumbing verifies the operator-owned definition source
+// reaches shared composition without being conflated with --agents-dir.
+func TestOperatorAgentsDirPlumbing(t *testing.T) {
+	cfg, err := parseFlags([]string{
+		"--operator-agents-dir", "/operator/one",
+		"--operator-agents-dir", "/operator/two",
+		"--agents-dir", "/explicit",
+	})
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
+	}
+	if got := []string(cfg.operatorAgentsDirs); len(got) != 2 || got[0] != "/operator/one" || got[1] != "/operator/two" {
+		t.Fatalf("operatorAgentsDirs = %v, want [/operator/one /operator/two]", got)
+	}
+	ac := appConfig(cfg, port.NopDiagnostics{}, observability{})
+	if got := ac.OperatorAgentsDirs; len(got) != 2 || got[0] != "/operator/one" || got[1] != "/operator/two" {
+		t.Fatalf("app.Config.OperatorAgentsDirs = %v, want [/operator/one /operator/two]", got)
+	}
+	if got := ac.AgentsDirs; len(got) != 1 || got[0] != "/explicit" {
+		t.Fatalf("app.Config.AgentsDirs = %v, want [/explicit]", got)
+	}
+}
+
 // TestAppConfigMapsK8sFields asserts appConfig threads the k8s-native fields
 // onto the shared app.Config: RedisURL, SessionLeaseK8sNamespace, the headless
 // inversion (Interactive=!headless), and the posture.

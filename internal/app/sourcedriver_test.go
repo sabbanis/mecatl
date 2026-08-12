@@ -94,6 +94,11 @@ func TestValidateDriverConfigSourceExclusivity(t *testing.T) {
 			cfg:     Config{AgentSourceURL: "127.0.0.1:7443", AgentsDirs: []string{"/tmp/agents"}},
 			wantErr: "mutually exclusive",
 		},
+		{
+			name:    "agent driver with operator dirs",
+			cfg:     Config{AgentSourceURL: "127.0.0.1:7443", OperatorAgentsDirs: []string{"/etc/mecatl/agents"}},
+			wantErr: "mutually exclusive",
+		},
 		// The command driver COMPOSES with file commands — deliberately NO
 		// exclusivity rule.
 		{name: "command driver alone", cfg: Config{CommandSourceURL: "127.0.0.1:7443"}},

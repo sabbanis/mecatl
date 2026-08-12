@@ -21,6 +21,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/learning"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/prompt"
@@ -159,6 +160,16 @@ type Deps struct {
 	LLM port.LLMProvider
 	// Catalog is the tool registry; the loop reads Specs(mode) and Lookup(name).
 	Catalog *tool.Catalog
+	// Authority is the root compatibility ceiling. A restricted value projects the
+	// catalog before any request or dispatch. When absent, NewEngine snapshots the
+	// supplied effective catalog into a restricted root authority.
+	Authority governance.Authority
+	// Delegates and MaxDelegationDepth are the admitted definition identities and
+	// depth limit captured with a compatibility root authority.
+	Delegates          []string
+	MaxDelegationDepth int
+	// Profile is the immutable execution-profile snapshot for the root authority.
+	Profile governance.AuthorityProfile
 	// Policy evaluates each tool call (deny → ask → allow).
 	Policy port.PermissionPolicy
 	// Hooks runs the PreToolUse / PostToolUse lifecycle hooks.
@@ -383,6 +394,11 @@ type Deps struct {
 // the whole process; the API layer (WP10) calls Run per prompt.
 type Engine struct {
 	deps Deps
+	// catalogBeforeAuthority retains the already-effective catalog snapshot solely
+	// to distinguish an authority-excluded catalog call from a genuinely unknown
+	// tool. The provider and ordinary lookup see only deps.Catalog's restricted
+	// projection; an unknown name must keep its existing unknown-tool result.
+	catalogBeforeAuthority *tool.Catalog
 }
 
 // now returns the engine's wall-clock time from the injected Clock, or the zero
@@ -444,12 +460,42 @@ func NewEngine(deps Deps) *Engine {
 			_ = deps.Catalog.Register(tool.NewToolSearch(deps.Catalog))
 		}
 	}
+	if deps.Catalog != nil {
+		catalogBeforeAuthority := deps.Catalog
+		if _, err := deps.Authority.Canonical(); err != nil {
+			deps.Authority = rootAuthority(deps.Catalog, deps.Delegates, deps.MaxDelegationDepth, deps.Profile)
+		}
+		deps.Catalog = deps.Catalog.Restrict(deps.Authority.ToolNames())
+		return &Engine{deps: deps, catalogBeforeAuthority: catalogBeforeAuthority}
+	}
 	return &Engine{deps: deps}
 }
 
-// Capabilities reports the multimodal input capabilities of the Engine's LLM
-// provider, so a surface adapter can advertise them and gate unsupported prompt
-// content. It is a pure pass-through to the injected provider.
+// rootAuthority snapshots the already-effective catalog rather than granting a
+// new capability. Invalid catalog names fail closed to an empty ceiling.
+func rootAuthority(catalog *tool.Catalog, delegates []string, depth int, profile governance.AuthorityProfile) governance.Authority {
+	tools := catalog.Tools()
+	names := make([]string, 0, len(tools))
+	for _, candidate := range tools {
+		names = append(names, candidate.Spec().Name)
+	}
+	authority, err := governance.NewAuthority(governance.AuthoritySpec{
+		Tools: names, Delegates: delegates, MaxDelegationDepth: depth, Profile: profile,
+	})
+	if err != nil {
+		authority, _ = governance.NewAuthority(governance.AuthoritySpec{})
+	}
+	return authority
+}
+
+// RootAuthority returns the canonical compatibility root authority captured by
+// this engine. It contains only safe capability names and profile booleans.
+func (e *Engine) RootAuthority() (string, error) {
+	return e.deps.Authority.Canonical()
+}
+
+// Capabilities returns the modalities supported by the injected provider, so a
+// surface adapter can advertise them and gate unsupported prompt content.
 func (e *Engine) Capabilities() port.ProviderCapabilities {
 	return e.deps.LLM.Capabilities()
 }
@@ -1562,6 +1608,27 @@ func (e *Engine) lookupTool(r *Run, name string) (tool.Tool, bool) {
 		return nil, false
 	}
 	return e.deps.Catalog.Lookup(name)
+}
+
+// authorityDeniesCatalogTool identifies a stale call to a tool that exists in
+// the compatibility root catalog but was excluded by the authority projection.
+// Run-scoped ExtraTools are intentionally outside that ceiling: they are
+// explicitly admitted by the trusted caller for this run (for example,
+// structured-output SubmitResult). Names unknown to both surfaces retain the
+// normal unknown-tool path.
+func (e *Engine) authorityDeniesCatalogTool(r *Run, name string) bool {
+	if e.deps.Authority.AllowsTool(name) || e.catalogBeforeAuthority == nil {
+		return false
+	}
+	if _, known := e.catalogBeforeAuthority.Lookup(name); !known {
+		return false
+	}
+	for _, candidate := range r.req.ExtraTools {
+		if candidate.Spec().Name == name {
+			return false
+		}
+	}
+	return true
 }
 
 // preTurnTerminal runs the turn-BOUNDARY stop checks before a model call, in

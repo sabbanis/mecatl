@@ -188,6 +188,7 @@ type config struct {
 	// over a workspace mount; these default OFF / conventional like mecated.
 	skillsDirs         stringList
 	skillsConventional bool
+	operatorAgentsDirs stringList
 	agentsDirs         stringList
 	agentsConventional bool
 	noSoul             bool
@@ -349,6 +350,7 @@ func parseFlags(argv []string) (config, error) {
 	// Skills / agents / soul / user-model (default OFF / conventional, like mecated).
 	fs.Var(&cfg.skillsDirs, "skills-dir", "directory to discover progressive-disclosure skills from (repeatable; highest precedence). TRUST BOUNDARY: a SKILL.md steers the model — point this only at directories you trust")
 	fs.BoolVar(&cfg.skillsConventional, "skills-conventional", false, "also discover skills from the conventional locations (lower precedence than --skills-dir). Default OFF")
+	fs.Var(&cfg.operatorAgentsDirs, "operator-agents-dir", "directory to discover operator-owned named agent definitions from (repeatable; highest precedence)")
 	fs.Var(&cfg.agentsDirs, "agents-dir", "directory to discover named agent definitions from (repeatable; highest precedence). TRUST BOUNDARY: a def body steers the model — point this only at directories you trust")
 	fs.BoolVar(&cfg.agentsConventional, "agents-conventional", true, "also discover agent definitions from the conventional locations. ON by default and INERT when no such dir exists")
 	fs.StringVar(&cfg.soulFile, "soul-file", "", "path to a user-scoped persona/\"soul\" file (empty = the conventional location, fail-soft if absent)")
@@ -504,6 +506,7 @@ func appConfig(cfg config, diag port.Diagnostics, obs observability) app.Config 
 		ScheduleFireRetentionMaxTotal: cfg.scheduleFireRetentionMaxTotal,
 		SkillsDirs:                    cfg.skillsDirs,
 		SkillsConventional:            cfg.skillsConventional,
+		OperatorAgentsDirs:            cfg.operatorAgentsDirs,
 		AgentsDirs:                    cfg.agentsDirs,
 		AgentsConventional:            cfg.agentsConventional,
 		SubagentModel:                 cfg.subagentModel,

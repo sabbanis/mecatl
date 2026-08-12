@@ -255,6 +255,14 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   A remote transport itself remains deferred — the ref is durable identity, not a
   transport contract. See ADR 0106.
 
+- **Root authority catalog projection and operator definition tier** (#371) —
+  `agent.Deps` accepts a compatibility-root `governance.Authority` and exposes
+  `Engine.RootAuthority`; `governance.Authority.AllowsTool`/`ToolNames` and
+  `tool.Catalog.Restrict` make the captured ceiling effective before provider
+  schema generation and dispatch. `tool.AgentOriginOperator` identifies
+  `--operator-agents-dir` definitions, which resolve before every lower tier
+  without exposing collision locators. Added (minor) per COMPATIBILITY.md.
+
 - **`session.ToValidUTF8` and `session.RepairToolResult`** (issue #402) — the
   UTF-8 repair primitives that close the Converse-stream kill. A tool can hand
   back arbitrary bytes (a command's stdout, a file's contents, an MCP server's

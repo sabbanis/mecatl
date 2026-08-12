@@ -1230,6 +1230,7 @@ func resolveAgentRegistry(ctx context.Context, cfg Config) *agents.Registry {
 			"workspace", cfg.Workspace, "dirs", ".mecatl/agents,.claude/agents")
 	}
 	sources := agents.ResolveSources(agents.ResolveOptions{
+		Operator:           cfg.OperatorAgentsDirs,
 		Explicit:           cfg.AgentsDirs,
 		Conventional:       cfg.AgentsConventional,
 		Workspace:          cfg.Workspace,

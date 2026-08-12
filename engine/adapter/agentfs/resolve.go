@@ -24,6 +24,10 @@ const (
 // NOTHING (no explicit paths, conventional set OFF) — discovery stays strictly
 // opt-in unless the operator asks for it, since a def body steers the model.
 type ResolveOptions struct {
+	// Operator are operator-owned directories. They are highest precedence and
+	// are intentionally distinct from Explicit, which remains a non-operator
+	// configured source for compatibility.
+	Operator []string
 	// Explicit are operator-configured directories (e.g. from a repeatable
 	// --agents-dir flag), highest precedence, in the order given. Always honoured
 	// regardless of Conventional.
@@ -51,13 +55,15 @@ type ResolveOptions struct {
 // conventional locations plus any explicit paths, ready to hand to NewMultiSource.
 // The precedence is:
 //
-//	explicit (--agents-dir, in flag order)                   [highest]
-//	  > project: <workspace>/.mecatl/agents, <workspace>/.claude/agents
+//	operator (--operator-agents-dir, in flag order)          [highest]
+//	  > explicit (--agents-dir, in flag order)
+//	    > project: <workspace>/.mecatl/agents, <workspace>/.claude/agents
 //	    > user: $XDG_CONFIG_HOME/mecatl/agents (or ~/.config/mecatl/agents),
 //	            ~/.claude/agents                                  [lowest]
 //
-// so a project def overrides a personal one of the same name, and an explicit def
-// overrides both. Each location becomes a labelled DirSource; missing directories
+// so a project def overrides a personal one of the same name, an explicit def
+// overrides both, and an operator definition overrides every lower tier. Each
+// location becomes a labelled DirSource; missing directories
 // are harmless. When Conventional is false only the Explicit paths are included.
 func ResolveSources(opts ResolveOptions) []AgentSource {
 	return resolveSourcesEnv(opts, OSEnv)
@@ -68,6 +74,13 @@ func ResolveSources(opts ResolveOptions) []AgentSource {
 // closed label, never a location.
 func resolveSourcesEnv(opts ResolveOptions, env ResolveEnv) []AgentSource {
 	var sources []AgentSource
+
+	for _, dir := range opts.Operator {
+		if dir == "" {
+			continue
+		}
+		sources = append(sources, DirSource{Dir: dir, Label: "operator", Tier: tool.AgentOriginOperator})
+	}
 
 	for _, dir := range opts.Explicit {
 		if dir == "" {

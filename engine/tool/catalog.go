@@ -48,6 +48,27 @@ func (c *Catalog) Lookup(name string) (Tool, bool) {
 	return t, ok
 }
 
+// Restrict returns an independent catalog containing only names permitted by
+// allowed. It is a catalog-level projection so excluded schemas cannot reach a
+// provider and stale calls cannot resolve during dispatch. A nil allowed list is
+// the unrestricted compatibility projection.
+func (c *Catalog) Restrict(allowed []string) *Catalog {
+	if allowed == nil {
+		return c
+	}
+	keep := make(map[string]struct{}, len(allowed))
+	for _, name := range allowed {
+		keep[name] = struct{}{}
+	}
+	out := NewCatalog()
+	for name, candidate := range c.tools {
+		if _, ok := keep[name]; ok {
+			out.tools[name] = candidate
+		}
+	}
+	return out
+}
+
 // Tools returns all registered tools, ordered by name for determinism.
 func (c *Catalog) Tools() []Tool {
 	return c.sorted(func(Tool) bool { return true })

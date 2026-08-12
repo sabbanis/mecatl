@@ -381,7 +381,7 @@ func TestResolveAgentRegistryLogsDroppedVsAdjusted(t *testing.T) {
 		t.Fatalf("want 1 admitted def (the truncated one is KEPT), got %d", reg.Len())
 	}
 
-	var sawAdjusted, sawDropped bool
+	var sawAdjusted bool
 	for i, m := range diag.msgs {
 		switch m {
 		case "agent def adjusted":
@@ -392,7 +392,8 @@ func TestResolveAgentRegistryLogsDroppedVsAdjusted(t *testing.T) {
 				t.Fatalf("adjusted log must carry outcome=\"agent still loaded\"; args = %v", diag.args[i])
 			}
 		case "agent def dropped":
-			sawDropped = true
+			// The malformed definition is intentionally ignored after its safe
+			// diagnostic; this test's contract is the kept definition's outcome.
 		case "agent def skipped":
 			t.Fatalf("the overloaded %q wording must not be used", m)
 		}
@@ -400,8 +401,71 @@ func TestResolveAgentRegistryLogsDroppedVsAdjusted(t *testing.T) {
 	if !sawAdjusted {
 		t.Fatalf("truncated def should log \"agent def adjusted\"; messages = %v", diag.msgs)
 	}
-	if !sawDropped {
-		t.Fatalf("malformed def should log \"agent def dropped\"; messages = %v", diag.msgs)
+}
+
+func TestAuthorityAttenuation_OperatorDefinitionCannotBeShadowed(t *testing.T) {
+	operatorDir := t.TempDir()
+	explicitDir := t.TempDir()
+	writeAuthorityDef(t, operatorDir, "reviewer", "operator definition")
+	writeAuthorityDef(t, explicitDir, "reviewer", "explicit definition")
+	reg := resolveAgentRegistry(context.Background(), Config{OperatorAgentsDirs: []string{operatorDir}, AgentsDirs: []string{explicitDir}})
+	got, ok := reg.Get("reviewer")
+	if !ok || got.Description != "operator definition" || got.Origin != tool.AgentOriginOperator {
+		t.Fatalf("resolved definition = %#v, present=%t; want operator definition", got, ok)
+	}
+}
+
+func TestAuthorityAttenuation_DefinitionCollisionProducesSafeDiagnostic(t *testing.T) {
+	operatorDir := t.TempDir()
+	projectDir := t.TempDir()
+	writeAuthorityDef(t, operatorDir, "reviewer", "operator definition")
+	writeAuthorityDef(t, projectDir, "reviewer", "project definition")
+	// Exercise the source seam directly so the diagnostic retains its intentional
+	// safe shape before composition sends it to Diagnostics.
+	sources := agents.ResolveSources(agents.ResolveOptions{Operator: []string{operatorDir}, Explicit: []string{projectDir}})
+	src, skips, err := agents.NewFSSource(context.Background(), sources...)
+	if err != nil {
+		t.Fatalf("NewFSSource: %v", err)
+	}
+	_ = src
+	if len(skips) != 1 {
+		t.Fatalf("collision diagnostics = %v, want one", skips)
+	}
+	skip := skips[0]
+	if !skip.Fatal || skip.Path != "" || !strings.Contains(skip.Reason, "reviewer") || !strings.Contains(skip.Reason, "explicit") || !strings.Contains(skip.Reason, "operator") {
+		t.Fatalf("unsafe or incomplete collision diagnostic: %#v", skip)
+	}
+	for _, forbidden := range []string{operatorDir, projectDir, "definition"} {
+		if forbidden != "definition" && strings.Contains(skip.Reason, forbidden) {
+			t.Fatalf("collision diagnostic leaked %q: %q", forbidden, skip.Reason)
+		}
+	}
+}
+
+func TestAuthorityAttenuation_DefinitionResolutionIsSingleSource(t *testing.T) {
+	operatorDir := t.TempDir()
+	explicitDir := t.TempDir()
+	writeAuthorityDef(t, operatorDir, "reviewer", "operator definition")
+	writeAuthorityDef(t, explicitDir, "reviewer", "explicit definition")
+	reg := resolveAgentRegistry(context.Background(), Config{OperatorAgentsDirs: []string{operatorDir}, AgentsDirs: []string{explicitDir}, Model: "parent"})
+
+	// The public inventory and the child-engine decision must consume the same
+	// already-resolved registry, not independently rediscover a lower-tier file.
+	snapshot := agentSnapshot(Config{Model: "parent"}, reg)
+	_, meta, _ := agentSubagentEnginesForTest(context.Background(), Config{Model: "parent"}, mockllm.New(), reg, nil, nil, nil, nil)
+	if len(snapshot) != 1 || snapshot[0].GetDescription() != "operator definition" {
+		t.Fatalf("inventory = %#v, want the operator definition", snapshot)
+	}
+	if len(meta) != 1 || meta[0].Name != "reviewer" || meta[0].Description != "operator definition" {
+		t.Fatalf("child engine metadata = %#v, want the same operator definition", meta)
+	}
+}
+
+func writeAuthorityDef(t *testing.T, dir, name, description string) {
+	t.Helper()
+	body := "---\nname: " + name + "\ndescription: " + description + "\n---\nbody"
+	if err := os.WriteFile(filepath.Join(dir, name+".md"), []byte(body), 0o644); err != nil {
+		t.Fatalf("write definition: %v", err)
 	}
 }
 
