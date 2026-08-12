@@ -86,14 +86,8 @@ type Snapshot struct {
 	// POINTER for true omitempty: an ownerless session emits no "owner" key, so a
 	// pre-ship snapshot decodes to a nil owner and an ownerless snapshot stays
 	// byte-identical to a pre-ship one — purely additive, no format-tag bump.
-	// Restored via the write-once aggregate method Session.RestoreLabels, NOT a
-	// RestoreState parameter (widening that signature would be a Changed/breaking
-	// entry under engine/COMPATIBILITY.md; a direct-assignment field is
-	// Added/minor).
 	Owner *session.Principal `json:"owner,omitempty"`
-	// Authority is Track C's inert label, round-tripped here so the contended
-	// generated-file regeneration is paid once. omitempty keeps a pre-ship
-	// snapshot with no "authority" key decoding to the zero value.
+	// Authority is Track C's inert session label.
 	Authority session.Authority `json:"authority,omitempty"`
 	// EnvironmentRef is the resolved execution-environment identity this session
 	// runs against (ADR 0106, issue #462 phase 3). The ref is a value type
@@ -107,6 +101,16 @@ type Snapshot struct {
 	// server.Config.EnvironmentResolver; local/mem/nofs resolve through the
 	// existing factories.
 	EnvironmentRef session.EnvironmentRef `json:"environment_ref,omitzero"`
+	// AuthorityBound is the canonical governance.Authority bound. It is opaque to
+	// sessnap, which keeps its dependency surface restricted to session.
+	AuthorityBound string `json:"authority_bound,omitempty"`
+	// DefinitionIdentity is the safe tier/name identity that contributed a child
+	// authority ceiling. It never stores a path, header, token, or raw claim.
+	DefinitionIdentity string `json:"definition_identity,omitempty"`
+	// AuthorityCompatibilityOnly explicitly labels a pre-v1 snapshot that had no
+	// authority bound. It is not an empty v1 authority and must not be treated as
+	// an attenuated child.
+	AuthorityCompatibilityOnly bool `json:"authority_compatibility_only,omitempty"`
 }
 
 // messageDTO mirrors session.Message with JSON tags. session.Message is
@@ -195,6 +199,7 @@ func Of(s *session.Session) (Snapshot, error) {
 	}
 	snap.Permanent = s.FailurePermanence()
 	snap.LastError = s.LastError()
+	snap.AuthorityBound, snap.DefinitionIdentity, snap.AuthorityCompatibilityOnly = s.AuthorityBound()
 	return snap, nil
 }
 
@@ -203,6 +208,9 @@ func Of(s *session.Session) (Snapshot, error) {
 // hold on the rebuilt aggregate.
 func (snap Snapshot) Restore() (*session.Session, error) {
 	s := session.New(snap.ID, snap.Mode, snap.Workspace, snap.Limits, snap.CreatedAt)
+	if err := restoreAuthority(s, snap); err != nil {
+		return nil, err
+	}
 
 	// Rebuild the conversation history verbatim.
 	for _, dto := range snap.Messages {
@@ -239,6 +247,28 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// restoreAuthority marks an absent pre-v1 bound as compatibility-only. A present
+// v1 value is stored opaquely; its governance validation occurs at the authority
+// boundary, keeping sessnap's dependency surface restricted to session.
+func restoreAuthority(s *session.Session, snap Snapshot) error {
+	if snap.AuthorityBound == "" {
+		if snap.DefinitionIdentity != "" {
+			return errors.New("sessnap: definition identity without authority")
+		}
+		if err := s.RestoreAuthorityBound("", "", true); err != nil {
+			return fmt.Errorf("sessnap: restore legacy authority: %w", err)
+		}
+		return nil
+	}
+	if snap.AuthorityCompatibilityOnly {
+		return errors.New("sessnap: authority cannot be compatibility-only")
+	}
+	if err := s.RestoreAuthorityBound(snap.AuthorityBound, snap.DefinitionIdentity, false); err != nil {
+		return fmt.Errorf("sessnap: restore authority: %w", err)
+	}
+	return nil
 }
 
 // RestoreState drives a freshly-constructed (StateIdle) Session through the state

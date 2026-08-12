@@ -3,7 +3,9 @@
     method func (*Principal).Clone() *Principal
     method func (*Principal).SameIdentity(other *Principal) bool
     method func (*Session).Abandon() error
+    method func (*Session).AuthorityBound() (authority string, definitionIdentity string, compatibilityOnly bool)
     method func (*Session).BeginTurn() error
+    method func (*Session).BindAuthority(authority string, definitionIdentity string) error
     method func (*Session).Cancel() error
     method func (*Session).Complete() error
     method func (*Session).Fail() error
@@ -27,6 +29,7 @@
     method func (*Session).ReplaceHistory(messages []Message) error
     method func (*Session).ResetUsage() error
     method func (*Session).RestoreLabels(owner *Principal, authority Authority) error
+    method func (*Session).RestoreAuthorityBound(authority string, definitionIdentity string, compatibilityOnly bool) error
     method func (*Session).ResumeWith() (PendingAsk, error)
     method func (*Session).SeedHistory(messages []Message) error
     method func (*Session).SetMode(mode PermissionMode) error

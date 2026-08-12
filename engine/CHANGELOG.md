@@ -225,6 +225,14 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   `CommandRunner`/`CommandStreamer`, `Engine.Run`/`ResumeApproval`, and forker/
   merger signature changes are the breaking half recorded below. The removed
   `WorkspaceForker`/`ForkMerger` interfaces are recorded under Removed.
+- **`governance.Authority` and `session.Session` authority-bound accessors** (#371) —
+  the session-free authority algebra supplies strict canonical serialization and
+  parsing plus fail-closed intersection/containment across exact tool and
+  definition names, remaining delegation depth, and immutable execution-profile
+  constraints. `session.Session.BindAuthority`, `RestoreAuthorityBound`, and
+  `AuthorityBound` persist the canonical bound without a governance dependency;
+  `sessnap` round-trips it and explicitly labels bound-less pre-v1 snapshots
+  compatibility-only. Added (minor) per COMPATIBILITY.md.
 
 - **`session.Session.EnvironmentRef` persisted** (ADR 0106, issue #462 phase 3)
   — the resolved execution-environment identity is now a durable, inert exported

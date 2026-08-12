@@ -421,6 +421,17 @@ type Session struct {
 	// CreatedAt is the creation timestamp.
 	CreatedAt time.Time
 
+	// authority is the canonical governance.Authority serialization bound before a
+	// child can execute. It remains an opaque string here so session stays free of a
+	// governance dependency.
+	authority string
+	// definitionIdentity identifies the resolved definition that contributed the
+	// child ceiling. It is a safe tier/name label, never a locator or credential.
+	definitionIdentity string
+	// authorityCompatibilityOnly labels pre-v1 snapshots that have no bound. It is
+	// intentionally distinct from an empty authority, which is a v1 deny-all bound.
+	authorityCompatibilityOnly bool
+
 	// pending is set iff State == StateAwaiting.
 	pending *PendingAsk
 	// stop holds the terminal stop reason once the session has stopped.
@@ -480,6 +491,48 @@ func New(id SessionID, mode PermissionMode, workspace string, limits Limits, cre
 		Workspace:    workspace,
 		CreatedAt:    createdAt,
 	}
+}
+
+// BindAuthority attaches a canonical authority bound before a session starts. The
+// session stores it opaquely so this domain package does not import governance;
+// callers must validate it with governance.ParseAuthority first. A bound is
+// write-once and only legal while idle, before a child can execute.
+func (s *Session) BindAuthority(authority, definitionIdentity string) error {
+	if s.State != StateIdle {
+		return fmt.Errorf("%w: BindAuthority from %q", ErrIllegalTransition, s.State)
+	}
+	if authority == "" {
+		return errors.New("session: empty authority bound")
+	}
+	if s.authority != "" || s.authorityCompatibilityOnly {
+		return errors.New("session: authority already bound")
+	}
+	s.authority = authority
+	s.definitionIdentity = definitionIdentity
+	return nil
+}
+
+// RestoreAuthorityBound restores persisted authority metadata before the snapshot
+// lifecycle is replayed. A missing pre-v1 bound is explicitly marked compatibility
+// only; it is never represented as a v1 attenuated authority.
+func (s *Session) RestoreAuthorityBound(authority, definitionIdentity string, compatibilityOnly bool) error {
+	if s.State != StateIdle {
+		return fmt.Errorf("%w: RestoreAuthorityBound from %q", ErrIllegalTransition, s.State)
+	}
+	if compatibilityOnly {
+		if authority != "" || definitionIdentity != "" {
+			return errors.New("session: legacy authority has bound data")
+		}
+		s.authorityCompatibilityOnly = true
+		return nil
+	}
+	return s.BindAuthority(authority, definitionIdentity)
+}
+
+// AuthorityBound returns the persisted canonical authority, resolved definition
+// identity, and whether this is a pre-v1 compatibility-only session.
+func (s *Session) AuthorityBound() (authority, definitionIdentity string, compatibilityOnly bool) {
+	return s.authority, s.definitionIdentity, s.authorityCompatibilityOnly
 }
 
 // BeginTurn transitions the session into StateRunning at the start of a model
