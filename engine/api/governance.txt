@@ -4,6 +4,7 @@
     method func (Authority).AllowsTool(name string) bool
     method func (Authority).Canonical() (string, error)
     method func (Authority).Contains(other Authority) bool
+    method func (Authority).Descend() (Authority, error)
     method func (Authority).Equal(other Authority) bool
     method func (Authority).Intersect(other Authority) (Authority, error)
     method func (Authority).ToolNames() []string

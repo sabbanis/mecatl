@@ -90,6 +90,7 @@ const SubagentSessionPrefix untyped string = "subagent-"
 const TeamSessionPrefix untyped string = "team-"
 const UntrustedFence untyped string = "<<<UNTRUSTED"
 func DefaultChildLimits() session.Limits
+func DeriveChildAuthority(parent governance.Authority, definition governance.Authority, call governance.Authority) (governance.Authority, error)
 func FenceUntrusted(body string) string
 func MemberSessionID(teamID string, member string) session.SessionID
 func MemberToolNames() map[string]struct{}
@@ -176,7 +177,7 @@ func WithWinnerReaper(s PreservedForkStore) ParallelOption
 func WithWritableChildEngine(e *Engine) SubagentOption
 func WithWritableEngineFactory(f func(model string) (*Engine, bool)) SubagentOption
 func WriteUntrustedBlock(b *strings.Builder, body string)
-type AgentMeta struct{Name string; Description string; Limits session.Limits}
+type AgentMeta struct{Name string; Description string; AuthorityCeiling *tool.AgentAuthorityCeiling; Limits session.Limits}
 type BashStatusTool struct{}
 type BashTool struct{}
 type BranchJudge interface{Judge(ctx context.Context, candidates []BranchSummary, criteria string) (winner int, rationale string, err error)}

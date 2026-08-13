@@ -56,6 +56,12 @@ const MaxAgentDescriptionBytes = 2000
 // invalidation as the description cap.
 const MaxAgentBodyBytes = 32 * 1024
 
+// AgentAuthorityCeiling is an opaque canonical governance.Authority serialization.
+// A nil pointer means a definition omitted its ceiling and inherits the parent. A
+// present empty or malformed value must be denied at the agent boundary; sources
+// must preserve presence rather than normalizing it away.
+type AgentAuthorityCeiling string
+
 // AgentDef is a pure value object: one agent definition's metadata and
 // system-prompt body. It carries no behaviour, no infrastructure types, and NO
 // path/dir/root concept — where a definition came from is the source
@@ -140,6 +146,10 @@ type AgentDef struct {
 	// instructions, composed into the engine's system prompt by the composition
 	// layer.
 	Body string
+	// AuthorityCeiling is the optional maximum capability envelope for this
+	// definition. Nil means omitted/inherit. A present empty or malformed value
+	// is preserved for fail-closed handling at the agent boundary.
+	AuthorityCeiling *AgentAuthorityCeiling
 	// Origin is the admission tier this def entered through (observability
 	// only; see AgentOrigin). A tier label, NEVER a location.
 	Origin AgentOrigin

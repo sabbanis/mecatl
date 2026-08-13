@@ -478,24 +478,33 @@ func (s *agentSourceServer) ListAgentDefs(ctx context.Context, _ *driverv1.ListA
 	out := make([]*driverv1.AgentDef, len(defs))
 	for i, d := range defs {
 		out[i] = &driverv1.AgentDef{
-			Name:            valid(d.Name),
-			Description:     valid(d.Description),
-			Tools:           validAll(d.Tools),
-			DisallowedTools: validAll(d.DisallowedTools),
-			Model:           valid(d.Model),
-			Provider:        valid(d.Provider),
-			PermissionMode:  valid(d.PermissionMode),
-			MaxTurns:        int32(d.MaxTurns),     //nolint:gosec // bounded operator config, never overflows
-			MaxToolCalls:    int32(d.MaxToolCalls), //nolint:gosec // bounded operator config, never overflows
-			Color:           valid(d.Color),
-			Skills:          validAll(d.Skills),
-			McpServers:      toProtoMCPServers(d.MCPServers),
-			Hooks:           validMap(d.Hooks),
-			Body:            valid(d.Body),
-			Origin:          string(d.Origin),
+			Name:             valid(d.Name),
+			Description:      valid(d.Description),
+			Tools:            validAll(d.Tools),
+			DisallowedTools:  validAll(d.DisallowedTools),
+			Model:            valid(d.Model),
+			Provider:         valid(d.Provider),
+			PermissionMode:   valid(d.PermissionMode),
+			MaxTurns:         int32(d.MaxTurns),     //nolint:gosec // bounded operator config, never overflows
+			MaxToolCalls:     int32(d.MaxToolCalls), //nolint:gosec // bounded operator config, never overflows
+			Color:            valid(d.Color),
+			Skills:           validAll(d.Skills),
+			McpServers:       toProtoMCPServers(d.MCPServers),
+			Hooks:            validMap(d.Hooks),
+			Body:             valid(d.Body),
+			Origin:           string(d.Origin),
+			AuthorityCeiling: toProtoAuthorityCeiling(d.AuthorityCeiling),
 		}
 	}
 	return &driverv1.ListAgentDefsResponse{AgentDefs: out}, nil
+}
+
+func toProtoAuthorityCeiling(ceiling *tool.AgentAuthorityCeiling) *string {
+	if ceiling == nil {
+		return nil
+	}
+	value := valid(string(*ceiling))
+	return &value
 }
 
 // toProtoMCPServers projects the port MCP-server entries onto the wire. The

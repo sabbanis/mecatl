@@ -225,6 +225,15 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   `CommandRunner`/`CommandStreamer`, `Engine.Run`/`ResumeApproval`, and forker/
   merger signature changes are the breaking half recorded below. The removed
   `WorkspaceForker`/`ForkMerger` interfaces are recorded under Removed.
+- **Subagent authority derivation** (#371) — `agent.DeriveChildAuthority`
+  applies the fail-closed parent ∩ optional definition ceiling ∩ call-request
+  attenuation before a child engine or workspace is acquired. An omitted
+  definition ceiling is explicitly represented by a nil
+  `tool.AgentDef.Authority`/`agent.AgentMeta.Authority` and inherits the
+  session-bound parent; malformed or widening bounds deny delegation.
+  `governance.Authority.Descend` provides the one-level delegation-depth
+  attenuation. Classified Added (minor) per COMPATIBILITY.md.
+
 - **`governance.Authority` and `session.Session` authority-bound accessors** (#371) —
   the session-free authority algebra supplies strict canonical serialization and
   parsing plus fail-closed intersection/containment across exact tool and

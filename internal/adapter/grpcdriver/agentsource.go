@@ -105,20 +105,21 @@ func (s *AgentSource) ListAgentDefs(ctx context.Context) ([]tool.AgentDef, error
 		}
 		seen[name] = true
 		out = append(out, tool.AgentDef{
-			Name:            name,
-			Description:     toolkit.TruncateRunes(singleLine(d.GetDescription()), tool.MaxAgentDescriptionBytes),
-			Tools:           d.GetTools(),
-			DisallowedTools: d.GetDisallowedTools(),
-			Model:           d.GetModel(),
-			Provider:        d.GetProvider(),
-			PermissionMode:  d.GetPermissionMode(),
-			MaxTurns:        int(d.GetMaxTurns()),
-			MaxToolCalls:    int(d.GetMaxToolCalls()),
-			Color:           d.GetColor(),
-			Skills:          d.GetSkills(),
-			MCPServers:      fromProtoMCPServers(d.GetMcpServers()),
-			Hooks:           agents.NormalizeHooks(d.GetHooks()),
-			Body:            toolkit.TruncateRunes(d.GetBody(), tool.MaxAgentBodyBytes),
+			Name:             name,
+			Description:      toolkit.TruncateRunes(singleLine(d.GetDescription()), tool.MaxAgentDescriptionBytes),
+			Tools:            d.GetTools(),
+			DisallowedTools:  d.GetDisallowedTools(),
+			Model:            d.GetModel(),
+			Provider:         d.GetProvider(),
+			PermissionMode:   d.GetPermissionMode(),
+			MaxTurns:         int(d.GetMaxTurns()),
+			MaxToolCalls:     int(d.GetMaxToolCalls()),
+			Color:            d.GetColor(),
+			Skills:           d.GetSkills(),
+			MCPServers:       fromProtoMCPServers(d.GetMcpServers()),
+			Hooks:            agents.NormalizeHooks(d.GetHooks()),
+			AuthorityCeiling: authorityCeilingFromProto(d),
+			Body:             toolkit.TruncateRunes(d.GetBody(), tool.MaxAgentBodyBytes),
 			// UNCONDITIONAL: every def listed by a driver is driver tier — the
 			// wire's origin label is never adopted (a driver claiming
 			// "project"/"user" would launder itself into a trusted-looking tier).
@@ -131,6 +132,14 @@ func (s *AgentSource) ListAgentDefs(ctx context.Context) ([]tool.AgentDef, error
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+func authorityCeilingFromProto(def *driverv1.AgentDef) *tool.AgentAuthorityCeiling {
+	if def.AuthorityCeiling == nil {
+		return nil
+	}
+	ceiling := tool.AgentAuthorityCeiling(*def.AuthorityCeiling)
+	return &ceiling
 }
 
 // overCapReason reports why a wire def violates the per-def count caps, or ""

@@ -238,6 +238,28 @@ func (a Authority) Intersect(other Authority) (Authority, error) {
 	})
 }
 
+// Descend returns the authority a newly-created child may hold after consuming one
+// delegation hop. The other constraints are unchanged. An unrestricted authority
+// remains unrestricted for compatibility roots; a restricted authority with no
+// remaining depth is rejected rather than silently creating an unbounded child.
+func (a Authority) Descend() (Authority, error) {
+	if _, err := a.Canonical(); err != nil {
+		return Authority{}, err
+	}
+	switch a.kind {
+	case authorityUnrestricted:
+		return UnrestrictedAuthority(), nil
+	case authorityRestricted:
+		if a.spec.MaxDelegationDepth == 0 {
+			return Authority{}, fmt.Errorf("%w: delegation depth exhausted", ErrInvalidAuthority)
+		}
+		spec := a.spec
+		spec.MaxDelegationDepth--
+		return NewAuthority(spec)
+	default:
+		return Authority{}, fmt.Errorf("%w: none authority", ErrInvalidAuthority)
+	}
+}
 func decodeRequired(object map[string]json.RawMessage, field string, dest any) error {
 	raw, ok := object[field]
 	if !ok {

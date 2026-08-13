@@ -38,20 +38,21 @@ const maxPromptBodyBytes = tool.MaxAgentBodyBytes
 // real Claude-Code `.claude/agents` file ("tools: Read, Edit") parses the same as
 // the YAML-array form.
 type frontmatter struct {
-	Name            string            `yaml:"name"`
-	Description     string            `yaml:"description"`
-	Tools           stringOrSlice     `yaml:"tools"`
-	DisallowedTools stringOrSlice     `yaml:"disallowedTools"`
-	Model           string            `yaml:"model"`
-	Provider        string            `yaml:"provider"`
-	PermissionMode  string            `yaml:"permissionMode"`
-	MaxTurns        int               `yaml:"maxTurns"`
-	MaxToolCalls    int               `yaml:"maxToolCalls"`
-	Color           string            `yaml:"color"`
-	Skills          stringOrSlice     `yaml:"skills"`
-	MCPServers      mcpServerList     `yaml:"mcpServers"`
-	Hooks           map[string]string `yaml:"hooks"`
-	Memory          string            `yaml:"memory"`
+	Name             string            `yaml:"name"`
+	Description      string            `yaml:"description"`
+	Tools            stringOrSlice     `yaml:"tools"`
+	DisallowedTools  stringOrSlice     `yaml:"disallowedTools"`
+	Model            string            `yaml:"model"`
+	Provider         string            `yaml:"provider"`
+	PermissionMode   string            `yaml:"permissionMode"`
+	MaxTurns         int               `yaml:"maxTurns"`
+	MaxToolCalls     int               `yaml:"maxToolCalls"`
+	Color            string            `yaml:"color"`
+	Skills           stringOrSlice     `yaml:"skills"`
+	MCPServers       mcpServerList     `yaml:"mcpServers"`
+	Hooks            map[string]string `yaml:"hooks"`
+	Memory           string            `yaml:"memory"`
+	AuthorityCeiling *string           `yaml:"authority"`
 }
 
 // mcpServerList is the parsed `mcpServers` frontmatter. It accepts THREE forms
@@ -399,22 +400,31 @@ func parseAgentDef(raw []byte, _ string) (AgentDef, string, []string) {
 	}
 
 	return AgentDef{
-		Name:            name,
-		Description:     desc,
-		Tools:           []string(fm.Tools),
-		DisallowedTools: []string(fm.DisallowedTools),
-		Model:           strings.TrimSpace(fm.Model),
-		Provider:        strings.TrimSpace(fm.Provider),
-		PermissionMode:  strings.TrimSpace(fm.PermissionMode),
-		MaxTurns:        fm.MaxTurns,
-		MaxToolCalls:    fm.MaxToolCalls,
-		Color:           strings.TrimSpace(fm.Color),
-		Skills:          []string(fm.Skills),
-		MCPServers:      fm.MCPServers.servers,
-		Hooks:           NormalizeHooks(fm.Hooks),
-		Memory:          mem,
-		Body:            trimmedBody,
+		Name:             name,
+		Description:      desc,
+		Tools:            []string(fm.Tools),
+		DisallowedTools:  []string(fm.DisallowedTools),
+		Model:            strings.TrimSpace(fm.Model),
+		Provider:         strings.TrimSpace(fm.Provider),
+		PermissionMode:   strings.TrimSpace(fm.PermissionMode),
+		MaxTurns:         fm.MaxTurns,
+		MaxToolCalls:     fm.MaxToolCalls,
+		Color:            strings.TrimSpace(fm.Color),
+		Skills:           []string(fm.Skills),
+		MCPServers:       fm.MCPServers.servers,
+		Hooks:            NormalizeHooks(fm.Hooks),
+		Memory:           mem,
+		AuthorityCeiling: authorityCeiling(fm.AuthorityCeiling),
+		Body:             trimmedBody,
 	}, "", notes
+}
+
+func authorityCeiling(raw *string) *tool.AgentAuthorityCeiling {
+	if raw == nil {
+		return nil
+	}
+	ceiling := tool.AgentAuthorityCeiling(*raw)
+	return &ceiling
 }
 
 // NormalizeHooks trims each phase key and command value and drops any entry whose

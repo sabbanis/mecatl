@@ -98,7 +98,8 @@ func ValidateMemoryEntryWrite(entry MemoryEntry, attribution MemoryAttribution) 
 func ValidateMemoryWrite(key string, value string) error
 func WithMemoryAttribution(ctx context.Context, attribution MemoryAttribution) context.Context
 func WithMemorySource(ctx context.Context, source MemorySource) context.Context
-type AgentDef struct{Name string; Description string; Tools []string; DisallowedTools []string; Model string; Provider string; PermissionMode string; MaxTurns int; MaxToolCalls int; Color string; Skills []string; MCPServers []AgentMCPServer; Hooks map[string]string; Memory string; Body string; Origin AgentOrigin}
+type AgentAuthorityCeiling string
+type AgentDef struct{Name string; Description string; Tools []string; DisallowedTools []string; Model string; Provider string; PermissionMode string; MaxTurns int; MaxToolCalls int; Color string; Skills []string; MCPServers []AgentMCPServer; Hooks map[string]string; Memory string; Body string; AuthorityCeiling *AgentAuthorityCeiling; Origin AgentOrigin}
 type AgentDefSource interface{ListAgentDefs(ctx context.Context) ([]AgentDef, error)}
 type AgentMCPServer struct{Name string; URL string; Headers map[string]string}
 type AgentOrigin string

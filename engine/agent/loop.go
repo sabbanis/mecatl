@@ -460,20 +460,53 @@ func NewEngine(deps Deps) *Engine {
 			_ = deps.Catalog.Register(tool.NewToolSearch(deps.Catalog))
 		}
 	}
-	if deps.Catalog != nil {
-		catalogBeforeAuthority := deps.Catalog
-		if _, err := deps.Authority.Canonical(); err != nil {
+	if _, err := deps.Authority.Canonical(); err != nil {
+		if deps.Catalog == nil {
+			deps.Authority = governance.UnrestrictedAuthority()
+		} else {
 			deps.Authority = rootAuthority(deps.Catalog, deps.Delegates, deps.MaxDelegationDepth, deps.Profile)
 		}
+	}
+	if deps.Catalog != nil {
+		catalogBeforeAuthority := deps.Catalog
 		deps.Catalog = deps.Catalog.Restrict(deps.Authority.ToolNames())
 		return &Engine{deps: deps, catalogBeforeAuthority: catalogBeforeAuthority}
 	}
 	return &Engine{deps: deps}
 }
 
-// rootAuthority snapshots the already-effective catalog rather than granting a
+// bindSessionAuthority snapshots this engine's compatibility root onto a fresh
+// session once. Subsequent delegation reads the session snapshot, never the shared
+// engine configuration; persisted legacy sessions remain explicitly compatibility-only.
+func (e *Engine) bindSessionAuthority(sess *session.Session) error {
+	bound, _, compatibilityOnly := sess.AuthorityBound()
+	if compatibilityOnly {
+		return nil
+	}
+	if bound != "" {
+		if _, err := governance.ParseAuthority(bound); err != nil {
+			return fmt.Errorf("agent: invalid session authority: %w", err)
+		}
+		return nil
+	}
+	root, err := e.RootAuthority()
+	if err != nil {
+		return fmt.Errorf("agent: root authority: %w", err)
+	}
+	if err := sess.BindAuthority(root, "root"); err != nil {
+		return fmt.Errorf("agent: bind session authority: %w", err)
+	}
+	return nil
+}
+
 // new capability. Invalid catalog names fail closed to an empty ceiling.
 func rootAuthority(catalog *tool.Catalog, delegates []string, depth int, profile governance.AuthorityProfile) governance.Authority {
+	// Existing subagent callers had no configured delegation-depth limit. Preserve
+	// their one-generation capability (children themselves have no Subagent tool)
+	// while making the compatibility root's ceiling explicit.
+	if depth == 0 {
+		depth = 1
+	}
 	tools := catalog.Tools()
 	names := make([]string, 0, len(tools))
 	for _, candidate := range tools {
@@ -1094,6 +1127,10 @@ func (e *Engine) drive(ctx context.Context, r *Run, sess *session.Session, env t
 	// honest rather than relying on their defensive fallback. It must precede the
 	// SessionStart hook events and the first turn.start.
 	e.emit(r, session.Event{Type: session.EvSessionInit})
+	if err := e.bindSessionAuthority(sess); err != nil {
+		e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, err, false)
+		return
+	}
 
 	// Step 0b: fire SessionStart once before any work, before the prompt is even
 	// recorded. This is a BLOCKING run-level gate (symmetric with

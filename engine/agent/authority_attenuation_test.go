@@ -18,7 +18,7 @@ import (
 // TestAuthorityAttenuation_RootCatalogAndDispatchEnforceCeiling pins both sides
 // of the root ceiling: excluded tools are absent from the provider schema and a
 // stale call to one is rejected before an otherwise allowing policy can execute it.
-func TestAuthorityAttenuation_RootCatalogAndDispatchEnforceCeiling(t *testing.T) {
+func TestAuthorityAttenuation_ExcludedToolIsAbsentAndDispatchDenied(t *testing.T) {
 	var requests []string
 	read := &fakeTool{name: "Read", readOnly: true, exec: func(_ context.Context, in session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
 		return session.NewToolResult(in.ID, "read"), nil

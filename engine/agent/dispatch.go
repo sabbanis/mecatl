@@ -1164,6 +1164,13 @@ func (e *Engine) parentCaps(r *Run, sess *session.Session, turnIdx int) parentCa
 	// snapshot it before any detach), never inside a detached background goroutine.
 	// nil when no parent session is threaded (plain Execute) — fork then unsupported.
 	if sess != nil {
+		caps.authority = func() (governance.Authority, error) {
+			bound, _, compatibilityOnly := sess.AuthorityBound()
+			if compatibilityOnly {
+				return e.deps.Authority, nil
+			}
+			return governance.ParseAuthority(bound)
+		}
 		caps.forkHistory = func() []session.Message {
 			return session.ForkSnapshot(sess.Conversation)
 		}

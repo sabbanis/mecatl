@@ -122,6 +122,11 @@ message AgentDef {
   // driver cannot claim the project/user tiers) — trust is enforced at source
   // CONSTRUCTION in the harness's composition layer, never from this field.
   string origin = 15;
+
+  // authority_ceiling is the optional opaque canonical authority serialization.
+  // Presence is significant: absent inherits the parent, while a present empty
+  // or malformed value must reach the harness for fail-closed denial.
+  optional string authority_ceiling = 16;
 }
 
 // AgentMCPServer is one entry of a def's mcp_servers, mirroring
