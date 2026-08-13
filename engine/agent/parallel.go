@@ -995,6 +995,28 @@ func (t *ParallelTool) runBranch(ctx context.Context, callID session.ToolCallID,
 	// same id the registry/emitter use and WithParallelStore persists under.
 	res := branchResult{index: i, label: label, childID: string(t.childSessionID(caps.parentSessionID, callID, i))}
 
+	// Derive the branch ceiling before selecting an engine or forking its workspace.
+	// The parent snapshot is run-bound; a shared engine's construction authority is
+	// only a compatibility root.
+	parentAuthority := governance.UnrestrictedAuthority()
+	if caps.authority != nil {
+		var err error
+		parentAuthority, err = caps.authority()
+		if err != nil {
+			res.failed = true
+			res.failReason = "invalid parent authority: " + err.Error()
+			be.branchEnd(res, session.StopError, session.Usage{}, 0, 0)
+			return res, session.StopError
+		}
+	}
+	branchAuthority, err := parallelChildAuthority(parentAuthority)
+	if err != nil {
+		res.failed = true
+		res.failReason = "parallel branch authority denied: " + err.Error()
+		be.branchEnd(res, session.StopError, session.Usage{}, 0, 0)
+		return res, session.StopError
+	}
+
 	// OPT-IN model router (ADR 0034): classify this branch's composed prompt ONCE (each
 	// branch routes at most once — this is the only call site, on the per-branch
 	// goroutine) and select the engine the branch runs on. routedCategory/routedModel are
@@ -1014,6 +1036,7 @@ func (t *ParallelTool) runBranch(ctx context.Context, callID session.ToolCallID,
 	}
 	routedCategory, routedModel, routingReason = reconcileRoutedModel(
 		routedCategory, routedModel, routingReason, routedAccepted)
+	branchEngine = childEngineWithAuthority(branchEngine, branchAuthority)
 
 	// Bracket the branch on the observability stream: branch_start carries the
 	// (truncated, model-authored) goal + the routed metadata (incl. the bare-metadata
@@ -1055,6 +1078,14 @@ func (t *ParallelTool) runBranch(ctx context.Context, callID session.ToolCallID,
 	)
 	// The branch is attributed to the PARENT session's owner (ADR 0100 decision 4).
 	caps.inheritOwner(childSess)
+	bound, bindErr := branchAuthority.Canonical()
+	if bindErr != nil || childSess.BindAuthority(bound, "") != nil {
+		_ = cleanup()
+		res.failed = true
+		res.failReason = "failed to bind parallel branch authority"
+		be.branchEnd(res, session.StopError, session.Usage{}, 0, branchEngine.now().Sub(start))
+		return res, session.StopError
+	}
 
 	run := branchEngine.Run(ctx, childSess, childEnv, RunRequest{Text: prompt})
 	// A Parallel branch always runs in its OWN isolated fork, so its Bash asks are eligible

@@ -2209,6 +2209,15 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 		if !rok {
 			return nil, tool.Environment{}, noop, "", false, errRes, false
 		}
+		bound, _, compatibilityOnly := loaded.AuthorityBound()
+		persistedAuthority, aerr := effectiveResumedChildAuthority(bound, compatibilityOnly, governance.UnrestrictedAuthority())
+		if aerr != nil {
+			return nil, nil, noop, "", false, session.NewToolError(call.ID, "Subagent: invalid persisted authority: "+aerr.Error()), false
+		}
+		directWrite, _ := governance.NewAuthority(governance.AuthoritySpec{Profile: governance.AuthorityProfile{DirectWrite: true}})
+		if !compatibilityOnly && writable != persistedAuthority.Contains(directWrite) {
+			return nil, nil, noop, "", false, session.NewToolError(call.ID, "Subagent: `mode` cannot change a resumed subagent's direct-write authority"), false
+		}
 		resumedChild = loaded
 		priorWorkspace = loaded.Workspace
 	}
@@ -2286,6 +2295,11 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	}
 
 	resuming := strings.TrimSpace(args.Resume) != ""
+	if resuming {
+		if _, errResult, ok := t.validateResume(call.ID, args); !ok {
+			return errResult, nil
+		}
+	}
 
 	// Attenuate before routing, factory selection, registry allocation, or any
 	// workspace/fork work. A rejected request therefore cannot acquire a child
@@ -2299,7 +2313,15 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 			return session.NewToolError(call.ID, "Subagent: invalid parent authority: "+authorityErr.Error()), nil
 		}
 	}
-	childAuthority, err := childAuthorityFor(parentAuthority, definitionCeiling, args)
+	var childAuthority governance.Authority
+	var err error
+	if resuming {
+		// A resume is governed by its persisted v1 child bound. Do not let
+		// request-only fields (agent/mode/defaults) manufacture a new ceiling.
+		childAuthority, err = parentAuthority.Descend()
+	} else {
+		childAuthority, err = childAuthorityFor(parentAuthority, definitionCeiling, args)
+	}
 	if err != nil {
 		return session.NewToolError(call.ID, "Subagent: "+err.Error()), nil
 	}
@@ -2461,20 +2483,30 @@ func (t *SubagentTool) runForeground(ctx context.Context, launch foregroundLaunc
 	// the throwaway checkout down.
 	defer func() { _ = cleanupWS() }()
 
+	runEngine := launch.engine
+	if launch.resuming {
+		bound, _, compatibilityOnly := child.AuthorityBound()
+		effectiveAuthority, err := effectiveResumedChildAuthority(bound, compatibilityOnly, launch.authority)
+		if err != nil {
+			return session.NewToolError(launch.call.ID, "Subagent: invalid persisted authority: "+err.Error())
+		}
+		runEngine = childEngineWithAuthority(runEngine, effectiveAuthority)
+	}
+
 	if launch.emit != nil {
 		launch.emit(session.Event{Type: session.EvSubagentStart, Subagent: &session.SubagentPayload{
 			ParentCallID: string(launch.call.ID), ChildID: string(launch.childID), Goal: subagentGoal(launch.args),
 			RoutedCategory: launch.routedCategory, RoutedModel: launch.routedModel,
-			RoutingReason: routingReasonPayload(launch.routingReason), Model: launch.engine.Model(),
+			RoutingReason: routingReasonPayload(launch.routingReason), Model: runEngine.Model(),
 		}})
 	}
 	runReq, submit, prompt := buildSubagentRunRequest(launch.args, launch.resuming,
 		resumePosture{writable: launch.args.Mode == subagentModeReadWrite, editsSurvived: editsSurvived}, forkAdvisory)
 	writable := launch.args.Mode == subagentModeReadWrite
 	posture := childPosture{isolated: !writable && t.childForker != nil, caps: launch.caps, role: string(launch.childID), childID: string(launch.childID), askLabel: fmt.Sprintf("subagent %q", subagentGoal(launch.args))}
-	start := launch.engine.now()
+	start := runEngine.now()
 	started = true
-	final, stop, cause, usage, toolCount := driveChild(ctx, launch.engine, child, runEnv, prompt, runReq, launch.emit, launch.call, launch.childID, posture, submit, launch.args.OutputSchema)
+	final, stop, cause, usage, toolCount := driveChild(ctx, runEngine, child, runEnv, prompt, runReq, launch.emit, launch.call, launch.childID, posture, submit, launch.args.OutputSchema)
 	terminalStop = stop
 	recordChildCauseOnSnapshot(child, stop, cause)
 	t.persistChild(ctx, child)
@@ -2652,6 +2684,20 @@ func (t *SubagentTool) startBackground(ctx context.Context, b backgroundChild) s
 			return errResult
 		}
 		b.resumed = loaded
+		bound, _, compatibilityOnly := loaded.AuthorityBound()
+		effectiveAuthority, err := effectiveResumedChildAuthority(bound, compatibilityOnly, b.authority)
+		if err != nil {
+			b.release()
+			abort()
+			return session.NewToolError(b.call.ID, "Subagent: invalid persisted authority: "+err.Error())
+		}
+		directWrite, _ := governance.NewAuthority(governance.AuthoritySpec{Profile: governance.AuthorityProfile{DirectWrite: true}})
+		if persistedAuthority, perr := persistedChildAuthority(bound); !compatibilityOnly && (perr != nil || persistedAuthority.Contains(directWrite)) {
+			b.release()
+			abort()
+			return session.NewToolError(b.call.ID, "Subagent: `mode` cannot change a resumed subagent's direct-write authority")
+		}
+		b.engine = childEngineWithAuthority(b.engine, effectiveAuthority)
 	}
 	b.caps.startChildRun(b.childID)
 	// A5: the start event is emitted SYNCHRONOUSLY before the goroutine spawns, so

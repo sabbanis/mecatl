@@ -381,6 +381,13 @@ func (t *TeamTool) run(ctx context.Context, call session.ToolCall, env tool.Envi
 	if budget > 0 {
 		opts = append(opts, WithTeamTokenBudget(budget))
 	}
+	if caps.authority != nil {
+		parentAuthority, err := caps.authority()
+		if err != nil {
+			return session.NewToolError(call.ID, "Team: invalid parent authority: "+err.Error()), nil
+		}
+		opts = append(opts, withTeamAuthority(parentAuthority))
+	}
 	// Thread the parent's caps so an unresolved member permission ask is surfaced to the
 	// human (interactive parent) or auto-denied with the accurate message (headless). The
 	// member askIDs are child-namespaced (team-<teamID>-<member>), so the parent router

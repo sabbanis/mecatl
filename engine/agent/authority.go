@@ -68,3 +68,51 @@ func childEngineWithAuthority(parent *Engine, authority governance.Authority) *E
 	deps.Authority = authority
 	return NewEngine(deps)
 }
+
+// parallelChildAuthority consumes one delegation hop before a Parallel branch
+// acquires its workspace or child engine.
+func parallelChildAuthority(parent governance.Authority) (governance.Authority, error) {
+	return parent.Descend()
+}
+
+// teamChildAuthority consumes one delegation hop before a Team lead or member
+// acquires its session or child engine.
+func teamChildAuthority(parent governance.Authority) (governance.Authority, error) {
+	return parent.Descend()
+}
+
+// persistedChildAuthority rejects an absent persisted child bound. Resume must
+// never fall back to the current authority, named definition, or defaults.
+func persistedChildAuthority(raw string) (governance.Authority, error) {
+	if raw == "" {
+		return governance.Authority{}, fmt.Errorf("missing persisted child authority")
+	}
+	authority, err := governance.ParseAuthority(raw)
+	if err != nil {
+		return governance.Authority{}, fmt.Errorf("invalid persisted child authority: %w", err)
+	}
+	return authority, nil
+}
+
+// resumedChildAuthority narrows a persisted child bound with the current
+// operator ceiling. The caller supplies only revocations; it is never a source
+// of new authority.
+func resumedChildAuthority(persisted, operatorCeiling governance.Authority) (governance.Authority, error) {
+	return persisted.Intersect(operatorCeiling)
+}
+
+// effectiveResumedChildAuthority reads the immutable v1 bound from the persisted
+// child. The current ceiling may only remove authority for this run; it is never
+// written back to the child snapshot.
+func effectiveResumedChildAuthority(childAuthority string, compatibilityOnly bool, operatorCeiling governance.Authority) (governance.Authority, error) {
+	if compatibilityOnly {
+		// Pre-v1 snapshots have no persisted bound. Retain the historical
+		// compatibility behavior, but never use this path for a v1 snapshot.
+		return operatorCeiling, nil
+	}
+	persisted, err := persistedChildAuthority(childAuthority)
+	if err != nil {
+		return governance.Authority{}, err
+	}
+	return resumedChildAuthority(persisted, operatorCeiling)
+}

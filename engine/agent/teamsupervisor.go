@@ -295,6 +295,7 @@ type Supervisor struct {
 	// is the sole writer.
 	sharedBaseWS func(root string) tool.Workspace
 	factory      MemberEngine
+	authority    governance.Authority
 
 	limits      session.Limits
 	mode        session.PermissionMode
@@ -500,6 +501,12 @@ func WithTeamSharedBaseWorkspace(f func(root string) tool.Workspace) SupervisorO
 	return func(s *Supervisor) { s.sharedBaseWS = f }
 }
 
+// withTeamAuthority sets the already-derived parent bound that applies to every
+// team member. It is a ceiling, not a grant.
+func withTeamAuthority(a governance.Authority) SupervisorOption {
+	return func(s *Supervisor) { s.authority = a }
+}
+
 // WithTeamLimits overrides the per-member, per-round stop conditions (default
 // defaultChildLimits). Reopen resets these counters each round, so they bound one
 // turn-loop, not the member's whole life.
@@ -674,6 +681,7 @@ func NewSupervisor(t *team.Team, base tool.Environment, factory MemberEngine, op
 		team:        t,
 		base:        base,
 		factory:     factory,
+		authority:   governance.UnrestrictedAuthority(),
 		limits:      defaultChildLimits,
 		mode:        session.ModeDefault,
 		maxRounds:   defaultMaxRounds,
@@ -711,6 +719,13 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 		return fmt.Errorf("agent: enrol member: %w", err)
 	}
 
+	// Derive every member's ceiling before selecting an engine or workspace.
+	memberAuthority, err := teamChildAuthority(s.authority)
+	if err != nil {
+		s.team.RemoveMember(spec.Name)
+		return fmt.Errorf("agent: team member authority: %w", err)
+	}
+
 	// OPT-IN model router (ADR 0034): classify this member ONCE here, before the engine
 	// is built (decide-once — the member engine is built once and reused across rounds via
 	// Reopen, never re-routed). maybeRouteMember gates on a PLAIN UNDEFINED member (no
@@ -734,6 +749,8 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 		s.team.RemoveMember(spec.Name)
 		return fmt.Errorf("%w for %q", ErrNilEngine, spec.Name)
 	}
+
+	eng = childEngineWithAuthority(eng, memberAuthority)
 
 	// Workspace selection (three tiers). needFork is true for any member that runs in
 	// its OWN isolated workspace — a Mutating member (force-copy fork, s.forker) or a
@@ -794,9 +811,24 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 	// team's tool-call/failure caps, and a member that pins nothing runs on s.limits
 	// unchanged.
 	limits := mergeLimits(s.limits, build.Limits)
-	sess := session.New(s.sessionID(spec.Name), mode, ws.Workspace().Root(), limits, build.Engine.now())
+	sess := session.New(s.sessionID(spec.Name), mode, ws.Workspace().Root(), limits, eng.now())
 	// The member is attributed to the PARENT session's owner (ADR 0100 decision 4).
 	s.caps.inheritOwner(sess)
+	bound, err := memberAuthority.Canonical()
+	if err != nil {
+		if cleanup != nil {
+			_ = cleanup()
+		}
+		s.team.RemoveMember(spec.Name)
+		return fmt.Errorf("agent: team member authority: %w", err)
+	}
+	if err := sess.BindAuthority(bound, ""); err != nil {
+		if cleanup != nil {
+			_ = cleanup()
+		}
+		s.team.RemoveMember(spec.Name)
+		return fmt.Errorf("agent: bind team member authority: %w", err)
+	}
 	_ = s.team.SetMemberSession(spec.Name, sess.ID)
 
 	// Mint the per-member cancellation pair and register the member in the PARENT
