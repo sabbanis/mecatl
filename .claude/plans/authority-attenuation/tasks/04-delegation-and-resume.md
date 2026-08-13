@@ -2,8 +2,8 @@
 id: 04-delegation-and-resume
 title: Parallel, Team, and persisted child resume attenuation
 blocked_by: [03-subagent-attenuation]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-attenuation/04-delegation-and-resume"
 worktree: ""
 issue: "371"
 retries: 0

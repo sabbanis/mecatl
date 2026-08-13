@@ -2,7 +2,7 @@
 id: 05-demonstrations-and-docs
 title: Offline and deployed authority attenuation journeys
 blocked_by: [04-delegation-and-resume]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
