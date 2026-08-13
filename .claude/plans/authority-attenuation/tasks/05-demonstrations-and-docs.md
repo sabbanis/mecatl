@@ -2,12 +2,12 @@
 id: 05-demonstrations-and-docs
 title: Offline and deployed authority attenuation journeys
 blocked_by: [04-delegation-and-resume]
-status: in-progress
-branch: ""
+status: blocked
+branch: "plan-authority-attenuation/05-demonstrations-and-docs"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: ""
+last_error: "AC7 requires the caller-separation Dex/OIDC/Redis fixture on acc/caller-separation, which is not an ancestor; no second harness may be created."
 accumulator: acc/authority-attenuation
 ---
 # Task brief
