@@ -99,11 +99,12 @@ ADR 0048):
    drain → lease release) lets a survivor take over *immediately*, not after the 30s TTL.
 3. **Session persistence across pod restart** — a session + run reaching terminal on pod-A
    survives pod-A's deletion; a follow-up on pod-B succeeds (Redis snapshot, `Recover`/reopen).
-4. **OIDC caller identity against a real in-cluster Dex** — the agent discovers Dex's
-   signing keys, rejects no-token and forged-token requests on both HTTP and gRPC,
-   records Alice as a newly created session owner, and records Bob as the durable
-   actor when he prompts Alice's session. A separate journey proves bounded JWKS
-   staleness returns 503 during an IdP outage and recovers when Dex is reachable.
+4. **OIDC caller identity and separation against a real in-cluster Dex** — the agent
+   discovers Dex's signing keys, rejects no-token and forged-token requests on both HTTP
+   and gRPC, persists Alice as session/schedule owner, rejects Bob's foreign resource
+   access as absence-shaped, and records the permitted caller as the durable actor. A
+   separate journey proves bounded JWKS staleness returns 503 during an IdP outage and
+   recovers when Dex is reachable.
 
 ```sh
 task e2e:k8s   # needs kind + ko + kubectl + Docker; NOT part of task test (~3-5 min)
@@ -117,15 +118,15 @@ three additional specs run real multi-second model turns through the pods, provi
 the Redis snapshot, and the drain gate hold under a live LLM stream (not just the mock's instant
 completion). The live specs `Skip` without the key; the mock suite is unaffected either way.
 
-#### Authority attenuation deployment status
+#### Authority attenuation deployment boundary
 
-The current kind suite does **not** include Dex/OIDC authentication, caller separation, or an
-authority-attenuation child spawn/resume journey. The local authority ceiling is covered by the
-offline `mecademo` act and unit tests; it does not demonstrate a downstream delegated identity.
-The planned deployed proofs require the caller-separation branch's authenticated fixture. That
-branch is not in this branch's history, so no `task e2e:k8s` authority claim is made here. Do
-not treat the existing Redis persistence test as proof that an authenticated child resume cannot
-widen its authority.
+The kind suite includes the Dex/OIDC/Redis caller-separation fixture, so it proves the
+deployment prerequisites that matter to local attenuation: an authenticated owner cannot
+operate another caller's session/schedule or fork source, and ownership persists across
+replicas. The authority ceiling itself is enforced inside the agent loop and is covered
+by the offline `mecademo` journey plus deterministic engine tests. Neither proof issues
+or observes a child-specific credential at an MCP/HTTP destination; do not read the
+kind fixture's authenticated edge or Redis persistence as such a delegation protocol.
 
 #### Honest shutdown contract
 

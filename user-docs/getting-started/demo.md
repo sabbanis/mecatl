@@ -137,10 +137,10 @@ It also reports the safe outcome of a same-name definition collision: the operat
 reviewer is selected and the project duplicate is rejected.
 
 This is a local harness guarantee, not an external identity protocol. It does not issue
-a credential or establish remote delegated identity. There is currently no deployed
-Dex/OIDC/Redis authority journey in `task e2e:k8s`: it requires the caller-separation
-branch's authenticated fixture, which is not included here. The existing kind suite's
-Redis persistence proof must not be read as that missing authority proof.
+a credential or establish remote delegated identity. `task e2e:k8s` reuses the
+Dex/OIDC/Redis caller-separation fixture to prove the authenticated ownership and
+restart-persistence prerequisites around this behavior. Those deployment facts do not
+mean an MCP or HTTP service receives a child-specific credential.
 
 ## Run it live (optional)
 

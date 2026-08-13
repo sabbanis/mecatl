@@ -43,7 +43,8 @@ func TestAuthorityAttenuation_ExcludedToolIsAbsentAndDispatchDenied(t *testing.T
 		mockllm.TextTurn("done"),
 	)
 	e := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, read, bash), Clock: &fakeClock{}, Authority: authority})
-	evs := drain(e.Run(context.Background(), newSession(t, session.Limits{}), memfs.NewWorkspace("/ws"), agent.RunRequest{Text: "go"}))
+	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "ws"}, memfs.NewWorkspace("/ws"), nil)
+	evs := drain(e.Run(context.Background(), newSession(t, session.Limits{}), env, agent.RunRequest{Text: "go"}))
 	for _, name := range requests {
 		if name != "Read" {
 			t.Fatalf("advertised tools = %v, want only Read", requests)
@@ -63,6 +64,20 @@ func TestAuthorityAttenuation_ExcludedToolIsAbsentAndDispatchDenied(t *testing.T
 	}
 	if !foundStale {
 		t.Fatal("missing stale authority-denial result")
+	}
+}
+
+func TestAuthorityAttenuation_LegacyRootRemainsExplicitlyUnrestricted(t *testing.T) {
+	read := &fakeTool{name: "Read", readOnly: true, exec: func(_ context.Context, in session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
+		return session.NewToolResult(in.ID, "ok"), nil
+	}}
+	e := newEngine(agent.Deps{Catalog: catalogWith(t, read)})
+	bound, err := e.RootAuthority()
+	if err != nil {
+		t.Fatalf("RootAuthority: %v", err)
+	}
+	if bound != `{"v":1,"kind":"unrestricted"}` {
+		t.Fatalf("legacy root authority = %s, want explicit unrestricted compatibility root", bound)
 	}
 }
 

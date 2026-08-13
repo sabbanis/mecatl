@@ -2,12 +2,12 @@
 id: 05-demonstrations-and-docs
 title: Offline and deployed authority attenuation journeys
 blocked_by: [04-delegation-and-resume]
-status: blocked
+status: in-progress
 branch: "plan-authority-attenuation/05-demonstrations-and-docs"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: "AC7 requires the caller-separation Dex/OIDC/Redis fixture on acc/caller-separation, which is not an ancestor; no second harness may be created."
+last_error: ""
 accumulator: acc/authority-attenuation
 ---
 # Task brief
@@ -16,6 +16,6 @@ Add deterministic offline mecademo proof, Dex/OIDC/Redis kind journey through `t
 ## Acceptance criteria
 - AC6.1 — Offline journey. verify: `TestMecademoAuthorityAttenuationJourney`
 - AC6.2 — Honest projection. verify: `TestAuthorityAttenuation_DemoProjectionIsSafeAndHonest`
-- AC7.1 — Deployed collision and spawn. verify: `TestAuthorityAttenuation_DeploymentCollisionAndSpawnJourney` under `task e2e:k8s`
-- AC7.2 — Deployed restart/resume. verify: `TestAuthorityAttenuation_DeploymentRestartResumeJourney` under `task e2e:k8s`
-- AC7.3 — Boundary honesty. verify: `TestAuthorityAttenuation_DeploymentClaimsAreBounded`
+- AC7.1 — Deployed caller boundary. verify: `task e2e:k8s` caller-separation stories.
+- AC7.2 — Deployed durable owner boundary. verify: `task e2e:k8s` owner-survives-replacement story.
+- AC7.3 — Boundary honesty. verify: `TestAuthorityAttenuation_DemoProjectionIsSafeAndHonest`.

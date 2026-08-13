@@ -461,7 +461,10 @@ func NewEngine(deps Deps) *Engine {
 		}
 	}
 	if _, err := deps.Authority.Canonical(); err != nil {
-		if deps.Catalog == nil {
+		if deps.Catalog == nil || !hasRootAuthorityInputs(deps) {
+			// Existing composition did not supply a finite delegation/profile snapshot.
+			// Keep that compatibility posture explicit instead of silently turning an
+			// omitted input into an empty delegate or direct-write ceiling.
 			deps.Authority = governance.UnrestrictedAuthority()
 		} else {
 			deps.Authority = rootAuthority(deps.Catalog, deps.Delegates, deps.MaxDelegationDepth, deps.Profile)
@@ -499,6 +502,14 @@ func (e *Engine) bindSessionAuthority(sess *session.Session) error {
 	return nil
 }
 
+// hasRootAuthorityInputs reports whether composition supplied the finite root
+// envelope metadata needed to turn a catalog into an authority snapshot. Without it,
+// legacy callers retain the explicit unrestricted compatibility root.
+func hasRootAuthorityInputs(deps Deps) bool {
+	return len(deps.Delegates) != 0 || deps.MaxDelegationDepth != 0 || deps.Profile != (governance.AuthorityProfile{})
+}
+
+// rootAuthority snapshots the already-effective catalog rather than granting a
 // new capability. Invalid catalog names fail closed to an empty ceiling.
 func rootAuthority(catalog *tool.Catalog, delegates []string, depth int, profile governance.AuthorityProfile) governance.Authority {
 	// Existing subagent callers had no configured delegation-depth limit. Preserve

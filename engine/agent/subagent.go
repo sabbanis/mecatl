@@ -2212,11 +2212,11 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 		bound, _, compatibilityOnly := loaded.AuthorityBound()
 		persistedAuthority, aerr := effectiveResumedChildAuthority(bound, compatibilityOnly, governance.UnrestrictedAuthority())
 		if aerr != nil {
-			return nil, nil, noop, "", false, session.NewToolError(call.ID, "Subagent: invalid persisted authority: "+aerr.Error()), false
+			return nil, tool.Environment{}, noop, "", false, session.NewToolError(call.ID, "Subagent: invalid persisted authority: "+aerr.Error()), false
 		}
 		directWrite, _ := governance.NewAuthority(governance.AuthoritySpec{Profile: governance.AuthorityProfile{DirectWrite: true}})
 		if !compatibilityOnly && writable != persistedAuthority.Contains(directWrite) {
-			return nil, nil, noop, "", false, session.NewToolError(call.ID, "Subagent: `mode` cannot change a resumed subagent's direct-write authority"), false
+			return nil, tool.Environment{}, noop, "", false, session.NewToolError(call.ID, "Subagent: `mode` cannot change a resumed subagent's direct-write authority"), false
 		}
 		resumedChild = loaded
 		priorWorkspace = loaded.Workspace

@@ -56,7 +56,7 @@ func TestAuthorityAttenuation_NewChildPersistsBoundBeforeExecution(t *testing.T)
 	if err != nil {
 		t.Fatalf("sessnap.Of: %v", err)
 	}
-	if snapshot.Authority != bound || snapshot.DefinitionIdentity != "operator:reviewer" || snapshot.AuthorityCompatibilityOnly {
+	if snapshot.AuthorityBound != bound || snapshot.DefinitionIdentity != "operator:reviewer" || snapshot.AuthorityCompatibilityOnly {
 		t.Fatalf("snapshot authority = %+v; want bound and non-legacy marker", snapshot)
 	}
 

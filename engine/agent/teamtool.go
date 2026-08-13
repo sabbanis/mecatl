@@ -327,85 +327,9 @@ func (t *TeamTool) run(ctx context.Context, call session.ToolCall, env tool.Envi
 		return session.NewToolError(call.ID, "Team: "+msg), nil
 	}
 
-	// Namespace the team id under the PARENT session's own id (review finding 2,
-	// issue #368; see SubagentTool.childSessionID's doc for the collision
-	// rationale): deriving from call.ID alone let two different top-level
-	// sessions issuing equal or adversarially-chosen call ids collide on the
-	// IDENTICAL team id, so MemberSessionID(teamID, member) — the same
-	// derivation InspectMember uses from the model-supplied team_id — could
-	// silently overwrite another owner's persisted member transcript.
-	// caps.parentSessionID is empty only on a caps-less drive (plain
-	// Execute/ExecuteObserved, no parent session threaded), which keeps the
-	// pre-fix call-id-only id.
-	teamID := string(call.ID)
-	if caps.parentSessionID != "" {
-		teamID = string(caps.parentSessionID) + "-" + string(call.ID)
-	}
-	tm := team.New(teamID)
-	factory := func(spec MemberSpec, routedModel string) MemberBuild { return t.factory(tm, spec, routedModel) }
-
-	opts := []SupervisorOption{
-		// Thread the goal so it frames every member's round-0 turn and the lead's
-		// synthesis as the team's TRUSTED top-level instruction (the parent model
-		// authored args.Goal from the user's own prompt — its provenance is the
-		// principal, not a peer, which is exactly the trusted case), and namespace
-		// member-session ids by the team id (parent-session-id + parent call id,
-		// see the teamID derivation above) so two concurrent teams sharing a
-		// member name get distinct, collision-free stored ids. The
-		// prefix MUST match MemberSessionID's scheme so the inspect tool can derive the
-		// same id: "team-<teamID>" → ids "team-<teamID>-<member>". No WithUntrustedGoal
-		// here: the in-loop Team tool's goal is always principal-authored and trusted.
-		WithTeamGoal(args.Goal),
-		WithMemberSessionPrefix(memberSessionIDPrefix + teamID),
-	}
-	if t.forker != nil {
-		opts = append(opts, WithForker(t.forker))
-	}
-	if t.roForker != nil {
-		opts = append(opts, WithReadOnlyForker(t.roForker))
-	}
-	if t.sharedBaseWS != nil {
-		opts = append(opts, WithTeamSharedBaseWorkspace(t.sharedBaseWS))
-	}
-	if t.hooks != nil {
-		opts = append(opts, WithTeamHooks(t.hooks))
-	}
-	if t.store != nil {
-		opts = append(opts, WithMemberStore(t.store))
-	}
-	// Team-wide token budget: the operator-configured ceiling, with the per-call
-	// max_team_tokens arg applied TIGHTEN-ONLY (tightenLimit, like subagentArgs.MaxTurns
-	// — the model can lower the operator's budget, never raise it). A non-positive
-	// effective budget disables it (no option appended).
-	budget := tightenLimit(t.tokenBudget, args.MaxTeamTokens)
-	if budget > 0 {
-		opts = append(opts, WithTeamTokenBudget(budget))
-	}
-	if caps.authority != nil {
-		parentAuthority, err := caps.authority()
-		if err != nil {
-			return session.NewToolError(call.ID, "Team: invalid parent authority: "+err.Error()), nil
-		}
-		opts = append(opts, withTeamAuthority(parentAuthority))
-	}
-	// Thread the parent's caps so an unresolved member permission ask is surfaced to the
-	// human (interactive parent) or auto-denied with the accurate message (headless). The
-	// member askIDs are child-namespaced (team-<teamID>-<member>), so the parent router
-	// routes a verdict back without a wire change.
-	opts = append(opts, withParentCaps(caps))
-	sup := NewSupervisor(tm, env, factory, opts...)
-
-	roster := teamRoster(args.Members)
-	for i, spec := range memberSpecs(args.Members) {
-		if err := sup.AddMember(ctx, spec); err != nil {
-			// A bad roster (e.g. a Mutating member with no forker wired) is a tool error
-			// the model can recover from. AddMember already tore down the FAILING
-			// member's own fork; but Run (whose deferred cleanupAll releases the earlier
-			// successful members' forks) is never reached on failure, so we tear those
-			// down explicitly here to avoid leaking them.
-			sup.cleanupAll()
-			return session.NewToolError(call.ID, fmt.Sprintf("forming team failed at member %d (%q): %v", i, spec.Name, err)), nil
-		}
+	sup, tm, teamID, roster, err := t.configureSupervisor(ctx, call, env, caps, args)
+	if err != nil {
+		return session.NewToolError(call.ID, "Team: "+err.Error()), nil
 	}
 
 	if emit != nil {
@@ -503,6 +427,60 @@ func (t *TeamTool) run(ctx context.Context, call session.ToolCall, env tool.Envi
 	// synthesis-report and the joinTeamFallback path.
 	result = renderTeamResult(teamID, result)
 	return session.NewToolResult(call.ID, result), nil
+}
+
+// configureSupervisor builds the team and fully enrolls its roster before Run
+// starts. Keeping construction separate from run's event projection preserves the
+// latter as a small, observable lifecycle wrapper.
+func (t *TeamTool) configureSupervisor(ctx context.Context, call session.ToolCall, env tool.Environment, caps parentCaps, args teamArgs) (*Supervisor, *team.Team, string, []session.TeamMemberSpec, error) {
+	// Namespace the team id under the parent session so equal model-supplied call
+	// ids cannot collide in persisted member-session ids.
+	teamID := string(call.ID)
+	if caps.parentSessionID != "" {
+		teamID = string(caps.parentSessionID) + "-" + string(call.ID)
+	}
+	tm := team.New(teamID)
+	factory := func(spec MemberSpec, routedModel string) MemberBuild { return t.factory(tm, spec, routedModel) }
+	opts := []SupervisorOption{
+		WithTeamGoal(args.Goal),
+		WithMemberSessionPrefix(memberSessionIDPrefix + teamID),
+	}
+	if t.forker != nil {
+		opts = append(opts, WithForker(t.forker))
+	}
+	if t.roForker != nil {
+		opts = append(opts, WithReadOnlyForker(t.roForker))
+	}
+	if t.sharedBaseWS != nil {
+		opts = append(opts, WithTeamSharedBaseWorkspace(t.sharedBaseWS))
+	}
+	if t.hooks != nil {
+		opts = append(opts, WithTeamHooks(t.hooks))
+	}
+	if t.store != nil {
+		opts = append(opts, WithMemberStore(t.store))
+	}
+	if budget := tightenLimit(t.tokenBudget, args.MaxTeamTokens); budget > 0 {
+		opts = append(opts, WithTeamTokenBudget(budget))
+	}
+	if caps.authority != nil {
+		parentAuthority, err := caps.authority()
+		if err != nil {
+			return nil, nil, "", nil, fmt.Errorf("invalid parent authority: %w", err)
+		}
+		opts = append(opts, withTeamAuthority(parentAuthority))
+	}
+	// A member ask is routed through the parent without adding a wire surface.
+	opts = append(opts, withParentCaps(caps))
+	sup := NewSupervisor(tm, env, factory, opts...)
+	roster := teamRoster(args.Members)
+	for i, spec := range memberSpecs(args.Members) {
+		if err := sup.AddMember(ctx, spec); err != nil {
+			sup.cleanupAll()
+			return nil, nil, "", nil, fmt.Errorf("forming team failed at member %d (%q): %w", i, spec.Name, err)
+		}
+	}
+	return sup, tm, teamID, roster, nil
 }
 
 // renderTeamResult prepends a machine-extractable team-id line so the parent MODEL

@@ -263,7 +263,7 @@ func demoAuthorityBashDenied(ctx context.Context, authority governance.Authority
 		LLM: provider, Catalog: catalog, Authority: authority,
 		Policy: permpolicy.NewPolicy(permpolicy.AllowAllFloorRules(), nil), Model: demoModel,
 	})
-	run := engine.Run(ctx, session.New("demo-authority-run", session.ModeDefault, demoWorkspaceRoot, session.Limits{}, time.Unix(0, 0).UTC()), memfs.NewWorkspace(demoWorkspaceRoot), agent.RunRequest{Text: "Try Bash."})
+	run := engine.Run(ctx, session.New("demo-authority-run", session.ModeDefault, demoWorkspaceRoot, session.Limits{}, time.Unix(0, 0).UTC()), tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: demoWorkspaceRoot}, memfs.NewWorkspace(demoWorkspaceRoot), nil), agent.RunRequest{Text: "Try Bash."})
 	for event := range run.Events() {
 		if event.Type == session.EvToolResult && event.ToolResult != nil && event.ToolResult.CallID == "authority-bash" {
 			denied = event.ToolResult.IsError && strings.Contains(event.ToolResult.Content, "authority")
@@ -294,7 +294,7 @@ func authorityToolProjection(authority governance.Authority) []string {
 
 func (t demoAuthorityTool) Spec() tool.ToolSpec { return tool.ToolSpec{Name: t.name} }
 func (demoAuthorityTool) ReadOnly() bool        { return true }
-func (t demoAuthorityTool) Execute(_ context.Context, in session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
+func (t demoAuthorityTool) Execute(_ context.Context, in session.ToolCall, _ tool.Environment) (session.ToolResult, error) {
 	return session.NewToolResult(in.ID, t.name+" executed"), nil
 }
 

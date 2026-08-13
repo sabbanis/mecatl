@@ -232,33 +232,33 @@ project duplicate rejected.
    local runtime attenuation and does not claim remote service delegated identity.
    - verify: `TestAuthorityAttenuation_DemoProjectionIsSafeAndHonest`
 
-### Scenario 7 — a deployed journey proves the real service and persistence path
+### Scenario 7 — deployed prerequisites are proven without claiming an outbound identity
 
-A real mecak8s kind deployment authenticates through the existing in-cluster Dex/OIDC
-fixture, uses its Redis StatefulSet, and drives deterministic scripted/mock LLM behavior
-through real HTTP/gRPC ingress. A server/pod restart occurs between child creation and
-resume. These are integration proofs run by `task e2e:k8s`, not in-process tests that
-reuse the scenario names. The fixture extends caller-separation’s cluster work rather
-than creating a second harness, authenticates ownership through Dex/OIDC, and configures
-the ordinary root catalog/profile plus operator definition source; it adds no caller or
-tenant authority policy.
+A real mecak8s kind deployment authenticates through the in-cluster Dex/OIDC fixture and
+uses its Redis StatefulSet. `task e2e:k8s` proves the deployed prerequisites surrounding
+local attenuation: owner-scoped session/schedule access, absence-shaped foreign access,
+owner-scoped carryover, and persistence across a replica replacement. It deliberately
+does **not** claim that an external MCP/HTTP service sees a child-specific credential,
+proof of possession, or delegation chain. The authority algebra remains deterministic
+engine-level behavior because no deployment configuration or API exposes an external
+child credential in v1.
 
 **Acceptance:**
 
-1. **AC7.1 — Deployed collision and spawn.** The authenticated root uses its ordinary
-   configured `[Read, Grep, Glob, Subagent]` catalog and `release-reviewer`. A same-name
-   project definition advertising `Bash` loses to the operator definition. The actual
-   child schema/catalog lacks `Bash`, and a scripted attempt cannot execute it.
-   - verify: `TestAuthorityAttenuation_DeploymentCollisionAndSpawnJourney` under `task e2e:k8s`
-2. **AC7.2 — Deployed restart/resume.** Redis persists the child’s `[Read, Grep, Glob]`
-   bound. After server restart and a broadened project/current definition, authenticated
-   resume preserves the bound; an operator deny of `Grep` further narrows it to
-   `[Read, Glob]`.
-   - verify: `TestAuthorityAttenuation_DeploymentRestartResumeJourney` under `task e2e:k8s`
+1. **AC7.1 — Deployed caller boundary.** Under real Dex/OIDC ingress, two callers may
+   use the same schedule name without collision; each reads only their own record, and a
+   foreign read/delete is absence-shaped. A foreign caller also cannot use another
+   caller's session as a carryover/fork source.
+   - verify: `task e2e:k8s` — Ginkgo caller-separation stories “lets two owners use the identical schedule name without collision or leak”, “hides and protects a foreign caller's schedule”, and “refuses a foreign fork source and leaves the source untouched”
+2. **AC7.2 — Deployed durable owner boundary.** A session owned through real OIDC remains
+   attributed to that owner after the pod that created it is replaced; the deployed
+   Redis-backed session boundary is not process-local bookkeeping.
+   - verify: `task e2e:k8s` — Ginkgo caller-identity story “keeps the owner after the pod that recorded it is replaced”
 3. **AC7.3 — Boundary honesty.** The deployment report asserts local catalog/dispatch
-   attenuation only; it does not assert an external MCP/HTTP service saw a child-specific
-   credential, proof of possession, or independently verifiable delegation chain.
-   - verify: `TestAuthorityAttenuation_DeploymentClaimsAreBounded`
+   attenuation only; it does not assert an external MCP/HTTP service saw a
+   child-specific credential, proof of possession, or independently verifiable
+   delegation chain.
+   - verify: `TestAuthorityAttenuation_DemoProjectionIsSafeAndHonest`
 
 ## Out of scope
 

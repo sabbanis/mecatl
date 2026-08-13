@@ -28,8 +28,8 @@
     method func (*Session).Reopen() error
     method func (*Session).ReplaceHistory(messages []Message) error
     method func (*Session).ResetUsage() error
-    method func (*Session).RestoreLabels(owner *Principal, authority Authority) error
     method func (*Session).RestoreAuthorityBound(authority string, definitionIdentity string, compatibilityOnly bool) error
+    method func (*Session).RestoreLabels(owner *Principal, authority Authority) error
     method func (*Session).ResumeWith() (PendingAsk, error)
     method func (*Session).SeedHistory(messages []Message) error
     method func (*Session).SetMode(mode PermissionMode) error

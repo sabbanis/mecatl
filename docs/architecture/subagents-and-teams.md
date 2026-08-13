@@ -30,9 +30,9 @@ lower-tier definition from supplying a different ceiling.
 This is **local runtime attenuation only**. It does not issue a credential, establish
 remote delegated identity, or prove a downstream service received a child-specific
 identity. The offline `mecademo` authority act demonstrates the local catalog and
-dispatch behaviour. A deployed Dex/OIDC/Redis journey is not currently present on this
-branch: it depends on the caller-separation branch and its authenticated kind fixture,
-which is not an ancestor of this branch. It must not be inferred from the offline demo.
+dispatch behaviour. The kind suite reuses the Dex/OIDC/Redis caller-separation fixture
+to prove its deployment prerequisites (authenticated ownership and restart-persistent
+state), but it does not turn those facts into an external delegated-credential claim.
 
 1. **Workspace selection.** When a child forker is wired (`WithChildForker` — the
    composition root wires it **iff** the child catalog includes Bash) it forks the
