@@ -117,6 +117,16 @@ three additional specs run real multi-second model turns through the pods, provi
 the Redis snapshot, and the drain gate hold under a live LLM stream (not just the mock's instant
 completion). The live specs `Skip` without the key; the mock suite is unaffected either way.
 
+#### Authority attenuation deployment status
+
+The current kind suite does **not** include Dex/OIDC authentication, caller separation, or an
+authority-attenuation child spawn/resume journey. The local authority ceiling is covered by the
+offline `mecademo` act and unit tests; it does not demonstrate a downstream delegated identity.
+The planned deployed proofs require the caller-separation branch's authenticated fixture. That
+branch is not in this branch's history, so no `task e2e:k8s` authority claim is made here. Do
+not treat the existing Redis persistence test as proof that an authenticated child resume cannot
+widen its authority.
+
 #### Honest shutdown contract
 
 On SIGTERM (or the `preStop` `httpGet /drain`) the drain gate arms (`/readyz` → false, the

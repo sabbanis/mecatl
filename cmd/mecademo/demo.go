@@ -13,11 +13,13 @@ import (
 	"strings"
 	"time"
 
+	"github.com/stacklok/mecatl/engine/adapter/agentfs"
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/adapter/permstore"
+	"github.com/stacklok/mecatl/engine/adapter/sessnap"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/port"
@@ -41,6 +43,12 @@ const demoFileContent = "hello from the mecatl demo workspace\n"
 // demoModel is the default model identifier stamped into requests and the
 // prompt env when the caller does not override it (the offline mockllm path).
 const demoModel = "mock-model"
+
+const (
+	demoAuthorityRead = "Read"
+	demoAuthorityGrep = "Grep"
+	demoAuthorityBash = "Bash"
+)
 
 // RunScenario drives one full offline session against the provided LLMProvider
 // and returns every emitted session.Event in order. The caller supplies the
@@ -87,6 +95,209 @@ func RunScenario(ctx context.Context, provider port.LLMProvider, model string) (
 	return events, nil
 }
 
+// AuthorityAttenuationJourney is the concise, safe projection of the authority
+// demo. It contains capability names and collision outcomes only.
+type AuthorityAttenuationJourney struct {
+	RootTools                  []string
+	ReviewerTools              []string
+	ChildTools                 []string
+	RestartedChildTools        []string
+	OperatorNarrowedChildTools []string
+	BashAdvertised             bool
+	BashDenied                 bool
+	OperatorDefinitionSelected bool
+	ProjectDuplicateRejected   bool
+}
+
+// AuthorityAttenuationDemoProjection describes only the locally enforced
+// capability boundary. It intentionally does not represent any remote identity.
+func AuthorityAttenuationDemoProjection() string {
+	return "local runtime attenuation; does not establish remote delegated identity; operator reviewer selected; project duplicate rejected"
+}
+
+// RunAuthorityAttenuationScenario drives a deterministic, offline authority
+// journey. It derives a child bound, proves a stale Bash call is filtered and
+// denied by the real loop, round-trips the child bound through sessnap, proves a
+// broader definition cannot widen it, and applies an operator-only narrowing.
+func RunAuthorityAttenuationScenario(ctx context.Context) (AuthorityAttenuationJourney, error) {
+	root, err := governance.NewAuthority(governance.AuthoritySpec{
+		Tools: []string{demoAuthorityRead, demoAuthorityGrep, "Subagent"}, Delegates: []string{"reviewer"}, MaxDelegationDepth: 1,
+		Profile: governance.AuthorityProfile{FileSystem: true, Isolated: true},
+	})
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("root authority: %w", err)
+	}
+	reviewer, err := governance.NewAuthority(governance.AuthoritySpec{
+		Tools: []string{demoAuthorityRead, demoAuthorityGrep, demoAuthorityBash}, MaxDelegationDepth: 1,
+		Profile: governance.AuthorityProfile{FileSystem: true, Isolated: true},
+	})
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("reviewer authority: %w", err)
+	}
+	child, err := agent.DeriveChildAuthority(root, reviewer, governance.UnrestrictedAuthority())
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("derive child authority: %w", err)
+	}
+	child, err = child.Descend()
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("descend child authority: %w", err)
+	}
+	childBound, err := child.Canonical()
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("canonical child authority: %w", err)
+	}
+
+	persisted := session.New("demo-authority-child", session.ModeDefault, demoWorkspaceRoot, session.Limits{}, time.Unix(0, 0).UTC())
+	if err := persisted.BindAuthority(childBound, "operator:reviewer"); err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("bind child authority: %w", err)
+	}
+	snapshot, err := sessnap.Of(persisted)
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("snapshot child authority: %w", err)
+	}
+	restored, err := snapshot.Restore()
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("restore child authority: %w", err)
+	}
+	restoredBound, _, compatibilityOnly := restored.AuthorityBound()
+	if compatibilityOnly {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("restored child unexpectedly used compatibility authority")
+	}
+	restarted, err := governance.ParseAuthority(restoredBound)
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("parse restored child authority: %w", err)
+	}
+	broaderDefinition, err := governance.NewAuthority(governance.AuthoritySpec{
+		Tools: []string{demoAuthorityRead, demoAuthorityGrep, demoAuthorityBash}, MaxDelegationDepth: 1,
+		Profile: governance.AuthorityProfile{FileSystem: true, Isolated: true},
+	})
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("broader definition: %w", err)
+	}
+	restartedAfterBroaderDefinition, err := restarted.Intersect(broaderDefinition)
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("apply broader definition: %w", err)
+	}
+	revocation, err := governance.NewAuthority(governance.AuthoritySpec{
+		Tools: []string{demoAuthorityRead}, Profile: governance.AuthorityProfile{FileSystem: true, Isolated: true},
+	})
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("operator revocation: %w", err)
+	}
+	narrowed, err := restartedAfterBroaderDefinition.Intersect(revocation)
+	if err != nil {
+		return AuthorityAttenuationJourney{}, fmt.Errorf("narrow restored child authority: %w", err)
+	}
+
+	bashAdvertised, bashDenied, err := demoAuthorityBashDenied(ctx, child)
+	if err != nil {
+		return AuthorityAttenuationJourney{}, err
+	}
+	operatorDefinitionSelected, projectDuplicateRejected, err := demoAuthorityDefinitionCollision(ctx)
+	if err != nil {
+		return AuthorityAttenuationJourney{}, err
+	}
+	return AuthorityAttenuationJourney{
+		RootTools:                  authorityToolProjection(root),
+		ReviewerTools:              authorityToolProjection(reviewer),
+		ChildTools:                 authorityToolProjection(child),
+		RestartedChildTools:        authorityToolProjection(restartedAfterBroaderDefinition),
+		OperatorNarrowedChildTools: authorityToolProjection(narrowed),
+		BashAdvertised:             bashAdvertised,
+		BashDenied:                 bashDenied,
+		OperatorDefinitionSelected: operatorDefinitionSelected,
+		ProjectDuplicateRejected:   projectDuplicateRejected,
+	}, nil
+}
+
+func demoAuthorityDefinitionCollision(ctx context.Context) (operatorSelected, projectRejected bool, err error) {
+	operator := tool.AgentDef{
+		Name: "reviewer", Origin: tool.AgentOriginOperator,
+		AuthorityCeiling: authorityCeiling(`{"v":1,"kind":"restricted","tools":["Grep","Read"],"delegates":[],"depth":1,"profile":{"filesystem":true,"direct_write":false,"isolated":true}}`),
+	}
+	project := tool.AgentDef{
+		Name: "reviewer", Origin: tool.AgentOriginProject,
+		AuthorityCeiling: authorityCeiling(`{"v":1,"kind":"restricted","tools":["Bash","Grep","Read"],"delegates":[],"depth":1,"profile":{"filesystem":true,"direct_write":false,"isolated":true}}`),
+	}
+	defs, skips, err := agentfs.NewMultiSource(
+		demoAuthorityDefinitionSource{defs: []agentfs.Discovered{{Def: operator, Detail: "operator-configured"}}},
+		demoAuthorityDefinitionSource{defs: []agentfs.Discovered{{Def: project, Detail: "project/.claude/agents/reviewer.md"}}},
+	).Agents(ctx)
+	if err != nil {
+		return false, false, fmt.Errorf("resolve definition collision: %w", err)
+	}
+	operatorSelected = len(defs) == 1 && defs[0].Def.Origin == tool.AgentOriginOperator && defs[0].Def.AuthorityCeiling == operator.AuthorityCeiling
+	projectRejected = len(skips) == 1 && skips[0].Fatal && strings.Contains(skips[0].Reason, "operator definition takes precedence")
+	if !operatorSelected || !projectRejected {
+		return operatorSelected, projectRejected, fmt.Errorf("operator/project collision did not resolve safely")
+	}
+	return operatorSelected, projectRejected, nil
+}
+
+type demoAuthorityDefinitionSource struct{ defs []agentfs.Discovered }
+
+func (s demoAuthorityDefinitionSource) Agents(context.Context) ([]agentfs.Discovered, []agentfs.SkipError, error) {
+	return s.defs, nil, nil
+}
+
+func authorityCeiling(raw string) *tool.AgentAuthorityCeiling {
+	ceiling := tool.AgentAuthorityCeiling(raw)
+	return &ceiling
+}
+
+func demoAuthorityBashDenied(ctx context.Context, authority governance.Authority) (advertised, denied bool, err error) {
+	catalog := tool.NewCatalog()
+	for _, name := range []string{demoAuthorityRead, demoAuthorityGrep, demoAuthorityBash} {
+		catalog.MustRegister(demoAuthorityTool{name: name})
+	}
+	var advertisedTools []string
+	provider := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(req port.LLMRequest) {
+		for _, spec := range req.Tools {
+			advertisedTools = append(advertisedTools, spec.Name)
+		}
+	})},
+		mockllm.ToolCallTurn(session.NewToolCall("authority-bash", demoAuthorityBash, json.RawMessage(`{"command":"git status"}`))),
+		mockllm.TextTurn("Bash was correctly denied."),
+	)
+	engine := agent.NewEngine(agent.Deps{
+		LLM: provider, Catalog: catalog, Authority: authority,
+		Policy: permpolicy.NewPolicy(permpolicy.AllowAllFloorRules(), nil), Model: demoModel,
+	})
+	run := engine.Run(ctx, session.New("demo-authority-run", session.ModeDefault, demoWorkspaceRoot, session.Limits{}, time.Unix(0, 0).UTC()), memfs.NewWorkspace(demoWorkspaceRoot), agent.RunRequest{Text: "Try Bash."})
+	for event := range run.Events() {
+		if event.Type == session.EvToolResult && event.ToolResult != nil && event.ToolResult.CallID == "authority-bash" {
+			denied = event.ToolResult.IsError && strings.Contains(event.ToolResult.Content, "authority")
+		}
+	}
+	for _, name := range advertisedTools {
+		if name == demoAuthorityBash {
+			advertised = true
+		}
+	}
+	if !denied {
+		return advertised, false, fmt.Errorf("stale Bash call was not denied by authority")
+	}
+	return advertised, denied, nil
+}
+
+type demoAuthorityTool struct{ name string }
+
+func authorityToolProjection(authority governance.Authority) []string {
+	var names []string
+	for _, name := range []string{demoAuthorityRead, demoAuthorityGrep, "Glob", "Subagent", demoAuthorityBash} {
+		if authority.AllowsTool(name) {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+func (t demoAuthorityTool) Spec() tool.ToolSpec { return tool.ToolSpec{Name: t.name} }
+func (demoAuthorityTool) ReadOnly() bool        { return true }
+func (t demoAuthorityTool) Execute(_ context.Context, in session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
+	return session.NewToolResult(in.ID, t.name+" executed"), nil
+}
+
 // buildEngine assembles the agent.Engine for the demo with the always-available
 // tool catalog (the demo exercises only Read/Write, so it runs shell-less: no
 // Bash tool is registered), the default deny/ask/allow policy (Read auto-allowed,
@@ -98,7 +309,7 @@ func buildEngine(provider port.LLMProvider, model string) *agent.Engine {
 	}
 
 	policy := permpolicy.NewPolicy([]governance.Rule{
-		{Scope: governance.ScopeManaged, Tool: "Read", Effect: governance.Allow},
+		{Scope: governance.ScopeManaged, Tool: demoAuthorityRead, Effect: governance.Allow},
 		{Scope: governance.ScopeManaged, Tool: "Grep", Effect: governance.Allow},
 		{Scope: governance.ScopeManaged, Tool: "Glob", Effect: governance.Allow},
 		{Scope: governance.ScopeManaged, Tool: "Write", Effect: governance.Ask},
@@ -136,7 +347,7 @@ func buildEngine(provider port.LLMProvider, model string) *agent.Engine {
 func mockProvider() *mockllm.Provider {
 	readCall := session.NewToolCall(
 		"call-read-1",
-		"Read",
+		demoAuthorityRead,
 		json.RawMessage(fmt.Sprintf(`{"path":%q}`, demoFilePath)),
 	)
 	writeCall := session.NewToolCall(

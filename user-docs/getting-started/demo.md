@@ -126,6 +126,22 @@ This example only works offline. It will be disabled if you configure a live LLM
 
 :::
 
+## Act 4 — local authority attenuation
+
+The final offline act derives a reviewer child from a root `[Read Grep Subagent]`
+ceiling. Although the reviewer definition advertises `[Read Grep Bash]`, the derived
+child is `[Read Grep]`: Bash is absent from its offered tools and a stale Bash call is
+denied. The demo then round-trips that child bound through the snapshot, shows that a
+broadened definition does not widen it, and applies an operator narrowing to `[Read]`.
+It also reports the safe outcome of a same-name definition collision: the operator
+reviewer is selected and the project duplicate is rejected.
+
+This is a local harness guarantee, not an external identity protocol. It does not issue
+a credential or establish remote delegated identity. There is currently no deployed
+Dex/OIDC/Redis authority journey in `task e2e:k8s`: it requires the caller-separation
+branch's authenticated fixture, which is not included here. The existing kind suite's
+Redis persistence proof must not be read as that missing authority proof.
+
 ## Run it live (optional)
 
 Drive the same scenario against a real model:

@@ -10,6 +10,30 @@
 
 `SubagentTool` is a `tool.Tool` (catalog name `Subagent`) that delegates a focused,
 self-contained task (multi-step investigation or build/test/git work) to a **child agent loop**. Its `Execute`:
+
+## Local authority attenuation
+
+[ADR 0105](../adr/0105-authority-attenuation.md) binds a local capability ceiling to a
+new run. A child is derived before it acquires a catalog, workspace, runner, or
+background slot:
+
+```text
+child = parent ∩ resolved definition ceiling ∩ call tightening
+```
+
+The resulting ceiling filters the child catalog and remains a dispatch backstop, so a
+stale call to an excluded tool is denied. The persisted child bound is resumed as a
+ceiling and may be narrowed by current operator revocation; a later definition cannot
+broaden it. Operator-owned definition names win over project duplicates, preventing a
+lower-tier definition from supplying a different ceiling.
+
+This is **local runtime attenuation only**. It does not issue a credential, establish
+remote delegated identity, or prove a downstream service received a child-specific
+identity. The offline `mecademo` authority act demonstrates the local catalog and
+dispatch behaviour. A deployed Dex/OIDC/Redis journey is not currently present on this
+branch: it depends on the caller-separation branch and its authenticated kind fixture,
+which is not an ancestor of this branch. It must not be inferred from the offline demo.
+
 1. **Workspace selection.** When a child forker is wired (`WithChildForker` — the
    composition root wires it **iff** the child catalog includes Bash) it forks the
    incoming `ws` into an **isolated git worktree** (the forker DEFAULT mode — shares

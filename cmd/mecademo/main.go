@@ -73,6 +73,20 @@ func main() {
 		for _, n := range notes {
 			fmt.Println(n)
 		}
+
+		fmt.Println()
+		fmt.Println("=== authority attenuation demo (offline) ===")
+		journey, aerr := RunAuthorityAttenuationScenario(context.Background())
+		if aerr != nil {
+			fmt.Fprintln(os.Stderr, "mecademo authority:", aerr)
+			os.Exit(1)
+		}
+		fmt.Printf("root: [%s] delegate:reviewer\n", strings.Join(journey.RootTools, " "))
+		fmt.Printf("reviewer ceiling: [%s]\n", strings.Join(journey.ReviewerTools, " "))
+		fmt.Printf("derived child: [%s]; Bash advertised=%t denied=%t\n", strings.Join(journey.ChildTools, " "), journey.BashAdvertised, journey.BashDenied)
+		fmt.Printf("after restart and broader definition: [%s]\n", strings.Join(journey.RestartedChildTools, " "))
+		fmt.Printf("after operator deny: [%s]\n", strings.Join(journey.OperatorNarrowedChildTools, " "))
+		fmt.Println(AuthorityAttenuationDemoProjection())
 	}
 }
 

@@ -59,6 +59,57 @@ func TestRunScenarioOffline(t *testing.T) {
 	assertApprovalResumed(t, events)
 }
 
+func TestAuthorityAttenuation_DemoProjectionIsSafeAndHonest(t *testing.T) {
+	projection := AuthorityAttenuationDemoProjection()
+	for _, forbidden := range []string{"credential", "header", "claim", "token", "oidc", "remote service delegated identity"} {
+		if strings.Contains(strings.ToLower(projection), forbidden) {
+			t.Errorf("demo projection leaked or overclaimed %q: %q", forbidden, projection)
+		}
+	}
+	for _, want := range []string{
+		"local runtime attenuation",
+		"does not establish remote delegated identity",
+		"operator reviewer selected; project duplicate rejected",
+	} {
+		if !strings.Contains(projection, want) {
+			t.Errorf("demo projection missing %q: %q", want, projection)
+		}
+	}
+}
+
+func TestMecademoAuthorityAttenuationJourney(t *testing.T) {
+	journey, err := RunAuthorityAttenuationScenario(context.Background())
+	if err != nil {
+		t.Fatalf("RunAuthorityAttenuationScenario: %v", err)
+	}
+	if got, want := strings.Join(journey.RootTools, " "), "Read Grep Subagent"; got != want {
+		t.Errorf("root tools = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(journey.ReviewerTools, " "), "Read Grep Bash"; got != want {
+		t.Errorf("reviewer ceiling = %q, want %q", got, want)
+	}
+	for _, got := range []string{
+		strings.Join(journey.ChildTools, " "),
+		strings.Join(journey.RestartedChildTools, " "),
+	} {
+		if got != "Read Grep" {
+			t.Errorf("child authority widened: %q, want %q", got, "Read Grep")
+		}
+	}
+	if got, want := strings.Join(journey.OperatorNarrowedChildTools, " "), "Read"; got != want {
+		t.Errorf("operator narrowing = %q, want %q", got, want)
+	}
+	if journey.BashAdvertised {
+		t.Error("Bash was advertised despite being outside the derived child authority")
+	}
+	if !journey.BashDenied {
+		t.Error("stale Bash call was not denied by authority before execution")
+	}
+	if !journey.OperatorDefinitionSelected || !journey.ProjectDuplicateRejected {
+		t.Errorf("collision resolution = operator selected %t, project rejected %t; want both true", journey.OperatorDefinitionSelected, journey.ProjectDuplicateRejected)
+	}
+}
+
 // TestRunTeamScenarioOffline runs the demo's offline team scenario and asserts the
 // outcome is the lead's CONSOLIDATED synthesis (the team's deliverable), not a bare
 // per-member concatenation — proving the new aggregation shape end to end.
