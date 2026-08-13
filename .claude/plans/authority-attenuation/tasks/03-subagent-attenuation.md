@@ -2,8 +2,8 @@
 id: 03-subagent-attenuation
 title: Subagent derivation, catalog filtering, and dispatch backstop
 blocked_by: [01-authority-domain, 02-root-and-definitions]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-attenuation/03-subagent-attenuation"
 worktree: ""
 issue: "371"
 retries: 0
