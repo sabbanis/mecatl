@@ -152,6 +152,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0032 — First-class worktree binding for a session](./0032-worktree-binding.md)
 - [0087 — Staged mecatui transport migration](./0087-mecatui-staged-transport-migration.md) *(superseded by 0089)*
 - [0088 — Explicit daemon.yaml (listener topology config)](./0088-daemon-config-file.md)
+- [0110 — Mecatl Studio as an in-repo module](./0110-studio-module.md)
 
 ### Retired
 - [0029 — Repo-map tree-sitter](./0029-repomap-tree-sitter.md) *(retired)*
