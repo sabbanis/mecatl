@@ -160,6 +160,9 @@ flowchart LR
     svc["Service (lifecycle + Run registry)\nauth/mTLS · rate limit · health"]
   end
 
+  studio["studio/ (local web client; Node, not a Go module)\nconsumes the PUBLIC HTTP/SSE surface only"]
+  studio --> http
+
   subgraph APP["application — engine/agent"]
     engine["Engine / Run\nloop · dispatch · permission · hooks\ncompaction · cascade · tokencount\nsubagent (Subagent) · parallel (Parallel)"]
   end
@@ -287,6 +290,25 @@ flag and its `MCP_<NAME>_TOKEN` bearer convention through the same package
 (`cliconfig.MCPServerList`, ADR 0082) — a scheduler launching one-shot runs injects a
 short-lived per-run identity as the token env and the run presents it to that MCP
 endpoint.
+
+**Mecatl Studio — the local web client (`studio/`).** The third first-party client,
+alongside `mecatui` in the terminal and the ACP editor surface. It is NOT a composition
+root and NOT a Go module: it is a Node application (a React/vinext app plus a small Node
+supervisor) that consumes the **public HTTP/SSE surface** `mecated` already serves on
+loopback, through a same-origin worker proxy — so it imports nothing from `engine/` or
+`internal/` and adds no Go dependency. Its supervisor (`studio/scripts/local-controller.mjs`,
+on `127.0.0.1:8788`) spawns and restarts `bin/mecated` against the repo root as the
+workspace, owns provider selection (an explicitly connected OpenRouter key outranks an
+auto-detected ToolHive LLM gateway, which outranks the offline mock) and the MCP-gateway
+OAuth exchange, and reports the resolved workspace on `/status` — the client never
+hardcodes a path. Beyond the chat transcript with tool-call and approval cards, it renders
+the oversight surfaces that are awkward in a terminal: the semantic model router, the
+project-scoped skill list, a READ-ONLY view of both memory stores (index only, never
+values — mecatl curates memory through injection-scanned tool calls, and a hand-typed
+value would reach turn-0 context without passing that check), and the schedule registry
+with pause/resume/fire-now/delete. It lives in this repo so a change to the HTTP/SSE
+surface breaks it on a PR rather than in a user's afternoon; see
+`docs/adr/0110-studio-module.md` and `studio/CLAUDE.md`.
 
 **mecak8s — the storage-free Kubernetes-native agent (`cmd/mecak8s`).** A fifth
 composition root and a *thin peer of `mecated`* over the same `app.Build`: it composes the
