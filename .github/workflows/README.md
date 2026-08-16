@@ -1,6 +1,6 @@
 # GitHub Actions workflows for mecatl
 
-Seven workflows live here. Every **third-party** action is **SHA-pinned** with a
+The workflows here keep every **third-party** action **SHA-pinned** with a
 `# vX.Y.Z` comment so a re-pointed tag from a compromised maintainer cannot
 silently change what runs. Pins track the Stacklok house set used in
 `a downstream consumer`. The lone exception is documented and deliberate: the reusable
@@ -23,6 +23,14 @@ superseded runs cancelled via `concurrency`):
 | `test` | `go test -race ./...` |
 | `lint` | `golangci-lint` (v2) + `go vet ./...` + `actionlint` (workflow lint, pinned via `go run`) + the reusable-workflow pin check + the empty-expression (action-templates) check + the mecatequi composite-action shell tests |
 | `fuzz-smoke` | `task fuzz FUZZTIME=20s` — short coverage-guided pass over the security-critical parsers (not the nightly deep fuzz) |
+
+## `studio.yml` — Studio changes on PRs and `main`
+
+Path-scoped to `studio/**` and the workflow itself. It installs the Node version
+pinned by `studio/.nvmrc`, then builds, behavior-tests, lints, type-checks, and
+runs `npm audit --audit-level=high`. Keeping this in a separate workflow avoids
+coupling the Node client to the Go job matrix and lets unrelated PRs skip the npm
+install entirely.
 
 Go is provisioned by `actions/setup-go` from `go.mod` with the module cache
 enabled; `GOTOOLCHAIN=local` prevents a surprise toolchain download.
