@@ -2,12 +2,12 @@
 id: 01-authority-domain
 title: Canonical authority bound and snapshot persistence
 blocked_by: []
-status: pending
-branch: ""
+status: blocked
+branch: "plan-authority-attenuation-reconciliation/01-authority-domain"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: ""
+last_error: "The existing authority implementation (c673a30b) conflicts across core session, snapshot, agent, server, and API surfaces when applied to current main; it needs a manual reconciliation task decomposition."
 accumulator: acc/authority-attenuation-reconciliation
 ---
 
