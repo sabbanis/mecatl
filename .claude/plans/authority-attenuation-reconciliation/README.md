@@ -1,0 +1,13 @@
+# Authority attenuation reconciliation plan state
+
+Accumulator: `acc/authority-attenuation-reconciliation`
+
+This is a local-only execution: task branches merge into the accumulator, but are never pushed and no PR is created. The acceptance contract is `docs/acceptance/authority-attenuation-reconciliation.md`.
+
+| Task | Depends on | Covers |
+|---|---|---|
+| 01-authority-domain | — | AC1.1–1.4, AC7.1 |
+| 02-root-event-fork | 01-authority-domain | AC2.3–2.4, AC6.4, AC7.2–7.4 |
+| 03-catalog-environment | 01-authority-domain | AC2.1–2.2, AC3.1–3.4, AC4.1–4.4 |
+| 04-managed-definitions | 01-authority-domain | AC5.1–5.4 |
+| 05-delegation-docs | 02-root-event-fork, 03-catalog-environment, 04-managed-definitions | AC6.1–6.3 and living documentation |
