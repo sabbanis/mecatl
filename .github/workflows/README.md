@@ -1,6 +1,6 @@
 # GitHub Actions workflows for mecatl
 
-The workflows here keep every **third-party** action **SHA-pinned** with a
+Seven workflows live here. Every **third-party** action is **SHA-pinned** with a
 `# vX.Y.Z` comment so a re-pointed tag from a compromised maintainer cannot
 silently change what runs. Pins track the Stacklok house set used in
 `a downstream consumer`. The lone exception is documented and deliberate: the reusable
