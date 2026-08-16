@@ -27,14 +27,63 @@ transport is **streaming-HTTP only** (the project's hard constraint): the
 stdio/command transport is never used, so no MCP server is ever `os/exec`-spawned.
 `mcp.Connect` / `mcp.NewManager` dial the configured servers, and the discovered
 tools are registered into the catalog **namespaced** `mcp__<server>__<tool>` so a
-remote tool can never collide with or shadow a built-in. A dropped session (server
-restart / 404 / closed transport) is re-established transparently with a single
-bounded reconnect attempt per call, serialized under a mutex — see
-[ADR 0056](../adr/0056-mcp-client-reconnect.md). The client also holds the
+remote tool can never collide with or shadow a built-in. Concrete session loss
+(server restart, plain missing-session 404, closed transport, EOF, or refused
+connection) is re-established transparently with a single bounded reconnect
+attempt per call, serialized under a mutex. A structured JSON-RPC 400/404 or HTTP
+429/502/503/504 is instead a one-call failure: the live session is retained and
+the operation is never replayed automatically. See
+[ADR 0056](../adr/0056-mcp-client-reconnect.md) and
+[ADR 0223](../adr/0223-mcp-sdk-transport-error-semantics.md). The client also holds the
 **standalone SSE GET stream** open per connected server, so server-initiated
 `notifications/{tools,prompts,resources}/list_changed` invalidate the cached
 snapshots (lazily re-listed on the next read); live catalog refresh is
 deferred to a later phase — see [ADR 0057](../adr/0057-mcp-server-notifications.md).
+
+The adapter optionally owns an authorization-code `OAuthController` when an embedding
+supplies `ServerConfig.OAuth`. One official SDK handler, durable credential source,
+authorization singleflight, and dedicated hardened HTTP client live for the whole
+`Server` lifetime and survive MCP session reconnects. Preregistered confidential and CIMD
+clients are supported; DCR is rejected by omission because the SDK exposes no durable
+registration hook. A nil presenter fails protected-server login immediately. An explicitly
+constructed stdlib-only `mcp/oauthlogin` runtime can instead own one serialized, random-path
+IPv4-loopback callback interaction. `internal/app.LoginMCP` bridges that runtime to a copy
+of one already-resolved OAuth `ServerConfig`, calls the real `mcp.Connect`, requires
+initialize and initial tool listing to succeed, and immediately closes the temporary
+server/controller while leaving the borrowed credential store open. The callback converts
+only code/state/issuer; the controller and official SDK retain their issuer/state checks,
+discovery, PKCE, exchange, and durable CAS. OAuth traffic is exact-origin allowlisted, DNS-resolved and pinned, and blocks
+loopback, link-local, metadata, unspecified, multicast, mapped, and other special destinations unconditionally.
+An exact `private_origins` opt-in admits only RFC1918 IPv4 or ULA IPv6 answers; every DNS answer must remain in that
+class. The adapter ignores
+proxies, and follows only bounded same-origin safe redirects. Discovery GETs may reach the
+resource/additional origins, but the presenter and protocol transport permit codes, tokens,
+client authentication, and token exchanges only at the canonical configured issuer origin;
+preregistered confidential clients require Basic and `client_secret_post` is denied before
+network send. The shipped roots resolve strict operator-tier `mcp.servers` profiles
+through one loader: `none`, environment-referenced `static_bearer`, or OAuth backed by a
+mutable encrypted local Store or read-only environment Reader. Normal serving and ACP
+never install a presenter. Only `mecated mcp login SERVER [--no-browser]
+[--permission-config PATH ...]` authorizes a local Store; the repeatable permission-config
+option selects trusted operator settings only and never carries OAuth values. Environment
+credentials are preprovisioned and picked up after restart. The
+combined path is guarded offline through operator resolution → explicit login → encrypted
+store close/reopen → `app.Build` global catalog → model tool call → lazy refresh rotation →
+second process restart → real dropped-session reconnect. The same gate verifies manager-before-
+profile-source teardown and scans diagnostics, errors, model-facing results, and generated
+configuration projections for distinct secret canaries. Headless startup with a clean store
+fails soft with a login remedy and no presenter; ACP consumes the already-built catalog and
+cannot provide OAuth profiles or authorize. After operator authorization, ACP sessions may
+invoke the shared global OAuth-backed tools under ordinary permissions.
+OAuth remains unavailable to per-session/inline/discovered MCP, and DCR remains
+unsupported. The ordinary MCP client has an OAuth-mode-only exact-resource capability and
+cross-origin redirect gate so its audience-bound bearer cannot be reattached elsewhere.
+Static `Authorization` and OAuth are mutually exclusive; OAuth-disabled static
+headers retain their existing origin-scoped behavior. See [ADR 0219](../adr/0219-mcp-oauth-sdk-profile.md)
+for the constrained dependency profile, [ADR 0220](../adr/0220-mcp-oauth-controller.md)
+for controller ownership, [ADR 0112](../adr/0112-mcp-oauth-loopback-runtime.md) for the
+opt-in host runtime, and [ADR 0113](../adr/0113-operator-mcp-auth-profiles.md) for profile
+and command wiring.
 
 **Progressive tool disclosure** (pattern 9) — a tool may optionally implement
 `tool.Disclosable`; the built-in `tool.Search` tool (catalog name `ToolSearch`,
@@ -57,22 +106,18 @@ an oversized body is flagged too (it is truncated on activation). A single
 read-only `Skill` tool (`skills.NewTool`, catalog name `Skill`,
 `ReadOnly()==true`) exposes them: its `Spec().Description` **enumerates every
 discovered skill's name + one-line description** — the cheap, always-in-context,
-cache-stable metadata layer — while `Execute({name})` returns that skill's full
-**body** only when the model activates it (the load-on-activation layer),
-prefixed by a small header carrying the skill's canonical **base directory** plus
-one line of bundled-files guidance. The header is the runtime-discoverability
-half of the out-of-workspace fix: a user-scope skill lives outside the workspace,
-and without the path in the result the model can only guess. The enforcement half
-is the **read-root allowlist**: composition computes the unique per-skill
-directories from the discovered set (`internal/app.skillReadRoots`, stashed once
-on `catalogAssets.skillReadRoots`) and constructs every production osfs
-`Workspace` — the per-session factory and all fork closures — with
-`osfs.WithReadRoots`, so `Read`/`Stat` (and only they) serve those absolute paths
-through a per-root `os.Root` with the same symlink containment as the workspace
-root; every other absolute path keeps the byte-identical escape error. Because
-the tool is read-only it is also available in plan mode. The tool is registered
-**only when at least one valid skill is discovered** — an empty inventory
-advertises nothing.
+cache-stable metadata layer. `Execute({name})` returns that skill's full **body** and
+a bounded inventory of bundled assets by logical name. If the instructions need a
+textual reference, the model calls the same tool again with
+`Execute({name, asset})`; the tool validates the advertised logical name, fetches
+only that payload through `tool.SkillSource`, enforces its size cap, and rejects
+invalid UTF-8 or NUL-containing content. No base directory crosses the seam, no
+asset is materialized or added to the workspace, and `Read`/`Bash` gain no implicit
+access. A workflow that genuinely needs a file must create or obtain it explicitly
+inside the workspace under ordinary permissions. Because the tool is read-only it
+is also available in plan and no-filesystem sessions. The tool is registered **only
+when at least one valid skill is discovered** — an empty inventory advertises
+nothing.
 
 The discovered set is *also* projected into a server-side inventory snapshot
 (`internal/app.skillSnapshot`, name-sorted, name+description only — no body),
@@ -101,9 +146,8 @@ both the FS adapter (`skills.FSSource`) and the remote driver
 (`SkillSourceService`, [observability & persistence](observability.md)) implement it, and the conformance suite holds them
 to the same semantics. `skills.Source` remains the **adapter-local**
 discovery/composition seam underneath it (where a skill's files live is the FS
-adapter's non-port business — `FSSource.AssetDirs` feeds the read-root
-allowlist above); nothing in the agent loop consumes skills directly (they are
-packaged into a `tool.Tool` at composition time).
+adapter's private business); nothing in the agent loop consumes skills directly
+(they are packaged into a `tool.Tool` at composition time).
 
 **The self-improving skill loop** (`skills.Drafter`, opt-in) closes the loop so
 durable skills can *come into being from the agent's own experience*. A single
@@ -202,8 +246,9 @@ surface entirely. **stdio MCP is never supported**. Embeddings remain unbuilt
 (multi-provider routing shipped — [multi-provider](providers.md)); **skills**
 exist as progressive-disclosure instruction units (see above), with bundled
 *packaging* shipped as logical assets on the `tool.SkillSource` port
-(`SkillAsset`, `ListSkillAssets`/`ReadSkillAsset` — never a path on the wire),
-served through the skill read-root allowlist. The guiding restraint still holds: build the shape, instrument it,
+(`SkillAsset`, `ListSkillAssets`/`ReadSkillAsset` — never a path on the wire).
+The `Skill` tool retrieves textual assets one at a time by logical name; it does
+not materialize them or widen the workspace. The guiding restraint still holds: build the shape, instrument it,
 and resist features before the loop, tools, permissions, hooks, and cache all work.
 
 ## Prerequisites

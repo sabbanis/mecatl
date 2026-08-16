@@ -17,6 +17,53 @@ For the exhaustive, auto-generated key/type/default/tier table, see the
 this guide are illustrative; the reference page is the complete source of truth
 (generated from the schema, so it never drifts).
 
+### Global MCP authentication profiles
+
+All three headless roots read the same operator-tier `mcp.servers` profiles. A project
+`.mecatl/settings.yaml` cannot define them. Each server selects exactly one auth mode:
+`none`, `static_bearer`, or `oauth`; secret-bearing fields name `MECATL_*` environment
+variables rather than containing values. See the [generated reference](../configuration-reference.md)
+for the complete strict schema.
+
+Local OAuth credentials require an absolute `credentials.local.root` and a canonical
+base64-encoded 32-byte key in `credentials.local.key_env`. Generate the key outside YAML,
+keep the root owner-only, and put only references in settings:
+
+```console
+$ umask 077
+$ key_dir="$HOME/.local/state"
+$ mkdir -p "$key_dir"
+$ chmod 700 "$key_dir"
+$ key_file="$key_dir/mecatl-mcp.key"
+$ openssl rand -base64 32 >"$key_file"
+$ chmod 600 "$key_file"
+$ export MECATL_MCP_CREDENTIAL_KEY=$(cat "$key_file")
+$ export MECATL_MCP_CLIENT_SECRET='value-from-your-secret-manager'
+$ mecated mcp login github
+$ mecated mcp login github --no-browser  # prints the authorization URL to this terminal
+```
+
+The full command is `mecated mcp login SERVER [--no-browser] [--permission-config
+PATH ...]`. The repeatable `--permission-config` selects trusted operator settings files;
+it does not supply OAuth values. Issuer, client, scope, secret, root, and network policy remain
+settings. Start serving after login and verify the
+`mcp__<server>__*` inventory. Startup restores the encrypted credential without another
+browser interaction. Expired access tokens refresh lazily; a mutable local store persists
+refresh-token rotation, so the next process restart remains warm. If identity metadata
+(profile, principal, client, scopes, or resource) changes, run login again. To roll back,
+replace the whole profile with `static_bearer` or `none` and restart.
+
+Normal serve/ACP, mecatequi, and mecak8s never open a browser. Environment-backed OAuth
+records are read-only and intended for Kubernetes: provision the opaque record externally
+and restart pods after rotation. They cannot be populated by `mecated mcp login`. DCR and
+ACP cannot provide OAuth profiles or install/drive authorization; after operator authorization,
+ACP sessions may invoke the shared global OAuth-backed tools under ordinary permissions. OAuth
+for per-session MCP, inline agents, or discovered ToolHive servers is not
+supported.
+
+The legacy `--mcp-server name=URL` and `MCP_<NAME>_TOKEN` path remains supported. A
+same-name legacy CLI entry replaces the whole settings profile case-insensitively.
+
 ### Automatic learning
 
 `learning.mode` in the operator settings file is strict and defaults to `off`:
@@ -24,15 +71,46 @@ this guide are illustrative; the reference page is the complete source of truth
 ```yaml
 learning:
   mode: off # off | review | auto
+  sensitivity: balanced # conservative | balanced | eager
+  automatic:
+    cooldown: 10m
+    window: 1h
+    max_reflections: 8
+    max_tokens: 100000
+    max_reflections_per_principal: 4
+    max_tokens_per_principal: 50000
 ```
+
+Sensitivity thresholds are conservative=6, balanced=4, and eager=3. The standard
+weights are repeated correction/trusted host contradiction=5, failure recovery=4,
+repeated stable tool sequence=3, and substantial success=2. Four model turns, five
+successful tool calls, and 12,000 run tokens each add one only when a base signal
+exists. Weighted admission accepts only a benign main-session `end_turn`. A genuine
+current principal prompt that explicitly asks to remember a fact or learn a procedure
+is hard admission on `end_turn`, `max_turns`, `max_tool_calls`, or `budget`: it bypasses
+the score, cooldown, and deprecated interval downsampler, but still consumes count and
+reserved-token budgets and coordinator capacity. Historical, tool, web, MCP, assistant,
+and repository text cannot hard-trigger. An unverifiable post-compaction current span
+fails closed.
+
+The automatic limits are sliding, process-local reservations. Zero for any maximum
+disables automatic reflection under that bound; cooldown zero disables only cooldown.
+The window must be 1m–24h. A reservation estimates the selected reflection model's
+bounded canonical input plus a 4096-token output cap and remains consumed after failure,
+timeout, or abstention. Queue-full does not consume it. Restart resets windows,
+cooldowns, and the 24-hour/1024-entry duplicate cache by design. There is no startup or
+shutdown catch-up. In a multi-replica deployment each replica owns a separate budget,
+so aggregate spend may be the configured limit multiplied by replica count.
 
 `review` signal-gates eligible clean completions into the process-wide reflection
 coordinator and durably stages valid proposals without changing memory. `auto` uses the same
 stage-first path, then promotes operator facts only from explicit principal-authored remember evidence and project facts only from principal-authored evidence at the exact trusted configured workspace. Project candidates from admitted alternate roots remain staged/reviewable but cannot approve, undo, or read/write launch-root project memory until a safe exact-root lifecycle store exists; untrusted project material is not ingested. Tool/assistant/repository-only, conflicting, ambiguous,
-sensitive, and unsupported material is not written, and procedures remain staged as
-`deferred_unsupported`. `off` installs no automatic observer/started coordinator worker or eager proposal repository and makes no automatic reflection provider
-call. Explicit reflection remains bounded and synchronous, lazily initializes persistence, starts the dormant coordinator for that job, and uses the completed session's persisted provider/model. A project `.mecatl/settings.yaml` may only tighten the operator ceiling
-(`off < review < auto`). Explicit memory/user-model tools remain available in every mode.
+sensitive, and unsupported material is not written. Procedures are first durably marked
+`deferred_unsupported` for crash recovery and then, when the lifecycle pipeline is installed,
+materialized and evaluated: review stages PASS/ABSTAIN and rejects FAIL; auto additionally
+activates only PASS. `off` performs no automatic procedure materialization; explicit drafts/imports
+remain inactive. `off` installs no automatic observer/started coordinator worker or eager proposal repository and makes no automatic reflection provider
+call. Authenticated explicit reflection remains bounded and synchronous, lazily initializes persistence, bypasses automatic admission/cooldown/budgets/recent-completed state, and uses the completed session's persisted provider/model; without genuine current-prompt promotion provenance its output remains stage-only. A project `.mecatl/settings.yaml` may only tighten the operator mode and sensitivity; its `automatic` subtree is warning-ignored/operator-only. Explicit memory/user-model tools remain available in every mode.
 The proposal store defaults to a `reflections/` directory beside the conventional or configured
 user-model store; in off mode that directory/flock is not created until the first explicit reflection or proposal operation.
 
@@ -238,14 +316,15 @@ set is **snapshotted once at startup** (fatal if the driver cannot answer —
 an explicitly configured source that is down is a misconfiguration, never a
 silent no-skills run). Skills cross the wire as **logical bundles** — name,
 description, body, and payloads addressed by slash-relative logical names
-(`references/api.md`, `scripts/run.sh`) — no paths. On a skill's **first
-activation** its payloads materialize into a temporary, build-scoped **asset
-cache** (the `Base directory` the activation header advertises); a
-never-activated skill transfers zero bytes. Materialization is capped
-(16 MiB per file, 64 MiB per bundle), name-validated and containment-checked
-(an invalid bundle fails that activation with a model-addressable error,
-never a partial bundle), honors the executable bit, and the whole cache is
-removed on shutdown. **Trust:** a driver-served `SKILL.md` steers the model
+(`references/api.md`, `scripts/run.sh`) — no paths. Calling `Skill` with a name
+returns the instructions and bounded logical inventory. If those instructions need
+a textual payload, the model calls `Skill` again with `{name, asset}` and only that
+asset is fetched. The harness validates the logical name, enforces the tool-output
+size bound, and rejects invalid UTF-8 or NUL-containing assets. It does **not**
+materialize bundles, honor executable bits by creating files, expose a base
+directory, or grant `Read`/`Bash` access. A workflow needing a real file must create
+or obtain it explicitly in the workspace under normal permissions. **Trust:** a
+driver-served `SKILL.md` steers the model
 like AGENTS.md/CLAUDE.md — point this only at a driver you trust (the same
 tier as `--skills-dir`).
 

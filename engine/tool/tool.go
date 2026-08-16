@@ -190,7 +190,7 @@ type FileSystem interface {
 }
 
 // FileVersion is the opaque, comparable content version a Workspace attaches to a
-// version-bearing read (ADR 0103). It is an adapter-minted token (a content hash,
+// version-bearing read (ADR 0208). It is an adapter-minted token (a content hash,
 // an inode+mtime pair, a remote ETag, …) the caller compares for equality with
 // another FileVersion from the SAME adapter and passes back to a conditional
 // mutation. It carries NO meaning outside equality and is NEVER used as a
@@ -250,15 +250,12 @@ func (f FileVersion) Token() (token string, ok bool) {
 // It carries the PLAIN (non-versioned) Read/Stat: non-agent consumers that only
 // inspect the tree (permission config, prompt discovery, the agent-def/skill
 // sources) never participate in the read-ledger / conditional-mutation protocol
-// (ADR 0103) and do not need a FileVersion. The agent-facing built-in
+// (ADR 0208) and do not need a FileVersion. The agent-facing built-in
 // Read/Edit/Write tools use the version-bearing ReadVersion + CreateFile/
 // ReplaceFile on the full Workspace, NOT this plain Read.
 //
 // Workspace embeds it, so any *Workspace is usable where a WorkspaceReader is
-// expected. All paths are session-relative; the adapter rejects escapes, EXCEPT
-// for any explicit READ-ONLY allowed roots the adapter was constructed with
-// (the activated-skill base-directory carve-out — see osfs.WithReadRoots),
-// which Read/Stat may serve by absolute path.
+// expected. Paths are session-relative and adapters reject escapes.
 type WorkspaceReader interface {
 	// Root returns the absolute session root all paths are scoped to.
 	Root() string
@@ -272,16 +269,12 @@ type WorkspaceReader interface {
 // all paths to a single session root (rejecting escapes such as "../"), exposes
 // the read/search operations the 7 core tools need, and carries the per-session
 // read-ledger + the explicit, unambiguous mutation operations the built-in
-// Edit/Write tools enforce their invariants through (ADR 0103).
+// Edit/Write tools enforce their invariants through (ADR 0208).
 //
 // All paths are relative to the session root unless documented otherwise;
-// adapters must reject any path that resolves outside the root. The ONE
-// sanctioned exception is read-only: an adapter may carry explicit allowed
-// roots (osfs.WithReadRoots — the per-skill directories of discovered skills)
-// that Read/Stat/ReadVersion serve by absolute path. CreateFile, ReplaceFile,
-// Glob, and Grep are workspace-only always.
+// adapters must reject any path that resolves outside the root.
 //
-// VERSION PROTOCOL (ADR 0103). The Workspace capability exposes only the
+// VERSION PROTOCOL (ADR 0208). The Workspace capability exposes only the
 // explicit create-only / conditional-replace-by-version pair, so a tool mutation
 // can never silently clobber a concurrent change:
 //
@@ -307,7 +300,7 @@ type WorkspaceReader interface {
 // (a shell command, an external editor) that bypasses the Workspace seam can still
 // race a conditional replace — this is honest best-effort same-process CAS, NOT
 // kernel-level locking; a future remote transport will provide true backend CAS
-// (ADR 0103, remote transport deferred).
+// (ADR 0208, remote transport deferred).
 type Workspace interface {
 	// WorkspaceReader is the read-only subset (Root + plain Read + Stat);
 	// embedding it keeps the read methods defined once and lets a *Workspace

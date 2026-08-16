@@ -26,6 +26,9 @@ type config struct {
 	// connectAddress is the dial target for `mecatui connect ADDRESS` ("" for the
 	// bare/local mode). Set by resolveTransportMode; consumed by resolveTransport.
 	connectAddress string
+	// browseSessions selects the startup session-browser launch intent. Transport
+	// remains independent: both embedded and connect modes can browse first.
+	browseSessions bool
 	// helpAll is true when --help-all was passed; it requests the exhaustive
 	// flag listing and exits 0 before transport resolution.
 	helpAll    bool
@@ -128,6 +131,12 @@ type config struct {
 	openCodeKey          string
 	mock                 bool
 	noBash               bool
+
+	// resumeID and resumeLatest select an existing owned main chat for static
+	// startup adoption. They are shared by embedded and connect modes and mutually
+	// exclusive; the first prompt still owns all run-entry attachment/revalidation.
+	resumeID     string
+	resumeLatest bool
 
 	// prompt is the literal seed-prompt text supplied via -p/--prompt.
 	// Empty = no seed. Joined ahead of --prompt-file when both are given.
@@ -308,13 +317,16 @@ func parseFlags(args []string) (config, error) {
 // returned FlagSet. mode is the resolved canonical transport mode; out is where
 // --help / parse errors are written; args excludes the program name (and, for
 // local/connect, the command word / ADDRESS — resolveTransportMode strips them).
-func parseTransportFlags(mode transportMode, out io.Writer, args []string) (*flag.FlagSet, config, error) {
+func parseTransportFlags(mode transportMode, out io.Writer, args []string, browseSessions ...bool) (*flag.FlagSet, config, error) {
 	var cfg config
 	cfg.transportMode = mode
+	cfg.browseSessions = len(browseSessions) > 0 && browseSessions[0]
 	fs := flag.NewFlagSet("mecatui", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&cfg.workspace, "workspace", "", "absolute workspace root for the session (default: cwd)")
+	fs.StringVar(&cfg.workspace, "workspace", "", "absolute workspace root for a new session (default: cwd); an adopted session keeps its stored workspace")
 	fs.StringVar(&cfg.mode, "mode", "default", "permission mode: default | plan | accept-edits")
+	fs.StringVar(&cfg.resumeID, "resume", "", "start by continuing the owned main chat with this exact opaque session ID; loads its authoritative transcript without creating a throwaway session (mutually exclusive with --resume-latest)")
+	fs.BoolVar(&cfg.resumeLatest, "resume-latest", false, "start by continuing the newest eligible owned main chat with an available authoritative transcript; excludes active, awaiting, scheduled, child, and unknown sessions (mutually exclusive with --resume)")
 	fs.StringVar(&cfg.prompt, "prompt", "", "seed prompt auto-submitted once the first session is ready (the CLI task to launch with). The TUI stays interactive for follow-ups; this is NOT a one-shot. Both --prompt and --prompt-file may be given (literal first)")
 	fs.StringVar(&cfg.prompt, "p", "", "short form of --prompt")
 	fs.StringVar(&cfg.promptFile, "prompt-file", "", "path to a file whose contents are the seed prompt body. Read at startup (fail-fast on unreadable). Joined after --prompt when both are given")
@@ -333,7 +345,7 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string) (*fla
 
 	// Keymap overrides: action=chords (comma-separated), repeatable.
 	cfg.keymap = new(cliconfig.KeyValueList)
-	fs.Var(cfg.keymap, "keymap", "rebind a key: Action=chord[,chord2] (repeatable). Actions: Agents, ScrollU, ScrollD, ScrollTop, ScrollBottom, ModeSwitch, MCPPanel, Resources, Prompts, Up, Down, Choose, Close, Refresh, Tasks, Findings, JumpTop, JumpEnd, NextTab, CancelChild, ExpandTools, Help, Effort, Submit, Newline, Cancel, EditBack, Paste, Quit, Allow, AllowAlways, Deny, SetGlobalDefault")
+	fs.Var(cfg.keymap, "keymap", "rebind a key: Action=chord[,chord2] (repeatable). Actions: Agents, ScrollU, ScrollD, ScrollTop, ScrollBottom, ModeSwitch, MCPPanel, Resources, Prompts, Up, Down, Choose, Close, Refresh, Tasks, Findings, JumpTop, JumpEnd, NextTab, CancelChild, ExpandTools, Help, Effort, Submit, Newline, Cancel, EditBack, Paste, Quit, Allow, AllowAlways, Deny, SetGlobalDefault, RawArgs")
 
 	fs.StringVar(&cfg.model, "model", "", "model identifier for the embedded server (empty: use the provider-appropriate default; ignored when dialling an external server)")
 	fs.StringVar(&cfg.defaultProvider, "default-provider", "", "embedded server only: deployment-wide default provider id shared by every client (e.g. openai, openrouter, anthropic); overrides the built-in provider preference for zero-selector sessions while a client-side selection still wins. Validated FAIL-FAST at startup: an unknown or unavailable provider refuses to start")
@@ -398,7 +410,7 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string) (*fla
 	fs.BoolVar(&cfg.perfMCP, "perf-mcp", false, "embedded server only: mount the read-only perf MCP server at /mcp on the --perf admin surface, so an agent can introspect THIS process's runtime/latency/profile state over MCP (list_slow_turns, runtime/heap/CPU profiles, FlightRecorder). Only meaningful with --perf. SECURITY: loopback-bound, UNAUTHENTICATED (decision 6) — embed REFUSES a non-loopback --perf-addr with this set")
 	fs.BoolVar(&cfg.helpAll, "help-all", false, "print the exhaustive flag reference for this command and exit (the common --help lists only the task-oriented subset)")
 
-	fs.Usage = transportUsage(fs, mode)
+	fs.Usage = transportUsage(fs, mode, cfg.browseSessions)
 
 	if err := fs.Parse(args); err != nil {
 		// Return the fully-registered FlagSet even on a parse/help error so the
@@ -411,11 +423,15 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string) (*fla
 	// --help-all was parsed as a normal flag; render and return ErrHelp (exit 0).
 	if cfg.helpAll {
 		out := fs.Output()
-		switch mode {
-		case modeConnect:
-			writeConnectHelpAll(out, fs)
-		default:
-			writeBareHelpAll(out, fs)
+		if cfg.browseSessions {
+			writeSessionsHelpAll(out, fs, mode)
+		} else {
+			switch mode {
+			case modeConnect:
+				writeConnectHelpAll(out, fs)
+			default:
+				writeBareHelpAll(out, fs)
+			}
 		}
 		return nil, config{}, flag.ErrHelp
 	}
@@ -429,6 +445,12 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string) (*fla
 	if err := finalizeParsedConfig(fs, &cfg); err != nil {
 		return fs, config{}, err
 	}
+	if cfg.resumeID != "" && cfg.resumeLatest {
+		return fs, config{}, errors.New("--resume and --resume-latest are mutually exclusive")
+	}
+	if err := validateSessionsLaunch(cfg); err != nil {
+		return fs, config{}, err
+	}
 	if cfg.promptFile != "" {
 		body, err := os.ReadFile(cfg.promptFile)
 		if err != nil {
@@ -437,6 +459,24 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string) (*fla
 		cfg.promptFileBody = string(body)
 	}
 	return fs, cfg, nil
+}
+
+func validateSessionsLaunch(cfg config) error {
+	if !cfg.browseSessions {
+		return nil
+	}
+	switch {
+	case cfg.prompt != "":
+		return errors.New("mecatui sessions conflicts with -p/--prompt")
+	case cfg.promptFile != "":
+		return errors.New("mecatui sessions conflicts with --prompt-file")
+	case cfg.resumeID != "":
+		return errors.New("mecatui sessions conflicts with --resume")
+	case cfg.resumeLatest:
+		return errors.New("mecatui sessions conflicts with --resume-latest")
+	default:
+		return nil
+	}
 }
 
 // finalizeParsedConfig applies the post-parse env fallbacks, records which flags
@@ -571,9 +611,13 @@ func wrapAuthFileWarning(warning string) string {
 // the bare form prints the bare-mode common help; `connect` prints its
 // mode-specific common help. Callers that want to assert the banner is the real
 // one (not a dead copy) wire this helper rather than duplicating the closure.
-func transportUsage(fs *flag.FlagSet, mode transportMode) func() {
+func transportUsage(fs *flag.FlagSet, mode transportMode, browseSessions ...bool) func() {
 	return func() {
 		out := fs.Output()
+		if len(browseSessions) > 0 && browseSessions[0] {
+			writeSessionsCommonHelp(out, fs, mode)
+			return
+		}
 		switch mode {
 		case modeConnect:
 			writeConnectCommonHelp(out, fs)
@@ -606,6 +650,9 @@ func resolveWorkspace(ws string) (string, error) {
 func (c config) validate() error {
 	if c.listThemes {
 		return nil
+	}
+	if c.resumeID != "" && c.resumeLatest {
+		return errors.New("--resume and --resume-latest are mutually exclusive")
 	}
 	if c.workspace == "" {
 		return errors.New("workspace is required")

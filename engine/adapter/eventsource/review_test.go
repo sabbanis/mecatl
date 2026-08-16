@@ -237,12 +237,14 @@ func TestFoldContractDocMatchesSessionFields(t *testing.T) {
 	// Every EXPORTED field of session.Session the reconstruction contract considers.
 	// Classification (kept in sync with COMPATIBILITY.md "Session reconstruction
 	// contract"):
-	//   reconstructed-from-events: Conversation, State, Usage, Title
-	//     (Title is seeded from the first genuine EvUserPrompt via SetTitle)
+	//   reconstructed-from-events: Conversation, State, Usage; legacy Title and
+	//     TitleProvenance fallback (seeded from the first genuine EvUserPrompt via
+	//     SetTitle)
 	//   run-scoped (latest segment): Counters
 	//   supplied via SessionMeta (not event-carried): ID, Mode, Limits, Workspace,
-	//     Profile, ProviderID, ModelID, ReasoningEffort, CreatedAt
-	//   not-event-carried identity labels (ADR 0100/0106): Owner, Authority,
+	//     Profile, ProviderID, ModelID, ReasoningEffort, Title, TitleProvenance,
+	//     Kind, Relationship, CreatedAt
+	//   not-event-carried identity labels (ADR 0204/0214): Owner, Authority,
 	//     EnvironmentRef — the event annotation is log-only and the fold neither
 	//     requires nor re-derives any of them, so a folded session keeps the
 	//     snapshot-restored value (ownerless stays ownerless, a zero ref stays
@@ -251,8 +253,9 @@ func TestFoldContractDocMatchesSessionFields(t *testing.T) {
 	wantSessionFields := map[string]struct{}{
 		"ID": {}, "State": {}, "Mode": {}, "Conversation": {}, "Limits": {},
 		"Counters": {}, "Usage": {}, "Workspace": {}, "Profile": {},
-		"ProviderID": {}, "ModelID": {}, "ReasoningEffort": {}, "CreatedAt": {},
-		"Title": {}, "Owner": {}, "Authority": {}, "EnvironmentRef": {},
+		"ProviderID": {}, "ModelID": {}, "ReasoningEffort": {}, "Kind": {},
+		"Relationship": {}, "CreatedAt": {},
+		"Title": {}, "TitleProvenance": {}, "Owner": {}, "Authority": {}, "EnvironmentRef": {},
 	}
 	assertExportedFields(t, reflect.TypeOf(session.Session{}), wantSessionFields,
 		"session.Session — classify the new field in COMPATIBILITY.md's reconstruction contract")

@@ -1,6 +1,7 @@
 "use client";
 
 import { ChangeEvent, DragEvent, FormEvent, KeyboardEvent, useEffect, useId, useMemo, useRef, useState } from "react";
+import { decodeScheduleRows, parseMecatlEvent, type MecatlEvent, type ScheduleRow } from "../lib/protocol";
 
 type ToolActivity = {
   id: string;
@@ -28,6 +29,7 @@ type Message = {
   attachments?: CsvAttachmentSummary[];
   tools?: ToolActivity[];
   approval?: Approval;
+  notices?: string[];
   streaming?: boolean;
   // The turn reached a terminal error (provider down, circuit breaker open).
   // Rendered distinctly so a dead turn never reads like a completed one.
@@ -52,19 +54,6 @@ type Task = {
   model?: string;
 };
 
-type MecatlEvent = {
-  type?: string;
-  seq?: string | number;
-  text?: string;
-  tool_call?: { id?: string; name?: string; args?: string; tool?: string; call_id?: string };
-  tool_result?: { call_id?: string; content?: string; result?: string; is_error?: boolean; tool?: string };
-  ask?: { ask_id?: string; tool?: string; args?: string; reason?: string };
-  result?: { text?: string; stop?: string; error?: string; usage?: { input_tokens?: string; output_tokens?: string } };
-  subagent?: { parent_call_id?: string; child_id?: string; goal?: string; routed_category?: string; routed_model?: string; model?: string };
-  team?: { parent_call_id?: string; roster?: Array<{ name?: string; role?: string; routed_category?: string; routed_model?: string; model?: string }> };
-  parallel?: { parent_call_id?: string; kind?: string; branch_index?: number; branch_label?: string; goal?: string; routed_category?: string; routed_model?: string; model?: string };
-};
-
 type ModelOption = { id: string; provider_id?: string; display_name?: string; reasoning?: boolean };
 type RouterCategory = { name: string; description: string; model: string };
 // Mirrors mecatl.v1.SkillInfo: the activation name plus the one-line frontmatter
@@ -75,27 +64,6 @@ type SkillInfo = { name: string; description: string };
 // agent loads a value with RecallUser when it needs one.
 type MemoryEntry = { key: string; description: string };
 type UserModelIndex = { entries: MemoryEntry[]; sizeBytes: number; sha256: string };
-// Mirrors mecatl.v1.Schedule (spec + durable state). The wire JSON carries proto
-// enums as NUMBERS (mode 2 = plan) and timestamps as {seconds, nanos}, so both
-// need decoding rather than direct display.
-type ProtoTimestamp = { seconds?: string | number; nanos?: number };
-type ScheduleRow = {
-  name: string;
-  prompt: string;
-  cron: string;
-  oneShotAt: number | null;
-  workspace: string;
-  mode: number;
-  mutating: boolean;
-  enabled: boolean;
-  fireCount: number;
-  nextFireAt: number | null;
-  lastFireAt: number | null;
-  // "claimed" is a fire whose slot was taken but whose run has not started yet
-  // (the crash-after-Claim window); "running" has a started_at. Both are live.
-  fireStage: "idle" | "claimed" | "running";
-};
-
 const defaultRouterCategories: RouterCategory[] = [
   { name: "routine", description: "Mechanical edits, quick lookups, formatting, renames, and other straightforward tasks.", model: "" },
   { name: "reasoning", description: "Architecture, debugging, security analysis, concurrency, and deep multi-step reasoning.", model: "" },
@@ -110,6 +78,22 @@ const API = "/api/mecatl";
 const STREAM_IDLE_TIMEOUT_MS = 120_000;
 const HEALTH_POLL_MS = 5_000;
 const CSV_MAX_BYTES = 256 * 1024;
+const relativeFormatter = new Intl.RelativeTimeFormat(undefined, { numeric: "auto", style: "narrow" });
+const NON_VISUAL_EVENT_TYPES = new Set([
+  "session.init",
+  "turn.start",
+  "turn.end",
+  "reasoning.delta",
+  "usage",
+  "hook",
+  "compaction",
+  "subagent.tool",
+  "subagent.end",
+  "team.member",
+  "team.end",
+  "parallel.start",
+  "parallel.end",
+]);
 
 const starterTask: Task = {
   id: "welcome",
@@ -128,13 +112,6 @@ const starterTask: Task = {
 };
 
 const uid = () => `${Date.now()}-${Math.random().toString(36).slice(2)}`;
-// proto3 JSON renders google.protobuf.Timestamp as {seconds, nanos} and omits the
-// message entirely for the zero time, which the schedule API uses to mean "never".
-const protoMillis = (value?: ProtoTimestamp): number | null => {
-  const seconds = Number(value?.seconds ?? 0);
-  if (!seconds) return null;
-  return seconds * 1000 + Math.floor((value?.nanos ?? 0) / 1e6);
-};
 const permissionModeLabel = (mode: number) => mode === 3 ? "accept edits" : mode === 2 ? "plan" : mode === 1 ? "default" : "unset";
 // Distinct from relativeTime() below, which is past-only ("3m ago") for task rows.
 // A schedule's next fire is in the FUTURE, so this one is signed and null-safe.
@@ -235,8 +212,9 @@ export default function Home() {
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [modelMenu, setModelMenu] = useState(false);
   const [credentialsOpen, setCredentialsOpen] = useState(false);
-  const [openRouterKey, setOpenRouterKey] = useState("");
-  const [credentialState, setCredentialState] = useState<"idle" | "saving" | "success" | "error">("idle");
+  const [controllerMode, setControllerMode] = useState<"managed" | "external">("managed");
+  const [providerName, setProviderName] = useState("offline mock");
+  const [authFile, setAuthFile] = useState("");
   const [routerOpen, setRouterOpen] = useState(false);
   const [routerEnabled, setRouterEnabled] = useState(true);
   const [routerClassifierModel, setRouterClassifierModel] = useState("");
@@ -252,7 +230,6 @@ export default function Home() {
   const [mcpName, setMcpName] = useState("gateway");
   const [mcpUrl, setMcpUrl] = useState("https://connector-gateway.stacklok.dev/gw/mcp");
   const [mcpToken, setMcpToken] = useState("");
-  const [mcpInsecure, setMcpInsecure] = useState(false);
   const [mcpState, setMcpState] = useState<"idle" | "saving" | "success" | "error">("idle");
   const [mcpError, setMcpError] = useState("");
   const [mcpConnected, setMcpConnected] = useState<{ name: string; url: string } | null>(null);
@@ -429,7 +406,11 @@ export default function Home() {
         if (!disposed && statusResponse?.ok) {
           const status = await statusResponse.json();
           setRouterStatus(status.modelRouter || null);
+          setControllerMode(status.mode === "external" ? "external" : "managed");
+          setProviderName(typeof status.provider === "string" ? status.provider : "server default");
+          setAuthFile(typeof status.authFile === "string" ? status.authFile : "");
           if (typeof status.workspace === "string") setWorkspace(status.workspace);
+          if (status.startupError) setError(String(status.startupError));
         }
         if (!response.ok && abortRef.current) {
           abortMessageRef.current = "Mecatl disconnected while this task was running.";
@@ -559,32 +540,7 @@ export default function Home() {
       return;
     }
     const body = await response.json();
-    // ListSchedulesResponse omits `schedules` entirely when none are stored.
-    const rows: ScheduleRow[] = (Array.isArray(body.schedules) ? body.schedules : []).map((entry: Record<string, never>) => {
-      const spec = (entry.spec ?? {}) as Record<string, never>;
-      const state = (entry.state ?? {}) as Record<string, never>;
-      const trigger = (spec.trigger ?? {}) as Record<string, never>;
-      return {
-        name: String(spec.name ?? ""),
-        prompt: String(spec.prompt ?? ""),
-        cron: String(trigger.cron ?? ""),
-        oneShotAt: protoMillis(trigger.one_shot),
-        workspace: String(spec.workspace ?? ""),
-        mode: Number(spec.mode ?? 0),
-        mutating: Boolean(spec.mutating),
-        enabled: Boolean(state.enabled),
-        fireCount: Number(state.fire_count ?? 0),
-        nextFireAt: protoMillis(state.next_fire_at),
-        lastFireAt: protoMillis(state.last_fire_at),
-        // RecordFireStart sets last_fire_started_at and RecordFire clears it, so a
-        // value here means the run is under way. Before that, a Claim leaves the
-        // "pending" sentinel in last_fire_session_id — still a live fire, just not
-        // started yet, and it must not read as idle (issue #386).
-        fireStage: protoMillis(state.last_fire_started_at) !== null
-          ? "running"
-          : String(state.last_fire_session_id ?? "") === "pending" ? "claimed" : "idle",
-      };
-    });
+    const rows = decodeScheduleRows(body);
     setSchedulerWired(true);
     setSchedules(rows);
   };
@@ -657,7 +613,9 @@ export default function Home() {
   };
 
   const createSession = async () => {
-    if (!workspace) throw new Error("Studio has not reached the local controller yet, so it does not know which workspace to open. Check that `npm run dev` started the controller on 127.0.0.1:8788.");
+    if (!workspace) throw new Error(controllerMode === "external"
+      ? "External mode needs MECATL_WORKSPACE set on the Studio server before it can create a session."
+      : "Studio has not reached the local controller yet, so it does not know which workspace to open. Check that `npm run dev` started the controller on 127.0.0.1:8788.");
     const response = await fetch(`${API}/v1/sessions`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
@@ -799,6 +757,12 @@ export default function Home() {
           }
           return { ...message, text: message.text || event.result?.text || "Done.", streaming: false };
         }
+        if (!NON_VISUAL_EVENT_TYPES.has(event.type)) {
+          const notice = event.text || `Mecatl sent an event this Studio version does not render yet: ${event.type}`;
+          return message.notices?.includes(notice)
+            ? message
+            : { ...message, notices: [...(message.notices ?? []), notice] };
+        }
         return message;
       }),
     }));
@@ -806,8 +770,7 @@ export default function Home() {
 
   const readStream = async (response: Response, assistantId: string) => {
     if (!response.body) throw new Error("The server did not return a stream.");
-    const reader = response.body.getReader();
-    const decoder = new TextDecoder();
+    const reader = response.body.pipeThrough(new TextDecoderStream()).getReader();
     let buffer = "";
     let sawResult = false;
     try {
@@ -818,14 +781,14 @@ export default function Home() {
         });
         const { value, done } = await Promise.race([reader.read(), idle]).finally(() => window.clearTimeout(timeout));
         if (done) break;
-        buffer += decoder.decode(value, { stream: true });
+        buffer += value;
         const frames = buffer.split("\n\n");
         buffer = frames.pop() ?? "";
         for (const frame of frames) {
           const line = frame.split("\n").find((item) => item.startsWith("data:"));
           if (!line) continue;
           try {
-            const parsed = JSON.parse(line.slice(5).trim()) as MecatlEvent;
+            const parsed = parseMecatlEvent(line.slice(5).trim());
             if (parsed.type === "result") sawResult = true;
             applyEvent(assistantId, parsed);
           } catch { /* malformed diagnostic frame */ }
@@ -940,29 +903,6 @@ export default function Home() {
     }));
   };
 
-  const connectOpenRouter = async (event: FormEvent) => {
-    event.preventDefault();
-    const key = openRouterKey.trim();
-    if (!key) return;
-    setCredentialState("saving");
-    try {
-      const response = await fetch("/api/mecatl-control/openrouter", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ apiKey: key }),
-      });
-      if (!response.ok) throw new Error(await readError(response));
-      setOpenRouterKey("");
-      setCredentialState("success");
-      setConnected("online");
-      setTasks((current) => current.map((task) => ({ ...task, sessionId: undefined, model: "OpenRouter" })));
-      window.setTimeout(() => { setCredentialsOpen(false); setCredentialState("idle"); }, 900);
-    } catch (caught) {
-      setCredentialState("error");
-      setError((caught as Error).message || "Could not enable OpenRouter.");
-    }
-  };
-
   const saveModelRouter = async (event: FormEvent) => {
     event.preventDefault();
     setRouterState("saving");
@@ -1029,7 +969,7 @@ export default function Home() {
       const response = await fetch("/api/mecatl-control/mcp", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ name: mcpName.trim(), url: mcpUrl.trim(), token: mcpToken.trim(), insecureHttp: mcpUrl.trim().startsWith("http://") && mcpInsecure }),
+        body: JSON.stringify({ name: mcpName.trim(), url: mcpUrl.trim(), token: mcpToken.trim() }),
       });
       if (!response.ok) throw new Error(await readError(response));
       setMcpToken("");
@@ -1149,8 +1089,8 @@ export default function Home() {
           <div className="topbar-actions">
             <button className="topbar-button" onClick={newTask}><span>＋</span><span className="desktop-label">New task</span></button>
             <button className="topbar-button" onClick={() => setCredentialsOpen(true)}><span>⌁</span><span className="desktop-label">Provider</span></button>
-            <button className="topbar-button" onClick={openRouterSettings}><span>⇄</span><span className="desktop-label">Model Router</span></button>
-            <button className="topbar-button" onClick={() => { setMcpState("idle"); setMcpError(""); setMcpOpen(true); }}><span>◎</span><span className="desktop-label">MCP Gateway</span></button>
+            <button className="topbar-button" onClick={openRouterSettings} disabled={controllerMode === "external"} title={controllerMode === "external" ? "Managed by the external deployment" : undefined}><span>⇄</span><span className="desktop-label">Model Router</span></button>
+            <button className="topbar-button" onClick={() => { setMcpState("idle"); setMcpError(""); setMcpOpen(true); }} disabled={controllerMode === "external"} title={controllerMode === "external" ? "Managed by the external deployment" : undefined}><span>◎</span><span className="desktop-label">MCP Gateway</span></button>
             <button className="topbar-button" onClick={openSkills}><span>✦</span><span className="desktop-label">Skills</span></button>
             <button className="topbar-button" onClick={openMemory}><span>❖</span><span className="desktop-label">Memory</span></button>
             <button className="topbar-button" onClick={openSchedules}><span>◷</span><span className="desktop-label">Schedules</span></button>
@@ -1190,6 +1130,7 @@ export default function Home() {
                   {!!message.tools?.length && <div className="activity-list">
                     {message.tools.map((tool) => <ToolCard key={tool.id} tool={tool} />)}
                   </div>}
+                  {!!message.notices?.length && <div className="event-notices" role="status">{message.notices.map((notice) => <p key={notice}>{notice}</p>)}</div>}
                   {message.approval && <ApprovalCard approval={message.approval} onApprove={approve} />}
                 </div>
               </article>
@@ -1235,19 +1176,18 @@ export default function Home() {
       {credentialsOpen && (
         <div className="modal-backdrop" role="presentation" onMouseDown={(event) => { if (event.currentTarget === event.target) setCredentialsOpen(false); }}>
           <section className="credential-modal" role="dialog" aria-modal="true" aria-labelledby="credential-title">
-            <div className="modal-topline"><span className="openrouter-mark">OR</span><button onClick={() => setCredentialsOpen(false)} aria-label="Close">×</button></div>
-            <h2 id="credential-title">Connect OpenRouter</h2>
-            <p>Use one key to access OpenAI, Anthropic, Google, and other models through your local mecatl server.</p>
-            <form onSubmit={connectOpenRouter}>
-              <label htmlFor="openrouter-key">OpenRouter API key</label>
-              <input id="openrouter-key" type="password" value={openRouterKey} onChange={(event) => setOpenRouterKey(event.target.value)} placeholder="sk-or-v1-••••••••••••" autoComplete="off" />
-              <div className="key-safety"><span>✓</span><p>Your key stays on this computer. It is held only by the running mecatl process and is never saved by this interface.</p></div>
-              {credentialState === "error" && <div className="credential-error">Connection failed. Check the key and try again.</div>}
-              <button className={`connect-button ${credentialState}`} type="submit" disabled={!openRouterKey.trim() || credentialState === "saving"}>
-                {credentialState === "saving" ? "Starting OpenRouter…" : credentialState === "success" ? "Connected ✓" : "Connect OpenRouter"}
-              </button>
-            </form>
-            <a href="https://openrouter.ai/keys" target="_blank" rel="noreferrer">Create or manage keys at openrouter.ai <span>↗</span></a>
+            <div className="modal-topline"><span className="openrouter-mark">LLM</span><button onClick={() => setCredentialsOpen(false)} aria-label="Close">×</button></div>
+            <h2 id="credential-title">Provider configuration</h2>
+            <div className="gateway-status"><span>●</span><p><strong>{providerName}</strong><small>{controllerMode === "external" ? "Owned by the external mecated deployment" : "Managed local daemon"}</small></p></div>
+            {controllerMode === "external" ? (
+              <div className="transport-note"><span>i</span><p>Provider selection and credentials stay with the remote daemon. Studio only receives the model inventory exposed by that deployment.</p></div>
+            ) : (
+              <>
+                <p>Studio never accepts or forwards provider secrets. Configure mecated&rsquo;s conventional credentials file, then restart Studio.</p>
+                {authFile && <code className="skills-path">{authFile}</code>}
+                <div className="key-safety"><span>✓</span><p>Set <code>MECATL_STUDIO_PROVIDER=openrouter</code> to select OpenRouter; put its API key under <code>providers.openrouter.api_key</code> in the auth file. A missing credential fails loudly instead of falling back.</p></div>
+              </>
+            )}
           </section>
         </div>
       )}
@@ -1315,7 +1255,7 @@ export default function Home() {
               <label htmlFor="mcp-token">Existing bearer token <span className="optional">Advanced</span></label>
               <input id="mcp-token" type="password" value={mcpToken} onChange={(event) => setMcpToken(event.target.value)} placeholder="Paste the gateway access token" autoComplete="off" />
               <div className="input-hint">Only use this when your gateway administrator supplied a current access token.</div>
-              <label className={`checkbox-row ${!mcpUrl.trim().startsWith("http://") ? "disabled" : ""}`}><input type="checkbox" aria-label="Allow plain HTTP to a remote host" checked={mcpUrl.trim().startsWith("http://") && mcpInsecure} disabled={!mcpUrl.trim().startsWith("http://")} onChange={(event) => setMcpInsecure(event.target.checked)} /><span><strong>Allow plain HTTP to a remote host</strong><small>Only available for an <code>http://</code> URL on a trusted private network. HTTPS never needs this option.</small></span></label>
+              <div className="input-hint">Gateway URLs must use HTTPS. A local HTTP gateway is accepted only when the controller is explicitly started with <code>MECATL_ALLOW_INSECURE_LOOPBACK_MCP=1</code>.</div>
               <div className="key-safety"><span>✓</span><p>Credentials stay in the loopback controller’s memory and are never stored in this app or repository.</p></div>
               {mcpState === "error" && <div className="credential-error" role="alert">{mcpError || "The gateway rejected the connection."}</div>}
               <button className="connect-button secondary-connect" type="submit" disabled={!mcpName.trim() || !mcpUrl.trim() || !mcpToken.trim() || mcpState === "saving"}>
@@ -1533,7 +1473,7 @@ function relativeTime(timestamp: number) {
   if (timestamp === 0) return "Just now";
   const seconds = Math.floor((Date.now() - timestamp) / 1000);
   if (seconds < 60) return "Just now";
-  if (seconds < 3600) return `${Math.floor(seconds / 60)}m ago`;
-  if (seconds < 86400) return `${Math.floor(seconds / 3600)}h ago`;
-  return `${Math.floor(seconds / 86400)}d ago`;
+  if (seconds < 3600) return relativeFormatter.format(-Math.floor(seconds / 60), "minute");
+  if (seconds < 86400) return relativeFormatter.format(-Math.floor(seconds / 3600), "hour");
+  return relativeFormatter.format(-Math.floor(seconds / 86400), "day");
 }

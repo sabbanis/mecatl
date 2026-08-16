@@ -167,7 +167,7 @@ type parentCaps struct {
 	// The ctx is the run's ctx so a Run.Cancel propagates into the classifier turn
 	// (issue #94); see SubagentModelRouter.
 	routeTask func(ctx context.Context, taskPrompt string) (category, model, reason string, ok bool)
-	// owner is the PARENT session's verified owner (ADR 0100 decision 4), handed
+	// owner is the PARENT session's verified owner (ADR 0204 decision 4), handed
 	// down so every child session (subagent-/parallel-/team-) is attributed to the
 	// same principal as the session that spawned it. It is read off the parent
 	// AGGREGATE, deliberately NOT off the ambient context: a child must inherit
@@ -193,7 +193,7 @@ type parentCaps struct {
 }
 
 // inheritOwner stamps the parent session's owner onto a freshly-minted child
-// session (ADR 0100 decision 4). It is the ONE point every child family goes
+// session (ADR 0204 decision 4). It is the ONE point every child family goes
 // through, so subagent/parallel/team children cannot drift apart. Write-once via
 // the aggregate (Session is an aggregate — never poke the field); on a fresh
 // child the slot is empty so this cannot collide, and a nil owner is a no-op —
@@ -2177,7 +2177,7 @@ func (t *SubagentTool) resolveEngineAndLimits(callID session.ToolCallID, args su
 // still on disk — because this is the only place that sees the resumed session's
 // PERSISTED workspace before buildChildSession re-homes it. See editsSurvived's
 // doc-comment on the named result below and resumeWritableNote.
-func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.ToolCall, env tool.Environment, args subagentArgs, resuming, writable bool, childID session.SessionID, limits session.Limits, forkHistory []session.Message) (child *session.Session, runEnv tool.Environment, cleanup func() error, advisory string, editsSurvived bool, errResult session.ToolResult, ok bool) {
+func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.ToolCall, env tool.Environment, args subagentArgs, resuming, writable bool, childID, parentID session.SessionID, limits session.Limits, forkHistory []session.Message) (child *session.Session, runEnv tool.Environment, cleanup func() error, advisory string, editsSurvived bool, errResult session.ToolResult, ok bool) {
 	noop := func() error { return nil }
 	var resumedChild *session.Session
 	// priorWorkspace is the resumed child's PERSISTED workspace root, captured here
@@ -2218,7 +2218,7 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 	// otherwise is the exact falsehood resumeWritableNote exists to prevent, inverted.
 	// The path comparison is the honest test and needs no new persisted field.
 	editsSurvived = writable && priorWorkspace != "" && priorWorkspace == env.Workspace().Root()
-	child, errRes, bok := t.buildChildSession(call.ID, childID, resumedChild, runEnv.Workspace().Root(), limits, forkHistory)
+	child, errRes, bok := t.buildChildSession(call.ID, childID, parentID, resumedChild, runEnv.Workspace().Root(), limits, forkHistory)
 	if !bok {
 		_ = cleanupWS()
 		return nil, tool.Environment{}, noop, "", false, errRes, false
@@ -2398,11 +2398,11 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	// Resume load + fork + session build (see prepareChildSession). The cleanup is
 	// always non-nil and tears the worktree down after the child fully drains (the
 	// run is drained below in this call), so a deferred cleanup is correct.
-	child, runEnv, cleanupWS, forkAdvisory, editsSurvived, errResult, ok := t.prepareChildSession(ctx, call, env, args, resuming, writable, childID, limits, forkHistory)
+	child, runEnv, cleanupWS, forkAdvisory, editsSurvived, errResult, ok := t.prepareChildSession(ctx, call, env, args, resuming, writable, childID, caps.parentSessionID, limits, forkHistory)
 	if !ok {
 		return errResult, nil
 	}
-	// The child is attributed to the PARENT session's owner (ADR 0100 decision 4).
+	// The child is attributed to the PARENT session's owner (ADR 0204 decision 4).
 	caps.inheritOwner(child)
 	// Tear down the run workspace after the child fully drains. For a writable
 	// (direct-write) child this is a no-op — cleanupWS is the no-op returned by
@@ -2733,12 +2733,12 @@ func (t *SubagentTool) driveBackground(ctx context.Context, b backgroundChild) {
 		return
 	}
 	defer func() { _ = cleanupWS() }()
-	child, errResult, ok := t.buildChildSession(b.call.ID, b.childID, b.resumed, runEnv.Workspace().Root(), b.limits, b.forkHistory)
+	child, errResult, ok := t.buildChildSession(b.call.ID, b.childID, b.caps.parentSessionID, b.resumed, runEnv.Workspace().Root(), b.limits, b.forkHistory)
 	if !ok {
 		endOnError(errResult)
 		return
 	}
-	// The child is attributed to the PARENT session's owner (ADR 0100 decision 4).
+	// The child is attributed to the PARENT session's owner (ADR 0204 decision 4).
 	b.caps.inheritOwner(child)
 	// RESUME-START persist, mirroring prepareChildSession: refresh the resumed
 	// snapshot's last-modified time so the child-session GC's age pass never
@@ -3038,7 +3038,7 @@ func subagentErrorBody(cause, final string) string {
 
 // subagentErrorResumeHint is the MODEL-VISIBLE next-action instruction stamped on a
 // FAILED delegation. A failed child is now recoverable through `resume` (issue #318,
-// docs/adr/0077-resume-a-failed-subagent.md), and a capability the model is never told
+// docs/adr/0200-resume-a-failed-subagent.md), and a capability the model is never told
 // about is a capability it cannot use — the model-visible-affordance rule (ADR 0070),
 // the same reason the StopNoProgress note and the no-summary floor carry their own resume
 // hints.
@@ -3830,7 +3830,7 @@ func (t *SubagentTool) loadOwnedResumeSession(ctx context.Context, callID sessio
 // error result and the replayed history stays provider-valid. Per Recover's own
 // contract, recovery makes retry POSSIBLE, not guaranteed: a permanent-cause child
 // re-fails cleanly, which is strictly better than never being able to try. See
-// docs/adr/0077-resume-a-failed-subagent.md.
+// docs/adr/0200-resume-a-failed-subagent.md.
 //
 // It returns the recovered session on success, or a model-addressable error ToolResult
 // (ok=false) on a load failure or non-resumable state.
@@ -3929,11 +3929,24 @@ func (t *SubagentTool) forkChildEnvironment(ctx context.Context, callID session.
 // torn down, and without the re-home the re-persisted snapshot would record a dead
 // path. (The child's prompt cwd is independently sourced from the engine's PromptConfig
 // and is NOT affected by this field.)
-func (t *SubagentTool) buildChildSession(callID session.ToolCallID, childID session.SessionID, resumedChild *session.Session, root string, limits session.Limits, forkHistory []session.Message) (*session.Session, session.ToolResult, bool) {
+func (t *SubagentTool) buildChildSession(callID session.ToolCallID, childID, parentID session.SessionID, resumedChild *session.Session, root string, limits session.Limits, forkHistory []session.Message) (*session.Session, session.ToolResult, bool) {
 	if resumedChild == nil {
 		// When a named agent def pins limits, the child runs under THOSE; otherwise it uses
 		// the Subagent tool's default limits.
-		child := session.New(childID, t.childMode, root, limits, t.childEngine.now())
+		var child *session.Session
+		var err error
+		if parentID == "" {
+			// Direct Tool.Execute has no parent aggregate identity. Classify that
+			// custom-host path unknown rather than fabricating lineage or granting main.
+			child = session.New(childID, t.childMode, root, limits, t.childEngine.now())
+			err = child.RestoreSessionMetadata(session.SessionKindUnknown, session.SessionRelationship{})
+		} else {
+			child, err = session.NewSubagent(childID, t.childMode, root, limits, t.childEngine.now(), parentID, callID)
+		}
+		if err != nil {
+			return nil, session.NewToolError(callID,
+				fmt.Sprintf("Subagent: failed to stamp child relationship metadata: %v", err)), false
+		}
 		// fork:true (issue #34): seed the FRESH child from the deep copy of the parent
 		// conversation taken synchronously in run()/startBackground. SeedHistory is
 		// idle-only and re-validates tool pairing (the snapshot is already
@@ -4010,55 +4023,19 @@ func drainChildObserved(run *Run, emit func(session.Event), parentCallID, childI
 	// Track child callID → tool name so a tool.result can be attributed to its
 	// tool.call name without re-deriving it from the (clamped) args preview.
 	names := map[session.ToolCallID]string{}
+	// turnUsage accumulates the child's CUMULATIVE provider-reported usage across the
+	// drain, independent of the terminal `usage` (read from EvResult). Each EvTurnEnd
+	// projection carries the running total so a client renders a live ↑↓ mid-run
+	// instead of a zero until subagent.end. Estimates are EXCLUDED (the issue-#82
+	// fallback is display-only, never cumulative/budget — provider truth only).
+	var turnUsage session.Usage
 	for ev := range run.Events() {
 		if emit != nil {
-			// Project ONLY the four preview kinds (ADR 0079); skip everything else
-			// BEFORE allocating the payload (turn.start, hooks, compaction, asks…)
-			// so a dropped event costs nothing.
-			if ev.Type != session.EvToolCall && ev.Type != session.EvToolResult &&
-				ev.Type != session.EvMessageDelta && ev.Type != session.EvResult {
-				goto handle
-			}
-			payload := &session.SubagentPayload{
-				ParentCallID: parentCallID,
-				ChildID:      childID,
-				InnerKind:    ev.Type,
-			}
-			project := false
-			switch ev.Type {
-			case session.EvToolCall:
-				if ev.ToolCall != nil {
-					names[ev.ToolCall.ID] = ev.ToolCall.Name
-					payload.ToolName = ev.ToolCall.Name
-					payload.Detail = clampPreview(string(ev.ToolCall.Args))
-					project = true
-				}
-			case session.EvToolResult:
-				if ev.ToolResult != nil {
-					toolCount++
-					payload.ToolName = names[ev.ToolResult.CallID]
-					payload.IsError = ev.ToolResult.IsError
-					payload.ToolCount = toolCount
-					payload.Detail = clampPreview(ev.ToolResult.Content)
-					project = true
-				}
-			case session.EvMessageDelta:
-				if strings.TrimSpace(ev.Text) != "" {
-					payload.Text = clampPreview(ev.Text)
-					project = true
-				}
-			case session.EvResult:
-				if ev.Result != nil {
-					payload.Text = clampPreview(ev.Result.Text)
-					payload.ToolCount = toolCount
-					project = true
-				}
-			}
-			if project {
-				emit(session.Event{Type: session.EvSubagentTool, Subagent: payload})
-			}
+			// Project ONLY the preview kinds (ADR 0079) plus EvTurnEnd (the live-usage
+			// projection); a non-projected event is dropped before any allocation.
+			toolCount, turnUsage = projectChildEvent(emit, ev, names, parentCallID, childID, toolCount, turnUsage)
 		}
-	handle:
+		// handle:
 		if text, st, ok := handleChildEvent(run, ev, posture); ok {
 			finalText, stop = text, st
 			if ev.Result != nil {
@@ -4070,6 +4047,93 @@ func drainChildObserved(run *Run, emit func(session.Event), parentCallID, childI
 		}
 	}
 	return finalText, stop, cause, usage, toolCount
+}
+
+// projectChildEvent maps ONE child event to its redacted subagent.tool projection and
+// emits it, advancing the running cumulative totals. It is the per-event half of
+// drainChildObserved, split out to keep that drain loop's complexity readable. It
+// returns the updated toolCount and turnUsage.
+//
+// ToolCount and Usage are stamped on EVERY projection — both are CUMULATIVE and always
+// current, so a client assigns either with no InnerKind guard (no projection reads
+// 0-after-positive). toolCount is tools-STARTED (a call, not a result: a result may
+// never arrive on a cancel); turnUsage is provider-reported usage (the issue-#82
+// display-only estimate is never folded in).
+func projectChildEvent(emit func(session.Event), ev session.Event, names map[session.ToolCallID]string, parentCallID, childID string, toolCount int, turnUsage session.Usage) (int, session.Usage) {
+	// Project ONLY the preview kinds (ADR 0079) plus EvTurnEnd (the live-usage
+	// projection); a non-projected event is dropped before any allocation.
+	switch ev.Type {
+	case session.EvToolCall, session.EvToolResult, session.EvMessageDelta,
+		session.EvResult, session.EvTurnEnd:
+	default:
+		return toolCount, turnUsage
+	}
+	// Count a tool when it STARTS and accumulate usage BEFORE the payload build, so the
+	// current projection and every later one carry the new totals.
+	if ev.Type == session.EvToolCall && ev.ToolCall != nil {
+		toolCount++
+	}
+	if ev.Type == session.EvTurnEnd && ev.TurnEnd != nil && !ev.TurnEnd.Estimated {
+		turnUsage = turnUsage.Add(ev.TurnEnd.Usage)
+	}
+	payload := &session.SubagentPayload{
+		ParentCallID: parentCallID,
+		ChildID:      childID,
+		InnerKind:    ev.Type,
+		ToolCount:    toolCount,
+		Usage:        turnUsage,
+	}
+	var project bool
+	switch ev.Type {
+	case session.EvToolCall:
+		project = projectChildToolCall(payload, ev, names)
+	case session.EvToolResult:
+		project = projectChildToolResult(payload, ev, names)
+	case session.EvMessageDelta:
+		project = strings.TrimSpace(ev.Text) != ""
+		if project {
+			payload.Text = clampPreview(ev.Text)
+		}
+	case session.EvResult:
+		project = ev.Result != nil
+		if project {
+			payload.Text = clampPreview(ev.Result.Text)
+		}
+	case session.EvTurnEnd:
+		// EvTurnEnd carries no content fields (Text/Detail stay empty); its usage was
+		// applied at the accumulator above. Project only when it carries REAL usage —
+		// a zero or estimated turn adds nothing new.
+		project = ev.TurnEnd != nil && !ev.TurnEnd.Estimated && ev.TurnEnd.Usage != (session.Usage{})
+	}
+	if project {
+		emit(session.Event{Type: session.EvSubagentTool, Subagent: payload})
+	}
+	return toolCount, turnUsage
+}
+
+// projectChildToolCall populates the payload from a child EvToolCall and records the
+// callID→name mapping so a later tool.result can be attributed without re-deriving it
+// from the clamped args preview. Returns false when the event carries no call.
+func projectChildToolCall(payload *session.SubagentPayload, ev session.Event, names map[session.ToolCallID]string) bool {
+	if ev.ToolCall == nil {
+		return false
+	}
+	names[ev.ToolCall.ID] = ev.ToolCall.Name
+	payload.ToolName = ev.ToolCall.Name
+	payload.Detail = clampPreview(string(ev.ToolCall.Args))
+	return true
+}
+
+// projectChildToolResult populates the payload from a child EvToolResult, resolving the
+// tool name from the recorded call. Returns false when the event carries no result.
+func projectChildToolResult(payload *session.SubagentPayload, ev session.Event, names map[session.ToolCallID]string) bool {
+	if ev.ToolResult == nil {
+		return false
+	}
+	payload.ToolName = names[ev.ToolResult.CallID]
+	payload.IsError = ev.ToolResult.IsError
+	payload.Detail = clampPreview(ev.ToolResult.Content)
+	return true
 }
 
 // drainChild consumes the child Run's Event channel to completion, auto-denying

@@ -25,6 +25,7 @@ import (
 	"context"
 	"strings"
 
+	coreskillfs "github.com/stacklok/mecatl/engine/adapter/skillfs"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/learning"
 	"github.com/stacklok/mecatl/engine/port"
@@ -59,29 +60,28 @@ import (
 //     returns), so the `!= nil` registration checks stay sound on the interface
 //     (guarded by TestBuildUserModelStoreDisabledReturnsNilInterface; see
 //     buildEngine's permconfig note for the trap this rule prevents).
-//   - skills/skillActivator/skillIndex: the skills seam resolved once at build
+//   - skills/skillSource/skillIndex: the skills seam resolved once at build
 //     time (resolveSkillSeam — the FS snapshot or the remote driver): the
 //     metadata snapshot the Skill tool enumerates and the ListSkills snapshot
-//     projects, the Activator the tool loads bodies/payloads through, and the
-//     name→body preload index agent definitions' `skills:` lists read.
-//   - skillReadRoots: the read-only allowed roots derived inside the seam
-//     (FSSource.AssetDirs per-skill dirs, or the driver asset cache), computed
-//     ONCE and threaded into EVERY production osfs Workspace constructor (main
-//     factory + all fork closures) via osfs.WithReadRoots — one computed value,
-//     no second list to drift.
+//     projects, the logical source the tool loads bodies/payloads through, and
+//     the name→body preload index agent definitions' `skills:` lists read.
 //   - forkReaper: ONE process-wide preserved-fork LRU shared by every Parallel
 //     tool, so ForkPreservedCap stays a PROCESS bound (a per-session reaper would
 //     multiply the cap by the number of sessions).
 type catalogAssets struct {
-	globalMgr      *mcp.Manager
-	agentReg       *agents.Registry
-	memStore       tool.MemoryStore
-	userModelStore tool.MemoryStore
-	skills         []tool.SkillMeta
-	skillActivator skills.Activator
-	skillIndex     skillIndex
-	skillReadRoots []string
-	forkReaper     *agent.LRUForkReaper
+	globalMgr        *mcp.Manager
+	agentReg         *agents.Registry
+	memStore         tool.MemoryStore
+	userModelStore   tool.MemoryStore
+	skills           []tool.SkillMeta
+	skillSource      tool.SkillSource
+	skillIndex       skillIndex
+	liveSkills       *coreskillfs.AtomicCatalog
+	learnedSkills    learning.SkillRepository
+	skillPublication *learnedSkillPublication
+	skillPartition   learning.SkillPartition
+	skillOwner       string
+	forkReaper       *agent.LRUForkReaper
 	// autoMerger is the ONE process-wide serializing tool.EnvironmentMerger used by the
 	// Parallel single-branch auto-merge (the writable Subagent no longer merges —
 	// it writes the parent tree directly, ADR 0041). It wraps a forker.Merger in a
@@ -165,6 +165,10 @@ type catalogSession struct {
 	// plan-mode session carries the ReadOnly()==true plan-aware variant that
 	// stays advertised and hard-denies only the mutating create per call.
 	mode session.PermissionMode
+	// skillPartitions is the caller-bound global/project view captured while the
+	// per-session engine is assembled. The Skill tool's Spec and Execute therefore
+	// share one principal-scoped catalog selection.
+	skillPartitions []learning.SkillPartition
 }
 
 // assembleCatalog registers every tool family into a fresh catalog, in the
@@ -298,7 +302,7 @@ func mountClientMCP(ctx context.Context, cfg Config, cat *tool.Catalog, s catalo
 // inherited sub-agent parent. The returned close tears down the Subagent per-def
 // inline-MCP managers (these connections belong to this catalog).
 func registerSubagentTrio(ctx context.Context, cfg Config, cat *tool.Catalog, reg *providerRegistry, store port.SessionStore, hooks port.HookRunner, a catalogAssets, s catalogSession, refMgr *mcp.Manager) func() error {
-	subagentTool, subagentClose := buildSubagentTool(ctx, cfg, reg, s.provider, s.providerID, s.model, hooks, a.agentReg, refMgr, store, a.skillReadRoots, a.skillIndex, a, s.noFS)
+	subagentTool, subagentClose := buildSubagentTool(ctx, cfg, reg, s.provider, s.providerID, s.model, hooks, a.agentReg, refMgr, store, a.skillIndex, a, s.noFS)
 	cat.MustRegister(subagentTool)
 	// The PULL subagent-transcript inspect tool: read-only, reads the SAME shared
 	// session store the Subagent tool persists children to (ids verbatim from the
@@ -336,7 +340,7 @@ func registerParallelTool(ctx context.Context, cfg Config, cat *tool.Catalog, re
 	// parent base. The builder applies the SAME trust-UNGATED hardening
 	// buildForceCopyRunner does (force-copy forks do no fork-time git, so the
 	// trust gate does not apply — see the comment above).
-	fk := forker.New(newForkWorkspace(a.skillReadRoots), forker.WithForceCopy(),
+	fk := forker.New(newForkWorkspace(), forker.WithForceCopy(),
 		forker.WithRunner(func(childRoot string) tool.CommandRunner {
 			if !forceCopyShellAvailable(cfg) {
 				return nil
@@ -419,7 +423,7 @@ func registerTeamTools(ctx context.Context, cfg Config, cat *tool.Catalog, reg *
 		}
 		return
 	}
-	factory, fk, roFk, sharedBaseWS, teamHooks := buildTeamWiring(ctx, cfg, reg, s.provider, s.providerID, s.model, refMgr, a.agentReg, a.skillReadRoots, a.skillIndex, a, s.noFS)
+	factory, fk, roFk, sharedBaseWS, teamHooks := buildTeamWiring(ctx, cfg, reg, s.provider, s.providerID, s.model, refMgr, a.agentReg, a.skillIndex, a, s.noFS)
 	cat.MustRegister(agent.NewTeamTool(
 		agent.TeamMemberEngineFactory(factory),
 		agent.WithTeamToolForker(fk),
@@ -499,7 +503,7 @@ func registerScheduleTool(ctx context.Context, cfg Config, cat *tool.Catalog, a 
 		cfg.diag().Log(ctx, port.LevelInfo, "Schedule tool ENABLED (Schedule); permission: allow (built-in default, overridable to ask/deny via settings)")
 	}
 	// No origin wiring here: the Schedule tool stamps OriginSessionID from the
-	// run context itself (fire-result-delivery, ADR 0104), so there is nothing
+	// run context itself (fire-result-delivery, ADR 0209), so there is nothing
 	// composition can forget to wrap.
 	//
 	// The READ-ONLY half (AC1.4): list/inspect live on a separate query tool so
@@ -525,14 +529,12 @@ func registerScheduleTool(ctx context.Context, cfg Config, cat *tool.Catalog, a 
 }
 
 // registerSkillFamily registers the Skill tool over the build-time skills seam
-// (the metadata snapshot + the Activator), plus the SkillDraft author tool
+// (the metadata snapshot + logical SkillSource), plus the SkillDraft author tool
 // when a quarantine dir is configured (its novelty snapshot is the metas +
 // preload-bodies projection — NewDirDrafter's []skills.Skill signature kept).
 //
-// NO-FS PROFILE: the Skill tool stays ON — a skill body is TEXT INJECTION into
-// the conversation, not a filesystem act (an out-of-workspace ASSET read would
-// fail honestly through the no-FS workspace, so a no-FS skill is body-only).
-// SkillDraft is OFF — drafting writes a SKILL.md into the quarantine dir, a
+// NO-FS PROFILE: the Skill tool stays ON — bodies and assets are logical source
+// reads, not filesystem acts. SkillDraft is OFF — drafting writes a SKILL.md into the quarantine dir, a
 // filesystem-authoring act a no-FS session has no business performing.
 // On the DRIVER branch the preload index is lazy (def-referenced names only),
 // so most projected bodies are empty and the drafter's novelty check is
@@ -540,13 +542,32 @@ func registerScheduleTool(ctx context.Context, cfg Config, cat *tool.Catalog, a 
 // (fetching every body eagerly just for a warn-only similarity check would
 // defeat the lazy-transfer design).
 func registerSkillFamily(ctx context.Context, cfg Config, cat *tool.Catalog, a catalogAssets, s catalogSession) {
-	if len(a.skills) > 0 {
-		if err := cat.Register(skills.NewTool(a.skills, a.skillActivator)); err != nil {
+	if a.liveSkills != nil {
+		live := coreskillfs.NewLiveTool(a.liveSkills)
+		if len(s.skillPartitions) > 0 {
+			live = coreskillfs.NewLiveToolForPartitions(a.liveSkills, s.skillPartitions...)
+		}
+		if err := cat.Register(live); err != nil {
+			cfg.diag().Log(ctx, port.LevelWarn, "registering live skills failed; Skill tool disabled", "err", err)
+		}
+	} else if len(a.skills) > 0 {
+		if err := cat.Register(skills.NewTool(a.skills, a.skillSource)); err != nil {
 			cfg.diag().Log(ctx, port.LevelWarn, "registering skills failed; Skill tool disabled", "err", err)
 		}
 	}
 	if !s.noFS {
-		registerSkillDraft(ctx, cfg, cat, skillValues(a.skills, a.skillIndex), s.narrate)
+		if a.learnedSkills != nil && cfg.SkillsDraftDir != "" {
+			inventory := make([]learning.SkillInventoryItem, 0, len(a.skills))
+			for _, meta := range a.skills {
+				inventory = append(inventory, learning.SkillInventoryItem{Name: meta.Name})
+			}
+			cat.MustRegister(skills.NewDraftTool(skills.NewLifecycleDrafter(a.learnedSkills, a.skillPartition, a.skillOwner, inventory)))
+			if s.narrate {
+				cfg.diag().Log(ctx, port.LevelInfo, "SkillDraft tool ENABLED (versioned agent-owned drafts; evidence/evaluation required for activation)")
+			}
+		} else {
+			registerSkillDraft(ctx, cfg, cat, skillValues(a.skills, a.skillIndex), s.narrate)
+		}
 	}
 }
 

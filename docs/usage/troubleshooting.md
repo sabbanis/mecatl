@@ -1,5 +1,22 @@
 ## 17. Troubleshooting / FAQ
 
+### MCP OAuth login required
+
+A diagnostic naming `MCP OAuth login required` intentionally omits resource, issuer,
+authorization URL, secret references, and adapter errors. For a mutable local profile, run
+the exact remedy it prints: `mecated mcp login <server>` (add `--no-browser` only when
+you want the authorization URL on stdout). For an environment-backed profile, preprovision
+the opaque credential and restart the process; the environment Reader is immutable and the
+login command will reject it. `invalid_grant` after a prior login usually means the refresh
+token was revoked/consumed or the credential identity changed (profile, principal, client,
+scopes, or resource): stop serving that profile, rerun `mecated mcp login <server>`, verify a
+warm startup, then resume traffic. If rollout fails, restore the previous whole profile
+(`static_bearer` where supported, or `none`) and restart; never enable browser behavior in a
+daemon to repair it. A persistent failure may instead be an upstream SDK metadata-profile
+incompatibility. ACP cannot provide OAuth profiles or install/drive authorization; after operator
+authorization it may invoke the shared global OAuth-backed tools under ordinary permissions. There
+is no per-session ACP OAuth or DCR fallback.
+
 **`no LLM provider available: set one of ANTHROPIC_API_KEY (Claude), OPENAI_API_KEY (OpenAI), or OPENROUTER_API_KEY (one key, many models — a good first choice) …`**
 You started `mecated` with no provider key in the environment. Set
 `ANTHROPIC_API_KEY`, `OPENAI_API_KEY`, or `OPENROUTER_API_KEY`; for a
@@ -26,7 +43,7 @@ URL, or troubleshooting output.
 | `unreachable`, timeout, HTTP 5xx, or retry exhaustion | DNS/TLS/network or a transient private-service failure. Before the first successful model list, Codex contributes no inventory; after success, process-local last-known-good rows may remain visible while current inference still fails. | Check connectivity to `chatgpt.com`, wait, and retry. Restart is required only if you changed the credential; a stale visible model list is not proof inference is healthy. |
 
 The backend is undocumented and may change or revoke third-party compatibility.
-See [ADR 0104](../adr/0104-openai-subscription-manual-token.md) for that boundary.
+See [ADR 0215](../adr/0215-openai-subscription-manual-token.md) for that boundary.
 
 **`--openai requires OPENAI_API_KEY to be set`** (the `cmd/mecademo` demo only)
 The demo's `--openai` flag was passed but no key is in the environment.

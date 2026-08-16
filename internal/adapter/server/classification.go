@@ -17,7 +17,7 @@ import (
 // parameter.
 var contextType = reflect.TypeOf((*context.Context)(nil)).Elem()
 
-// AccessKind is one of the four classifications ADR 0102 decision 2 requires
+// AccessKind is one of the four classifications ADR 0212 decision 2 requires
 // for every designated application object-touching boundary.
 type AccessKind int
 
@@ -36,7 +36,7 @@ const (
 	KindDerived
 	// KindSharedInfrastructure means the boundary is a classified, narrow,
 	// non-caller-identified operation — an internal system-principal root
-	// (ADR 0100 decision 7) or a process-wide catalog/config read that is,
+	// (ADR 0204 decision 7) or a process-wide catalog/config read that is,
 	// by design, the same for every caller.
 	KindSharedInfrastructure
 	// KindExempt is an explicit, reviewed carve-out for a boundary that
@@ -61,7 +61,7 @@ func (k AccessKind) String() string {
 	}
 }
 
-// ClassificationEntry is one boundary's per-kind table row (ADR 0102 decision
+// ClassificationEntry is one boundary's per-kind table row (ADR 0212 decision
 // 2). Rationale is MANDATORY: a shared-infrastructure/exempt entry that
 // cannot state a concrete, reviewable reason is rejected by validate, so an
 // exemption can never become a silent caller-owned bypass (AC5.3).
@@ -122,7 +122,7 @@ type classificationReport struct {
 func (r classificationReport) Errors() []error {
 	var errs []error
 	for _, name := range r.Unclassified {
-		errs = append(errs, fmt.Errorf("%s: unclassified access boundary %q — add a ClassificationEntry (ADR 0102 decision 2)", r.Surface, name))
+		errs = append(errs, fmt.Errorf("%s: unclassified access boundary %q — add a ClassificationEntry (ADR 0212 decision 2)", r.Surface, name))
 	}
 	for _, name := range r.Misclassified {
 		errs = append(errs, fmt.Errorf("%s: misclassified access boundary %q", r.Surface, name))
@@ -216,7 +216,7 @@ func requireCallerOwnedContext(surface string, t reflect.Type, table map[string]
 }
 
 // serviceAccessTable classifies every exported *Service method — the
-// application-facade, in-memory-registry, and event-relay boundaries ADR 0102
+// application-facade, in-memory-registry, and event-relay boundaries ADR 0212
 // decision 2 names. See AccessKind's doc comment for what each kind means.
 //
 // Adding an exported Service method requires an entry here or
@@ -228,24 +228,29 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"CreateSessionWithProfile":  {KindCallerOwned, "atomic owner bind at creation (reserveSessionID); ForkSession/carryover sources are authorized via authorizeSession before copying history"},
 	"CreateSessionWithMCP":      {KindCallerOwned, "delegates to CreateSessionWithProfile's atomic owner bind"},
 	"GetSession":                {KindCallerOwned, "authorizeSession: owner mismatch or absence both return ErrNotFound"},
+	"GetTranscript":             {KindCallerOwned, "one SessionStore.Load followed by authorizeSession; no run-entry side effects"},
 	"LoadSession":               {KindCallerOwned, "authorizeSession before rehydration"},
 	"LoadSessionWithMCP":        {KindCallerOwned, "delegates to LoadSession's authorizeSession before mounting client MCP"},
 	"SetMode":                   {KindCallerOwned, "authorizes via GetSession before changing the session's permission mode"},
+	"RenameSession":             {KindCallerOwned, "authorizes via GetSession, then revalidates ownership, kind, state, liveness, and lease under runEntryMu before persisting"},
+	"DeleteSession":             {KindCallerOwned, "authorizes via GetSession, then revalidates ownership, kind, state, liveness, and lease under runEntryMu before physical deletion"},
 	"ForkSession":               {KindCallerOwned, "authorizes the SOURCE session (authorizeSession) before copying its history to a new owned session"},
 	"EndSession":                {KindCallerOwned, "authorizes via GetSession before CloseSession"},
 	"ListSessions":              {KindCallerOwned, "filters to the caller's own rows before any pagination/count is computed"},
+	"ListSessionPage":           {KindCallerOwned, "passes caller ownership into the store query before keyset page formation and counting"},
 	"StreamSessionEvents":       {KindCallerOwned, "event log/live stream resolves through the owning session's authorizeSession check"},
 	"Subscribe":                 {KindCallerOwned, "authorizes via GetSession before registering a live subscriber (issue #368)"},
 
 	// --- caller-owned: live run verbs ---
-	"StartRun":        {KindCallerOwned, "delegates to StartRunContent's run-entry authorization"},
-	"StartRunContent": {KindCallerOwned, "loadAndReopen authorizes the session before entering/resuming the run"},
-	"Approve":         {KindCallerOwned, "delegates to ApproveRun's authorization"},
-	"ApproveRun":      {KindCallerOwned, "same-process path authorizes via the registered run's owning session; the cross-process resumeFromAwaiting path authorizes via loadAndReopen"},
-	"ApprovePlan":     {KindCallerOwned, "authorizes the session before resolving the parked plan ask"},
-	"Cancel":          {KindCallerOwned, "authorizes via GetSession before signalling the in-flight run"},
-	"CancelChild":     {KindCallerOwned, "authorizes the PARENT session via GetSession before reaching into its child registry"},
-	"Persist":         {KindCallerOwned, "authorizes via GetSession before consulting the live run registry"},
+	"StartRun":                 {KindCallerOwned, "delegates to StartRunContent's run-entry authorization"},
+	"StartRunContent":          {KindCallerOwned, "authorizes before the public chat-purpose kind gate and shared run-entry path"},
+	"StartScheduledRunContent": {KindCallerOwned, "trusted scheduler-purpose entry; authorizes the schedule owner before its kind gate and shared run-entry path"},
+	"Approve":                  {KindCallerOwned, "delegates to ApproveRun's authorization"},
+	"ApproveRun":               {KindCallerOwned, "same-process path authorizes via the registered run's owning session; the cross-process resumeFromAwaiting path authorizes via loadAndReopen"},
+	"ApprovePlan":              {KindCallerOwned, "authorizes the session before resolving the parked plan ask"},
+	"Cancel":                   {KindCallerOwned, "authorizes via GetSession before signalling the in-flight run"},
+	"CancelChild":              {KindCallerOwned, "authorizes the PARENT session via GetSession before reaching into its child registry"},
+	"Persist":                  {KindCallerOwned, "authorizes via GetSession before consulting the live run registry"},
 
 	// --- caller-owned: schedules ---
 	"CreateSchedule": {KindCallerOwned, "the schedule manager binds the verified context principal as owner atomically with visibility"},
@@ -295,16 +300,24 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"GetSoul":            {KindSharedInfrastructure, "the deployment's configured soul, identical for every caller"},
 
 	// --- derived: user-model memory delegates entirely to the caller-partitioned store ---
-	"GetUserModel":           {KindDerived, "delegates to cfg.UserModel.List, the caller-partitioned memory.CallerStore already classified caller-owned"},
-	"GetUserModelDetail":     {KindDerived, "delegates to cfg.UserModel's optional lifecycle Inspect, preserving the same caller-partitioned memory.CallerStore boundary for current value and history"},
-	"ReflectSession":         {KindCallerOwned, "loads and authorizes the source session before submitting its bounded completed trajectory"},
-	"ListLearningProposals":  {KindCallerOwned, "derives the proposal partition from the verified caller; optional project scope is trust-gated"},
-	"GetLearningProposal":    {KindCallerOwned, "reads only the verified caller's proposal partition"},
-	"DecideLearningProposal": {KindCallerOwned, "mutates only the verified caller's proposal partition with version CAS"},
-	"UndoLearningPromotion":  {KindCallerOwned, "compensates only a verified caller-owned proposal and linked current revision with version CAS"},
+	"GetUserModel":             {KindDerived, "delegates to cfg.UserModel.List, the caller-partitioned memory.CallerStore already classified caller-owned"},
+	"GetUserModelDetail":       {KindDerived, "delegates to cfg.UserModel's optional lifecycle Inspect, preserving the same caller-partitioned memory.CallerStore boundary for current value and history"},
+	"ReflectSession":           {KindCallerOwned, "loads and authorizes the source session before submitting its bounded completed trajectory"},
+	"ListLearningProposals":    {KindCallerOwned, "derives the proposal partition from the verified caller; optional project scope is trust-gated"},
+	"GetLearningProposal":      {KindCallerOwned, "reads only the verified caller's proposal partition"},
+	"DecideLearningProposal":   {KindCallerOwned, "mutates only the verified caller's proposal partition with version CAS"},
+	"UndoLearningPromotion":    {KindCallerOwned, "compensates only a verified caller-owned proposal and linked current revision with version CAS"},
+	"ListLearnedSkills":        {KindCallerOwned, "lists only the verified caller's learned-skill partition"},
+	"GetLearnedSkill":          {KindCallerOwned, "reads only the verified caller's learned-skill partition"},
+	"DiffLearnedSkillVersions": {KindCallerOwned, "diffs versions only inside the verified caller's learned-skill partition"},
+	"ActivateLearnedSkill":     {KindCallerOwned, "activates an agent-owned caller-partitioned version with revision CAS"},
+	"RejectLearnedSkill":       {KindCallerOwned, "rejects an agent-owned caller-partitioned version with revision CAS"},
+	"ArchiveLearnedSkill":      {KindCallerOwned, "archives an agent-owned caller-partitioned version with revision CAS"},
+	"RollbackLearnedSkill":     {KindCallerOwned, "rolls back an agent-owned caller-partitioned skill with revision CAS"},
+	"ListSkillChanges":         {KindCallerOwned, "lists bounded receipts only from the verified caller's learned-skill partition"},
 
 	// --- exempt: workspace-path-scoped (project trust), not caller-identity-scoped ---
-	"ListCommands":  {KindExempt, "scoped by filesystem workspace path under the pre-existing project-trust gate, not caller identity — out of ADR 0102's per-caller kind table"},
+	"ListCommands":  {KindExempt, "scoped by filesystem workspace path under the pre-existing project-trust gate, not caller identity — out of ADR 0212's per-caller kind table"},
 	"ListWorktrees": {KindExempt, "scoped by filesystem workspace path under the pre-existing project-trust gate, not caller identity"},
 
 	// --- exempt: composition-time wiring / process lifecycle, structurally caller-free ---
@@ -331,7 +344,7 @@ var serviceAccessTable = map[string]ClassificationEntry{
 }
 
 // callerStoreAccessTable classifies memory.CallerStore's exported methods —
-// the "cache/index" boundary ADR 0102 decision 2 names (the local backing
+// the "cache/index" boundary ADR 0212 decision 2 names (the local backing
 // store, search/index, and delete for the caller-partitioned user-model and
 // project memory kinds). Every method derives its namespace from the
 // context-carried verified principal (session.PrincipalFromContext), so all
@@ -353,7 +366,7 @@ var callerStoreAccessTable = map[string]ClassificationEntry{
 }
 
 // systemAccessTable classifies each internal/syscaller.Root's explicit
-// shared-infrastructure scope (ADR 0102 decision 5): the NARROW operation set
+// shared-infrastructure scope (ADR 0212 decision 5): the NARROW operation set
 // that root's system principal may perform. A system principal is NEVER a
 // universal ownership bypass — every other caller-owned boundary (GetSession,
 // GetSchedule, …) denies it exactly like any other non-matching identity
@@ -390,11 +403,11 @@ var systemAccessTable = map[syscaller.Root]ClassificationEntry{
 
 // modelToolAccessTable classifies the model-facing tool families that reach a
 // caller-owned or shared-infrastructure boundary directly rather than only
-// through *Service — ADR 0102 decision 2's "model-tool access boundary" and
+// through *Service — ADR 0212 decision 2's "model-tool access boundary" and
 // Scenario 3's non-store coverage. Names are the literal tool.ToolSpec.Name
 // values (engine/agent keeps its own name constants unexported; these
 // literals are the single source the guard and the tests share — see
-// ADR 0102 and docs/architecture.md's caller-ownership section).
+// ADR 0212 and docs/architecture.md's caller-ownership section).
 var modelToolAccessTable = map[string]ClassificationEntry{
 	// Project memory tools (Remember/Recall/SearchMemory): backed by
 	// memory.CallerStore(project=true), classified caller-owned above.
@@ -462,7 +475,7 @@ func ClassifyCallerStoreBoundaries() []error {
 }
 
 // ClassifySystemBoundaries walks every registered internal/syscaller.Root
-// (the explicit shared-infrastructure system-principal scopes, ADR 0102
+// (the explicit shared-infrastructure system-principal scopes, ADR 0212
 // decision 5).
 func ClassifySystemBoundaries() []error {
 	table := make(map[string]ClassificationEntry, len(systemAccessTable))

@@ -8,9 +8,11 @@ package ui
 
 import (
 	"context"
+	"errors"
 
 	"charm.land/bubbles/v2/spinner"
 	"charm.land/bubbles/v2/textarea"
+	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 
@@ -99,6 +101,7 @@ type Converser interface {
 // mode and returns display-ready labels plus restart guidance. Policy ordering stays outside ui.
 type LearningSettings interface {
 	Advance() (fromLabel, toLabel, restart string, err error)
+	AdvanceSensitivity() (fromLabel, toLabel, restart string, err error)
 }
 
 // Deps are the ui's injected collaborators and presentation config. The ui
@@ -126,15 +129,18 @@ type Deps struct {
 	// (issue #245 Phase 2); nil disables it (the overlay is honestly absent). It is
 	// the lister the picker calls to enumerate stored sessions. Unlike the
 	// caps-gated overlays it is NOT gated on a ServerCapabilities bit — the picker
-	// is available whenever a lister + replayer are wired (a no-FS/cloud server
-	// with a durable SessionStore still has stored sessions to list).
+	// is available whenever a lister + authoritative transcript loader are wired
+	// (a no-FS/cloud server with a durable SessionStore still has stored sessions).
 	Sessions client.SessionLister
-	// Replayer is the durable-event-log replay surface for the /sessions transcript
-	// viewer (issue #245 Phase 2/3, cloud-native Phase 3a read-back); nil disables
-	// the /sessions overlay (the picker needs BOTH a lister AND a replayer — gating
-	// on both keeps the overlay honest: a lister without a replayer could list
-	// sessions it cannot open). The ui holds the interface (not a *Client) so it is
-	// injectable with a fake for offline tests.
+	// SessionManagement mutates stored main-chat metadata. nil leaves rename/delete
+	// undiscoverable even if a custom lister advertises those capabilities.
+	SessionManagement client.SessionManager
+	// Transcript is the authoritative snapshot-derived conversation surface used
+	// by /sessions for both continuation and read-only inspection. Event replay is
+	// optional activity and never substitutes for this seam.
+	Transcript client.SessionTranscripter
+	// Replayer is the optional durable-event-log activity surface used by live
+	// delivery catch-up. It never attests conversation completeness.
 	Replayer client.SessionReplayer
 	// LiveStream is the LIVE per-session event feed (ADR 0075 Scenario 5): the server
 	// pushes fire-result delivery notes for the active session as they occur. The ui
@@ -175,6 +181,14 @@ type Deps struct {
 	Workspace string
 	Mode      string
 	Model     string
+	// Resume is a statically validated existing chat selected before Bubble Tea
+	// starts. Its authoritative transcript is adopted without CreateSession; nil
+	// preserves the new-session default.
+	Resume *client.ResumeSelection
+	// BrowseSessions launches into the same inventory used by /sessions without
+	// creating a throwaway session. New-chat creation remains gated on the startup
+	// model-list reconcile.
+	BrowseSessions bool
 	// InitialPrompt is a CLI-supplied seed prompt auto-submitted once the first
 	// session is ready (the equivalent of typing the prompt and pressing enter).
 	// Empty = today's behavior (no seed). Cleared after the first use so a
@@ -229,6 +243,14 @@ type Deps struct {
 	// selection/coordinate issues (it is what surfaced the highlight-on-wrong-line
 	// bug). Default OFF (zero cost when unset); main.go reads the env var.
 	DebugMouse bool
+
+	// DebugAsk registers the /debug-ask built-in (env MECATUI_DEBUG_ASK=1): it
+	// injects a fake permission ask with long Bash args through the REAL ask
+	// reducer, so the modal's wrap/scroll/full-screen-args behaviour (issue #488)
+	// can be exercised by hand without driving a live run. Default OFF (the
+	// built-in is absent); main.go reads the env var — deliberately never a flag,
+	// so it stays out of --help.
+	DebugAsk bool
 
 	// KeyOverrides maps a keyMap field name (e.g. "Agents") to its replacement chord(s).
 	// nil = no overrides, byte-identical to today. Resolved+validated in composition.
@@ -315,6 +337,18 @@ type Model struct {
 
 	phase     phase
 	sessionID string
+	// browsingStartupSessions keeps the launch picker lifecycle distinct from the
+	// ordinary in-chat /sessions overlay. modelsReconciled gates n so a persisted
+	// selection cannot race the startup ListModels result.
+	browsingStartupSessions bool
+	modelsReconciled        bool
+	// sessionDetailsOpen is the read-only /session surface. The metadata fields
+	// below are refreshed from the current session snapshot; zero timestamps are
+	// rendered as unknown rather than guessed.
+	sessionDetailsOpen bool
+	sessionState       string
+	sessionCreatedAt   int64
+	sessionModifiedAt  int64
 	// sessionTitle is the session's human label for the terminal window/tab title
 	// (the "<title> — …" head of windowTitle). Set-once from the first genuine
 	// user prompt (submitPrompt), adopted on a session switch (switchToSession
@@ -351,8 +385,41 @@ type Model struct {
 	// geometry) short-circuits in openPlanReviewView — a plan-review keypress
 	// does not re-render the plan. Cleared alongside planVPReady.
 	planVPFingerprint string
-	ta                textarea.Model
-	sp                spinner.Model
+
+	// askVPOffset is the YOffset of the permission modal's in-card args
+	// mini-viewport (issue #488): the args region of a non-diff ask is a
+	// height-capped plain string slice scrolled by this offset (NOT a third
+	// viewport.Model — the body is rebuilt per frame/call from the same source,
+	// and the hit-test reuses the same builder, so render and hit-test can never
+	// desync). Reset to 0 on ask advance/retract/endRun/resetSession (via
+	// clearAskArgsView) and when the full-screen args view closes.
+	askVPOffset int
+
+	// The full-screen ask-args view (issue #488) mirrors the planVP cluster
+	// one-for-one: a dedicated viewport the ctrl+t full-args view populates
+	// (openAskArgsView) for a non-diff, non-plan ask, sized to the body region
+	// minus the pinned action bar. argsViewOpen is Model state alongside the
+	// phase (NOT a new phase): the phase stays phaseAwaitingApproval and the
+	// render/hit-test/key arms discriminate on this flag BEFORE the generic
+	// modal arms. argsViewRaw selects the raw-JSON tier (RawArgs toggle).
+	// argsVPWidth/argsVPHeight/argsVPFingerprint drive the same no-op
+	// re-population short-circuit + resize re-wrap (YOffset preserved) as the
+	// planVP trio. All cleared by clearAskArgsView on ask advance/retract/endRun.
+	argsVP            viewport.Model
+	argsVPReady       bool
+	argsVPWidth       int
+	argsVPHeight      int
+	argsVPFingerprint string
+	argsViewRaw       bool
+	argsViewOpen      bool
+
+	// debugAskCycle rotates the /debug-ask built-in (Deps.DebugAsk) through its
+	// canned long-args payloads so repeated invocations exercise the different
+	// wrap shapes (one long line, a compound pipeline, a heredoc).
+	debugAskCycle int
+
+	ta textarea.Model
+	sp spinner.Model
 	// stuck is true while the viewport auto-follows the bottom (tails streaming
 	// output). It is no longer hardcoded: syncStuck re-derives it from
 	// m.vp.AtBottom() after every scroll/wheel/nav so a scroll-up unsticks (and
@@ -388,33 +455,40 @@ type Model struct {
 	// first. Bounded in practice by the server's child-concurrency gate — no
 	// client-side cap needed. Head-advancement funnels through advanceAsk.
 	askQueue []pendingAsk
+	// askResumePhase is the phase the currently-visible ask interrupted, recorded
+	// by the PermissionAskMsg reducer (the ONLY ask-opening path). advanceAsk
+	// returns to it when the queue drains — a wire ask resumes phaseRunning, a
+	// /debug-ask resumes phaseIdle (never a spinner-running phase no run owns).
+	askResumePhase phase
 	// resolvedAsks is the set of askIDs answered/retracted THIS run — a defensive
 	// same-stream dedupe for re-delivered PermissionAskMsgs (the streamGen guard
 	// already kills stale-reader duplicates; this kills same-stream ones). Lazily
 	// initialised (markAskResolved); a reference type mutable through the
 	// value-receiver Model, same pattern as filesSeen below.
-	resolvedAsks   map[string]struct{}
-	mcp            mcpState       // MCP overlay state (view==mcpNone when closed)
-	skills         skillsState    // skills-inventory overlay state (view==skillsNone when closed)
-	palette        paletteState   // slash-command palette (open when the input starts with "/")
-	mention        mentionState   // @-file-mention completion menu (open when the trailing word is an "@token"); mutually exclusive with palette
-	queued         []string       // follow-up prompts staged while a run streams; MERGED into one prompt and drained on a clean/transient stop (see drainQueue)
-	queuePaused    string         // non-empty when a run ended on a non-clean stop with a non-empty queue: the stop reason holding the queue (see drainQueue/renderQueue)
-	team           teamState      // unified ctrl+a agents overlay: container open flag + Teams-tab state (view==teamNone when closed)
-	agentsTab      agentsTab      // active tab in the unified agents overlay (Subagents | Parallel | Teams)
-	subagents      subagentState  // Subagents-tab state of the unified agents overlay (roster | focus)
-	parallel       parallelState  // Parallel-tab state of the unified agents overlay (roster | group focus)
-	agentsInv      agentsInvState // agent-definition inventory overlay state (view==agentsInvNone when closed)
-	soul           soulState      // soul (persona) inspection overlay state (view==soulNone when closed)
-	userModel      userModelState // user-model inspection overlay state (view==userModelNone when closed)
-	userModelGen   uint64         // monotonic request generation; invalidates delayed detail/index responses
-	reflections    reflectionsState
-	reflectionsGen uint64
-	models         modelsState    // /models picker overlay state (view==modelsNone when closed)
-	effort         effortState    // /effort picker overlay state (view==effortNone when closed) — ADR 0055
-	worktrees      worktreesState // /worktrees overlay state (view==worktreesNone when closed) — issue #102
-	schedule       scheduleState  // /schedule overlay state (view==scheduleNone when closed) — issue #234
-	sessions       sessionsState  // /sessions overlay state (view==sessionsNone when closed) — issue #245
+	resolvedAsks    map[string]struct{}
+	mcp             mcpState       // MCP overlay state (view==mcpNone when closed)
+	skills          skillsState    // skills-inventory overlay state (view==skillsNone when closed)
+	skillsEpoch     uint64         // model-lifetime monotonic request epoch; never reset on close
+	skillChangeLast string         // newest bounded lifecycle receipt already announced
+	palette         paletteState   // slash-command palette (open when the input starts with "/")
+	mention         mentionState   // @-file-mention completion menu (open when the trailing word is an "@token"); mutually exclusive with palette
+	queued          []string       // follow-up prompts staged while a run streams; MERGED into one prompt and drained on a clean/transient stop (see drainQueue)
+	queuePaused     string         // non-empty when a run ended on a non-clean stop with a non-empty queue: the stop reason holding the queue (see drainQueue/renderQueue)
+	team            teamState      // unified ctrl+a agents overlay: container open flag + Teams-tab state (view==teamNone when closed)
+	agentsTab       agentsTab      // active tab in the unified agents overlay (Subagents | Parallel | Teams)
+	subagents       subagentState  // Subagents-tab state of the unified agents overlay (roster | focus)
+	parallel        parallelState  // Parallel-tab state of the unified agents overlay (roster | group focus)
+	agentsInv       agentsInvState // agent-definition inventory overlay state (view==agentsInvNone when closed)
+	soul            soulState      // soul (persona) inspection overlay state (view==soulNone when closed)
+	userModel       userModelState // user-model inspection overlay state (view==userModelNone when closed)
+	userModelGen    uint64         // monotonic request generation; invalidates delayed detail/index responses
+	reflections     reflectionsState
+	reflectionsGen  uint64
+	models          modelsState    // /models picker overlay state (view==modelsNone when closed)
+	effort          effortState    // /effort picker overlay state (view==effortNone when closed) — ADR 0055
+	worktrees       worktreesState // /worktrees overlay state (view==worktreesNone when closed) — issue #102
+	schedule        scheduleState  // /schedule overlay state (view==scheduleNone when closed) — issue #234
+	sessions        sessionsState  // /sessions overlay state (view==sessionsNone when closed) — issue #245
 	// activeModel is the currently-selected (provider, model) the NEXT CreateSession
 	// will carry (apply-on-next-create). Seeded from Deps.InitialModel, updated by the
 	// picker, and reconciled-to-default at connect when its provider is unavailable. It
@@ -576,6 +650,14 @@ type Model struct {
 	// re-fires. Empty = no seed (the default; today's behavior).
 	pendingInitialPrompt string
 
+	// Startup-adopted chats remain protected until their first prompt reaches the
+	// server stream. A pre-SessionInit failure restores the authoritative transcript
+	// as a read-only retry/back view; no fallback session is ever created.
+	startupAdopted            bool
+	startupFirstPromptPending bool
+	startupRunEntryFailed     bool
+	startupRetryPrompt        string
+
 	// restartFailed is true while a /models restart-now handoff's re-create FAILED and
 	// the app is in the RECOVERABLE no-session state (phaseIdle, sessionID==""). It is
 	// NOT phaseFatal: a transient blip on a deliberate model switch must leave a usable
@@ -714,12 +796,14 @@ type Model struct {
 	// selBase is the UNSTYLED content the active selection's highlight is spliced
 	// onto (styleSelection) — the conversation render WITHOUT any selection styling.
 	// It is captured the moment a selection becomes active (a press / word / line
-	// gesture) and refreshed by refreshView (a full conversation re-render). A pure
-	// GEOMETRY change (drag / edge-autoscroll, via snapshotSelection) re-splices THIS
-	// base in place rather than re-rendering the whole conversation — so the highlight
-	// follows the new span without a content rebuild and the viewport's scroll/line
-	// geometry is undisturbed (matching the old in-place highlight). Empty when no
-	// selection is active.
+	// gesture) and refreshed by refreshView (a full conversation re-render) — and by
+	// snapshotSelection itself when a gesture races a pending delta (the viewDirty
+	// guard, so a stale base is never spliced). A pure GEOMETRY change (drag /
+	// edge-autoscroll, via snapshotSelection) re-splices THIS base in place rather
+	// than re-rendering the whole conversation — so the highlight follows the new
+	// span without a content rebuild and the viewport's scroll/line geometry is
+	// undisturbed (matching the old in-place highlight). Empty when no selection is
+	// active.
 	selBase string
 
 	// gatewayNotice is the rendered idle footer-left notice fired ONCE per process
@@ -770,7 +854,7 @@ func New(deps Deps) Model {
 	// high-contrast block (luminance-derived foreground), legible on dark and light
 	// themes alike — styleSelection reads it via m.deps.Theme.Style("selection").
 
-	return Model{
+	m := Model{
 		deps:  deps,
 		keys:  keys,
 		rend:  newRenderer(th, keyMarkings(keys)),
@@ -797,6 +881,36 @@ func New(deps Deps) Model {
 		// env-based) so the header hot path reads a bool, never os.Environ().
 		emojiOK: emojiCapable(),
 	}
+	if deps.BrowseSessions {
+		m.phase = phaseIdle
+		m.browsingStartupSessions = true
+		m.modelsReconciled = deps.Models == nil
+		m.sessions = newSessionsPanelState()
+		m.sessions.startup = true
+		m.ta.Blur()
+		if deps.Sessions == nil {
+			m.sessions.loading = false
+			m.sessions.err = errors.New("session inventory unavailable")
+		}
+	}
+	if resume := deps.Resume; resume != nil {
+		m.phase = phaseIdle
+		m.sessionID = resume.Row.ID
+		m.sessionTitle = resume.Row.Title
+		m.sessionState = resume.Snapshot.State
+		m.sessionCreatedAt = resume.Snapshot.CreatedAt
+		m.sessionModifiedAt = resume.Row.ModifiedAt
+		m.activeWorkspace = resume.Snapshot.Workspace
+		m.activeMode = client.ModeString(client.ModeFromString(resume.Snapshot.Mode))
+		m.effectiveModel = resume.Snapshot.ResolvedModel
+		m.caps = resume.Snapshot.Capabilities
+		m.conv = conversationFromTranscript(resume.Transcript.Messages)
+		m.startupAdopted = true
+		m.restartedThisRun = true
+		m.statusMsg = "continuing chat " + sanitizeTerminal(resume.Row.Title) + " — type to add a turn"
+		m.refreshView()
+	}
+	return m
 }
 
 // recordFileChange folds a workspace path touched by a file-mutating tool into
@@ -880,8 +994,9 @@ func (m Model) resetSession() Model {
 	// picker/clear paths are idle-only, so no ask is open), but keeps this seam's
 	// "owns all session-derived state" invariant honest — and the restart-now
 	// handoff goes through here. The plan-review viewport is cleared alongside (a
-	// plan ask may have been open).
+	// plan ask may have been open), as is the full-screen ask-args view.
 	(&m).clearPlanReview()
+	(&m).clearAskArgsView()
 	m.ask = pendingAsk{}
 	m.askQueue = nil
 	m.resolvedAsks = nil
@@ -926,6 +1041,10 @@ func (m Model) resetSession() Model {
 	return m
 }
 
+// startupResumeReadyMsg starts post-adoption work only after Bubble Tea owns the
+// model, preserving transcript-before-seed ordering.
+type startupResumeReadyMsg struct{}
+
 // Init starts the spinner and kicks off connect.
 //
 // Connect SEQUENCING (§4 key-removed safety): when a model lister is wired, it
@@ -938,6 +1057,19 @@ func (m Model) resetSession() Model {
 // fallback leg. With no lister wired (old server / persistence off) it fires
 // CreateSession directly (the historical path, with an empty selection).
 func (m Model) Init() tea.Cmd {
+	if m.deps.BrowseSessions {
+		cmds := []tea.Cmd{m.sp.Tick}
+		if m.deps.Models != nil {
+			cmds = append(cmds, client.ListModelsCmd(m.deps.Ctx, m.deps.Models))
+		}
+		if m.deps.Sessions != nil {
+			cmds = append(cmds, client.ListSessionsCmd(m.deps.Ctx, m.deps.Sessions), textinput.Blink)
+		}
+		return tea.Batch(cmds...)
+	}
+	if m.deps.Resume != nil {
+		return tea.Batch(m.sp.Tick, func() tea.Msg { return startupResumeReadyMsg{} })
+	}
 	if m.deps.Models != nil {
 		return tea.Batch(m.sp.Tick, client.ListModelsCmd(m.deps.Ctx, m.deps.Models))
 	}

@@ -17,6 +17,74 @@ Prefer updating the relevant design doc + this file over re-growing CLAUDE.md.
 
 ---
 
+## Credential store
+
+`internal/adapter/credentialstore` owns a narrow host-internal port; it stays out of
+`engine/port` because the engine is not its consumer. `Reader` provides `Get`, backend
+capabilities, and `Close`; `ConditionalWriter` provides CAS `Put`/`Delete`; mutable
+`Store` embeds both. Mutability is represented by interface implementation, not a
+capability flag. `internal/adapter/credentialstore/environment.go` implements an explicit
+Reader for one namespace/key/environment-name/lookup tuple. Its name must start with
+`MECATL_` and otherwise follows the ASCII grammar `[A-Z_][A-Z0-9_]{0,127}`; its value is canonical padded base64 decoded under
+`MaxValueBytes`. Construction performs no lookup, `Get` serves only the exact configured
+opaque key with owned copies and a deterministic domain-separated version, and `Close` is
+idempotent. `Get` invokes the host lookup outside the lifecycle lock and rechecks closure
+before returning, so a blocking or reentrant lookup cannot delay `Close` and an in-flight
+read discards its result after closure. It has no list, mutation, logging, `os.LookupEnv`, or
+fallback path.
+
+The package does not import OAuth, MCP, provider, config, XDG, or composition packages.
+Logical stores are namespace-bound. Keys and values are arbitrary bytes with explicit
+caps. `Put` is create-only when `expected == nil` and otherwise replace-only for the exact
+opaque version; `Delete` always requires a valid exact version. There is no unconditional
+or zero-version wildcard. The shared mutable-Store suite in
+`internal/adapter/credentialstore/conformance/conformance.go` drives both backends.
+
+The deterministic memory backend shares nested namespace maps behind one mutex, copies
+all values, and mints versions from a backend-wide monotonic generation. The encrypted
+backend in `internal/adapter/credentialstore/encrypted_file.go` is available only on the
+reviewed Unix targets. Construction requires an explicit absolute `0700`, current-UID
+root and exactly 32 injected bytes; it clones that key and clears its sole long-lived
+owned copy under the lifecycle write lock on `Close`. It performs no key/path discovery.
+Unsupported platforms return `ErrUnavailable` without filesystem side effects.
+
+Physical names are full domain-separated SHA-256 hashes: one `ns-v1-<digest>` directory,
+then `rec-v1-<digest>.lock` and `.cred` files per logical key. The `0600` lock sentinel
+is stable and never deleted. Every operation takes its exclusive flock, rechecks file
+ownership/type/mode/link count, and completes read/authentication, condition evaluation,
+and mutation while holding it. Existing corruption is authenticated before conflict
+selection, so `Put` and `Delete` cannot launder a damaged or wrong-key record.
+
+`internal/adapter/credentialstore/envelope.go` encodes one strict format: eight-byte
+magic, version/algorithm/nonce-length/zero-flags bytes, a big-endian ciphertext length,
+a random 12-byte nonce, and AES-256-GCM ciphertext/tag. Decoder input is capped at
+`44 + MaxValueBytes`; unknown metadata, impossible lengths, truncation, trailing bytes,
+and authentication failures are `ErrCorrupt`. AAD covers the complete header,
+namespace, and arbitrary-byte record key through length-prefixed framing. The SHA-256
+of the complete persisted envelope is the opaque version; random nonces make identical
+replace and delete/recreate fresh against ABA.
+
+Writes use an unpredictable exclusive `0600` temporary in the namespace directory,
+write + file sync + close, a final context gate, same-directory rename, then directory
+sync where supported. Delete has the same final gate before remove and directory sync.
+An error before rename/remove leaves the old record authoritative; an error after that
+atomic boundary may have committed, so the caller must `Get` before retrying.
+Cancellation racing after the final gate cannot cancel the syscall. A crash can leave an
+encrypted temporary file, which is ignored rather than swept.
+
+The posture is intentionally local: advisory flock/CAS is claimed only for cooperating
+processes on one supported local host/filesystem. Root and same-UID attackers, process
+memory, secure media erasure, valid-envelope rollback, lengths/access patterns, and
+network-filesystem semantics are not defended. No default consumer or key source ships;
+OAuth integration remains explicit, and OS-keyring/HSM acquisition, remote/Kubernetes
+mutation, and per-client routing remain separate work. A Secret-backed environment is a
+read-only process snapshot: durable rotation needs an external controller and restart or
+a future Kubernetes Secret `resourceVersion` CAS backend. See
+[ADR 0218](../adr/0218-credential-store.md) and
+[ADR 0221](../adr/0221-read-only-credential-source.md).
+
+---
+
 ## Caller identity embedding and OIDC module boundary
 
 The engine accepts identity only after verification. `session.PrincipalFromClaims`
@@ -28,12 +96,28 @@ session aggregate itself, it also seeds durable ownership through
 `Session.RestoreLabels(principal, "")`; children, forks, and resumed sessions inherit
 that owner.
 
-OIDC/JWKS mechanics live in the opt-in `authn/oidc` module (ADR 0103), not engine and
+OIDC/JWKS mechanics live in the opt-in `authn/oidc` module (ADR 0206), not engine and
 not a provider module. Its `Validator` wraps `toolhive-core/authn`, maps validation and
 IdP-availability failures onto module-owned sentinels, fails closed if verified claims
 do not project to a principal, and owns an explicit `Close` for the background refresh.
 `internal/cliconfig` adapts those errors to the unchanged server sentinels and retains
 the server-root system context and all existing flag behavior.
+
+---
+
+## Domain — `engine/session/` (producer taxonomy)
+
+`engine/session/session.go` (`Session.Kind` / `Session.Relationship`) carries inert,
+durable creation metadata with a closed validated schema in `engine/session/kind.go`
+(ADR 0217): public creates and ADR-0065 peer/carryover forks remain `main` without
+lineage; scheduler fires, Subagent children, Parallel branches, and team members are
+stamped by their trusted producer paths. `engine/session/session.go` (`New`) keeps its
+existing signature and creates `main`; intention-revealing constructors create the
+non-main kinds. `engine/adapter/sessnap/sessnap.go`, every SessionStore adapter
+(including the opaque remote snapshot driver), `internal/adapter/store/jsonlstore/metalist.go`
+(`MetaList`), and `engine/adapter/eventsource/eventsource.go` (`SessionMeta`) round-trip the values.
+Restore rejects invalid combinations; a legacy absent kind becomes fail-closed
+`unknown` rather than gaining main-session continuation posture.
 
 ---
 
@@ -78,7 +162,7 @@ on a reused session at the run-entry funnel (`loadAndReopen`):
   "retryable" instead of permanently bricking the session. Recovery makes retry
   POSSIBLE, not guaranteed — a permanent-cause failure (auth/config) simply
   fails again with the conversation context intact, and the user can clear. Since
-  ADR 0077 (issue #318) the subagent `resume:` path uses this seam too: a failed
+  ADR 0200 (issue #318) the subagent `resume:` path uses this seam too: a failed
   CHILD recovers exactly like a main session (see the Subagent resume note
   below), because a long-running direct-write child's accumulated cost includes
   mutations already applied to the real tree.
@@ -336,6 +420,21 @@ config resolves per-session against that root without a mutate-capable handle; `
 (child/member engines with no resolver). `Clock`'s production implementation is
 `engine/adapter/wallclock`, wired in `engineDepsForProvider`/`newChildEngineWithHooks`
 (issue #53 — previously never injected, leaving all latency observations zero).
+
+**Provider request session correlation (issue #543).**
+`engine/agent/loop.go` (`startRun`) overwrites the run context with the exact
+loaded `session.SessionID` via `engine/port/sessioncontext.go` (`WithSessionID`),
+shipped in `engine/v0.11.0`, so regular and awaiting-resume runs share one binding seam and nested engines replace a
+parent binding with their own child/member/auxiliary ID. Compaction receives that
+same context and therefore uses the parent run ID. The three real HTTP adapters read
+it at request time and add `X-Mecatl-Session-ID` through SDK per-request options:
+`provider/openai/openai.go` (`Stream`),
+`provider/openaichat/openaichat.go` (`Stream`), and
+`provider/anthropic/anthropic.go` (`Stream`). No provider instance stores
+session identity. Absent or Go-illegal header values are omitted without changing
+the inference request; legal values remain exact. The proprietary field is
+correlation-only, never auth, tracing, idempotency, provider state, user/safety
+identity, or cache identity ([ADR 0216](../adr/0216-provider-session-correlation-header.md)).
 
 ## Application — `engine/agent/` (subagent workspace policy)
 
@@ -1310,7 +1409,7 @@ team-member transcript (`team-<teamID>-<member>`) cannot be resumed through Suba
 via `InspectMember`) — the same gate `InspectSubagent` uses. The child is reloaded and its terminal
 state recovered at the AGENT layer (the `loadAndReopen` discipline): `StateCompleted` → `Reopen()`,
 `StateCancelled` → `Interrupt()` (history-repair, no dangling tool_use), `StateIdle` → run as-is,
-`StateFailed` → `Recover()` (history-repair with the FAILURE-accurate close-out wording — ADR 0077,
+`StateFailed` → `Recover()` (history-repair with the FAILURE-accurate close-out wording — ADR 0200,
 issue #318; it used to be refused on the premise that "a failed child carries no accumulated-user-context
 cost", which a 50+-turn direct-write child with mutations already applied to the real tree falsifies),
 any other state (e.g. a snapshot still recorded `running` — a process that died mid-turn) →
@@ -1773,7 +1872,7 @@ now script a second clean end (their first one legitimately draws the nudge). No
 change: the loop still emits exactly THREE operator lines.
 
 **Background Bash commands (issue #23 commands half — `background: true` on Bash +
-BashStatus; ADR 0090).** The open half of #23 after ADR 0015's background subagents:
+BashStatus; ADR 0201).** The open half of #23 after ADR 0015's background subagents:
 a long-running shell command (a dev server, a watch loop, a slow build) detaches
 instead of blocking the turn. **The tool is the AGENT loop's own Bash**
 (`engine/agent/bashtool.go`, `BashTool` / `NewBashTool`), NOT the fstools adapter's —
@@ -2275,7 +2374,7 @@ mutating-tool backstop because `MemberToolNames()` derives from `MemberTools`); 
 **LastText/completed-task digest** for members that recorded NO finding (rescues a limit-cut-off
 member whose `LastText` is otherwise the only trace); (3) the **lead's drained inbox**.
 `neutraliseFraming`'s header list is extended for every new synthesis/round-0 section header so
-an injected body cannot forge one. A lead stopped by its lifetime turn budget — or, since ADR 0077,
+an injected body cannot forge one. A lead stopped by its lifetime turn budget — or, since ADR 0200,
 by one round that ended in `StopError` — is still *resumable*, so the ONE synthesis turn runs even
 then (§5 special-case). `runTurn` picks the recovery seam from the session's STATE
 (`StateFailed → Recover`, else `Reopen`) rather than from `stop`, because `terminateComplete` lands a
@@ -2283,7 +2382,7 @@ text-bearing `StopError` turn in `StateCompleted`; `memberRT.nonResumable` is no
 transition itself fails (in practice: a CANCELLED member, whose `Reopen` is illegal by design), and
 that is the one case that still yields an empty `Report` → the structured fallback.
 
-**Bounded member retry (ADR 0077, the last #318 acceptance bullet).** Recovering the
+**Bounded member retry (ADR 0200, the last #318 acceptance bullet).** Recovering the
 session made the member drivable, but `stopped` still descheduled it, so a member that hit ONE
 transient stall was benched for the rest of the run. `runTurn` now leaves an errored member
 SCHEDULABLE while it is under `Supervisor.memberErrorRetries` (`agent.WithMemberErrorRetries`, default
@@ -2817,7 +2916,7 @@ a `settings.yaml` TTL key, and Anthropic's 1h TTL via OpenRouter (no TTL
 concept on that path). See [ADR 0100](../adr/0100-provider-prompt-caching.md)
 for the full rationale and the rejected mixed-TTL alternative.
 
-### OpenRouter downstream-provider steering + echo (issue #480, ADR 0104)
+### OpenRouter downstream-provider steering + echo (issue #480, ADR 0210)
 
 OpenRouter is a meta-provider: one model id fans out to several **downstream**
 inference providers (Anthropic, Bedrock, Vertex, DeepInfra, …). Two halves, both
@@ -3272,17 +3371,29 @@ tool call refined into an askable ask, a serialized provenance marker, a verdict
   the SAME posture as every other permission ask (Write/Bash asks carry their args for
   operator review); the operator is the intended audience. Gauntlet #7 holds: the
   `EvApproval` payload carries ONLY tool NAME + verdict + askID + call id — NO args.
-- **The scrollable plan-approval modal (`cmd/mecatui/ui/permission.go`
-  (`renderPlanApprovalModal`), `cmd/mecatui/ui/permission.go` (`planBodyFromArgs`)).**
-  The mecatui modal parses the `plan` (falling back to `note`) out of `ask.Args` JSON and
-  renders it between the model line and the buttons so the operator can READ what they are
-  approving (not just "plan ready for operator approval"). A long plan is line-capped to
-  `maxPlanLines` (12) with a "+N more lines · ctrl+t expand" affordance, and the global
-  ctrl+t (`expandTools`) toggle reveals the full plan — the SAME established reveal
-  pattern as Edit/Write diffs and tool-result bodies. The model-authored plan text is
-  terminal-sanitized. Backwards/forwards compat: no `plan` arg → `note`; no note → the
-  reason line; malformed args JSON → the reason line (an older model that put the plan only
-  in message text never breaks the modal).
+- **The scrollable plan-approval view (`cmd/mecatui/ui/permission.go`
+  (`openPlanReviewView`), `cmd/mecatui/ui/permission.go` (`planBodyFromArgs`;
+  `renderPlanApprovalModal` no longer exists — the plan path is
+  `renderPlanReviewView` over the dedicated planVP viewport).** The mecatui
+  plan surface parses the `plan` (falling back to `note`) out of `ask.Args`
+  JSON and renders it scrollable in the conversation region (NOT the centered
+  card) with the verdict buttons pinned to the bottom bar, so the operator
+  READs what they are approving (not just "plan ready for operator approval").
+  The model-authored plan text is terminal-sanitized. Backwards/forwards
+  compat: no `plan` arg → `note`; no note → the reason line; malformed args
+  JSON → the reason line (an older model that put the plan only in message text
+  never breaks the modal). **The non-diff ask-args surface (issue #488, ADR
+  0108 — `cmd/mecatui/ui/permission.go` (`openAskArgsView`))** mirrors this
+  trio one-for-one: a non-diff, non-plan ask's args WRAP inside the centered
+  card (a Bash `{"command": …}` decodes to the command text), cap at six rows
+  plus a scroll/full-args hint, and `ctrl+t` opens the full-screen argsVP view
+  (raw JSON via the bare-`r` RawArgs toggle; the verdict keys/buttons work from
+  inside it) — ctrl+t routing by ask type is `isDiffCapableAskTool` (Edit/Write
+  keep the in-modal diff expand; plan asks untouched). The modal body builder
+  `cmd/mecatui/ui/permission.go` (`permissionModalBodyParts`) remains the
+  SINGLE source for render AND click hit-test (it measures the buttons row at
+  the structural point it writes them), so the added args/hint rows cannot
+  desync the click geometry.
 - **Verdict → mode (`engine/agent/loop.go` (`planApprovedTarget`)).** Allow-once →
   `ModeDefault`; allow-always → `ModeAccept`; deny → terminate CLEANLY with
   `engine/session/session.go` (`StopPlanIterate`) (the iterate pause — issue #206
@@ -3535,11 +3646,52 @@ trivial completions spend no provider call and do not consume the debounce caden
 constructs `agent.EvidenceReflector` on the selected session provider/model (or the same-provider
 `reflection` slot), stages through the durable proposal repository under principal/project partitions,
 and applies `memorypromotion.StandardPolicy`. `review` stages without memory writes. `auto` promotes operator facts only from explicit principal-authored remember evidence. Trusted project facts require principal-authored evidence and an exact configured-workspace match; tool/assistant/repository-only evidence remains staged. Project candidates from admitted alternate roots remain staged/reviewable but cannot approve, undo, or read/write launch-root project memory until a safe exact-root lifecycle store exists; untrusted project material is not ingested. Existing project partitions stay listable/rejectable. Conflicts and ambiguous facts remain non-promoted, project material
-requires `projectIngestionAdmitted`, and procedures become `deferred_unsupported`. `off` installs no
+requires `projectIngestionAdmitted`. Procedures first become `deferred_unsupported` as the durable crash-recovery checkpoint, then enter the installed learned-skill pipeline in review/auto. `off` installs no
 automatic observer, started coordinator worker, or eager proposal repository. Explicit reflection synchronously uses the persisted session provider/model, performs a bounded EventLog read, and lazily opens persistence and starts coordinator workers in Off. Approval re-verifies owner-authorized message/event digest, sequence, and tool-call evidence before promotion. The deprecated `--user-model-review` alias maps to this same `auto` path;
 the old exported `UserModelReviewer`, `NewUserModelObserver`, and `Review` remain compatibility APIs but
 standard Build no longer uses their direct-writing child engine. Dream and explicit memory tools remain
 independent CAS writers. The shipped gRPC/HTTP surface provides synchronous explicit reflection plus caller-partitioned proposal list/detail/decision/undo, and mecatui provides windowed review with exact canonical value/scope/description and stale-CAS refresh.
+
+**Configurable learning trigger (ADR 0114):** `engine/learning/admission.go`
+(`ThresholdPolicy`) replaces the old `len(signals)` gate with a pure closed decision over the
+session kind, stop, verified current `MessageSpan`, standard weighted signals, counters, and run
+usage. `engine/agent/loop.go` (`observeCompletion`) snapshots Kind/Counters and locates the accepted
+genuine prompt in final history; compaction that makes the span unverifiable therefore fails closed.
+Hard explicit intent is genuine-current-user-only and bypasses score/cooldown/legacy interval, never
+budgets or coordinator capacity. `internal/app/learning_controller.go`
+(`automaticAdmissionController`) owns the process-local sliding reservations, per-principal weighted
+cooldown, completed-digest LRU, and canonical digest excluding `ExistingFact`; coordinator admission
+runs its reservation callback after duplicate/capacity checks and before provider work, so queue-full
+cannot spend a reservation. Terminal failures still call completion and retain the reservation.
+Authenticated explicit reflection carries `SignalHostRequested`, bypasses this controller, and joins
+an identical in-flight digest. Off constructs no automatic controller/coordinator worker; explicit Off
+runs synchronously against lazy proposal persistence. `Close` cancels and joins; no startup/shutdown
+sweep exists. Every process gets an independent budget and restart resets all controller state.
+
+**Evaluated agent-owned skills (#510; ADR 0111):** `engine/adapter/skilllifecycle.Pipeline` is a
+state-aware, idempotent resume over content-addressed versions: it skips already-committed evaluation/stage/
+activation boundaries and reconciles publication for an already-active version. PASS/ABSTAIN stage and FAIL
+rejects; auto+PASS activates only with a real bound publisher, while `SimilarStageHint` always forces review.
+A nil evaluator records ABSTAIN. `Config.SkillEvaluator` is trusted admission control: an embedder must supply
+immutable host fixture IDs, independent baseline/treatment execution, a fenced candidate, no tools/shell/network,
+and explicit limits; mecatl ships no production judge. Candidate inventory drains external metadata plus every
+learned version in the exact partition.
+
+`skillfs.AtomicCatalog` composes the existing path-free `tool.SkillSource` with body-only learned versions behind
+one immutable generation pointer. External filesystem/driver assets retain the ordinary `{name, asset}` schema,
+validation, and bounds; learned asset requests fail explicitly, and no path/read-root/materialization seam exists.
+External names win. Shared, selector, and no-fs catalogs register `LiveTool` over the same pointer. Only the
+ownerless deployment partition and exact trusted launch-root project can bind that shared publication target;
+unrelated caller/project state remains staged. Service mutation authorization is skill-specific and independent
+of memory convergence.
+
+Archive accepts only Active. Rollback additionally requires durable proof that the PASS target was previously
+active. Post-commit publication uses a bounded cancel-detached context and reports `published` versus
+`pending_reconciliation` alongside committed state; failure revokes the learned entry fail-safe, while startup and
+live-list refresh reconstruct from durable active state. Lifecycle `SkillDraft` derives verified caller identity,
+exact live workspace root, and main-agent ownership at execution, refusing identity-free calls. API/TUI requests
+preserve project and correlate generation plus skill/version; list and receipt consumers drain every page, with
+receipt-count pagination. See `docs/adr/0111-hardened-agent-owned-skill-publication.md`.
 
 `agent.terminateComplete` invokes the existing Observer after state establishment and excludes
 error/cancelled terminals. Project settings apply only as a minimum ceiling (`off < review < auto`).
@@ -3648,7 +3800,7 @@ its OWN `openrouter.Model` (composition maps it to `modelEntry` — no import cy
 `id`/`name`/`context_length`/`top_provider.max_completion_tokens`→OutputLimit (the output
 ceiling, captured for the resolvers)/`architecture.input_modalities`/`supported_parameters∋{reasoning,tools}`.
 
-### `authfile` + `openaicodex` — manual ChatGPT subscription adjunct (ADR 0104)
+### `authfile` + `openaicodex` — manual ChatGPT subscription adjunct (ADR 0215)
 
 `internal/adapter/authfile` accepts one additional strict leaf only at
 `providers.openai-codex.oauth`: required non-empty string `access_token`, optional
@@ -4624,7 +4776,7 @@ the remote tool offers none (it saves the context budget, not the remote-hop
 bandwidth). See ADR 0063 for the rejected alternatives (persist-to-scratch + `jq(1)`,
 hand-rolled JSON-path, shell-out to `jq(1)`, a general `QueryJson` tool).
 
-## Caller ownership classification guard (`internal/adapter/server/classification.go`, issue #368, ADR 0102 decision 2)
+## Caller ownership classification guard (`internal/adapter/server/classification.go`, issue #368, ADR 0212 decision 2)
 
 The per-kind ownership table `internal/adapter/server/ownership.go` decides is
 mechanically inventoried, not left to a future implementer's memory. Four
@@ -4699,7 +4851,7 @@ name in `boundaries` must resolve to a valid table entry (else
 "stale table entry" half) — a renamed/removed method leaves a dangling row
 the guard also catches, not just a new unclassified one.
 
-See [ADR 0102](../adr/0102-caller-ownership-enforcement.md) and
+See [ADR 0212](../adr/0212-caller-ownership-enforcement.md) and
 [`docs/architecture.md`](../architecture.md)'s "Caller ownership enforcement"
 section for the narrative and the per-kind decision the table classifies.
 
@@ -4898,15 +5050,10 @@ discover skills via `resolveSkills`) and produces the process-wide `catalogAsset
 under the typed-nil discipline: every assignment is a known-non-nil concrete store or
 an untyped nil (`buildUserModelStore` returns the interface with untyped-nil returns,
 guarded by `TestBuildUserModelStoreDisabledReturnsNilInterface`), so the typed-nil
-interface trap cannot arise — the skills slice, the per-skill
-read-root allowlist `skillReadRoots` — computed ONCE from that same discovered slice
-(`internal/app.skillReadRoots`: unique `osfs.ResolveRoot(filepath.Dir(sk.Path))` per
-skill, so the trust gate is inherited by construction and there is no second list to
-drift) and threaded into EVERY production osfs Workspace constructor
-(`osfsWorkspaceFactory` + the shared `newForkWorkspace` fork closure) as
-`osfs.WithReadRoots`, making an activated skill's out-of-workspace files Read/Stat-able
-by the absolute path the Skill tool's "Base directory" header advertises — and ONE
-process-wide `agent.LRUForkReaper` so `ForkPreservedCap` stays a process bound). `assembleCatalog`
+interface trap cannot arise — the skills metadata snapshot, path-free source,
+and name→body preload index — resolved ONCE from the admitted source set, so the
+trust gate is inherited by construction — and ONE process-wide
+`agent.LRUForkReaper` so `ForkPreservedCap` stays a process bound). `assembleCatalog`
 is the single registration path both the build-time shared catalog and every
 `sessionEngineFactory` catalog run through, in the canonical order core → global MCP
 (+ `MCPResourceTools` meta-tools) → client MCP → Subagent trio → Parallel → Team →
@@ -5111,8 +5258,8 @@ the scoped WRITE path is deferred** (see below).
   follows symlinks, so a committed `MEMORY.md` that is a SYMLINK to an out-of-tree secret
   (`~/.ssh/id_rsa`, `/etc/passwd`) would be read and injected into the prompt — an exfiltration path
   even in a TRUSTED workspace (a contributor may not scrutinise a committed symlink). After the path
-  is computed, both root and path are resolved through symlinks (`osfs.ResolveRoot` for the root — the
-  SAME resolver the Workspace read-root allowlist is keyed on — and `filepath.EvalSymlinks` for the
+  is computed, both root and path are resolved through symlinks (`osfs.ResolveRoot` for the root and
+  `filepath.EvalSymlinks` for the
   file) and the resolved real path is asserted to STILL live under the resolved root; an escape is a
   fail-soft `("", false)` + one WARN. It is fail-soft on a MISSING file (`EvalSymlinks` ENOENT ⇒
   `os.IsNotExist` ⇒ true, so the ordinary `os.ReadFile` miss handles the cold-start case); any other
@@ -5215,11 +5362,11 @@ engine has the FS tools baked in) and `server.SessionEngineFactory` grew a
   files are body-only in a no-fs session: the body injects fine, asset reads fail honestly
   with not-exist through the nofs workspace (and the posture note tells the model so).
 
-### Version-aware Workspace mutation and the execution-environment seam (ADR 0104 + ADR 0105 + ADR 0106)
+### Version-aware Workspace mutation and the execution-environment seam (ADR 0208 + ADR 0211 + ADR 0214)
 
 A coding agent ultimately needs one execution environment whose filesystem and command namespace are
-affined: the bytes Read/Edit see and the tree Bash builds must be the same place. ADR 0104 fixes the
-layering and the version protocol; ADR 0105 IMPLEMENTS the runtime seam (issue #462). Durable identity
+affined: the bytes Read/Edit see and the tree Bash builds must be the same place. ADR 0208 fixes the
+layering and the version protocol; ADR 0211 IMPLEMENTS the runtime seam (issue #462). Durable identity
 lives cycle-safely in `session.EnvironmentRef{Kind, ID}` (stdlib-only, so it CAN ride the
 snapshot/event log without pulling tool types in — but in phase 2 it is an IN-PROCESS identity only,
 NOT yet a snapshot field; persistence/remote transport are deferred to phase 3); the minimal immutable
@@ -5237,7 +5384,7 @@ and Team use the CHILD Environment. Composition wires the forker's bound-runner 
 (`forker.WithRunner`, the same envscrub/gitenv hardening as the parent runner); the Service binds the
 main `CommandRunner` + a `CommandRunnerFactory` for worktree-bound sessions.
 
-**Persistence/reattachment (ADR 0106, issue #462 phase 3).** `EnvironmentRef` is now a DURABLE
+**Persistence/reattachment (ADR 0214, issue #462 phase 3).** `EnvironmentRef` is now a DURABLE
 snapshot field: `session.Session.EnvironmentRef` is an inert exported label (the same posture as
 `Profile`/`ProviderID`), persisted via `sessnap.Snapshot.EnvironmentRef` (Go 1.26 `omitzero`, so a
 default/local session stays byte-identical to a pre-phase-3 snapshot; a legacy snapshot restores the
@@ -5308,7 +5455,7 @@ evicted on `CloseSession` / editor disconnect. Rebuilding a default Environment 
 including the next user run — resets its ledger, so Edit/overwrite is refused until Read
 records a version through that instance. The overrides are in-memory (restart loses them);
 a restarted session re-derives its Environment through the same rehydration path (no-fs
-profile, ACP adapter reconnect). **EnvironmentRef is now a DURABLE snapshot field (ADR 0106, issue #462 phase 3):** `EnvironmentRef` persists via `sessnap.Snapshot.EnvironmentRef` (Go 1.26 `omitzero` — a default/local session stays byte-identical to a pre-phase-3 snapshot); a non-in-tree Kind reattaches a live `Environment` at run entry through `server.Config.EnvironmentResolver` (nil/mismatch/nil-Workspace fails loudly with `ErrFailedPrecondition`, never a silent local fallback; the in-tree Kinds never reach the resolver — they re-derive through the factories; the resolver does NOT trigger per-session engine rehydration — environment reattachment and engine rehydration are INDEPENDENT). A default `local`/`nofs` ref is stamped at `createSession`; a legacy zero ref is stamped from the first resolved live Environment on the next save (no migration sweep). See the Persistence/reattachment subsection above for the full detail.
+profile, ACP adapter reconnect). **EnvironmentRef is now a DURABLE snapshot field (ADR 0214, issue #462 phase 3):** `EnvironmentRef` persists via `sessnap.Snapshot.EnvironmentRef` (Go 1.26 `omitzero` — a default/local session stays byte-identical to a pre-phase-3 snapshot); a non-in-tree Kind reattaches a live `Environment` at run entry through `server.Config.EnvironmentResolver` (nil/mismatch/nil-Workspace fails loudly with `ErrFailedPrecondition`, never a silent local fallback; the in-tree Kinds never reach the resolver — they re-derive through the factories; the resolver does NOT trigger per-session engine rehydration — environment reattachment and engine rehydration are INDEPENDENT). A default `local`/`nofs` ref is stamped at `createSession`; a legacy zero ref is stamped from the first resolved live Environment on the next save (no migration sweep). See the Persistence/reattachment subsection above for the full detail.
 
 ### Path-escape posture (`docs/acceptance/path-escape-posture.md` + ADR 0080)
 
@@ -5322,15 +5469,15 @@ tool body, never re-opens it after).
 **Decision in composition, serving in osfs.** Two halves, deliberately split:
 
 - `internal/app/escapeclassifier.go` (`escapeClassifier`) — a pure composition-layer
-  predicate answering "is this Read/Write/Edit call an out-of-root escape?" into four
-  kinds: in-root / read-root / escape / pseudo-fs. It NEVER reimplements the osfs
-  algorithms — it is built from `internal/adapter/osfs/osfs.go` (`Canonicalize`) and its
-  sibling exported helpers `LocalizeInRoot`, `MatchReadRoot`, and `ResolveRoot` — the SAME
-  canonicalize-then-reject and lexical read-root primitives the tool body runs over the
-  same canonicalized root, so a symlinked absolute path classifies identically to the
-  tool body by construction. Only the three path-carrying FS tools classify: Bash is
-  gated by its own classifiers, Glob/Grep route patterns and stay workspace-confined at
-  every posture (ADR-0047 point 5), and a malformed path arg classifies in-root (the
+  predicate answering "is this Read/Write/Edit call an out-of-root escape?" into three
+  kinds: in-root / escape / pseudo-fs. It NEVER reimplements the osfs algorithms — it is
+  built from `internal/adapter/osfs/osfs.go` (`Canonicalize`) and its sibling exported
+  helpers `LocalizeInRoot` and `ResolveRoot` — the SAME canonicalize-then-reject primitives
+  the tool body runs over the same canonicalized root, so a symlinked absolute path
+  classifies identically to the tool body by construction. Only the three path-carrying
+  FS tools classify: Bash is gated by its own classifiers, Glob/Grep route patterns and
+  stay workspace-confined at every posture (ADR-0047 point 5), and a malformed path arg
+  classifies in-root (the
   tool body's own validation rejects it — the escape decision never invents a path).
 - `internal/app/escapepolicy.go` (`escapePolicy`) — a root-aware wrapping
   `port.PermissionPolicy` (a permpolicy sibling over the same seam) that layers ONLY the
@@ -6062,7 +6209,7 @@ FIELDS on the manager (`SetScheduler` / `setModelsPointer`), never a reach back
 into the Service. `*server.Service` DELEGATES its nine `port.ScheduleManager`
 verbs + `GetFire` to the embedded manager, so the RPC surface is byte-identical.
 `EmitScheduleEvent` is the ONE exception and lives on the **Service**, not the
-manager (ADR 0100 decision 5): a schedule lifecycle event has to be stamped with
+manager (ADR 0204 decision 5): a schedule lifecycle event has to be stamped with
 `Event.Actor` by the same single `appendEvent` chokepoint as every other durable
 append, and that chokepoint is the Service's. It takes a `ctx` for exactly that
 reason — the old manager-side body built a fresh `context.Background()`, which
@@ -6079,7 +6226,7 @@ catalog gains `Schedule` (mutating) + `ScheduleQuery` (read-only), exactly like
 the six memory tools (ADR 0073 decision 1: "registered in the catalog for every
 session that has a backing `ScheduleStore`").
 
-**Run-context origin attribution (ADR 0104).** There is no schedule-manager wrapper.
+**Run-context origin attribution (ADR 0209).** There is no schedule-manager wrapper.
 The shared run constructor in `engine/agent/loop.go` (`startRun`) applies
 `withSessionOrigin` immediately after deriving the cancellation context; both the
 normal `Run` path and `ResumeApproval` therefore carry the executing session id.
@@ -6412,12 +6559,12 @@ grew without bound. Split mechanism from policy:
   in-memory store stays bounded too). Durable-store-only in effect: the in-memory
   default never accumulates across restarts.
 
-## Source drivers — skill + soul (Phase C1: `engine/tool/skillsource.go` + `engine/adapter/sourceconformance/` + `skills.FSSource`/`Activator`/`AssetMaterializer` + grpcdriver clients)
+## Source drivers — skill + soul (Phase C1: `engine/tool/skillsource.go` + `engine/adapter/sourceconformance/` + `skills.FSSource`/`Tool` + grpcdriver clients)
 
 HARD REQUIREMENT honoured throughout: the `tool.SkillSource` port carries **NO path/dir/root/
 file concept** — a skill crosses as a LOGICAL BUNDLE (identity + trigger metadata, instruction
-body, payloads addressed by LOGICAL name). The FS adapter's path business
-(`FSSource.AssetDir/AssetDirs`) is adapter-public NON-PORT API consumed only by composition.
+body, payloads addressed by LOGICAL name). The Skill tool now preserves that property end to
+end; filesystem paths remain private to `FSSource`.
 The settled decisions, condensed:
 
 - **A — Port home: `engine/tool` (skills); soul stays on `prompt.SoulSource`.** New types are
@@ -6467,33 +6614,27 @@ The settled decisions, condensed:
   `compatibility`=6, `metadata`=7, `map<string,string>`, `allowed_tools`=8, `repeated string`);
   the grpcdriver client re-clamps defensively to the SAME caps the parser uses (the driver
   sits at the operator tier, but its metadata feeds the always-in-context layer).
-- **C — Aux assets: real disk behind the existing Read/read-roots contract.** FS skills serve
-  IN PLACE (zero copy; `FSSource.AssetDirs` = the old per-skill `skillReadRoots`). Driver skills
-  materialize LAZILY (`skills.AssetMaterializer`, over the PORT only) into
-  `<cacheBase>/<skill>/<logical-name>` on FIRST activation (per-skill once; never-activated =
-  zero bytes; executable→0o755 else 0o644; caps 16 MiB/asset + 64 MiB/bundle on the ACTUAL
-  bytes; name validation + post-Clean containment; failure = model-addressable activation error,
-  NEVER a partial bundle). cacheBase via eager `os.MkdirTemp` at build (osfs opens read roots at
-  workspace construction — a late-born root would be unreadable), canonicalized through
-  `osfs.ResolveRoot`, RemoveAll folded into the catalog close. A pure-virtual overlay was
-  REJECTED on a hard fact: Bash executes real OS processes — a virtual file can't be executed.
-  A dedicated asset tool was REJECTED: it orphans every SKILL.md's relative-Read/script
-  instructions (model-facing regression for zero interface gain).
-- **K — Skill tool seam.** `skills.NewTool(metas []tool.SkillMeta, act Activator)`;
-  `Activator.Activate(ctx,name) → Activation{Body, BaseDir, Assets}` (BaseDir "" omits the
-  Base-directory header block; Assets is the bundled-asset logical-name list, enumerated
-  but never eagerly read). `NewSnapshotActivator(*FSSource)` (FS, byte-identical — the
-  golden `TestFSSkillActivationByteIdentical` pins Execute output AND Spec().Description
-  byte-for-byte against the pre-seam rendering) and `NewSourceActivator(tool.SkillSource,
-  *AssetMaterializer)` (driver; caches body+BaseDir+Assets after first success; failures NOT
-  cached — the materializer's once caches deterministic rejections). descriptionPreamble /
-  header strings / truncation are UNCHANGED — editing them is a defect against the C1 plan.
-  Activation renders a `Bundled files:` block (one indented logical name per line, sorted)
-  after the base-directory guidance when `len(Assets) > 0`, per the agentskills.io "should
-  enumerate bundled scripts/resources but must not eagerly read them" contract; an asset-less
-  skill renders byte-identically to before.
+- **C — Aux assets: path-free, textual, and on demand (issue #540; ADR 0108).**
+  `Skill({name})` reads the body and lists a bounded, sorted logical inventory without reading
+  payload bytes. `Skill({name,asset})` validates the logical name, requires it to appear in the
+  source inventory, reads only that payload through `ReadSkillAsset`, reserves the exact rendered
+  header from the shared tool-output bound, and rejects an advertised or actual payload that cannot
+  fit whole. Successful assets are never truncated. Invalid UTF-8 or NUL bytes are rejected before
+  returning text. FS and driver skills therefore render identically. There is NO
+  `AssetMaterializer`, temp cache, `FSSource.AssetDir(s)`, base-directory header, workspace
+  read-root threading, executable-bit application, or implicit execution. Bash requiring real
+  files does not justify materializing textual references; a workflow that genuinely needs a
+  file must create or obtain one explicitly in the workspace under ordinary permissions.
+- **K — Skill tool seam.** `skills.NewTool(metas []tool.SkillMeta, source tool.SkillSource)`
+  consumes the logical source directly. Its description tells the model the two-call contract:
+  `{name}` for instructions + inventory, then `{name,asset}` for one textual payload. Activation
+  renders `Bundled assets (logical names; request one with this Skill tool's asset argument):`
+  with name + advertised byte size, bounded to 8 KiB; asset content is never eager. The same
+  renderer supplies slash-command post-expansion metadata, so placeholder substitution cannot
+  rewrite logical names and a slash command still directs asset retrieval through `Skill`.
 - **H — Wire + client discipline.** `SkillSourceService{ListSkills,GetSkillBody,
-  ListSkillAssets,ReadSkillAsset}` (unary; rides the 64 MiB ceiling; origin is a string
+  ListSkillAssets,ReadSkillAsset}` (unary with dedicated per-call receive caps sized to the
+  inventory/payload surface, not the 64 MiB snapshot ceiling; origin is a string
   passthrough, no proto enum) and `SoulSourceService{LoadSoul}`. Server wrappers
   (`NewSkillSourceServer(tool.SkillSource)` / `NewSoulSourceServer(prompt.SoulSource)`)
   pre-validate blank names and logical names (`ValidSkillAssetName` → `INVALID_ARGUMENT`,
@@ -6512,18 +6653,17 @@ The settled decisions, condensed:
   (one INFO line; `--soul-strict`/`--approve-soul` are documented no-ops for this provenance).
   Build-time probe failure FATAL (in `buildEngine`, conn close folded into the teardown chain);
   per-session turn-0 Load fail-soft.
-- **Composition reshape.** `resolveSkillSeam(ctx,cfg,agentReg)` replaces `resolveSkills` (FS
-  branch: `NewFSSource` over `ResolveSources(skillResolveOptions(cfg))`, narration verbatim;
-  driver branch: dial + ONE ListSkills snapshot, both FATAL on fault — explicit config =
-  loud-misconfig). `catalogAssets` now carries `skills []tool.SkillMeta` + `skillActivator` +
-  `skillIndex` (name→body preload: full for FS, LAZY def-referenced-only for the driver) +
-  `skillReadRoots` (name + ALL workspace-constructor threading KEPT; only the derivation moved
-  into the seam). `resolveSkillIndex` and skilldraft's `skillReadRoots()` are DELETED;
-  `buildSubagentTool`/`buildTeamWiring`/`applyTeamConfig` take the index as a param.
-  `skillValues(metas, idx)` projects back to `[]skills.Skill{Name,Description,Body}` for the
-  two legacy consumers (skillSnapshot, NewDirDrafter novelty input — signature kept).
-  `activeSkillDirs` stays CONCRETE (quarantine-overlap validation is inherently FS business;
-  driver source ⇒ empty active dirs ⇒ the check trivially passes, documented).
+- **Composition reshape.** `resolveSkillSeam(ctx,cfg,agentReg)` resolves the FS or driver
+  source, snapshots metadata once, preloads only the bodies required by agent definitions, and
+  returns the same `tool.SkillSource` consumed by every catalog's Skill tool and skill-command
+  source. `catalogAssets` carries `skills []tool.SkillMeta` + `skillSource` + `skillIndex`; it
+  carries no activator, materializer, cache close, or skill read roots. `resolveSkillIndex` and
+  skilldraft's `skillReadRoots()` remain deleted; `buildSubagentTool`/`buildTeamWiring`/
+  `applyTeamConfig` take the index as a param. `skillValues(metas, idx)` projects back to
+  `[]skills.Skill{Name,Description,Body}` for the two legacy consumers (skillSnapshot,
+  NewDirDrafter novelty input — signature kept). `activeSkillDirs` stays CONCRETE
+  (quarantine-overlap validation is inherently FS business; driver source ⇒ empty active dirs ⇒
+  the check trivially passes, documented).
 - **Conformance as contract.** `sourceconformance.RunSkillSource` (driven by the exported
   canonical `Fixture`: text+executable assets / asset-less / multi-segment logical name;
   subtests: list-matches-fixture incl. sorted/unique/HasAssets/Origin-non-empty,
@@ -6537,8 +6677,9 @@ The settled decisions, condensed:
 **Phase D notes (landed in `DRIVERS.md`, additions to the Phase-B list):** the construction-time-trust rule (Origin is
 observability; admission is gated where sources are CONSTRUCTED — an untrusted workspace's
 project tier is never built); the logical-name grammar (verbatim from `ValidSkillAssetName`);
-the no-watch/snapshot decision and its trust-gate rationale; the memfs/virtual-overlay
-rejection rationale (Bash executes real processes — drivers must materialize).
+and the no-watch/snapshot decision and its trust-gate rationale. ADR 0108 supersedes the former
+materialize-for-Bash conclusion: textual assets are fetched through `Skill({name,asset})`, while
+execution requires an explicit workspace-file workflow.
 
 ## Source drivers — agent defs + commands (Phase C2: `engine/tool/agentsource.go` + `engine/prompt/commandsource.go` + `agents.FSSource` + grpcdriver clients)
 
@@ -6655,22 +6796,23 @@ rejection rationale (Bash executes real processes — drivers must materialize).
   the skill's instructions directly in context — no new tool, no new dispatch
   concept. The bridge is `engine/adapter/skillfs.SkillCommandSource`, a
   `prompt.CommandSource` over the resolved skill seam's always-in-context
-  `SkillMeta` inventory + the `Activator` the Skill tool already loads through.
-  `ListCommands` projects one `prompt.Command` per skill, defensively filtered by
+  `SkillMeta` inventory + the same path-free `tool.SkillSource` the Skill tool
+  consumes. `ListCommands` projects one `prompt.Command` per skill, defensively filtered by
   `prompt.ValidCommandName` (the skill-name grammar is a subset of the command
   grammar, so the filter is belt-and-braces), de-duped + name-sorted.
-  `CommandBody` calls `Activator.Activate` and returns the body (ALREADY
+  `CommandBodyWithPost` reads the body through `SkillBody` and appends the bounded
+  logical inventory after ordinary command parsing/substitution (the body is ALREADY
   frontmatter-stripped by `ParseSkill`, so `SourceExpander`'s `stripFrontmatter`
-  is a no-op); an `ErrSkillNotFound`-class activation is the NORMAL `found=false`
-  outcome (the input passes through unchanged), a genuine activation fault
+  is a no-op); an `ErrSkillNotFound`-class source miss is the NORMAL `found=false`
+  outcome (the input passes through unchanged), a genuine source fault
   surfaces as an error (mirroring the Skill tool's addressable-error posture),
-  and an empty body does NOT expand (never a blank substitution). The driver
-  path's caching/materialization is SHARED — a `/skill` expansion and a Skill
-  tool activation read through one activator. Composition (`internal/app`
+  and an empty body does NOT expand (never a blank substitution). Asset bytes are
+  not read during expansion; the inventory tells the model to call `Skill` with
+  `{name,asset}`. Composition (`internal/app`
   `buildCommandExpander`) inserts the bridge into the expander chain with
   precedence `dirExp > skillExp > sourceExp > mcpExp`: a local command file
   SHADOWS a same-named skill, a skill SHADOWS a same-named driver command, both
-  shadow MCP prompts. The seam inputs (metas + activator) are stashed on the
+  shadow MCP prompts. The seam inputs (metas + source) are stashed on the
   unexported `Config.skillCommandInputs` after `buildCatalog` resolves the seam
   (the `Config.commandSource` precedent — `buildCommandExpander` runs per
   session), so the main engine, the per-session factory, and the `ListCommands`
@@ -6851,6 +6993,124 @@ to extract a shared `ChildActivity` value object — not before** (recorded in t
   previews" honesty note). It folds into the fleet
   footer (a `⑂` segment). Default-tab precedence (plan Q5): `teamLive > parallelLive > haveSubagents >
   haveParallel > haveTeam > Subagents`. Rendered from relayed Events ONLY (no internal/proto import).
+
+## MCP OAuth controller (ADR 0220)
+
+`internal/adapter/mcp/oauth.go` (`OAuthController`) is an optional adapter-local
+`auth.OAuthHandler`. `ServerConfig.OAuth` constructs one controller before the first dial;
+`internal/adapter/mcp/mcp.go` (`Server.dial`) attaches that same official SDK handler to
+every initial/reconnect transport. The controller owns no browser or callback listener.
+A nil presenter closes the challenge response and returns typed login-required.
+
+The credential key frames profile, principal, canonical resource, exact issuer,
+registration kind, and client ID before SHA-256. The strict v1 envelope stores token and
+refresh configuration but never a client secret. Persistence accepts either one mutable
+Store, which supplies reads and conditional writes from the same CAS domain, or one
+read-only Reader; the options are mutually exclusive and no independent writer is
+accepted. Reader-only sources warm-restore valid credentials, while authorization and reset
+fail before side effects.
+An expired token fails before refresh network by default; explicit
+`AllowInMemoryRefresh` may retain a successful refresh only for the controller lifetime,
+never mutating the source or claiming restart durability. Reader-only `invalid_grant`
+clears memory and returns login-required. With a writer, new grants, refresh rotation,
+`invalid_grant`, and `ResetCredential` use bounded CAS/reload/delete transitions in
+`internal/adapter/mcp/oauth_tokensource.go`; a conflict adopts the validated winner rather
+than overwriting it. One controller-local authorization flight coalesces concurrent and
+late-arriving equivalent 401s: its completed safe outcome remains keyed by SHA-256 digests
+of the request credential and response challenge/status, never raw credentials. A changed
+credential/challenge or `ResetCredential` replaces that outcome. Waiter contexts remain
+independently cancellable; the first live caller after a cancelled leader replaces it and
+peers join that replacement.
+
+OAuth endpoints use `internal/adapter/mcp/oauth_http.go`: a separate no-proxy client with
+an exact origin allowlist, all-answer IP screening through `session.ValidateResolvedIP`,
+DNS-pinned dialing, exact private-origin opt-in, TLS/time/header bounds, and same-origin
+GET/HEAD-only redirects that reject POST or credential-bearing redirects. Resource and
+additional origins may serve credential-free discovery GETs, but only the canonical
+configured issuer origin may receive an OAuth protocol POST, authorization header, code,
+refresh token, client assertion, or token exchange. The presenter applies the same origin
+gate before handing a URL to host code. Preregistered confidential token requests require
+Basic and form `client_secret` is rejected before dialing. The MCP resource client uses a
+separate exact-resource marker for its audience-bound bearer, remains no-proxy/DNS-pinned,
+and rejects cleartext except for an exact private-origin opt-in; an allowlist entry alone
+never grants credential egress. Static `Authorization` and OAuth are mutually exclusive.
+Preregistered confidential and CIMD clients are the only supported registrations; DCR and a
+broad production claim remain blocked on ADR 0219's official-SDK hooks. Construction and
+credential restore inherit the caller's `Connect` cancellation; `Close` cancels and joins
+all controller operations before releasing owned transport state.
+
+## MCP OAuth loopback login (ADR 0112)
+
+`mcp/oauthlogin` is a stdlib-only host runtime, not an engine port. `Runtime.Authorize`
+serializes the complete interaction per runtime instance, binds `tcp4` on
+`127.0.0.1:0`, derives a redirect with a fresh 32-byte random path segment, and starts a
+dedicated bounded `http.Server`. Its exact-path GET handler rejects request bodies,
+duplicate/empty/oversized query values, wrong Host, mismatched state (constant-time), and a
+non-canonical or unexpected issuer. It returns only code/state/issuer; static success and
+failure pages carry no provider values and set no-store, CSP, referrer, MIME-sniffing, and
+permissions headers. Sixteen invalid requests exhaust the flow.
+
+Presentation parses the official SDK's authorization URL and requires exactly one state.
+An injected `BrowserLauncher` receives the opaque URL, or explicit no-browser mode writes it
+once to a required host-owned writer. The default launcher uses fixed OS-specific argv and
+never a shell. Browser/callback values never enter diagnostics or returned error text.
+Cancellation, callback completion, browser failure, and authorization failure all converge
+on detached bounded HTTP shutdown, listener close, and `Serve` join before the serialization
+gate is released.
+
+`internal/adapter/mcp/oauth_login.go` (`OAuthLoginPresenter`) only converts the runtime's
+result into `auth.AuthorizationResult`; it does not reproduce protocol validation.
+`internal/app/mcplogin.go` (`LoginMCP`) rejects a nil runtime, non-OAuth config, preinstalled
+presenter/redirect, and static Authorization before binding. It copies the already-resolved
+config, closes over its exact issuer, installs the generated redirect/presenter, and calls
+`internal/adapter/mcp/mcp.go` (`Connect`). Success requires the authenticated initialize and
+initial tool listing plus the controller's durable credential CAS; the temporary `Server`
+and controller close on every path while the injected store stays caller-owned. Failures
+project to context/runtime categories or fixed `ErrMCPLoginConfig`/`ErrMCPLoginFailed`
+without endpoint or credential-bearing causes.
+
+The shipped `mecated mcp login SERVER [--no-browser] [--permission-config PATH ...]`
+command is the sole runtime constructor. The repeatable permission-config option selects trusted
+operator settings only, never OAuth values. It uses the canonical operator profile loader, requires a mutable local Store,
+and emits an authorization URL to stdout only in explicit no-browser mode. Normal serving,
+ACP, mecatequi, and mecak8s keep the presenter nil. ADR 0219's metadata-profile blockers
+remain open.
+
+## Operator MCP profiles (ADR 0113)
+
+`internal/adapter/permconfig/schema.go` owns the strict operator-only `mcp.servers` tagged
+unions. `internal/cliconfig/mcpprofile.go` (`LoadMCPProfiles`) is the sole conversion to
+runtime `ServerConfig`: it merges settings with legacy CLI entries by whole profile,
+resolves only named environment references, shares local Stores within one load, and owns
+all resulting Stores/Readers. The three command roots install the same profile resolver on
+`app.Config`; `Build` gives it `Resolver.OperatorMCP`, so there is no MCP-specific YAML pass.
+
+`Built.Close` shuts down the service and global MCP manager/controllers before closing the
+profile lifecycle. Environment Readers are the intended Kubernetes posture: credentials are
+externally provisioned and a rotated value requires restart. They cannot be targeted by the
+login command. OAuth applies only to named global static profiles. ACP cannot provide OAuth
+profiles or install/drive authorization, but after operator authorization ACP sessions may invoke
+the shared global OAuth-backed tools under ordinary permissions. Client MCP, inline agent
+definitions, and ToolHive-discovered servers cannot add OAuth.
+
+`internal/app/mcp_oauth_acceptance_test.go` (`TestMCPOAuthHermeticAcceptance`) is the final
+hermetic composition gate. It uses external test package `app_test` because the production
+command-side `internal/cliconfig` package imports `internal/app`; importing it from package
+`app` itself would create a cycle. At that exact boundary the test directly drives the real
+`permconfig` operator resolver, `cliconfig.LoadMCPProfiles`/`MCPProfileResolver`, and
+`MCPProfiles.OAuthServer` selection used by login; only loopback admission and environment
+lookup remain injected test seams. It extends `internal/app/mcplogin_test.go`'s official-SDK
+`loginFixture` rather than copying the qualification matrices: one ordered loopback scenario
+drives operator settings, explicit login, encrypted-store process exit, `Build`, global
+catalog dispatch, short-expiry lazy refresh with rotated-refresh persistence, a second process
+restart, and the real 404/session-missing reconnect. It also pins close ordering, headless
+clean-store fail-soft behavior, ACP client MCP's nil-OAuth boundary, and `static_bearer`/`none`
+regressions. Protocol matrices remain in `internal/adapter/mcp`; this gate proves their
+composition only. Distinct canary classes are scanned across diagnostics/errors,
+model-facing tool/result text, ACP/config boundaries, and generated configuration output;
+failures name only the class, never the value. The elapsed-time expiry leg is bounded and is
+the only clock-dependent part because the official `oauth2.Token.Valid` has no injected
+clock.
 
 ## Live e2e — `e2e/` (see `e2e/README.md`)
 

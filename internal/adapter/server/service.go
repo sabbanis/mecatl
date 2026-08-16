@@ -4,7 +4,9 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/sha256"
+	"encoding/base64"
 	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"iter"
@@ -13,6 +15,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+	"unicode/utf8"
 
 	"google.golang.org/protobuf/types/known/timestamppb"
 
@@ -204,7 +207,7 @@ type Config struct {
 	// ACP / cloud deployments. The factory returns nil when Bash is disabled.
 	CommandRunnerFactory func(root string) tool.CommandRunner
 	// EnvironmentResolver, when non-nil, resolves a persisted session.EnvironmentRef
-	// to a LIVE tool.Environment for a non-in-tree Kind (ADR 0106, issue #462 phase
+	// to a LIVE tool.Environment for a non-in-tree Kind (ADR 0214, issue #462 phase
 	// 3). It is the reattachment half of the Environment seam: a restarted process
 	// reads the persisted ref off a loaded session and reattaches a live
 	// Environment to the SAME backend (a remote worker, a container) rather than
@@ -395,6 +398,17 @@ type Config struct {
 	UndoProposal            ProposalUndoer
 	ProjectPromotionAllowed func(project string) bool
 	ProposalActionAvailable func(project string) (bool, string)
+
+	// LearnedSkills exposes caller-partitioned, agent-owned lifecycle records. The
+	// publisher atomically refreshes the shared live Skill catalog after mutations.
+	LearnedSkills             learning.SkillRepository
+	PublishLearnedSkills      func(context.Context, learning.SkillPartition) error
+	BeginSkillPublication     func() func()
+	RevokeLearnedSkill        func(learning.SkillPartition, string)
+	LiveSkillGeneration       func(learning.SkillPartition) uint64
+	SkillActionAvailable      func(learning.SkillPartition, string) (bool, string)
+	LearnedSkillNameAvailable func(string) bool
+	LiveSkills                func(context.Context) []*mecatlv1.SkillInfo
 
 	// SessionEngine builds a PER-SESSION engine over a non-default provider/model
 	// selector AND/OR client-provided streaming-HTTP MCP servers (the ACP
@@ -1189,11 +1203,14 @@ type createSessionOpts struct {
 	// (byte-identical default).
 	sourceSessionID session.SessionID
 	// owner overrides the context principal as the created session's owner
-	// (ADR 0100 decision 4). ownerSet distinguishes "WithOwner was called
+	// (ADR 0204 decision 4). ownerSet distinguishes "WithOwner was called
 	// (possibly with nil — an explicitly ownerless session)" from "never
 	// called", which falls back to session.PrincipalFromContext.
 	owner    *session.Principal
 	ownerSet bool
+	// scheduled is set only by the trusted scheduler composition path. Public
+	// create requests have no field that can populate it.
+	scheduled *session.SessionRelationship
 }
 
 // WithSessionID overrides the session id a CreateSession* call mints. When set,
@@ -1222,7 +1239,7 @@ func WithSourceSession(id session.SessionID) CreateSessionOption {
 }
 
 // WithOwner overrides the owner a CreateSession* call stamps on the new session
-// (ADR 0100 decision 4). By DEFAULT the owner comes from the verified principal
+// (ADR 0204 decision 4). By DEFAULT the owner comes from the verified principal
 // on the context (session.PrincipalFromContext) — a caller can never name its
 // own owner in the request body, which is why CreateSessionRequest has no owner
 // field. This option is the in-process injection seam for a caller that already
@@ -1237,16 +1254,31 @@ func WithOwner(p *session.Principal) CreateSessionOption {
 	return func(o *createSessionOpts) { o.owner, o.ownerSet = p, true }
 }
 
+// WithScheduledRelationship is the trusted composition-only creation seam for
+// scheduler fires. No public request field maps to this option.
+func WithScheduledRelationship(scheduleName string, origin session.SessionID) CreateSessionOption {
+	return func(o *createSessionOpts) {
+		o.scheduled = &session.SessionRelationship{ScheduleName: scheduleName, OriginSessionID: origin}
+	}
+}
+
 // resolveOwner picks the owner a create stamps: the explicit WithOwner value
 // when the option was passed (nil included — see WithOwner), else the verified
 // principal riding the context. An absent principal yields nil — the ownerless
-// no-auth path, byte-identical to the pre-ADR-0100 behaviour. It NEVER
+// no-auth path, byte-identical to the pre-ADR-0204 behaviour. It NEVER
 // fabricates one.
 func resolveOwner(ctx context.Context, opts createSessionOpts) *session.Principal {
 	if opts.ownerSet {
 		return opts.owner
 	}
 	return session.PrincipalFromContext(ctx)
+}
+
+func newCreatedSession(id session.SessionID, mode session.PermissionMode, workspace string, limits session.Limits, createdAt time.Time, scheduled *session.SessionRelationship) (*session.Session, error) {
+	if scheduled == nil {
+		return session.New(id, mode, workspace, limits, createdAt), nil
+	}
+	return session.NewScheduled(id, mode, workspace, limits, createdAt, scheduled.ScheduleName, scheduled.OriginSessionID)
 }
 
 // CreateSession allocates a new idle session on the SHARED engine, persists it,
@@ -1508,13 +1540,17 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 		owner = srcOwner
 	}
 
-	needPerSession := s.sessionNeedsPerFactory(sel, specs, profile, workspace)
+	needPerSession := s.sessionNeedsPerFactory(sel, specs, profile, workspace) ||
+		s.cfg.LearnedSkills != nil && session.PrincipalFromContext(ctx) != nil
 	if !needPerSession {
 		// Shared-engine fast path (today's behaviour, byte-identical). The labels are
 		// the empty pair + default profile here (the empty-selector default profile is
 		// exactly the no-per-session case), so setLabels persists nothing new — the
 		// snapshot stays byte-identical to a pre-Phase-1 default session.
-		sess := session.New(mintID(), mode, workspace, limits, s.cfg.Now())
+		sess, err := newCreatedSession(mintID(), mode, workspace, limits, s.cfg.Now(), opts.scheduled)
+		if err != nil {
+			return nil, fmt.Errorf("server: create session metadata: %w", err)
+		}
 		if err := setSessionLabels(sess, sel, profile, owner); err != nil {
 			return nil, err
 		}
@@ -1528,7 +1564,7 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 		return sess, nil
 	}
 
-	return s.createPerSessionEngine(ctx, mintID, mode, workspace, limits, sel, specs, profile, carrySnap, owner)
+	return s.createPerSessionEngine(ctx, mintID, mode, workspace, limits, sel, specs, profile, carrySnap, owner, opts.scheduled)
 }
 
 // createPerSessionEngine is the per-session-engine create branch, factored out
@@ -1539,7 +1575,7 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 // evicts the reservation and tears the freshly-built engine down so a failed
 // create leaks neither a slot nor a connection. See createSession for the
 // profile-aware workspace rule and the carryover snapshot semantics.
-func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() session.SessionID, mode session.PermissionMode, workspace string, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, carrySnap []session.Message, owner *session.Principal) (*session.Session, error) {
+func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() session.SessionID, mode session.PermissionMode, workspace string, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, carrySnap []session.Message, owner *session.Principal, scheduled *session.SessionRelationship) (*session.Session, error) {
 	if s.cfg.SessionEngine == nil {
 		return nil, fmt.Errorf("%w: per-session engine not supported (no session-engine factory configured)", ErrInvalidArgument)
 	}
@@ -1562,7 +1598,13 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 		return nil, err
 	}
 	eng, closeFn := res.Engine, res.Close
-	sess := session.New(mintID(), mode, workspace, limits, s.cfg.Now())
+	sess, err := newCreatedSession(mintID(), mode, workspace, limits, s.cfg.Now(), scheduled)
+	if err != nil {
+		if closeFn != nil {
+			_ = closeFn()
+		}
+		return nil, fmt.Errorf("server: create session metadata: %w", err)
+	}
 	// Persist the neutral provider+model selector and the profile as write-once
 	// creation labels on the aggregate, so a restarted process re-derives the SAME
 	// per-session engine via the factory (rehydrateSession) instead of falling to the
@@ -1685,6 +1727,7 @@ func (s *Service) capabilities() *mecatlv1.ServerCapabilities {
 		Worktrees:         s.cfg.Worktrees != nil,
 		Reflection:        s.cfg.ReflectSession != nil,
 		LearningProposals: s.cfg.Proposals != nil,
+		LearnedSkills:     s.cfg.LearnedSkills != nil,
 		Scheduling:        s.scheduleStore() != nil,
 	}
 }
@@ -1996,7 +2039,105 @@ func (s *Service) GetSession(ctx context.Context, id session.SessionID) (*sessio
 	if err != nil || s.authorizeSession(ctx, sess) != nil {
 		return nil, fmt.Errorf("%w: %q", ErrNotFound, id)
 	}
+	// The session ID is an opaque handle, so repairing malformed bytes here would
+	// silently turn one persisted identity into another before protobuf mapping.
+	if !utf8.ValidString(string(sess.ID)) {
+		return nil, fmt.Errorf("%w: persisted session has an invalid UTF-8 id", ErrInternal)
+	}
 	return sess, nil
+}
+
+// RenameSession applies an explicit operator title change to an owned main
+// session. Authorization, kind/state/liveness checks, and lease acquisition are
+// serialized under the same per-session mutex used by prompt starts.
+func (s *Service) RenameSession(ctx context.Context, id session.SessionID, title string) (*session.Session, error) {
+	unlock := s.runEntryMu.lock(id)
+	defer unlock()
+	sess, absent, err := s.managementTarget(ctx, id, false)
+	if err != nil {
+		return nil, err
+	}
+	if absent {
+		return nil, fmt.Errorf("%w: %q", ErrNotFound, id)
+	}
+	release, err := s.acquireMutationLease(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	defer release()
+	if err := sess.RenameTitle(title); err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+	}
+	if err := s.cfg.Store.Save(ctx, sess); err != nil {
+		return nil, fmt.Errorf("%w: rename session: %v", ErrInternal, err)
+	}
+	return sess, nil
+}
+
+// DeleteSession physically removes an owned main session and all store-managed
+// sidecars. Absence and foreign ownership are both idempotent success, preventing
+// deletion from becoming an ownership oracle. Infrastructure failures remain loud.
+func (s *Service) DeleteSession(ctx context.Context, id session.SessionID) error {
+	unlock := s.runEntryMu.lock(id)
+	defer unlock()
+	sess, absent, err := s.managementTarget(ctx, id, true)
+	if err != nil || absent {
+		return err
+	}
+	prunable, ok := s.cfg.Store.(port.PrunableStore)
+	if !ok {
+		return ErrSessionDeleteUnsupported
+	}
+	release, err := s.acquireMutationLease(ctx, id)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if err := prunable.Delete(ctx, sess.ID); err != nil {
+		if errors.Is(err, port.ErrSessionNotFound) {
+			return nil
+		}
+		if errors.Is(err, port.ErrPruneUnsupported) {
+			return ErrSessionDeleteUnsupported
+		}
+		return fmt.Errorf("%w: delete session: %v", ErrInternal, err)
+	}
+	s.CloseSession(id)
+	return nil
+}
+
+// managementTarget performs the common management authorization and eligibility
+// gate. The caller must hold runEntryMu for id. concealAbsence makes missing and
+// foreign sessions indistinguishable idempotent success for DeleteSession.
+func (s *Service) managementTarget(ctx context.Context, id session.SessionID, concealAbsence bool) (*session.Session, bool, error) {
+	sess, err := s.cfg.Store.Load(ctx, id)
+	if err != nil {
+		if errors.Is(err, port.ErrSessionNotFound) {
+			if concealAbsence {
+				return nil, true, nil
+			}
+			return nil, false, fmt.Errorf("%w: %q", ErrNotFound, id)
+		}
+		return nil, false, fmt.Errorf("%w: load session: %v", ErrInternal, err)
+	}
+	if sess == nil || sess.ID != id || s.authorizeSession(ctx, sess) != nil {
+		if concealAbsence {
+			return nil, true, nil
+		}
+		return nil, false, fmt.Errorf("%w: %q", ErrNotFound, id)
+	}
+	// Session IDs are opaque handles. Repairing malformed persisted bytes would
+	// silently change the identity returned by RenameSession's wire response.
+	if !utf8.ValidString(string(sess.ID)) {
+		return nil, false, fmt.Errorf("%w: persisted session has an invalid UTF-8 id", ErrInternal)
+	}
+	if sess.Kind != session.SessionKindMain || hasLegacyNonChatPrefix(id) {
+		return nil, false, fmt.Errorf("%w: session is not a main session", ErrFailedPrecondition)
+	}
+	if sess.State == session.StateRunning || sess.State == session.StateAwaiting || s.IsLive(id) {
+		return nil, false, fmt.Errorf("%w: session is active or awaiting approval", ErrFailedPrecondition)
+	}
+	return sess, false, nil
 }
 
 // SetMode changes the permission posture of the session under id and persists
@@ -2067,15 +2208,13 @@ func (s *Service) LoadSession(ctx context.Context, id session.SessionID) (*sessi
 // provider/model/profile labels (ADR 0065). Same provider and model only; the ONE
 // permitted selector delta is an optional reasoning-effort override (ADR 0068).
 //
-// The source is loaded via the run-entry funnel (loadAndReopen), so a terminal
+// The source is authorized and checked for main-kind, liveness, and awaiting state
+// under runEntryMu, then leased before terminal recovery or snapshotting. A terminal
 // source is recovered to idle first (completed→Reopen / cancelled→Interrupt /
-// failed→Recover) and approval replay runs. A running/awaiting source is rejected
-// with ErrFailedPrecondition (fork requires a turn boundary) — loadAndReopen's
-// switch only handles terminal states, so the running/awaiting check runs AFTER
-// it returns. The snapshot is session.ForkSnapshot (fresh backing array, trailing
-// orphans stripped, tool-pairing-valid), seeded via session.SeedHistory into a
-// fresh session.New aggregate. The new session starts idle with zeroed
-// Counters/Usage but inherits the source's history verbatim (not re-fenced —
+// failed→Recover) and approval replay runs. The snapshot is session.ForkSnapshot
+// (fresh backing array, trailing orphans stripped, tool-pairing-valid), seeded via
+// session.SeedHistory into a fresh session.New aggregate. The new session starts
+// with zeroed Counters/Usage but inherits the source's history verbatim (not re-fenced —
 // peer-trust parity, same as the subagent fork).
 //
 // title overrides the forked session's title when non-empty; empty inherits the
@@ -2092,15 +2231,25 @@ func (s *Service) LoadSession(ctx context.Context, id session.SessionID) (*sessi
 // (non-default selector / no-fs profile / worktree workspace), mirroring
 // createSession's branching on sessionNeedsPerFactory; a default-FS fork rides the
 // shared engine (zero overhead, no registry entry). The MaxSessionEngines cap is
-// enforced by the rehydrate path. No runEntryMu is taken (the new session has no
-// run; the source is loaded, not driven). Returns the new id.
+// enforced by the rehydrate path. Returns the new id.
 func (s *Service) ForkSession(ctx context.Context, srcID session.SessionID, title, effortOverride string) (session.SessionID, error) {
-	src, err := s.loadAndReopen(ctx, srcID)
+	unlock := s.runEntryMu.lock(srcID)
+	defer unlock()
+	src, absent, err := s.managementTarget(ctx, srcID, false)
 	if err != nil {
 		return "", err
 	}
-	if src.State == session.StateRunning || src.State == session.StateAwaiting {
-		return "", fmt.Errorf("%w: fork requires a session at a turn boundary; source %q is %s", ErrFailedPrecondition, srcID, src.State)
+	if absent {
+		return "", fmt.Errorf("%w: %q", ErrNotFound, srcID)
+	}
+	release, err := s.acquireMutationLease(ctx, srcID)
+	if err != nil {
+		return "", err
+	}
+	defer release()
+	src, err = s.reopenLoadedSession(ctx, src)
+	if err != nil {
+		return "", err
 	}
 	snap := session.ForkSnapshot(src.Conversation)
 	forked := session.New(s.cfg.NewID(), src.Mode, src.Workspace, src.Limits, s.cfg.Now())
@@ -2115,16 +2264,19 @@ func (s *Service) ForkSession(ctx context.Context, srcID session.SessionID, titl
 		sel.ReasoningEffort = effortOverride
 	}
 	profile := profileForSession(src)
-	// The fork inherits the SOURCE's owner (ADR 0100 decision 4), NOT the
+	// The fork inherits the SOURCE's owner (ADR 0204 decision 4), NOT the
 	// principal of whoever called ForkSession — otherwise fork is an
 	// ownership-laundering path. An ownerless source forks ownerless.
 	if err := setSessionLabels(forked, sel, profile, src.Owner); err != nil {
 		return "", err
 	}
 	if title != "" {
-		forked.Title = title
+		if err := forked.RenameTitle(title); err != nil {
+			return "", fmt.Errorf("%w: %v", ErrInvalidArgument, err)
+		}
 	} else {
 		forked.Title = src.Title
+		forked.TitleProvenance = src.TitleProvenance
 	}
 	// Save first, then rehydrate: a rehydrate failure (e.g. ErrTooManySessionEngines)
 	// leaves a valid persisted session that self-heals at the next StartRunContent
@@ -2186,7 +2338,7 @@ func (s *Service) validateCarryover(ctx context.Context, srcID session.SessionID
 	if src.State == session.StateRunning || src.State == session.StateAwaiting {
 		return nil, nil, fmt.Errorf("%w: carryover requires a session at a turn boundary; source %q is %s", ErrFailedPrecondition, srcID, src.State)
 	}
-	// The SOURCE's owner travels with the carried history (ADR 0100 decision 4):
+	// The SOURCE's owner travels with the carried history (ADR 0204 decision 4):
 	// a fork is attributed to whoever owned the session it copied, never to the
 	// caller doing the forking — otherwise fork is an ownership-laundering path
 	// (copy someone else's session, become its owner). An ownerless source
@@ -2319,6 +2471,14 @@ func (s *Service) loadAndReopen(ctx context.Context, id session.SessionID) (*ses
 	if err != nil {
 		return nil, err
 	}
+	return s.reopenLoadedSession(ctx, sess)
+}
+
+// reopenLoadedSession applies the existing terminal-state recovery funnel to an
+// already-authorized session. Run entry uses this form so its purpose gate can
+// reject a session before recovery mutates or persists it.
+func (s *Service) reopenLoadedSession(ctx context.Context, sess *session.Session) (*session.Session, error) {
+	id := sess.ID
 	// Repopulate the in-memory learned-rule store from the durable EventLog's
 	// allow-always verdicts (cloud-native Phase 3b) BEFORE the run starts, so a
 	// session that allow-always'd a tool before a restart does not re-ask. Done at
@@ -2502,27 +2662,59 @@ func (s *Service) StartRun(ctx context.Context, id session.SessionID, text strin
 // It reopens-if-completed (via loadAndReopen) so a follow-up prompt on a session
 // that cleanly finished a prior turn continues it — the in-process multi-turn
 // counterpart to the cross-process LoadSession resume path.
+// StartRunContent is the public chat-purpose multimodal sibling of StartRun.
+// Only explicitly-stamped main sessions are admitted; delegation children,
+// scheduled sessions, unknown metadata, and every historical child/fire prefix
+// fail closed. The trusted scheduler uses StartScheduledRunContent instead.
 func (s *Service) StartRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
+	return s.startRunContent(ctx, id, text, parts, runPurposeChat)
+}
+
+// StartScheduledRunContent is the trusted scheduler-purpose entry. It admits
+// explicitly-stamped scheduled sessions and the historical sched-- fallback for
+// legacy unknown snapshots. It is intentionally absent from public transports;
+// scheduler composition calls it directly.
+func (s *Service) StartScheduledRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
+	return s.startRunContent(ctx, id, text, parts, runPurposeScheduler)
+}
+
+type runPurpose uint8
+
+const (
+	runPurposeChat runPurpose = iota
+	runPurposeScheduler
+	scheduleFireSessionPrefix = "sched--"
+)
+
+func (s *Service) startRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content, purpose runPurpose) (*agent.Run, error) {
 	if text == "" && len(parts) == 0 {
 		return nil, fmt.Errorf("%w: prompt text or parts is required", ErrInvalidArgument)
 	}
-	// Delegation-child ids (subagent-/parallel-/team-, engine/agent/childregistry.go's
-	// exported id-minting convention) are NEVER a legitimate StartRunContent target
-	// (issue #475 follow-up). A child is driven exclusively by its PARENT's in-process
-	// dispatch (driveChild) — that is precisely why Service.IsLive is structurally
-	// blind to it (see the doc comment there and internal/app/childgc.go's isLive
-	// caveat). A caller who learns a child's id from the `agentId:`/Team-id trailer or
-	// InspectSubagent/InspectMember's MemberSessionID scheme could otherwise call the
-	// prompt endpoint directly against it WHILE the parent is genuinely still driving
-	// it: IsLive(childID) reads false (it only tracks top-level runs), so the
-	// StateRunning crash-orphan repair below would Abandon()+Save the child's history
-	// out from under the parent's live drive — reintroducing the dangling-tool_use/
-	// provider-400 hazard issue #475 exists to close, this time self-inflicted via
-	// direct wire access. `sched--`-prefixed schedule-fire sessions are DELIBERATELY
-	// excluded — scheduler_fire.go's own StartRunContent call IS the legitimate way a
-	// fire session is driven, so that family stays untouched.
-	if isDelegationChildSessionID(id) {
-		return nil, fmt.Errorf("%w: session %q is a delegation-child session (subagent/parallel/team) and cannot be started directly; children are driven only by their parent's run", ErrInvalidArgument, id)
+	// Serialize the complete run-entry transaction, including the authoritative
+	// load, purpose authorization, and terminal-state recovery. Loading before this
+	// lock lets two same-id starts recover the same snapshot independently.
+	unlock := s.runEntryMu.lock(id)
+	defer unlock()
+	// Authorize the exact id before revealing whether its metadata or legacy prefix
+	// is runnable. Foreign, ownerless-under-enforcement, pruned, and absent ids all
+	// remain the same ErrNotFound class.
+	sess, err := s.GetSession(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := admitRunPurpose(sess, purpose); err != nil {
+		return nil, err
+	}
+	// The run registry is the authoritative same-process single-run gate while the
+	// loaded aggregate is non-terminal. A terminal snapshot means the registered
+	// run has finished driving but its relay has not called FinishRun yet. Remove
+	// that exact run before reopening so the finished relay's later FinishRun
+	// cannot deregister the continuation that replaces it.
+	if registered, ok := s.LookupRun(id); ok {
+		if !sess.State.IsTerminal() {
+			return nil, fmt.Errorf("%w: session %q already has an active run", ErrFailedPrecondition, id)
+		}
+		s.deregister(id, registered)
 	}
 	// NOTE (ADR 0062): there is NO prompt-channel scan here. The guardrails
 	// approve-once flow is OUT-OF-BAND — a PreToolUse guardrail block surfaces to the
@@ -2532,26 +2724,16 @@ func (s *Service) StartRunContent(ctx context.Context, id session.SessionID, tex
 	// human AllowAlways verdict, never from a parsed directive in `text`. This replaces
 	// the removed ADR-0061 /guardrail-allow prompt directive (no scan, no strip, no
 	// near-miss WARN). The `text` param flows straight through.
-	// loadAndReopen (not GetSession): a session that cleanly completed a prior turn
-	// is in StateCompleted, and the engine's RecordUserPrompt rejects a terminal
-	// state — so an in-process follow-up prompt (interactive multi-turn chat, a
-	// long-lived teammate) must reopen-if-completed FIRST, exactly as the
-	// cross-process LoadSession resume path does. A freshly-created idle session is
-	// returned unchanged; a cancelled session is recovered via Interrupt and a
-	// failed one via Recover (both history-repaired), so neither wedges the next
-	// prompt on an illegal RecordUserPrompt transition (issue #51).
-	sess, err := s.loadAndReopen(ctx, id)
+	// Apply the unchanged reopen/interrupt/recover funnel only after the trusted
+	// purpose gate. Rejected kinds are never mutated as a side effect of probing.
+	sess, err = s.reopenLoadedSession(ctx, sess)
 	if err != nil {
 		return nil, err
 	}
 	// Hold the per-session run-entry lock across engine-resolve (which may REBUILD a
 	// per-session engine for a mode→model change, ADR 0030 Layer 3) + run launch +
-	// register: this makes the rebuild's under-lock no-live-run check authoritative
-	// (no concurrent run-entry for this id can be between its engine-read and its
-	// register), so a displaced prior engine is never closed while in use. Per-session,
-	// so unrelated sessions run concurrently.
-	unlock := s.runEntryMu.lock(id)
-	defer unlock()
+	// register. The lock was acquired before loading so the entire run-entry
+	// transaction observes one authoritative snapshot.
 	// Cross-process single-writer gate (cloud-native Phase 4): take the session
 	// lease AFTER the in-process runEntryMu so same-process exclusion stays cheap.
 	// A competing live owner refuses the run with ErrSessionLeasedElsewhere; nil
@@ -2570,18 +2752,11 @@ func (s *Service) StartRunContent(ctx context.Context, id session.SessionID, tex
 	//
 	// One remaining hazard: runEntryMu only serializes the RUN-ENTRY section, not
 	// a run's full lifetime (it is unlocked as soon as this function returns,
-	// long before the registered run finishes). A second StartRunContent for the
-	// SAME id can therefore enter here while a run this process itself started
-	// earlier is still genuinely live and re-saving StateRunning snapshots
-	// (resumeFromAwaiting cannot collide here — it rejects everything but
-	// StateAwaiting before it ever reaches this repair). Abandoning a genuinely
-	// live session's history out from under it would corrupt an active run, so
-	// IsLive(id) is checked FIRST and, if true, the repair is refused outright
-	// rather than racing it.
+	// long before the registered run finishes). The authoritative registry/state
+	// check above therefore runs while runEntryMu is held and before reopen/save.
+	// Reaching this branch proves the running snapshot has no same-process owner
+	// and may be repaired.
 	if sess.State == session.StateRunning {
-		if s.IsLive(id) {
-			return nil, fmt.Errorf("%w: session %q already has an active run", ErrFailedPrecondition, id)
-		}
 		if err := sess.Abandon(); err != nil {
 			return nil, fmt.Errorf("server: abandon stale running session: %w", err)
 		}
@@ -2614,6 +2789,35 @@ func isDelegationChildSessionID(id session.SessionID) bool {
 	return strings.HasPrefix(s, agent.SubagentSessionPrefix) ||
 		strings.HasPrefix(s, agent.ParallelSessionPrefix) ||
 		strings.HasPrefix(s, agent.TeamSessionPrefix)
+}
+
+func hasLegacyNonChatPrefix(id session.SessionID) bool {
+	return isDelegationChildSessionID(id) || strings.HasPrefix(string(id), scheduleFireSessionPrefix)
+}
+
+func admitRunPurpose(sess *session.Session, purpose runPurpose) error {
+	if sess == nil {
+		return fmt.Errorf("%w: session metadata is unavailable", ErrInvalidArgument)
+	}
+	if err := session.ValidateSessionMetadata(sess.Kind, sess.Relationship); err != nil {
+		return fmt.Errorf("%w: invalid session metadata: %v", ErrInvalidArgument, err)
+	}
+	kind := sess.Kind
+	if kind == "" {
+		kind = session.SessionKindUnknown
+	}
+	switch purpose {
+	case runPurposeChat:
+		if kind == session.SessionKindMain && !hasLegacyNonChatPrefix(sess.ID) {
+			return nil
+		}
+	case runPurposeScheduler:
+		if kind == session.SessionKindScheduled ||
+			(kind == session.SessionKindUnknown && strings.HasPrefix(string(sess.ID), scheduleFireSessionPrefix)) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: session %q is not eligible for this run purpose", ErrInvalidArgument, sess.ID)
 }
 
 // engineAndEnvironmentFor resolves the engine + environment a loaded session should run
@@ -2714,7 +2918,7 @@ func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Ses
 		if !isRemoteEnvironmentRef(sess.EnvironmentRef) && (sess.Profile == string(ProfileNoFS) || sess.Workspace == "") {
 			// rehydrateSession re-registered the no-fs environment override (same as
 			// create); read it back so the resolution below uses the complete override.
-			// A REMOTE EnvironmentRef (ADR 0106) is excluded: its Environment is
+			// A REMOTE EnvironmentRef (ADR 0214) is excluded: its Environment is
 			// reattached at run entry through the EnvironmentResolver, NOT relabeled
 			// no-fs from its empty persisted Workspace (a remote backend's filesystem
 			// is not a local root). Reading the no-fs override here would preempt the
@@ -2739,11 +2943,11 @@ func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Ses
 		// CommandRunner. Use it directly — never guess a ref or runner from the
 		// override's presence (issue #462 phase-2 finding #2). Stamp the default ref
 		// from the live override so a legacy zero-ref session persists it on the next
-		// save (ADR 0106, issue #462 phase 3).
+		// save (ADR 0214, issue #462 phase 3).
 		stampDefaultEnvironmentRef(sess)
 		return engine, envOverride, nil
 	}
-	// ENVIRONMENT REATTACHMENT (ADR 0106, issue #462 phase 3): a loaded session
+	// ENVIRONMENT REATTACHMENT (ADR 0214, issue #462 phase 3): a loaded session
 	// with a PERSISTED non-in-tree EnvironmentRef (a remote worker, a container)
 	// reattaches a LIVE Environment through the configured resolver. This runs
 	// ONLY when no in-process override is registered (a remote session registers
@@ -2783,14 +2987,14 @@ func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Ses
 		return nil, tool.Environment{}, err
 	}
 	// Stamp the resolved default ref from the live Environment so a legacy
-	// zero-ref session persists it on the next ordinary save (ADR 0106, issue
+	// zero-ref session persists it on the next ordinary save (ADR 0214, issue
 	// #462 phase 3 — no migration sweep).
 	stampDefaultEnvironmentRef(sess)
 	return engine, env, nil
 }
 
 // isRemoteEnvironmentRef reports whether ref names a non-in-tree backend that
-// requires an EnvironmentResolver to reattach (ADR 0106). The zero ref and the
+// requires an EnvironmentResolver to reattach (ADR 0214). The zero ref and the
 // in-tree Kinds (local/mem/nofs) return false; any other Kind returns true. The
 // in-tree set is closed here (the session package owns the constants); a
 // future remote transport adds its own Kind label and this predicate returns
@@ -2807,7 +3011,7 @@ func isRemoteEnvironmentRef(ref session.EnvironmentRef) bool {
 }
 
 // resolveEnvironmentRef reattaches a LIVE tool.Environment for a persisted
-// non-in-tree EnvironmentRef via the configured EnvironmentResolver (ADR 0106,
+// non-in-tree EnvironmentRef via the configured EnvironmentResolver (ADR 0214,
 // issue #462 phase 3). It validates the returned Environment's Ref() equals
 // the requested ref and carries a non-nil Workspace; a nil resolver, a ref
 // mismatch, or a nil-Workspace result fails loudly (ErrFailedPrecondition),
@@ -2866,7 +3070,7 @@ func (s *Service) buildSessionEnvironment(sess *session.Session, ws tool.Workspa
 
 // defaultEnvironmentRef computes the resolved default EnvironmentRef for a
 // session from its workspace/profile. It is the SINGLE source for the in-tree
-// default ref (ADR 0106, issue #462 phase 3 — finding #6 collapsed the
+// default ref (ADR 0214, issue #462 phase 3 — finding #6 collapsed the
 // duplicate derivation): buildSessionEnvironment uses it for the LIVE
 // Environment's ref, and stampDefaultEnvironmentRef uses it for the ref STAMPED
 // at create time so the next ordinary save persists it. The two therefore
@@ -2925,7 +3129,7 @@ func (s *Service) sessionNeedsPerFactory(sel ProviderSelector, specs []mcp.Serve
 // the shared engine with zero rehydration overhead, exactly as before. The
 // empty-workspace check stays as the SECOND defense (a no-fs session that
 // somehow persisted no profile label still rehydrates) — but it is GUARDED
-// against a REMOTE EnvironmentRef (ADR 0106, issue #462 phase 3): a remote
+// against a REMOTE EnvironmentRef (ADR 0214, issue #462 phase 3): a remote
 // session carries an empty persisted Workspace (its filesystem lives in the
 // remote backend, not on a local root), so the empty-workspace arm must NOT
 // fire for it — that would relabel it no-fs (profileForSession → ProfileNoFS),
@@ -2951,7 +3155,8 @@ func (s *Service) sessionNeedsPerFactory(sel ProviderSelector, specs []mcp.Serve
 // keep riding whatever engine gets (re)built for it without ever picking up
 // a heal that lands after the restart.
 func (s *Service) needsRehydration(sess *session.Session) bool {
-	return sess.Profile == string(ProfileNoFS) ||
+	return s.cfg.LearnedSkills != nil && sess.Owner != nil && sess.Owner.Issuer != "" && sess.Owner.Subject != "" ||
+		sess.Profile == string(ProfileNoFS) ||
 		sess.ProviderID != "" || sess.ModelID != "" ||
 		sess.ReasoningEffort != "" ||
 		(sess.Workspace == "" && !isRemoteEnvironmentRef(sess.EnvironmentRef)) ||
@@ -2964,7 +3169,7 @@ func (s *Service) needsRehydration(sess *session.Session) bool {
 // the second-defense empty-workspace inference. It is the shared profile source for the
 // mode→model rebuild (CASE 1) so a no-fs session that switches mode rebuilds the no-FS
 // catalog, never silently escalating onto the FS tools. A REMOTE EnvironmentRef
-// (ADR 0106, issue #462 phase 3) is excluded from the empty-workspace inference: a
+// (ADR 0214, issue #462 phase 3) is excluded from the empty-workspace inference: a
 // remote session carries an empty persisted Workspace (its filesystem lives in the
 // remote backend), so inferring no-fs from it would relabel the session and register a
 // no-fs environment override that preempts the EnvironmentResolver. A remote session
@@ -3675,7 +3880,7 @@ func (s *Service) Persist(ctx context.Context, id session.SessionID) {
 // An Append failure is best-effort: it WARNs and never aborts the run (a broken
 // durable log must not break the live stream).
 //
-// It is ALSO the SINGLE site that stamps session.Event.Actor (ADR 0100 decision
+// It is ALSO the SINGLE site that stamps session.Event.Actor (ADR 0204 decision
 // 5): the attribution is derive-at-append, read from the CONTEXT PRINCIPAL — the
 // verified caller who drove this request — so the loop stays storage- and
 // identity-agnostic and every emit site leaves Actor nil. Callers pass a
@@ -3939,6 +4144,26 @@ const autoApproveWaitTimeout = 30 * time.Second
 // live run to terminate. Short so the continuation starts promptly after the
 // verdict terminates the run.
 const autoApprovePollInterval = 10 * time.Millisecond
+
+// acquireMutationLease acquires a lease for one serialized management mutation
+// and returns its cleanup. A lease already held for the session lifetime is left
+// untouched; a lease newly acquired by this mutation is released on every exit.
+// The caller must hold runEntryMu for id.
+func (s *Service) acquireMutationLease(ctx context.Context, id session.SessionID) (func(), error) {
+	s.mu.Lock()
+	_, preHeld := s.heldLeases[id]
+	s.mu.Unlock()
+	if err := s.acquireLease(ctx, id); err != nil {
+		return func() {}, err
+	}
+	s.mu.Lock()
+	_, held := s.heldLeases[id]
+	s.mu.Unlock()
+	if preHeld || !held {
+		return func() {}, nil
+	}
+	return func() { s.releaseLease(id) }, nil
+}
 
 // acquireLease takes (or confirms) the cross-process single-writer lease for id
 // (cloud-native Phase 4). It is called at the run-entry seam AFTER the
@@ -4558,9 +4783,22 @@ func (s *Service) ListAgents(_ context.Context) []*mecatlv1.AgentInfo {
 	return s.cfg.Agents
 }
 
-// ListSkills returns the resolved skills-inventory snapshot (possibly empty).
-// It is a pure read of the injected snapshot; no live discovery.
-func (s *Service) ListSkills(_ context.Context) []*mecatlv1.SkillInfo {
+// ListSkills returns the current skills inventory (possibly empty).
+func (s *Service) ListSkills(ctx context.Context) []*mecatlv1.SkillInfo {
+	if s.cfg.BeginSkillPublication != nil {
+		unlock := s.cfg.BeginSkillPublication()
+		defer unlock()
+	}
+	if s.cfg.PublishLearnedSkills != nil {
+		if partition, err := s.skillPartition(ctx, ""); err == nil {
+			publishCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), skillPublicationTimeout)
+			_ = s.cfg.PublishLearnedSkills(publishCtx, partition)
+			cancel()
+		}
+	}
+	if s.cfg.LiveSkills != nil {
+		return s.cfg.LiveSkills(ctx)
+	}
 	return s.cfg.Skills
 }
 
@@ -4831,14 +5069,303 @@ type SessionSummary struct {
 	// (walks the conversation for the first genuine user prompt). Empty for a
 	// session with no genuine prompt.
 	Title string
-	// Owner is the verified caller the session is attributed to (ADR 0100), or
-	// nil for an ownerless session (a no-auth deployment, or a session persisted
-	// before the owner label existed — nothing backfills it). DISPLAY ONLY:
-	// ListSessions applies NO owner filtering, so a caller sees every stored
-	// session regardless of who owns it. Scoping belongs to the isolation track
-	// (#368), not here. Populated identically on the MetaLister fast path and the
-	// Load-per-row fallback.
+	// TitleProvenance reports whether the title is prompt-derived, operator-authored,
+	// or legacy/unknown.
+	TitleProvenance session.TitleProvenance
+	// Workspace is the stored session root used for search and display.
+	Workspace string
+	// Owner is the verified caller the session is attributed to.
 	Owner *session.Principal
+	// Kind and Relationship are the durable trusted-producer taxonomy.
+	Kind         session.SessionKind
+	Relationship session.SessionRelationship
+	// Capabilities and Reasons describe each public action valid for this row.
+	// ReasonCode is the legacy aggregate public-chat reason.
+	Capabilities SessionInventoryCapabilities
+	Reasons      SessionInventoryActionReasons
+	ReasonCode   CapabilityReason
+}
+
+// SessionInventoryCapabilities is the proto-free action posture for one row.
+type SessionInventoryCapabilities struct {
+	PublicChat              bool
+	Inspect                 bool
+	AuthoritativeTranscript bool
+	ActivityReplay          bool
+	CopyID                  bool
+	ViewTranscript          bool
+	Fork                    bool
+	Rename                  bool
+	Delete                  bool
+}
+
+// SessionInventoryActionReasons carries one closed reason for each disabled action.
+type SessionInventoryActionReasons struct {
+	PublicChat     CapabilityReason
+	Inspect        CapabilityReason
+	CopyID         CapabilityReason
+	ViewTranscript CapabilityReason
+	Fork           CapabilityReason
+	Rename         CapabilityReason
+	Delete         CapabilityReason
+}
+
+// CapabilityReason is a stable machine-readable explanation for a disabled
+// inventory action.
+type CapabilityReason string
+
+const (
+	// CapabilityReasonInspectOnlyKind means the session kind is available for
+	// inspection but cannot be driven through the public chat entry point.
+	CapabilityReasonInspectOnlyKind CapabilityReason = "inspect_only_kind"
+	// CapabilityReasonAwaitingApproval means the chat has an unresolved approval.
+	CapabilityReasonAwaitingApproval CapabilityReason = "awaiting_approval"
+	// CapabilityReasonActiveElsewhere means another live run currently owns the chat.
+	CapabilityReasonActiveElsewhere CapabilityReason = "active_elsewhere"
+	// CapabilityReasonTranscriptUnavailable means no complete snapshot transcript can be loaded.
+	CapabilityReasonTranscriptUnavailable CapabilityReason = "transcript_unavailable"
+	// CapabilityReasonStorageUnsupported means the configured store cannot perform the action.
+	CapabilityReasonStorageUnsupported CapabilityReason = "storage_unsupported"
+	// CapabilityReasonUnknown means the row cannot prove action eligibility.
+	CapabilityReasonUnknown CapabilityReason = "unknown"
+)
+
+const (
+	// DefaultSessionInventoryPageSize applies when the caller omits page_size.
+	DefaultSessionInventoryPageSize = 50
+	// MaxSessionInventoryPageSize is the hard response-row bound.
+	MaxSessionInventoryPageSize = 100
+)
+
+// ListSessionsPageRequest asks for one bounded inventory page.
+type ListSessionsPageRequest struct {
+	PageSize int
+	Cursor   string
+}
+
+// ListSessionsPage is one bounded owner-filtered inventory response.
+type ListSessionsPage struct {
+	Sessions   []SessionSummary
+	NextCursor string
+	TotalCount int
+}
+
+type inventoryCursor struct {
+	ModifiedAtUnixNano int64  `json:"m"`
+	SessionID          string `json:"i"`
+}
+
+func encodeInventoryCursor(cursor *port.SessionMetadataCursor) (string, error) {
+	if cursor == nil {
+		return "", nil
+	}
+	data, err := json.Marshal(inventoryCursor{ModifiedAtUnixNano: cursor.ModifiedAt.UnixNano(), SessionID: string(cursor.ID)})
+	if err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(data), nil
+}
+
+func decodeInventoryCursor(token string) (*port.SessionMetadataCursor, error) {
+	if token == "" {
+		return nil, nil
+	}
+	data, err := base64.RawURLEncoding.DecodeString(token)
+	if err != nil {
+		return nil, fmt.Errorf("%w: invalid session inventory cursor", ErrInvalidArgument)
+	}
+	var cursor inventoryCursor
+	if err := json.Unmarshal(data, &cursor); err != nil || cursor.SessionID == "" {
+		return nil, fmt.Errorf("%w: invalid session inventory cursor", ErrInvalidArgument)
+	}
+	return &port.SessionMetadataCursor{ModifiedAt: time.Unix(0, cursor.ModifiedAtUnixNano), ID: session.SessionID(cursor.SessionID)}, nil
+}
+
+func inventoryCapabilities(kind session.SessionKind, id session.SessionID, state session.State, live bool) (SessionInventoryCapabilities, SessionInventoryActionReasons) {
+	caps := SessionInventoryCapabilities{Inspect: true, CopyID: id != ""}
+	reasons := SessionInventoryActionReasons{
+		PublicChat: CapabilityReasonUnknown, CopyID: CapabilityReasonUnknown,
+		ViewTranscript: CapabilityReasonTranscriptUnavailable, Fork: CapabilityReasonUnknown,
+		Rename: CapabilityReasonUnknown, Delete: CapabilityReasonUnknown,
+	}
+	if caps.CopyID {
+		reasons.CopyID = ""
+	}
+	if kind != session.SessionKindMain || hasLegacyNonChatPrefix(id) {
+		reasons.PublicChat = CapabilityReasonInspectOnlyKind
+		reasons.Fork = CapabilityReasonInspectOnlyKind
+		reasons.Rename = CapabilityReasonInspectOnlyKind
+		reasons.Delete = CapabilityReasonInspectOnlyKind
+		return caps, reasons
+	}
+	if state == session.StateAwaiting {
+		reasons.PublicChat = CapabilityReasonAwaitingApproval
+		reasons.Fork = CapabilityReasonAwaitingApproval
+		reasons.Rename = CapabilityReasonAwaitingApproval
+		reasons.Delete = CapabilityReasonAwaitingApproval
+		return caps, reasons
+	}
+	if state == session.StateRunning || live {
+		reasons.PublicChat = CapabilityReasonActiveElsewhere
+		reasons.Fork = CapabilityReasonActiveElsewhere
+		reasons.Rename = CapabilityReasonActiveElsewhere
+		reasons.Delete = CapabilityReasonActiveElsewhere
+		return caps, reasons
+	}
+	caps.PublicChat, caps.Fork, caps.Rename = true, true, true
+	reasons.PublicChat, reasons.Fork, reasons.Rename = "", "", ""
+	return caps, reasons
+}
+
+func validSessionRelationshipUTF8(relationship session.SessionRelationship) bool {
+	return utf8.ValidString(string(relationship.ParentSessionID)) &&
+		utf8.ValidString(string(relationship.CallID)) &&
+		utf8.ValidString(relationship.ScheduleName) &&
+		utf8.ValidString(string(relationship.OriginSessionID)) &&
+		utf8.ValidString(relationship.TeamID) &&
+		utf8.ValidString(relationship.MemberName)
+}
+
+func validSessionIdentityMetadata(id session.SessionID, relationship session.SessionRelationship) bool {
+	return id != "" && utf8.ValidString(string(id)) && validSessionRelationshipUTF8(relationship)
+}
+
+func metadataKeyAfter(row port.SessionDiscoveryMeta, cursor *port.SessionMetadataCursor) bool {
+	return row.ModifiedAt.Before(cursor.ModifiedAt) ||
+		(row.ModifiedAt.Equal(cursor.ModifiedAt) && row.ID > cursor.ID)
+}
+
+func validateSessionMetadataPage(page port.SessionMetadataPage, request port.SessionMetadataPageRequest) error {
+	if len(page.Sessions) > request.Limit {
+		return fmt.Errorf("pager returned %d rows for limit %d", len(page.Sessions), request.Limit)
+	}
+	if page.TotalCount < 0 || page.TotalCount < len(page.Sessions) {
+		return fmt.Errorf("pager returned invalid total count %d", page.TotalCount)
+	}
+	for i, row := range page.Sessions {
+		if !validSessionIdentityMetadata(row.ID, row.Relationship) {
+			return fmt.Errorf("pager returned invalid session identity metadata")
+		}
+		if request.OwnershipEnforced && (request.Owner == nil || !request.Owner.SameIdentity(row.Owner)) {
+			return fmt.Errorf("pager returned a session outside the requested owner scope")
+		}
+		if request.Cursor != nil && !metadataKeyAfter(row, request.Cursor) {
+			return fmt.Errorf("pager returned a row before its cursor")
+		}
+		if i > 0 && !metadataKeyAfter(row, &port.SessionMetadataCursor{
+			ModifiedAt: page.Sessions[i-1].ModifiedAt,
+			ID:         page.Sessions[i-1].ID,
+		}) {
+			return fmt.Errorf("pager returned rows out of keyset order")
+		}
+	}
+	if page.NextCursor != nil {
+		if len(page.Sessions) == 0 || page.NextCursor.ID == "" || !utf8.ValidString(string(page.NextCursor.ID)) {
+			return fmt.Errorf("pager returned an invalid next cursor")
+		}
+		last := page.Sessions[len(page.Sessions)-1]
+		if !page.NextCursor.ModifiedAt.Equal(last.ModifiedAt) || page.NextCursor.ID != last.ID {
+			return fmt.Errorf("pager next cursor does not identify the final row")
+		}
+	}
+	return nil
+}
+
+// ListSessionPage returns one bounded keyset page. The optional pager is a
+// deployment capability: unsupported stores fail honestly instead of falling
+// back to an unbounded response. Ownership criteria are sent to the store so
+// filtering occurs before page formation and TotalCount.
+func (s *Service) ListSessionPage(ctx context.Context, request ListSessionsPageRequest) (ListSessionsPage, error) {
+	pager, ok := s.cfg.Store.(port.SessionMetadataPager)
+	if !ok {
+		return ListSessionsPage{}, port.ErrSessionMetadataPagingUnsupported
+	}
+	limit := request.PageSize
+	if limit < 0 {
+		return ListSessionsPage{}, fmt.Errorf("%w: page_size must be non-negative", ErrInvalidArgument)
+	}
+	if limit == 0 {
+		limit = DefaultSessionInventoryPageSize
+	}
+	if limit > MaxSessionInventoryPageSize {
+		limit = MaxSessionInventoryPageSize
+	}
+	cursor, err := decodeInventoryCursor(request.Cursor)
+	if err != nil {
+		return ListSessionsPage{}, err
+	}
+	pageRequest := port.SessionMetadataPageRequest{
+		Limit: limit, Cursor: cursor, OwnershipEnforced: s.cfg.OwnershipEnforced,
+		Owner: session.PrincipalFromContext(ctx),
+	}
+	page, err := pager.PageSessionMetadata(ctx, pageRequest)
+	if err != nil {
+		if errors.Is(err, port.ErrSessionMetadataPagingUnsupported) {
+			return ListSessionsPage{}, err
+		}
+		return ListSessionsPage{}, fmt.Errorf("%w: list session page: %v", ErrInternal, err)
+	}
+	if err := validateSessionMetadataPage(page, pageRequest); err != nil {
+		return ListSessionsPage{}, fmt.Errorf("%w: invalid session metadata page: %v", ErrInternal, err)
+	}
+	out := ListSessionsPage{Sessions: make([]SessionSummary, 0, len(page.Sessions)), TotalCount: page.TotalCount}
+	for _, meta := range page.Sessions {
+		out.Sessions = append(out.Sessions, s.summaryFromDiscoveryMeta(meta))
+	}
+	out.NextCursor, err = encodeInventoryCursor(page.NextCursor)
+	if err != nil {
+		return ListSessionsPage{}, fmt.Errorf("%w: encode session inventory cursor: %v", ErrInternal, err)
+	}
+	return out, nil
+}
+
+func sessionDeleteSupported(store port.SessionStore) bool {
+	if _, ok := store.(port.PrunableStore); !ok {
+		return false
+	}
+	if support, ok := store.(port.SessionDeleteSupport); ok {
+		return support.SupportsSessionDelete()
+	}
+	return true
+}
+
+func (s *Service) summaryFromDiscoveryMeta(meta port.SessionDiscoveryMeta) SessionSummary {
+	created := int64(0)
+	if !meta.CreatedAt.IsZero() {
+		created = meta.CreatedAt.Unix()
+	}
+	kind := meta.Kind
+	if kind == "" {
+		kind = session.SessionKindUnknown
+	}
+	caps, reasons := inventoryCapabilities(kind, meta.ID, meta.State, s.IsLive(meta.ID))
+	caps.AuthoritativeTranscript = meta.State != ""
+	caps.ViewTranscript = caps.AuthoritativeTranscript
+	if caps.ViewTranscript {
+		reasons.ViewTranscript = ""
+	}
+	deletableStore := sessionDeleteSupported(s.cfg.Store)
+	caps.Delete = caps.Rename && deletableStore
+	if caps.Delete {
+		reasons.Delete = ""
+	} else if caps.Rename && !deletableStore {
+		reasons.Delete = CapabilityReasonStorageUnsupported
+	}
+	caps.ActivityReplay = s.cfg.EventLog != nil
+	return SessionSummary{
+		SessionID: string(meta.ID), ModifiedAtUnix: meta.ModifiedAt.Unix(), State: string(meta.State),
+		Turns: meta.Turns, ModelID: meta.ModelID, CreatedAtUnix: created, Title: meta.Title,
+		TitleProvenance: meta.TitleProvenance,
+		Workspace:       meta.Workspace, Owner: meta.Owner.Clone(), Kind: kind, Relationship: meta.Relationship,
+		Capabilities: caps, Reasons: reasons, ReasonCode: reasons.PublicChat,
+	}
+}
+
+func (s *Service) summaryFromMeta(meta port.SessionMeta) SessionSummary {
+	return s.summaryFromDiscoveryMeta(port.SessionDiscoveryMeta{
+		ID: meta.ID, ModifiedAt: meta.ModifiedAt, State: meta.State, Turns: meta.Turns,
+		ModelID: meta.ModelID, CreatedAt: meta.CreatedAt, Title: meta.Title, Owner: meta.Owner,
+	})
 }
 
 // StreamSessionEvents replays a session's durable event log as a lazy iterator
@@ -4931,9 +5458,11 @@ func (s *Service) ListSessions(ctx context.Context) ([]SessionSummary, error) {
 				continue
 			}
 		}
+		kind := session.SessionKindUnknown
+		caps, reasons := inventoryCapabilities(kind, r.ID, "", s.IsLive(r.ID))
 		summary := SessionSummary{
-			SessionID:      string(r.ID),
-			ModifiedAtUnix: r.ModifiedAt.Unix(),
+			SessionID: string(r.ID), ModifiedAtUnix: r.ModifiedAt.Unix(),
+			Kind: kind, Capabilities: caps, Reasons: reasons, ReasonCode: reasons.PublicChat,
 		}
 		if sess, lerr := s.cfg.Store.Load(ctx, r.ID); lerr == nil && sess != nil {
 			if !s.ownsResource(ctx, sess.Owner) {
@@ -4946,9 +5475,29 @@ func (s *Service) ListSessions(ctx context.Context) ([]SessionSummary, error) {
 				summary.ModelID = sess.ModelID
 			}
 			summary.Title = DeriveTitle(sess)
+			summary.TitleProvenance = sess.TitleProvenance
+			summary.Workspace = sess.Workspace
 			// Clone: the row must not carry a live pointer into the loaded
 			// session, or a consumer of the row can rewrite the recorded owner.
 			summary.Owner = sess.Owner.Clone()
+			summary.Kind = sess.Kind
+			if summary.Kind == "" {
+				summary.Kind = session.SessionKindUnknown
+			}
+			summary.Relationship = sess.Relationship
+			summary.Capabilities, summary.Reasons = inventoryCapabilities(summary.Kind, sess.ID, sess.State, s.IsLive(sess.ID))
+			summary.ReasonCode = summary.Reasons.PublicChat
+			summary.Capabilities.AuthoritativeTranscript = true
+			summary.Capabilities.ViewTranscript = true
+			summary.Reasons.ViewTranscript = ""
+			deletableStore := sessionDeleteSupported(s.cfg.Store)
+			summary.Capabilities.Delete = summary.Capabilities.Rename && deletableStore
+			if summary.Capabilities.Delete {
+				summary.Reasons.Delete = ""
+			} else if summary.Capabilities.Rename && !deletableStore {
+				summary.Reasons.Delete = CapabilityReasonStorageUnsupported
+			}
+			summary.Capabilities.ActivityReplay = s.cfg.EventLog != nil
 		}
 		out = append(out, summary)
 	}
@@ -4979,16 +5528,7 @@ func (s *Service) listSessionsMeta(ctx context.Context, ml port.MetaLister) ([]S
 				continue
 			}
 		}
-		summary := SessionSummary{
-			SessionID:      string(r.ID),
-			ModifiedAtUnix: r.ModifiedAt.Unix(),
-			State:          string(r.State),
-			Turns:          r.Turns,
-			CreatedAtUnix:  r.CreatedAt.Unix(),
-			ModelID:        r.ModelID,
-			Title:          r.Title,
-			Owner:          r.Owner.Clone(),
-		}
+		summary := s.summaryFromMeta(r)
 		// A zero CreatedAt (a snapshot with no created_at, or a corrupt row that
 		// left CreatedAt at the zero time) maps to 0, NOT the zero time's Unix
 		// value (-62135596800) — matching the Load-fails zeroed-fields behaviour.

@@ -4,7 +4,9 @@ import { fileURLToPath } from "node:url";
 
 const root = resolve(dirname(fileURLToPath(import.meta.url)), "..");
 const controllerScript = resolve(root, "scripts/local-controller.mjs");
-const vinext = resolve(root, "node_modules/.bin/vinext");
+const next = resolve(root, "node_modules/.bin/next");
+const production = process.argv.includes("--production");
+const externalMode = Boolean(process.env.MECATL_BASE_URL?.trim());
 
 let stopping = false;
 let controller = null;
@@ -24,7 +26,7 @@ async function controllerIsHealthy() {
 }
 
 async function ensureController() {
-  if (stopping || controller || await controllerIsHealthy()) return;
+  if (externalMode || stopping || controller || await controllerIsHealthy()) return;
   controller = spawn(process.execPath, [controllerScript], { cwd: root, env: process.env, stdio: "inherit" });
   controller.once("exit", () => {
     controller = null;
@@ -34,9 +36,9 @@ async function ensureController() {
 
 function startWeb() {
   if (stopping || web) return;
-  web = spawn(vinext, ["dev"], {
+  web = spawn(next, production ? ["start"] : ["dev"], {
     cwd: root,
-    env: { ...process.env, WRANGLER_LOG_PATH: ".wrangler/wrangler.log" },
+    env: process.env,
     stdio: "inherit",
   });
   web.once("exit", () => {

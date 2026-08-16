@@ -25,6 +25,12 @@ type sessionStateProjection struct {
 	contextTokens int64
 	activeTool    string
 	toolProgress  string
+	// The ask-args surfaces (issue #488): the full-screen view is session-derived
+	// (its ask rides the OLD session's askIDs), so resetSession must close it and
+	// reset the modal's mini-viewport offset.
+	argsViewOpen bool
+	argsVPReady  bool
+	askVPOffset  int
 }
 
 // sessionState projects a Model onto its session-derived fields for comparison.
@@ -39,6 +45,9 @@ func sessionState(m Model) sessionStateProjection {
 		contextTokens: m.contextTokens,
 		activeTool:    m.activeTool,
 		toolProgress:  m.toolProgress,
+		argsViewOpen:  m.argsViewOpen,
+		argsVPReady:   m.argsVPReady,
+		askVPOffset:   m.askVPOffset,
 	}
 }
 
@@ -67,16 +76,16 @@ func builtinNames(caps client.Capabilities, w wiredCollaborators) []string {
 	return out
 }
 
-// TestBuiltinCommandsCapsFilter pins the caps gate AND the fixed order: /clear
-// and /help are always present (and lead, in that order); /mcp needs caps.MCP &&
-// the MCP collaborator wired; /agents (the def inventory) needs caps.Agents &&
+// TestBuiltinCommandsCapsFilter pins the caps gate AND the fixed order: /clear,
+// /help, and /session are always present (and lead, in that order); /mcp needs
+// caps.MCP && the MCP collaborator wired; /agents (the def inventory) needs caps.Agents &&
 // the agents collaborator wired; /team (the live overlay) needs caps.Teams;
 // /skills needs caps.Skills && the skills collaborator wired; /soul needs
 // caps.Soul && the soul collaborator wired; /usermodel needs caps.UserModel &&
 // the user-model collaborator wired; /models needs caps.ModelSelection && the model
 // lister wired; /worktrees needs caps.Worktrees && the worktree lister wired
 // (issue #102); /effort is gated identically to /models and follows it (ADR 0055).
-// The fixed order is clear, help, mcp, agents, team, skills, soul, usermodel,
+// The fixed order is clear, help, session, mcp, agents, team, skills, soul, usermodel,
 // models, effort, worktrees.
 func TestBuiltinCommandsCapsFilter(t *testing.T) {
 	all := client.Capabilities{MCP: true, Agents: true, Teams: true, Skills: true, Soul: true, UserModel: true, ModelSelection: true, Worktrees: true, Scheduling: true, Posture: "auto"}
@@ -127,8 +136,9 @@ func TestBuiltinCommandsCapsFilter(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := builtinNames(tc.caps, tc.w)
-			if strings.Join(got, ",") != strings.Join(tc.want, ",") {
-				t.Fatalf("builtinCommands order/filter = %v, want %v", got, tc.want)
+			want := append([]string{"clear", "help", "session"}, tc.want[2:]...)
+			if strings.Join(got, ",") != strings.Join(want, ",") {
+				t.Fatalf("builtinCommands order/filter = %v, want %v", got, want)
 			}
 		})
 	}
@@ -181,6 +191,74 @@ func TestBuiltinByName(t *testing.T) {
 	}
 	if _, ok := builtinByName(caps, wired, "nope"); ok {
 		t.Error("unknown name should not be found")
+	}
+}
+
+// TestDebugAskBuiltinGatedOnEnv pins the /debug-ask gate (issue #488): without
+// Deps.DebugAsk the builtin is absent; with it, it is registered.
+func TestDebugAskBuiltinGatedOnEnv(t *testing.T) {
+	caps := client.Capabilities{}
+	if _, ok := builtinByName(caps, wiredCollaborators{}, "debug-ask"); ok {
+		t.Error("/debug-ask must be ABSENT without the DebugAsk gate")
+	}
+	if _, ok := builtinByName(caps, wiredCollaborators{DebugAsk: true}, "debug-ask"); !ok {
+		t.Error("/debug-ask must be registered with the DebugAsk gate on")
+	}
+}
+
+// TestDebugAskInjectsFakeAsk pins that /debug-ask drives the REAL ask reducer:
+// the fake ask opens the modal at phaseIdle (applyPermissionAsk does not gate
+// on phase), cycles through three payloads, and resolving it leaves a notice.
+func TestDebugAskInjectsFakeAsk(t *testing.T) {
+	m, _ := builtinDispatchModel(t, client.Capabilities{}, false)
+	m.deps.DebugAsk = true
+
+	// Three invocations cycle through the three canned payloads, each opening a
+	// fresh ask (resolve between invocations).
+	seenArgs := map[string]bool{}
+	for i := 0; i < 3; i++ {
+		b, ok := builtinByName(m.caps, m.wiredCollaborators(), "debug-ask")
+		if !ok {
+			t.Fatal("precondition: /debug-ask must be registered with DebugAsk on")
+		}
+		mm, _ := b.run(m)
+		m = mm.(Model)
+		if m.phase != phaseAwaitingApproval {
+			t.Fatalf("invocation %d: /debug-ask must open the modal (even at idle), got phase %v", i, m.phase)
+		}
+		if m.ask.Tool != "Bash" {
+			t.Errorf("invocation %d: the fake ask must be a Bash ask, got %q", i, m.ask.Tool)
+		}
+		seenArgs[m.ask.Args] = true
+		// Resolve it (allow once) so the next invocation's ask opens fresh.
+		m, _ = pressKey(m, tea.KeyPressMsg{Code: 'a', Text: "a"})
+		if got := lastNotice(m); got != "permission allowed" {
+			t.Errorf("invocation %d: resolving must record the notice, got %q", i, got)
+		}
+	}
+	if len(seenArgs) != 3 {
+		t.Errorf("three invocations must cycle through three DISTINCT payloads, got %d", len(seenArgs))
+	}
+	if m.phase != phaseIdle {
+		t.Errorf("a /debug-ask opened at idle must RESUME to idle on resolve, got %v", m.phase)
+	}
+}
+
+// TestDebugAskIdleResolveDoesNotSpin reproduces issue-#553's "stuck spinner":
+// a /debug-ask opened at phaseIdle must NOT resume into phaseRunning on
+// resolve (that left the footer spinner running with no run behind it).
+func TestDebugAskIdleResolveDoesNotSpin(t *testing.T) {
+	m, _ := builtinDispatchModel(t, client.Capabilities{}, false)
+	m.deps.DebugAsk = true
+	b, _ := builtinByName(m.caps, m.wiredCollaborators(), "debug-ask")
+	mm, _ := b.run(m)
+	m = mm.(Model)
+	if m.phase != phaseAwaitingApproval {
+		t.Fatalf("precondition: the debug ask must open the modal, got %v", m.phase)
+	}
+	m, _ = pressKey(m, tea.KeyPressMsg{Code: 'a', Text: "a"})
+	if m.phase != phaseIdle {
+		t.Fatalf("resolving an idle-opened debug ask must return to idle, got %v", m.phase)
 	}
 }
 
@@ -281,6 +359,11 @@ func TestClearBuiltinResetsState(t *testing.T) {
 	m.contextTokens = 1200
 	m.activeTool = "Write"
 	m.toolProgress = "writing"
+	// args-view residue: resetSession (via /clear) must close the args view and
+	// zero the mini-viewport offset.
+	m.argsViewOpen = true
+	m.argsVPReady = true
+	m.askVPOffset = 2
 	// Scrolled up (auto-follow off): /clear must re-arm it, since an empty
 	// conversation is at-bottom and the next run must tail its streaming deltas.
 	m.stuck = false
@@ -493,8 +576,9 @@ func TestBuiltinNameWithArgsFallsThrough(t *testing.T) {
 // from the builtinCommands table AND that an unknown name is false.
 func TestIsKnownBuiltinName(t *testing.T) {
 	known := []string{
-		"clear", "help", "mcp", "agents", "team", "skills", "soul", "usermodel",
-		"models", "effort", "worktrees", "schedule", "sessions", "learning", "posture",
+		"clear", "help", "session", "mcp", "agents", "team", "skills", "soul", "usermodel",
+		"models", "effort", "worktrees", "schedule", "sessions", "learning", "learning-sensitivity", "posture",
+		"debug-ask",
 	}
 	for _, name := range known {
 		if !isKnownBuiltinName(name) {

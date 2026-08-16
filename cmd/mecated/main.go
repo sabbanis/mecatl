@@ -710,6 +710,7 @@ func runSkillsPromote(argv []string, in io.Reader, out io.Writer) error {
 	if err != nil {
 		return err
 	}
+	_, _ = fmt.Fprintln(out, "Warning: `skills promote` is the deprecated legacy quarantine workflow; it never activates evaluated-lifecycle repository records.")
 	_, _ = fmt.Fprintf(out, "\n--- candidate skill %q (model-authored, UNTRUSTED until promoted) ---\n%s\n--- end candidate ---\n\n", name, raw)
 
 	if !assumeYes {
@@ -1109,6 +1110,7 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		ForkPreservedCap:        cfg.forkPreservedCap,
 		EnableTeams:             cfg.enableTeams,
 		MCPServers:              cfg.mcpServers.Servers(),
+		MCPProfileLoader:        cliconfig.NewMCPProfileResolver(cfg.mcpServers, os.LookupEnv),
 		MCPResourceTools:        cfg.mcpResourceTools,
 		MCPPrompts:              cfg.mcpPrompts,
 		ToolHiveEnabled:         cfg.toolHiveEnabled,
@@ -1146,6 +1148,7 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		ToolCallRecorder:       recorder,
 		MetricsRoleScoper:      roleScoper,
 		ScheduleMetricsEmitter: metrics.EmitSchedule,
+		LearningMetricsEmitter: metrics.EmitLearning,
 		Diagnostics:            diag,
 		// Plan-mode auto-approve (issue #206 Wave 6a): the OPT-IN operator flag.
 		PlanModeAutoApprove: cfg.planModeAutoApprove,
@@ -1461,7 +1464,7 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 
 	fs.Var(&cfg.skillsDirs, "skills-dir", "directory to discover progressive-disclosure skills from, laid out as <name>/SKILL.md (repeatable; highest precedence); empty disables the Skill tool unless --skills-conventional is set. TRUST BOUNDARY: a SKILL.md steers the model like AGENTS.md/CLAUDE.md — point this only at directories you trust")
 	fs.BoolVar(&cfg.skillsConventional, "skills-conventional", false, "also discover skills from the conventional locations: <workspace>/"+skills.ProjectDirMecatl+", <workspace>/"+skills.ProjectDirClaude+", $XDG_CONFIG_HOME/mecatl/skills (or ~/.config/mecatl/skills), and ~/.claude/skills (lower precedence than --skills-dir). Default OFF — opt in only for trusted locations (same trust class as AGENTS.md/CLAUDE.md)")
-	fs.StringVar(&cfg.skillSourceURL, "skill-source-url", "", "host:port of a remote skill-source gRPC driver (mecatl.driver.v1.SkillSourceService); replaces local skills discovery, so it is mutually exclusive with --skills-dir/--skills-conventional. The driver's skill set is snapshotted at startup (fatal if unreachable); bundled files materialize lazily into a temporary asset cache on a skill's first activation (removed on shutdown). TRUST BOUNDARY: a driver-served SKILL.md steers the model like AGENTS.md/CLAUDE.md — point this only at a driver you trust. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
+	fs.StringVar(&cfg.skillSourceURL, "skill-source-url", "", "host:port of a remote skill-source gRPC driver (mecatl.driver.v1.SkillSourceService); replaces local skills discovery, so it is mutually exclusive with --skills-dir/--skills-conventional. The driver's skill set is snapshotted at startup (fatal if unreachable); bundled assets are fetched on demand by logical name. TRUST BOUNDARY: a driver-served SKILL.md steers the model like AGENTS.md/CLAUDE.md — point this only at a driver you trust. Same auth/TLS posture as --session-store-url (equal URLs share one connection)")
 
 	fs.StringVar(&cfg.skillsDraftDir, "skills-draft-dir", "", "enable the writable SkillDraft tool and set the QUARANTINE directory for model-authored candidate skills. Empty disables the tool. TRUST BOUNDARY: must be OUTSIDE the workspace root (so the model's workspace-confined Write/Edit cannot reach it; fatal otherwise) and disjoint from every --skills-dir (fatal on overlap). Drafts are quarantined (never live); an operator reviews and promotes one with `mecated skills promote --skills-draft-dir <dir> --skills-dir <active> <name>`")
 	fs.Float64Var(&cfg.skillsDraftThreshold, "skills-draft-similarity-threshold", skills.DefaultSimilarityThreshold, "2-gram Jaccard similarity above which a SkillDraft warns of a near-duplicate existing skill (warn-only, does not block)")
@@ -1868,7 +1871,7 @@ func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus
 // ctx is the SERVER-ROOT context: the validator owns background JWKS refresh, so
 // it must outlive any request. EVERY failure here is fatal and the daemon
 // refuses to start — silently falling back to the unauthenticated path would
-// turn an authenticated deployment into an open one (ADR 0100).
+// turn an authenticated deployment into an open one (ADR 0204).
 func buildEdge(ctx context.Context, cfg config) (*tls.Config, *server.Authenticator, error) {
 	tlsCfg, err := buildTLSConfig(cfg)
 	if err != nil {

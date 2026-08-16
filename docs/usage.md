@@ -19,6 +19,7 @@ an editor that spawned it.
 > protections: bearer auth (`--auth-token` / `MECATL_AUTH_TOKEN`), TLS
 > (`--tls-cert` / `--tls-key`), mutual TLS (`--client-ca`), and rate limiting
 > (`--rate-limit` / `--rate-burst`) — see [mecated](usage/mecated.md).
+>
 
 > **How to read this guide:** sections 1–4 (install → quickstart → mecated →
 > guardrails) are a **linear new-operator path**; the remaining sections are
@@ -52,6 +53,38 @@ an editor that spawned it.
 | 17. Troubleshooting / FAQ | [troubleshooting.md](usage/troubleshooting.md) |
 | 18. OpenAI Codex subscription | [OpenAI Codex subscription](#openai-codex-subscription-experimental) |
 | 19. ToolHive LLM gateway | [ToolHive LLM gateway](#toolhive-llm-gateway) |
+
+## mecatui session identity
+
+The TUI header shows a compact `#<digest>` for the active session rather than a long
+opaque ID. Type `/session` to inspect the safely quoted full ID, title, state, workspace,
+known timestamps, provider, and model; press `c` in that overlay to copy the exact ID.
+Use `/sessions` separately to Continue a stored chat or Inspect scheduled, child, and
+unknown/other runs without changing the active chat. Its selected-row hints come from
+server capabilities: `y` copies the exact ID, `v` views without attaching, `f` forks an
+eligible main chat, `r` edits its title, and `d` confirms permanent deletion. Rename,
+fork, and delete are revalidated at execution; failure leaves the active prompt target
+unchanged, and the currently attached chat must be switched away before deletion.
+To make that same inventory the
+first interactive view, run `mecatui sessions [flags]` for the embedded server or
+`mecatui connect ADDRESS sessions [flags]` for a remote server. These forms create no
+throwaway session: `enter` continues or inspects, inspection `esc` goes Back, `n` creates
+one new chat after model defaults are reconciled, and picker `esc` quits with no final
+session handoff. Seed-prompt and resume flags conflict with this explicit browser intent.
+To continue directly at process startup, pass `--resume SESSION_ID` or
+`--resume-latest` in either embedded or `connect` mode. mecatui adopts the complete
+authoritative transcript without creating a throwaway session; latest excludes active,
+awaiting, scheduled, child, unknown, and transcript-unavailable rows. The first new
+prompt still enters the normal atomic run funnel. If attachment fails, the transcript
+stays visible and the preserved prompt can be retried with `r` or returned to with
+`esc`; no fallback chat is created. A `--prompt`/`--prompt-file` seed is submitted only
+after adoption. While the TUI is open, `/session` + `c` copies the exact ID. On an
+ordinary clean exit, mecatui leaves the alternate screen and then writes one stderr line
+of the stable form `mecatui: final-session-id=<JSON string>`; JSON-decoding the value
+recovers the byte-exact final active ID after any rebind. Keep it to launch
+`mecatui --resume SESSION_ID` later. No handoff is claimed when setup fails, no session
+exists, the TUI fails, or a signal interrupts/forces exit; stdout is unchanged. See the
+[full TUI reference](tui.md#continue-a-chat-at-startup).
 
 ## Scheduled tasks
 

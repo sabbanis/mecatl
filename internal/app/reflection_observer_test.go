@@ -2,11 +2,17 @@ package app
 
 import (
 	"context"
+	"reflect"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/stacklok/mecatl/engine/adapter/memmemory"
 	"github.com/stacklok/mecatl/engine/adapter/memorypromotion"
 	"github.com/stacklok/mecatl/engine/adapter/memproposal"
+	"github.com/stacklok/mecatl/engine/adapter/memskill"
+	"github.com/stacklok/mecatl/engine/adapter/mockllm"
+	"github.com/stacklok/mecatl/engine/adapter/skillfs"
 	"github.com/stacklok/mecatl/engine/learning"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
@@ -14,6 +20,12 @@ import (
 )
 
 type captureReflectionInput struct{ input chan learning.Input }
+
+type passingSkillEvaluator struct{}
+
+func (passingSkillEvaluator) Evaluate(context.Context, learning.SkillEvaluationRequest) (learning.SkillEvaluation, error) {
+	return learning.SkillEvaluation{Verdict: learning.EvaluationPass, FixtureIDs: []string{"fixture-pass"}}, nil
+}
 
 func (r captureReflectionInput) Reflect(_ context.Context, in learning.Input) (learning.Outcome, error) {
 	r.input <- in
@@ -25,6 +37,8 @@ func reflectionOutcomeFixture(t *testing.T, kind learning.CandidateKind) (learni
 	trajectory := learning.NewTrajectory("source-session", "/project/root", session.StopEndTurn, session.Usage{}, []session.Message{
 		session.NewUserMessage("Remember that I prefer concise Go examples"),
 	})
+	trajectory.Current = learning.MessageSpan{Start: 0, End: len(trajectory.Messages)}
+	trajectory.Kind = session.SessionKindMain
 	input := learning.NewInput(trajectory, nil, nil, nil)
 	ref, err := learning.MessageEvidenceRef(input, 0, "")
 	if err != nil {
@@ -36,7 +50,7 @@ func reflectionOutcomeFixture(t *testing.T, kind learning.CandidateKind) (learni
 	}
 	if kind == learning.CandidateProcedure {
 		candidate.Key, candidate.Value, candidate.Description = "", "", ""
-		candidate.Title, candidate.Body = "Review Go changes", "Run focused tests before the full suite."
+		candidate.Name, candidate.Title, candidate.Body = "review-go-changes", "Review Go changes", "Run focused tests before the full suite."
 	}
 	validated, err := learning.NewCandidate(input, candidate)
 	if err != nil {
@@ -47,6 +61,100 @@ func reflectionOutcomeFixture(t *testing.T, kind learning.CandidateKind) (learni
 		t.Fatal(err)
 	}
 	return input, learning.Outcome{Kind: learning.OutcomeProposed, Candidates: []learning.Candidate{validated}}, digest
+}
+
+func TestAutomaticReflectionEmitsCorrelatedClosedMetrics(t *testing.T) {
+	var mu sync.Mutex
+	var activities []learning.Activity
+	emitted := make(chan learning.Activity, 8)
+	emitter := func(activity learning.Activity) {
+		mu.Lock()
+		activities = append(activities, activity)
+		mu.Unlock()
+		emitted <- activity
+	}
+	automatic := defaultLearningAutomaticConfig()
+	automatic.Cooldown = 0
+	automatic.MaxReflections = 1
+	cfg := Config{
+		Model: "test-model", LearningMode: learning.Auto, LearningSensitivity: learning.Balanced,
+		LearningAutomatic: automatic, LearningMetricsEmitter: emitter,
+	}
+	admission := newLearningAdmission(1)
+	admission.controller = newAutomaticAdmissionController(cfg.LearningAutomatic, cfg.LearningMetricsEmitter)
+	coordinator := newReflectionCoordinator(context.Background(), reflectionCoordinatorConfig{Workers: 1, Capacity: 2, Timeout: time.Second})
+	t.Cleanup(coordinator.Close)
+	provider := mockllm.New(mockllm.TextTurn(`{"kind":"abstained","candidates":[]}`))
+	memory := memmemory.New()
+	observer, ok := buildReflectionObserver(cfg, provider, cfg.Model, memory, nil, memproposal.New(), coordinator, admission).(*reflectionObserver)
+	if !ok {
+		t.Fatal("automatic reflection observer was not built")
+	}
+
+	trajectory := func(id, prompt string) learning.Trajectory {
+		messages := []session.Message{session.NewUserMessage(prompt)}
+		result := learning.NewTrajectory(session.SessionID(id), "/workspace", session.StopEndTurn, session.Usage{}, messages)
+		result.Kind = session.SessionKindMain
+		result.Current = learning.MessageSpan{Start: 0, End: len(messages)}
+		return result
+	}
+	first := trajectory("first-private-session", "Please remember that private preference")
+	input := learning.NewInput(first, nil, nil, memoryExisting(context.Background(), memory))
+	estimator := observer.reflector.(interface {
+		RequestTokenEstimate(learning.Input) (int, error)
+	})
+	reserved, err := estimator.RequestTokenEstimate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := observer.Observe(context.Background(), first); err != nil {
+		t.Fatal(err)
+	}
+	waitForLearningActivity(t, emitted, learning.ActivityAbstained)
+
+	second := trajectory("second-private-session", "Please remember another private preference")
+	if err := observer.Observe(context.Background(), second); err != nil {
+		t.Fatal(err)
+	}
+	waitForLearningActivity(t, emitted, learning.ActivityRateLimited)
+
+	mu.Lock()
+	got := append([]learning.Activity(nil), activities...)
+	mu.Unlock()
+	want := []learning.Activity{
+		{Kind: learning.ActivityAdmitted, Reason: learning.ReasonHardTrigger, Sensitivity: learning.Balanced, Count: 1},
+		{Kind: learning.ActivityReservedTokens, Reason: learning.ReasonHardTrigger, Sensitivity: learning.Balanced, Count: int64(reserved)},
+		{Kind: learning.ActivityAbstained, Reason: learning.ReasonAbstained, Sensitivity: learning.Balanced, Count: 1},
+		{Kind: learning.ActivityAdmitted, Reason: learning.ReasonHardTrigger, Sensitivity: learning.Balanced, Count: 1},
+		{Kind: learning.ActivityRateLimited, Reason: learning.ReasonRateLimit, Sensitivity: learning.Balanced, Count: 1},
+	}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("learning activities = %#v, want %#v", got, want)
+	}
+	activityType := reflect.TypeFor[learning.Activity]()
+	wantFields := []string{"Kind", "Reason", "Sensitivity", "Count"}
+	if activityType.NumField() != len(wantFields) {
+		t.Fatalf("learning activity exposes %d fields, want only %v", activityType.NumField(), wantFields)
+	}
+	for i, name := range wantFields {
+		if activityType.Field(i).Name != name {
+			t.Fatalf("learning activity field %d = %q, want %q", i, activityType.Field(i).Name, name)
+		}
+	}
+}
+
+func waitForLearningActivity(t *testing.T, emitted <-chan learning.Activity, kind learning.ActivityKind) {
+	t.Helper()
+	for {
+		select {
+		case activity := <-emitted:
+			if activity.Kind == kind {
+				return
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("timed out waiting for learning activity %q", kind)
+		}
+	}
 }
 
 func TestExplicitReflectionRunsWhenAutomaticModeOff(t *testing.T) {
@@ -152,6 +260,33 @@ func TestProcessReflectionOutcomeProcedureIsDeferred(t *testing.T) {
 	page, err := repository.List(context.Background(), partition, learning.ProposalList{})
 	if err != nil || len(page.Records) != 1 || page.Records[0].Status != learning.ProposalDeferredUnsupported {
 		t.Fatalf("procedure proposals = %+v err=%v", page.Records, err)
+	}
+}
+
+func TestProcessReflectionOutcomeProcedurePipelineActivatesPass(t *testing.T) {
+	input, outcome, digest := reflectionOutcomeFixture(t, learning.CandidateProcedure)
+	proposals := memproposal.New()
+	repository := memskill.New()
+	catalog := skillfs.NewAtomicCatalog(nil, nil, nil)
+	assets := catalogAssets{reflectionRepository: proposals, learnedSkills: repository, liveSkills: catalog, skillPartition: learning.SkillPartition{Principal: "principal"}, skillOwner: "reflection"}
+	cfg := Config{LearningMode: learning.Auto, SkillEvaluator: passingSkillEvaluator{}, Workspace: input.Trajectory.Workspace, TrustProject: true}
+	processor := buildProcedureProcessor(cfg, assets)
+	_, err := processReflectionOutcome(context.Background(), proposals, nil, memmemory.New(), "principal", input, digest, outcome, learning.DetectSignals(input), learning.Auto, true, input.Trajectory.Workspace, processor)
+	if err != nil {
+		t.Fatal(err)
+	}
+	part := learning.ProposalPartition{Principal: "principal", Project: input.Trajectory.Workspace}
+	page, err := proposals.List(context.Background(), part, learning.ProposalList{})
+	if err != nil || len(page.Records) != 1 || page.Records[0].Status != learning.ProposalSkillMaterialized {
+		t.Fatalf("proposal=%+v err=%v", page.Records, err)
+	}
+	skillsPage, err := repository.List(context.Background(), learning.SkillPartition{Principal: "principal", Project: input.Trajectory.Workspace}, learning.SkillList{State: learning.SkillActive, OwnerAgent: "reflection"})
+	if err != nil || len(skillsPage.Versions) != 1 {
+		t.Fatalf("skills=%+v err=%v", skillsPage, err)
+	}
+	metas := catalog.View(learning.SkillPartition{Principal: "principal", Project: input.Trajectory.Workspace}).Metas
+	if len(metas) != 1 || metas[0].Name != "review-go-changes" {
+		t.Fatalf("live metas=%+v", metas)
 	}
 }
 
@@ -269,6 +404,7 @@ func TestAutoPromotionRejectsHarnessAuthoredUserContinuations(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			trajectory := learning.NewTrajectory("eligibility", "/trusted", session.StopEndTurn, session.Usage{}, []session.Message{session.NewUserMessage(tc.text)})
+			trajectory.Current = learning.MessageSpan{Start: 0, End: len(trajectory.Messages)}
 			input := learning.NewInput(trajectory, nil, []learning.Signal{{Kind: learning.SignalExplicitRemember}}, nil)
 			ref, err := learning.MessageEvidenceRef(input, 0, "")
 			if err != nil {

@@ -34,6 +34,15 @@ with a usage error.
 The minimal invocation starts the server on loopback with an in-memory session
 store. No persistence, no auth — the single-user localhost trust model.
 
+Global MCP OAuth profiles are operator settings. Serving never opens a browser; authorize
+a mutable local profile explicitly with `mecated mcp login SERVER [--no-browser]
+[--permission-config PATH ...]`. The repeatable permission-config option selects trusted
+operator settings only, never OAuth values. Serving then warm-restores the encrypted record, persists lazy refresh-token
+rotation, and remains warm after restart. Roll back with a whole `static_bearer`/`none`
+profile change and restart. ACP cannot provide OAuth profiles or install/drive authorization;
+after operator authorization it may invoke the shared global OAuth-backed tools under ordinary
+permissions. See [MCP client](/what-you-get/mcp-client.md).
+
 Default addresses:
 
 | Listener | Default |
@@ -146,7 +155,7 @@ revocation. An otherwise valid token remains acceptable until its normal expiry.
 The JWKS cache is process-local and not persisted; a restarted process fetches
 current keys again. The flags are identical on `mecak8s`. Full reference:
 [usage.md](https://github.com/stacklok/mecatl/blob/main/docs/usage.md) and
-[ADR 0100](https://github.com/stacklok/mecatl/blob/main/docs/adr/0100-caller-identity-threading.md).
+[ADR 0204](https://github.com/stacklok/mecatl/blob/main/docs/adr/0204-caller-identity-threading.md).
 
 #### Daemon config file (`daemon.yaml`)
 
@@ -339,6 +348,21 @@ a checked-in file weakening a security checker would be a downgrade.
 
 `--mcp-server` uses streaming-HTTP transport only. mecatl never speaks stdio MCP
 directly; ToolHive stdio backends are HTTP-proxied and fine.
+
+### Skills
+
+| Flag | Default | Notes |
+|---|---|---|
+| `--skills-dir` | (none) | Trusted local Agent Skills directory; repeatable |
+| `--skills-conventional` | `false` | Add conventional project/user skill locations |
+| `--skill-source-url` | (none) | Remote `SkillSourceService`; replaces local discovery and snapshots metadata at startup |
+
+The `Skill` tool uses path-free progressive disclosure. `{name}` loads instructions
+and a logical asset inventory; `{name, asset}` fetches one bounded textual asset.
+Local and remote skills behave the same. Assets are not materialized or exposed as
+workspace files, and bundled scripts are not implicitly executable. If a skill needs
+a real file, its instructions must create or obtain one explicitly in the workspace,
+where ordinary Write/Bash permissions apply.
 
 ### Observability
 
@@ -568,11 +592,15 @@ mecated skills promote \
 mecated perf-mcp print-config
 ```
 
-`mecated skills promote` is the only path from a model-authored quarantine skill
-(`--skills-draft-dir`) into the trusted, live catalog (`--skills-dir`). It shows the
-full candidate content, asks for operator confirmation (or `--yes` for CI), validates
-the promotion, and moves the file. The model cannot perform this step — it does not
-have filesystem access outside the workspace.
+`mecated skills promote` is the deprecated compatibility path from a legacy
+model-authored quarantine skill (`--skills-draft-dir`) into an operator-managed live catalog
+(`--skills-dir`). It shows the full candidate content, asks for operator confirmation (or `--yes`
+for CI), validates the promotion, and moves the file. It does **not** read or activate evaluated
+skill-lifecycle repository records, so it cannot silently promote an unevaluated lifecycle Draft.
+Existing operator/manual skills are unchanged. New lifecycle integrations explicitly import a
+legacy `origin:model` draft as inactive. The standard evaluator abstains on that unevidenced
+record; later review/evaluation/stage/activation requires an explicit host or operator path. The model
+cannot perform the legacy promotion step — it does not have filesystem access outside the workspace.
 
 Schedules are managed **in-chat** via the model-facing `Schedule` tool or over the
 gRPC/REST `ScheduleService` API — there is no `mecated schedules` CLI (it was removed;

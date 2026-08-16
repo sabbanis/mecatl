@@ -1,6 +1,7 @@
-// Package learning defines host-driven completed-trajectory observation and
-// evidence-backed reflection values. It owns policy and bounded snapshots only;
-// persistence, scheduling, model transport, and promotion remain host concerns.
+// Package learning defines host-driven completed-trajectory observation,
+// evidence-backed reflection, and evaluated agent-owned skill lifecycle values.
+// It owns policy and bounded contracts only; persistence, scheduling, model
+// transport, and runtime catalog activation remain host concerns.
 package learning
 
 import (
@@ -70,6 +71,12 @@ type Trajectory struct {
 	Stop      session.StopReason
 	Usage     session.Usage
 	Messages  []session.Message
+	// Kind identifies the trusted producer. Automatic admission accepts main only.
+	Kind session.SessionKind
+	// Counters are the completed current run's model/tool counters.
+	Counters session.Counters
+	// Current is the verified half-open message span for the current run.
+	Current MessageSpan
 	// Principal is a copied completed-session owner for host partitioning.
 	Principal *session.Principal
 }

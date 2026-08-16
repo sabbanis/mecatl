@@ -268,6 +268,46 @@ func toProtoCompactionArchive(p session.CompactionArchivePayload) *mecatlv1.Comp
 	return &mecatlv1.CompactionArchive{Replaced: out}
 }
 
+func toProtoTranscript(t *SessionTranscript) *mecatlv1.GetSessionTranscriptResponse {
+	messages := make([]*mecatlv1.ConversationMessage, 0, len(t.Messages))
+	for _, m := range t.Messages {
+		messages = append(messages, toProtoTranscriptMessage(m))
+	}
+	return &mecatlv1.GetSessionTranscriptResponse{
+		SessionId:    string(t.SessionID),
+		Messages:     messages,
+		Complete:     t.Complete,
+		Kind:         string(t.Kind),
+		Relationship: toProtoSessionRelationship(t.Relationship),
+		Activity: &mecatlv1.ActivityReplayStatus{
+			Available:     t.Activity.Available,
+			Complete:      t.Activity.Complete,
+			Authoritative: t.Activity.Authoritative,
+		},
+	}
+}
+
+// toProtoTranscriptMessage deliberately excludes provider-private replay state.
+// The transcript is for human display; provider replay continues to use the
+// aggregate's session.Message values directly.
+func toProtoTranscriptMessage(m session.Message) *mecatlv1.ConversationMessage {
+	out := &mecatlv1.ConversationMessage{
+		Role:  valid(string(m.Role)),
+		Text:  valid(m.Text),
+		Parts: contentToProto(m.Parts),
+	}
+	if len(m.ToolCalls) > 0 {
+		out.ToolCalls = make([]*mecatlv1.ToolCall, 0, len(m.ToolCalls))
+		for _, c := range m.ToolCalls {
+			out.ToolCalls = append(out.ToolCalls, toProtoToolCall(c))
+		}
+	}
+	if m.ToolResult != nil {
+		out.ToolResult = toProtoToolResult(*m.ToolResult)
+	}
+	return out
+}
+
 // toProtoConversationMessage maps one session.Message (an immutable conversation
 // history entry) to its proto ConversationMessage form. It mirrors the Message
 // value object: Role + Text + the assistant's ToolCalls + an optional tool-role
@@ -694,17 +734,18 @@ func toProtoUsage(u session.Usage) *mecatlv1.Usage {
 // toProtoSession maps a session.Session aggregate to its proto snapshot.
 func toProtoSession(s *session.Session, rm ResolvedModel, caps *mecatlv1.ServerCapabilities) *mecatlv1.Session {
 	return &mecatlv1.Session{
-		SessionId:     string(s.ID),
-		State:         string(s.State),
-		Mode:          modeToProto(s.Mode),
-		Workspace:     valid(s.Workspace),
-		Limits:        limitsToProto(s.Limits),
-		Turns:         ClampInt32(s.Counters.Turns),
-		ToolCalls:     ClampInt32(s.Counters.ToolCalls),
-		CreatedAtUnix: s.CreatedAt.Unix(),
-		ResolvedModel: resolvedModelToProto(rm),
-		Title:         valid(s.Title),
-		Capabilities:  caps,
+		SessionId:       string(s.ID),
+		State:           string(s.State),
+		Mode:            modeToProto(s.Mode),
+		Workspace:       valid(s.Workspace),
+		Limits:          limitsToProto(s.Limits),
+		Turns:           ClampInt32(s.Counters.Turns),
+		ToolCalls:       ClampInt32(s.Counters.ToolCalls),
+		CreatedAtUnix:   s.CreatedAt.Unix(),
+		ResolvedModel:   resolvedModelToProto(rm),
+		Title:           valid(s.Title),
+		TitleProvenance: string(s.TitleProvenance),
+		Capabilities:    caps,
 	}
 }
 
@@ -894,18 +935,52 @@ func toProtoWorktrees(wts []Worktree) []*mecatlv1.Worktree {
 // picker metadata — no conversation content.
 func toProtoSessionSummary(s SessionSummary) *mecatlv1.SessionSummary {
 	return &mecatlv1.SessionSummary{
-		SessionId:      s.SessionID,
-		ModifiedAtUnix: s.ModifiedAtUnix,
-		State:          s.State,
-		Turns:          ClampInt32(s.Turns),
-		ModelId:        s.ModelID,
-		CreatedAtUnix:  s.CreatedAtUnix,
-		Title:          valid(s.Title),
-		Owner:          toProtoPrincipal(s.Owner),
+		SessionId:       s.SessionID,
+		ModifiedAtUnix:  s.ModifiedAtUnix,
+		State:           s.State,
+		Turns:           ClampInt32(s.Turns),
+		ModelId:         s.ModelID,
+		CreatedAtUnix:   s.CreatedAtUnix,
+		Title:           valid(s.Title),
+		TitleProvenance: string(s.TitleProvenance),
+		Workspace:       valid(s.Workspace),
+		Owner:           toProtoPrincipal(s.Owner),
+		Kind:            string(s.Kind),
+		Relationship:    toProtoSessionRelationship(s.Relationship),
+		Capabilities: &mecatlv1.SessionInventoryCapabilities{
+			PublicChat:              s.Capabilities.PublicChat,
+			Inspect:                 s.Capabilities.Inspect,
+			AuthoritativeTranscript: s.Capabilities.AuthoritativeTranscript,
+			ActivityReplay:          s.Capabilities.ActivityReplay,
+			CopyId:                  s.Capabilities.CopyID,
+			ViewTranscript:          s.Capabilities.ViewTranscript,
+			Fork:                    s.Capabilities.Fork,
+			Rename:                  s.Capabilities.Rename,
+			Delete:                  s.Capabilities.Delete,
+			Reasons: &mecatlv1.SessionInventoryActionReasons{
+				PublicChat: string(s.Reasons.PublicChat), Inspect: string(s.Reasons.Inspect),
+				CopyId: string(s.Reasons.CopyID), ViewTranscript: string(s.Reasons.ViewTranscript),
+				Fork: string(s.Reasons.Fork), Rename: string(s.Reasons.Rename), Delete: string(s.Reasons.Delete),
+			},
+		},
+		ReasonCode: string(s.ReasonCode),
 	}
 }
 
-// toProtoPrincipal maps the verified owner (ADR 0100) to its proto form. A nil
+func toProtoSessionRelationship(r session.SessionRelationship) *mecatlv1.SessionRelationship {
+	out := &mecatlv1.SessionRelationship{
+		ParentSessionId: string(r.ParentSessionID), CallId: string(r.CallID),
+		ScheduleName: r.ScheduleName, OriginSessionId: string(r.OriginSessionID),
+		TeamId: r.TeamID, MemberName: r.MemberName,
+	}
+	if r.BranchIndex != nil {
+		index := ClampInt32(*r.BranchIndex)
+		out.BranchIndex = &index
+	}
+	return out
+}
+
+// toProtoPrincipal maps the verified owner (ADR 0204) to its proto form. A nil
 // principal maps to a nil message — an ABSENT owner must stay absent on the wire,
 // never a present-but-empty "anonymous" one. Every string goes through valid()
 // (the UTF-8 scrubber every other wire string uses): the issuer/subject come from

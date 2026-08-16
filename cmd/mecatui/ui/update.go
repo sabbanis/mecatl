@@ -345,12 +345,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 }
 
+func (m Model) finishStartupResume() (tea.Model, tea.Cmd) {
+	cmd := (&m).maybeKittyTransmit()
+	if liveCmd := (&m).armLiveFeed(); liveCmd != nil {
+		cmd = tea.Batch(cmd, liveCmd)
+	}
+	if p := strings.TrimSpace(m.pendingInitialPrompt); p != "" {
+		m.pendingInitialPrompt = ""
+		m.ta.SetValue(p)
+		mm, submitCmd := m.submitPrompt()
+		return mm, tea.Batch(cmd, submitCmd)
+	}
+	return m, cmd
+}
+
 // applySessionReady binds an established session into the model: the
 // SessionReadyMsg arm's body, extracted so the connectFallbackMsg arm (the
 // server-rejected-selection fallback, issue #41) can reuse it before layering its
 // warning on top.
 func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd, bool) {
-	m.sessionID = msg.SessionID
+	m = m.bindSessionID(msg.SessionID)
+	m.browsingStartupSessions = false
+	m.sessions = sessionsState{}
 	m.caps = msg.Capabilities // stored for Phase B; unrendered this phase
 	// The EFFECTIVE provider+model the server resolved this session to (echoed
 	// verbatim). The header shows it from turn zero. The model is FIXED per session,
@@ -388,7 +404,7 @@ func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd
 	// the title is always "" server-side too, so the refetch is a no-op for the
 	// title — it still may raise the footer window denominator, which is the
 	// existing footer-heal path's concern.)
-	if m.sessionTitle == "" && m.sessionID != "" && m.deps.Session != nil {
+	if m.sessionID != "" && m.deps.Session != nil {
 		heal := client.RefreshResolvedModelCmd(m.deps.Ctx, m.deps.Session, m.sessionID)
 		cmd = tea.Batch(cmd, heal)
 	}
@@ -422,8 +438,13 @@ func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd
 // split out of update so the top-level dispatcher stays under the cyclomatic cap;
 // handled=false means the msg is none of these and the caller continues its
 // fall-through chain (MCP/skills/agents overlays → stream events).
+//
+//nolint:gocyclo // one flat lifecycle message classifier; splitting it would duplicate the handled contract.
 func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	switch msg := msg.(type) {
+	case startupResumeReadyMsg:
+		mm, cmd := m.finishStartupResume()
+		return mm, cmd, true
 	case reconnectMsg:
 		// Live-feed reconnect loop msgs (issue #387): degraded-state markers and
 		// the catch-up event msgs ride the reconnect channel. Handled here (a
@@ -470,7 +491,7 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		// on the /effort path the source session (and transcript) SURVIVES — see
 		// restartFailedForkID.
 		m.phase = phaseIdle
-		m.sessionID = ""
+		m = m.bindSessionID("")
 		m.restartFailed = true
 		// A carryover create's failure means enter-to-retry re-fires a FRESH
 		// (non-carryover) create (see onIdleSubmit), so the note armed by
@@ -493,6 +514,10 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.refreshView()
 		return m, nil, true
 	case client.StreamErrMsg:
+		if m.startupFirstPromptPending {
+			m = m.failStartupRunEntry()
+			return m, nil, true
+		}
 		// A HARD stream error PAUSES the queue: the staged follow-ups are kept intact
 		// and marked paused (m.queuePaused) so the queue card says why, not auto-sent
 		// into a broken run. A TRANSIENT stream error (msg.Transient — an idle/stalled
@@ -507,6 +532,8 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case clipboardResultMsg:
 		mm, cmd := m.onClipboardResult(msg)
 		return mm, cmd, true
+	case sessionIDCopyResultMsg:
+		return m.onSessionIDCopyResult(msg), nil, true
 	case shellWriteResultMsg:
 		// Best-effort shell-clipboard WRITE result: intentionally swallowed. OSC52
 		// (tea.SetClipboard) is the primary copy path and the copy already reported
@@ -590,6 +617,9 @@ func (m Model) onResolvedModelMsg(msg client.ResolvedModelMsg) (Model, tea.Cmd, 
 	if msg.Mode != "" {
 		m.activeMode = client.ModeString(client.ModeFromString(msg.Mode))
 	}
+	m.sessionState = msg.State
+	m.sessionCreatedAt = msg.CreatedAt
+	m.activeWorkspace = msg.Workspace
 	// Model identity changed (e.g. plan model → execute model): full replace.
 	// The model is normally fixed per session, so this only fires on a
 	// server-driven mode transition (plan approval). When identity is unchanged
@@ -633,6 +663,11 @@ func (m Model) onRenderTick() (tea.Model, tea.Cmd) {
 func (m Model) updateStreamEvent(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case client.SessionInitMsg:
+		if m.startupFirstPromptPending {
+			m.startupFirstPromptPending = false
+			m.startupAdopted = false
+			m.startupRetryPrompt = ""
+		}
 		return m, m.waitCmd()
 	case client.TurnStartMsg:
 		m.conv.startAssistant()
@@ -792,6 +827,10 @@ func (m Model) applyPermissionAsk(msg client.PermissionAskMsg) (tea.Model, tea.C
 		m.askQueue = append(m.askQueue, next)
 		return m.afterEvent()
 	}
+	// Record the phase this ask interrupted so advanceAsk can RESUME it on close
+	// (a wire ask pauses phaseRunning; a /debug-ask opens from phaseIdle and must
+	// NOT resume into a spinner-running phase that no run owns).
+	m.askResumePhase = m.phase
 	m.phase = phaseAwaitingApproval
 	m.activeTool = ""
 	m.toolProgress = ""
@@ -946,7 +985,11 @@ func (m Model) applyResult(msg client.ResultMsg) (tea.Model, tea.Cmd) {
 		return dm, tea.Batch(pm.refreshCmd(), modeCmd, proceedCmd, drainCmd, refresh)
 	}
 	mm, drainCmd := m.drainQueue(msg.Stop, msg.Transient)
-	return mm, tea.Batch(m.refreshCmd(), modeCmd, drainCmd, m.armLiveFeed())
+	var skillChanges tea.Cmd
+	if lifecycle, ok := m.deps.Skills.(client.LearnedSkillClient); ok {
+		skillChanges = client.ListSkillChangesCmd(m.deps.Ctx, lifecycle, m.deps.Workspace)
+	}
+	return mm, tea.Batch(m.refreshCmd(), modeCmd, drainCmd, m.armLiveFeed(), skillChanges)
 }
 
 // noticeLine renders the muted-notice text for a transient advisory message
@@ -1198,6 +1241,14 @@ func (m *Model) relayout() {
 	if m.phase == phaseAwaitingApproval && isPlanAsk(m.ask.Tool) {
 		m.openPlanReviewView(m.ask, len(m.askQueue), m.effectiveModel.ModelID)
 	}
+	// The full-screen ask-args view, when open, is re-populated at the SAME
+	// position as the plan-review view above (BEFORE the bodyHeight early-return)
+	// so a resize/transient toggle re-wraps the args at the new geometry with the
+	// operator's YOffset preserved (openAskArgsView's fingerprint short-circuits
+	// a no-op).
+	if m.phase == phaseAwaitingApproval && m.argsViewOpen {
+		m.openAskArgsView(m.ask, len(m.askQueue))
+	}
 	if bodyHeight == m.vp.Height() {
 		return
 	}
@@ -1293,9 +1344,7 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// ctrl+t is a global render toggle (full vs capped tool output); it works in
 	// any phase and never feeds the textarea.
 	if key.Matches(msg, m.keys.ExpandTools) {
-		m.expandTools = !m.expandTools
-		m.refreshView()
-		return m, nil
+		return m.onExpandToolsKey()
 	}
 
 	// ctrl+v reads the OS clipboard into the prompt (image → staged attachment,
@@ -1316,6 +1365,27 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	}
 
 	return m.dispatchPhaseKey(msg)
+}
+
+// onExpandToolsKey is the ctrl+t handler, extracted from onKey so onKey stays
+// under the cyclomatic cap. ctrl+t is a global render toggle (full vs capped
+// tool output); inside the permission modal it ROUTES by ask type (issue #488):
+// a non-diff, non-plan ask opens/closes the full-screen ask-args view INSTEAD
+// of toggling expandTools; a plan ask or an Edit/Write (diff-capable) ask keeps
+// the in-modal expand behaviour byte-for-byte.
+func (m Model) onExpandToolsKey() (tea.Model, tea.Cmd) {
+	if m.phase == phaseAwaitingApproval && !isPlanAsk(m.ask.Tool) && !isDiffCapableAskTool(m.ask.Tool) {
+		if m.argsViewOpen {
+			(&m).clearAskArgsView()
+		} else {
+			m.argsViewOpen = true
+			(&m).openAskArgsView(m.ask, len(m.askQueue))
+		}
+		return m, nil
+	}
+	m.expandTools = !m.expandTools
+	m.refreshView()
+	return m, nil
 }
 
 // dispatchPhaseKey is the per-phase key router, extracted from onKey so onKey
@@ -1345,6 +1415,7 @@ func (m Model) dispatchPhaseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // / esc-only. Returns handled=false when no overlay is open so onKey falls through.
 func (m Model) onOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	overlays := []func(tea.KeyPressMsg) (tea.Model, tea.Cmd, bool){
+		m.onSessionDetailsKey,
 		m.onMCPKey,
 		m.onAgentsKey,
 		m.onAgentsInvKey,
@@ -1685,6 +1756,25 @@ func isChildAsk(askID, sessionID string) bool {
 // operator can act after reading. up/down scroll the plan; left/right/tab move
 // the button focus (documented in the plan-review footer hint).
 func (m Model) onApprovalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	// The full-screen ask-args view owns the keyboard while open (issue #488):
+	// scroll keys route to argsVP, Cancel (esc) closes the view back to the
+	// modal, RawArgs (r) toggles the pretty/raw tier and re-populates. The
+	// verdict keys (A/W/D/enter/left/right/tab) fall through to the ordinary
+	// action handlers so the operator can resolve the ask from inside the view.
+	if m.argsViewOpen {
+		if mm, cmd, handled := m.onAskArgsScrollKey(msg); handled {
+			return mm, cmd
+		}
+		if key.Matches(msg, m.keys.Cancel) {
+			(&m).clearAskArgsView()
+			return m, nil
+		}
+		if key.Matches(msg, m.keys.RawArgs) {
+			m.argsViewRaw = !m.argsViewRaw
+			(&m).openAskArgsView(m.ask, len(m.askQueue))
+			return m, nil
+		}
+	}
 	// A plan ask owns the keyboard for SCROLL keys: route them to planVP. This
 	// mirrors onScrollKey's m.vp routing (pgup/pgdn delegate to the viewport,
 	// home/end jump to top/bottom) so the scroll affordance is identical to the
@@ -1693,6 +1783,15 @@ func (m Model) onApprovalKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	if isPlanAsk(m.ask.Tool) {
 		if mm, cmd, handled := m.onPlanScrollKey(msg); handled {
 			return mm, cmd
+		}
+	}
+	// A non-diff ask with hidden args rows owns the SCROLL keys for its in-card
+	// args mini-viewport (issue #488): pgup/pgdn and up/down move askVPOffset
+	// within the clamped range (no-op at the edges). left/right/tab keep button
+	// focus; the verdict keys fall through.
+	if !isPlanAsk(m.ask.Tool) && !isDiffCapableAskTool(m.ask.Tool) {
+		if mm, handled := m.onAskArgsMiniScrollKey(msg); handled {
+			return mm, nil
 		}
 	}
 	// The focus ring is {0:allow, 2:deny} for a two-button modal and
@@ -1745,6 +1844,21 @@ func focusVerdict(focus int) client.Verdict {
 	}
 }
 
+// dispatchClick executes a ClickAction from the hit-test registry — the SINGLE
+// executor for clickable regions (issue #555). Every action drives the SAME
+// path its key chord would (a verdict click is identical to pressing the
+// button's chord: set focus, then resolveAsk). New ClickAction kinds add ONE
+// case here; they never grow a parallel click path.
+func (m Model) dispatchClick(act ClickAction) (tea.Model, tea.Cmd) {
+	switch act.kind {
+	case clickAskVerdict:
+		m.ask.focus = act.focus
+		return m.resolveAsk(focusVerdict(act.focus))
+	default:
+		return m, nil
+	}
+}
+
 // advanceAsk advances the FIFO ask queue's head: it pops the next queued ask into
 // the visible m.ask slot (phase STAYS phaseAwaitingApproval — the successor modal
 // opens immediately), or — when the queue is empty — clears the modal and returns
@@ -1767,9 +1881,12 @@ func (m Model) advanceAsk() (Model, bool) {
 		// capacity-clamped append form instead because it appends into the very
 		// slice it splits.)
 		// First clear any prior plan-review viewport (the outgoing head may have
-		// been a plan ask; a non-plan successor must NOT inherit its planVP), then
-		// if the new head is itself a plan ask, populate a fresh planVP for it.
+		// been a plan ask; a non-plan successor must NOT inherit its planVP) and
+		// any open ask-args view (the view is per-ask — a queued successor opens
+		// its own), then if the new head is itself a plan ask, populate a fresh
+		// planVP for it.
 		(&m).clearPlanReview()
+		(&m).clearAskArgsView()
 		m.ask = m.askQueue[0]
 		m.askQueue = m.askQueue[1:]
 		if isPlanAsk(m.ask.Tool) {
@@ -1778,11 +1895,20 @@ func (m Model) advanceAsk() (Model, bool) {
 		return m, false
 	}
 	// No successor: clear any plan-review viewport (the closing ask may have been
-	// a plan ask) and close the modal, returning to phaseRunning.
+	// a plan ask) and any open ask-args view, and close the modal, resuming the
+	// phase the ask interrupted (phaseRunning for a wire ask, phaseIdle for a
+	// /debug-ask). Default a zero/unset resume phase to phaseRunning so the wire
+	// path is unchanged even if a test bypassed the reducer.
 	(&m).clearPlanReview()
+	(&m).clearAskArgsView()
 	m.ask = pendingAsk{}
-	m.phase = phaseRunning
-	return m, true
+	resume := m.askResumePhase
+	if resume != phaseIdle {
+		resume = phaseRunning
+	}
+	m.askResumePhase = 0
+	m.phase = resume
+	return m, resume == phaseRunning
 }
 
 // markAskResolved records an answered/retracted askID into the resolvedAsks
@@ -2263,6 +2389,27 @@ func (m Model) afterInputEdit(cmd tea.Cmd) (tea.Model, tea.Cmd) {
 	return mm, tea.Batch(cmd, fetch)
 }
 
+var errStartupRunEntry = &sessionTranscriptError{"the chat could not be attached for a new turn"}
+
+func (m Model) failStartupRunEntry() Model {
+	m = m.endRun("")
+	m.conv = conversationFromTranscript(m.deps.Resume.Transcript.Messages)
+	m.sessions = sessionsState{
+		selected:   m.deps.Resume.Row,
+		inspect:    true,
+		loadErr:    errStartupRunEntry,
+		transcript: conversationFromTranscript(m.deps.Resume.Transcript.Messages),
+		view:       sessionsTranscript,
+	}
+	m.phase = phaseReplay
+	m.startupFirstPromptPending = false
+	m.startupRunEntryFailed = true
+	m.ta.SetValue(m.startupRetryPrompt)
+	m.ta.Blur()
+	m.refreshView()
+	return m
+}
+
 // submitPrompt opens a fresh Converse run for the textarea text, sends the
 // mandatory prompt frame, starts the reader goroutine, and arms WaitForMsg.
 func (m Model) submitPrompt() (tea.Model, tea.Cmd) {
@@ -2372,6 +2519,10 @@ func (m Model) submitPrompt() (tea.Model, tea.Cmd) {
 	// truly empty submit (no text AND no parts) is the no-op early-return.
 	if text == "" && len(media.Parts) == 0 {
 		return m, nil
+	}
+	if m.startupAdopted {
+		m.startupRetryPrompt = m.ta.Value()
+		m.startupFirstPromptPending = true
 	}
 	if len(media.Descriptors) > 0 {
 		m.conv.addUserWithMedia(text, media.Descriptors)
@@ -3142,20 +3293,35 @@ func compactionArchiveNotice(msg client.CompactionArchiveMsg) string {
 	return "history compacted — " + plural(n, "turn") + " archived"
 }
 
-// onReplayKey routes keys while a read-only transcript replay is open
-// (phaseReplay — reached for CHILD sessions opened from the Children tab, and
-// transiently for TOP-LEVEL sessions while their history loads before the
-// phaseIdle handoff). Esc closes the transcript view
-// (closeSessionsTranscript): stop the replay, clear replay state, resetSession,
-// return to idle with NO live session — read-only inspection ends honestly.
-// The bare `c` key / continueSession have been REMOVED: top-level sessions
-// continue by default (loading history then transitioning to phaseIdle), and a
-// child session cannot be continued as a top-level live session (no parent
-// context), so there is no Continue action to offer. Any key other than esc is
-// swallowed.
+// onReplayKey routes keys while an authoritative transcript is loading or being
+// inspected. Escape returns to the inventory without changing the active chat;
+// retry reloads the same opaque session id after a failed request.
 func (m Model) onReplayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
+	if m.startupRunEntryFailed {
+		if key.Matches(msg, m.keys.Close) {
+			m.sessions = sessionsState{}
+			m.startupRunEntryFailed = false
+			m.phase = phaseIdle
+			cmd := m.ta.Focus()
+			m.refreshView()
+			return m, cmd
+		}
+		if msg.String() == "r" {
+			m.sessions = sessionsState{}
+			m.startupRunEntryFailed = false
+			m.phase = phaseIdle
+			m.ta.SetValue(m.startupRetryPrompt)
+			return m.submitPrompt()
+		}
+		return m, nil
+	}
 	if key.Matches(msg, m.keys.Close) {
 		return m.closeSessionsTranscript()
+	}
+	if msg.String() == "r" && m.sessions.loadErr != nil && m.deps.Transcript != nil {
+		m.sessions.loading = true
+		m.sessions.loadErr = nil
+		return m, client.GetSessionTranscriptCmd(m.deps.Ctx, m.deps.Transcript, m.sessions.selected.ID)
 	}
 	return m, nil
 }
@@ -3187,8 +3353,10 @@ func (m Model) endRun(stop string) Model {
 	// A dead run's asks must not survive into idle: drop the visible modal, the FIFO
 	// queue behind it, and the answered-set dedupe (covers every endRun caller —
 	// ResultMsg, StreamErrMsg, StreamClosedMsg, cancel). The plan-review viewport
-	// is cleared alongside (the closing ask may have been a plan ask).
+	// and the ask-args view are cleared alongside (the closing ask may have been a
+	// plan ask, or had its full-screen args view open).
 	(&m).clearPlanReview()
+	(&m).clearAskArgsView()
 	m.ask = pendingAsk{}
 	m.askQueue = nil
 	m.resolvedAsks = nil
@@ -3219,10 +3387,37 @@ func (m Model) endRun(stop string) Model {
 // its Update handles the wheel natively; m.vp is left untouched (it is not the
 // visible body during a plan ask).
 func (m Model) onMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
+	if m.phase == phaseAwaitingApproval && m.argsViewOpen && m.argsVPReady {
+		// The full-screen ask-args view owns the wheel while open (issue #488) —
+		// same shape as the plan-review arm below.
+		var cmd tea.Cmd
+		m.argsVP, cmd = m.argsVP.Update(msg)
+		return m, cmd
+	}
 	if m.phase == phaseAwaitingApproval && isPlanAsk(m.ask.Tool) && m.planVPReady {
 		var cmd tea.Cmd
 		m.planVP, cmd = m.planVP.Update(msg)
 		return m, cmd
+	}
+	if m.phase == phaseAwaitingApproval && !isPlanAsk(m.ask.Tool) && !isDiffCapableAskTool(m.ask.Tool) &&
+		m.askArgsWheelOverCard(msg) {
+		// The modal's in-card args mini-viewport scrolls ONLY when the cursor is
+		// over the card rect (a wheel elsewhere keeps scrolling the conversation
+		// behind the modal).
+		mo := msg.Mouse()
+		step := 3
+		if mo.Button == tea.MouseWheelUp {
+			step = -3
+		}
+		off := m.askVPOffset + step
+		if maxOff := m.askArgsMiniScrollRange(); off > maxOff {
+			off = maxOff
+		}
+		if off < 0 {
+			off = 0
+		}
+		m.askVPOffset = off
+		return m, nil
 	}
 	var cmd tea.Cmd
 	m.vp, cmd = m.vp.Update(msg)
@@ -3231,6 +3426,21 @@ func (m Model) onMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	m.rend.invalidateVPView()
 	m.syncStuck()
 	return m, cmd
+}
+
+// askArgsWheelOverCard reports whether a wheel event's cursor cell falls inside
+// the centered permission card's rect — the gate for routing the wheel to the
+// modal's in-card args mini-viewport rather than the conversation behind the
+// modal. It reads the card rect from approvalCardRect — the SAME source the
+// click hit-test consumes — so the wheel region and the click region can never
+// drift.
+func (m Model) askArgsWheelOverCard(msg tea.MouseWheelMsg) bool {
+	rect, _, ok := m.approvalCardRect()
+	if !ok {
+		return false
+	}
+	mo := msg.Mouse()
+	return rect.contains(mo.X, mo.Y)
 }
 
 // onMouseMsg fans the four mouse message types out to their handlers. It is one
@@ -3309,9 +3519,8 @@ func (m Model) onMousePress(mo tea.Mouse) (tea.Model, tea.Cmd) {
 			if !mouseCaptureEnabled(m) {
 				return m, nil
 			}
-			if idx, ok := m.askButtonAt(mo.X, mo.Y); ok {
-				m.ask.focus = idx
-				return m.resolveAsk(focusVerdict(idx))
+			if act, ok := m.clickAt(mo.X, mo.Y); ok {
+				return m.dispatchClick(act)
 			}
 			return m, nil
 		}
@@ -3661,6 +3870,19 @@ func snapshotSelection(m *Model) {
 	// vpView cache must be invalidated so the next View() reflects the new content.
 	m.rend.invalidateVPView()
 	base := m.selBase
+	// selBase is refreshed by refreshView, but a streamed delta only marks the view
+	// dirty (deferred to the frame-cadence tick) — it does NOT re-render. A gesture
+	// that lands in that dirty window (delta arrived, tick not yet fired) would
+	// otherwise re-splice the STALE base and SetContent it, reverting the viewport to
+	// the pre-delta conversation (a "flash back" to an earlier state). Re-capture the
+	// base from the LIVE conversation whenever it is dirty so the splice always starts
+	// from current content. This re-renders the conversation, but only on a gesture
+	// that races a pending delta — never on the streaming hot path (which has no
+	// active selection gesture between deltas).
+	if m.viewDirty {
+		base = m.rend.renderConversation(&m.conv, m.expandTools)
+		m.selBase = base
+	}
 	if base == "" {
 		// Defensive: no base captured (e.g. a test that set raw viewport content then
 		// pointed a selection at it without a press). Adopt the current viewport content
@@ -3754,6 +3976,82 @@ func (m Model) onScrollKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	m.rend.invalidateVPView()
 	m.syncStuck()
 	return m, cmd
+}
+
+// askArgsMiniScrollRange computes the maximum clamped YOffset of the modal's
+// in-card args mini-viewport for the current ask/geometry: the wrapped args
+// line count minus the view rows the modal declares (the SAME arithmetic
+// permissionModalBodyParts lays out, so the scroll bound matches the render).
+// Returns 0 when nothing is hidden (the scroll keys then no-op).
+func (m Model) askArgsMiniScrollRange() (maxOff int) {
+	pretty, _, ok := askArgsContent(m.deps.Theme, m.ask)
+	if !ok || pretty == "" {
+		return 0
+	}
+	// The SAME layout the render path lays out (askArgsMiniViewport) — never a
+	// re-derived wrap/cap, so the scroll bound matches the frame by construction.
+	return askArgsMiniViewport(m.deps.Theme, pretty, m.width, m.vp.Height()).maxOffset
+}
+
+// onAskArgsMiniScrollKey moves the modal's in-card args mini-viewport
+// (askVPOffset) on a scroll key while the args full-screen view is NOT open.
+// Returns handled=true only when the key was a scroll key AND there are hidden
+// rows to scroll to; otherwise the key falls through to the action handlers.
+func (m Model) onAskArgsMiniScrollKey(msg tea.KeyPressMsg) (Model, bool) {
+	maxOff := m.askArgsMiniScrollRange()
+	if maxOff <= 0 {
+		return m, false
+	}
+	step := 0
+	switch {
+	case key.Matches(msg, m.keys.ScrollU):
+		step = -3
+	case key.Matches(msg, m.keys.ScrollD):
+		step = 3
+	case msg.String() == keyMenuUp:
+		step = -1
+	case msg.String() == keyMenuDown:
+		step = 1
+	default:
+		return m, false
+	}
+	off := m.askVPOffset + step
+	if off < 0 {
+		off = 0
+	}
+	if off > maxOff {
+		off = maxOff
+	}
+	m.askVPOffset = off
+	return m, true
+}
+
+// onAskArgsScrollKey routes a scroll key to the full-screen ask-args viewport
+// (argsVP) while the ask-args view is open — the args-view analogue of
+// onPlanScrollKey: pgup/pgdn delegate to the viewport, home/end jump to
+// top/bottom, and the arrow keys (up/down) scroll a line at a time. Returns
+// handled=true when the key was a scroll key it consumed; false otherwise so
+// onApprovalKey's close/toggle/action fall-through still runs.
+func (m Model) onAskArgsScrollKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
+	if !m.argsVPReady {
+		return m, nil, false
+	}
+	var cmd tea.Cmd
+	switch {
+	case key.Matches(msg, m.keys.ScrollTop):
+		m.argsVP.GotoTop()
+		return m, nil, true
+	case key.Matches(msg, m.keys.ScrollBottom):
+		m.argsVP.GotoBottom()
+		return m, nil, true
+	case key.Matches(msg, m.keys.ScrollU), key.Matches(msg, m.keys.ScrollD):
+		m.argsVP, cmd = m.argsVP.Update(msg)
+		return m, cmd, true
+	case msg.String() == keyMenuUp, msg.String() == keyMenuDown:
+		m.argsVP, cmd = m.argsVP.Update(msg)
+		return m, cmd, true
+	}
+	return m, nil, false
 }
 
 // onPlanScrollKey routes a scroll key to the plan-review viewport (planVP) while

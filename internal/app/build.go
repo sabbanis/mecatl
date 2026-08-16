@@ -28,6 +28,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -35,12 +36,14 @@ import (
 	"k8s.io/client-go/rest"
 	"k8s.io/client-go/tools/clientcmd"
 
+	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/adapter/memorypromotion"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/nofs"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/adapter/permstore"
 	refsearch "github.com/stacklok/mecatl/engine/adapter/search"
+	coreskillfs "github.com/stacklok/mecatl/engine/adapter/skillfs"
 	"github.com/stacklok/mecatl/engine/adapter/wallclock"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/governance"
@@ -73,6 +76,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/scheduler"
 	"github.com/stacklok/mecatl/internal/adapter/server"
 	"github.com/stacklok/mecatl/internal/adapter/skills"
+	"github.com/stacklok/mecatl/internal/adapter/skillstore"
 	"github.com/stacklok/mecatl/internal/adapter/store/jsonlstore"
 	"github.com/stacklok/mecatl/internal/adapter/tokenizer"
 	"github.com/stacklok/mecatl/internal/adapter/toolhivellm"
@@ -375,8 +379,8 @@ type Config struct {
 	// LOCAL skills discovery (mutually exclusive with SkillsDirs/
 	// SkillsConventional — one source per seam) with a
 	// mecatl.driver.v1.SkillSourceService client; the driver's skill bundles
-	// serve the same Skill tool, with auxiliary payloads materialized lazily
-	// into a build-scoped asset cache on first activation. SoulSourceURL
+	// serve the same Skill tool, with auxiliary payloads fetched lazily by
+	// logical name through the source port. SoulSourceURL
 	// replaces the LOCAL user-scoped soul file (mutually exclusive with
 	// SoulPath; --no-soul still wins) with a mecatl.driver.v1.SoulSourceService
 	// client occupying the USER slot of the soul selection precedence. Both are
@@ -503,9 +507,20 @@ type Config struct {
 	// the zero/default. The legacy UserModelReview flag projects to Auto for one
 	// compatibility window; it now follows the same staged/convergent path.
 	LearningMode learning.Mode
+	// LearningSensitivity controls weighted automatic reflection; zero defaults to
+	// Conservative at the type level, so LearningSensitivitySet distinguishes an
+	// explicit conservative choice from the product default Balanced.
+	LearningSensitivity learning.Sensitivity
+	LearningAutomatic   LearningAutomaticConfig
+	// LearningMetricsEmitter receives content-free closed learning activities.
+	LearningMetricsEmitter func(learning.Activity)
+	// SkillEvaluator evaluates evidence-backed procedure drafts. nil installs the
+	// conservative abstaining evaluator; only PASS can activate in auto mode.
+	SkillEvaluator learning.SkillEvaluator
 	// operatorLearningMode retains the pre-project ceiling so per-session engines
 	// can apply their own workspace's tighten-only project setting.
-	operatorLearningMode learning.Mode
+	operatorLearningMode        learning.Mode
+	operatorLearningSensitivity learning.Sensitivity
 
 	// operatorProfileSource is composition-only wiring inherited by user-facing
 	// delegation engines. Internal-purpose classifier/reviewer/judge engines clear it.
@@ -719,11 +734,21 @@ type Config struct {
 
 	// MCP: static servers, the resource meta-tools toggle, the prompt-expander
 	// toggle, and the live ToolHive workload source.
-	MCPServers       []mcp.ServerConfig
-	MCPResourceTools bool
-	MCPPrompts       bool
-	ToolHiveEnabled  bool
-	ToolHiveGroup    string
+	MCPServers []mcp.ServerConfig
+	// MCPProfileLoader resolves operator-tier profiles with the same permission
+	// resolver Build already owns. Command roots install it so settings are not
+	// parsed a second time and secret lookup remains a runtime-only operation.
+	MCPProfileLoader interface {
+		Load(*permconfig.MCPSection) ([]mcp.ServerConfig, interface{ Close() error }, error)
+	}
+	// MCPProfileLifecycle owns credential stores/readers used by MCPServers.
+	// Build closes it after the global MCP manager/controllers and before other
+	// source lifecycles. It is nil for programmatic and legacy static configs.
+	MCPProfileLifecycle interface{ Close() error }
+	MCPResourceTools    bool
+	MCPPrompts          bool
+	ToolHiveEnabled     bool
+	ToolHiveGroup       string
 
 	// File-based permission config (issue #13). PermissionsConventional turns on
 	// auto-discovery of the conventional per-project config (<ws>/.mecatl/settings.yaml
@@ -998,7 +1023,7 @@ type Config struct {
 	commandSource prompt.CommandSource
 	// skillCommandInputs is the build-once skill→command bridge inputs
 	// (the resolved seam's always-in-context SkillMeta inventory + the
-	// Activator the Skill tool loads through), stashed by buildEngine after
+	// logical SkillSource the Skill tool loads through), stashed by buildEngine after
 	// buildCatalog resolves the seam (the commandSource precedent):
 	// buildCommandExpander runs PER SESSION and composes a SkillCommandSource
 	// over them rather than re-resolving the seam. nil/empty when no skills
@@ -1131,6 +1156,15 @@ func (c Config) diag() port.Diagnostics {
 	return c.Diagnostics
 }
 
+func closeMCPProfileLifecycle(ctx context.Context, cfg Config) {
+	if cfg.MCPProfileLifecycle == nil {
+		return
+	}
+	if err := cfg.MCPProfileLifecycle.Close(); err != nil {
+		cfg.diag().Log(ctx, port.LevelWarn, "MCP profile credential sources close failed")
+	}
+}
+
 // Built is the result of Build: the assembled server.Service plus a Close func
 // that tears down composition-owned resources (the MCP manager). Close is always
 // safe to call, even when nothing needs closing.
@@ -1149,6 +1183,17 @@ type Built struct {
 //
 //nolint:gocyclo // composition root: long sequential wiring with reverse-order teardown; inherent.
 func Build(ctx context.Context, cfg Config) (*Built, error) {
+	profileLifecycle := cfg.MCPProfileLifecycle
+	closeProfiles := sync.OnceFunc(func() {
+		cfg.MCPProfileLifecycle = profileLifecycle
+		closeMCPProfileLifecycle(ctx, cfg)
+	})
+	profilesTransferred := false
+	defer func() {
+		if !profilesTransferred {
+			closeProfiles()
+		}
+	}()
 	// Remote store drivers (Phase B): a local dir and a driver URL for the same
 	// store are mutually exclusive — fatal here, before anything is constructed
 	// (the validateSkillDraftConfig precedent).
@@ -1233,9 +1278,26 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		return nil, learningErr
 	}
 	if resolver, ok := cfg.permResolver.(*permconfig.Resolver); ok {
+		if cfg.MCPProfileLoader != nil {
+			profiles, lifecycle, err := cfg.MCPProfileLoader.Load(resolver.OperatorMCP())
+			if err != nil {
+				return nil, err
+			}
+			cfg.MCPServers = profiles
+			cfg.MCPProfileLifecycle = lifecycle
+			profileLifecycle = lifecycle
+		}
 		if models := resolver.OperatorModelPolicy(); models != nil {
 			cfg.contextWindows = map[string]map[string]int(models.ContextWindows)
 		}
+	} else if cfg.MCPProfileLoader != nil {
+		profiles, lifecycle, err := cfg.MCPProfileLoader.Load(nil)
+		if err != nil {
+			return nil, err
+		}
+		cfg.MCPServers = profiles
+		cfg.MCPProfileLifecycle = lifecycle
+		profileLifecycle = lifecycle
 	}
 
 	// Guardrails operator-tier config (issue #27, decision 3): fold the user-global +
@@ -1512,7 +1574,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// project-tier trust gate is INHERITED by construction (ResolveSources dropped
 	// the untrusted project tier inside buildCatalog). Empty on the no-skills
 	// path (the bridge is a no-op).
-	cfg.skillCommandInputs = skillCommandInputs{metas: assets.skills, activator: assets.skillActivator}
+	cfg.skillCommandInputs = skillCommandInputs{metas: assets.skills, source: assets.skillSource}
 
 	// The command lister backs ListCommands (the TUI palette). It reuses the SAME
 	// expander build the engine consumes, so the palette offers exactly the
@@ -1522,7 +1584,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		Engine:            engine,
 		Store:             store,
 		OwnershipEnforced: cfg.OwnershipEnforced,
-		Workspaces:        osfsWorkspaceFactory(cfg.diag(), assets.skillReadRoots),
+		Workspaces:        osfsWorkspaceFactory(cfg.diag()),
 		DefaultWorkspace:  cfg.Workspace, // the launch root; a session on a DIFFERENT root routes through the per-session factory (issue #102, docs/adr/0032)
 		// CommandRunner (issue #462): the MAIN session's bound runner — the
 		// Environment seam hands it to Tool.Execute so Bash observes the session
@@ -1619,6 +1681,77 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		// snapshot (like Agents), not a live lister. nil/empty when skills are
 		// disabled.
 		Skills: skillSnapshot(skillValues(assets.skills, assets.skillIndex)),
+		LiveSkills: func(ctx context.Context) []*mecatlv1.SkillInfo {
+			if assets.liveSkills == nil {
+				return skillSnapshot(skillValues(assets.skills, assets.skillIndex))
+			}
+			view := assets.liveSkills.View(learnedSkillPartitions(ctx, "", cfg)...)
+			metas := view.Metas
+			out := make([]*mecatlv1.SkillInfo, 0, len(metas))
+			for _, meta := range metas {
+				info := &mecatlv1.SkillInfo{Name: session.ToValidUTF8(meta.Name), Description: session.ToValidUTF8(meta.Description)}
+				if meta.Metadata["mecatl.agent_owned"] == "true" {
+					info.AgentOwned = true
+					info.OwnerAgent = session.ToValidUTF8(meta.Metadata["mecatl.owner_agent"])
+					info.ActiveVersion = session.ToValidUTF8(meta.Metadata["mecatl.active_version"])
+				}
+				out = append(out, info)
+			}
+			return out
+		},
+		LearnedSkills: assets.learnedSkills,
+		PublishLearnedSkills: func(ctx context.Context, partition learning.SkillPartition) error {
+			if assets.liveSkills == nil || assets.learnedSkills == nil {
+				return nil
+			}
+			partitions := []learning.SkillPartition{{Principal: partition.Principal}}
+			if partition.Project != "" {
+				partitions = append(partitions, partition)
+			}
+			return (learnedSkillPublisher{repository: assets.learnedSkills, partitions: partitions, owner: "", catalog: assets.liveSkills}).Publish(ctx)
+		},
+		BeginSkillPublication: func() func() {
+			if assets.skillPublication == nil {
+				return func() {}
+			}
+			assets.skillPublication.mu.Lock()
+			return assets.skillPublication.mu.Unlock
+		},
+		RevokeLearnedSkill: func(partition learning.SkillPartition, name string) {
+			if assets.liveSkills != nil {
+				assets.liveSkills.RevokePartition(partition, name)
+			}
+		},
+		LiveSkillGeneration: func(partition learning.SkillPartition) uint64 {
+			if assets.liveSkills == nil {
+				return 0
+			}
+			parts := []learning.SkillPartition{{Principal: partition.Principal}}
+			if partition.Project != "" {
+				parts = append(parts, partition)
+			}
+			return assets.liveSkills.View(parts...).Generation
+		},
+		SkillActionAvailable: func(partition learning.SkillPartition, owner string) (bool, string) {
+			if assets.liveSkills == nil || assets.learnedSkills == nil {
+				return false, "learned-skill publication target is unavailable"
+			}
+			if owner == "" {
+				return false, "agent identity is required for this publication target"
+			}
+			if partition.Project != "" && (partition.Project != cfg.Workspace || !projectIngestionAdmittedForRoot(cfg, partition.Project)) {
+				return false, "project publication requires the exact trusted launch root"
+			}
+			return true, ""
+		},
+		LearnedSkillNameAvailable: func(name string) bool {
+			for _, meta := range assets.skills {
+				if meta.Name == name {
+					return false
+				}
+			}
+			return true
+		},
 		// GetSoul snapshot: re-run the same selection policy (selectSoulSource) once
 		// here and project the WINNING soul's content + meta into the proto form. The
 		// soul is selected deterministically at build time (USER-wins precedence, trust
@@ -1656,7 +1789,8 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		ReflectSession: func(ctx context.Context, sess *session.Session) (server.ReflectionReceipt, error) {
 			reflectionCfg := cfg
 			reflectionProvider := provider
-			reflectionCfg.LearningMode = learningModeForWorkspace(cfg, sess.Workspace)
+			reflectionCfg.Workspace = sess.Workspace
+			reflectionCfg.LearningMode, reflectionCfg.LearningSensitivity = learningPolicyForWorkspace(cfg, sess.Workspace)
 			reflectionCfg.Model = sess.ModelID
 			if sess.ProviderID != "" {
 				entry, ok := reg.Lookup(sess.ProviderID)
@@ -1673,13 +1807,15 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 				// provider's own default above; cfg.Model belongs to reg.Default().
 				reflectionCfg.Model = cfg.Model
 			}
-			explicitReflection := buildExplicitReflectionObserver(reflectionCfg, reflectionProvider, reflectionCfg.Model, assets.userModelStore, assets.memStore, assets.reflectionRepository, assets.reflectionCoordinator)
+			explicitReflection := buildExplicitReflectionObserver(reflectionCfg, reflectionProvider, reflectionCfg.Model, assets.userModelStore, assets.memStore, assets.reflectionRepository, assets.reflectionCoordinator, buildProcedureProcessor(reflectionCfg, assets))
 			if explicitReflection == nil {
 				return server.ReflectionReceipt{}, errors.New("reflection is not configured")
 			}
 			stop, _ := sess.StopReason()
 			trajectory := learning.NewTrajectory(sess.ID, sess.Workspace, stop, sess.Usage, sess.Conversation.Messages)
 			trajectory.Principal = sess.Owner.Clone()
+			trajectory.Kind = sess.Kind
+			trajectory.Counters = sess.Counters
 			var events []session.Event
 			if eventLog != nil {
 				for event, eventErr := range eventLog.Read(ctx, sess.ID) {
@@ -1698,6 +1834,37 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		PromoteProposal: func(ctx context.Context, part learning.ProposalPartition, id learning.ProposalID, version learning.ProposalVersion, approved bool) (learning.ProposalRecord, error) {
 			if cfg.OwnershipEnforced && session.PrincipalFromContext(ctx) == nil {
 				return learning.ProposalRecord{}, server.ErrFailedPrecondition
+			}
+			current, found, err := assets.reflectionRepository.Get(ctx, part, id)
+			if err != nil {
+				return learning.ProposalRecord{}, err
+			}
+			if !found {
+				return learning.ProposalRecord{}, learning.ErrProposalNotFound
+			}
+			if current.Version != version {
+				return learning.ProposalRecord{}, learning.ErrProposalVersionConflict
+			}
+			if current.Candidate.Kind == learning.CandidateProcedure {
+				procedureCfg := cfg
+				if procedureCfg.LearningMode == learning.Off {
+					procedureCfg.LearningMode = learning.Review
+				}
+				processor := buildProcedureProcessor(procedureCfg, assets)
+				if processor == nil {
+					return learning.ProposalRecord{}, server.ErrFailedPrecondition
+				}
+				if err := processor(ctx, current, learning.Review); err != nil {
+					return learning.ProposalRecord{}, err
+				}
+				updated, ok, err := assets.reflectionRepository.Get(ctx, part, id)
+				if err != nil {
+					return learning.ProposalRecord{}, err
+				}
+				if !ok {
+					return learning.ProposalRecord{}, learning.ErrProposalNotFound
+				}
+				return updated, nil
 			}
 			ctx = memory.WithWorkspace(ctx, part.Project)
 			store := assets.userModelStore
@@ -1802,7 +1969,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		svcCfg.PromoteProposal = nil
 		svcCfg.UndoProposal = nil
 	}
-	applyTeamConfig(&svcCfg, cfg, reg, provider, mainMgr, agentReg, assets.skillReadRoots, assets.skillIndex, assets)
+	applyTeamConfig(&svcCfg, cfg, reg, provider, mainMgr, agentReg, assets.skillIndex, assets)
 
 	svc, err := server.NewService(svcCfg)
 	if err != nil {
@@ -1883,10 +2050,12 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		refreshClose()
 		svc.Close()
 		mcpClose()
+		closeProfiles()
 		agentClose()
 		storeClose()
 		commandConnClose()
 	}
+	profilesTransferred = true
 	return &Built{Service: svc, Close: closeAll}, nil
 }
 
@@ -2196,14 +2365,20 @@ func sessionEngineFactory(
 		// Subagent per-def inline managers + the client mgr); assets.globalMgr is
 		// NEVER in it — Build owns its lifecycle (a per-session CloseSession must
 		// never tear down MCP for every other session).
+		// Caller-scoped lazy hydration: rebuild this authenticated session's global
+		// and admitted project generations from durable state before binding the
+		// Skill tool. A failed authoritative read clears only these partitions.
+		skillPartitions := hydrateLearnedSkillPartitions(ctx, cfg, assets, workspace)
+
 		cat, closeFn := assembleCatalog(ctx, cfg, reg, store, hooks, &assets, catalogSession{
-			provider:   resolvedProvider,
-			providerID: resolvedProviderID,
-			model:      resolvedModel,
-			clientMgr:  mgr,
-			narrate:    false,
-			noFS:       noFS,
-			mode:       mode,
+			provider:        resolvedProvider,
+			providerID:      resolvedProviderID,
+			model:           resolvedModel,
+			clientMgr:       mgr,
+			narrate:         false,
+			noFS:            noFS,
+			mode:            mode,
+			skillPartitions: skillPartitions,
 		})
 
 		// Identical to the main engine in every NON-provider Deps field except the
@@ -2212,12 +2387,13 @@ func sessionEngineFactory(
 		// the shared wiring, so no collaborator is silently dropped and a non-default
 		// provider never contaminates compaction/counting.
 		learningCfg := cfg
-		learningCfg.LearningMode = learningModeForWorkspace(cfg, workspace)
+		learningCfg.Workspace = workspace
+		learningCfg.LearningMode, learningCfg.LearningSensitivity = learningPolicyForWorkspace(cfg, workspace)
 		learningCfg.Model = resolvedModel
 		deps := engineDepsForProvider(cfg, resolvedProvider, resolvedModel, windowFn, store, policy, hooks, mcpProvider, instructions)
 		attachOperatorProfile(&deps, assets.userModelStore)
 		deps.LearningMode = learningCfg.LearningMode
-		deps.LearningObserver = buildReflectionObserver(learningCfg, resolvedProvider, learningCfg.Model, assets.userModelStore, assets.memStore, assets.reflectionRepository, assets.reflectionCoordinator, assets.learningAdmission)
+		deps.LearningObserver = buildReflectionObserver(learningCfg, resolvedProvider, learningCfg.Model, assets.userModelStore, assets.memStore, assets.reflectionRepository, assets.reflectionCoordinator, assets.learningAdmission, buildProcedureProcessor(learningCfg, assets))
 		deps.Catalog = cat
 		// Fire-result delivery drain (ADR 0075): the per-session engine's Step 2a
 		// drain reads the SAME durable queue as the main engine. nil (no
@@ -2772,9 +2948,14 @@ func buildSessionStore(cfg Config) (port.SessionStore, port.EventLog, func(), er
 			return nil, nil, nil, fmt.Errorf("dial session-store driver %q: %w", cfg.SessionStoreURL, err)
 		}
 		cfg.diag().Log(context.Background(), port.LevelInfo, "session store: grpc driver", "target", cfg.SessionStoreURL)
+		st, err := grpcdriver.NewSessionStore(context.Background(), conn)
+		if err != nil {
+			closeFn()
+			return nil, nil, nil, fmt.Errorf("negotiate session-store driver %q: %w", cfg.SessionStoreURL, err)
+		}
 		// The EventLog over a session-store driver is nil unless --event-log-url
 		// names one; nil here = the relay records nothing.
-		return grpcdriver.NewSessionStore(conn), nil, closeFn, nil
+		return st, nil, closeFn, nil
 	}
 	if cfg.StoreDir == "" {
 		cfg.diag().Log(context.Background(), port.LevelInfo, "session store: in-memory")
@@ -2912,7 +3093,7 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 	// trust gate is INHERITED by construction (ResolveSources dropped the
 	// untrusted project tier before the seam was built). Empty on the
 	// no-skills path (the bridge is a no-op).
-	cfg.skillCommandInputs = skillCommandInputs{metas: assets.skills, activator: assets.skillActivator}
+	cfg.skillCommandInputs = skillCommandInputs{metas: assets.skills, source: assets.skillSource}
 	// Fold the schedule-tool override conn close into the engine teardown chain
 	// (mcpClose). The close is once-guarded by driverConns, so this AND
 	// buildScheduler's schedClose close the shared conn exactly once (the dedup
@@ -3000,22 +3181,24 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 	// wrapper classifies per session root from the ws the loop hands it, and
 	// the workspace factory relaxes the osfs workspace over the SAME root —
 	// the policy decision and the workspace serving can never disagree.
-	// assets.skillReadRoots feeds the per-root classifier's read-root verdict
-	// (the skills carve-out).
 	// ADR 0080 (auto + the operator-tier escape knob): arm the guardrail-routed
 	// escape pre-check on the MAIN policy ONLY. The checker is built over the
 	// SAME engine-backed VerdictChecker the modelhook hook path uses (the
 	// recursion guard and operator-tier-only config carry over); the option is a
 	// no-op at any non-auto posture or with no checker, so yolo/strict/trusted
 	// and the un-knobbed auto stay byte-identical.
-	sharedPolicy := newEscapePolicy(policy, cfg.Posture, assets.skillReadRoots,
+	sharedPolicy := newEscapePolicy(policy, cfg.Posture,
 		withEscapeGuardrailRoute(buildGuardrailsEscapeChecker(cfg, reg, provider)))
-	learningAdmission := newLearningAdmission(cfg.UserModelReviewInterval)
+	var learningAdmission *learningAdmission
+	if cfg.operatorLearningMode != learning.Off {
+		learningAdmission = newLearningAdmission(cfg.UserModelReviewInterval)
+		learningAdmission.controller = newAutomaticAdmissionController(cfg.LearningAutomatic, cfg.LearningMetricsEmitter)
+	}
 	assets.learningAdmission = learningAdmission
 	deps := baseEngineDeps(cfg, reg, provider, store, sharedPolicy, mainHooks, mcpProvider, instructions)
 	attachOperatorProfile(&deps, userModelStore)
 	deps.LearningMode = cfg.LearningMode
-	deps.LearningObserver = buildReflectionObserver(cfg, provider, cfg.Model, userModelStore, memStore, assets.reflectionRepository, assets.reflectionCoordinator, learningAdmission)
+	deps.LearningObserver = buildReflectionObserver(cfg, provider, cfg.Model, userModelStore, memStore, assets.reflectionRepository, assets.reflectionCoordinator, learningAdmission, buildProcedureProcessor(cfg, assets))
 	deps.Catalog = cat
 	// MODEL-VISIBLE Schedule affordance (ADR 0073, the ADR-0070 gate), on the
 	// SHARED engine too — the SAME wiring the per-session factory applies
@@ -3057,10 +3240,8 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 	// the UNWRAPPED hooks: the Phase-2b reviewer fires once per MAIN-engine Stop,
 	// not per per-session stop (one of the two sanctioned per-session deltas).
 	sessFactory := sessionEngineFactory(cfg, reg, provider, store, sharedPolicy, hooks, mcpProvider, instructions, assets, guardrailWaiver)
-	// The build-once assets travel back to Build whole: it reads assets.skills
-	// (ListSkills snapshot), assets.userModelStore (GetUserModel lister), and
-	// assets.skillReadRoots (the workspace factory + team fork closures) off the
-	// SAME value every catalog assembly shares.
+	// The build-once assets travel back to Build whole so every catalog assembly
+	// and service projection share the same resolved collaborators.
 	return agent.NewEngine(deps), assets.globalMgr, mcpProvider, mcpInventory, sessFactory, learned, sharedPolicy, assets, scheduleMgr, mcpClose, nil
 }
 
@@ -3436,15 +3617,15 @@ func engineDepsForProvider(
 // skill SHADOWS a same-named driver command, and both shadow a same-named MCP
 // prompt (the MCP prompt namespace is disjoint anyway, kept last as before).
 // The skill bridge reuses the SAME resolved seam the Skill tool loads through
-// (cfg.skillCommandInputs.metas + .activator), so the driver path's
-// caching/materialization is shared and the project-tier trust gate is
-// INHERITED by construction — an untrusted workspace's project-tier skills
-// never enter the seam, so they never become invocable as /<skill-name>.
+// (cfg.skillCommandInputs.metas + .source), so the logical source and the
+// project-tier trust gate are shared by construction — an untrusted
+// workspace's project-tier skills never enter the seam, so they never become
+// invocable as /<skill-name>.
 func buildCommandExpander(cfg Config, mcpProvider mcp.Provider) prompt.CommandExpander {
 	dirExp := buildDirCommandExpander(cfg)
 	var skillExp prompt.CommandExpander
-	if len(cfg.skillCommandInputs.metas) > 0 && cfg.skillCommandInputs.activator != nil {
-		skillExp = prompt.NewSourceExpander(skills.NewSkillCommandSource(cfg.skillCommandInputs.metas, cfg.skillCommandInputs.activator))
+	if len(cfg.skillCommandInputs.metas) > 0 && cfg.skillCommandInputs.source != nil {
+		skillExp = prompt.NewSourceExpander(skills.NewSkillCommandSource(cfg.skillCommandInputs.metas, cfg.skillCommandInputs.source))
 	}
 	var sourceExp prompt.CommandExpander
 	if cfg.commandSource != nil {
@@ -4361,6 +4542,39 @@ func buildCatalog(ctx context.Context, cfg Config, reg *providerRegistry, provid
 		return nil, catalogAssets{}, nil, nil, nil, err
 	}
 
+	// Learned skills are a lowest-precedence, body-only live generation layered
+	// over the immutable external seam. The repository is lazy on empty startup.
+	var learnedSkills learning.SkillRepository
+	var liveSkills *coreskillfs.AtomicCatalog
+	skillPartition := learning.SkillPartition{Principal: reflectionPrincipal(nil)}
+	const skillOwner = "reflection"
+	if base := resolveUserModelDir(cfg.UserModelDir); base != "" {
+		learned, openErr := skillstore.New(filepath.Join(base, "learned-skills"))
+		if openErr != nil {
+			mcpClose()
+			return nil, catalogAssets{}, nil, nil, nil, fmt.Errorf("build learned-skill store: %w", openErr)
+		}
+		learnedSkills = learned
+		active, listErr := listActiveLearnedSkills(ctx, learned, skillPartition, "")
+		if listErr == nil && cfg.Workspace != "" && projectIngestionAdmitted(cfg) {
+			projectActive, projectErr := listActiveLearnedSkills(ctx, learned, learning.SkillPartition{Principal: skillPartition.Principal, Project: cfg.Workspace}, "")
+			if projectErr != nil {
+				listErr = projectErr
+			} else {
+				active = append(active, projectActive...)
+			}
+		}
+		if listErr != nil {
+			mcpClose()
+			return nil, catalogAssets{}, nil, nil, nil, fmt.Errorf("load active learned skills: %w", listErr)
+		}
+		liveSkills = coreskillfs.NewAtomicCatalog(seam.metas, seam.source, active)
+	}
+	var skillPublication *learnedSkillPublication
+	if liveSkills != nil {
+		skillPublication = &learnedSkillPublication{}
+	}
+
 	// ONE process-wide preserved-fork LRU shared by every Parallel tool (build-time
 	// AND per-session), so ForkPreservedCap stays a PROCESS bound.
 	var forkReaper *agent.LRUForkReaper
@@ -4381,21 +4595,20 @@ func buildCatalog(ctx context.Context, cfg Config, reg *providerRegistry, provid
 	}
 
 	assets := catalogAssets{
-		globalMgr:      mainMgr,
-		agentReg:       agentReg,
-		memStore:       memStore,
-		userModelStore: userModelStore,
-		skills:         seam.metas,
-		skillActivator: seam.activator,
-		skillIndex:     seam.index,
-		// The ONE computation of the read-only allowed roots, now derived inside
-		// the seam (FSSource.AssetDirs per-skill dirs, or the driver asset cache —
-		// the project-tier trust gate is inherited by construction either way) and
-		// threaded into every production osfs Workspace constructor via the
-		// assets — no second list to drift.
-		skillReadRoots: seam.readRoots,
-		forkReaper:     forkReaper,
-		autoMerger:     autoMerger,
+		globalMgr:        mainMgr,
+		agentReg:         agentReg,
+		memStore:         memStore,
+		userModelStore:   userModelStore,
+		skills:           seam.metas,
+		skillSource:      seam.source,
+		skillIndex:       seam.index,
+		liveSkills:       liveSkills,
+		learnedSkills:    learnedSkills,
+		skillPublication: skillPublication,
+		skillPartition:   skillPartition,
+		skillOwner:       skillOwner,
+		forkReaper:       forkReaper,
+		autoMerger:       autoMerger,
 		// WebSearch provider (issue #26): resolved ONCE here via the backend ladder
 		// (kill switch > --websearch-url > SEARXNG_URL > BRAVE_API_KEY > Exa default)
 		// and threaded onto the assets so every per-session catalog reuses the SAME
@@ -4444,8 +4657,7 @@ func buildCatalog(ctx context.Context, cfg Config, reg *providerRegistry, provid
 			memDriverClose()
 		}
 	}
-	// Fold the skill seam's teardown (driver branch only: asset-cache RemoveAll
-	// + its once-guarded conn close) into the same chain.
+	// Fold the skill driver's once-guarded connection close into the same chain.
 	if seam.close != nil {
 		prev := mcpClose
 		mcpClose = func() {
@@ -4532,11 +4744,19 @@ func connectMCP(ctx context.Context, cfg Config) (*mcp.Manager, mcp.Provider, []
 	}
 
 	onError := func(sc mcp.ServerConfig, err error) {
-		cfg.diag().Log(ctx, port.LevelWarn, "MCP server unreachable; skipping", "name", sc.Name, "url", sc.URL, "err", err)
+		if errors.Is(err, mcp.ErrOAuthLoginRequired) {
+			cfg.diag().Log(ctx, port.LevelWarn, "MCP OAuth login required", "name", sc.Name, "remedy", mcpLoginRemedy(sc))
+			return
+		}
+		if sc.OAuth != nil && sc.OAuth.CredentialReader != nil && errors.Is(err, mcp.ErrOAuthUnavailable) {
+			cfg.diag().Log(ctx, port.LevelWarn, "MCP OAuth environment credential unavailable", "name", sc.Name, "remedy", mcpLoginRemedy(sc))
+			return
+		}
+		cfg.diag().Log(ctx, port.LevelWarn, "MCP server unreachable; skipping", "name", sc.Name, "reason", "unavailable")
 	}
 	mgr, err := mcp.NewManager(ctx, configs, onError, cfg.diag())
 	if err != nil {
-		cfg.diag().Log(ctx, port.LevelWarn, "MCP manager construction failed; continuing without MCP tools", "err", err)
+		cfg.diag().Log(ctx, port.LevelWarn, "MCP manager construction failed; continuing without MCP tools", "reason", "unavailable")
 		return nil, nil, inventory, func() {}
 	}
 	cfg.diag().Log(ctx, port.LevelInfo, "MCP servers connected", "servers", len(configs), "tools", len(mgr.Tools()))
@@ -4546,6 +4766,13 @@ func connectMCP(ctx context.Context, cfg Config) (*mcp.Manager, mcp.Provider, []
 			cfg.diag().Log(ctx, port.LevelWarn, "MCP manager close", "err", err)
 		}
 	}
+}
+
+func mcpLoginRemedy(sc mcp.ServerConfig) string {
+	if sc.OAuth != nil && sc.OAuth.CredentialReader != nil {
+		return "preprovision the environment credential and restart"
+	}
+	return "mecated mcp login " + sc.Name
 }
 
 // logMCPInventory logs a one-line-per-source summary of the resolved MCP source
@@ -4583,42 +4810,37 @@ func skillResolveOptions(cfg Config) skills.ResolveOptions {
 // skillSeam is the resolved skills wiring (Phase C1): the build-once products
 // every catalog assembly shares, produced by resolveSkillSeam from EITHER the
 // filesystem branch (NewFSSource over the trust-gated resolved sources) or the
-// remote-driver branch (a grpcdriver SkillSource + lazy asset materializer).
-// The PORT (tool.SkillSource) carries logical bundles only; the path business
-// an FS deployment still needs (readRoots) derives from the FS adapter's
-// NON-PORT AssetDirs, and the driver branch's single read root is its asset
-// cache.
+// remote-driver branch (a grpcdriver SkillSource). The PORT
+// (tool.SkillSource) carries logical bundles only; no composition path exposes
+// skill payloads as filesystem paths.
 type skillSeam struct {
 	// metas is the name-sorted always-in-context metadata snapshot the Skill
 	// tool enumerates and the ListSkills RPC projects.
 	metas []tool.SkillMeta
-	// activator loads a skill's body + base directory on activation (snapshot
-	// in place for FS; lazy materialization for the driver).
-	activator skills.Activator
+	// source is the logical source shared by the Skill tool and slash-command
+	// expansion. It owns no model-visible paths.
+	source tool.SkillSource
 	// index is the name → body preload map agent definitions' `skills:` lists
 	// read (full for FS — bodies are snapshot-retained; LAZY for the driver —
 	// only def-referenced names are fetched).
 	index skillIndex
-	// readRoots are the read-only allowed roots every production osfs Workspace
-	// is constructed with: the FS per-skill dirs, or the driver's asset cache.
-	readRoots []string
-	// close is the driver branch's teardown (asset-cache RemoveAll + the
-	// once-guarded conn close); nil for the FS/disabled branches.
+	// close is the remote driver's once-guarded connection close; nil for the
+	// filesystem and disabled branches.
 	close func()
 }
 
 // skillCommandInputs is the per-session-consumable half of the resolved skill
 // seam: the always-in-context SkillMeta inventory (the names a `/skill` can
-// resolve to) and the Activator the Skill tool loads bodies through. It is
+// resolve to) and the logical SkillSource used to load bodies and assets. It is
 // stashed on cfg after buildCatalog resolves the seam so buildCommandExpander
 // — which runs per session — composes a SkillCommandSource over them without
-// re-resolving. The activator is the SAME seam the Skill tool uses (the
-// driver's caching/materialization is shared); the metas already passed the
-// project-tier trust gate at source construction, so the bridge inherits it.
-// Empty (nil metas / nil activator) on the no-skills path.
+// re-resolving. The source is the SAME seam the Skill tool uses; the metas
+// already passed the project-tier trust gate at source construction, so the
+// bridge inherits it.
+// Empty (nil metas / nil source) on the no-skills path.
 type skillCommandInputs struct {
-	metas     []tool.SkillMeta
-	activator skills.Activator
+	metas  []tool.SkillMeta
+	source tool.SkillSource
 }
 
 // resolveSkillSeam resolves the skills wiring from cfg: the remote-driver
@@ -4675,25 +4897,16 @@ func resolveFSSkillSeam(ctx context.Context, cfg Config) skillSeam {
 		"count", len(discovered), "skills", strings.Join(names, ","))
 	metas, _ := src.ListSkills(ctx) // snapshot read; never errors
 	return skillSeam{
-		metas:     metas,
-		activator: skills.NewSnapshotActivator(src),
-		index:     idx,
-		// The ONE computation of the per-skill read-only allowed roots, moved
-		// home to the FS adapter (FSSource.AssetDirs): derived from the SAME
-		// snapshot (so the project-tier trust gate is inherited by construction)
-		// and threaded into every production osfs Workspace constructor via the
-		// assets — no second list to drift.
-		readRoots: src.AssetDirs(),
+		metas:  metas,
+		source: src,
+		index:  idx,
 	}
 }
 
 // resolveDriverSkillSeam is the remote-driver branch: dial the
 // SkillSourceService (fatal on a dial/snapshot fault), take ONE ListSkills
-// snapshot, create the build-scoped asset cache EAGERLY (the osfs Workspace
-// opens its read roots at construction and skips non-existent dirs — a
-// late-born cache would be unreadable), and wire the lazy materializer behind
-// a SourceActivator. The cache RemoveAll + the once-guarded conn close ride
-// the seam's close, folded into the catalog teardown.
+// metadata snapshot, and retain the logical source for on-demand body/asset
+// reads. The once-guarded connection close rides the seam's close.
 func resolveDriverSkillSeam(ctx context.Context, cfg Config, agentReg *agents.Registry) (skillSeam, error) {
 	conn, connClose, err := cfg.drivers().dial(cfg, cfg.SkillSourceURL)
 	if err != nil {
@@ -4711,38 +4924,18 @@ func resolveDriverSkillSeam(ctx context.Context, cfg Config, agentReg *agents.Re
 		return skillSeam{close: connClose}, nil
 	}
 
-	rawCache, err := os.MkdirTemp("", "mecatl-skill-assets-")
-	if err != nil {
-		connClose()
-		return skillSeam{}, fmt.Errorf("create skill asset cache: %w", err)
-	}
-	// Canonicalize the cache root through the SAME resolver the osfs read-root
-	// allowlist is keyed on (a temp dir may live behind a symlinked prefix), so
-	// the Base-directory paths the Skill tool advertises match the allowlist.
-	cacheBase := rawCache
-	if resolved, rerr := osfs.ResolveRoot(rawCache); rerr == nil {
-		cacheBase = resolved
-	}
-
 	names := make([]string, 0, len(metas))
 	for _, m := range metas {
 		names = append(names, m.Name)
 	}
 	cfg.diag().Log(ctx, port.LevelInfo, "Skill tool ENABLED",
-		"target", cfg.SkillSourceURL, "count", len(metas), "skills", strings.Join(names, ","),
-		"asset_cache", cacheBase)
+		"target", cfg.SkillSourceURL, "count", len(metas), "skills", strings.Join(names, ","))
 
 	return skillSeam{
-		metas:     metas,
-		activator: skills.NewSourceActivator(src, skills.NewAssetMaterializer(src, cacheBase)),
-		index:     driverSkillIndex(ctx, cfg, src, metas, agentReg),
-		readRoots: []string{cacheBase},
-		close: func() {
-			if rerr := os.RemoveAll(rawCache); rerr != nil {
-				cfg.diag().Log(context.Background(), port.LevelWarn, "removing the skill asset cache failed", "dir", rawCache, "err", rerr)
-			}
-			connClose()
-		},
+		metas:  metas,
+		source: src,
+		index:  driverSkillIndex(ctx, cfg, src, metas, agentReg),
+		close:  connClose,
 	}, nil
 }
 
@@ -4828,7 +5021,7 @@ func registerSkillDraft(ctx context.Context, cfg Config, cat *tool.Catalog, exis
 // exits on shutdown) and the same LLM provider as the agent.
 func startMemoryConsolidation(ctx context.Context, cfg Config, store tool.MemoryStore, provider port.LLMProvider) {
 	// No caller: the consolidator runs as the explicit system principal
-	// (ADR 0100 decision 7).
+	// (ADR 0204 decision 7).
 	ctx = syscaller.Context(ctx, syscaller.RootMemoryConsolidation)
 	if cfg.MemoryConsolidateInterval <= 0 {
 		cfg.diag().Log(ctx, port.LevelInfo, "memory consolidation DISABLED")
@@ -4857,7 +5050,7 @@ func startMemoryConsolidation(ctx context.Context, cfg Config, store tool.Memory
 // interval/store/provider prerequisites are present and a consolidator was started.
 func startUserModelConsolidation(ctx context.Context, cfg Config, store tool.MemoryStore, provider port.LLMProvider) bool {
 	// No caller: the consolidator runs as the explicit system principal
-	// (ADR 0100 decision 7).
+	// (ADR 0204 decision 7).
 	ctx = syscaller.Context(ctx, syscaller.RootUserModelConsolidation)
 	if cfg.UserModelConsolidateInterval <= 0 || store == nil || provider == nil {
 		cfg.diag().Log(ctx, port.LevelInfo, "user-model consolidation DISABLED")
@@ -5914,9 +6107,8 @@ func buildModelRouterTask(cfg Config, provReg *providerRegistry, provider port.L
 // NO-FS PROFILE (issue #55): with noFS true the Subagent tool delegates to the
 // FILE-LESS child shape instead — see buildNoFSSubagentTool. `a` carries the
 // catalog assets the no-FS child surface registers over (memory stores + the
-// shared global MCP manager); it is read ONLY on the noFS branch (the default
-// branch keeps reading the skillReadRoots/skillIdx params as before).
-func buildSubagentTool(ctx context.Context, cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, hooks port.HookRunner, reg *agents.Registry, mainMgr *mcp.Manager, store port.SessionStore, skillReadRoots []string, skillIdx skillIndex, a catalogAssets, noFS bool) (tool.Tool, func() error) {
+// shared global MCP manager); it is read only on the noFS branch.
+func buildSubagentTool(ctx context.Context, cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, hooks port.HookRunner, reg *agents.Registry, mainMgr *mcp.Manager, store port.SessionStore, skillIdx skillIndex, a catalogAssets, noFS bool) (tool.Tool, func() error) {
 	if noFS {
 		return buildNoFSSubagentTool(ctx, cfg, provReg, provider, parentProviderID, parentModel, hooks, store, a), nil
 	}
@@ -5968,7 +6160,7 @@ func buildSubagentTool(ctx context.Context, cfg Config, provReg *providerRegistr
 		// buildSandboxedCommandRunner does (sandboxedRunner != nil already proves the
 		// gate passed at build time; the per-child builder re-checks it so a future
 		// per-session trust change cannot hand a shell to an untrusted child).
-		taskForker := forker.New(newForkWorkspace(skillReadRoots), forker.WithDirtyOverlay(),
+		taskForker := forker.New(newForkWorkspace(), forker.WithDirtyOverlay(),
 			forker.WithRunner(func(childRoot string) tool.CommandRunner {
 				if !sandboxedShellAvailable(cfg) {
 					return nil
@@ -5998,7 +6190,7 @@ func buildSubagentTool(ctx context.Context, cfg Config, provReg *providerRegistr
 	// which the parent workspace construction already surfaced).
 	if cfg.Posture >= PostureAuto {
 		opts = append(opts, agent.WithSharedChildWorkspace(func(root string) tool.Workspace {
-			ws, err := newForkWorkspace(skillReadRoots)(root)
+			ws, err := newForkWorkspace()(root)
 			if err != nil {
 				return nil
 			}
@@ -6368,7 +6560,7 @@ func buildAgentWritableEngineFactory(ctx context.Context, cfg Config, provReg *p
 // both are filesystem acts), NO shell runners, and every member gets the no-FS
 // child surface (see buildMemberEngine's noFS branch). `a` carries the catalog
 // assets the no-FS member surface registers over; it is read only when noFS.
-func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, mainMgr *mcp.Manager, agentReg *agents.Registry, skillReadRoots []string, skillIdx skillIndex, a catalogAssets, noFS bool) (server.MemberEngineFactory, tool.EnvironmentForker, tool.EnvironmentForker, func(string) tool.Workspace, port.HookRunner) {
+func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, mainMgr *mcp.Manager, agentReg *agents.Registry, skillIdx skillIndex, a catalogAssets, noFS bool) (server.MemberEngineFactory, tool.EnvironmentForker, tool.EnvironmentForker, func(string) tool.Workspace, port.HookRunner) {
 	// A single hooks runner shared by the supervisor and the member coordination
 	// tools. hookexec.New(nil) matches buildEngine's default: the configured-hook map
 	// is not yet wired from cfg anywhere, so this is an inert (no-op) runner today,
@@ -6420,8 +6612,8 @@ func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, p
 		}
 		return newHardenedRunnerForRoot(cfg, childRoot)
 	}
-	fk := forker.New(newForkWorkspace(skillReadRoots), forker.WithForceCopy(), forker.WithRunner(fkRunnerBuilder))
-	roFk := forker.New(newForkWorkspace(skillReadRoots), forker.WithDirtyOverlay(), forker.WithRunner(roRunnerBuilder))
+	fk := forker.New(newForkWorkspace(), forker.WithForceCopy(), forker.WithRunner(fkRunnerBuilder))
+	roFk := forker.New(newForkWorkspace(), forker.WithDirtyOverlay(), forker.WithRunner(roRunnerBuilder))
 	memberRunner := buildSandboxedCommandRunner(cfg)
 	mutatingRunner := buildForceCopyRunner(cfg)
 	roIsolationAvailable := memberRunner != nil && roFk != nil
@@ -6445,7 +6637,7 @@ func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, p
 	var sharedBaseWS func(string) tool.Workspace
 	if cfg.Posture >= PostureAuto {
 		sharedBaseWS = func(root string) tool.Workspace {
-			ws, err := newForkWorkspace(skillReadRoots)(root)
+			ws, err := newForkWorkspace()(root)
 			if err != nil {
 				return nil
 			}
@@ -6462,7 +6654,7 @@ func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, p
 // SAME wiring the Team tool uses (buildCatalog) — so the gRPC CreateTeam path and the
 // Team tool cannot drift. MaxTeams is left at zero so the server applies its own
 // default.
-func applyTeamConfig(svcCfg *server.Config, cfg Config, reg *providerRegistry, provider port.LLMProvider, mainMgr *mcp.Manager, agentReg *agents.Registry, skillReadRoots []string, skillIdx skillIndex, a catalogAssets) {
+func applyTeamConfig(svcCfg *server.Config, cfg Config, reg *providerRegistry, provider port.LLMProvider, mainMgr *mcp.Manager, agentReg *agents.Registry, skillIdx skillIndex, a catalogAssets) {
 	if !cfg.EnableTeams {
 		cfg.diag().Log(context.Background(), port.LevelInfo, "agent teams DISABLED (set --enable-teams to enable; experimental)")
 		return
@@ -6474,7 +6666,7 @@ func applyTeamConfig(svcCfg *server.Config, cfg Config, reg *providerRegistry, p
 	// agentReg is the ONE registry Build resolved (resolveAgentSeam).
 	// The gRPC CreateTeam path is always the DEFAULT (filesystem) profile — a
 	// no-FS team exists only inside a no-fs session's in-catalog Team tool.
-	factory, fk, roFk, sharedBaseWS, teamHooks := buildTeamWiring(context.Background(), cfg, reg, provider, reg.Default(), cfg.Model, mainMgr, agentReg, skillReadRoots, skillIdx, a, false)
+	factory, fk, roFk, sharedBaseWS, teamHooks := buildTeamWiring(context.Background(), cfg, reg, provider, reg.Default(), cfg.Model, mainMgr, agentReg, skillIdx, a, false)
 	svcCfg.MemberEngine = factory
 	svcCfg.Forker = fk
 	svcCfg.ReadOnlyForker = roFk
@@ -7600,9 +7792,7 @@ func defaultLimits() session.Limits {
 }
 
 // osfsWorkspaceFactory returns a server.WorkspaceFactory that builds an osfs
-// Workspace rooted at the session's workspace dir, carrying the per-skill
-// read-only allowed roots (catalogAssets.skillReadRoots) so Read/Stat can serve
-// an activated skill's files by absolute path. A root that cannot be opened
+// Workspace rooted at the session's workspace dir. A root that cannot be opened
 // yields a nil Workspace; tool calls against it return errors the model can read.
 //
 // PATH-ESCAPE POSTURE (docs/acceptance/path-escape-posture.md Scenarios 2–4):
@@ -7631,7 +7821,7 @@ func defaultLimits() session.Limits {
 // the defense a FUTURE caller cannot bypass: it serves the honest no-filesystem
 // workspace and logs loudly, because reaching it means a no-fs guard upstream
 // regressed.
-func osfsWorkspaceFactory(d port.Diagnostics, skillReadRoots []string) server.WorkspaceFactory {
+func osfsWorkspaceFactory(d port.Diagnostics) server.WorkspaceFactory {
 	return func(root string) tool.Workspace {
 		if root == "" {
 			d.Log(context.Background(), port.LevelError,
@@ -7641,9 +7831,9 @@ func osfsWorkspaceFactory(d port.Diagnostics, skillReadRoots []string) server.Wo
 		// The relaxed SERVING options ride every posture (the escape DECISION is
 		// the policy wrapper's — the workspace only serves what the policy
 		// already authorized; at strict/trusted that is an APPROVED escape ask).
-		clf, cerr := newEscapeClassifier(root, skillReadRoots...)
+		clf, cerr := newEscapeClassifier(root)
 		if cerr == nil {
-			ws, err := osfs.NewWorkspace(root, osfs.WithReadRoots(skillReadRoots...), osfs.WithRelaxedReads(), osfs.WithRelaxedWrites())
+			ws, err := osfs.NewWorkspace(root, osfs.WithRelaxedReads(), osfs.WithRelaxedWrites())
 			if err != nil {
 				d.Log(context.Background(), port.LevelError, "workspace factory: cannot open root", "root", root, "err", err)
 				return nil
@@ -7651,7 +7841,7 @@ func osfsWorkspaceFactory(d port.Diagnostics, skillReadRoots []string) server.Wo
 			return newEscapeWorkspace(ws, clf)
 		}
 		d.Log(context.Background(), port.LevelError, "workspace factory: cannot build the escape classifier for a relaxed workspace; serving the deny-on-escape workspace", "root", root, "err", cerr)
-		ws, err := osfs.NewWorkspace(root, osfs.WithReadRoots(skillReadRoots...))
+		ws, err := osfs.NewWorkspace(root)
 		if err != nil {
 			d.Log(context.Background(), port.LevelError, "workspace factory: cannot open root", "root", root, "err", err)
 			return nil
@@ -7761,11 +7951,10 @@ func parseWorktreePorcelain(out string) []server.Worktree {
 }
 
 // newForkWorkspace returns the ONE workspace constructor every fork family
-// (Subagent worktree, team member force-copy/worktree, Parallel branch) hands its
-// forker, so the per-skill read-only allowed roots reach ISOLATED worktrees too —
-// a single helper, not four closures that could drift on the allowlist.
-func newForkWorkspace(skillReadRoots []string) func(string) (tool.Workspace, error) {
+// (Subagent worktree, team member force-copy/worktree, Parallel branch) uses, so
+// their isolated workspaces cannot drift in construction semantics.
+func newForkWorkspace() func(string) (tool.Workspace, error) {
 	return func(root string) (tool.Workspace, error) {
-		return osfs.NewWorkspace(root, osfs.WithReadRoots(skillReadRoots...))
+		return osfs.NewWorkspace(root)
 	}
 }

@@ -28,10 +28,70 @@ func DetectSignals(in Input) []Signal {
 	if refs := explicitRemember(in); len(refs) > 0 {
 		signals = append(signals, Signal{Kind: SignalExplicitRemember, Evidence: refs})
 	}
+	if refs := explicitLearnProcedure(in); len(refs) > 0 {
+		signals = append(signals, Signal{Kind: SignalExplicitLearnProcedure, Evidence: refs})
+	}
 	if refs := repeatedCorrections(in); len(refs) > 0 {
 		signals = append(signals, Signal{Kind: SignalRepeatedCorrection, Evidence: refs})
 	}
 	return signals
+}
+
+// DetectSignalsScoped returns deterministic standard signals whose complete
+// pattern evidence belongs to the genuine current run. Trusted host signals are
+// deliberately limited to contradiction and host-requested provenance; callers
+// cannot forge built-in evidence classes.
+func DetectSignalsScoped(in Input, scope DetectionScope) []Signal {
+	if err := ValidateInput(in); err != nil || !scope.Current.Valid(len(in.Trajectory.Messages)) {
+		return nil
+	}
+	current := in.Trajectory.Messages[scope.Current.Start:scope.Current.End]
+	trajectory := NewTrajectory(in.Trajectory.SessionID, in.Trajectory.Workspace, in.Trajectory.Stop, in.Trajectory.Usage, current)
+	trajectory.Principal = in.Trajectory.Principal.Clone()
+	trajectory.Kind = in.Trajectory.Kind
+	trajectory.Counters = in.Trajectory.Counters
+	trajectory.Current = MessageSpan{Start: 0, End: len(current)}
+	currentInput := NewInput(trajectory, nil, nil, in.Existing)
+	detected := DetectSignals(currentInput)
+	for i := range detected {
+		for j := range detected[i].Evidence {
+			detected[i].Evidence[j].Ordinal += scope.Current.Start
+		}
+	}
+	all := make([]Signal, 0, len(in.Signals)+len(detected))
+	for _, signal := range in.Signals {
+		if (signal.Kind == SignalContradiction || signal.Kind == SignalHostRequested) && signalHasOnlyCurrentEvidence(signal, scope.Current) {
+			all = append(all, signal)
+		}
+	}
+	all = append(all, detected...)
+	order := []SignalKind{
+		SignalExplicitRemember, SignalExplicitLearnProcedure,
+		SignalRepeatedCorrection, SignalContradiction, SignalFailureRecovery,
+		SignalRepeatedToolSequence, SignalSubstantialSuccess, SignalHostRequested,
+	}
+	result := make([]Signal, 0, len(all))
+	for _, kind := range order {
+		for _, signal := range all {
+			if signal.Kind == kind {
+				result = append(result, signal)
+				break
+			}
+		}
+	}
+	return result
+}
+
+func signalHasOnlyCurrentEvidence(signal Signal, span MessageSpan) bool {
+	if len(signal.Evidence) == 0 {
+		return signal.Kind == SignalContradiction || signal.Kind == SignalHostRequested
+	}
+	for _, ref := range signal.Evidence {
+		if ref.Locator != EvidenceMessage || !span.Contains(ref.Ordinal) {
+			return false
+		}
+	}
+	return true
 }
 
 func substantialSuccess(in Input) []EvidenceRef {
@@ -162,6 +222,24 @@ func explicitRemember(in Input) []EvidenceRef {
 		line := strings.ToLower(strings.TrimSpace(message.Text))
 		for _, prefix := range []string{"remember that ", "please remember that ", "please remember ", "learn that "} {
 			if strings.HasPrefix(line, prefix) && len(strings.TrimSpace(line[len(prefix):])) >= 4 {
+				ref, err := MessageEvidenceRef(in, i, "")
+				if err == nil {
+					return []EvidenceRef{ref}
+				}
+			}
+		}
+	}
+	return nil
+}
+
+func explicitLearnProcedure(in Input) []EvidenceRef {
+	for i, message := range in.Trajectory.Messages {
+		if message.Role != session.RoleUser {
+			continue
+		}
+		line := strings.ToLower(strings.TrimSpace(message.Text))
+		for _, prefix := range []string{"learn this procedure", "learn this workflow", "save this as a skill", "remember this procedure"} {
+			if strings.HasPrefix(line, prefix) {
 				ref, err := MessageEvidenceRef(in, i, "")
 				if err == nil {
 					return []EvidenceRef{ref}

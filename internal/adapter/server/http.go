@@ -15,6 +15,7 @@ import (
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/learning"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 )
@@ -25,6 +26,8 @@ import (
 //	POST   /v1/sessions               -> CreateSession (JSON)
 //	GET    /v1/sessions/{id}          -> GetSession (JSON snapshot)
 //	DELETE /v1/sessions/{id}          -> CloseSession (release session resources; 204)
+//	POST   /v1/sessions/{id}/rename   -> RenameSession (persist an explicit title)
+//	POST   /v1/sessions/{id}/delete   -> DeleteSession (physical snapshot + sidecars)
 //	POST   /v1/sessions/{id}/prompt   -> start a run; text/event-stream of Events
 //	POST   /v1/sessions/{id}/approve  -> resolve the paused ask on the run
 //	POST   /v1/sessions/{id}/cancel   -> cancel the in-flight run
@@ -44,8 +47,11 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h := &HTTPHandler{svc: svc, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /v1/sessions", h.createSession)
 	h.mux.HandleFunc("GET /v1/sessions/{id}", h.getSession)
+	h.mux.HandleFunc("GET /v1/sessions/{id}/transcript", h.getSessionTranscript)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/mode", h.setMode)
 	h.mux.HandleFunc("DELETE /v1/sessions/{id}", h.closeSession)
+	h.mux.HandleFunc("POST /v1/sessions/{id}/rename", h.renameSession)
+	h.mux.HandleFunc("POST /v1/sessions/{id}/delete", h.deleteSession)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/prompt", h.prompt)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/approve", h.approve)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/plan:approve", h.approvePlan)
@@ -65,6 +71,14 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h.mux.HandleFunc("GET /v1/mcp/toolhive/groups", h.listToolHiveGroups)
 	h.mux.HandleFunc("GET /v1/agents", h.listAgents)
 	h.mux.HandleFunc("GET /v1/skills", h.listSkills)
+	h.mux.HandleFunc("GET /v1/skills/learned", h.listLearnedSkills)
+	h.mux.HandleFunc("GET /v1/skills/learned/changes", h.listSkillChanges)
+	h.mux.HandleFunc("GET /v1/skills/learned/{id}", h.getLearnedSkill)
+	h.mux.HandleFunc("GET /v1/skills/learned/{id}/diff", h.diffLearnedSkill)
+	h.mux.HandleFunc("POST /v1/skills/learned/{id}/activate", h.activateLearnedSkill)
+	h.mux.HandleFunc("POST /v1/skills/learned/{id}/reject", h.rejectLearnedSkill)
+	h.mux.HandleFunc("POST /v1/skills/learned/{id}/archive", h.archiveLearnedSkill)
+	h.mux.HandleFunc("POST /v1/skills/learned/{id}/rollback", h.rollbackLearnedSkill)
 	h.mux.HandleFunc("GET /v1/models", h.listModels)
 	h.mux.HandleFunc("GET /v1/soul", h.getSoul)
 	h.mux.HandleFunc("GET /v1/usermodel", h.getUserModel)
@@ -194,6 +208,7 @@ type serverCapabilitiesJSON struct {
 	ModelSelection    bool   `json:"model_selection"`
 	Reflection        bool   `json:"reflection"`
 	LearningProposals bool   `json:"learning_proposals"`
+	LearnedSkills     bool   `json:"learned_skills"`
 	Posture           string `json:"posture,omitempty"`
 }
 
@@ -214,6 +229,7 @@ func capabilitiesJSON(c *mecatlv1.ServerCapabilities) *serverCapabilitiesJSON {
 		ModelSelection:    c.GetModelSelection(),
 		Reflection:        c.GetReflection(),
 		LearningProposals: c.GetLearningProposals(),
+		LearnedSkills:     c.GetLearnedSkills(),
 		Posture:           c.GetPosture(),
 	}
 }
@@ -229,6 +245,9 @@ type sessionResp struct {
 	// deriveTitle fallback when the snapshot Title is empty). Omitted via
 	// omitempty only when both are empty (no genuine prompt).
 	Title string `json:"title,omitempty"`
+	// TitleProvenance records whether Title is prompt-derived, operator-authored,
+	// or legacy/unknown.
+	TitleProvenance string `json:"title_provenance,omitempty"`
 	// ResolvedModel mirrors the gRPC Session snapshot's resolved_model so the HTTP
 	// read surface is consistent with gRPC GetSession: the EFFECTIVE provider+model
 	// this session resolved to (from Service.ResolvedModel, the composition single
@@ -357,6 +376,16 @@ func (h *HTTPHandler) getSession(w http.ResponseWriter, r *http.Request) {
 	h.writeSession(w, http.StatusOK, sess)
 }
 
+// getSessionTranscript handles GET /v1/sessions/{id}/transcript.
+func (h *HTTPHandler) getSessionTranscript(w http.ResponseWriter, r *http.Request) {
+	transcript, err := h.svc.GetTranscript(r.Context(), session.SessionID(r.PathValue("id")))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, toProtoTranscript(transcript))
+}
+
 // setMode handles POST /v1/sessions/{id}/mode.
 func (h *HTTPHandler) setMode(w http.ResponseWriter, r *http.Request) {
 	id := session.SessionID(r.PathValue("id"))
@@ -413,14 +442,15 @@ func (h *HTTPHandler) writeSession(w http.ResponseWriter, status int, sess *sess
 		title = DeriveTitle(sess)
 	}
 	writeJSON(w, status, sessionResp{
-		SessionID:     string(sess.ID),
-		State:         string(sess.State),
-		Mode:          string(sess.Mode),
-		Workspace:     sess.Workspace,
-		Turns:         sess.Counters.Turns,
-		ToolCalls:     sess.Counters.ToolCalls,
-		Title:         title,
-		ResolvedModel: resolvedModelToJSON(h.svc.ResolvedModel(sess.ID)),
+		SessionID:       string(sess.ID),
+		State:           string(sess.State),
+		Mode:            string(sess.Mode),
+		Workspace:       sess.Workspace,
+		Turns:           sess.Counters.Turns,
+		ToolCalls:       sess.Counters.ToolCalls,
+		Title:           title,
+		TitleProvenance: string(sess.TitleProvenance),
+		ResolvedModel:   resolvedModelToJSON(h.svc.ResolvedModel(sess.ID)),
 	})
 }
 
@@ -765,6 +795,33 @@ func planModeFromString(s string) session.PermissionMode {
 func (h *HTTPHandler) closeSession(w http.ResponseWriter, r *http.Request) {
 	id := session.SessionID(r.PathValue("id"))
 	if err := h.svc.EndSession(r.Context(), id); err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.WriteHeader(http.StatusNoContent)
+}
+
+// renameSession handles POST /v1/sessions/{id}/rename.
+func (h *HTTPHandler) renameSession(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		Title string `json:"title"`
+	}
+	if err := decodeLearningJSON(r, 2<<10, &body, false); err != nil || strings.TrimSpace(body.Title) == "" {
+		writeError(w, http.StatusBadRequest, "a non-blank title is required")
+		return
+	}
+	sess, err := h.svc.RenameSession(r.Context(), session.SessionID(r.PathValue("id")), body.Title)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	h.writeSession(w, http.StatusOK, sess)
+}
+
+// deleteSession handles POST /v1/sessions/{id}/delete. DELETE on the base path
+// intentionally retains CloseSession's resource-release-only semantics.
+func (h *HTTPHandler) deleteSession(w http.ResponseWriter, r *http.Request) {
+	if err := h.svc.DeleteSession(r.Context(), session.SessionID(r.PathValue("id"))); err != nil {
 		writeServiceError(w, err)
 		return
 	}
@@ -1315,6 +1372,117 @@ func (h *HTTPHandler) listSkills(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, &mecatlv1.ListSkillsResponse{Skills: h.svc.ListSkills(r.Context())})
 }
 
+func (h *HTTPHandler) listLearnedSkills(w http.ResponseWriter, r *http.Request) {
+	limit, err := strconv.Atoi(defaultString(r.URL.Query().Get("limit"), "0"))
+	if err != nil || limit < 0 || limit > learning.MaxSkillPageSize {
+		http.Error(w, "invalid limit", http.StatusBadRequest)
+		return
+	}
+	resp, err := h.svc.ListLearnedSkills(r.Context(), &mecatlv1.ListLearnedSkillsRequest{Project: r.URL.Query().Get("project"), Cursor: r.URL.Query().Get("cursor"), Limit: int32(limit), State: r.URL.Query().Get("state"), OwnerAgent: r.URL.Query().Get("owner_agent")}) //nolint:gosec // bounded above
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+func (h *HTTPHandler) getLearnedSkill(w http.ResponseWriter, r *http.Request) {
+	resp, err := h.svc.GetLearnedSkill(r.Context(), &mecatlv1.GetLearnedSkillRequest{Project: r.URL.Query().Get("project"), OwnerAgent: r.URL.Query().Get("owner_agent"), Id: r.PathValue("id"), Version: r.URL.Query().Get("version")})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+func (h *HTTPHandler) diffLearnedSkill(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	resp, err := h.svc.DiffLearnedSkillVersions(r.Context(), &mecatlv1.DiffLearnedSkillVersionsRequest{Project: q.Get("project"), OwnerAgent: q.Get("owner_agent"), Id: r.PathValue("id"), FromVersion: q.Get("from"), ToVersion: q.Get("to")})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+type learnedSkillMutationBody struct {
+	Project          string `json:"project"`
+	OwnerAgent       string `json:"owner_agent"`
+	Version          string `json:"version"`
+	ExpectedRevision string `json:"expected_revision"`
+	TargetVersion    string `json:"target_version"`
+}
+
+func (*HTTPHandler) decodeLearnedSkillMutation(w http.ResponseWriter, r *http.Request) (learnedSkillMutationBody, bool) {
+	var body learnedSkillMutationBody
+	if err := decodeLearningJSON(r, 16<<10, &body, false); err != nil || len(body.Project) > 4096 || len(body.OwnerAgent) > learning.MaxSkillOwnerBytes || len(body.Version) > 256 || len(body.ExpectedRevision) > 256 || len(body.TargetVersion) > 256 {
+		http.Error(w, "invalid JSON body", http.StatusBadRequest)
+		return body, false
+	}
+	return body, true
+}
+func (h *HTTPHandler) learnedSkillMutation(w http.ResponseWriter, r *http.Request, operation string) {
+	body, ok := h.decodeLearnedSkillMutation(w, r)
+	if !ok {
+		return
+	}
+	request := &mecatlv1.MutateLearnedSkillRequest{Project: body.Project, OwnerAgent: body.OwnerAgent, Id: r.PathValue("id"), Version: body.Version, ExpectedRevision: body.ExpectedRevision}
+	var resp *mecatlv1.MutateLearnedSkillResponse
+	var err error
+	switch operation {
+	case "activate":
+		resp, err = h.svc.ActivateLearnedSkill(r.Context(), request)
+	case "reject":
+		resp, err = h.svc.RejectLearnedSkill(r.Context(), request)
+	case "archive":
+		resp, err = h.svc.ArchiveLearnedSkill(r.Context(), request)
+	}
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+func (h *HTTPHandler) activateLearnedSkill(w http.ResponseWriter, r *http.Request) {
+	h.learnedSkillMutation(w, r, "activate")
+}
+func (h *HTTPHandler) rejectLearnedSkill(w http.ResponseWriter, r *http.Request) {
+	h.learnedSkillMutation(w, r, "reject")
+}
+func (h *HTTPHandler) archiveLearnedSkill(w http.ResponseWriter, r *http.Request) {
+	h.learnedSkillMutation(w, r, "archive")
+}
+func (h *HTTPHandler) rollbackLearnedSkill(w http.ResponseWriter, r *http.Request) {
+	body, ok := h.decodeLearnedSkillMutation(w, r)
+	if !ok {
+		return
+	}
+	resp, err := h.svc.RollbackLearnedSkill(r.Context(), &mecatlv1.RollbackLearnedSkillRequest{Project: body.Project, OwnerAgent: body.OwnerAgent, Id: r.PathValue("id"), TargetVersion: body.TargetVersion, ExpectedRevision: body.ExpectedRevision})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+func (h *HTTPHandler) listSkillChanges(w http.ResponseWriter, r *http.Request) {
+	limit, err := strconv.Atoi(defaultString(r.URL.Query().Get("limit"), "0"))
+	if err != nil || limit < 0 || limit > learning.MaxSkillPageSize {
+		http.Error(w, "invalid limit", http.StatusBadRequest)
+		return
+	}
+	resp, err := h.svc.ListSkillChanges(r.Context(), &mecatlv1.ListSkillChangesRequest{Project: r.URL.Query().Get("project"), Cursor: r.URL.Query().Get("cursor"), Limit: int32(limit)}) //nolint:gosec // bounded above
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, resp)
+}
+
+func defaultString(value, fallback string) string {
+	if value == "" {
+		return fallback
+	}
+	return value
+}
+
 // listModels handles GET /v1/models. Threads (issue #262) the per-provider
 // live-listing status alongside the model list; ListModels itself triggers
 // the on-demand refresh (when installed), so ProviderStatuses is read AFTER
@@ -1518,12 +1686,26 @@ func (h *HTTPHandler) listWorktrees(w http.ResponseWriter, r *http.Request) {
 // listSessions handles GET /v1/sessions — the stored-session inventory picker
 // (issue #245 Phase 1). Read-only; loads no conversation content.
 func (h *HTTPHandler) listSessions(w http.ResponseWriter, r *http.Request) {
-	rows, err := h.svc.ListSessions(r.Context())
+	pageSize := 0
+	if raw := r.URL.Query().Get("page_size"); raw != "" {
+		parsed, err := strconv.Atoi(raw)
+		if err != nil || parsed < 0 {
+			writeServiceError(w, fmt.Errorf("%w: page_size must be a non-negative integer", ErrInvalidArgument))
+			return
+		}
+		pageSize = parsed
+	}
+	page, err := h.svc.ListSessionPage(r.Context(), ListSessionsPageRequest{
+		PageSize: pageSize, Cursor: r.URL.Query().Get("cursor"),
+	})
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, &mecatlv1.ListSessionsResponse{Sessions: toProtoSessionSummaries(rows)})
+	writeJSON(w, http.StatusOK, &mecatlv1.ListSessionsResponse{
+		Sessions: toProtoSessionSummaries(page.Sessions), NextCursor: page.NextCursor,
+		TotalCount: ClampInt32(page.TotalCount),
+	})
 }
 
 // streamSessionEvents handles GET /v1/sessions/{id}/events — replays a session's
@@ -1655,6 +1837,10 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		// No durable EventLog (cloud-native Phase 3a) is configured: the
 		// StreamSessionEvents read-back surface is not available on this
 		// deployment. 501 (gRPC Unimplemented).
+		writeError(w, http.StatusNotImplemented, err.Error())
+	case errors.Is(err, ErrSessionDeleteUnsupported):
+		writeError(w, http.StatusNotImplemented, err.Error())
+	case errors.Is(err, port.ErrSessionMetadataPagingUnsupported):
 		writeError(w, http.StatusNotImplemented, err.Error())
 	case errors.Is(err, ErrSchedulerNotRunning):
 		// A ScheduleStore is available but no in-process scheduler is wired to

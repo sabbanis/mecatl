@@ -233,7 +233,9 @@ The HTTP adapter wraps the same service. Every event is one SSE `data:` line car
 | `POST /v1/sessions` | `{workspace, mode?, limits?, provider_id?, model_id?, profile?, source_session_id?}` | `201` `{session_id}` |
 | `GET /v1/sessions/{id}` | — | `200` session snapshot |
 | `POST /v1/sessions/{id}/mode` | `{mode}` | `200` updated session snapshot; rejected mid-turn |
-| `DELETE /v1/sessions/{id}` | — | `204` — close the session |
+| `POST /v1/sessions/{id}/rename` | `{title}` | `200` updated snapshot; permanently records operator-authored title provenance |
+| `POST /v1/sessions/{id}/delete` | — | `204` — permanently delete an idle main session and store-managed sidecars; active/awaiting/leased/non-main targets are rejected |
+| `DELETE /v1/sessions/{id}` | — | `204` — close runtime session resources without physically deleting stored history |
 | `POST /v1/sessions/{id}/prompt` | `{text}` | `200` `text/event-stream` |
 | `POST /v1/sessions/{id}/approve` | `{ask_id, verdict}` (`allow_once`\|`allow_always`\|`deny`; legacy `{ask_id, allow}` bool still accepted) | `204` |
 | `POST /v1/sessions/{id}/cancel` | — | `204` |
@@ -384,6 +386,8 @@ In addition, `contracts/proto/mecatl/driver/v1/session_lease.proto` and `event_l
 ### Key properties of the driver protocol
 
 **Snapshot semantics vs live semantics.** `SessionStoreService`, `SkillSourceService`, and `AgentSourceService` use snapshot semantics — the harness resolves once at build time and does not reload. `CommandSourceService` and `MemoryStoreService` have live semantics — the harness consults them on every call.
+
+**Skill assets stay logical.** `ListSkillAssets` advertises names; `ReadSkillAsset` supplies one payload when the model calls `Skill` with `{name, asset}`. The harness returns bounded textual content directly and does not materialize driver bytes, create workspace read roots, or honor `executable` by creating a file. A script that must run needs an explicit workspace-file workflow under normal permissions.
 
 **Opaque payloads.** `SessionStoreService` round-trips session snapshots as opaque format-tagged bytes (`format = "sessnap-json/1"`). The driver stores and returns the envelope verbatim; it never decodes it. A conforming driver must accept payloads up to 64 MiB.
 

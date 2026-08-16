@@ -34,6 +34,13 @@ $ go run ./cmd/mecated serve --openai --workspace "$PWD"
 - `mecated --help-all` — the exhaustive serve-compatible flag reference (every
   public flag a `mecated serve` invocation accepts), plus a note pointing to
   `mecated acp --help-all` for the ACP-scoped subset.
+- `mecated mcp login SERVER [--no-browser] [--permission-config PATH ...]` — authorize one operator-configured
+  OAuth server backed by a mutable local credential store. Login uses the same
+  conventional operator settings and explicit-file precedence as `serve`; the
+  repeatable `--permission-config` selects trusted config files and never carries an
+  OAuth value. This is the only command
+  that installs an OAuth presenter; `--help` performs no settings, environment,
+  browser, listener, or network work.
 - `mecated import --help` — offline Codex/Claude Code session, skill, and
   workspace-file import flags. The import does not start a listener or provider.
 
@@ -130,13 +137,13 @@ explicitly enable the imported skills directory.
 | `--user-model-dir` | `""` | directory for the user-scoped, **cross-project** user-model store of durable FACTS about the operator (empty → the conventional `$XDG_CONFIG_HOME/mecatl/usermodel`, fallback `~/.config/mecatl/usermodel`). Exposes the user memory tools and the live bounded operator profile in the volatile system suffix. **See the user-model note below.** |
 | `--no-user-model` | `false` | disable the user model entirely (explicit tools and live operator profile). |
 | `--user-model-review` | `false` | deprecated compatibility alias for operator `learning.mode: auto`; runs the synchronous completed-trajectory user-model reviewer after eligible clean completions and never reopens the user session. |
-| `--user-model-review-interval` | `1` | process-wide completed-session debounce for `learning.mode: auto` and the compatibility alias (1 = every eligible completion). |
+| `--user-model-review-interval` | `1` | deprecated post-threshold downsampler for weighted automatic admission. `0`/`1` are inert; hard genuine-current-prompt triggers bypass it. Use `learning.automatic` for process-local budgets. |
 | `--user-model-consolidate-interval` | `0` | independently authorize process-wide background consolidation (dream) of the cross-project user-model store's `user/` namespace; 0 disables. A project `learning.mode: off` cannot suppress a positive operator schedule. |
 | `--permissions-conventional` | `true` | auto-discover the per-project permission config (`<workspace>/.mecatl/settings.yaml`, and with `--import-claude-permissions` also `<workspace>/.claude/settings.json`) plus the user-global file. **Re-resolved per session** against each session's workspace root. ON and inert until such a file exists. **See the permission-config note below.** |
 | `--import-claude-permissions` | `false` | also import Claude-Code `settings.json` permissions (project + user). **Lossy** (fail-safe): see the table below. |
 | `--trust-project` | `false` | honour the discovered **project authority set**: the project's ALLOW rules (its deny/ask are always honoured regardless), its project persona/soul at `<workspace>/.mecatl/soul.md`, AND the **project tier** of agent definitions, slash commands, skills, and project rules (`.claude/rules`, issue #329) (`<workspace>/.mecatl/*`, `<workspace>/.claude/*`). It also gates the **read-only subagent/team-member shell**: on an untrusted workspace, Subagent children and read-only members run Bash-less (Read/Grep/Glob only — creating their worktree runs a `git` checkout over the repo's `.git`, where a tracked `.gitattributes` can name filter drivers that execute code with nobody having run anything); mutating members and Parallel branches keep their hardened shells (force-copy forks are created by a pure file copy with no git invocation, and their git afterwards runs over the copied repo — the same exposure as the operator's own session). OFF by default (the safe stance) — an untrusted repo's grants, persona, agents, commands, skills, rules, and subagent shell are withheld; the agent still runs in "ask the human" mode (see the workspace-trust note below). **See the permission-config, persona/soul, and workspace-trust notes below.** |
 | `--permission-config` | `""` | path to a YAML permission-config file loaded at the **user (fully-trusted) scope** (**repeatable**). Always loaded regardless of `--permissions-conventional`. |
-| `--posture` | `strict` | **OPERATOR POSTURE LADDER.** One ordered tier governs the whole prompt/trust posture: `strict` (default, fail-closed: prompt for the mutate-ask floor, no posture-derived trust) → `trusted` (interactive roots trust the project; still prompts) → `auto` (allow-all main + children, child prompt-injection defence ON) → `yolo` (also loosens child substitution; defence OFF). `--yolo` and `--trust-project` are aliases; the higher tier wins. On a **headless** root posture never raises `TrustProject`: explicit `--trust-project`, `trustedWorkspaces:`, or undrifted remembered trust admits BOTH repo steering and the read-only child shell; without a trust source, auto/yolo gets neither. On an interactive root, trusted/auto/yolo retain the historical trust floor. The resolved tier and the root-aware `trust_project`/`project_ingestion` decision are emitted as the structured `operator posture` startup diagnostic by `mecated serve` (once, before serving). See [ADR 0095](../adr/0095-root-aware-project-trust.md) and [ADR 0096](../adr/0096-diagnostic-only-posture-reporting.md). |
+| `--posture` | `strict` | **OPERATOR POSTURE LADDER.** One ordered tier governs the whole prompt/trust posture: `strict` (default, fail-closed: prompt for the mutate-ask floor, no posture-derived trust) → `trusted` (interactive roots trust the project; still prompts) → `auto` (allow-all main + children, child prompt-injection defence ON) → `yolo` (also loosens child substitution; defence OFF). `--yolo` and `--trust-project` are aliases; the higher tier wins. On a **headless** root posture never raises `TrustProject`: explicit `--trust-project`, `trustedWorkspaces:`, or undrifted remembered trust admits BOTH repo steering and the read-only child shell; without a trust source, auto/yolo gets neither. On an interactive root, trusted/auto/yolo retain the historical trust floor. The resolved tier and the root-aware `trust_project`/`project_ingestion` decision are emitted as the structured `operator posture` startup diagnostic by `mecated serve` (once, before serving). See [ADR 0095](../adr/0095-root-aware-project-trust.md) and [ADR 0202](../adr/0202-diagnostic-only-posture-reporting.md). |
 | `--reasoning-effort` | `auto` | **OPERATOR REASONING-EFFORT TIER** ([ADR 0055](../adr/0055-reasoning-effort.md)). The default reasoning depth for every session: `auto` (default — unset; do **not** send a reasoning-effort field, so the provider's own default applies) or one of `low`/`medium`/`high`/`xhigh`/`max`. **OpenAI** supports `low`/`medium`/`high` only, so `xhigh`/`max` are **clamped down to `high`** (with a `WARN` naming the requested and clamped-to values); **Anthropic** maps all five. Empty = unset (honours the operator-global `reasoning-effort:` setting if present). A per-session `CreateSession.reasoning_effort` **out-ranks** this default. A model the catalog/live source says has **no** reasoning support drops the effort (with a `WARN`); an unknown model fails open (sends it). Operator-tier only: a project-tier `reasoning-effort:` key is ignored with a `WARN` (a project cannot raise the model's reasoning spend). CLI out-ranks the user-global setting. An unknown value fail-softs to unset with a `WARN`. It binds the agent and its subagents, never the harness's internal classifier calls. **Mid-conversation change:** a running session's effort is changed by *forking* it — `ForkSession` with a `reasoning_effort` override (ADR 0068) creates a peer session on the new tier that **keeps the transcript** (the mecatui `/effort` picker does this; provider/model always inherit). |
 | `--no-prompt-cache` | `false` | **PROVIDER-SIDE PROMPT CACHING** ([ADR 0100](../adr/0100-provider-prompt-caching.md)) is **ON by default**: Anthropic gets a 4-slot `cache_control` breakpoint budget over the growing conversation (not just the system prompt), and OpenAI/OpenRouter get `prompt_cache_key` (+ OpenAI's model-gated `prompt_cache_retention`, or OpenRouter's `cache_control` field). Pass `--no-prompt-cache` to disable it entirely — every adapter's cache dialect degrades to `None` and Anthropic drops its three new breakpoints, reproducing the pre-ADR-0100 wire exactly (only the pre-existing StablePrefix breakpoint survives). The dialect is gated on `(provider id, resolved base URL)`, never the id alone, so pointing `--openai-base-url` at a non-canonical compatible endpoint (vLLM/LiteLLM) already gets `None` — see [openai-compatible.md](./openai-compatible.md). |
 | `--anthropic-cache-ttl` | `""` (API default, `5m`) | TTL stamped on **every** Anthropic ephemeral `cache_control` breakpoint (uniform across all 4 slots — the rule that makes the documented TTL-ordering 400s unreachable). Accepts `5m` or `1h`; empty (default) omits the `ttl` field entirely, so the API's own 5-minute default applies. Any other value is ignored with a `WARN` (fires at most once per process). No effect on OpenAI/OpenRouter/openaichat (Anthropic-only). |
@@ -236,7 +243,7 @@ mailbox). See the delegation-capabilities note below.
 > (checked at the round boundary, so it genuinely prevents the retry round) and
 > `--max-run-tokens` as each member's CUMULATIVE ceiling (it lives on the member's session
 > and accumulates across rounds, including the retry round) — on top of the built-in round
-> cap and per-member turn budget. Mechanism: `docs/adr/0077-resume-a-failed-subagent.md`.
+> cap and per-member turn budget. Mechanism: `docs/adr/0200-resume-a-failed-subagent.md`.
 
 #### Enabling web search
 
@@ -392,6 +399,19 @@ window (retryable) and the **post-first-chunk** stream (terminal).
 | `--toolhive` | `true` | discover MCP servers from the **running ToolHive workloads** (the embedded ToolHive library lists already-running workloads and reads their HTTP proxy URLs; mecatl **never** starts or spawns a workload). Fails soft to zero servers when no container runtime is reachable. Same trust class as `--mcp-server`. |
 | `--toolhive-group` | `""` | ToolHive group to discover workloads from (empty → the `default` group). Only consulted with `--toolhive`. |
 
+Operator-tier `mcp.servers` profiles are wired through the same resolver for login and
+serve. For a mutable local OAuth profile, keep the client secret and canonical base64
+32-byte store key in referenced `MECATL_*` variables, then run
+`mecated mcp login SERVER [--no-browser] [--permission-config PATH ...]`. Subsequent serve
+processes warm-restore the
+encrypted record; lazy access-token refresh persists a rotated refresh token for the next
+restart. Serving, ACP, mecatequi, and mecak8s never install a browser presenter. A missing
+local credential degrades safely and prints the login command; an environment-backed
+profile is read-only and must be provisioned externally. Rolling back to `none` or
+`static_bearer` is a whole-profile settings change followed by restart. See
+[configuration](configuration.md#global-mcp-authentication-profiles) and
+[ADR 0113](../adr/0113-operator-mcp-auth-profiles.md).
+
 #### Security & transport (auth, TLS, rate limiting)
 
 All off by default (the loopback single-user posture); set them **before** any
@@ -410,8 +430,8 @@ non-loopback bind — see the trust note below.
 | `--oidc-max-jwks-staleness` | `1h` | maximum age of a last-good JWKS when refresh cannot reach the IdP. `0` deliberately disables the bound; a negative duration is rejected. Once stale, a failed refresh returns 503 rather than accepting with stale keys. |
 
 The four OIDC flags are identical on `mecak8s`. Two things to be clear about
-([ADR 0100](../adr/0100-caller-identity-threading.md),
-[ADR 0101](../adr/0101-bounded-jwks-staleness.md)):
+([ADR 0204](../adr/0204-caller-identity-threading.md),
+[ADR 0205](../adr/0205-bounded-jwks-staleness.md)):
 
 - **Attribution, not isolation.** Sessions, schedules and durable event-log
   records gain an owner; **nothing is refused** on identity grounds. Any
@@ -902,17 +922,15 @@ description cap and the on-activation body truncation apply to **every** source,
 including the conventional ones. (An OS-level sandbox around tool execution remains
 future work — see the deferral note in the architecture doc.)
 
-A **discovered** skill's own directory (the one holding its `SKILL.md`) also
-becomes **read-visible** to the model — `Read` accepts that directory's absolute
-path even when it lies outside the workspace (e.g. `~/.claude/skills/<name>`), so
-an activated skill's bundled `references/`, `scripts/`, and `assets/` files are
-actually reachable (the `Skill` tool's result names the base directory). This is
-**read-only and per-skill**: `Write`/`Edit` still refuse those paths, `Glob`/`Grep`
-never enumerate them, a shadowed skill's directory or a sibling under a skills
-source never becomes readable, an untrusted workspace's project-tier skills are
-never discovered and therefore never readable, and the `SkillDraft` quarantine dir
-is never a source so it can never enter the read allowlist. Bundled scripts run
-via Bash by absolute path, under the same permission gates Bash always has.
+A discovered skill's bundled assets remain in the **logical SkillSource namespace**;
+they do not become workspace files. Activating the skill lists bounded logical names.
+To read a textual reference, the model calls `Skill` again with the exact `name` and
+`asset`; that one payload is returned after name, size, UTF-8, and NUL validation.
+This works for local and remote skills, including `no-fs` sessions. `Read`, `Stat`,
+`Glob`, `Grep`, and Bash receive no skill-derived path or access grant, and executable
+metadata does not cause implicit materialization or execution. Skill authors whose
+workflow truly needs a script on disk must provide an explicit step to create or obtain
+it inside the workspace; the resulting Write/Bash calls follow normal permissions.
 
 #### Path forms
 
@@ -925,8 +943,7 @@ accepts a path in one of two forms:
   is the same physical file a relative path would reach, addressed by its
   absolute alias, and reduced to its root-relative form before any operation. An
   absolute path that resolves OUTSIDE the workspace root is rejected with
-  `ErrPathEscape`. (For `Read`/`Stat` only, an absolute path under an activated
-  skill's base directory is also accepted — the read-only carve-out above.)
+  `ErrPathEscape`.
 
 A symlink inside the workspace whose target resolves OUTSIDE the workspace is
 rejected at resolution time, whether addressed relatively or absolutely —

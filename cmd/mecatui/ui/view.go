@@ -82,21 +82,14 @@ func (m Model) View() tea.View {
 // permission-modal card (generic) or the full-screen scrollable plan-review
 // view (a plan ask), or the conversation.
 func (m Model) renderBody() string {
+	if m.phase == phaseAwaitingApproval {
+		return m.renderApprovalBody()
+	}
 	switch {
+	case m.sessionDetailsOpen:
+		return renderSessionDetails(m.deps.Theme, m.sessionDetails(), m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.showHelp:
 		return renderHelpOverlay(m.deps.Theme, m.caps, m.width, m.vp.Height(), m.helpKeyMarkings())
-	case m.phase == phaseAwaitingApproval:
-		if isPlanAsk(m.ask.Tool) {
-			// A plan ask fills the conversation region with a dedicated SCROLLABLE
-			// viewport (planVP) instead of the small centered card — the plan is
-			// read in full, no collapse, no ctrl+t gate. planVP is populated at the
-			// reducer seams (openPlanReviewView: the PermissionAskMsg reducer, the
-			// advanceAsk queued-successor path, relayout/onResize geometry changes)
-			// so the render path is a pure read of m.planVP.View(). See
-			// renderPlanReviewView / openPlanReviewView.
-			return m.renderPlanReviewView(m.ask)
-		}
-		return m.rend.renderPermissionModal(m.ask, m.expandTools, len(m.askQueue), m.width, m.vp.Height())
 	case m.mcp.view != mcpNone:
 		return renderMCPOverlay(m.deps.Theme, m.mcp, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.team.view != teamNone:
@@ -118,7 +111,7 @@ func (m Model) renderBody() string {
 	case m.worktrees.view != worktreesNone:
 		return renderWorktreesOverlay(m.deps.Theme, m.worktrees, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.schedule.view != scheduleNone:
-		return renderScheduleOverlay(m.deps.Theme, m.schedule, m.caps, m.deps.Replayer != nil, m.helpKeyMarkings(), m.width, m.vp.Height())
+		return renderScheduleOverlay(m.deps.Theme, m.schedule, m.caps, m.deps.Transcript != nil, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.sessions.view != sessionsNone:
 		return renderSessionsOverlay(m.deps.Theme, m.sessions, m.caps, m.sessionID, m.rend.vpView(m.vp), m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.phase == phaseIdle && m.conv.isEmpty() && !m.restartedThisRun:
@@ -128,11 +121,35 @@ func (m Model) renderBody() string {
 	}
 }
 
+// renderApprovalBody owns the phaseAwaitingApproval arm of renderBody (extracted
+// to keep renderBody under the cyclomatic bound). The full-screen ask-args view
+// (issue #488) owns the body while open — discriminated BEFORE the plan/generic
+// modal arms (the phase stays phaseAwaitingApproval; argsViewOpen is Model state
+// alongside it).
+func (m Model) renderApprovalBody() string {
+	if m.argsViewOpen {
+		return m.renderAskArgsView(m.ask)
+	}
+	if isPlanAsk(m.ask.Tool) {
+		// A plan ask fills the conversation region with a dedicated SCROLLABLE
+		// viewport (planVP) instead of the small centered card — the plan is
+		// read in full, no collapse, no ctrl+t gate. planVP is populated at the
+		// reducer seams (openPlanReviewView: the PermissionAskMsg reducer, the
+		// advanceAsk queued-successor path, relayout/onResize geometry changes)
+		// so the render path is a pure read of m.planVP.View(). See
+		// renderPlanReviewView / openPlanReviewView.
+		return m.renderPlanReviewView(m.ask)
+	}
+	return m.rend.renderPermissionModal(m.ask, m.expandTools, len(m.askQueue), m.width, m.vp.Height(), m.askVPOffset)
+}
+
 // renderHeader is the top bar: session id · model · mode · server.
 func (m Model) renderHeader() string {
 	sid := m.sessionID
 	if sid == "" {
 		sid = "connecting…"
+	} else {
+		sid = "#" + sessionDigest(sid)[:8]
 	}
 	// next: badge — the pendingNext (apply-on-next-create) selection, shown ONLY when
 	// it is set AND differs from the effective model this session runs on (same model

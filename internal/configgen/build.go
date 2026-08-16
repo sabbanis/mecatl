@@ -28,6 +28,7 @@ func BuildModel(docs Docs) *Model {
 		learningSubtree(docs),
 		modelsSubtree(docs),
 		openRouterSubtree(docs),
+		mcpSubtree(docs),
 	}}
 }
 
@@ -149,6 +150,15 @@ func learningSubtree(docs Docs) *Subtree {
 	fields := fieldsOf("LearningSection", permconfig.LearningSection{}, docs)
 	fields[0].ExampleValue = "off"
 	fields[0].Default = "off"
+	fields[1].ExampleValue = "balanced"
+	fields[1].Default = "balanced"
+	automatic := fieldsOf("LearningAutomaticSection", permconfig.LearningAutomaticSection{}, docs)
+	automatic[0].Type, automatic[1].Type = "duration", "duration"
+	defaults := []string{"10m", "1h", "8", "100000", "4", "50000"}
+	for i := range automatic {
+		automatic[i].ExampleValue, automatic[i].Default = defaults[i], defaults[i]
+	}
+	fields[2].Nested = automatic
 	return &Subtree{
 		Key: "learning", Tier: TierProject,
 		Doc:          "Optional completed-trajectory observation policy. Off means no automatic completed-trajectory reflection or review; project settings may only tighten the operator ceiling off < review < auto. Separately configured consolidation schedules are independent.",
@@ -268,6 +278,126 @@ func docFor(docs Docs, key, fallback string) string {
 		return d
 	}
 	return fallback
+}
+
+func mcpSubtree(docs Docs) *Subtree {
+	fields := fieldsOf("MCPSection", permconfig.MCPSection{}, docs)
+	servers := fields[0]
+	servers.SkeletonCollapse = true
+	servers.Nested = fieldsOf("MCPServerProfile", permconfig.MCPServerProfile{}, docs)
+	for _, serverField := range servers.Nested {
+		if serverField.Key != "auth" {
+			continue
+		}
+		serverField.Nested = fieldsOf("MCPAuthProfile", permconfig.MCPAuthProfile{}, docs)
+		for _, authField := range serverField.Nested {
+			switch authField.Key {
+			case "static_bearer":
+				authField.Nested = fieldsOf("MCPStaticBearerProfile", permconfig.MCPStaticBearerProfile{}, docs)
+			case "oauth":
+				authField.Nested = mcpOAuthFields(docs)
+			}
+		}
+	}
+	return &Subtree{
+		Key:          "mcp",
+		Tier:         TierOperator,
+		Doc:          "Strict OPERATOR-TIER named global Streamable HTTP MCP servers. Authentication is a closed none/static_bearer/oauth union; OAuth supports preregistered or CIMD clients and local or environment credentials. All secret-shaped values are MECATL_* environment references, never values in YAML. Project mcp blocks are ignored with a value-free warning.",
+		CommentedOut: true,
+		Fields:       fields,
+		Example: []string{
+			"mcp:",
+			"  servers:",
+			"    - name: public",
+			"      url: https://mcp.example.com/public",
+			"      auth:",
+			"        mode: none",
+			"    - name: static_api",
+			"      url: https://mcp.example.com/static",
+			"      auth:",
+			"        mode: static_bearer",
+			"        static_bearer:",
+			"          token_env: MECATL_MCP_STATIC_TOKEN",
+			"    - name: github",
+			"      url: https://mcp.example.com/mcp",
+			"      auth:",
+			"        mode: oauth",
+			"        oauth:",
+			"          profile: work",
+			"          principal: alice@example.com",
+			"          issuer: https://id.example.com",
+			"          client:",
+			"            mode: preregistered",
+			"            preregistered:",
+			"              id: mecatl-local",
+			"              secret_env: MECATL_MCP_GITHUB_CLIENT_SECRET",
+			"          scopes: [mcp.read, mcp.write]",
+			"          request_refresh_token: true",
+			"          credentials:",
+			"            mode: local",
+			"            local:",
+			"              root: /home/alice/.local/state/mecatl/credentials",
+			"              key_env: MECATL_MCP_CREDENTIAL_KEY",
+			"          network:",
+			"            additional_origins: []",
+			"            private_origins: []",
+			"            max_redirects: 0",
+			"    - name: cluster_tools",
+			"      url: https://tools.example.com/mcp",
+			"      auth:",
+			"        mode: oauth",
+			"        oauth:",
+			"          profile: cluster",
+			"          principal: service-account:mecatl",
+			"          issuer: https://issuer.example.com",
+			"          client:",
+			"            mode: cimd",
+			"            cimd:",
+			"              document_url: https://client.example.com/mecatl.json",
+			"          scopes: [mcp.read]",
+			"          request_refresh_token: false",
+			"          credentials:",
+			"            mode: environment",
+			"            environment:",
+			"              credential_env: MECATL_MCP_CLUSTER_CREDENTIAL",
+			"              allow_process_local_refresh: false",
+			"          network:",
+			"            additional_origins: [https://client.example.com]",
+			"            private_origins: []",
+			"            max_redirects: 0",
+		},
+	}
+}
+
+func mcpOAuthFields(docs Docs) []*Field {
+	fields := fieldsOf("MCPOAuthProfile", permconfig.MCPOAuthProfile{}, docs)
+	for _, field := range fields {
+		switch field.Key {
+		case "client":
+			field.Nested = fieldsOf("MCPOAuthClientProfile", permconfig.MCPOAuthClientProfile{}, docs)
+			for _, variant := range field.Nested {
+				switch variant.Key {
+				case "preregistered":
+					variant.Nested = fieldsOf("MCPPreregisteredClientProfile", permconfig.MCPPreregisteredClientProfile{}, docs)
+				case "cimd":
+					variant.Nested = fieldsOf("MCPCIMDClientProfile", permconfig.MCPCIMDClientProfile{}, docs)
+				}
+			}
+		case "credentials":
+			field.Nested = fieldsOf("MCPOAuthCredentialProfile", permconfig.MCPOAuthCredentialProfile{}, docs)
+			for _, variant := range field.Nested {
+				switch variant.Key {
+				case "local":
+					variant.Nested = fieldsOf("MCPLocalCredentialProfile", permconfig.MCPLocalCredentialProfile{}, docs)
+				case "environment":
+					variant.Nested = fieldsOf("MCPEnvironmentCredentialProfile", permconfig.MCPEnvironmentCredentialProfile{}, docs)
+				}
+			}
+		case "network":
+			field.Nested = fieldsOf("MCPOAuthNetworkProfile", permconfig.MCPOAuthNetworkProfile{}, docs)
+		}
+	}
+	return fields
 }
 
 func openRouterSubtree(docs Docs) *Subtree {

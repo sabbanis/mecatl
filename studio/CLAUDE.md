@@ -3,7 +3,7 @@
 A local web client for the harness: chat with tool-call and approval cards, plus
 panels for the provider, MCP gateway, semantic model routing, skills, memory, and
 scheduled tasks. It talks to `mecated` over the SAME public HTTP/SSE API any
-external client would use — see [ADR 0110](../docs/adr/0110-studio-module.md).
+external client would use — see [ADR 0225](../docs/adr/0225-studio-module.md).
 
 **This module is not a Go module.** It is not in `go.work`, the layering DAG, the
 depguard allowlists, or the api-compat gate, and `task test` does not run it.
@@ -13,7 +13,7 @@ depguard allowlists, or the api-compat gate, and `task test` does not run it.
 Use the root Taskfile's `studio:` namespace — not `npm run` from inside here:
 
 ```sh
-task build            # FIRST: studio drives ../bin/mecated, so it must exist
+task build            # FIRST for managed mode; external mode does not need the local binary
 task studio:dev       # start Studio + its mecated supervisor (background) at http://localhost:3000
 task studio:stop      # stop the web server, the controller, and the supervised mecated
 task studio:test      # build + the test suite (what CI runs)
@@ -24,14 +24,16 @@ task studio:typecheck # tsc --noEmit
 ## Shape
 
 - `app/` — the client (a single `page.tsx` view plus `globals.css`).
+- `app/api/` + `lib/server-proxy.ts` — server-side same-origin proxies. External
+  mode injects `MECATL_AUTH_TOKEN`; managed mode delegates to the controller.
 - `scripts/local-controller.mjs` — the supervisor on `127.0.0.1:8788`. Spawns and
-  restarts `../bin/mecated`, owns provider selection and the MCP gateway OAuth
-  dance, and reports the resolved workspace on `/status`.
-- `scripts/dev-local.mjs` — starts the controller and the web server together.
-- `worker/index.ts` — same-origin proxies: `/api/mecatl/*` → mecated (8081),
-  `/api/mecatl-control/*` → the controller (8788).
-- `tests/rendered-html.test.mjs` — builds the app, asserts it server-renders, and
-  pins the source invariants below.
+  restarts `../bin/mecated` on a free port, owns MCP gateway OAuth, and reports
+  the resolved workspace on `/status`.
+- `scripts/dev-local.mjs` — starts the controller and Next server in managed
+  mode; with `MECATL_BASE_URL`, starts Next only.
+- `lib/protocol.ts` — the typed runtime decoder for daemon wire JSON.
+- `tests/rendered-html.test.mjs` — server rendering, authenticated external
+  proxy, control-policy, egress-policy, and wire-decoder behavior tests.
 
 ## Rules that have teeth
 
@@ -39,10 +41,14 @@ task studio:typecheck # tsc --noEmit
   root from its own location and reports it on `/status`; the client refuses to
   open a session until it has one. Do not reintroduce a literal path — the app
   then works on exactly one machine (it did, once).
-- **The controller holds no gateway credential.** ToolHive's `thv llm proxy`
-  injects a token per request. An OpenRouter key, when the operator connects one,
-  lives in the controller's memory for the process lifetime and is never written
-  to disk.
+- **Provider credentials never cross the browser/controller boundary.** Select a
+  managed provider with `MECATL_STUDIO_PROVIDER`; mecated resolves its key from
+  the normal auth file. External mode leaves provider configuration remote.
+- **Daemon traffic is authenticated.** Managed mode generates a bearer token and
+  chooses a free port; external mode injects `MECATL_AUTH_TOKEN` server-side.
+- **Controller mutations are server-only.** Keep the loopback Host/Origin gate
+  and `x-mecatl-studio-request` check. Browser input must not select arbitrary
+  plain-HTTP MCP egress.
 - **The memory panel is read-only.** Mecatl curates its own memory through
   injection-scanned tool calls; a value typed into the UI would land in turn-0
   context without passing that check.
@@ -52,10 +58,8 @@ task studio:typecheck # tsc --noEmit
 - **Skills stay project-scoped.** `--skills-dir` only; never
   `--skills-conventional`, which would widen discovery to the user-global tree.
 
-Each of those has an assertion in `tests/rendered-html.test.mjs`. If you change
-the behavior deliberately, change the test in the same commit — a stale assertion
-that no longer matches the code is how the routing invariant rotted before this
-module moved in-repo.
+These boundaries have behavior tests. If you change one deliberately, update the
+test at the observable seam; do not replace it with a source-text regex.
 
 ## Gotcha
 

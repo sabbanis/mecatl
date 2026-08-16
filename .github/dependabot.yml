@@ -45,7 +45,7 @@ updates:
           - minor
           - patch
 
-  # Opt-in caller-identity adapter module (ADR 0103; not a provider).
+  # Opt-in caller-identity adapter module (ADR 0206; not a provider).
   - package-ecosystem: gomod
     directory: "/authn/oidc"
     schedule:
@@ -118,6 +118,38 @@ updates:
       - dependencies
     groups:
       go-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  # Node applications. Keep the public docs site and Studio's server-side
+  # proxy/runtime dependencies on the same weekly vulnerability-update rhythm.
+  - package-ecosystem: npm
+    directory: "/website"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+    groups:
+      npm-minor-patch:
+        update-types:
+          - minor
+          - patch
+
+  - package-ecosystem: npm
+    directory: "/studio"
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "chore(deps)"
+    labels:
+      - dependencies
+    groups:
+      npm-minor-patch:
         update-types:
           - minor
           - patch

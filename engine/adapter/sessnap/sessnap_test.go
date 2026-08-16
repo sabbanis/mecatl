@@ -90,6 +90,9 @@ func assertEquivalent(t *testing.T, got, want *session.Session) {
 	if got.Title != want.Title {
 		t.Errorf("Title = %q, want %q", got.Title, want.Title)
 	}
+	if got.TitleProvenance != want.TitleProvenance {
+		t.Errorf("TitleProvenance = %q, want %q", got.TitleProvenance, want.TitleProvenance)
+	}
 	if got.Usage != want.Usage {
 		t.Errorf("Usage = %+v, want %+v", got.Usage, want.Usage)
 	}
@@ -761,7 +764,7 @@ func TestLoadV1SnapshotMissingLastErrorKeyLoadsEmpty(t *testing.T) {
 }
 
 // TestSnapshotEnvironmentRefRoundTrip proves a non-zero EnvironmentRef survives
-// Marshal→Unmarshal (ADR 0106, issue #462 phase 3).
+// Marshal→Unmarshal (ADR 0214, issue #462 phase 3).
 func TestSnapshotEnvironmentRefRoundTrip(t *testing.T) {
 	s := session.New("s1", session.ModeDefault, "/ws", session.Limits{MaxTurns: 1}, time.Unix(1700000000, 0).UTC())
 	s.EnvironmentRef = session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/ws"}

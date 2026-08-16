@@ -183,6 +183,11 @@ type Resolver struct {
 	// (explicit files) out-ranks user-global (first-non-nil keeps CLI).
 	operatorOpenRouter *OpenRouterSection
 
+	// operatorMCP is the first complete operator-tier mcp: subtree. Explicit CLI
+	// files are visited before user-global settings, so precedence is whole-block,
+	// first-non-nil; project mcp blocks are warning-only and never captured.
+	operatorMCP *MCPSection
+
 	mu    sync.RWMutex
 	cache map[string]*cacheEntry // keyed by ws.Root()
 }
@@ -234,6 +239,15 @@ func (r *Resolver) OperatorPlanModeAutoApprove() bool {
 	return r.operatorPlanModeAutoApprove
 }
 
+// OperatorLearning returns the complete operator-tier learning policy. Callers
+// must treat it as immutable.
+func (r *Resolver) OperatorLearning() *LearningSection {
+	if r == nil {
+		return nil
+	}
+	return r.operatorLearning
+}
+
 // OperatorLearningMode returns the operator-tier learning mode token, or empty
 // when no learning subtree was configured.
 func (r *Resolver) OperatorLearningMode() string {
@@ -246,10 +260,24 @@ func (r *Resolver) OperatorLearningMode() string {
 // ProjectLearningModes returns project-tier mode tokens in precedence order.
 // Composition applies them only as autonomy ceilings (off < review < auto).
 func (r *Resolver) ProjectLearningModes(ws tool.WorkspaceReader) []string {
+	settings := r.ProjectLearningSettings(ws)
+	modes := make([]string, 0, len(settings))
+	for _, setting := range settings {
+		if token := strings.TrimSpace(setting.Mode); token != "" {
+			modes = append(modes, token)
+		}
+	}
+	return modes
+}
+
+// ProjectLearningSettings returns strict project learning subtrees in precedence
+// order. Composition applies only mode and sensitivity as tighten-only ceilings;
+// Automatic is operator-only and ignored with a warning.
+func (r *Resolver) ProjectLearningSettings(ws tool.WorkspaceReader) []*LearningSection {
 	if r == nil || ws == nil {
 		return nil
 	}
-	var modes []string
+	var result []*LearningSection
 	for _, src := range r.sources {
 		if src.claude {
 			continue
@@ -259,12 +287,11 @@ func (r *Resolver) ProjectLearningModes(ws tool.WorkspaceReader) []string {
 			continue
 		}
 		cfg, err := parseYAML(data)
-		if err != nil || cfg.Learning == nil || strings.TrimSpace(cfg.Learning.Mode) == "" {
-			continue
+		if err == nil && cfg.Learning != nil {
+			result = append(result, cfg.Learning)
 		}
-		modes = append(modes, strings.TrimSpace(cfg.Learning.Mode))
 	}
-	return modes
+	return result
 }
 
 // OperatorModelSlots returns the operator-tier models: subtree (user-global + CLI
@@ -290,6 +317,15 @@ func (r *Resolver) OperatorOpenRouter() *OpenRouterSection {
 		return nil
 	}
 	return r.operatorOpenRouter
+}
+
+// OperatorMCP returns the complete operator-tier mcp subtree, or nil when absent.
+// It is metadata only and can never originate from project settings.
+func (r *Resolver) OperatorMCP() *MCPSection {
+	if r == nil {
+		return nil
+	}
+	return r.operatorMCP
 }
 
 // OperatorModelPolicy returns the operator-tier models: subtree (user-global + CLI
@@ -543,6 +579,11 @@ func (r *Resolver) loadProjectRules(ws tool.WorkspaceReader) ([]governance.Rule,
 				"openrouter: IGNORING a project-tier openrouter: block (operator-tier only — a project repo cannot steer the OpenRouter downstream provider; set openrouter in your user-global settings.yaml)",
 				"file", src.path, "root", ws.Root())
 		}
+		if cfg.MCP != nil {
+			r.diag.Log(context.Background(), port.LevelWarn,
+				"mcp: IGNORING a project-tier mcp: block (operator-tier only — a project repo cannot configure global MCP servers)",
+				"file", src.path, "root", ws.Root())
+		}
 		// models: is project-overridable WITHIN AN OPERATOR ALLOWLIST (ADR 0030 Phase 4),
 		// otherwise IGNORED. captureProjectModels applies the full gate (allowlist key
 		// stripped + WARN; opt-in by operator allowlist; trust gate) and merges the
@@ -736,6 +777,8 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 		r.captureModels(cfg.Models)
 		// Operator-tier openrouter: same first-non-nil-keeps-CLI discipline (issue #480).
 		r.captureOpenRouter(cfg.OpenRouter)
+		// Operator-tier MCP profiles: capture the complete first block; never field-merge.
+		r.captureMCP(cfg.MCP)
 	}
 
 	if !r.opts.Conventional {
@@ -767,6 +810,8 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 				r.captureModels(cfg.Models)
 				// User-global openrouter: captured only if no higher CLI file already did.
 				r.captureOpenRouter(cfg.OpenRouter)
+				// User-global MCP: captured only if no higher CLI file already did.
+				r.captureMCP(cfg.MCP)
 			}
 		}
 	}
@@ -875,6 +920,15 @@ func (r *Resolver) captureOpenRouter(s *OpenRouterSection) {
 		return
 	}
 	r.operatorOpenRouter = s
+}
+
+// captureMCP records the first complete operator-tier mcp block. It is called
+// only by loadUserRules, whose explicit-files-before-user order defines precedence.
+func (r *Resolver) captureMCP(s *MCPSection) {
+	if s == nil || r.operatorMCP != nil {
+		return
+	}
+	r.operatorMCP = s
 }
 
 // specOf reconstructs a human-readable "Tool(pattern)" spec from a rule, for the

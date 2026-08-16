@@ -1,6 +1,6 @@
 package agent_test
 
-// Review finding 2 (issue #368, ADR 0102): a durable delegation id previously
+// Review finding 2 (issue #368, ADR 0212): a durable delegation id previously
 // derived ONLY from the provider tool-call id — a value the LLM API supplies
 // and does not guarantee unique across independent conversations, let alone
 // across owners (two different top-level sessions). These tests pin the fix
@@ -14,6 +14,7 @@ package agent_test
 import (
 	"context"
 	"encoding/json"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -132,6 +133,14 @@ func TestParallelBranchSessionIDsDoNotCollideAcrossOwnersWithEqualCallID(t *test
 	if conversationContainsIn(branchA, "BRANCH_B_ANSWER") || conversationContainsIn(branchB, "BRANCH_A_ANSWER") {
 		t.Fatalf("one owner's branch was overwritten by the other's: A=%+v B=%+v", branchA.Conversation.Messages, branchB.Conversation.Messages)
 	}
+	wantA := session.SessionRelationship{ParentSessionID: "owner-a-session", CallID: "p1", BranchIndex: intPtr(0)}
+	wantB := session.SessionRelationship{ParentSessionID: "owner-b-session", CallID: "p1", BranchIndex: intPtr(0)}
+	if branchA.Kind != session.SessionKindParallelBranch || !reflect.DeepEqual(branchA.Relationship, wantA) {
+		t.Errorf("branch A metadata = (%q, %+v), want (%q, %+v)", branchA.Kind, branchA.Relationship, session.SessionKindParallelBranch, wantA)
+	}
+	if branchB.Kind != session.SessionKindParallelBranch || !reflect.DeepEqual(branchB.Relationship, wantB) {
+		t.Errorf("branch B metadata = (%q, %+v), want (%q, %+v)", branchB.Kind, branchB.Relationship, session.SessionKindParallelBranch, wantB)
+	}
 }
 
 // TestTeamMemberSessionIDsDoNotCollideAcrossOwnersWithEqualCallID is the Team
@@ -194,6 +203,8 @@ func TestTeamMemberSessionIDsDoNotCollideAcrossOwnersWithEqualCallID(t *testing.
 		t.Fatalf("one owner's team member was overwritten by the other's: A=%+v B=%+v", workerA.Conversation.Messages, workerB.Conversation.Messages)
 	}
 }
+
+func intPtr(v int) *int { return &v }
 
 // conversationContains reports whether any message in sess's conversation
 // contains the given substring (in its Text or, for a tool call, its raw

@@ -16,10 +16,13 @@ import (
 
 // SessionSnapshot is the proto-free subset of a server session snapshot mecatui needs.
 type SessionSnapshot struct {
-	Mode          string
-	State         string
-	ResolvedModel ResolvedModel
-	Title         string
+	Mode            string
+	State           string
+	Workspace       string
+	CreatedAt       int64
+	ResolvedModel   ResolvedModel
+	Title           string
+	TitleProvenance string
 	// Capabilities is the server's feature-advertisement snapshot from the Session
 	// proto (the SAME value CreateSessionResponse carries). A client that re-hydrates
 	// a persisted session on adopt (continue, /effort fork) reads this to re-derive
@@ -33,11 +36,14 @@ func snapshotFrom(s *mecatlv1.Session) SessionSnapshot {
 		return SessionSnapshot{Mode: ModeDefaultString}
 	}
 	return SessionSnapshot{
-		Mode:          ModeString(s.GetMode()),
-		State:         s.GetState(),
-		ResolvedModel: resolvedModelFrom(s.GetResolvedModel()),
-		Title:         s.GetTitle(),
-		Capabilities:  capabilitiesFrom(s.GetCapabilities()),
+		Mode:            ModeString(s.GetMode()),
+		State:           s.GetState(),
+		Workspace:       s.GetWorkspace(),
+		CreatedAt:       s.GetCreatedAtUnix(),
+		ResolvedModel:   resolvedModelFrom(s.GetResolvedModel()),
+		Title:           s.GetTitle(),
+		TitleProvenance: s.GetTitleProvenance(),
+		Capabilities:    capabilitiesFrom(s.GetCapabilities()),
 	}
 }
 
@@ -100,6 +106,9 @@ type ResolvedModelMsg struct {
 	SessionID string
 	Resolved  ResolvedModel
 	Mode      string
+	State     string
+	Workspace string
+	CreatedAt int64
 	// Title is the session's stored title from the snapshot (self-heal channel for
 	// the window title). See the struct doc.
 	Title string
@@ -155,6 +164,10 @@ func SetModeCmd(ctx context.Context, s ModeSetter, id, mode string) tea.Cmd {
 func RefreshResolvedModelCmd(ctx context.Context, g SessionGetter, id string) tea.Cmd {
 	return func() tea.Msg {
 		snap, err := g.GetSession(ctx, id)
-		return ResolvedModelMsg{SessionID: id, Resolved: snap.ResolvedModel, Mode: snap.Mode, Title: snap.Title, Capabilities: snap.Capabilities, Err: err}
+		return ResolvedModelMsg{
+			SessionID: id, Resolved: snap.ResolvedModel, Mode: snap.Mode,
+			State: snap.State, Workspace: snap.Workspace, CreatedAt: snap.CreatedAt,
+			Title: snap.Title, Capabilities: snap.Capabilities, Err: err,
+		}
 	}
 }

@@ -34,7 +34,7 @@ const (
 // of a prior fire's session) via Service.CreateSessionWithProfile (passing a
 // pre-minted "sched--" id as the WithSessionID override, so the fire id IS the
 // session id and the session carries the sched-- GC-retention family prefix),
-// drives it to a terminal EvResult via Service.StartRunContent, and returns the
+// drives it to a terminal EvResult via Service.StartScheduledRunContent, and returns the
 // fire record carrying the stop reason + any error. It applies subagent-grade
 // defaults (bounded MaxTurns/MaxToolCalls when the schedule carries none) and
 // maps the port.ScheduleSpec's neutral selector/profile onto the server adapter's
@@ -92,7 +92,8 @@ func makeFireFunc(svc *server.Service, store port.ScheduleStore, defaultTimeout 
 		fireID := newFireID(literalName, now)
 		sess, err := svc.CreateSessionWithProfile(ctx, sched.Spec.Workspace, mode, limits, sel, profile,
 			server.WithSessionID(session.SessionID(fireID)),
-			server.WithOwner(fireSessionOwner(sched.Spec.Owner)))
+			server.WithOwner(fireSessionOwner(sched.Spec.Owner)),
+			server.WithScheduledRelationship(literalName, sched.Spec.OriginSessionID))
 		if err != nil {
 			return fireFailed(sched, now, "", err), err
 		}
@@ -180,7 +181,7 @@ func makeFireFunc(svc *server.Service, store port.ScheduleStore, defaultTimeout 
 		}
 		defer stopTimer()
 
-		run, err := svc.StartRunContent(ownerCtx, sess.ID, prompt, sched.Spec.Parts)
+		run, err := svc.StartScheduledRunContent(ownerCtx, sess.ID, prompt, sched.Spec.Parts)
 		if err != nil {
 			return fireFailed(sched, now, string(sess.ID), err), err
 		}
@@ -202,7 +203,7 @@ func makeFireFunc(svc *server.Service, store port.ScheduleStore, defaultTimeout 
 			// through the ONE stamping path (Service.appendEvent), which attributes
 			// each event to the caller on this ctx — the scheduler's SYSTEM
 			// principal, the thing that actually acted. The schedule's owner stays
-			// on the fire SESSION (ADR 0100 decisions 5 + 6).
+			// on the fire SESSION (ADR 0204 decisions 5 + 6).
 			svc.AppendRunEvent(logCtx, sess.ID, ev)
 			// RecordFireProgress on turn-boundary / activity events (issue #386):
 			// NOT every chunk — once per EvToolCall / EvTurnEnd / EvResult, so a
@@ -280,7 +281,7 @@ func schedulerOwnerContext(ctx context.Context, owner *session.Principal) contex
 	return session.WithPrincipal(ctx, owner)
 }
 
-// fireSessionOwner projects the SCHEDULE's captured owner (ADR 0100 decision 6)
+// fireSessionOwner projects the SCHEDULE's captured owner (ADR 0204 decision 6)
 // onto the fire session's owner: the same (issuer, subject) identity, with
 // GrantType client_credentials — a fire is automated, not interactive, and the
 // grant type says so honestly while attribution still collapses to the

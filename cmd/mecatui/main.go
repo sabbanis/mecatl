@@ -109,7 +109,7 @@ func run(argv []string) error {
 		return runLogin(res.remaining)
 	}
 
-	fs, cfg, err := parseTransportFlags(res.mode, os.Stderr, res.remaining)
+	fs, cfg, err := parseTransportFlags(res.mode, os.Stderr, res.remaining, res.browseSessions)
 	if err != nil {
 		return err
 	}
@@ -179,20 +179,27 @@ func run(argv []string) error {
 		return err
 	}
 
+	resume, uiWorkspace, err := startupResumeConfig(ctx, cl, cfg)
+	if err != nil {
+		_ = cl.Close()
+		transCleanup()
+		return err
+	}
+
 	// Client-side model-selection persistence (the /models picker): the store reads
 	// the last-used selection at launch and persists a pick. Lives in main (the
 	// composition root) so the client stays proto-only and the ui never touches
 	// os/xdg. The connect-time ListModels reconcile clears a now-unavailable provider
 	// before the create carries it (see ui.Init / updateModelsMsg).
 	store := newSelectionStore(xdgconfig.OSEnv)
-	initialSel := store.Load(cfg.workspace)
+	initialSel := store.Load(uiWorkspace)
 	// Provenance inputs for the /models picker (display-only): the un-collapsed
 	// per-workspace entry and the global default, kept separate so the picker can tell
 	// "workspace default" from "global default" without a server round-trip.
-	wsDefault, wsDefaultSet := store.LoadWorkspace(cfg.workspace)
+	wsDefault, wsDefaultSet := store.LoadWorkspace(uiWorkspace)
 	globalDefault := store.LoadGlobalDefault()
 
-	deps := ui.Deps{
+	deps := applyLaunchIntent(cfg, ui.Deps{
 		Session:             &sessionAdapter{cl: cl, workspace: cfg.workspace, mode: cfg.mode},
 		Conv:                cl,
 		MCP:                 cl,
@@ -206,6 +213,8 @@ func run(argv []string) error {
 		Worktrees:           cl,
 		Sched:               cl,
 		Sessions:            cl,
+		SessionManagement:   cl,
+		Transcript:          cl,
 		Replayer:            cl,
 		LiveStream:          cl,
 		SelectionStore:      store,
@@ -226,8 +235,9 @@ func run(argv []string) error {
 		// --context-window-override and an external mecated's flag both move the engine
 		// trigger and this echoed denominator.
 		Model:     cfg.model,
-		Workspace: cfg.workspace,
+		Workspace: uiWorkspace,
 		Mode:      cfg.mode,
+		Resume:    resume,
 		Ctx:       ctx,
 		// Build version for the welcome splash (ldflags-set; "dev" by default).
 		Version: version,
@@ -247,11 +257,16 @@ func run(argv []string) error {
 		// Diagnostic: MECATUI_DEBUG_MOUSE=1 shows raw mouse coords + content mapping in
 		// the footer (for diagnosing selection/coordinate issues). Default off.
 		DebugMouse: os.Getenv("MECATUI_DEBUG_MOUSE") != "",
+		// Diagnostic: MECATUI_DEBUG_ASK=1 registers /debug-ask, which injects a fake
+		// long-args permission ask through the real reducer (for exercising the
+		// modal's wrap/scroll/full-screen-args behaviour by hand). Default off;
+		// deliberately env-only so it never appears in --help.
+		DebugAsk: os.Getenv("MECATUI_DEBUG_ASK") != "",
 		// Seed prompt from -p/--prompt + --prompt-file: joined at startup and
 		// auto-submitted once the first session is ready (interactive-seed, NOT a
 		// one-shot — the TUI stays open for follow-ups). Empty = no seed.
 		InitialPrompt: cliconfig.JoinPromptBody(cfg.prompt, cfg.promptFileBody),
-	}
+	})
 
 	// Apply keymap overrides (CLI for now).
 	if err := applyKeyOverridesToDeps(cfg, &deps); err != nil {
@@ -261,13 +276,23 @@ func run(argv []string) error {
 	}
 
 	prog := tea.NewProgram(ui.New(deps), tea.WithContext(ctx))
-	_, runErr := prog.Run()
+	finalModel, runErr := prog.Run()
+	interrupted := ctx.Err() != nil
 
 	runCleanup(forceExit, func() {
 		_ = cl.Close()
 		transCleanup()
 	})
+	maybeWriteFinalSessionHandoff(os.Stderr, finalModel, runErr, interrupted)
 	return runErr
+}
+
+// applyLaunchIntent threads command-derived launch state into the ui at the
+// composition boundary. Keeping this projection separate makes the command path
+// testable without starting a transport or a Bubble Tea program.
+func applyLaunchIntent(cfg config, deps ui.Deps) ui.Deps {
+	deps.BrowseSessions = cfg.browseSessions
+	return deps
 }
 
 // emitAuthFileWarning is the command-root's single warning emission seam.

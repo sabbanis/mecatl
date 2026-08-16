@@ -140,7 +140,9 @@
   after a restart so a previously-approved tool does not re-ask; and (#115)
   **event-sourced `SessionStore.Load`** — a host whose system of record is the
   event log folds `EventLog` + `SessionMeta` → `*session.Session` via
-  `engine/adapter/eventsource.Fold`. That third consumer carries a documented
+  `engine/adapter/eventsource.Fold`. The out-of-band metadata includes the durable,
+  validated session kind/relationship; absent legacy kind metadata restores as
+  fail-closed `unknown`. That third consumer carries a documented
   **replay-fidelity limitation**: the opaque assistant-replay fields
   (`Message.Reasoning`/`ProviderPhase`, `ToolCall.ItemID`) are not on the stream,
   so a pure fold is byte-identical-replay faithful only for plain-chat providers
@@ -205,11 +207,10 @@ Phase C1 adds the **content-source drivers** on the same protocol:
 LOGICAL BUNDLES — metadata, body, payloads by logical name; NO path/dir/root
 on the wire) and `SoulSourceService` behind `prompt.SoulSource`.
 `--skill-source-url` replaces local skills discovery (mutually exclusive with
-`--skills-dir`/`--skills-conventional`); a driver skill's payloads
-materialize LAZILY into a build-scoped temp asset cache on first activation
-(per-asset 16 MiB / per-bundle 64 MiB caps, logical-name validation +
-containment, executable bit honored; the cache dir is the single skill read
-root and is removed on shutdown). `--soul-source-url` occupies the USER slot
+`--skills-dir`/`--skills-conventional`). Driver skills remain path-free: activation
+loads the body and logical inventory, and `Skill({name, asset})` fetches one bounded
+textual payload on demand. No temp cache, materialization, executable-bit application,
+or workspace read root is created. `--soul-source-url` occupies the USER slot
 of the soul selection (mutually exclusive with `--soul-file`; `--no-soul`
 wins); the body is RE-VALIDATED client-side (`soul.ValidateBody` — byte cap,
 injection scan, fence integrity) because a driver is never trusted to

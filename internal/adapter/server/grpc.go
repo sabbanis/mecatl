@@ -1,5 +1,7 @@
 package server
 
+//revive:disable:exported // RPC methods mirror the generated HarnessService interface
+
 import (
 	"context"
 	"errors"
@@ -95,6 +97,18 @@ func (h *HarnessServer) GetSession(ctx context.Context, req *mecatlv1.GetSession
 	return &mecatlv1.GetSessionResponse{Session: proto}, nil
 }
 
+// GetSessionTranscript returns the owned session's snapshot-derived transcript.
+func (h *HarnessServer) GetSessionTranscript(ctx context.Context, req *mecatlv1.GetSessionTranscriptRequest) (*mecatlv1.GetSessionTranscriptResponse, error) {
+	if req.GetSessionId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+	transcript, err := h.svc.GetTranscript(ctx, session.SessionID(req.GetSessionId()))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return toProtoTranscript(transcript), nil
+}
+
 // SetMode changes the permission posture of the requested session.
 func (h *HarnessServer) SetMode(ctx context.Context, req *mecatlv1.SetModeRequest) (*mecatlv1.SetModeResponse, error) {
 	if req.GetSessionId() == "" {
@@ -119,6 +133,29 @@ func (h *HarnessServer) CloseSession(ctx context.Context, req *mecatlv1.CloseSes
 		return nil, toStatus(err)
 	}
 	return &mecatlv1.CloseSessionResponse{}, nil
+}
+
+// RenameSession explicitly replaces an idle main session's persisted title.
+func (h *HarnessServer) RenameSession(ctx context.Context, req *mecatlv1.RenameSessionRequest) (*mecatlv1.RenameSessionResponse, error) {
+	if req.GetSessionId() == "" || strings.TrimSpace(req.GetTitle()) == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id and non-blank title are required")
+	}
+	sess, err := h.svc.RenameSession(ctx, session.SessionID(req.GetSessionId()), req.GetTitle())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &mecatlv1.RenameSessionResponse{Session: toProtoSession(sess, h.svc.ResolvedModel(sess.ID), h.svc.capabilities())}, nil
+}
+
+// DeleteSession physically removes an idle main session and store-managed sidecars.
+func (h *HarnessServer) DeleteSession(ctx context.Context, req *mecatlv1.DeleteSessionRequest) (*mecatlv1.DeleteSessionResponse, error) {
+	if req.GetSessionId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+	if err := h.svc.DeleteSession(ctx, session.SessionID(req.GetSessionId())); err != nil {
+		return nil, toStatus(err)
+	}
+	return &mecatlv1.DeleteSessionResponse{}, nil
 }
 
 // ForkSession creates a peer session from an existing session's history snapshot
@@ -420,6 +457,63 @@ func (h *HarnessServer) UndoLearningPromotion(ctx context.Context, req *mecatlv1
 	return &mecatlv1.UndoLearningPromotionResponse{Proposal: proposal}, nil
 }
 
+func (h *HarnessServer) ListLearnedSkills(ctx context.Context, req *mecatlv1.ListLearnedSkillsRequest) (*mecatlv1.ListLearnedSkillsResponse, error) {
+	resp, err := h.svc.ListLearnedSkills(ctx, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return resp, nil
+}
+func (h *HarnessServer) GetLearnedSkill(ctx context.Context, req *mecatlv1.GetLearnedSkillRequest) (*mecatlv1.GetLearnedSkillResponse, error) {
+	resp, err := h.svc.GetLearnedSkill(ctx, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return resp, nil
+}
+func (h *HarnessServer) DiffLearnedSkillVersions(ctx context.Context, req *mecatlv1.DiffLearnedSkillVersionsRequest) (*mecatlv1.DiffLearnedSkillVersionsResponse, error) {
+	resp, err := h.svc.DiffLearnedSkillVersions(ctx, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return resp, nil
+}
+func (h *HarnessServer) ActivateLearnedSkill(ctx context.Context, req *mecatlv1.MutateLearnedSkillRequest) (*mecatlv1.MutateLearnedSkillResponse, error) {
+	resp, err := h.svc.ActivateLearnedSkill(ctx, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return resp, nil
+}
+func (h *HarnessServer) RejectLearnedSkill(ctx context.Context, req *mecatlv1.MutateLearnedSkillRequest) (*mecatlv1.MutateLearnedSkillResponse, error) {
+	resp, err := h.svc.RejectLearnedSkill(ctx, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return resp, nil
+}
+func (h *HarnessServer) ArchiveLearnedSkill(ctx context.Context, req *mecatlv1.MutateLearnedSkillRequest) (*mecatlv1.MutateLearnedSkillResponse, error) {
+	resp, err := h.svc.ArchiveLearnedSkill(ctx, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return resp, nil
+}
+func (h *HarnessServer) RollbackLearnedSkill(ctx context.Context, req *mecatlv1.RollbackLearnedSkillRequest) (*mecatlv1.MutateLearnedSkillResponse, error) {
+	resp, err := h.svc.RollbackLearnedSkill(ctx, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return resp, nil
+}
+func (h *HarnessServer) ListSkillChanges(ctx context.Context, req *mecatlv1.ListSkillChangesRequest) (*mecatlv1.ListSkillChangesResponse, error) {
+	resp, err := h.svc.ListSkillChanges(ctx, req)
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return resp, nil
+}
+
 // ListCommands returns the available slash commands for the requested workspace.
 func (h *HarnessServer) ListCommands(ctx context.Context, req *mecatlv1.ListCommandsRequest) (*mecatlv1.ListCommandsResponse, error) {
 	cmds, err := h.svc.ListCommands(ctx, req.GetWorkspace())
@@ -591,12 +685,17 @@ func isDeliveryNoteText(text string) bool {
 // ListSessions returns the stored-session inventory — the picker metadata a
 // client renders to let an operator open an EXISTING session by id (issue #245
 // Phase 1).
-func (h *HarnessServer) ListSessions(ctx context.Context, _ *mecatlv1.ListSessionsRequest) (*mecatlv1.ListSessionsResponse, error) {
-	rows, err := h.svc.ListSessions(ctx)
+func (h *HarnessServer) ListSessions(ctx context.Context, req *mecatlv1.ListSessionsRequest) (*mecatlv1.ListSessionsResponse, error) {
+	page, err := h.svc.ListSessionPage(ctx, ListSessionsPageRequest{
+		PageSize: int(req.GetPageSize()), Cursor: req.GetCursor(),
+	})
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &mecatlv1.ListSessionsResponse{Sessions: toProtoSessionSummaries(rows)}, nil
+	return &mecatlv1.ListSessionsResponse{
+		Sessions: toProtoSessionSummaries(page.Sessions), NextCursor: page.NextCursor,
+		TotalCount: ClampInt32(page.TotalCount),
+	}, nil
 }
 
 // toStatus maps service sentinel errors to gRPC status codes.
@@ -654,6 +753,10 @@ func toStatus(err error) error {
 		// No durable EventLog (cloud-native Phase 3a) is configured: the
 		// StreamSessionEvents read-back surface is not available on this
 		// deployment. Unimplemented (HTTP 501).
+		return status.Error(codes.Unimplemented, err.Error())
+	case errors.Is(err, ErrSessionDeleteUnsupported):
+		return status.Error(codes.Unimplemented, err.Error())
+	case errors.Is(err, port.ErrSessionMetadataPagingUnsupported):
 		return status.Error(codes.Unimplemented, err.Error())
 	case errors.Is(err, ErrSchedulerNotRunning):
 		// A ScheduleStore is available but no in-process scheduler is wired to

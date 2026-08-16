@@ -42,41 +42,52 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
-	HarnessService_CreateSession_FullMethodName          = "/mecatl.v1.HarnessService/CreateSession"
-	HarnessService_GetSession_FullMethodName             = "/mecatl.v1.HarnessService/GetSession"
-	HarnessService_SetMode_FullMethodName                = "/mecatl.v1.HarnessService/SetMode"
-	HarnessService_CloseSession_FullMethodName           = "/mecatl.v1.HarnessService/CloseSession"
-	HarnessService_ForkSession_FullMethodName            = "/mecatl.v1.HarnessService/ForkSession"
-	HarnessService_Converse_FullMethodName               = "/mecatl.v1.HarnessService/Converse"
-	HarnessService_ListMcpResources_FullMethodName       = "/mecatl.v1.HarnessService/ListMcpResources"
-	HarnessService_ReadMcpResource_FullMethodName        = "/mecatl.v1.HarnessService/ReadMcpResource"
-	HarnessService_ListMcpPrompts_FullMethodName         = "/mecatl.v1.HarnessService/ListMcpPrompts"
-	HarnessService_GetMcpPrompt_FullMethodName           = "/mecatl.v1.HarnessService/GetMcpPrompt"
-	HarnessService_ListMcpSources_FullMethodName         = "/mecatl.v1.HarnessService/ListMcpSources"
-	HarnessService_ListToolHiveGroups_FullMethodName     = "/mecatl.v1.HarnessService/ListToolHiveGroups"
-	HarnessService_ListAgents_FullMethodName             = "/mecatl.v1.HarnessService/ListAgents"
-	HarnessService_ListCommands_FullMethodName           = "/mecatl.v1.HarnessService/ListCommands"
-	HarnessService_ListWorktrees_FullMethodName          = "/mecatl.v1.HarnessService/ListWorktrees"
-	HarnessService_StreamSessionEvents_FullMethodName    = "/mecatl.v1.HarnessService/StreamSessionEvents"
-	HarnessService_StreamSessionLive_FullMethodName      = "/mecatl.v1.HarnessService/StreamSessionLive"
-	HarnessService_ListSessions_FullMethodName           = "/mecatl.v1.HarnessService/ListSessions"
-	HarnessService_ListSkills_FullMethodName             = "/mecatl.v1.HarnessService/ListSkills"
-	HarnessService_GetSoul_FullMethodName                = "/mecatl.v1.HarnessService/GetSoul"
-	HarnessService_GetUserModel_FullMethodName           = "/mecatl.v1.HarnessService/GetUserModel"
-	HarnessService_ReflectSession_FullMethodName         = "/mecatl.v1.HarnessService/ReflectSession"
-	HarnessService_ListLearningProposals_FullMethodName  = "/mecatl.v1.HarnessService/ListLearningProposals"
-	HarnessService_GetLearningProposal_FullMethodName    = "/mecatl.v1.HarnessService/GetLearningProposal"
-	HarnessService_DecideLearningProposal_FullMethodName = "/mecatl.v1.HarnessService/DecideLearningProposal"
-	HarnessService_UndoLearningPromotion_FullMethodName  = "/mecatl.v1.HarnessService/UndoLearningPromotion"
-	HarnessService_ListModels_FullMethodName             = "/mecatl.v1.HarnessService/ListModels"
-	HarnessService_CreateTeam_FullMethodName             = "/mecatl.v1.HarnessService/CreateTeam"
-	HarnessService_SpawnTeammate_FullMethodName          = "/mecatl.v1.HarnessService/SpawnTeammate"
-	HarnessService_SendTeammateMessage_FullMethodName    = "/mecatl.v1.HarnessService/SendTeammateMessage"
-	HarnessService_CancelTeammate_FullMethodName         = "/mecatl.v1.HarnessService/CancelTeammate"
-	HarnessService_RunTeam_FullMethodName                = "/mecatl.v1.HarnessService/RunTeam"
-	HarnessService_ListTeam_FullMethodName               = "/mecatl.v1.HarnessService/ListTeam"
-	HarnessService_CleanupTeam_FullMethodName            = "/mecatl.v1.HarnessService/CleanupTeam"
-	HarnessService_ApprovePlan_FullMethodName            = "/mecatl.v1.HarnessService/ApprovePlan"
+	HarnessService_CreateSession_FullMethodName            = "/mecatl.v1.HarnessService/CreateSession"
+	HarnessService_GetSession_FullMethodName               = "/mecatl.v1.HarnessService/GetSession"
+	HarnessService_GetSessionTranscript_FullMethodName     = "/mecatl.v1.HarnessService/GetSessionTranscript"
+	HarnessService_SetMode_FullMethodName                  = "/mecatl.v1.HarnessService/SetMode"
+	HarnessService_CloseSession_FullMethodName             = "/mecatl.v1.HarnessService/CloseSession"
+	HarnessService_RenameSession_FullMethodName            = "/mecatl.v1.HarnessService/RenameSession"
+	HarnessService_DeleteSession_FullMethodName            = "/mecatl.v1.HarnessService/DeleteSession"
+	HarnessService_ForkSession_FullMethodName              = "/mecatl.v1.HarnessService/ForkSession"
+	HarnessService_Converse_FullMethodName                 = "/mecatl.v1.HarnessService/Converse"
+	HarnessService_ListMcpResources_FullMethodName         = "/mecatl.v1.HarnessService/ListMcpResources"
+	HarnessService_ReadMcpResource_FullMethodName          = "/mecatl.v1.HarnessService/ReadMcpResource"
+	HarnessService_ListMcpPrompts_FullMethodName           = "/mecatl.v1.HarnessService/ListMcpPrompts"
+	HarnessService_GetMcpPrompt_FullMethodName             = "/mecatl.v1.HarnessService/GetMcpPrompt"
+	HarnessService_ListMcpSources_FullMethodName           = "/mecatl.v1.HarnessService/ListMcpSources"
+	HarnessService_ListToolHiveGroups_FullMethodName       = "/mecatl.v1.HarnessService/ListToolHiveGroups"
+	HarnessService_ListAgents_FullMethodName               = "/mecatl.v1.HarnessService/ListAgents"
+	HarnessService_ListCommands_FullMethodName             = "/mecatl.v1.HarnessService/ListCommands"
+	HarnessService_ListWorktrees_FullMethodName            = "/mecatl.v1.HarnessService/ListWorktrees"
+	HarnessService_StreamSessionEvents_FullMethodName      = "/mecatl.v1.HarnessService/StreamSessionEvents"
+	HarnessService_StreamSessionLive_FullMethodName        = "/mecatl.v1.HarnessService/StreamSessionLive"
+	HarnessService_ListSessions_FullMethodName             = "/mecatl.v1.HarnessService/ListSessions"
+	HarnessService_ListSkills_FullMethodName               = "/mecatl.v1.HarnessService/ListSkills"
+	HarnessService_GetSoul_FullMethodName                  = "/mecatl.v1.HarnessService/GetSoul"
+	HarnessService_GetUserModel_FullMethodName             = "/mecatl.v1.HarnessService/GetUserModel"
+	HarnessService_ReflectSession_FullMethodName           = "/mecatl.v1.HarnessService/ReflectSession"
+	HarnessService_ListLearningProposals_FullMethodName    = "/mecatl.v1.HarnessService/ListLearningProposals"
+	HarnessService_GetLearningProposal_FullMethodName      = "/mecatl.v1.HarnessService/GetLearningProposal"
+	HarnessService_DecideLearningProposal_FullMethodName   = "/mecatl.v1.HarnessService/DecideLearningProposal"
+	HarnessService_UndoLearningPromotion_FullMethodName    = "/mecatl.v1.HarnessService/UndoLearningPromotion"
+	HarnessService_ListLearnedSkills_FullMethodName        = "/mecatl.v1.HarnessService/ListLearnedSkills"
+	HarnessService_GetLearnedSkill_FullMethodName          = "/mecatl.v1.HarnessService/GetLearnedSkill"
+	HarnessService_DiffLearnedSkillVersions_FullMethodName = "/mecatl.v1.HarnessService/DiffLearnedSkillVersions"
+	HarnessService_ActivateLearnedSkill_FullMethodName     = "/mecatl.v1.HarnessService/ActivateLearnedSkill"
+	HarnessService_RejectLearnedSkill_FullMethodName       = "/mecatl.v1.HarnessService/RejectLearnedSkill"
+	HarnessService_ArchiveLearnedSkill_FullMethodName      = "/mecatl.v1.HarnessService/ArchiveLearnedSkill"
+	HarnessService_RollbackLearnedSkill_FullMethodName     = "/mecatl.v1.HarnessService/RollbackLearnedSkill"
+	HarnessService_ListSkillChanges_FullMethodName         = "/mecatl.v1.HarnessService/ListSkillChanges"
+	HarnessService_ListModels_FullMethodName               = "/mecatl.v1.HarnessService/ListModels"
+	HarnessService_CreateTeam_FullMethodName               = "/mecatl.v1.HarnessService/CreateTeam"
+	HarnessService_SpawnTeammate_FullMethodName            = "/mecatl.v1.HarnessService/SpawnTeammate"
+	HarnessService_SendTeammateMessage_FullMethodName      = "/mecatl.v1.HarnessService/SendTeammateMessage"
+	HarnessService_CancelTeammate_FullMethodName           = "/mecatl.v1.HarnessService/CancelTeammate"
+	HarnessService_RunTeam_FullMethodName                  = "/mecatl.v1.HarnessService/RunTeam"
+	HarnessService_ListTeam_FullMethodName                 = "/mecatl.v1.HarnessService/ListTeam"
+	HarnessService_CleanupTeam_FullMethodName              = "/mecatl.v1.HarnessService/CleanupTeam"
+	HarnessService_ApprovePlan_FullMethodName              = "/mecatl.v1.HarnessService/ApprovePlan"
 )
 
 // HarnessServiceClient is the client API for HarnessService service.
@@ -90,6 +101,9 @@ type HarnessServiceClient interface {
 	CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error)
 	// GetSession returns a snapshot of an existing session.
 	GetSession(ctx context.Context, in *GetSessionRequest, opts ...grpc.CallOption) (*GetSessionResponse, error)
+	// GetSessionTranscript returns the authoritative, snapshot-derived human
+	// transcript for one owned session. It is read-only and does not use EventLog.
+	GetSessionTranscript(ctx context.Context, in *GetSessionTranscriptRequest, opts ...grpc.CallOption) (*GetSessionTranscriptResponse, error)
 	// SetMode changes an existing session's permission posture. The session aggregate
 	// remains authoritative: a mid-turn change is rejected with InvalidArgument, so
 	// clients that want "next prompt" semantics must defer and retry once idle.
@@ -99,6 +113,10 @@ type HarnessServiceClient interface {
 	// unknown or already-closed session via the wire returns NotFound only for a
 	// never-created id; an already-released session succeeds.
 	CloseSession(ctx context.Context, in *CloseSessionRequest, opts ...grpc.CallOption) (*CloseSessionResponse, error)
+	// RenameSession explicitly replaces an idle main session's title.
+	RenameSession(ctx context.Context, in *RenameSessionRequest, opts ...grpc.CallOption) (*RenameSessionResponse, error)
+	// DeleteSession physically removes an idle main session and its sidecars.
+	DeleteSession(ctx context.Context, in *DeleteSessionRequest, opts ...grpc.CallOption) (*DeleteSessionResponse, error)
 	// ForkSession creates a new peer session whose conversation history is a
 	// snapshot of an existing session's, inheriting the source's mode, workspace,
 	// limits, and provider/model/profile labels. Same provider and model only;
@@ -253,6 +271,16 @@ type HarnessServiceClient interface {
 	// UndoLearningPromotion commits a compensating revision only while the promoted
 	// revision is still current, also guarded by proposal-version CAS.
 	UndoLearningPromotion(ctx context.Context, in *UndoLearningPromotionRequest, opts ...grpc.CallOption) (*UndoLearningPromotionResponse, error)
+	// Learned-skill lifecycle inspection and CAS mutations. These methods are
+	// caller/project partitioned and are unimplemented when no lifecycle store exists.
+	ListLearnedSkills(ctx context.Context, in *ListLearnedSkillsRequest, opts ...grpc.CallOption) (*ListLearnedSkillsResponse, error)
+	GetLearnedSkill(ctx context.Context, in *GetLearnedSkillRequest, opts ...grpc.CallOption) (*GetLearnedSkillResponse, error)
+	DiffLearnedSkillVersions(ctx context.Context, in *DiffLearnedSkillVersionsRequest, opts ...grpc.CallOption) (*DiffLearnedSkillVersionsResponse, error)
+	ActivateLearnedSkill(ctx context.Context, in *MutateLearnedSkillRequest, opts ...grpc.CallOption) (*MutateLearnedSkillResponse, error)
+	RejectLearnedSkill(ctx context.Context, in *MutateLearnedSkillRequest, opts ...grpc.CallOption) (*MutateLearnedSkillResponse, error)
+	ArchiveLearnedSkill(ctx context.Context, in *MutateLearnedSkillRequest, opts ...grpc.CallOption) (*MutateLearnedSkillResponse, error)
+	RollbackLearnedSkill(ctx context.Context, in *RollbackLearnedSkillRequest, opts ...grpc.CallOption) (*MutateLearnedSkillResponse, error)
+	ListSkillChanges(ctx context.Context, in *ListSkillChangesRequest, opts ...grpc.CallOption) (*ListSkillChangesResponse, error)
 	// ListModels returns the selectable-model inventory: every AVAILABLE provider's
 	// catalog models, projected to public metadata only (no secrets). It powers the
 	// client /models picker (multi-provider Phase 0, S3). Derived from the build-time
@@ -348,6 +376,16 @@ func (c *harnessServiceClient) GetSession(ctx context.Context, in *GetSessionReq
 	return out, nil
 }
 
+func (c *harnessServiceClient) GetSessionTranscript(ctx context.Context, in *GetSessionTranscriptRequest, opts ...grpc.CallOption) (*GetSessionTranscriptResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetSessionTranscriptResponse)
+	err := c.cc.Invoke(ctx, HarnessService_GetSessionTranscript_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *harnessServiceClient) SetMode(ctx context.Context, in *SetModeRequest, opts ...grpc.CallOption) (*SetModeResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(SetModeResponse)
@@ -362,6 +400,26 @@ func (c *harnessServiceClient) CloseSession(ctx context.Context, in *CloseSessio
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CloseSessionResponse)
 	err := c.cc.Invoke(ctx, HarnessService_CloseSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) RenameSession(ctx context.Context, in *RenameSessionRequest, opts ...grpc.CallOption) (*RenameSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(RenameSessionResponse)
+	err := c.cc.Invoke(ctx, HarnessService_RenameSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) DeleteSession(ctx context.Context, in *DeleteSessionRequest, opts ...grpc.CallOption) (*DeleteSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteSessionResponse)
+	err := c.cc.Invoke(ctx, HarnessService_DeleteSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -609,6 +667,86 @@ func (c *harnessServiceClient) UndoLearningPromotion(ctx context.Context, in *Un
 	return out, nil
 }
 
+func (c *harnessServiceClient) ListLearnedSkills(ctx context.Context, in *ListLearnedSkillsRequest, opts ...grpc.CallOption) (*ListLearnedSkillsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListLearnedSkillsResponse)
+	err := c.cc.Invoke(ctx, HarnessService_ListLearnedSkills_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) GetLearnedSkill(ctx context.Context, in *GetLearnedSkillRequest, opts ...grpc.CallOption) (*GetLearnedSkillResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetLearnedSkillResponse)
+	err := c.cc.Invoke(ctx, HarnessService_GetLearnedSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) DiffLearnedSkillVersions(ctx context.Context, in *DiffLearnedSkillVersionsRequest, opts ...grpc.CallOption) (*DiffLearnedSkillVersionsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DiffLearnedSkillVersionsResponse)
+	err := c.cc.Invoke(ctx, HarnessService_DiffLearnedSkillVersions_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) ActivateLearnedSkill(ctx context.Context, in *MutateLearnedSkillRequest, opts ...grpc.CallOption) (*MutateLearnedSkillResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MutateLearnedSkillResponse)
+	err := c.cc.Invoke(ctx, HarnessService_ActivateLearnedSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) RejectLearnedSkill(ctx context.Context, in *MutateLearnedSkillRequest, opts ...grpc.CallOption) (*MutateLearnedSkillResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MutateLearnedSkillResponse)
+	err := c.cc.Invoke(ctx, HarnessService_RejectLearnedSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) ArchiveLearnedSkill(ctx context.Context, in *MutateLearnedSkillRequest, opts ...grpc.CallOption) (*MutateLearnedSkillResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MutateLearnedSkillResponse)
+	err := c.cc.Invoke(ctx, HarnessService_ArchiveLearnedSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) RollbackLearnedSkill(ctx context.Context, in *RollbackLearnedSkillRequest, opts ...grpc.CallOption) (*MutateLearnedSkillResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(MutateLearnedSkillResponse)
+	err := c.cc.Invoke(ctx, HarnessService_RollbackLearnedSkill_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) ListSkillChanges(ctx context.Context, in *ListSkillChangesRequest, opts ...grpc.CallOption) (*ListSkillChangesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListSkillChangesResponse)
+	err := c.cc.Invoke(ctx, HarnessService_ListSkillChanges_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *harnessServiceClient) ListModels(ctx context.Context, in *ListModelsRequest, opts ...grpc.CallOption) (*ListModelsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(ListModelsResponse)
@@ -728,6 +866,9 @@ type HarnessServiceServer interface {
 	CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error)
 	// GetSession returns a snapshot of an existing session.
 	GetSession(context.Context, *GetSessionRequest) (*GetSessionResponse, error)
+	// GetSessionTranscript returns the authoritative, snapshot-derived human
+	// transcript for one owned session. It is read-only and does not use EventLog.
+	GetSessionTranscript(context.Context, *GetSessionTranscriptRequest) (*GetSessionTranscriptResponse, error)
 	// SetMode changes an existing session's permission posture. The session aggregate
 	// remains authoritative: a mid-turn change is rejected with InvalidArgument, so
 	// clients that want "next prompt" semantics must defer and retry once idle.
@@ -737,6 +878,10 @@ type HarnessServiceServer interface {
 	// unknown or already-closed session via the wire returns NotFound only for a
 	// never-created id; an already-released session succeeds.
 	CloseSession(context.Context, *CloseSessionRequest) (*CloseSessionResponse, error)
+	// RenameSession explicitly replaces an idle main session's title.
+	RenameSession(context.Context, *RenameSessionRequest) (*RenameSessionResponse, error)
+	// DeleteSession physically removes an idle main session and its sidecars.
+	DeleteSession(context.Context, *DeleteSessionRequest) (*DeleteSessionResponse, error)
 	// ForkSession creates a new peer session whose conversation history is a
 	// snapshot of an existing session's, inheriting the source's mode, workspace,
 	// limits, and provider/model/profile labels. Same provider and model only;
@@ -891,6 +1036,16 @@ type HarnessServiceServer interface {
 	// UndoLearningPromotion commits a compensating revision only while the promoted
 	// revision is still current, also guarded by proposal-version CAS.
 	UndoLearningPromotion(context.Context, *UndoLearningPromotionRequest) (*UndoLearningPromotionResponse, error)
+	// Learned-skill lifecycle inspection and CAS mutations. These methods are
+	// caller/project partitioned and are unimplemented when no lifecycle store exists.
+	ListLearnedSkills(context.Context, *ListLearnedSkillsRequest) (*ListLearnedSkillsResponse, error)
+	GetLearnedSkill(context.Context, *GetLearnedSkillRequest) (*GetLearnedSkillResponse, error)
+	DiffLearnedSkillVersions(context.Context, *DiffLearnedSkillVersionsRequest) (*DiffLearnedSkillVersionsResponse, error)
+	ActivateLearnedSkill(context.Context, *MutateLearnedSkillRequest) (*MutateLearnedSkillResponse, error)
+	RejectLearnedSkill(context.Context, *MutateLearnedSkillRequest) (*MutateLearnedSkillResponse, error)
+	ArchiveLearnedSkill(context.Context, *MutateLearnedSkillRequest) (*MutateLearnedSkillResponse, error)
+	RollbackLearnedSkill(context.Context, *RollbackLearnedSkillRequest) (*MutateLearnedSkillResponse, error)
+	ListSkillChanges(context.Context, *ListSkillChangesRequest) (*ListSkillChangesResponse, error)
 	// ListModels returns the selectable-model inventory: every AVAILABLE provider's
 	// catalog models, projected to public metadata only (no secrets). It powers the
 	// client /models picker (multi-provider Phase 0, S3). Derived from the build-time
@@ -972,11 +1127,20 @@ func (UnimplementedHarnessServiceServer) CreateSession(context.Context, *CreateS
 func (UnimplementedHarnessServiceServer) GetSession(context.Context, *GetSessionRequest) (*GetSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetSession not implemented")
 }
+func (UnimplementedHarnessServiceServer) GetSessionTranscript(context.Context, *GetSessionTranscriptRequest) (*GetSessionTranscriptResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetSessionTranscript not implemented")
+}
 func (UnimplementedHarnessServiceServer) SetMode(context.Context, *SetModeRequest) (*SetModeResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method SetMode not implemented")
 }
 func (UnimplementedHarnessServiceServer) CloseSession(context.Context, *CloseSessionRequest) (*CloseSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CloseSession not implemented")
+}
+func (UnimplementedHarnessServiceServer) RenameSession(context.Context, *RenameSessionRequest) (*RenameSessionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RenameSession not implemented")
+}
+func (UnimplementedHarnessServiceServer) DeleteSession(context.Context, *DeleteSessionRequest) (*DeleteSessionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteSession not implemented")
 }
 func (UnimplementedHarnessServiceServer) ForkSession(context.Context, *ForkSessionRequest) (*ForkSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ForkSession not implemented")
@@ -1043,6 +1207,30 @@ func (UnimplementedHarnessServiceServer) DecideLearningProposal(context.Context,
 }
 func (UnimplementedHarnessServiceServer) UndoLearningPromotion(context.Context, *UndoLearningPromotionRequest) (*UndoLearningPromotionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method UndoLearningPromotion not implemented")
+}
+func (UnimplementedHarnessServiceServer) ListLearnedSkills(context.Context, *ListLearnedSkillsRequest) (*ListLearnedSkillsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListLearnedSkills not implemented")
+}
+func (UnimplementedHarnessServiceServer) GetLearnedSkill(context.Context, *GetLearnedSkillRequest) (*GetLearnedSkillResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetLearnedSkill not implemented")
+}
+func (UnimplementedHarnessServiceServer) DiffLearnedSkillVersions(context.Context, *DiffLearnedSkillVersionsRequest) (*DiffLearnedSkillVersionsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DiffLearnedSkillVersions not implemented")
+}
+func (UnimplementedHarnessServiceServer) ActivateLearnedSkill(context.Context, *MutateLearnedSkillRequest) (*MutateLearnedSkillResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ActivateLearnedSkill not implemented")
+}
+func (UnimplementedHarnessServiceServer) RejectLearnedSkill(context.Context, *MutateLearnedSkillRequest) (*MutateLearnedSkillResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RejectLearnedSkill not implemented")
+}
+func (UnimplementedHarnessServiceServer) ArchiveLearnedSkill(context.Context, *MutateLearnedSkillRequest) (*MutateLearnedSkillResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ArchiveLearnedSkill not implemented")
+}
+func (UnimplementedHarnessServiceServer) RollbackLearnedSkill(context.Context, *RollbackLearnedSkillRequest) (*MutateLearnedSkillResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method RollbackLearnedSkill not implemented")
+}
+func (UnimplementedHarnessServiceServer) ListSkillChanges(context.Context, *ListSkillChangesRequest) (*ListSkillChangesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListSkillChanges not implemented")
 }
 func (UnimplementedHarnessServiceServer) ListModels(context.Context, *ListModelsRequest) (*ListModelsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListModels not implemented")
@@ -1128,6 +1316,24 @@ func _HarnessService_GetSession_Handler(srv interface{}, ctx context.Context, de
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HarnessService_GetSessionTranscript_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetSessionTranscriptRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).GetSessionTranscript(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_GetSessionTranscript_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).GetSessionTranscript(ctx, req.(*GetSessionTranscriptRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _HarnessService_SetMode_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(SetModeRequest)
 	if err := dec(in); err != nil {
@@ -1160,6 +1366,42 @@ func _HarnessService_CloseSession_Handler(srv interface{}, ctx context.Context, 
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HarnessServiceServer).CloseSession(ctx, req.(*CloseSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_RenameSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RenameSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).RenameSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_RenameSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).RenameSession(ctx, req.(*RenameSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_DeleteSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).DeleteSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_DeleteSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).DeleteSession(ctx, req.(*DeleteSessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1535,6 +1777,150 @@ func _HarnessService_UndoLearningPromotion_Handler(srv interface{}, ctx context.
 	return interceptor(ctx, in, info, handler)
 }
 
+func _HarnessService_ListLearnedSkills_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListLearnedSkillsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).ListLearnedSkills(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_ListLearnedSkills_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).ListLearnedSkills(ctx, req.(*ListLearnedSkillsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_GetLearnedSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetLearnedSkillRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).GetLearnedSkill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_GetLearnedSkill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).GetLearnedSkill(ctx, req.(*GetLearnedSkillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_DiffLearnedSkillVersions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DiffLearnedSkillVersionsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).DiffLearnedSkillVersions(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_DiffLearnedSkillVersions_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).DiffLearnedSkillVersions(ctx, req.(*DiffLearnedSkillVersionsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_ActivateLearnedSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MutateLearnedSkillRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).ActivateLearnedSkill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_ActivateLearnedSkill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).ActivateLearnedSkill(ctx, req.(*MutateLearnedSkillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_RejectLearnedSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MutateLearnedSkillRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).RejectLearnedSkill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_RejectLearnedSkill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).RejectLearnedSkill(ctx, req.(*MutateLearnedSkillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_ArchiveLearnedSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(MutateLearnedSkillRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).ArchiveLearnedSkill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_ArchiveLearnedSkill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).ArchiveLearnedSkill(ctx, req.(*MutateLearnedSkillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_RollbackLearnedSkill_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(RollbackLearnedSkillRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).RollbackLearnedSkill(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_RollbackLearnedSkill_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).RollbackLearnedSkill(ctx, req.(*RollbackLearnedSkillRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_ListSkillChanges_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListSkillChangesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).ListSkillChanges(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_ListSkillChanges_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).ListSkillChanges(ctx, req.(*ListSkillChangesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _HarnessService_ListModels_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListModelsRequest)
 	if err := dec(in); err != nil {
@@ -1699,12 +2085,24 @@ var HarnessService_ServiceDesc = grpc.ServiceDesc{
 			Handler:    _HarnessService_GetSession_Handler,
 		},
 		{
+			MethodName: "GetSessionTranscript",
+			Handler:    _HarnessService_GetSessionTranscript_Handler,
+		},
+		{
 			MethodName: "SetMode",
 			Handler:    _HarnessService_SetMode_Handler,
 		},
 		{
 			MethodName: "CloseSession",
 			Handler:    _HarnessService_CloseSession_Handler,
+		},
+		{
+			MethodName: "RenameSession",
+			Handler:    _HarnessService_RenameSession_Handler,
+		},
+		{
+			MethodName: "DeleteSession",
+			Handler:    _HarnessService_DeleteSession_Handler,
 		},
 		{
 			MethodName: "ForkSession",
@@ -1781,6 +2179,38 @@ var HarnessService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "UndoLearningPromotion",
 			Handler:    _HarnessService_UndoLearningPromotion_Handler,
+		},
+		{
+			MethodName: "ListLearnedSkills",
+			Handler:    _HarnessService_ListLearnedSkills_Handler,
+		},
+		{
+			MethodName: "GetLearnedSkill",
+			Handler:    _HarnessService_GetLearnedSkill_Handler,
+		},
+		{
+			MethodName: "DiffLearnedSkillVersions",
+			Handler:    _HarnessService_DiffLearnedSkillVersions_Handler,
+		},
+		{
+			MethodName: "ActivateLearnedSkill",
+			Handler:    _HarnessService_ActivateLearnedSkill_Handler,
+		},
+		{
+			MethodName: "RejectLearnedSkill",
+			Handler:    _HarnessService_RejectLearnedSkill_Handler,
+		},
+		{
+			MethodName: "ArchiveLearnedSkill",
+			Handler:    _HarnessService_ArchiveLearnedSkill_Handler,
+		},
+		{
+			MethodName: "RollbackLearnedSkill",
+			Handler:    _HarnessService_RollbackLearnedSkill_Handler,
+		},
+		{
+			MethodName: "ListSkillChanges",
+			Handler:    _HarnessService_ListSkillChanges_Handler,
 		},
 		{
 			MethodName: "ListModels",

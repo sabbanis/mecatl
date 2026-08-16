@@ -187,7 +187,7 @@ not mecatl's heavy dependency cone. See [ADR 0036](docs/adr/0036-engine-module.m
 | Path | Contents |
 |---|---|
 | `go.work`, `go.mod`, `engine/go.mod`, `authn/oidc/go.mod` | the committed Go workspace and the root, importable-engine, and opt-in OIDC module manifests |
-| `authn/oidc` | reusable OIDC bearer validation that projects verified claims into `session.Principal` without exposing ToolHive types ([ADR 0103](docs/adr/0103-oidc-authn-module.md)) |
+| `authn/oidc` | reusable OIDC bearer validation that projects verified claims into `session.Principal` without exposing ToolHive types ([ADR 0206](docs/adr/0206-oidc-authn-module.md)) |
 | `engine/COMPATIBILITY.md`, `engine/CHANGELOG.md`, `engine/api/*.txt` | the engine public-API stability contract: policy, change record, and committed surface snapshots (the `api-compat` gate, [ADR 0037](docs/adr/0037-engine-stability-contract.md)) |
 | `engine/session`, `engine/governance`, `engine/tool`, `engine/prompt` | the domain (aggregate, permission/hook types, tool catalog + FS interfaces, prompt assembly) |
 | `engine/port` | the port interfaces the loop consumes |
@@ -197,7 +197,7 @@ not mecatl's heavy dependency cone. See [ADR 0036](docs/adr/0036-engine-module.m
 | `internal/app` | the composition layer (`app.Build`): provider registry, catalog assembly, per-session routing |
 | `contracts/proto`, `contracts/gen` | gRPC contract + the driver protocol (source of truth) and generated Go |
 | `cmd/mecated`, `cmd/mecatui`, `cmd/mecademo`, `cmd/mecatequi` | the server (composition root), the optional TUI client, the demo, and the single-shot headless CI/batch runner |
-| `studio/` | **Mecatl Studio**, the local web client (`task studio:dev`): a Node module, not a Go module — it consumes the public HTTP/SSE surface only and is never in `go.work` ([ADR 0110](docs/adr/0110-studio-module.md)) |
+| `studio/` | **Mecatl Studio**, the web client (`task studio:dev`): a Node module, not a Go module — it consumes the public HTTP/SSE surface in managed-local or authenticated-external mode and is never in `go.work` ([ADR 0225](docs/adr/0225-studio-module.md)) |
 | `perf/` | the offline scenario perf harness (`task perf:scenarios`), the `allocsgate` CI gate, and `perfconvert`; never imports `internal/` |
 | `e2e/` | the live BDD suite (Ginkgo) against real models via OpenRouter (`task e2e`; needs `OPENROUTER_API_KEY`) |
 | `.github/actions/mecatequi*`, `.github/workflows/mecatequi*.yml` | the forge glue: three composite actions (build+run, extract-prompt, publish) + the reusable `workflow_call` workflow (the recommended adoption path) + the split-privilege example workflow that runs `mecatequi` against an issue and opens a PR |

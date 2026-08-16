@@ -4,6 +4,8 @@ import { fileURLToPath } from "node:url";
 import { dirname, resolve } from "node:path";
 import { createHash, randomBytes } from "node:crypto";
 import { mkdir, readFile, rename, rm, writeFile } from "node:fs/promises";
+import { homedir } from "node:os";
+import { requestIsAllowed, validateGatewayURL } from "../lib/controller-security.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Studio is a module INSIDE the mecatl monorepo, so the harness it drives is
@@ -26,9 +28,26 @@ const skillsDir = resolve(workspace, ".mecatl/skills");
 // store is per-project by design, so it lives beside the session store rather than
 // in a shared location. Consolidation stays off: it spends tokens in the background.
 const memoryDir = resolve(workspace, ".scratch/studio-memory");
+const authFile = process.env.XDG_CONFIG_HOME
+  ? resolve(process.env.XDG_CONFIG_HOME, "mecatl/auth.yaml")
+  : resolve(homedir(), ".config/mecatl/auth.yaml");
+const configuredProvider = process.env.MECATL_STUDIO_PROVIDER?.trim().toLowerCase() || "";
+if (configuredProvider && !["mock", "openrouter", "toolhive"].includes(configuredProvider)) {
+  throw new Error("MECATL_STUDIO_PROVIDER must be mock, openrouter, or toolhive");
+}
+const managedAuthToken = (process.env.MECATL_AUTH_TOKEN || randomBytes(32).toString("base64url")).replace(/^Bearer\s+/i, "");
+const mcpProxySecret = randomBytes(24).toString("base64url");
+const studioPublicOrigin = process.env.MECATL_STUDIO_PUBLIC_ORIGIN?.trim() || "http://localhost:3000";
+const allowedOrigins = new Set(
+  (process.env.MECATL_STUDIO_ORIGINS || "http://localhost:3000,http://127.0.0.1:3000")
+    .split(",")
+    .map((origin) => origin.trim())
+    .filter(Boolean),
+);
+allowedOrigins.add(studioPublicOrigin);
 let child = null;
 let provider = "offline mock";
-let openRouterApiKey = "";
+let mecatlBaseURL = "";
 let gateway = null;
 let modelRouterConfig = null;
 let operatorSettingsActive = false;
@@ -38,6 +57,7 @@ let gatewayRefresh = null;
 let shuttingDown = false;
 let restartTimer = null;
 let restartFailures = 0;
+let startupError = "";
 const expectedExits = new WeakSet();
 const oauthAttempts = new Map();
 const oauthRedirectUri = "http://127.0.0.1:8788/oauth/callback";
@@ -52,6 +72,51 @@ let toolhiveReady = false;
 
 const delay = (milliseconds) => new Promise((done) => setTimeout(done, milliseconds));
 
+function jsonError(response, status, message) {
+  response.statusCode = status;
+  response.end(JSON.stringify({ error: message }));
+}
+
+async function readBody(request, limit = 1_048_576) {
+  const declared = Number(request.headers["content-length"] || 0);
+  if (declared > limit) throw Object.assign(new Error("request too large"), { statusCode: 413 });
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > limit) throw Object.assign(new Error("request too large"), { statusCode: 413 });
+    chunks.push(chunk);
+  }
+  return Buffer.concat(chunks);
+}
+
+async function pickLoopbackPort() {
+  const probe = http.createServer();
+  await new Promise((resolveListen, reject) => {
+    probe.once("error", reject);
+    probe.listen(0, "127.0.0.1", resolveListen);
+  });
+  const address = probe.address();
+  const port = typeof address === "object" && address ? address.port : 0;
+  await new Promise((resolveClose) => probe.close(resolveClose));
+  if (!port) throw new Error("Could not allocate a loopback port for mecated");
+  return port;
+}
+
+function fetchMecatl(path, options = {}) {
+  if (!mecatlBaseURL) throw new Error("mecated has not been assigned a listener yet");
+  const headers = new Headers(options.headers);
+  headers.set("authorization", `Bearer ${managedAuthToken}`);
+  return fetch(new URL(path, mecatlBaseURL), { ...options, headers });
+}
+
+function startupFailure(kind, message) {
+  startupError = kind === "openrouter"
+    ? `OpenRouter could not start. Add providers.openrouter.api_key to ${authFile}, then restart Studio. mecated: ${message}`
+    : message;
+  return new Error(startupError);
+}
+
 // A short probe, deliberately: when no token is cached the proxy blocks on an
 // interactive browser login, and a controller start must never hang on that.
 // Timing out simply means "not offerable right now" and studio falls back.
@@ -64,10 +129,10 @@ async function detectToolhiveGateway() {
   }
 }
 
-// Provider preference. An explicitly connected OpenRouter key is a deliberate
-// user choice and still outranks everything; otherwise the gateway is the
-// default and the canned mock is only the last resort.
-const preferredKind = () => (openRouterApiKey ? "openrouter" : toolhiveReady ? "toolhive" : "mock");
+// Provider credentials are owned by mecated's conventional auth file, never
+// copied through a browser form or patched into the child's environment here.
+// MECATL_STUDIO_PROVIDER selects a provider without carrying its credential.
+const preferredKind = () => configuredProvider || (toolhiveReady ? "toolhive" : "mock");
 
 function normalizeModelRouter(input) {
   const classifierModel = typeof input?.classifierModel === "string" ? input.classifierModel.trim() : "";
@@ -162,10 +227,6 @@ async function fetchJSON(url) {
   } catch {
     return null;
   }
-}
-
-async function fetchWithTimeout(url, options = {}, timeout = 10_000) {
-  return fetch(url, { ...options, signal: AbortSignal.timeout(timeout) });
 }
 
 function requireHttpsEndpoint(value, label) {
@@ -284,7 +345,7 @@ async function refreshGatewayAccessToken(force = false) {
     });
     const tokenResult = await tokenResponse.json().catch(() => ({}));
     if (!tokenResponse.ok || !tokenResult.access_token) {
-      process.stderr.write(`[oauth] refresh rejected (${tokenResponse.status}): ${JSON.stringify(tokenResult).slice(0, 300)}\n`);
+      process.stderr.write(`[oauth] refresh rejected (${tokenResponse.status}, ${String(tokenResult.error || "unknown_error").slice(0, 80)})\n`);
       throw new Error(tokenResult.error_description || tokenResult.error || "Gateway token refresh failed");
     }
     gateway.token = tokenResult.access_token;
@@ -313,14 +374,23 @@ async function stopChild() {
   await delay(250);
 }
 
-async function startMecatl(kind, apiKey = openRouterApiKey) {
+async function startMecatl(kind) {
   if (restartTimer) {
     clearTimeout(restartTimer);
     restartTimer = null;
   }
   await stopChild();
   startupLog = "";
-  const args = ["serve", "--workspace", workspace, "--store-dir", ".scratch/studio-sessions"];
+  startupError = "";
+  const port = await pickLoopbackPort();
+  mecatlBaseURL = `http://127.0.0.1:${port}`;
+  const args = [
+    "serve",
+    "--workspace", workspace,
+    "--store-dir", ".scratch/studio-sessions",
+    "--grpc-addr", "127.0.0.1:0",
+    "--http-addr", `127.0.0.1:${port}`,
+  ];
   if (operatorSettingsActive) args.push("--permission-config", operatorSettingsFile);
   else if (modelRouterConfig) args.push("--permission-config", routerSettingsFile);
   // mecated refuses to start on a missing --skills-dir, and an empty directory is
@@ -335,14 +405,13 @@ async function startMecatl(kind, apiKey = openRouterApiKey) {
   // "toolhive" provider on its own. Naming it as the default is all it takes.
   else if (kind === "toolhive") args.push("--default-provider", "toolhive");
   else args.push("--mock");
-  const env = { ...process.env };
-  if (kind === "openrouter") env.OPENROUTER_API_KEY = apiKey;
+  const env = { ...process.env, MECATL_AUTH_TOKEN: managedAuthToken };
   if (gateway) {
     // Mecatl's SDK opens the optional standalone SSE notification stream after
     // initialization. Some authenticated gateways (including Connector Gateway)
     // close that GET stream and thereby cancel an otherwise valid MCP session.
     // Keep the optional stream on loopback and forward request/response traffic.
-    args.push("--mcp-server", `${gateway.name}=http://127.0.0.1:8788/mcp-proxy/${encodeURIComponent(gateway.name)}`);
+    args.push("--mcp-server", `${gateway.name}=http://127.0.0.1:8788/mcp-proxy/${mcpProxySecret}/${encodeURIComponent(gateway.name)}`);
   }
   const proc = spawn(binary, args, { cwd: mecatlDir, env, stdio: ["ignore", "ignore", "pipe"] });
   child = proc;
@@ -361,11 +430,11 @@ async function startMecatl(kind, apiKey = openRouterApiKey) {
   // initialize handshake up to 30 seconds. Keep the controller's readiness
   // window longer than that so it never kills a valid in-flight connection.
   for (let attempt = 0; attempt < 320; attempt += 1) {
-    if (proc.exitCode !== null) throw new Error(`mecatl exited during startup (code ${proc.exitCode})`);
+    if (proc.exitCode !== null) throw startupFailure(kind, `mecatl exited during startup (code ${proc.exitCode})`);
     await delay(125);
     let ready = false;
     try {
-      const response = await fetch("http://127.0.0.1:8081/v1/models");
+      const response = await fetchMecatl("/v1/models");
       ready = response.ok;
     } catch { /* server is still starting */ }
     if (!ready) continue;
@@ -379,18 +448,44 @@ async function startMecatl(kind, apiKey = openRouterApiKey) {
     if (gateway && /MCP manager construction failed|no servers could be connected/i.test(startupLog)) {
       throw new Error("MCP Gateway could not be initialized. Check that the URL is a Streamable HTTP endpoint and that its credential is valid.");
     }
-    const stable = await fetch("http://127.0.0.1:8081/v1/models").then((response) => response.ok).catch(() => false);
+    const stable = await fetchMecatl("/v1/models").then((response) => response.ok).catch(() => false);
     if (!stable) continue;
     restartFailures = 0;
     return;
   }
-  throw new Error("mecatl did not become ready");
+  throw startupFailure(kind, "mecatl did not become ready");
 }
 
 const server = http.createServer(async (request, response) => {
   const requestURL = new URL(request.url, "http://127.0.0.1:8788");
-  if (requestURL.pathname.startsWith("/mcp-proxy/")) {
-    const proxyName = decodeURIComponent(requestURL.pathname.slice("/mcp-proxy/".length));
+  const mcpProxyPrefix = `/mcp-proxy/${mcpProxySecret}/`;
+  if (!requestIsAllowed(request, requestURL, { allowedOrigins, mcpProxyPrefix })) {
+    jsonError(response, 403, "request origin is not allowed");
+    return;
+  }
+  if (requestURL.pathname.startsWith("/mecatl/")) {
+    try {
+      const body = request.method === "GET" || request.method === "HEAD" ? undefined : await readBody(request);
+      const headers = {};
+      for (const key of ["content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"]) {
+        if (request.headers[key]) headers[key] = request.headers[key];
+      }
+      const path = requestURL.pathname.slice("/mecatl".length) + requestURL.search;
+      const upstream = await fetchMecatl(path, { method: request.method, headers, body, redirect: "manual" });
+      response.statusCode = upstream.status;
+      for (const key of ["content-type", "cache-control", "mcp-session-id", "www-authenticate"]) {
+        const value = upstream.headers.get(key);
+        if (value) response.setHeader(key, value);
+      }
+      if (upstream.body) for await (const chunk of upstream.body) response.write(chunk);
+      response.end();
+    } catch (error) {
+      jsonError(response, error.statusCode || 502, error.message || "mecated proxy failed");
+    }
+    return;
+  }
+  if (requestURL.pathname.startsWith(mcpProxyPrefix)) {
+    const proxyName = decodeURIComponent(requestURL.pathname.slice(mcpProxyPrefix.length));
     if (!gateway || proxyName !== gateway.name) {
       response.statusCode = 404;
       response.end("gateway not configured");
@@ -409,14 +504,12 @@ const server = http.createServer(async (request, response) => {
       return;
     }
     try {
-      const chunks = [];
-      for await (const chunk of request) chunks.push(chunk);
+      const requestBody = request.method === "POST" ? await readBody(request) : undefined;
       await refreshGatewayAccessToken(false);
       const headers = { Authorization: `Bearer ${gateway.token}` };
       for (const key of ["content-type", "accept", "mcp-session-id", "mcp-protocol-version", "last-event-id"]) {
         if (request.headers[key]) headers[key] = request.headers[key];
       }
-      const requestBody = request.method === "POST" ? Buffer.concat(chunks) : undefined;
       let upstream = await fetch(gateway.url, { method: request.method, headers, body: requestBody });
       if (upstream.status === 401 && gateway.refreshToken) {
         await upstream.arrayBuffer();
@@ -436,8 +529,7 @@ const server = http.createServer(async (request, response) => {
       response.end();
     } catch (error) {
       process.stderr.write(`[mcp-proxy] ${request.method} failed: ${error.message || error}\n`);
-      response.statusCode = 502;
-      response.end(JSON.stringify({ error: error.message || "gateway proxy failed" }));
+      jsonError(response, error.statusCode || 502, error.message || "gateway proxy failed");
     }
     return;
   }
@@ -504,11 +596,12 @@ const server = http.createServer(async (request, response) => {
       if (!code) throw new Error("Gateway sign-in did not return an authorization code");
       const tokenBody = new URLSearchParams({ grant_type: "authorization_code", code, client_id: attempt.clientId, redirect_uri: oauthRedirectUri, code_verifier: attempt.verifier });
       if (attempt.resource) tokenBody.set("resource", attempt.resource);
-      const tokenResponse = await fetchWithTimeout(attempt.tokenEndpoint, {
+      const tokenResponse = await fetch(attempt.tokenEndpoint, {
         method: "POST",
         headers: { "Content-Type": "application/x-www-form-urlencoded" },
         body: tokenBody,
-      }, 15_000);
+        signal: AbortSignal.timeout(15_000),
+      });
       const tokenResult = await tokenResponse.json().catch(() => ({}));
       if (!tokenResponse.ok || !tokenResult.access_token) throw new Error(tokenResult.error_description || tokenResult.error || "Gateway token exchange failed");
       await queueRestart(async () => {
@@ -523,17 +616,16 @@ const server = http.createServer(async (request, response) => {
           scope: attempt.scope,
           resource: attempt.resource,
           expiresAt: Date.now() + Math.max(60, Number(tokenResult.expires_in) || 300) * 1000,
-          insecureHttp: false,
         };
         try { await startMecatl(preferredKind()); }
         catch (error) { gateway = previousGateway; await startMecatl(preferredKind()); throw error; }
       });
-      response.end('<!doctype html><title>Mecatl Gateway Connected</title><style>body{font:16px system-ui;padding:40px;color:#25231f}</style><h1>Gateway connected</h1><p>You can close this window.</p><script>window.opener?.postMessage({type:"mecatl-mcp-oauth",ok:true},"http://localhost:3000");setTimeout(()=>window.close(),700)</script>');
+      response.end(`<!doctype html><title>Mecatl Gateway Connected</title><style>body{font:16px system-ui;padding:40px;color:#25231f}</style><h1>Gateway connected</h1><p>You can close this window.</p><script>window.opener?.postMessage({type:"mecatl-mcp-oauth",ok:true},${JSON.stringify(studioPublicOrigin)});setTimeout(()=>window.close(),700)</script>`);
     } catch (error) {
       const message = String(error.message || "Gateway sign-in failed").replace(/[<>&"']/g, "");
       process.stderr.write(`[oauth] callback failed: ${message}\n`);
       response.statusCode = 400;
-      response.end(`<!doctype html><title>Mecatl Gateway Error</title><style>body{font:16px system-ui;padding:40px;color:#25231f}</style><h1>Could not connect</h1><p>${message}</p><script>window.opener?.postMessage({type:"mecatl-mcp-oauth",ok:false,error:${JSON.stringify(message)}},"http://localhost:3000")</script>`);
+      response.end(`<!doctype html><title>Mecatl Gateway Error</title><style>body{font:16px system-ui;padding:40px;color:#25231f}</style><h1>Could not connect</h1><p>${message}</p><script>window.opener?.postMessage({type:"mecatl-mcp-oauth",ok:false,error:${JSON.stringify(message)}},${JSON.stringify(studioPublicOrigin)})</script>`);
     }
     return;
   }
@@ -551,9 +643,7 @@ const server = http.createServer(async (request, response) => {
   // Restart mecated with the CURRENT provider, gateway and router config. The
   // daemon resolves skills and agent definitions once at startup (ListSkills is
   // a pure snapshot read), so a newly authored SKILL.md only reaches the model
-  // after a restart. Driving it from here preserves the provider credential,
-  // which lives in this process's memory — restarting the controller instead
-  // would drop it and silently fall back to the mock provider.
+  // after a restart. Provider credentials remain owned by mecated's auth file.
   if (request.method === "POST" && requestURL.pathname === "/restart") {
     try {
       await queueRestart(async () => {
@@ -570,8 +660,11 @@ const server = http.createServer(async (request, response) => {
   }
   if (request.method === "GET" && requestURL.pathname === "/status") {
     response.end(JSON.stringify({
+      mode: "managed",
       provider,
       running: Boolean(child),
+      startupError,
+      authFile,
       // The client has no other way to learn this: it is resolved from THIS
       // file's location, so a clone anywhere works with no source edit.
       workspace,
@@ -588,41 +681,16 @@ const server = http.createServer(async (request, response) => {
     response.end(JSON.stringify({ config: modelRouterConfig, managedBy: operatorSettingsActive ? "operator-settings" : "studio" }));
     return;
   }
-  // Switch back to the gateway after an OpenRouter key was connected. Dropping
-  // the key is what makes the switch stick: preferredKind() gives an explicitly
-  // connected key precedence, so leaving it in place would flip straight back
-  // on the next restart.
-  if (request.method === "POST" && requestURL.pathname === "/toolhive") {
-    try {
-      toolhiveReady = await detectToolhiveGateway();
-      if (!toolhiveReady) throw new Error(`No ToolHive LLM gateway on ${toolhiveGatewayURL}. Start it with "thv llm proxy start" and try again.`);
-      await queueRestart(async () => {
-        openRouterApiKey = "";
-        await startMecatl("toolhive");
-      });
-      response.end(JSON.stringify({ ok: true, provider }));
-    } catch (error) {
-      response.statusCode = 400;
-      response.end(JSON.stringify({ error: error.message || "Could not switch to the ToolHive LLM gateway" }));
-    }
-    return;
-  }
-  if (request.method !== "POST" || !["/openrouter", "/mcp", "/model-router"].includes(requestURL.pathname)) {
+  if (request.method !== "POST" || !["/mcp", "/model-router"].includes(requestURL.pathname)) {
     response.statusCode = 404;
     response.end(JSON.stringify({ error: "not found" }));
     return;
   }
-  let body = "";
-  for await (const chunk of request) {
-    body += chunk;
-    if (body.length > 16_384) {
-      response.statusCode = 413;
-      response.end(JSON.stringify({ error: "request too large" }));
-      return;
-    }
-  }
   try {
-    const input = JSON.parse(body);
+    if (!String(request.headers["content-type"] || "").toLowerCase().startsWith("application/json")) {
+      throw Object.assign(new Error("Content-Type must be application/json"), { statusCode: 415 });
+    }
+    const input = JSON.parse((await readBody(request, 16_384)).toString("utf8"));
     if (requestURL.pathname === "/model-router") {
       if (operatorSettingsActive) throw new Error("Routing is managed by the imported operator settings. Update the complete settings file to preserve its aliases, slots, and guardrails.");
       const nextConfig = normalizeModelRouter(input);
@@ -643,21 +711,10 @@ const server = http.createServer(async (request, response) => {
       response.end(JSON.stringify({ ok: true, config: modelRouterConfig }));
       return;
     }
-    if (requestURL.pathname === "/openrouter") {
-      if (typeof input.apiKey !== "string" || !input.apiKey.trim()) throw new Error("OpenRouter API key is required");
-      await queueRestart(async () => {
-        openRouterApiKey = input.apiKey.trim();
-        await startMecatl("openrouter", openRouterApiKey);
-      });
-      response.end(JSON.stringify({ ok: true, provider }));
-      return;
-    }
     if (!/^[A-Za-z0-9_]+$/.test(input.name || "")) throw new Error("Gateway name may contain only letters, numbers, and underscores");
-    const parsed = new URL(input.url);
-    const loopback = ["localhost", "127.0.0.1", "::1"].includes(parsed.hostname);
-    if (parsed.protocol !== "https:" && !(parsed.protocol === "http:" && (loopback || input.insecureHttp))) throw new Error("Use HTTPS, or explicitly allow insecure HTTP");
+    const parsed = validateGatewayURL(input.url, { allowLoopbackHTTP: process.env.MECATL_ALLOW_INSECURE_LOOPBACK_MCP === "1" });
     const token = typeof input.token === "string" ? input.token.trim().replace(/^Bearer\s+/i, "") : "";
-    const candidate = { name: input.name, url: parsed.toString(), token, insecureHttp: Boolean(input.insecureHttp && parsed.protocol === "http:" && !loopback) };
+    const candidate = { name: input.name, url: parsed.toString(), token };
     await queueRestart(async () => {
       const previousGateway = gateway;
       gateway = candidate;
@@ -673,8 +730,7 @@ const server = http.createServer(async (request, response) => {
     });
     response.end(JSON.stringify({ ok: true, gateway: { name: gateway.name, url: gateway.url } }));
   } catch (error) {
-    response.statusCode = 400;
-    response.end(JSON.stringify({ error: error.message || "Could not update the Mecatl controller" }));
+    jsonError(response, error.statusCode || 400, error.message || "Could not update the Mecatl controller");
   }
 });
 
@@ -687,7 +743,10 @@ server.listen(8788, "127.0.0.1", async () => {
     ? `ToolHive LLM gateway detected at ${toolhiveGatewayURL}\n`
     : `ToolHive LLM gateway not reachable at ${toolhiveGatewayURL} (start it with "thv llm proxy start"); falling back to the offline mock\n`);
   try { await startMecatl(preferredKind()); }
-  catch (error) { process.stderr.write(`${error.message}\n`); }
+  catch (error) {
+    startupError ||= error.message || "mecated could not start";
+    process.stderr.write(`${startupError}\n`);
+  }
 });
 
 for (const signal of ["SIGINT", "SIGTERM"]) {

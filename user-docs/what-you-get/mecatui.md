@@ -21,21 +21,60 @@ mecatui -p "Summarize the failing tests in this repo" --workspace "$PWD"
 The seed fires once: a `/models` restart or `/clear` rebinds the session but never
 re-submits it. See the [`docs/tui.md` flags reference](https://github.com/stacklok/mecatl/blob/main/docs/tui.md#seeding-an-initial-prompt) for the full details.
 
-## Changing completed-trajectory learning (`/learning`)
+## Continue a chat when mecatui starts
 
-`/learning` cycles the operator setting through **Off → Review → Auto** in
+Pass `--resume SESSION_ID` to open one exact owned main chat, or `--resume-latest`
+to open the newest eligible one. Both selectors work when mecatui hosts its embedded
+server and in `mecatui connect` mode, and cannot be combined:
+
+```sh
+mecatui --resume 01JOPAQUESESSIONID
+mecatui connect 127.0.0.1:8080 --resume-latest
+```
+
+mecatui loads the authoritative stored transcript and adopts that same chat; it does
+not create a throwaway session. The chat keeps its stored workspace, mode, model, and
+capabilities. Latest skips active or awaiting chats, scheduled and child runs, unknown
+rows, and rows without a complete transcript. An exact selector reports why the chosen
+row cannot be continued.
+
+The first new prompt still goes through the server's atomic attachment and lease checks.
+If that fails, the prior transcript remains read-only and no fallback chat is created:
+press `r` to retry the preserved prompt, or `esc` to go Back and edit it. You can combine
+a resume selector with `--prompt` or `--prompt-file`; mecatui adopts the old transcript
+first, then sends the seed exactly once as the next turn.
+
+While mecatui is open, `/session` then `c` is the quickest way to copy the exact active
+ID. If you quit normally instead, mecatui restores the terminal and then prints one stable
+line to stderr:
+
+```text
+mecatui: final-session-id="01JOPAQUESESSIONID"
+```
+
+Everything after `=` is a JSON string. Decode it with a JSON decoder to recover the
+byte-exact final active ID, including after you continued another chat, changed model or
+effort, or switched worktrees. Save that ID and pass it to `--resume` next time. The line
+is deliberately absent if no session was established, startup/the TUI failed, or a signal
+interrupted or forced the exit; normal stdout remains available to scripts. See the
+[`docs/tui.md` startup continuation reference](https://github.com/stacklok/mecatl/blob/main/docs/tui.md#continue-a-chat-at-startup).
+
+## Changing completed-trajectory learning (`/learning`, `/learning-sensitivity`)
+
+`/learning` cycles the operator setting through **Off → Review → Auto** and
+`/learning-sensitivity` cycles **Conservative → Balanced → Eager** in
 `$XDG_CONFIG_HOME/mecatl/settings.yaml`, preserving unrelated YAML and comments. Off means
 no automatic completed-trajectory reflection. Review signal-gates eligible completions and
 stages evidence-backed proposals without changing memory; Auto uses the same stage-first path
 and may conservatively promote eligible non-conflicting facts. These modes do not control a separately configured `--user-model-consolidate-interval`,
-which remains an independent process-wide maintenance schedule. The setting is build-time:
-restart local mecatui after saving. In connect mode, mecatui never edits local settings;
-change `learning.mode` on the remote server host and restart that remote server.
+which remains an independent process-wide maintenance schedule. The commands report both pending values and require a local restart; there is no live
+mutation API. In connect mode, mecatui never edits local settings; change `learning.mode` or
+`learning.sensitivity` on the remote server host and restart that remote server.
 
 ## Reviewing reflections (`/reflections`, `/reflect`)
 
 When the server advertises staged learning, `/reflections` opens a bounded proposal list and detail
-view with independent operator/project pagination. Before approval, the scrollable detail shows the complete bounded canonical key, value, scope, and optional description rather than only a benign summary, together with each evidence handle's ownership-checked, digest-reverified source session/sequence/tool-call/digest provenance and bounded redacted canonical preview. Approve or reject staged fact proposals with version-checked decisions; procedure approval is disabled and remains deferred to #510. Stale decisions offer an in-place refresh, and promoted facts offer a
+view with independent operator/project pagination. Before approval, the scrollable detail shows the complete bounded canonical key, value, scope, and optional description rather than only a benign summary, together with each evidence handle's ownership-checked, digest-reverified source session/sequence/tool-call/digest provenance and bounded redacted canonical preview. Approve or reject staged fact proposals with version-checked decisions; evidence-backed procedures can be materialized and evaluated into a linked learned skill. Active agent-owned skills are labelled with owner/version in `/skills`; learned rows open bounded body/evaluation/receipt detail and activate/reject/archive/rollback only through revision-CAS server calls. Updates never auto-open an overlay. Stale decisions offer an in-place refresh, and promoted facts offer a
 compensating undo only while their linked memory revision is still current and the partition's convergence-capable memory target is available. When a project target is unavailable or is not the exact trusted configured root, approve and undo are disabled with the server-provided reason while the proposal remains inspectable and rejectable. Unavailable, changed, and cross-owner evidence is shown honestly without a preview and cannot be approved; raw tool/permission arguments, reasoning, binary data, controls, and secrets are omitted. `/reflect` explicitly submits
 the current completed session synchronously on that session's persisted provider/model and works even when automatic learning is Off through lazy initialization. Older or unconfigured
 servers hide these commands through capability discovery.
@@ -70,7 +109,34 @@ If your current model doesn't support reasoning effort, the picker warns you tha
 
 Every session persists to disk as append-only JSONL — the conversation, the tool-call history, and the event timeline — under a per-workspace directory, mode `0700` (owner-only; it stores the raw conversation in plaintext). Quit mecatui and come back later and your work is still there.
 
-`/sessions` opens a picker over past sessions in the current workspace. Each row shows a relative timestamp, the turn count, a title (taken from your first prompt, or the session id if there isn't one yet), and the model it ran on. Opening one replays its durable history — this is a pure read of what already happened, not a live reconnect, so a session that's still `running` or parked awaiting your approval can't be opened this way (mecatui tells you so rather than showing you a partial, misleading transcript).
+To browse before creating a chat, launch the existing session inventory directly:
+
+```sh
+mecatui sessions
+mecatui connect 127.0.0.1:8080 sessions
+```
+
+Neither form creates a throwaway session. Press `enter` to continue or inspect the
+selected row, `n` to create a new chat with your launch defaults, or `esc` to quit
+without a session. `esc` from an inspection goes Back to the startup inventory.
+New-chat creation waits for saved model defaults to be reconciled. Seed-prompt flags
+(`-p`/`--prompt`, `--prompt-file`) and resume flags cannot be combined with a
+`sessions` launch.
+
+`/sessions` opens a searchable inventory in four tabs: **Chats**, **Scheduled runs**, **Child runs**, and **Other**. Unknown legacy or custom rows appear under Other instead of being mislabeled as children. Rows show state, time, turns, title, model, and a short digest handle; the chat you are currently using is marked **`[current]`**. The search applies to the selected tab and matches the row's title, model, workspace, digest, and available relationship details.
+
+The selected row shows only actions the server advertises: **`y`** copies its exact
+opaque ID, **`v`** opens its authoritative transcript without attaching, **`f`** forks
+an eligible main chat and adopts the peer, **`r`** edits its persisted title, and
+**`d`** asks before permanent deletion. `esc` cancels the rename or delete prompt.
+The currently attached chat cannot be deleted from its own row; switch first.
+Server-side ownership, kind, active/awaiting, and lease checks run again when an
+action executes, so stale inventory data fails safely without changing the active chat.
+Scheduled, child, and unknown rows expose only the actions valid for their kind.
+
+The main header uses that same compact digest instead of exposing the full opaque ID. Type `/session` to see the active chat's safely quoted full ID and metadata (title, state, workspace, known timestamps, provider, and model), then press `c` to copy the exact ID. Clipboard failure or a session switch is reported rather than shown as a successful stale copy.
+
+Press `enter` on a Chat to **Continue** it when the server says it is publicly continuable. mecatui loads the authoritative snapshot transcript first, then makes that chat the active prompt target. Scheduled, Child, and inspect-capable Other runs are normally **Inspect** instead: their same authoritative snapshot transcript opens read-only, without changing your active chat. This is deliberately non-destructive — `esc` is **Back** to the inventory. If a transcript cannot be loaded completely, mecatui does not continue it; the error view offers **`r` Retry** or **Back**. The durable event log may help live delivery catch-up, but it is not used as the conversation transcript or as proof that a transcript is complete.
 
 ## Suspending and quitting like a terminal app
 
@@ -96,6 +162,8 @@ A Subagent card adds delegation visibility: while the child runs, its collapsed 
 
 When the agent needs permission, a modal asks you to **allow once**, **always allow** (this session), or **deny**. You can answer with the keyboard chords (`a` / `w` / `d` by default, rebindable) or by **left-clicking the button** with the mouse — a click does exactly what its chord does. Plan-mode reviews get the same clickable action bar (**approve & run** / **auto-accept edits** / **iterate**). Clicking anywhere else in the modal does nothing, so a stray click can't accidentally approve something.
 
+Long arguments never run off the card: they **wrap**, and when there's more than fits, the modal shows a scroll hint — `pgup`/`pgdn`, the arrow keys, or the mouse wheel over the card scroll the args in place. For a really long command (a Bash ask shows the decoded command — with a `timeout_ms: N` note when the envelope carries one — not the JSON envelope), `ctrl+t` opens a **full-screen args view** with the whole thing scrollable and the buttons pinned at the bottom; `r` toggles between the pretty rendering and the raw tier — the **verbatim wire args string, untouched** — and `esc` (or `ctrl+t` again) takes you back to the modal. `ctrl+t` routes by ask type: plan asks keep their full-screen plan review and Edit/Write asks keep the in-modal diff expand.
+
 ## Remapping keys
 
 Every mecatui action is rebindable — and the `?` help overlay always shows your **live** bindings, so a remap is reflected in the help you see, not just in the keys that fire. Three override layers merge **per action**: the repeatable `--keymap Action=chord[,chord2]` CLI flag wins, over the `keymap:` map in `~/.config/mecatui/settings.yaml` (mecatui's own client settings file), over the deprecated legacy location:
@@ -112,7 +180,7 @@ The classic use case is **getting readline-style editing back in the prompt**. B
 
 The footer help line, the inline trace/collapse markers, the permission-modal buttons, and every overlay's navigation footer (agents/team/mcp/effort/models/sessions pickers) all follow remapped keys whenever the displayed action is backed by the keymap. Genuinely local/non-keyMap controls stay literal — including raw form/list arrows and tabs, the schedule panel's `c`/`p`/`r`/`f`/`d` action keys, and the inline `@`-mention/slash-palette menus — as do the input widget's own editing keys. With the default approval chords (`a`/`w`/`d`) the permission-modal buttons read `[A]llow` / `Al[w]ays` / `[D]eny`; rebound, they switch to an honest standalone form (`[Y] allow` / `[Q] always allow` / `[N] deny`).
 
-Rules, in plain language: action names must match the documented set exactly; a **global** action (one that fires at the main prompt) must be a modified or special chord — never a bare letter that would swallow your typing — while keys that only act inside an overlay or the permission modal may be bare; two actions in the same scope can't share a chord; the deny key can't collide with allow/always-allow/submit/cancel; and the send key must differ from the newline key. An invalid override fails startup with a clear `keymap:` error.
+Rules, in plain language: action names must match the documented set exactly; a **global** action (one that fires at the main prompt) must be a modified or special chord — never a bare letter that would swallow your typing — while keys that only act inside an overlay or the permission modal may be bare; two actions in the same scope can't share a chord; the deny key can't collide with allow/always-allow/submit/cancel; and the send key must differ from the newline key. `RawArgs` (the full-screen ask-args view's pretty↔raw toggle) and `Refresh` share the default chord `r` in disjoint surfaces — an explicit rebind of either must keep the pair disjoint. An invalid override fails startup with a clear `keymap:` error.
 
 Settings are read **once at startup** — restart mecatui to apply a change (live reload is a planned follow-up). For the full action table, the input widget's editing keys, and the exact validation rules, see the [`docs/tui.md` Remapping keys reference](https://github.com/stacklok/mecatl/blob/main/docs/tui.md#remapping-keys).
 

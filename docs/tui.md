@@ -94,6 +94,12 @@ or fallback:
   `--trust-project`, provider knobs, …) apply, and the remote-only flags
   (`--auth-token`, `--tls`, `--tls-ca`, `--insecure`) are **rejected** here.
 
+- **`mecatui sessions [flags]`** — use the same embedded transport and flags as
+  bare `mecatui`, but open the stored-session inventory before creating anything.
+  Press `enter` to Continue an eligible chat or Inspect a read-only run, `n` to
+  create a new chat with the launch workspace/mode/model defaults, or `esc` to
+  quit without a session. Inspection `esc` returns to the startup inventory.
+
 - **`mecatui connect ADDRESS [flags]`** — always dial a running `mecated` at
   `ADDRESS` (host:port); **never probe** loopback and **never embed** — the
   target must already be serving. Embedded-server flags (`--mock`,
@@ -103,6 +109,7 @@ or fallback:
   ```sh
   bin/mecated serve &                                 # listens on 127.0.0.1:8080
   bin/mecatui connect 127.0.0.1:8080 --workspace "$PWD"
+  bin/mecatui connect 127.0.0.1:8080 sessions --workspace "$PWD"
   bin/mecatui connect mecated.internal:443 --tls --auth-token "$MECATL_AUTH_TOKEN"
   ```
 
@@ -127,8 +134,16 @@ agent pod, not your local checkout. See [Security & transport](usage/mecated.md#
 
 `ADDRESS` must immediately follow `connect`; a missing or flag-first `ADDRESS` is
 a usage error, with one carve-out: `mecatui connect --help` renders the connect
-help instead of the missing-ADDRESS usage error. An unknown leading command fails
-closed.
+help instead of the missing-ADDRESS usage error. Put `sessions` after the address
+for the remote startup browser: `mecatui connect ADDRESS sessions [flags]`.
+An unknown leading command fails closed.
+
+The startup browser never creates a throwaway session. It completes the model-list
+reconcile before enabling `n`, so a removed saved provider cannot race a new-chat
+create. Empty inventories, list failures, and unavailable transcript loading still
+leave `n` and `esc` available. `-p`/`--prompt`, `--prompt-file`, `--resume`, and
+`--resume-latest` conflict with either `sessions` launch form and are rejected with
+a usage error; choose one startup intent explicitly.
 
 > **Removed flags:** the three `--subagent-ask-reviewer*` flags were inert under
 > `mecatui` (it runs interactive — a child ask surfaces to the approval modal, not
@@ -136,6 +151,49 @@ closed.
 > To use the headless ask reviewer, run a headless `mecated serve --headless
 > --subagent-ask-reviewer …` and point `mecatui connect` at it. The `--model-slot
 > ask-reviewer=…` model slot is unaffected.
+
+### Continue a chat at startup
+
+`--resume SESSION_ID` adopts an existing owned main chat before Bubble Tea starts.
+`--resume-latest` instead chooses the newest eligible owned main chat whose authoritative
+snapshot transcript is available. Both flags work with the embedded server and with
+`mecatui connect`, and they are mutually exclusive:
+
+```sh
+mecatui --resume 01JOPAQUESESSIONID
+mecatui connect 127.0.0.1:8080 --resume-latest
+```
+
+Adoption does not create a temporary session: mecatui loads and displays the stored
+transcript, workspace, mode, model, and capabilities, then targets the same opaque ID.
+`--workspace` and `--mode` therefore describe only a newly created session; an adopted
+chat keeps its stored values. Scheduled runs, child runs, unknown legacy rows, chats
+awaiting approval, active chats, and rows without a complete authoritative transcript
+are not eligible. Exact `--resume` reports why its row cannot be continued;
+`--resume-latest` skips ineligible or unreadable rows and tries the next one.
+
+The read-only startup lookup does not reopen, recover, abandon, or acquire a lease.
+Those checks remain atomic at the ordinary run-entry funnel when the first new prompt
+is sent. If that attachment fails, the stored transcript remains visible and no
+fallback session is created: press `r` to retry the preserved prompt or `esc` to go
+Back and edit it. Combining a resume selector with `--prompt` or `--prompt-file`
+adopts the transcript first and then submits the seed exactly once as the next turn.
+
+On an ordinary clean exit, after the terminal has left the alternate screen and cleanup
+has completed, mecatui writes exactly one handoff line to **stderr**:
+
+```text
+mecatui: final-session-id="01JOPAQUESESSIONID"
+```
+
+The value after `=` is a JSON string, not display text: a JSON decoder recovers the
+byte-exact valid-UTF-8 ID even when it contains spaces, quotes, or line separators. The ID
+is the final active chat after any startup continuation, `/sessions` continuation, model
+carryover, effort fork, or worktree switch—not necessarily the ID created at startup. The
+line is absent when no session was established, startup or the TUI failed, or a signal
+interrupted/forced exit. stdout is unchanged. This makes the normal workflow: copy the ID
+inside `/session` with `c` while the TUI is open, or retain this stderr line and pass its
+decoded value to `--resume` later.
 
 ### Seeding an initial prompt
 
@@ -158,8 +216,10 @@ a short directive with a longer brief. The seed fires ONCE: a `/models` restart 
 
 | Flag | Default | Meaning |
 |---|---|---|
-| `--workspace` | cwd | absolute session workspace root |
-| `--mode` | `default` | permission posture: `default` \| `plan` \| `accept-edits` |
+| `--workspace` | cwd | absolute workspace root for a new session; an adopted chat keeps its stored workspace |
+| `--mode` | `default` | permission posture for a new session: `default` \| `plan` \| `accept-edits`; an adopted chat keeps its stored mode |
+| `--resume` | – | continue the owned main chat with this exact opaque session ID; loads its authoritative transcript without creating a throwaway session; mutually exclusive with `--resume-latest` |
+| `--resume-latest` | off | continue the newest eligible owned main chat with an available authoritative transcript; excludes active, awaiting, scheduled, child, and unknown sessions; mutually exclusive with `--resume` |
 | `-p` / `--prompt` | – | seed prompt auto-submitted once the first session is ready (the CLI task to launch with). The TUI stays interactive for follow-ups; this is NOT a one-shot. Both `--prompt` and `--prompt-file` may be given (literal first, joined by a blank line). Fires ONCE — a `/models` restart or `/clear` never re-submits it |
 | `--prompt-file` | – | path to a file whose contents are the seed prompt body. Read at startup (fail-fast on unreadable). Joined after `--prompt` when both are given. Same once-only semantics as `--prompt` |
 | `--theme` | `aztec` | theme name (also `MECATUI_THEME`) |
@@ -242,7 +302,10 @@ Exiting mecatui (double Ctrl+C on an empty prompt, or an OS `SIGINT`/`SIGTERM`)
 runs a **bounded** graceful shutdown — it cannot hang indefinitely on an in-flight
 scheduled fire, a stuck MCP server, or a wedged gRPC stream (issue #388). The first
 signal quits Bubble Tea and starts cleanup; a **second** signal during cleanup forces
-an immediate hard exit (`os.Exit(130)`).
+an immediate hard exit (`os.Exit(130)`). Signal-driven exits print no final-session handoff.
+After an ordinary clean keyboard exit, mecatui first restores the normal screen and finishes
+cleanup, then emits the JSON-safe `mecatui: final-session-id=<JSON string>` line documented
+under [Continue a chat at startup](#continue-a-chat-at-startup).
 
 Cleanup is bounded at each layer (mirroring the `mecak8s` bounded-shutdown
 precedent), worst case ≈ 45s:
@@ -311,13 +374,16 @@ in your `~/.tmux.conf`.
 conventional dirs, e.g. `.claude/skills`, when present) — consistent with
 agent-definition discovery. Skills register only when at least one `SKILL.md` is
 found (opt-in by presence), so with none, `caps.Skills` is false and the `?`
-overlay reflects that. When skills ARE discovered, `/skills` opens a read-only
-inventory panel listing each skill's name + one-line description (a startup
-snapshot via the `ListSkills` RPC — skills are immutable for the process
-lifetime). The panel opens with a **type-to-filter** input focused: type to
-narrow the list by a case-insensitive substring match over each skill's **name**
-and **description** (mirroring the `/models` picker's filter, but read-only —
-there is no cursor/enter/select here, activation stays the model's call). `esc`
+overlay reflects that. `/skills` opens the combined inventory panel: external skills show
+name/description from the live `ListSkills` generation, while learned skills also show owner and
+lifecycle state. Active learned entries are labelled `agent-owned` with owner and active version;
+external skills remain unlabelled and retain precedence. `up`/`down` selects a learned skill and
+`enter` opens bounded body, evidence/evaluation, receipt history, and a `v` version diff; `a` activates, `x` rejects,
+`d` archives, and `r` rolls back through server-side expected-revision CAS. A stale action stays in
+the detail with a refresh hint. Procedure linkage is also shown in `/reflections`; changes surface
+non-modally and never force-open either overlay. The panel opens with a **type-to-filter** input focused: type to
+narrow the external live list by a case-insensitive substring match over each skill's **name**
+and **description**. `esc`
 is two-stage: a non-empty filter is cleared first (panel stays open); a second
 `esc` closes the panel. A long inventory is **scrollable** the same way `/soul` is:
 `pgup`/`pgdn` (and `up`/`down`, `home`/`end`) move a fixed line-window over the
@@ -392,19 +458,21 @@ tasks) appear
 only when the connected server advertises those capabilities (and, for
 `/mcp`/`/agents`/`/skills`/`/soul`/`/usermodel`/`/reflections`/`/reflect`/`/models`/`/worktrees`/`/schedule`, the matching client
 collaborator is wired). The fixed palette order is
-`clear, help, mcp, agents, team, skills, soul, usermodel, reflections, reflect, models, effort, worktrees, schedule, learning` (locked by a test).
+`clear, help, mcp, agents, team, skills, soul, usermodel, reflections, reflect, models, effort, worktrees, schedule, learning, learning-sensitivity` (locked by a test).
 `/learning` is local embedded-server operator-settings UX: each invocation selects the
 next Off→Review→Auto value in `$XDG_CONFIG_HOME/mecatl/settings.yaml`, preserving
-unrelated YAML and comments, and reports that restart is required. These labels describe
+unrelated YAML and comments. `/learning-sensitivity` independently cycles
+Conservative→Balanced→Eager. Both report the complete pending mode+sensitivity and that a
+restart is required; neither provides a live mutation API. These labels describe
 completed-trajectory observation only: Off disables automatic reflection, Review stages
 bounded evidence-backed proposals for operator approval, and Auto additionally promotes only
 standard-policy-eligible, non-conflicting facts. Explicit `/reflect` remains available in Off when
 the server has a configured reflection provider/repository.
 They do not control a separately configured `--user-model-consolidate-interval`; that
 process-wide schedule remains operator-authorized even when a project lowers the effective
-mode to Off. In `mecatui connect` mode, `/learning` is read-only: it never mutates the
-client's local settings file and tells the operator to edit `learning.mode` on the remote
-server host and restart that server.
+mode to Off. In `mecatui connect` mode, `/learning` and `/learning-sensitivity` are
+read-only: they never mutate the client's local settings file and tell the operator to edit
+the mode or sensitivity on the remote server host and restart that server.
 `/agents` and `/team` are distinct: `/agents` is the **definition inventory** (a
 palette-only `ListAgents` snapshot, gated on `caps.agents`), while `/team` opens
 the **live overlay** of a team that has actually run (gated on `caps.teams`).
@@ -438,7 +506,7 @@ Forget remains an ordinary model tool behind its permission gate.
 **`/reflections` and `/reflect` (proposal review).** `/reflections` is gated on the
 server's proposal capability. It loads at most 50 operator proposals plus at most 50 proposals
 for the current project, keeps independent scope cursors, sorts staged/conflicted work ahead of recent terminal records,
-and offers `n`/`p` bounded pages, `enter` detail, `a` approve facts, `x` reject, and `u` compensating undo. Procedure approval stays disabled and visibly deferred (#510 is not implemented). Detail uses a terminal-height window with arrow/page scrolling and shows the complete bounded canonical fact key, value, scope, and optional description before approval, plus
+and offers `n`/`p` bounded pages, `enter` detail, `a` approve facts or materialize/evaluate evidence-backed procedures, `x` reject, and `u` compensating undo. A materialized procedure shows its learned-skill id and points to `/skills`; no receipt auto-opens a modal. Detail uses a terminal-height window with arrow/page scrolling and shows the complete bounded canonical fact key, value, scope, and optional description before approval, plus
 bounded proposal metadata, triggers, decisions, promotion receipt, and ownership-checked,
 digest-reverified evidence provenance plus its bounded redacted canonical preview (source session,
 locator/ordinal, optional event sequence and tool call, digest, and preview). Preview projection omits
@@ -758,7 +826,11 @@ show the plain prompt-hint card.
 | in the permission modal: `w` | always allow (this session; offered for the main agent's asks only, not surfaced subagent asks; rebindable via `AllowAlways`) |
 | in the permission modal: `d`/`n`/`esc` | deny (rebindable via `Deny`) |
 | in the permission modal: `←`/`→`/`tab` | cycle the focused button; `enter` activates it |
-| in the permission modal / plan-review bar: left-click a button | activate it (same as its chord — **alt screen only**). Clicking anywhere else in the modal does nothing (it is a gate, not a form) |
+| in the permission modal (non-diff ask): `pgup`/`pgdn`, `↑`/`↓` | scroll the modal's in-card args region when rows are hidden (long args wrap; the `… · ctrl+t full args` hint shows when anything is hidden) |
+| in the permission modal (non-diff ask): `ctrl+t` | open the **full-screen ask-args view** (see below); plan asks and Edit/Write asks keep the in-modal expand behaviour instead |
+| in the full-screen ask-args view: `r` | toggle the args between the pretty tier (a Bash `{"command": …}` decodes to the command text, with a muted `timeout_ms: N` annotation when the envelope carries one) and the **verbatim wire args string** (rebindable via `RawArgs`; shown only when the tiers genuinely differ, hidden when they are byte-identical) |
+| in the full-screen ask-args view: `esc` / `ctrl+t` | back to the modal |
+| in the permission modal / plan-review bar / ask-args view: left-click a button | activate it (same as its chord — **alt screen only**). Clicking anywhere else in the modal does nothing (it is a gate, not a form) |
 | `pgup` / `pgdn` | scroll the conversation up / down |
 | `home` / `end` | jump to the top / bottom of the conversation (`end` resumes auto-follow) |
 | mouse wheel | scroll the conversation (**alt screen only**; see below) |
@@ -792,6 +864,37 @@ while asks are queued. Answering or denying the visible ask advances the queue (
 modal opens immediately); a cancelled child's queued ask is withdrawn in place (with a
 notice, since the count badge advertised it); any asks still queued when the run ends are
 dropped. The keys are unchanged — you only ever answer one modal at a time.
+
+**Long args wrap, scroll, and open full-screen.** A non-diff ask's args (a Bash
+`{"command": …}` decodes to the command text; anything else renders as pretty
+JSON) **wrap** inside the card — no more single unreadable line running off the
+edge. The command renders in the bright `askArgs` style with a tool-coloured
+left accent bar, so the thing being approved reads distinct from the muted
+reason/hint around it. The in-card args region caps at ten rows: when anything
+is hidden, a hint (`… · pgup/pgdn scroll · ctrl+t full args`) shows, and
+`pgup`/`pgdn`, `↑`/`↓`, or the mouse wheel over the card scroll the region in
+place. The card itself sizes to its content up to 132 columns on a wide
+terminal (still a centred card, not a full-width band). `ctrl+t`
+on a non-diff ask opens the **full-screen ask-args view**: the whole args fill
+the conversation region and scroll, and both that view and the modal mark a
+soft-wrapped command with a warning-coloured `↩` at the END of each continued
+row, so a wrap is never mistaken for a real newline in the args. The buttons
+pin to the bottom bar, and
+`r` toggles between the pretty tier and the **raw tier — the VERBATIM wire args
+string**, sanitized but otherwise untouched (the escape hatch that can never
+lie: "exactly what am I approving"). The toggle is offered whenever the tiers
+genuinely differ (any Bash ask, or an ask whose pretty tier re-indents the
+verbatim raw); an ask whose tiers are byte-identical (empty args, a non-JSON
+single-line passthrough) shows no toggle hint. `esc` or
+`ctrl+t` returns to the modal; the verdict keys work from inside the view.
+`ctrl+t` routes by ask type: plan asks keep the scrollable plan-review view and
+Edit/Write asks keep the in-modal diff expand — see
+[ADR 0222](./adr/0222-mecatui-ask-args-view.md).
+
+For hand-testing the modal's long-args surfaces without driving a live run,
+`MECATUI_DEBUG_ASK=1` registers a `/debug-ask` built-in that injects a fake
+long-args permission ask through the real reducer (deliberately env-var-only —
+it never appears in `--help`).
 
 The `?` overlay enumerates the rest of the chords — `ctrl+v` (paste a clipboard
 image), `ctrl+o`/`ctrl+r`/`ctrl+p` (MCP inventory / resources / prompts), `ctrl+a`
@@ -860,7 +963,7 @@ safe there). Actions marked *(approval)* are the permission-modal keys.
 | `Resources` | `ctrl+r` | global | MCP resources picker |
 | `Prompts` | `ctrl+p` | global | MCP prompts picker |
 | `Agents` | `ctrl+a` | global | unified agents overlay (subagents / parallel / teams) |
-| `ExpandTools` | `ctrl+t` | global | expand/collapse tool-card details & reasoning summaries |
+| `ExpandTools` | `ctrl+t` | global | expand/collapse tool-card details & reasoning summaries; in the permission modal, opens the full-screen args view for non-diff asks (in-modal diff expand for Edit/Write; untouched for plan asks) |
 | `Help` | `?` | global | this help overlay (on an empty prompt) |
 | `Effort` | `ctrl+e` | global | reasoning-effort picker |
 | `Up` | `up`, `k` | overlay | move the cursor up |
@@ -874,6 +977,7 @@ safe there). Actions marked *(approval)* are the permission-modal keys.
 | `JumpEnd` | `end`, `G` | overlay | jump to the last roster row |
 | `NextTab` | `tab` | overlay | agents overlay: switch tab |
 | `CancelChild` | `x` | overlay | agents overlay: cancel the selected running child |
+| `RawArgs` | `r` | overlay | full-screen ask-args view: toggle pretty ↔ raw args |
 | `SetGlobalDefault` | `ctrl+g` | overlay¹ (`/models` picker) | set the cursor row as the client global default |
 
 ¹ `SetGlobalDefault` is consulted only inside the `/models` picker, but it is in
@@ -881,6 +985,12 @@ safe there). Actions marked *(approval)* are the permission-modal keys.
 `overlayInternal`) — so its chord is not collision-checked against the other
 actions. Keep it `ctrl`-modified (the default `ctrl+g`): a bare `g` would be
 swallowed by the picker's filter input and by `ScrollTop`/`JumpTop`.
+
+`RawArgs` and `Refresh` share the default chord `r` in **disjoint surfaces** (the
+MCP overlay vs the full-screen ask-args view — an overlay never owns the keyboard
+while the permission modal is open), so the shared default passes validation; an
+explicit rebind of either must keep the pair disjoint, or startup fails with a
+`keymap:` error.
 
 #### What the override cannot reach — the textarea's own editing keys
 
@@ -1008,7 +1118,11 @@ whether the input is focused or blurred. The panel carries a tinted top-pad row 
 the top border, and one blank spacer row sits above the panel so it isn't jammed against the
 conversation history.
 
-**Header bar.** `mecatui · session <id> · <model> · mode <mode> · <server>`.
+**Header bar.** `mecatui · session #<digest> · <model> · mode <mode> · <server>`.
+The session segment uses the same terminal-safe eight-character SHA-256 digest as the
+`/sessions` inventory; it never prints the full opaque ID. Type **`/session`** for the
+safe quoted full ID and active-session metadata, or press **`c`** there to copy the exact
+ID through the clipboard.
 The **mode segment** shows the server-confirmed permission posture for the current session;
 when a mid-turn switch has been deferred it shows `mode <target> pending` until the retry
 succeeds at the next prompt boundary. The **model segment** shows the EFFECTIVE model the server resolved THIS session to —
@@ -1075,12 +1189,68 @@ prompt preview, selector, mode, mutating, singleton, misfire, timezone,
 max_fires) + the durable state (enabled, fire_count, next/last fire,
 last_fire_session) + the fire records (id, fired_at, stop, err); `esc` returns
 to the panel. In the inspect sub-view the fire records are cursor-navigable
-(`↑`/`↓`, clamped): **`enter`** or **`t`** on a fire jumps straight to that
-fire's read-only transcript (issue #235) — a fire is just a top-level
-`sched--` session, so this reuses the `/sessions` replay handoff. The
-jump-to-fire footer hint (`↑↓: select fire  enter/t: open transcript  esc:
-back`) appears only when a session replayer is wired; a fire whose
-`SessionID` is empty reports "fire has no session id" and stays in inspect.
+(`↑`/`↓`, clamped): **`enter`** or **`t`** on a fire opens that fire's
+read-only authoritative transcript. The jump-to-fire footer hint (`↑↓: select
+fire  enter/t: open transcript  esc: back`) appears only when the transcript
+client is wired; a fire whose `SessionID` is empty reports "fire has no session
+id" and stays in inspect.
+
+**`/session` (active session details).** This read-only overlay shows the current
+chat's safely quoted full opaque ID, title, lifecycle state, workspace, known creation
+and modification timestamps, provider, and model. The header intentionally shows only
+the compact digest. Press **`c`** to copy the exact full ID byte-for-byte; mecatui reports
+clipboard failure or a session change instead of claiming a stale copy. `esc` closes it.
+
+**`/sessions` (session continuity).** The session inventory has four tabs:
+**Chats**, **Scheduled runs**, **Child runs**, and **Other**. The same inventory is
+the initial view for `mecatui sessions` and `mecatui connect ADDRESS sessions`;
+those launch forms establish no session until the operator continues a chat or
+presses `n` for a new one. At startup, `esc` quits; after opening an inspection,
+`esc` returns to this inventory.
+The Other tab keeps
+unknown legacy/custom rows inspect-only without mislabeling them as delegation children.
+`tab` switches tabs; the
+search box filters the current tab. Search matches the title, full session ID,
+its terminal-safe digest handle, model, workspace, and the available
+relationship metadata (parent/call, schedule/origin, team/member). This keeps
+scheduled fires and delegation children discoverable without making their IDs
+part of the UI contract.
+
+Each row shows a state badge, relative modification time, turn count, title,
+digest handle, and model. The active chat is explicitly marked **`[current]`**;
+a team member row also identifies its member. The digest is a lowercase SHA-256
+prefix (`#…`): it starts at eight hex characters and expands only if another
+visible row collides, while the full opaque ID remains what the client sends
+back to the server.
+
+Pressing `enter` follows server-authored capabilities. A public Chat is
+**Continue**: mecatui first loads the authoritative snapshot-derived
+conversation, then rebinds the prompt to that session so the next text adds a
+turn. Scheduled, Child, and inspect-capable Other runs are normally **Inspect**: their authoritative
+snapshot transcript is displayed read-only, and the active chat is left
+unchanged. A row with neither capability explains why it is unavailable (for
+example, awaiting approval, active elsewhere, unavailable transcript, or
+unavailable environment).
+
+The selected row's server-authored action capabilities also drive the footer and
+keys: **`y`** copies the exact opaque ID, **`v`** opens the authoritative
+transcript read-only without attaching, **`f`** forks an eligible main chat and
+adopts the peer only after the fork and transcript load both succeed, **`r`**
+opens a prefilled title form, and **`d`** opens permanent-delete confirmation.
+`esc` cancels the rename form or delete confirmation; `n` also cancels delete.
+The current attached chat cannot be deleted from its own inventory row—switch
+first. Rename/delete/fork are revalidated by the server, so a stale row can fail
+without rebinding the active chat. Scheduled, child, active, awaiting, and
+unknown rows show only the subset the server reports; hidden actions are also
+rejected if invoked.
+
+The snapshot transcript is the conversation source of truth. Durable event
+replay may support live delivery catch-up, but is not used to establish a
+conversation's completeness or to reconstruct it for Continue/Inspect. An
+inspection is non-destructive: `esc` is **Back** to the inventory, never a
+session reset or rebind. If the authoritative load fails or is incomplete,
+continuation stays disabled and the transcript view offers **`r` Retry** and
+**Back**.
 
 **Create form (Phase 3b).** The **`c`** action key opens an in-overlay Create
 form (peer of the inspect/confirm sub-views): fields for name, prompt, trigger
@@ -1096,26 +1266,6 @@ arrival). `esc` returns to the panel without creating. The form is a
 common-path authoring surface — the REST/gRPC `CreateSchedule` API (and the
 in-chat `Schedule` tool) covers the full flag surface (provider/model, mode,
 max-fires, misfire, timezone, singleton, limits); the form keeps it simple.
-
-**Row format.** Each `/sessions` picker row renders as
-`<state-badge> <relative-time> <turns>t <label> (<model-id>)`, where `<label>`
-is the session **title** (seeded once from the first genuine user prompt, clamped
-to 120 runes) and falls back to the session id when no title is set. The
-confirm card keeps the session id (precise identification) and shows the title
-when present. A session with no genuine prompt yet (e.g. a freshly-created,
-still-empty session, which is also excluded from the list) shows the id.
-
-**State gate (open-a-session).** The `/sessions` picker and the schedule
-jump-to-fire both open a session via the replay RPC (`StreamSessionEvents`),
-which is a **pure durable-log read with no live-tail** — it streams what has
-been appended so far and ends at the log's current tail. Opening a session
-that is currently **`running`** or **`awaiting`** (parked on a permission ask)
-would therefore show a *partial* transcript with no terminal result, so the
-UI **blocks** it with a "session <id> is currently <state> — cannot open
-read-only while active" notice. This is a best-effort client-side gate: a
-session that transitions to running between the `ListSessions` call and the
-open will still replay successfully (a partial transcript ending at the log's
-current tail).
 
 **v1 limits.** The overlay lists/inspects/manages schedules and creates them
 in-overlay (the `c` Create form + NL→cron compiler), but the gRPC/REST API

@@ -22,6 +22,10 @@ flowchart TD
 
 Kill any pod. The survivor acquires the lease and resumes interrupted sessions from the Redis snapshot. The pod is disposable; the session is not.
 
+For global MCP OAuth, use an externally provisioned read-only environment credential and
+restart pods after rotation. `mecak8s` never launches a browser; a local mutable credential
+root conflicts with the normal storage-free posture. See [MCP client](/what-you-get/mcp-client.md).
+
 ---
 
 ## How mecak8s differs from mecated
@@ -43,6 +47,21 @@ Kill any pod. The survivor acquires the lease and resumes interrupted sessions f
 | ACP surface | Yes | No |
 
 The `--redis-url` flag exists **only on `cmd/mecak8s`**. `mecated` does not expose it. If you want Redis-backed state with `mecated`, you need `mecak8s`.
+
+:::note[MCP OAuth credentials from Kubernetes Secrets]
+
+`mecak8s` wires the operator profile's explicit read-only credential Reader from one
+base64 environment value; it installs no browser presenter and no Kubernetes Secret writer.
+The selected name must use the `MECATL_` prefix and the strict uppercase
+`[A-Z_][A-Z0-9_]{0,127}` grammar — for example,
+`MECATL_MCP_OAUTH_CREDENTIAL` — so the credential is removed from every agent-facing
+shell environment. A Secret projected as an environment variable is immutable for the running
+pod. The Reader warm-restores a valid credential. Persistent rotation requires an external
+controller to update the Secret followed by a rolling pod restart, or a future Secret backend
+using Kubernetes `resourceVersion` compare-and-swap. In-memory refresh is explicit and
+process-local; the default fails before refresh network when no writer exists.
+
+:::
 
 ---
 
@@ -276,7 +295,7 @@ whoever can reach the API is "the caller". This overlay changes that — a real
 IdP authenticates each request, every session/schedule/team/memory entry records
 the verified `(issuer, subject)` that owns it, and **application access is
 enforced per caller** (see
-[ADR-0102](https://github.com/stacklok/mecatl/blob/main/docs/adr/0102-caller-ownership-enforcement.md)
+[ADR-0212](https://github.com/stacklok/mecatl/blob/main/docs/adr/0212-caller-ownership-enforcement.md)
 for the full design).
 
 ### Read this before you enable it
@@ -303,7 +322,7 @@ filesystem**, so a workspace path is not itself a security boundary — isolate
 callers' workspaces yourselves if that matters for your deployment. A raw
 gRPC/HTTP driver process (a remote `SessionStore`/`MemoryStore` backend) remains
 explicitly **trusted infrastructure**, not caller-enforced (see
-[ADR-0103](https://github.com/stacklok/mecatl/blob/main/docs/adr/0103-driver-caller-ownership.md)) —
+[ADR-0213](https://github.com/stacklok/mecatl/blob/main/docs/adr/0213-driver-caller-ownership.md)) —
 see `raw-driver-networkpolicy.yaml` below. And a session/schedule created **before**
 you turned identity on has no owner: once enforcement is on, every ownerless
 record becomes permanently unavailable to every caller (never adopted by the
@@ -356,7 +375,7 @@ The overlay also applies `raw-driver-networkpolicy.yaml`, scoping ingress to any
 pod labelled `app.kubernetes.io/component: raw-driver` to the mecak8s agent pod
 only. This exists because a raw gRPC/HTTP driver (a remote `SessionStore`/
 `MemoryStore` backend) is trusted infrastructure, not caller-enforced, until
-ADR-0103 lands — if you run one, give it that label and keep it off any Service,
+ADR-0213 lands — if you run one, give it that label and keep it off any Service,
 Ingress, or tenant-facing NetworkPolicy. A tenant workload must reach mecak8s
 through the authenticated public Service, never a raw driver endpoint directly.
 
@@ -511,7 +530,7 @@ limited to `providers.openai-codex.oauth`: existing `auth.yaml` API-key entries
 remain supported. Use an API-key provider today; a future Codex deployment needs
 a separate Kubernetes Secret or external-secret design. Do not mount a local
 Codex OAuth entry and assume the binary will accept it. See [ADR
-0104](https://github.com/stacklok/mecatl/blob/main/docs/adr/0104-openai-subscription-manual-token.md).
+0104](https://github.com/stacklok/mecatl/blob/main/docs/adr/0215-openai-subscription-manual-token.md).
 
 | Capability | mecated | mecak8s |
 |---|---|---|

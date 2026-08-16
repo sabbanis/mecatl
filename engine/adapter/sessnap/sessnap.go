@@ -40,6 +40,10 @@ type Snapshot struct {
 	Messages   []messageDTO           `json:"messages"`
 	Pending    *session.PendingAsk    `json:"pending,omitempty"`
 	StopReason session.StopReason     `json:"stop_reason,omitempty"`
+	// Kind and Relationship are the validated producer taxonomy from ADR 0217.
+	// A missing kind is legacy data and restores as unknown (fail-closed).
+	Kind         session.SessionKind         `json:"kind,omitempty"`
+	Relationship session.SessionRelationship `json:"relationship,omitzero"`
 	// Profile is the session's opaque tool-surface profile label. omitempty keeps a
 	// v1 snapshot with no "profile" key decoding to "" (the default profile) —
 	// purely additive, no format-tag bump (the same precedent as ProviderPhase /
@@ -62,7 +66,8 @@ type Snapshot struct {
 	// Profile / ProviderID / Parts). Persisting it lets a restarted process show
 	// the label without re-deriving it. It is an inert stored label (like
 	// Profile), restored by direct assignment, NOT a state transition.
-	Title string `json:"title,omitempty"`
+	Title           string                  `json:"title,omitempty"`
+	TitleProvenance session.TitleProvenance `json:"title_provenance,omitempty"`
 	// Usage is the cumulative run-token accounting, a POINTER for true omitempty
 	// (matching the Pending precedent): a zero Usage marshals nothing and a v1
 	// snapshot with no "usage" key decodes to a nil pointer => the zero Usage on
@@ -82,7 +87,7 @@ type Snapshot struct {
 	// event-side subagentCausePayload so the snapshot and the subagent.end event
 	// carry the same persisted cause.
 	LastError string `json:"last_error,omitempty"`
-	// Owner is the verified caller the session is attributed to (ADR 0100). A
+	// Owner is the verified caller the session is attributed to (ADR 0204). A
 	// POINTER for true omitempty: an ownerless session emits no "owner" key, so a
 	// pre-ship snapshot decodes to a nil owner and an ownerless snapshot stays
 	// byte-identical to a pre-ship one — purely additive, no format-tag bump.
@@ -96,7 +101,7 @@ type Snapshot struct {
 	// snapshot with no "authority" key decoding to the zero value.
 	Authority session.Authority `json:"authority,omitempty"`
 	// EnvironmentRef is the resolved execution-environment identity this session
-	// runs against (ADR 0106, issue #462 phase 3). The ref is a value type
+	// runs against (ADR 0214, issue #462 phase 3). The ref is a value type
 	// (EnvironmentKind + opaque ID); a zero ref {Kind:"", ID:""} is the
 	// "unspecified" value. It uses Go 1.26's `omitzero` (NOT `omitempty`, which
 	// never omits a non-empty struct) so a default/local session with no remote
@@ -153,6 +158,11 @@ func Of(s *session.Session) (Snapshot, error) {
 	if s == nil {
 		return Snapshot{}, ErrNilSession
 	}
+	relationship := s.Relationship
+	if relationship.BranchIndex != nil {
+		branchIndex := *relationship.BranchIndex
+		relationship.BranchIndex = &branchIndex
+	}
 	snap := Snapshot{
 		ID:              s.ID,
 		State:           s.State,
@@ -166,7 +176,10 @@ func Of(s *session.Session) (Snapshot, error) {
 		ModelID:         s.ModelID,
 		ReasoningEffort: s.ReasoningEffort,
 		Title:           s.Title,
+		TitleProvenance: s.TitleProvenance,
 		Authority:       s.Authority,
+		Kind:            s.Kind,
+		Relationship:    relationship,
 		CreatedAt:       s.CreatedAt,
 		// Owner is a pointer for true omitempty; Clone so the snapshot cannot
 		// alias (and later mutate) the aggregate's own principal.
@@ -203,6 +216,9 @@ func Of(s *session.Session) (Snapshot, error) {
 // hold on the rebuilt aggregate.
 func (snap Snapshot) Restore() (*session.Session, error) {
 	s := session.New(snap.ID, snap.Mode, snap.Workspace, snap.Limits, snap.CreatedAt)
+	if err := s.RestoreSessionMetadata(snap.Kind, snap.Relationship); err != nil {
+		return nil, fmt.Errorf("sessnap: restore session metadata: %w", err)
+	}
 
 	// Rebuild the conversation history verbatim.
 	for _, dto := range snap.Messages {
@@ -217,6 +233,7 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 	s.ReasoningEffort = snap.ReasoningEffort
 	s.EnvironmentRef = snap.EnvironmentRef
 	s.Title = snap.Title
+	s.TitleProvenance = snap.TitleProvenance
 	// The identity labels go through the WRITE-ONCE aggregate method rather than a
 	// field poke (Session is an aggregate) and rather than a RestoreState
 	// parameter (that widening is Changed/breaking; this stays Added/minor).

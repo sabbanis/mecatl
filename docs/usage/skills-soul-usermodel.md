@@ -1,10 +1,18 @@
 ## 7. Skills, soul, user model
 
-### The self-improving-skill loop (`SkillDraft` + `mecated skills promote`)
+### Legacy self-improving-skill loop (`SkillDraft` + `mecated skills promote`)
+
+> **Deprecated compatibility workflow:** `mecated skills promote` operates only on
+> the old `origin:model` quarantine tree. It does not inspect or activate records in
+> the evaluated skill lifecycle repository. Lifecycle integrations must explicitly
+> import a legacy candidate as an unevidenced Draft. The standard evaluator abstains
+> for unevidenced drafts; any later review/evaluation/stage/activation is an explicit host or
+> operator action. There is no command or startup sweep that makes an unevaluated lifecycle
+> skill live. Operator/manual skills already supplied through `--skills-dir` are unchanged.
 
 `--skills-draft-dir <quarantine>` enables a **writable** `SkillDraft` tool so the
-agent can author a reusable skill from a procedure it just performed. This is the
-*only* tool that produces skills, and it is bounded by a hard trust boundary:
+agent can author a reusable skill from a procedure it just performed. This legacy
+quarantine tool is bounded by a hard trust boundary:
 
 - A drafted skill is **never active in the session that wrote it.** `SkillDraft`
   validates and sanitizes the (untrusted) candidate — name regex, an
@@ -43,6 +51,23 @@ When you promote, **read the body** — it is agent-authored, untrusted,
 instruction-like text that becomes trusted on promotion. The automated injection
 scan is a backstop, not a substitute for reading it.
 
+### Authoring bundled assets
+
+Treat bundled files as **logical textual references**, not paths. In `SKILL.md`,
+tell the model to call the `Skill` tool again with the skill name and exact logical
+asset name, for example: “Call `Skill` with `{name: "deploy", asset:
+"references/api.md"}` before choosing an endpoint.” Activation lists the available
+logical names and sizes; the follow-up call returns one bounded UTF-8, NUL-free asset.
+Do not tell the model to use `Read` on a skill directory or assume a base directory
+will be advertised.
+
+Bundled execution is not implicitly available. A `scripts/run.sh` asset is only a
+logical payload; the harness does not materialize it, apply its executable bit, or
+make it available to Bash. If a workflow genuinely requires a script or data file on
+disk, author an explicit, permission-governed step that creates or obtains it inside
+the session workspace, then invoke it normally. Prefer keeping reference material
+textual and consuming it directly through `Skill`.
+
 ### Skills as slash commands (`/<skill-name>`)
 
 Each discovered skill is also invocable as a **slash command** — a Claude-Code
@@ -52,11 +77,14 @@ instructions). No new tool, no new dispatch concept — it reuses the existing
 slash-command layer, so `$ARGUMENTS`/`$1`/`$2` placeholders substitute exactly
 like a file-backed command.
 
-This means the two ways to load a skill are equivalent:
+This means the two ways to load a skill's instructions are equivalent:
 - call the **`Skill`** tool with the skill's `name` (the progressive-disclosure
-  path, which also surfaces the base directory + bundled files), or
+  path, which also surfaces the logical bundled-asset inventory), or
 - type **`/<skill-name> <args>`** at the prompt (the inline path, which injects
-  just the body).
+  the body plus the same post-expansion logical inventory).
+
+Neither path retrieves asset content automatically. When an asset is needed, the
+model calls `Skill` with `{name, asset}`.
 
 **Precedence** (first-that-expands-wins): a local command file (`<commands-dir>/<name>.md`)
 **shadows** a same-named skill; a skill **shadows** a same-named slash-command
@@ -192,14 +220,32 @@ It surfaces three ways:
   scope overrides these built-in floors.
 - **Staged reflection (`learning.mode`):** `off` is the default and attaches no
   automatic completion observer; explicit reflection remains available through its lazy path.
-  `review` reflects eligible clean completions and stages bounded, evidence-backed proposals
+  `review` and `auto` share the configurable threshold admission policy: balanced is the
+  default (conservative/balanced/eager thresholds 6/4/3), and process-local cooldown/count/token
+  limits are configured under `learning.automatic`. Genuine current principal remember/learn
+  requests are hard but still budgeted; historical/tool/web/MCP/assistant/repository text cannot
+  hard-trigger. Restart resets those process-local budgets and no shutdown catch-up runs.
+  `review` reflects admitted main-session completions and stages bounded, evidence-backed proposals
   without writing memory. `auto` uses the same stage-first path and then promotes only
-  conservative standard-policy-eligible, non-conflicting facts. Project/procedure proposals are
-  staged only when the session root is the exact trusted configured root. Proposal detail
+  conservative standard-policy-eligible, non-conflicting facts. Evidence-backed procedures use
+  the versioned learned-skill lifecycle: `review` evaluates and stages PASS/ABSTAIN (FAIL rejects),
+  while `auto` activates only PASS when that caller/project has a bound publication target; a similar
+  candidate remains staged for review. A missing evaluator records ABSTAIN. Activation, archive, and rollback
+  return committed state plus publication status; temporary publication failure revokes the live learned entry
+  and startup or the next `/skills` refresh reconciles it. Rollback targets must be PASS versions durably proven
+  previously active. `SkillDraft` derives the verified caller, exact workspace, and main-agent owner and refuses
+  identity-free calls. It creates body-only inactive content: learned assets/scripts are unsupported.
+  `off` never materializes procedures automatically; explicit `SkillDraft` or legacy import creates
+  only an inactive validated draft. Project proposals are eligible only when the session root is the
+  exact trusted configured root. The gRPC/HTTP learned-skill API lists and inspects bounded bodies,
+  diffs, evidence/evaluations, and receipts and applies activate/reject/archive/rollback with an
+  expected revision. External/operator skills retain precedence and cannot be lifecycle-mutated.
+  Proposal detail
   re-checks source ownership and evidence digests and exposes a bounded, redacted canonical
   preview before approval; changed, unavailable, and cross-owner evidence is not previewed or
   promotable. `--user-model-review` remains as a deprecated `auto` alias and
-  `--user-model-review-interval` still debounces admitted completions. Reflection never reopens
+  `--user-model-review-interval` is now only a deprecated post-threshold weighted downsampler
+  (`0`/`1` inert; hard triggers bypass). Reflection never reopens
   or re-runs the user's session.
 - **Scheduled consolidation:** `--user-model-consolidate-interval > 0` independently
   authorizes a process-wide `dream` consolidator over the cross-project `user/` namespace.

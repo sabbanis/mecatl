@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"github.com/stacklok/mecatl/engine/agent"
@@ -14,6 +15,14 @@ import (
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
+
+type stringList []string
+
+func (s *stringList) String() string { return strings.Join(*s, ",") }
+func (s *stringList) Set(value string) error {
+	*s = append(*s, value)
+	return nil
+}
 
 // flags is the parsed command-line configuration for mecatequi. It is a small,
 // single-shot subset of mecated's config: the engine-build knobs (provider, model,
@@ -80,13 +89,14 @@ type flags struct {
 	// mecated/mecak8s: a per-server bearer rides the MCP_<NAME>_TOKEN env (a
 	// scheduler like titlani injects a short-lived per-run identity there), token
 	// optional. Threaded onto app.Config.MCPServers in appConfig.
-	mcpServers    *cliconfig.MCPServerList
-	useMock       bool
-	storeDir      string
-	shell         string
-	noBash        bool
-	maxRunTokens  int
-	maxTeamTokens int
+	mcpServers        *cliconfig.MCPServerList
+	permissionConfigs stringList
+	useMock           bool
+	storeDir          string
+	shell             string
+	noBash            bool
+	maxRunTokens      int
+	maxTeamTokens     int
 	// maxTurns caps the session's model calls (the StopMaxTurns terminal). 0
 	// (default/unset) inherits the composition default (internal/app build.go), so
 	// it is NOT mapped onto app.Config — it is a per-SESSION limit threaded to
@@ -191,6 +201,7 @@ func parseFlags(argv []string) (flags, error) {
 	// Remote MCP servers (issue #341): the shared repeatable name=URL flag +
 	// MCP_<NAME>_TOKEN bearer convention, identical to mecated/mecak8s.
 	f.mcpServers = cliconfig.RegisterMCPServerFlag(fs, "")
+	fs.Var(&f.permissionConfigs, "permission-config", "explicit operator settings YAML (repeatable); uses the same precedence and strict parser as conventional settings")
 	fs.BoolVar(&f.useMock, "mock", false, "use a canned offline mock provider (no network; smoke tests only)")
 	fs.StringVar(&f.storeDir, "store-dir", "", "directory for the JSONL session store (empty -> in-memory store)")
 	fs.StringVar(&f.shell, "shell", "/bin/sh", "shell used to execute Bash-tool commands; empty disables Bash")
@@ -213,7 +224,7 @@ func parseFlags(argv []string) (flags, error) {
 	fs.StringVar(&f.reasoningEffort, "reasoning-effort", "", "OPERATOR REASONING-EFFORT TIER (ADR 0055): auto (default — unset, the provider default applies) or low/medium/high/xhigh/max. OpenAI supports low/medium/high only (xhigh/max clamp to high); Anthropic maps all five. Empty = unset (honours the operator-global settings.yaml reasoning-effort: key). Operator-tier only; a project-tier key is ignored with a WARN. An unknown value fail-softs to unset with a WARN")
 	fs.BoolVar(&f.trustProject, "trust-project", false, "trust the workspace for this run: admit BOTH project steering (AGENTS.md/CLAUDE.md, project rules/agents/skills/soul/commands/git snapshot) and the read-only child worktree shell. On this HEADLESS root posture never grants trust. DEFAULT OFF: without explicit, declared, or remembered trust a cloned repo gets neither steering nor child shell. TRUST BOUNDARY: only pass it for a repo whose content and .git you trust")
 
-	// Headless telemetry (issue #343, ADR 0097): OPT-IN OTLP trace + metrics push.
+	// Headless telemetry (issue #343, ADR 0098): OPT-IN OTLP trace + metrics push.
 	// Both endpoints empty (the default) leaves the pipeline off — no metrics, no
 	// tracing, byte-identical to the pre-telemetry posture. A metrics endpoint
 	// installs a PeriodicReader (push) alongside the always-on prometheus reader.
@@ -395,7 +406,10 @@ func appConfig(f flags, diag port.Diagnostics, obs observability) app.Config {
 		// MCP_<NAME>_TOKEN bearer already resolved into Headers at parse time),
 		// consumed by app.Build's static MCP source. Nil-safe when the flag was
 		// never registered (a hand-built test config).
-		MCPServers: f.mcpServers.Servers(),
+		MCPServers:              f.mcpServers.Servers(),
+		MCPProfileLoader:        cliconfig.NewMCPProfileResolver(f.mcpServers, os.LookupEnv),
+		PermissionsConventional: true,
+		PermissionConfigs:       f.permissionConfigs,
 
 		GuardrailsModel:    f.guardrailsModel,
 		GuardrailsDisabled: f.guardrailsOff,
@@ -430,7 +444,7 @@ func appConfig(f flags, diag port.Diagnostics, obs observability) app.Config {
 		Interactive: !f.headless,
 
 		Diagnostics: diag,
-		// Observability (issue #343, ADR 0097): OPT-IN OTLP push. With no --otlp-*
+		// Observability (issue #343, ADR 0098): OPT-IN OTLP push. With no --otlp-*
 		// flags the handles are zero-valued (nil Sink/ToolCallRecorder/
 		// MetricsRoleScoper) — the byte-identical no-telemetry posture.
 		Sink:              obs.Sink,

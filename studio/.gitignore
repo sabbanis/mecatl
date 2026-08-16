@@ -17,7 +17,6 @@
 
 # next.js
 /.next/
-/.vinext/
 /out/
 
 # misc
@@ -36,14 +35,9 @@ yarn-error.log*
 # vercel
 .vercel
 
-/dist/
-/.wrangler/
 /outputs/
 /work/
 /.scratch/
-
-# demo recordings (large binaries; regenerate with npm run demo:record)
-/demo-recordings/
 
 # typescript incremental build cache
 tsconfig.tsbuildinfo

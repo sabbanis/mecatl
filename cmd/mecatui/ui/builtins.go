@@ -1,6 +1,8 @@
 package ui
 
 import (
+	"encoding/json"
+	"fmt"
 	"strings"
 
 	tea "charm.land/bubbletea/v2"
@@ -39,8 +41,9 @@ type wiredCollaborators struct {
 	Models      bool // mirrors client.Capabilities.ModelSelection
 	Worktrees   bool
 	Scheduling  bool
-	Sessions    bool // /sessions picker — gated on the lister + replayer being wired (NO caps bit)
+	Sessions    bool // /sessions picker — gated on inventory + authoritative transcript
 	Learning    bool // /learning operator-settings enum
+	DebugAsk    bool // /debug-ask — env-gated (MECATUI_DEBUG_ASK=1) fake-ask injector
 }
 
 // wiredCollaborators builds the struct from m.deps — the SINGLE construction
@@ -55,8 +58,9 @@ func (m Model) wiredCollaborators() wiredCollaborators {
 		Soul: m.deps.Soul != nil, UserModel: m.deps.UserModel != nil, Models: m.deps.Models != nil,
 		Reflections: m.deps.Reflections != nil,
 		Worktrees:   m.deps.Worktrees != nil, Scheduling: m.deps.Sched != nil,
-		Sessions: m.deps.Sessions != nil && m.deps.Replayer != nil,
+		Sessions: m.deps.Sessions != nil && m.deps.Transcript != nil,
 		Learning: m.deps.Learning != nil,
+		DebugAsk: m.deps.DebugAsk,
 	}
 }
 
@@ -93,6 +97,11 @@ func builtinCommands(caps client.Capabilities, w wiredCollaborators) []builtin {
 			name: "help",
 			desc: "show keys & features",
 			run:  Model.runHelp,
+		},
+		{
+			name: "session",
+			desc: "show active session details and copy its exact ID",
+			run:  Model.runSessionDetails,
 		},
 	}
 	if caps.MCP && w.MCP {
@@ -172,19 +181,17 @@ func builtinCommands(caps client.Capabilities, w wiredCollaborators) []builtin {
 			run:  Model.runSchedule,
 		})
 	}
-	// /sessions opens the stored-session picker (issue #245 Phase 3a). Gated on the
-	// lister + replayer being wired (w.Sessions) — NO caps bit: a no-FS/cloud server
-	// with a durable SessionStore still has stored sessions to list, so the picker is
-	// available whenever the lister + replayer are wired. The Enter handoff opens a
-	// READ-ONLY transcript replay; continue-interactive is out of scope.
+	// /sessions is available when inventory and authoritative transcript clients
+	// are wired. Row capabilities drive continuation, inspection, and management.
 	if w.Sessions {
 		out = append(out, builtin{
 			name: "sessions",
-			desc: "open a stored session (read-only transcript)",
+			desc: "continue, inspect, or manage stored sessions",
 			run:  Model.runSessions,
 		})
 	}
 	out = appendLearningBuiltin(out, w)
+	out = appendDebugAskBuiltin(out, w)
 	// /posture prints the server-wide operator posture tier + a line per defense.
 	// Gated on a non-empty caps.Posture (an older server omits the field), so it never
 	// appears against a server that cannot report it. Chrome only — it changes nothing.
@@ -202,10 +209,23 @@ func appendLearningBuiltin(out []builtin, w wiredCollaborators) []builtin {
 	if !w.Learning {
 		return out
 	}
+	return append(out,
+		builtin{name: "learning", desc: "cycle completed-trajectory learning mode (restart required)", run: Model.runLearning},
+		builtin{name: "learning-sensitivity", desc: "cycle automatic learning sensitivity (restart required)", run: Model.runLearningSensitivity},
+	)
+}
+
+// appendDebugAskBuiltin registers /debug-ask ONLY under the env-gated Deps.DebugAsk
+// (MECATUI_DEBUG_ASK=1) — a hand-testing affordance for the permission modal's
+// long-args surfaces (issue #488), never a documented feature.
+func appendDebugAskBuiltin(out []builtin, w wiredCollaborators) []builtin {
+	if !w.DebugAsk {
+		return out
+	}
 	return append(out, builtin{
-		name: "learning",
-		desc: "cycle completed-trajectory learning mode (restart required)",
-		run:  Model.runLearning,
+		name: "debug-ask",
+		desc: "(debug) inject a fake permission ask (long bash)",
+		run:  Model.runDebugAsk,
 	})
 }
 
@@ -244,6 +264,10 @@ func (m Model) runHelp() (tea.Model, tea.Cmd) {
 	m.showHelp = true
 	m.ta.Blur()
 	return m, nil
+}
+
+func (m Model) runSessionDetails() (tea.Model, tea.Cmd) {
+	return m.openSessionDetails()
 }
 
 // runMCP opens the MCP inventory panel — the same surface ctrl+o opens. Only
@@ -319,9 +343,8 @@ func (m Model) runSchedule() (tea.Model, tea.Cmd) {
 	return m.openSchedule()
 }
 
-// runSessions opens the /sessions overlay (issue #245 Phase 3a). Only registered
-// when the session lister + replayer are wired, so openSessions's own nil/idle
-// guards are belt-and-braces here.
+// runSessions opens the capability-driven session inventory. It is registered
+// only when the inventory and authoritative transcript clients are wired.
 func (m Model) runSessions() (tea.Model, tea.Cmd) {
 	return m.openSessions()
 }
@@ -336,6 +359,16 @@ func (m Model) runLearning() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func (m Model) runLearningSensitivity() (tea.Model, tea.Cmd) {
+	from, to, restart, err := m.deps.Learning.AdvanceSensitivity()
+	if err != nil {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("learning sensitivity: " + err.Error())
+		return m, nil
+	}
+	m.statusMsg = m.deps.Theme.Style("success").Render("learning sensitivity: " + from + " → " + to + "; " + restart)
+	return m, nil
+}
+
 // runPosture shows the server-wide operator posture tier and a compact per-defense
 // summary in the status line. Chrome only — read-only, mutates nothing on the server
 // and acts purely on the Model (like /clear). Only registered when caps.Posture is
@@ -344,6 +377,46 @@ func (m Model) runLearning() (tea.Model, tea.Cmd) {
 func (m Model) runPosture() (tea.Model, tea.Cmd) {
 	m.statusMsg = m.deps.Theme.Style("muted").Render(postureSummary(m.caps.Posture))
 	return m, nil
+}
+
+// debugAskPayloads are the three canned long-args Bash commands /debug-ask
+// rotates through (issue #488): (a) one very long single-line pipeline, (b) a
+// compound &&/||/; command with pipes and redirections, (c) a heredoc carrying
+// real newlines. Each is injected JSON-encoded as {"command": …} so the modal's
+// pretty tier decodes it exactly like a wire ask.
+var debugAskPayloads = []string{
+	"find . -name '*.go' -not -path './vendor/*' -print0 | xargs -0 grep -nH 'func Test' | awk -F: '{print $1}' | sort | uniq -c | sort -rn | head -40 | while read -r count file; do printf '%5d  %s\\n' \"$count\" \"$file\"; done | tee /tmp/test-counts.txt | column -t -s' '",
+	"git fetch origin main && git rebase origin/main || git merge --abort; cargo build --release 2>&1 | tee /tmp/build.log | grep -E 'error|warning' > /tmp/build-issues.txt; docker compose up -d --wait && curl -fsS http://localhost:8080/healthz || docker compose logs --tail=200",
+	"cat <<'EOF' > /tmp/report.md\n# Nightly report\n\n## Summary\n\n- total: 42\n- failed: 3\n- skipped: 1\n\n## Failures\n\n- pkg/foo: TestBar — timeout after 30s waiting on the fixture server\n- pkg/baz: TestQux — golden mismatch (see .scratch/qux.diff)\n- pkg/quux: TestCorge — nil dereference on empty input\n\n## Environment\n\nRun at $(date -u +%FT%TZ) against the staging workspace (us-east-1).\nRunner: nightly-04 · image sha256:9f86d08…\n\n## Next steps\n\nRe-run the three failing tests with -count=1 -v and attach the artifacts bundle to the tracker issue.\nEOF\nprintf 'wrote %s (%d bytes)\\n' /tmp/report.md \"$(wc -c < /tmp/report.md)\"",
+}
+
+// runDebugAsk injects a FAKE permission ask with long Bash args through the SAME
+// reducer the wire drives (applyPermissionAsk over a client.PermissionAskMsg), so
+// queueing, dedupe, focus, the (1 of N) badge, and the click geometry all
+// exercise for real. Registered only under MECATUI_DEBUG_ASK=1. Each invocation
+// rotates to the next canned payload (debugAskCycle). At phaseIdle the modal
+// opens directly (applyPermissionAsk does not gate on phase) — that is the
+// intended debug affordance, and a phaseAwaitingApproval invocation queues FIFO
+// behind the open modal exactly like a wire ask.
+func (m Model) runDebugAsk() (tea.Model, tea.Cmd) {
+	n := m.debugAskCycle
+	m.debugAskCycle++
+	cmd := debugAskPayloads[n%len(debugAskPayloads)]
+	args, err := json.Marshal(map[string]string{"command": cmd})
+	if err != nil {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("debug-ask: marshal failed")
+		return m, nil
+	}
+	// The askID embeds the monotonic invocation counter so a re-injection after a
+	// resolve is never swallowed by the resolvedAsks dedupe. It is colon-free up
+	// to the trailing counter, so isChildAsk classifies it as a MAIN ask (the
+	// always button is offered — the modal shows all three buttons).
+	return m.applyPermissionAsk(client.PermissionAskMsg{
+		AskID:  fmt.Sprintf("sess-debug-ask-%d", n),
+		Tool:   "Bash",
+		Args:   string(args),
+		Reason: "debug ask (MECATUI_DEBUG_ASK) — not from the model",
+	})
 }
 
 // postureSummary renders the one-line /posture summary for a posture token. It is
@@ -387,6 +460,7 @@ func allBuiltins() map[string]bool {
 	allWired := wiredCollaborators{
 		MCP: true, Agents: true, Skills: true, Soul: true, UserModel: true,
 		Models: true, Worktrees: true, Scheduling: true, Sessions: true, Learning: true,
+		DebugAsk: true,
 	}
 	set := make(map[string]bool, 14)
 	for _, b := range builtinCommands(allCaps, allWired) {

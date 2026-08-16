@@ -72,6 +72,16 @@ func helpBody(th theme.Theme, caps client.Capabilities, hk helpKeys) string {
 		{key: hk.cancel, action: "clear staged input / queue, else cancel run"},
 	})
 
+	b.WriteString("\n" + muted.Render("While the permission modal is open") + "\n")
+	writeHelpRows(&b, th, []helpRow{
+		{key: hk.allow, action: "allow once"},
+		{key: hk.allowAlways, action: "always allow (this session; main-agent asks only)"},
+		{key: hk.deny, action: "deny"},
+		{key: "←/→/tab", action: "cycle the focused button · enter activates it"},
+		{key: hk.expandTools, action: "full-screen args (non-diff asks) · in-modal diff expand (Edit/Write)"},
+		{key: hk.rawArgs, action: "raw args in the full view"},
+	})
+
 	b.WriteString("\n" + muted.Render("Inspect & control") + "\n")
 	writeHelpRows(&b, th, []helpRow{
 		{key: hk.mcpPanel, action: "MCP inventory", available: caps.MCP, gated: true},
@@ -80,7 +90,8 @@ func helpBody(th theme.Theme, caps client.Capabilities, hk helpKeys) string {
 		{key: hk.agents, action: "agents overlay (subagents / parallel / teams · " + hk.nextTab + " to switch)"},
 		{key: hk.effort, action: "reasoning-effort picker", available: caps.ModelSelection, gated: true},
 		{key: "/schedule", action: "browse & manage scheduled tasks", available: caps.Scheduling, gated: true},
-		{key: "/sessions", action: "open a stored session (read-only transcript)"},
+		{key: "/session", action: "show active session details and copy its exact ID"},
+		{key: "/sessions", action: "continue, inspect, or manage stored sessions"},
 		{key: hk.modeSwitch, action: "cycle permission mode (default / plan / accept-edits)"},
 		{key: hk.expandTools, action: "expand/collapse details"},
 	})
@@ -190,6 +201,7 @@ type helpKeys struct {
 	allow        string // Allow — the permission-modal allow-once key (approval)
 	allowAlways  string // AllowAlways — the permission-modal always-allow key (approval)
 	deny         string // Deny — the permission-modal deny key (approval)
+	rawArgs      string // RawArgs — pretty↔raw toggle inside the full-screen ask-args view (r)
 
 	// Overlay-navigation markings (issue #457). The agents/team/mcp/effort/models/
 	// sessions/worktrees/schedule/skills/soul/usermodel overlays render inline hints
@@ -293,6 +305,7 @@ func keyMarkings(km keyMap) helpKeys {
 		allow:        firstKey(km.Allow, "a"),
 		allowAlways:  firstKey(km.AllowAlways, "w"),
 		deny:         firstKey(km.Deny, "d"),
+		rawArgs:      firstKey(km.RawArgs, "r"),
 
 		choose:           firstKey(km.Choose, "enter"),
 		nextTab:          firstKey(km.NextTab, "tab"),

@@ -28,7 +28,7 @@ tasks:
     deps: [install]
     cmds:
       - |
-        if [ ! -x ../bin/mecated ]; then
+        if [ -z "${MECATL_BASE_URL:-}" ] && [ ! -x ../bin/mecated ]; then
           echo "../bin/mecated not found — run 'task build' first" >&2
           exit 1
         fi
@@ -69,7 +69,7 @@ tasks:
         fi
 
   build:
-    desc: Build Studio into studio/dist/
+    desc: Build Studio into studio/.next/
     deps: [install]
     cmds:
       - npm run build

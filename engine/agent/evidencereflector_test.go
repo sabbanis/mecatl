@@ -32,11 +32,47 @@ func admittedInput(t *testing.T) (learning.Input, learning.EvidenceRef) {
 func modelOutcome(candidate learning.Candidate, handles ...string) []byte {
 	wireCandidate := map[string]any{
 		"kind": candidate.Kind, "key": candidate.Key, "value": candidate.Value,
-		"description": candidate.Description, "title": candidate.Title, "body": candidate.Body,
+		"description": candidate.Description, "name": candidate.Name, "title": candidate.Title, "body": candidate.Body,
 		"evidence": handles,
 	}
 	encoded, _ := json.Marshal(map[string]any{"kind": learning.OutcomeProposed, "candidates": []any{wireCandidate}})
 	return encoded
+}
+
+type byteTokenCounter struct{}
+
+func (byteTokenCounter) Count(text string) int { return len(text) }
+func (byteTokenCounter) CountMessages(messages []session.Message) int {
+	total := 0
+	for _, message := range messages {
+		total += len(message.Text)
+	}
+	return total
+}
+
+func TestEvidenceReflectorReservationEstimateCoversExactRequestAndOutput(t *testing.T) {
+	input, _ := admittedInput(t)
+	input.Trajectory.Current = learning.MessageSpan{Start: 0, End: len(input.Trajectory.Messages)}
+	var request port.LLMRequest
+	provider := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(req port.LLMRequest) { request = req })}, mockllm.TextTurn(`{"kind":"abstained","candidates":[]}`))
+	reflector, err := agent.NewEvidenceReflector(provider, "selected-model", byteTokenCounter{}, agent.ReflectionLimits{Tokens: 123})
+	if err != nil {
+		t.Fatal(err)
+	}
+	reserved, err := reflector.RequestTokenEstimate(input)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err = reflector.Reflect(context.Background(), input); err != nil {
+		t.Fatal(err)
+	}
+	actual := len(request.System.Render()) + len(request.Messages[0].Text) + 123
+	if reserved < actual || reserved != actual {
+		t.Fatalf("reserved=%d actual bounded request=%d", reserved, actual)
+	}
+	if !strings.Contains(request.Messages[0].Text, "explicit_remember") {
+		t.Fatal("exact request omitted detected signals")
+	}
 }
 
 func TestEvidenceReflectorOneProviderCallZeroToolsAndSelectedModel(t *testing.T) {
@@ -66,7 +102,7 @@ func TestEvidenceReflectorOneProviderCallZeroToolsAndSelectedModel(t *testing.T)
 			t.Errorf("request leaked %q", forbidden)
 		}
 	}
-	if !strings.Contains(request.System.StablePrefix, "Abstention is normal") || !strings.Contains(request.Messages[0].Text, agent.UntrustedFence) {
+	if !strings.Contains(request.System.StablePrefix, "Abstention is normal") || !strings.Contains(request.System.StablePrefix, "lowercase activation name") || !strings.Contains(request.Messages[0].Text, agent.UntrustedFence) {
 		t.Fatal("reflection policy or untrusted fence missing")
 	}
 }
@@ -86,7 +122,7 @@ func TestEvidenceReflectorAbstainsWithoutSignalAndDoesNotCall(t *testing.T) {
 
 func TestParseReflectionOutcomeStrictnessAndEvidenceResolution(t *testing.T) {
 	input, ref := admittedInput(t)
-	candidate := learning.Candidate{Kind: learning.CandidateProcedure, Title: "Format Go", Body: "Run gofmt before focused tests."}
+	candidate := learning.Candidate{Kind: learning.CandidateProcedure, Name: "format-go", Title: "Format Go", Body: "Run gofmt before focused tests."}
 	valid := modelOutcome(candidate, "m:0")
 	for name, raw := range map[string]string{
 		"unknown":          strings.TrimSuffix(string(valid), "}") + `,"extra":true}`,

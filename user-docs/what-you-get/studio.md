@@ -18,15 +18,29 @@ task build
 task studio:dev
 ```
 
-That starts two processes — the web app on `http://localhost:3000` and a local controller on `127.0.0.1:8788` that spawns and supervises `mecated` — and opens a session whose workspace is the repo root. `task studio:stop` stops all three; `task studio:status` reports whether it is up.
+That starts two processes — the web app on `http://localhost:3000` and a local controller on `127.0.0.1:8788` that spawns and supervises `mecated` — and opens a session whose workspace is the repo root. The controller chooses a free daemon port and protects it with a generated bearer token. `task studio:stop` stops all three; `task studio:status` reports whether it is up.
+
+To keep the UI local while using an existing daemon, start Studio in external mode:
+
+```sh
+MECATL_BASE_URL=https://mecated.example.com \
+MECATL_AUTH_TOKEN="$TOKEN" \
+MECATL_WORKSPACE=/workspace \
+MECATL_STUDIO_PUBLIC_ORIGIN=https://studio.example.com \
+task studio:dev
+```
+
+External mode does not start or supervise `mecated`. Provider, model-router, and MCP configuration remain owned by that deployment, so Studio disables those mutation controls.
 
 ## Choosing a provider
 
-Studio picks a provider in this order, and shows the winner under **Provider**:
+Studio never accepts provider credentials in the browser. In managed mode, `mecated` reads its conventional `auth.yaml` file (normally `~/.config/mecatl/auth.yaml`). Select a provider before starting Studio:
 
-1. **An OpenRouter key you connect** in the Provider panel. An explicit choice always wins. The key stays in the controller's memory for the process lifetime — it is never written to disk.
-2. **The ToolHive LLM gateway**, if `thv llm proxy` is listening on `127.0.0.1:14000`. Studio holds no credential for this path: the proxy injects a fresh token per request. Start it with `thv llm proxy start`.
-3. **The offline mock**, so a fresh clone with no credentials still opens a working UI.
+```sh
+MECATL_STUDIO_PROVIDER=openrouter task studio:dev
+```
+
+Put the key under `providers.openrouter.api_key` in `auth.yaml`. If the selected provider has no usable credential, startup fails with the exact auth-file path instead of silently falling back. With no explicit selection, Studio prefers a reachable ToolHive LLM gateway and otherwise uses the offline mock. External mode uses the provider already configured on the remote daemon.
 
 :::note
 A reachable gateway is not the same as a usable one. Studio's readiness probe asks the gateway for its model list, which can succeed while individual models fail — if turns error out with a provider 500, check that the specific model you pinned is served by a backend that answers, not merely that it appears in the model list.
@@ -39,7 +53,7 @@ A reachable gateway is not the same as a usable one. Studio's readiness probe as
 | **Model Router** | Define 2–8 semantic categories, each with a description and a model. A small classifier picks the category for every unpinned delegation. When an operator policy is imported, editing is locked so router edits cannot clobber aliases, slots, and guardrails. |
 | **MCP Gateway** | Connect a remote MCP gateway by browser OAuth or an existing token. Sign-in is bounded to 10 minutes, so a closed popup fails cleanly instead of hanging. |
 | **Skills** | Lists the skills discovered in the workspace's `.mecatl/skills`. Discovery is project-scoped by design and never widens to your user-global skills. |
-| **Memory** | Read-only view of both stores: the cross-project user model (keys and descriptions, never values) and this workspace's project memory. Mecatl curates these through its own tool calls — see [Memory](./memory.md). |
+| **Memory** | Read-only view of the cross-project user-model index (keys and descriptions, never values), plus whether project memory is enabled. The daemon does not yet expose a project-memory listing endpoint. See [Memory](./memory.md). |
 | **Schedules** | The oversight surface for [scheduled tasks](./scheduled-tasks.md): what is armed, when it next fires, whether it can write, and pause / resume / run-now / delete. |
 
 The memory panel is deliberately read-only. Mecatl's memory tool calls are injection-scanned; a value typed into a text box would reach the model's turn-0 context without passing that check. Ask the agent to remember or forget something instead.

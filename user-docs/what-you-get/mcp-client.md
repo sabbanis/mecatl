@@ -35,6 +35,19 @@ export MCP_GITHUB_TOKEN=ghp_…
 mecated serve --mcp-server github=https://mcp.example.com/github …
 ```
 
+## OAuth operator profiles
+
+For servers that use OAuth, define an operator `mcp.servers` profile rather than putting
+credentials in a URL or command line. A mutable local profile is authorized once with
+`mecated mcp login SERVER [--no-browser] [--permission-config PATH ...]`; the repeatable
+permission-config option selects trusted operator settings only and never carries OAuth values.
+Normal serving then warm-restores the encrypted record,
+refreshes lazily, persists refresh-token rotation, and remains warm after restart. Serving
+and ACP never open a browser. Environment-backed profiles are read-only and require an
+external Secret update plus process restart. Keep `static_bearer` as a rollback profile when
+the server supports it. See the
+[operator configuration guide](https://github.com/stacklok/mecatl/blob/main/docs/usage/configuration.md#global-mcp-authentication-profiles).
+
 **ToolHive discovery.** If you run MCP servers via [ToolHive](https://toolhive.io), mecatl discovers them automatically from the running workloads — no `--mcp-server` flag needed. ToolHive proxy URLs are HTTP, so the streaming-HTTP constraint is met transparently. Discovery is controlled by `--toolhive` (default `true`; pass `--toolhive=false` to disable) and `--toolhive-group` (default group when empty).
 
 ---
@@ -68,7 +81,19 @@ A glob prefix like `mcp__github__*` matches all tools from the `github` server.
 
 ## Reconnect behavior
 
-A connection drop — the MCP server restarts, returns HTTP 404 "session not found", or closes the transport — does not take the server out for the rest of the run. The client reconnects automatically.
+A concrete connection drop — the MCP server restarts, returns a plain HTTP 404
+"session not found", closes the transport, reaches EOF, or refuses the connection —
+does not take the server out for the rest of the run. The client reconnects
+automatically. A server-declared call failure is different: structured JSON-RPC
+400/404 responses and HTTP 429/502/503/504 responses are surfaced once on the
+existing session and are **not replayed automatically**. This distinction prevents
+a potentially mutating tool call from running twice after its response is rejected.
+
+The root currently pins the official Go SDK to the exact unreleased revision
+`v1.7.1-0.20260813084956-64e454e35c23` for these transport, cancellation, and
+failed-connect lifecycle fixes. It will move to the first tagged release that is
+verified to contain this revision or an equivalent successor; a merely newer tag
+is not sufficient.
 
 The reconnect logic sits on the server object (not on individual tool wrappers), so all tool calls, resource reads, and prompt expansions share one retry path:
 
@@ -195,6 +220,40 @@ within a session, so live catalog mutation for a running session isn't
 supported yet. If a server drops a tool an existing session still has
 registered, calling it surfaces an error the model can react to, rather than
 the tool silently vanishing.
+
+---
+
+## OAuth profiles and login
+
+The same operator `settings.yaml` can define global servers using `none`, a referenced
+static bearer, or OAuth. `mecated`, `mecatequi`, and `mecak8s` resolve those profiles the
+same way; the legacy `--mcp-server` and `MCP_<NAME>_TOKEN` path remains available.
+An OAuth `private_origins` opt-in admits only RFC1918 IPv4 or ULA IPv6 DNS answers;
+loopback, link-local and cloud-metadata, unspecified, multicast, IPv4-mapped, public,
+and other special addresses remain blocked.
+
+For OAuth backed by a mutable local encrypted store, authorize once with:
+
+```sh
+mecated mcp login github
+# On a terminal without a browser:
+mecated mcp login github --no-browser
+# Select an explicit trusted operator settings file (repeatable):
+mecated mcp login github --permission-config /etc/mecatl/settings.yaml
+```
+
+Serving and batch commands never launch a browser. Kubernetes should normally use an
+externally provisioned, read-only environment credential and restart the pod after
+rotation; the login command deliberately cannot mutate it. ACP cannot provide OAuth profiles
+or install/drive authorization, but after operator authorization ACP sessions may invoke the
+shared global OAuth-backed tools under ordinary permissions. OAuth is not available for
+client-supplied/inline/discovered MCP, and dynamic client registration is not yet
+supported. OAuth remains constrained to RFC 9728 metadata with one exact
+resource/authorization server, S256, and Basic-authenticated confidential clients.
+Repeated authorization rejection is bounded; invalid grants are not automatically
+reauthorized; dynamic client registration is not durable; and the caller still owns
+redirect/destination policy. See the [configuration guide](https://github.com/stacklok/mecatl/blob/main/docs/usage/configuration.md)
+and [ADR 0113](https://github.com/stacklok/mecatl/blob/main/docs/adr/0113-operator-mcp-auth-profiles.md).
 
 ---
 
