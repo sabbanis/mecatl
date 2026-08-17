@@ -2,11 +2,18 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"testing"
+	"time"
 
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
+	"github.com/stacklok/mecatl/engine/adapter/memstore"
+	"github.com/stacklok/mecatl/engine/adapter/mockllm"
+	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/governance"
+	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/team"
+	"github.com/stacklok/mecatl/engine/tool"
 )
 
 func TestADR_0224_AuthorityAttenuation_Scenario6_SubagentVariantsCannotWiden(t *testing.T) {
@@ -50,6 +57,65 @@ func TestADR_0224_AuthorityAttenuation_Scenario6_SubagentVariantsCannotWiden(t *
 	persisted := mustAuthority(t, []string{"Read"}, nil, 1, governance.AuthorityProfile{FileSystem: true})
 	if canonical := mustCanonicalAuthority(t, persisted); canonical == "" {
 		t.Fatal("persisted child authority must be durable")
+	}
+}
+
+// TestADR_0224_AuthorityAttenuation_ResumeRejectsPersistedChildWidening proves
+// that both resume paths reject a saved child whose immutable maximum is broader
+// than the current parent before the child can run.
+func TestADR_0224_AuthorityAttenuation_ResumeRejectsPersistedChildWidening(t *testing.T) {
+	for _, background := range []bool{false, true} {
+		name := "foreground"
+		if background {
+			name = "background"
+		}
+		t.Run(name, func(t *testing.T) {
+			store := memstore.New()
+			parentAuthority := mustAuthority(t, []string{"Read", subagentToolName}, nil, 2, governance.AuthorityProfile{FileSystem: true, Isolated: true})
+			childAuthority := mustAuthority(t, []string{"Read", "Write"}, nil, 1, governance.AuthorityProfile{FileSystem: true, Isolated: true})
+			childID := session.SessionID("subagent-parent-resume")
+			child := session.New(childID, session.ModeDefault, "/ws", session.Limits{}, time.Now())
+			if err := child.BindAuthority(mustCanonicalAuthority(t, childAuthority), ""); err != nil {
+				t.Fatalf("BindAuthority: %v", err)
+			}
+			if err := child.Complete(); err != nil {
+				t.Fatalf("Complete: %v", err)
+			}
+			if err := store.Save(context.Background(), child); err != nil {
+				t.Fatalf("Save child: %v", err)
+			}
+
+			task := NewSubagentTool(authorityTestEngine(), WithSubagentStore(store))
+			catalog := tool.NewCatalog()
+			catalog.MustRegister(task)
+			args := `{"resume":"subagent-parent-resume","prompt":"continue"}`
+			if background {
+				args = `{"resume":"subagent-parent-resume","prompt":"continue","background":true}`
+			}
+			parent := NewEngine(Deps{
+				LLM: mockllm.New(
+					mockllm.ToolCallTurn(session.NewToolCall("resume", subagentToolName, json.RawMessage(args))),
+					mockllm.TextTurn("done"),
+				),
+				Catalog: catalog,
+				Policy:  permpolicy.NewPolicy(permpolicy.AllowAllFloorRules(), nil),
+			})
+			parentSession := session.New("parent", session.ModeDefault, "/ws", session.Limits{}, time.Now())
+			if err := parentSession.BindAuthority(mustCanonicalAuthority(t, parentAuthority), ""); err != nil {
+				t.Fatalf("BindAuthority parent: %v", err)
+			}
+
+			run := parent.Run(context.Background(), parentSession, testEnvironment(memfs.NewWorkspace("/ws"), nil), RunRequest{Text: "go"})
+			var result *session.ToolResult
+			for event := range run.Events() {
+				if event.Type == session.EvToolResult && event.ToolResult.CallID == "resume" {
+					result = event.ToolResult
+				}
+			}
+			if result == nil || !result.IsError || result.Content != "Subagent: resumed child authority exceeds the parent maximum; refusing delegation" {
+				t.Fatalf("resume result = %+v", result)
+			}
+		})
 	}
 }
 

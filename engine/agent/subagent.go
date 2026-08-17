@@ -196,12 +196,18 @@ type parentCaps struct {
 }
 
 func deriveRunChildAuthority(caps parentCaps, resuming bool, args subagentArgs, writable bool, callID session.ToolCallID) (governance.Authority, session.ToolResult, bool) {
-	if caps.authority == nil || resuming {
+	if caps.authority == nil {
 		return governance.UnrestrictedAuthority(), session.ToolResult{}, true
 	}
 	parent, err := caps.authority()
 	if err != nil {
 		return governance.NoneAuthority(), session.NewToolError(callID, "Subagent: authority is unavailable; refusing delegation"), false
+	}
+	// A resumed child already consumed its delegation hop when its persisted bound
+	// was created. resumeChildAuthority validates that saved bound against this
+	// parent before the child environment is acquired.
+	if resuming {
+		return parent, session.ToolResult{}, true
 	}
 	child, err := deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{
 		delegate: strings.TrimSpace(args.Agent), directWrite: writable,
@@ -210,6 +216,21 @@ func deriveRunChildAuthority(caps parentCaps, resuming bool, args subagentArgs, 
 		return governance.NoneAuthority(), session.NewToolError(callID, "Subagent: authority denies this delegation: "+err.Error()), false
 	}
 	return child, session.ToolResult{}, true
+}
+
+// resumeChildAuthority refuses a persisted child bound that is not contained by
+// the caller's current maximum. A resume does not consume another hop, but it
+// must never use a saved child to widen a later-narrowed parent.
+func resumeChildAuthority(parent governance.Authority, child *session.Session, callID session.ToolCallID) session.ToolResult {
+	bound, _, legacy := child.AuthorityBound()
+	if legacy {
+		return session.NewToolError(callID, "Subagent: resumed child has no authority bound; refusing delegation")
+	}
+	saved, err := governance.ParseAuthority(bound)
+	if err != nil || !parent.Contains(saved) {
+		return session.NewToolError(callID, "Subagent: resumed child authority exceeds the parent maximum; refusing delegation")
+	}
+	return session.ToolResult{}
 }
 
 // inheritOwner stamps the parent session's owner onto a freshly-minted child
@@ -2197,7 +2218,7 @@ func (t *SubagentTool) resolveEngineAndLimits(callID session.ToolCallID, args su
 // still on disk — because this is the only place that sees the resumed session's
 // PERSISTED workspace before buildChildSession re-homes it. See editsSurvived's
 // doc-comment on the named result below and resumeWritableNote.
-func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.ToolCall, env tool.Environment, args subagentArgs, resuming, writable bool, childID, parentID session.SessionID, limits session.Limits, forkHistory []session.Message) (child *session.Session, runEnv tool.Environment, cleanup func() error, advisory string, editsSurvived bool, errResult session.ToolResult, ok bool) {
+func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.ToolCall, env tool.Environment, args subagentArgs, resuming, writable bool, childID, parentID session.SessionID, limits session.Limits, forkHistory []session.Message, parentAuthority governance.Authority, enforceAuthority bool) (child *session.Session, runEnv tool.Environment, cleanup func() error, advisory string, editsSurvived bool, errResult session.ToolResult, ok bool) {
 	noop := func() error { return nil }
 	var resumedChild *session.Session
 	// priorWorkspace is the resumed child's PERSISTED workspace root, captured here
@@ -2211,6 +2232,11 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 			return nil, tool.Environment{}, noop, "", false, errRes, false
 		}
 		resumedChild = loaded
+		if enforceAuthority {
+			if result := resumeChildAuthority(parentAuthority, loaded, call.ID); result.IsError {
+				return nil, tool.Environment{}, noop, "", false, result, false
+			}
+		}
 		priorWorkspace = loaded.Workspace
 	}
 	// A mode:"read-write" child runs DIRECTLY against the parent workspace (no fork —
@@ -2425,7 +2451,7 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	// Resume load + fork + session build (see prepareChildSession). The cleanup is
 	// always non-nil and tears the worktree down after the child fully drains (the
 	// run is drained below in this call), so a deferred cleanup is correct.
-	child, runEnv, cleanupWS, forkAdvisory, editsSurvived, errResult, ok := t.prepareChildSession(ctx, call, env, args, resuming, writable, childID, caps.parentSessionID, limits, forkHistory)
+	child, runEnv, cleanupWS, forkAdvisory, editsSurvived, errResult, ok := t.prepareChildSession(ctx, call, env, args, resuming, writable, childID, caps.parentSessionID, limits, forkHistory, childAuthority, caps.authority != nil)
 	if !ok {
 		return errResult, nil
 	}
@@ -2694,6 +2720,13 @@ func (t *SubagentTool) startBackground(ctx context.Context, b backgroundChild) s
 			return errResult
 		}
 		b.resumed = loaded
+		if b.caps.authority != nil {
+			if result := resumeChildAuthority(b.authority, loaded, b.call.ID); result.IsError {
+				b.release()
+				abort()
+				return result
+			}
+		}
 	}
 	b.caps.startChildRun(b.childID)
 	// A5: the start event is emitted SYNCHRONOUSLY before the goroutine spawns, so
