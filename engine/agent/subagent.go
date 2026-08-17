@@ -195,7 +195,15 @@ type parentCaps struct {
 	parentSessionID session.SessionID
 }
 
-func deriveRunChildAuthority(caps parentCaps, resuming bool, args subagentArgs, writable bool, callID session.ToolCallID) (governance.Authority, session.ToolResult, bool) {
+func deriveRunChildAuthority(caps parentCaps, resuming bool, args subagentArgs, writable bool, definitionCeiling *string, callID session.ToolCallID) (governance.Authority, session.ToolResult, bool) {
+	definition := governance.UnrestrictedAuthority()
+	if !resuming && definitionCeiling != nil {
+		parsed, err := governance.ParseAuthority(*definitionCeiling)
+		if err != nil {
+			return governance.NoneAuthority(), session.NewToolError(callID, "Subagent: configured agent authority ceiling is invalid; refusing delegation"), false
+		}
+		definition = parsed
+	}
 	if caps.authority == nil {
 		return governance.UnrestrictedAuthority(), session.ToolResult{}, true
 	}
@@ -209,7 +217,7 @@ func deriveRunChildAuthority(caps parentCaps, resuming bool, args subagentArgs, 
 	if resuming {
 		return parent, session.ToolResult{}, true
 	}
-	child, err := deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{
+	child, err := deriveChildAuthority(parent, definition, childAuthorityRequest{
 		delegate: strings.TrimSpace(args.Agent), directWrite: writable,
 	})
 	if err != nil {
@@ -525,6 +533,10 @@ type AgentMeta struct {
 	Name string
 	// Description is the one-line summary the model uses to choose a specialist.
 	Description string
+	// AuthorityCeiling is the optional managed-definition ceiling, retained in raw
+	// form so an invalid declaration is rejected at selection time rather than
+	// broadened during startup.
+	AuthorityCeiling *string
 	// Limits are the per-def session stop conditions the child session runs under
 	// when this agent is selected. The composition root derives them from the def's
 	// maxTurns/maxToolCalls (per-field falling back to the Subagent tool's default
@@ -2315,7 +2327,7 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 
 	resuming := strings.TrimSpace(args.Resume) != ""
 
-	childAuthority, errResult, authorityOK := deriveRunChildAuthority(caps, resuming, args, writable, call.ID)
+	childAuthority, errResult, authorityOK := deriveRunChildAuthority(caps, resuming, args, writable, t.agentAuthorityCeiling(args.Agent), call.ID)
 	if !authorityOK {
 		return errResult, nil
 	}
@@ -4532,6 +4544,16 @@ func (t *SubagentTool) persistChild(ctx context.Context, child *session.Session)
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), childPersistTimeout)
 	defer cancel()
 	_ = t.store.Save(saveCtx, child)
+}
+
+func (t *SubagentTool) agentAuthorityCeiling(name string) *string {
+	for _, meta := range t.agentMeta {
+		if meta.Name == name && meta.AuthorityCeiling != nil {
+			ceiling := *meta.AuthorityCeiling
+			return &ceiling
+		}
+	}
+	return nil
 }
 
 // unknownAgentHint builds the model-addressable error text for a Subagent call that

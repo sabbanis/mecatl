@@ -37,7 +37,7 @@ func TestADR_0226_AuthorityAttenuation_Scenario6_SubagentVariantsCannotWiden(t *
 		{name: "fork_history", args: subagentArgs{Fork: true}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			got, result, ok := deriveRunChildAuthority(parentCaps{authority: func() (governance.Authority, error) { return parent, nil }}, false, tc.args, tc.writable, "call")
+			got, result, ok := deriveRunChildAuthority(parentCaps{authority: func() (governance.Authority, error) { return parent, nil }}, false, tc.args, tc.writable, nil, "call")
 			if !ok || result.IsError {
 				t.Fatalf("deriveRunChildAuthority = %q", result.Content)
 			}
@@ -57,6 +57,27 @@ func TestADR_0226_AuthorityAttenuation_Scenario6_SubagentVariantsCannotWiden(t *
 	persisted := mustAuthority(t, []string{"Read"}, nil, 1, governance.AuthorityProfile{FileSystem: true})
 	if canonical := mustCanonicalAuthority(t, persisted); canonical == "" {
 		t.Fatal("persisted child authority must be durable")
+	}
+}
+
+func TestADR_0226_AuthorityAttenuation_ManagedDefinitionCeilingAttenuatesAtSelection(t *testing.T) {
+	t.Parallel()
+	parent := mustAuthority(t, []string{"Read", "Write", subagentToolName}, []string{"reviewer"}, 2, governance.AuthorityProfile{FileSystem: true, Isolated: true})
+	ceiling := mustCanonicalAuthority(t, mustAuthority(t, []string{"Read"}, []string{"reviewer"}, 1, governance.AuthorityProfile{FileSystem: true, Isolated: true}))
+	subagent := &SubagentTool{agentMeta: []AgentMeta{{Name: "reviewer", AuthorityCeiling: &ceiling}}}
+	got, result, ok := deriveRunChildAuthority(parentCaps{authority: func() (governance.Authority, error) { return parent, nil }}, false, subagentArgs{Agent: "reviewer"}, false, subagent.agentAuthorityCeiling("reviewer"), "call")
+	if !ok || result.IsError || got.AllowsTool("Write") {
+		t.Fatalf("managed ceiling must attenuate selected child: authority=%v result=%q", got, result.Content)
+	}
+
+	invalid := "not an authority"
+	_, result, ok = deriveRunChildAuthority(parentCaps{authority: func() (governance.Authority, error) { return parent, nil }}, false, subagentArgs{Agent: "reviewer"}, false, &invalid, "call")
+	if ok || !result.IsError {
+		t.Fatal("invalid managed ceiling must fail closed")
+	}
+	_, result, ok = deriveRunChildAuthority(parentCaps{}, false, subagentArgs{Agent: "reviewer"}, false, &invalid, "call")
+	if ok || !result.IsError {
+		t.Fatal("invalid managed ceiling must not bypass an unbound legacy parent")
 	}
 }
 
