@@ -180,7 +180,7 @@ func WithWinnerReaper(s PreservedForkStore) ParallelOption
 func WithWritableChildEngine(e *Engine) SubagentOption
 func WithWritableEngineFactory(f func(model string) (*Engine, bool)) SubagentOption
 func WriteUntrustedBlock(b *strings.Builder, body string)
-type AgentMeta struct{Name string; Description string; AuthorityCeiling *string; Limits session.Limits}
+type AgentMeta struct{Name string; Description string; AuthorityCeiling *string; DefinitionIdentity string; Limits session.Limits}
 type BashStatusTool struct{}
 type BashTool struct{}
 type BranchJudge interface{Judge(ctx context.Context, candidates []BranchSummary, criteria string) (winner int, rationale string, err error)}
@@ -200,7 +200,7 @@ type HeuristicTokenCounter struct{CharsPerToken int}
 type InspectMemberTool struct{}
 type InspectSubagentTool struct{}
 type LRUForkReaper struct{}
-type MemberBuild struct{Engine *Engine; Mode session.PermissionMode; Limits session.Limits; Close func() error; MCPToolNames []string; IsolateReadOnly bool}
+type MemberBuild struct{Engine *Engine; Mode session.PermissionMode; Limits session.Limits; AuthorityCeiling *string; DefinitionIdentity string; Close func() error; MCPToolNames []string; IsolateReadOnly bool}
 type MemberDisposition string
 type MemberEngine func(spec MemberSpec, routedModel string) MemberBuild
 type MemberOutcome struct{Name string; LastText string; Stopped bool; Disposition MemberDisposition; Reason MemberStopReason; ErrorRounds int; Completed []string; Lead bool}

@@ -6877,7 +6877,9 @@ func buildMemberEngine(cfg Config, provReg *providerRegistry, provider port.LLMP
 			mode          session.PermissionMode
 			// memberLimits carries ONLY the def-set per-round stop conditions (zero =
 			// unset); AddMember per-field merges them onto the team default (s.limits).
-			memberLimits session.Limits
+			memberLimits       session.Limits
+			authorityCeiling   *string
+			definitionIdentity string
 			// mcpClose tears down any INLINE MCP managers this member connected (nil for a
 			// reference-only or MCP-less member); mcpNames are the def's MCP tool names the
 			// supervisor exempts from the read-only-member backstop (MCP tools report
@@ -6972,6 +6974,10 @@ func buildMemberEngine(cfg Config, provReg *providerRegistry, provider port.LLMP
 			}
 			mcpClose, mcpNames = cl, names2
 			memberLimits = defLimits(def, session.Limits{}) // only def-set fields; AddMember merges with the team default
+			authorityCeiling = def.ManagedAuthorityCeiling()
+			if authorityCeiling != nil {
+				definitionIdentity = "explicit:" + def.Name
+			}
 			// Resolve the def's (provider, model, window) via the SHARED helper: a
 			// pinned-and-known provider switches the member engine; a def pinning none
 			// inherits the parent. resolve ONCE; thread the model into agentPromptConfig.
@@ -7031,7 +7037,7 @@ func buildMemberEngine(cfg Config, provReg *providerRegistry, provider port.LLMP
 		// member now resolves the parent model's REAL window via childWindowFor too
 		// (issue #64), flooring to 128k only for a genuinely uncatalogued model.
 		eng := newChildEngineForProvider(cfg, "member:"+spec.Name, childProvider, model, windowFn, cat, pc, memberHooks)
-		return agent.MemberBuild{Engine: eng, Mode: mode, Limits: memberLimits, Close: mcpClose, MCPToolNames: mcpNames, IsolateReadOnly: isolateReadOnly}
+		return agent.MemberBuild{Engine: eng, Mode: mode, Limits: memberLimits, AuthorityCeiling: authorityCeiling, DefinitionIdentity: definitionIdentity, Close: mcpClose, MCPToolNames: mcpNames, IsolateReadOnly: isolateReadOnly}
 	}
 }
 

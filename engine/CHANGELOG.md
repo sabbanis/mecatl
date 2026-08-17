@@ -23,7 +23,10 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 - **Managed agent-definition authority ceiling** ([ADR 0226](../docs/adr/0226-authority-attenuation-on-current-main.md)) —
   `agent.AgentMeta.AuthorityCeiling` carries the optional managed-definition
   ceiling into named Subagent selection, where it is intersected before child
-  runtime resources are acquired. Added field: minor.
+  runtime resources are acquired. `AgentMeta.DefinitionIdentity` and
+  `MemberBuild`'s corresponding fields preserve only the managed tier/name
+  identity alongside the optional ceiling for child/member authority bindings.
+  Added fields: minor.
 
   `agent.WithTeamAuthority` applies a parent-derived maximum to team members and
   synthesis runs. New exported option: Added (minor).

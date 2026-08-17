@@ -201,6 +201,69 @@ func TestADR_0226_AuthorityAttenuation_Scenario6_DirectTeamsHaveOnlyStructuralCo
 	}
 }
 
+func TestADR_0226_AuthorityAttenuation_Scenario5_ManagedLocalDefinitionNarrowsChild(t *testing.T) {
+	t.Parallel()
+	parent := mustAuthority(t, []string{"Read", "Write", subagentToolName, teamToolName}, []string{"reviewer"}, 2, governance.AuthorityProfile{FileSystem: true, Isolated: true})
+	ceiling := mustCanonicalAuthority(t, mustAuthority(t, []string{"Read"}, []string{"reviewer"}, 1, governance.AuthorityProfile{FileSystem: true, Isolated: true}))
+	const identity = "explicit:reviewer"
+
+	subagent := &SubagentTool{agentMeta: []AgentMeta{{Name: "reviewer", AuthorityCeiling: &ceiling, DefinitionIdentity: identity}}}
+	child, result, ok := deriveRunChildAuthority(parentCaps{authority: func() (governance.Authority, error) { return parent, nil }}, false, subagentArgs{Agent: "reviewer"}, false, subagent.agentAuthorityCeiling("reviewer"), "call")
+	if !ok || result.IsError || child.AllowsTool("Write") {
+		t.Fatalf("named subagent authority=%v result=%q, want managed ceiling to remove Write", child, result.Content)
+	}
+
+	read, write := &fakeOverlayTool{name: "Read"}, &fakeOverlayTool{name: "Write"}
+	sup := NewSupervisor(team.New("managed"), testEnvironment(memfs.NewWorkspace("/ws"), nil), func(MemberSpec, string) MemberBuild {
+		return MemberBuild{Engine: authorityTestEngine(read, write), AuthorityCeiling: &ceiling, DefinitionIdentity: identity}
+	}, WithTeamAuthority(parent))
+	if err := sup.AddMember(context.Background(), MemberSpec{Name: "reviewer", AgentType: "reviewer", Lead: true}); err != nil {
+		t.Fatalf("AddMember: %v", err)
+	}
+	bound, gotIdentity, legacy := sup.members["reviewer"].sess.AuthorityBound()
+	if legacy || gotIdentity != identity {
+		t.Fatalf("team member identity=%q legacy=%t, want %q and bound", gotIdentity, legacy, identity)
+	}
+	memberAuthority, err := governance.ParseAuthority(bound)
+	if err != nil || memberAuthority.AllowsTool("Write") {
+		t.Fatalf("team member authority=%q err=%v, want managed ceiling to remove Write", bound, err)
+	}
+}
+
+func TestADR_0226_AuthorityAttenuation_Scenario5_DefinitionCeilingPresenceIsPreserved(t *testing.T) {
+	t.Parallel()
+	empty := ""
+	for _, tc := range []struct {
+		name string
+		def  tool.AgentDef
+		want *string
+	}{
+		{name: "absent", def: tool.AgentDef{Name: "reviewer", Origin: tool.AgentOriginExplicit}},
+		{name: "present_empty", def: tool.AgentDef{Name: "reviewer", Origin: tool.AgentOriginExplicit, AuthorityCeiling: &empty}, want: &empty},
+		{name: "driver", def: tool.AgentDef{Name: "reviewer", Origin: tool.AgentOriginDriver, AuthorityCeiling: &empty}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got := tc.def.ManagedAuthorityCeiling()
+			if (got == nil) != (tc.want == nil) || got != nil && *got != *tc.want {
+				t.Fatalf("ManagedAuthorityCeiling()=%v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
+func TestADR_0226_AuthorityAttenuation_Scenario5_RemoteDriverCannotBecomeManaged(t *testing.T) {
+	t.Parallel()
+	ceiling := mustCanonicalAuthority(t, mustAuthority(t, []string{"Read"}, nil, 1, governance.AuthorityProfile{FileSystem: true}))
+	remote := tool.AgentDef{Name: "reviewer", Origin: tool.AgentOriginDriver, AuthorityCeiling: &ceiling}
+	if got := remote.ManagedAuthorityCeiling(); got != nil {
+		t.Fatalf("driver ceiling=%q, want no managed ceiling", *got)
+	}
+	profile := AgentMeta{Name: "reviewer"}
+	if got := profile.AuthorityCeiling; got != nil {
+		t.Fatalf("remote profile ceiling=%q, want nil", *got)
+	}
+}
+
 func mustCanonicalAuthority(t *testing.T, authority governance.Authority) string {
 	t.Helper()
 	canonical, err := authority.Canonical()

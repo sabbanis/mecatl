@@ -196,9 +196,10 @@ type parentCaps struct {
 }
 
 type delegationPreflight struct {
-	childID   session.SessionID
-	resuming  bool
-	authority governance.Authority
+	childID            session.SessionID
+	resuming           bool
+	authority          governance.Authority
+	definitionIdentity string
 }
 
 // preflightDelegation performs the control-plane-only checks which must complete
@@ -235,11 +236,13 @@ func (t *SubagentTool) preflightDelegation(ctx context.Context, call session.Too
 			preflight.authority = governance.UnrestrictedAuthority()
 		}
 	} else {
-		authority, result, ok := deriveRunChildAuthority(caps, false, args, writable, t.agentAuthorityCeiling(args.Agent), call.ID)
+		definitionCeiling, definitionIdentity := t.agentAuthorityProfile(args.Agent)
+		authority, result, ok := deriveRunChildAuthority(caps, false, args, writable, definitionCeiling, call.ID)
 		if !ok {
 			return delegationPreflight{}, result, false
 		}
 		preflight.authority = authority
+		preflight.definitionIdentity = definitionIdentity
 	}
 	if !authorityAllowsEnvironment(preflight.authority, env, writable, t.childForker != nil) {
 		return delegationPreflight{}, session.NewToolError(call.ID, "Subagent: requested environment posture is not authorized; refusing delegation"), false
@@ -596,6 +599,9 @@ type AgentMeta struct {
 	// form so an invalid declaration is rejected at selection time rather than
 	// broadened during startup.
 	AuthorityCeiling *string
+	// DefinitionIdentity is the safe tier/name identity persisted with a managed
+	// ceiling. It contains neither a locator nor definition transport data.
+	DefinitionIdentity string
 	// Limits are the per-def session stop conditions the child session runs under
 	// when this agent is selected. The composition root derives them from the def's
 	// maxTurns/maxToolCalls (per-field falling back to the Subagent tool's default
@@ -2462,8 +2468,9 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 			call: call, env: env, emit: emit, caps: caps, args: args,
 			engine: engine, limits: limits, resuming: resuming, childID: childID,
 			authority: childAuthority, bindAuthority: caps.authority != nil && !resuming,
-			forkHistory:    forkHistory,
-			routedCategory: routedCategory, routedModel: routedModel, routingReason: routingReason,
+			definitionIdentity: preflight.definitionIdentity,
+			forkHistory:        forkHistory,
+			routedCategory:     routedCategory, routedModel: routedModel, routingReason: routingReason,
 			timeoutCtx: timeoutCtx, cancelCall: cancelCall, cancelTimeout: cancelTimeout,
 		}), nil
 	}
@@ -2518,7 +2525,7 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	}
 	if !resuming && caps.authority != nil {
 		bound, err := childAuthority.Canonical()
-		if err != nil || child.BindAuthority(bound, "") != nil {
+		if err != nil || child.BindAuthority(bound, preflight.definitionIdentity) != nil {
 			_ = cleanupWS()
 			return session.NewToolError(call.ID, "Subagent: failed to bind child authority"), nil
 		}
@@ -2712,8 +2719,9 @@ type backgroundChild struct {
 	resuming bool
 	// authority is the already-derived child maximum. It is bound only for a
 	// fresh child; a resumed session keeps its persisted authority.
-	authority     governance.Authority
-	bindAuthority bool
+	authority          governance.Authority
+	bindAuthority      bool
+	definitionIdentity string
 	// resumed is the loaded+recovered session on a resume call (loaded SYNCHRONOUSLY
 	// in startBackground so an unknown id / non-resumable state fails fast inline,
 	// not as a collectible background error).
@@ -2872,7 +2880,7 @@ func (t *SubagentTool) driveBackground(ctx context.Context, b backgroundChild) {
 	}
 	if b.bindAuthority {
 		bound, err := b.authority.Canonical()
-		if err != nil || child.BindAuthority(bound, "") != nil {
+		if err != nil || child.BindAuthority(bound, b.definitionIdentity) != nil {
 			endOnError(session.NewToolError(b.call.ID, "Subagent: failed to bind child authority"))
 			return
 		}
@@ -4595,14 +4603,19 @@ func (t *SubagentTool) persistChild(ctx context.Context, child *session.Session)
 	_ = t.store.Save(saveCtx, child)
 }
 
-func (t *SubagentTool) agentAuthorityCeiling(name string) *string {
+func (t *SubagentTool) agentAuthorityProfile(name string) (*string, string) {
 	for _, meta := range t.agentMeta {
 		if meta.Name == name && meta.AuthorityCeiling != nil {
 			ceiling := *meta.AuthorityCeiling
-			return &ceiling
+			return &ceiling, meta.DefinitionIdentity
 		}
 	}
-	return nil
+	return nil, ""
+}
+
+func (t *SubagentTool) agentAuthorityCeiling(name string) *string {
+	ceiling, _ := t.agentAuthorityProfile(name)
+	return ceiling
 }
 
 // unknownAgentHint builds the model-addressable error text for a Subagent call that

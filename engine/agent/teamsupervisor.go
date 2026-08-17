@@ -213,6 +213,13 @@ type MemberBuild struct {
 	// the supervisor stays agnostic of agent definitions. A wholly zero Limits leaves
 	// the member on the team default, unchanged.
 	Limits session.Limits
+	// AuthorityCeiling is the optional ceiling from a trusted managed local
+	// definition. Nil means absent; non-nil empty/malformed values remain distinct
+	// and fail closed during member enrolment.
+	AuthorityCeiling *string
+	// DefinitionIdentity is the safe tier/name label persisted with a managed
+	// ceiling. It must not contain a source path or transport detail.
+	DefinitionIdentity string
 	// Close, if non-nil, tears down resources the factory opened for THIS member —
 	// specifically the inline per-agent MCP manager(s) connected for the member's
 	// agent definition (a reference entry opens nothing, so it contributes no Close).
@@ -706,10 +713,9 @@ func NewSupervisor(t *team.Team, base tool.Environment, factory MemberEngine, op
 	return s
 }
 
-// bindMemberAuthority stamps the team's one-hop attenuation onto a new idle
-// member session. NoneAuthority remains stampable for fail-closed callers, but a
-// supervisor cannot derive a runnable child from it.
-func (s *Supervisor) bindMemberAuthority(sess *session.Session) error {
+// bindMemberAuthority stamps the team's one-hop attenuation intersected with the
+// managed definition ceiling and the member's safe identity onto a new idle session.
+func (s *Supervisor) bindMemberAuthority(sess *session.Session, build MemberBuild) error {
 	memberAuthority := s.authority
 	if !s.authority.Equal(governance.NoneAuthority()) {
 		var err error
@@ -718,8 +724,21 @@ func (s *Supervisor) bindMemberAuthority(sess *session.Session) error {
 			return fmt.Errorf("agent: attenuate team-member authority: %w", err)
 		}
 	}
+	if build.AuthorityCeiling == nil && build.DefinitionIdentity != "" {
+		return errors.New("agent: team-member definition identity requires a managed authority ceiling")
+	}
+	if build.AuthorityCeiling != nil {
+		ceiling, err := governance.ParseAuthority(*build.AuthorityCeiling)
+		if err != nil {
+			return errors.New("agent: invalid managed team-member authority ceiling")
+		}
+		memberAuthority, err = memberAuthority.Intersect(ceiling)
+		if err != nil {
+			return errors.New("agent: intersect team-member authority")
+		}
+	}
 	bound, err := memberAuthority.Canonical()
-	if err != nil || sess.BindAuthority(bound, "") != nil {
+	if err != nil || sess.BindAuthority(bound, build.DefinitionIdentity) != nil {
 		return errors.New("agent: bind team-member authority")
 	}
 	return nil
@@ -836,7 +855,7 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 		s.team.RemoveMember(spec.Name)
 		return fmt.Errorf("agent: stamp team-member relationship: %w", err)
 	}
-	if err := s.bindMemberAuthority(sess); err != nil {
+	if err := s.bindMemberAuthority(sess, build); err != nil {
 		if cleanup != nil {
 			_ = cleanup()
 		}
