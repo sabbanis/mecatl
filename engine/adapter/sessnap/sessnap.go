@@ -100,6 +100,15 @@ type Snapshot struct {
 	// generated-file regeneration is paid once. omitempty keeps a pre-ship
 	// snapshot with no "authority" key decoding to the zero value.
 	Authority session.Authority `json:"authority,omitempty"`
+	// AuthorityVersion distinguishes an explicit v1 authority record from a
+	// pre-feature snapshot. A pointer preserves absence on decode.
+	AuthorityVersion *int `json:"authority_version,omitempty"`
+	// AuthorityBound is the canonical maximum, opaque to sessnap.
+	AuthorityBound string `json:"authority_bound,omitempty"`
+	// DefinitionIdentity is the safe tier/name provenance of a definition ceiling.
+	DefinitionIdentity string `json:"definition_identity,omitempty"`
+	// AuthorityCompatibilityOnly explicitly marks a pre-v1 legacy record.
+	AuthorityCompatibilityOnly bool `json:"authority_compatibility_only,omitempty"`
 	// EnvironmentRef is the resolved execution-environment identity this session
 	// runs against (ADR 0214, issue #462 phase 3). The ref is a value type
 	// (EnvironmentKind + opaque ID); a zero ref {Kind:"", ID:""} is the
@@ -208,6 +217,13 @@ func Of(s *session.Session) (Snapshot, error) {
 	}
 	snap.Permanent = s.FailurePermanence()
 	snap.LastError = s.LastError()
+	snap.AuthorityBound, snap.DefinitionIdentity, snap.AuthorityCompatibilityOnly = s.AuthorityBound()
+	version := 1
+	if snap.AuthorityBound == "" {
+		version = 0
+		snap.AuthorityCompatibilityOnly = true
+	}
+	snap.AuthorityVersion = &version
 	return snap, nil
 }
 
@@ -218,6 +234,9 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 	s := session.New(snap.ID, snap.Mode, snap.Workspace, snap.Limits, snap.CreatedAt)
 	if err := s.RestoreSessionMetadata(snap.Kind, snap.Relationship); err != nil {
 		return nil, fmt.Errorf("sessnap: restore session metadata: %w", err)
+	}
+	if err := restoreAuthority(s, snap); err != nil {
+		return nil, err
 	}
 
 	// Rebuild the conversation history verbatim.
@@ -256,6 +275,41 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+// restoreAuthority accepts a valid v1 authority record or a genuinely legacy
+// record with no authority metadata. A claimed v1 record without a bound fails
+// closed rather than acquiring legacy compatibility by inference.
+func restoreAuthority(s *session.Session, snap Snapshot) error {
+	if snap.AuthorityVersion == nil {
+		if snap.AuthorityBound != "" || snap.DefinitionIdentity != "" || snap.AuthorityCompatibilityOnly {
+			return errors.New("sessnap: authority data without version")
+		}
+		if err := s.RestoreAuthorityBound("", "", true); err != nil {
+			return fmt.Errorf("sessnap: restore legacy authority: %w", err)
+		}
+		return nil
+	}
+	switch *snap.AuthorityVersion {
+	case 0:
+		if !snap.AuthorityCompatibilityOnly || snap.AuthorityBound != "" || snap.DefinitionIdentity != "" {
+			return errors.New("sessnap: invalid legacy authority migration")
+		}
+		if err := s.RestoreAuthorityBound("", "", true); err != nil {
+			return fmt.Errorf("sessnap: restore legacy authority: %w", err)
+		}
+		return nil
+	case 1:
+		if snap.AuthorityCompatibilityOnly || snap.AuthorityBound == "" {
+			return errors.New("sessnap: invalid v1 authority")
+		}
+		if err := s.RestoreAuthorityBound(snap.AuthorityBound, snap.DefinitionIdentity, false); err != nil {
+			return fmt.Errorf("sessnap: restore authority: %w", err)
+		}
+		return nil
+	default:
+		return errors.New("sessnap: unknown authority version")
+	}
 }
 
 // RestoreState drives a freshly-constructed (StateIdle) Session through the state

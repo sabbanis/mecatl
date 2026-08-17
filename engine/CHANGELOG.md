@@ -20,6 +20,14 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   non-activatable evaluator-infrastructure marker. New identifiers are Added (minor); the standard
   app's Auto default changes independently while the engine pipeline zero remains evaluated.
 
+- **Versioned session authority bound** ([ADR 0224](../docs/adr/0224-authority-attenuation-on-current-main.md)) —
+  `governance.Authority`, `AuthoritySpec`, and `AuthorityProfile` provide the
+  pure versioned capability vocabulary and canonicalization. `session.(*Session).BindAuthority`, `RestoreAuthorityBound`, and `AuthorityBound`
+  persist an opaque canonical authority maximum and safe definition identity. The
+  snapshot adapter distinguishes valid v1 authority records from pre-feature
+  compatibility records and rejects malformed v1 records. New methods are Added
+  (minor).
+
 - **Configurable learning-trigger policy ([ADR 0114](../docs/adr/0114-configurable-learning-trigger-policy.md))** —
   `learning` adds strict sensitivity, scoped signal detection, closed admission
   request/decision/class/reason contracts, pure threshold/always/never policies,

@@ -2,8 +2,8 @@
 id: 01-authority-domain
 title: Canonical authority bound and snapshot persistence
 blocked_by: []
-status: pending
-branch: ""
+status: done
+branch: "plan-authority-attenuation-reconciliation/01-authority-domain-20260812"
 worktree: ""
 issue: "371"
 retries: 0

@@ -1,6 +1,13 @@
     method func (*Evaluator).Evaluate(tool string, args json.RawMessage, planMode bool) PermissionDecision
     method func (*Evaluator).EvaluateWith(tool string, args json.RawMessage, planMode bool, extra []Rule) PermissionDecision
     method func (*Evaluator).LearnableRule(tool string, args json.RawMessage) (Rule, bool)
+    method func (Authority).AllowsTool(name string) bool
+    method func (Authority).Canonical() (string, error)
+    method func (Authority).Contains(other Authority) bool
+    method func (Authority).Descend() (Authority, error)
+    method func (Authority).Equal(other Authority) bool
+    method func (Authority).Intersect(other Authority) (Authority, error)
+    method func (Authority).ToolNames() []string
     method func (Scope).HasHigherPrecedenceThan(other Scope) bool
 const Allow Effect = "allow"
 const Ask Effect = "ask"
@@ -28,13 +35,20 @@ func Canonicalize(cmd string) string
 func HasSubstitutionOrGrouping(seg string) bool
 func IsReadOnlyTool(tool string) bool
 func IsolationApprovable(cmd string) bool
+func NewAuthority(spec AuthoritySpec) (Authority, error)
 func NewEvaluator(rules []Rule, opts ...EvaluatorOption) *Evaluator
+func NoneAuthority() Authority
+func ParseAuthority(raw string) (Authority, error)
 func ReadOnlyBash(cmd string) bool
 func SplitCommands(cmd string) []string
 func SubstitutionReadOnly(seg string) bool
+func UnrestrictedAuthority() Authority
 func WithAudience(a Audience) EvaluatorOption
 func WithLooseSubstitution(loose bool) EvaluatorOption
 type Audience int
+type Authority struct{}
+type AuthorityProfile struct{FileSystem bool; DirectWrite bool; Isolated bool}
+type AuthoritySpec struct{Tools []string; Delegates []string; MaxDelegationDepth int; Profile AuthorityProfile}
 type Effect string
 type Evaluator struct{}
 type EvaluatorOption func(*Evaluator)
@@ -44,3 +58,4 @@ type HookPhase string
 type PermissionDecision struct{Effect Effect; Reason string; ConfiguredAsk bool; FlooredConfiguredAllow bool}
 type Rule struct{Scope Scope; Tool string; Pattern string; Effect Effect; Exact bool; Audience Audience}
 type Scope int
+var ErrInvalidAuthority error
