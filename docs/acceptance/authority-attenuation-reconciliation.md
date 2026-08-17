@@ -1,7 +1,7 @@
 # Authority attenuation on current main — acceptance plan
 
 **Phase:** capability — in-process delegated authority
-**Status:** draft, 2026-08-12. Successor to the pre-main-reconciliation authority draft.
+**Status:** in-progress, 2026-08-12. Successor to the pre-main-reconciliation authority draft.
 **Issue:** [stacklok/mecatl#371](https://github.com/stacklok/mecatl/issues/371).
 **ADR:** [ADR-0224](../adr/0224-authority-attenuation-on-current-main.md) — immutable local capability maxima for roots and delegation.
 **Accumulator branch:** `acc/authority-attenuation-reconciliation` (off `main`).
