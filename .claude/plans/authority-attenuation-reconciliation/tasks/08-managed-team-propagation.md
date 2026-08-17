@@ -2,7 +2,7 @@
 id: 08-managed-team-propagation
 title: Managed definition identity and Team ceiling propagation
 blocked_by: [07-delegation-preflight]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
