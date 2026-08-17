@@ -2,8 +2,8 @@
 id: 06-root-authority-snapshot
 title: Creation-time root authority snapshot
 blocked_by: []
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-attenuation-reconciliation/06-root-authority-snapshot"
 worktree: ""
 issue: "371"
 retries: 0
