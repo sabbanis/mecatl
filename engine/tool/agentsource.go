@@ -135,6 +135,14 @@ type AgentDef struct {
 	// across sessions. A scoped write path is deliberately deferred; the
 	// directory scheme is forward-compatible with adding it later.
 	Memory string
+	// AuthorityCeiling is the OPTIONAL declared authority ceiling from managed
+	// local frontmatter. nil means the field was absent; a non-nil empty or
+	// malformed value is retained so a later authority derivation can fail closed
+	// instead of mistaking it for no ceiling. It is an opaque canonical-authority
+	// wire value: never a path, credential, runner, or runtime handle. A driver
+	// source preserves its declaration for transport compatibility but is always
+	// Origin Driver and therefore cannot establish a managed local ceiling.
+	AuthorityCeiling *string
 	// Body is the markdown content of the definition: the specialist's full
 	// instructions, composed into the engine's system prompt by the composition
 	// layer.
@@ -142,6 +150,18 @@ type AgentDef struct {
 	// Origin is the admission tier this def entered through (observability
 	// only; see AgentOrigin). A tier label, NEVER a location.
 	Origin AgentOrigin
+}
+
+// ManagedAuthorityCeiling returns a copy of the declared ceiling only for an
+// operator-configured local definition. The raw declaration remains available
+// through AuthorityCeiling for source transport, including empty and malformed
+// values, but remote and conventional tiers cannot establish a managed ceiling.
+func (d AgentDef) ManagedAuthorityCeiling() *string {
+	if d.Origin != AgentOriginExplicit || d.AuthorityCeiling == nil {
+		return nil
+	}
+	ceiling := *d.AuthorityCeiling
+	return &ceiling
 }
 
 // AgentMCPServer is one entry of a def's MCPServers. It is EITHER a reference

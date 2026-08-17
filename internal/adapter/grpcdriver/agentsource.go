@@ -105,20 +105,21 @@ func (s *AgentSource) ListAgentDefs(ctx context.Context) ([]tool.AgentDef, error
 		}
 		seen[name] = true
 		out = append(out, tool.AgentDef{
-			Name:            name,
-			Description:     toolkit.TruncateRunes(singleLine(d.GetDescription()), tool.MaxAgentDescriptionBytes),
-			Tools:           d.GetTools(),
-			DisallowedTools: d.GetDisallowedTools(),
-			Model:           d.GetModel(),
-			Provider:        d.GetProvider(),
-			PermissionMode:  d.GetPermissionMode(),
-			MaxTurns:        int(d.GetMaxTurns()),
-			MaxToolCalls:    int(d.GetMaxToolCalls()),
-			Color:           d.GetColor(),
-			Skills:          d.GetSkills(),
-			MCPServers:      fromProtoMCPServers(d.GetMcpServers()),
-			Hooks:           agents.NormalizeHooks(d.GetHooks()),
-			Body:            toolkit.TruncateRunes(d.GetBody(), tool.MaxAgentBodyBytes),
+			Name:             name,
+			Description:      toolkit.TruncateRunes(singleLine(d.GetDescription()), tool.MaxAgentDescriptionBytes),
+			Tools:            d.GetTools(),
+			DisallowedTools:  d.GetDisallowedTools(),
+			Model:            d.GetModel(),
+			Provider:         d.GetProvider(),
+			PermissionMode:   d.GetPermissionMode(),
+			MaxTurns:         int(d.GetMaxTurns()),
+			MaxToolCalls:     int(d.GetMaxToolCalls()),
+			Color:            d.GetColor(),
+			Skills:           d.GetSkills(),
+			MCPServers:       fromProtoMCPServers(d.GetMcpServers()),
+			Hooks:            agents.NormalizeHooks(d.GetHooks()),
+			Body:             toolkit.TruncateRunes(d.GetBody(), tool.MaxAgentBodyBytes),
+			AuthorityCeiling: declaredAuthorityCeiling(d.AuthorityCeiling),
 			// UNCONDITIONAL: every def listed by a driver is driver tier — the
 			// wire's origin label is never adopted (a driver claiming
 			// "project"/"user" would launder itself into a trusted-looking tier).
@@ -131,6 +132,18 @@ func (s *AgentSource) ListAgentDefs(ctx context.Context) ([]tool.AgentDef, error
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].Name < out[j].Name })
 	return out, nil
+}
+
+// declaredAuthorityCeiling copies the optional proto scalar so an absent field
+// stays nil and a declared empty or malformed value remains declared. Driver
+// provenance is stamped independently by ListAgentDefs; this helper merely
+// preserves source data for protocol round-tripping.
+func declaredAuthorityCeiling(raw *string) *string {
+	if raw == nil {
+		return nil
+	}
+	value := *raw
+	return &value
 }
 
 // overCapReason reports why a wire def violates the per-def count caps, or ""

@@ -752,6 +752,12 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Changed
 
+- **Managed definition authority ceiling ([ADR 0224](../docs/adr/0224-authority-attenuation-on-current-main.md))** —
+  `tool.AgentDef` adds `AuthorityCeiling` and `ManagedAuthorityCeiling`, preserving
+  optional declared ceiling data while admitting it as a managed ceiling only from
+  operator-configured local definitions. The exported struct field is breaking for
+  external unkeyed literals; classified Changed for a pre-v1 minor bump.
+
 - **Learning trajectory current-run metadata ([ADR 0114](../docs/adr/0114-configurable-learning-trigger-policy.md))** —
   `learning.Trajectory` adds `Kind`, `Counters`, and `Current`. The fields are
   additive for keyed literals but breaking for external unkeyed literals; classified
