@@ -159,12 +159,29 @@ func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, 
 	// id-minting convention (and thereby in scope for the child-session GC).
 	id := agent.TeamSessionPrefix + string(s.cfg.NewID())
 
+	// Server-created teams have no parent run, but the supervisor still derives each
+	// member (including the lead's later synthesis turn) through one structural child
+	// hop. Grant exactly that depth and the team coordination protocol tools; ordinary
+	// tools remain absent from the authority ceiling.
+	coordinationTools := agent.MemberToolNames()
+	authorizedTools := make([]string, 0, len(coordinationTools))
+	for name := range coordinationTools {
+		authorizedTools = append(authorizedTools, name)
+	}
+	directAuthority, err := governance.NewAuthority(governance.AuthoritySpec{
+		Tools:              authorizedTools,
+		MaxDelegationDepth: 1,
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("server: build direct-team authority: %w", err)
+	}
+
 	opts := []agent.SupervisorOption{
 		agent.WithTeamGoal(goal),
 		agent.WithMemberSessionPrefix(agent.TeamSessionPrefix + id),
-		// Server-created teams have no parent run from which authority can flow.
-		// They are process-bound coordination objects, never resumable authority roots.
-		agent.WithTeamAuthority(governance.NoneAuthority()),
+		// This restricted root is process-bound with the team registry; it does not
+		// make direct server teams resumable after restart.
+		agent.WithTeamAuthority(directAuthority),
 	}
 	// The goal is the team's TRUSTED top-level instruction by default (the deployment
 	// owns the gRPC front door, so the goal's provenance is the operator/principal,

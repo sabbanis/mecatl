@@ -148,22 +148,35 @@ func TestADR_0224_AuthorityAttenuation_Scenario6_ParallelAndTeamCannotWiden(t *t
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario6_DirectTeamsHaveZeroCapabilitiesAndAreNotResumable(t *testing.T) {
+func TestADR_0224_AuthorityAttenuation_Scenario6_DirectTeamsHaveOnlyStructuralCoordinationAuthorityAndAreNotResumable(t *testing.T) {
 	t.Parallel()
+	tm := team.New("direct")
 	write := &fakeOverlayTool{name: "Write"}
-	sup := NewSupervisor(team.New("direct"), testEnvironment(memfs.NewWorkspace("/ws"), nil), func(MemberSpec, string) MemberBuild {
-		return MemberBuild{Engine: authorityTestEngine(write)}
-	}, WithTeamAuthority(governance.NoneAuthority()))
+	coordination := MemberTools(tm, "lead", nil)
+	authorizedNames := MemberToolNames()
+	toolNames := make([]string, 0, len(authorizedNames))
+	for name := range authorizedNames {
+		toolNames = append(toolNames, name)
+	}
+	directAuthority := mustAuthority(t, toolNames, nil, 1, governance.AuthorityProfile{})
+	tools := append([]tool.Tool{write}, coordination...)
+	sup := NewSupervisor(tm, testEnvironment(memfs.NewWorkspace("/ws"), nil), func(MemberSpec, string) MemberBuild {
+		return MemberBuild{Engine: authorityTestEngine(tools...)}
+	}, WithTeamAuthority(directAuthority))
 	if err := sup.AddMember(context.Background(), MemberSpec{Name: "lead", Lead: true}); err != nil {
 		t.Fatalf("AddMember: %v", err)
 	}
 	member := sup.members["lead"]
 	run := member.engine.startRun(context.Background(), member.sess, RunRequest{}, func(context.Context, *Run) {})
-	if specs := member.engine.buildRequest(context.Background(), run, member.sess, member.env).Tools; len(specs) != 0 {
-		t.Fatalf("direct team disclosed ordinary tools: %v", authorityToolNames(specs))
+	specs := member.engine.buildRequest(context.Background(), run, member.sess, member.env).Tools
+	if names := authorityToolNames(specs); !sameAuthorityToolNames(names, toolNames) {
+		t.Fatalf("direct team advertised tools %v, want coordination tools %v", names, toolNames)
 	}
 	if _, ok := member.engine.lookupTool(run, "Write"); ok {
 		t.Fatal("direct team executed an ordinary tool")
+	}
+	if _, ok := member.engine.lookupTool(run, "RecordFinding"); !ok {
+		t.Fatal("direct team coordination tool was unauthorized")
 	}
 }
 

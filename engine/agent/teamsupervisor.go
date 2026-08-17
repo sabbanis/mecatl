@@ -707,8 +707,8 @@ func NewSupervisor(t *team.Team, base tool.Environment, factory MemberEngine, op
 }
 
 // bindMemberAuthority stamps the team's one-hop attenuation onto a new idle
-// member session. NoneAuthority is intentionally stamped unchanged for direct
-// server-created teams: it denies ordinary tools without becoming a grant.
+// member session. NoneAuthority remains stampable for fail-closed callers, but a
+// supervisor cannot derive a runnable child from it.
 func (s *Supervisor) bindMemberAuthority(sess *session.Session) error {
 	memberAuthority := s.authority
 	if !s.authority.Equal(governance.NoneAuthority()) {

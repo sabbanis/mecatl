@@ -825,6 +825,80 @@ func TestCreateTeamWithRoster(t *testing.T) {
 	}
 }
 
+func TestDirectServerTeamCoordinatesWithoutOrdinaryToolAuthority(t *testing.T) {
+	ordinary := &scriptTool{name: "OrdinaryProbe", readOnly: true, content: "must not run"}
+	var observed [][]string
+	llm := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(req port.LLMRequest) {
+		names := make([]string, 0, len(req.Tools))
+		for _, spec := range req.Tools {
+			names = append(names, spec.Name)
+		}
+		observed = append(observed, names)
+	})},
+		mockllm.ToolCallTurn(
+			session.NewToolCall("ordinary", ordinary.name, json.RawMessage(`{}`)),
+			session.NewToolCall("finding", "RecordFinding", json.RawMessage(`{"finding":"coordination worked"}`)),
+		),
+		mockllm.TextTurn("final synthesis"),
+	)
+	allow := permpolicy.NewPolicy(permpolicy.AllowAllFloorRules(), nil)
+	memberEngine := func(tm *team.Team, spec agent.MemberSpec, _ string) agent.MemberBuild {
+		cat := tool.NewCatalog()
+		cat.MustRegister(ordinary)
+		for _, coordinationTool := range agent.MemberTools(tm, spec.Name, nil) {
+			cat.MustRegister(coordinationTool)
+		}
+		return agent.MemberBuild{Engine: agent.NewEngine(agent.Deps{
+			LLM: llm, Catalog: cat, Policy: allow, Model: "mock",
+		})}
+	}
+	svc, err := server.NewService(server.Config{
+		Engine: agent.NewEngine(agent.Deps{
+			LLM: mockllm.New(mockllm.TextTurn("unused")), Catalog: tool.NewCatalog(), Policy: allow, Model: "mock",
+		}),
+		Store:        memstore.New(),
+		Workspaces:   func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		Now:          func() time.Time { return time.Unix(0, 0) },
+		MemberEngine: memberEngine,
+	})
+	if err != nil {
+		t.Fatalf("new service: %v", err)
+	}
+
+	ctx := context.Background()
+	teamID, _, err := svc.CreateTeam(ctx, "/ws", "direct", "coordinate", 0, []agent.MemberSpec{{Name: "lead", Lead: true}})
+	if err != nil {
+		t.Fatalf("CreateTeam: %v", err)
+	}
+	outcome, err := svc.RunTeam(ctx, teamID, func(agent.TeamEvent) {})
+	if err != nil {
+		t.Fatalf("RunTeam: %v", err)
+	}
+	if ordinary.ran() {
+		t.Fatal("direct server team executed an ordinary tool outside its authority")
+	}
+	if len(outcome.Findings) != 1 || outcome.Findings[0].Body != "coordination worked" {
+		t.Fatalf("coordination finding = %+v, want one recorded finding", outcome.Findings)
+	}
+	if outcome.Report != "final synthesis" {
+		t.Fatalf("report = %q, want final synthesis", outcome.Report)
+	}
+	wantTools := agent.MemberToolNames()
+	if len(observed) == 0 {
+		t.Fatal("no direct-team provider requests observed")
+	}
+	for i, names := range observed {
+		if len(names) != len(wantTools) {
+			t.Fatalf("request %d advertised tools %v, want only coordination tools", i, names)
+		}
+		for _, name := range names {
+			if _, ok := wantTools[name]; !ok {
+				t.Fatalf("request %d advertised ordinary tool %q in %v", i, name, names)
+			}
+		}
+	}
+}
+
 // TestCreateTeamWithRosterAtomicFailure asserts the atomicity guarantee: a roster
 // containing a member that cannot enrol (here a duplicate name within the roster)
 // fails the WHOLE CreateTeam, and the would-be team is never registered — a
