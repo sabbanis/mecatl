@@ -8,6 +8,7 @@
     method func (Authority).Equal(other Authority) bool
     method func (Authority).Intersect(other Authority) (Authority, error)
     method func (Authority).ToolNames() []string
+    method func (Authority).WithoutDirectWrite() (Authority, error)
     method func (Scope).HasHigherPrecedenceThan(other Scope) bool
 const Allow Effect = "allow"
 const Ask Effect = "ask"

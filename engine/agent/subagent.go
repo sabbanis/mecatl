@@ -109,6 +109,9 @@ type parentCaps struct {
 	// tool is driven without parent caps (plain Execute/ExecuteObserved) — the
 	// child then simply is not client-cancellable, unchanged behaviour.
 	children *childRunRegistry
+	// authority reads the parent's effective maximum for this run. It is nil for
+	// direct Tool.Execute, which preserves the historical unrestricted host path.
+	authority func() (governance.Authority, error)
 	// diag is the parent run's run-scoped diagnostics, used to emit the headless
 	// auto-deny operator diagnostic (LevelInfo, tagged agent=<child identity>: the child
 	// session id "subagent-<callID>" for Subagent children; the member name / fork label
@@ -190,6 +193,23 @@ type parentCaps struct {
 	// Execute/ExecuteObserved, no parent session threaded) — the legacy
 	// call-id-only id, unaffected outside real dispatch.
 	parentSessionID session.SessionID
+}
+
+func deriveRunChildAuthority(caps parentCaps, resuming bool, args subagentArgs, writable bool, callID session.ToolCallID) (governance.Authority, session.ToolResult, bool) {
+	if caps.authority == nil || resuming {
+		return governance.UnrestrictedAuthority(), session.ToolResult{}, true
+	}
+	parent, err := caps.authority()
+	if err != nil {
+		return governance.NoneAuthority(), session.NewToolError(callID, "Subagent: authority is unavailable; refusing delegation"), false
+	}
+	child, err := deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{
+		delegate: strings.TrimSpace(args.Agent), directWrite: writable,
+	})
+	if err != nil {
+		return governance.NoneAuthority(), session.NewToolError(callID, "Subagent: authority denies this delegation: "+err.Error()), false
+	}
+	return child, session.ToolResult{}, true
 }
 
 // inheritOwner stamps the parent session's owner onto a freshly-minted child
@@ -2236,6 +2256,7 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 	return child, runEnv, cleanupWS, advisory, editsSurvived, session.ToolResult{}, true
 }
 
+//nolint:gocyclo // lifecycle ordering is security-sensitive; authority derivation stays before runtime acquisition.
 func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.Environment, emit func(session.Event), caps parentCaps) (session.ToolResult, error) {
 	var args subagentArgs
 	if msg, ok := session.ParseArgs(call, &args); !ok {
@@ -2267,6 +2288,11 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	}
 
 	resuming := strings.TrimSpace(args.Resume) != ""
+
+	childAuthority, errResult, authorityOK := deriveRunChildAuthority(caps, resuming, args, writable, call.ID)
+	if !authorityOK {
+		return errResult, nil
+	}
 
 	// OPT-IN semantic model router (ADR 0031): for a PLAIN default delegation, classify
 	// the task and mint the child on the routed model via the per-call factory path. The
@@ -2348,6 +2374,7 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 		return t.startBackground(ctx, backgroundChild{
 			call: call, env: env, emit: emit, caps: caps, args: args,
 			engine: engine, limits: limits, resuming: resuming, childID: childID,
+			authority: childAuthority, bindAuthority: caps.authority != nil && !resuming,
 			forkHistory:    forkHistory,
 			routedCategory: routedCategory, routedModel: routedModel, routingReason: routingReason,
 			timeoutCtx: timeoutCtx, cancelCall: cancelCall, cancelTimeout: cancelTimeout,
@@ -2401,6 +2428,13 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	child, runEnv, cleanupWS, forkAdvisory, editsSurvived, errResult, ok := t.prepareChildSession(ctx, call, env, args, resuming, writable, childID, caps.parentSessionID, limits, forkHistory)
 	if !ok {
 		return errResult, nil
+	}
+	if !resuming && caps.authority != nil {
+		bound, err := childAuthority.Canonical()
+		if err != nil || child.BindAuthority(bound, "") != nil {
+			_ = cleanupWS()
+			return session.NewToolError(call.ID, "Subagent: failed to bind child authority"), nil
+		}
 	}
 	// The child is attributed to the PARENT session's owner (ADR 0204 decision 4).
 	caps.inheritOwner(child)
@@ -2589,6 +2623,10 @@ type backgroundChild struct {
 	engine   *Engine
 	limits   session.Limits
 	resuming bool
+	// authority is the already-derived child maximum. It is bound only for a
+	// fresh child; a resumed session keeps its persisted authority.
+	authority     governance.Authority
+	bindAuthority bool
 	// resumed is the loaded+recovered session on a resume call (loaded SYNCHRONOUSLY
 	// in startBackground so an unknown id / non-resumable state fails fast inline,
 	// not as a collectible background error).
@@ -2737,6 +2775,13 @@ func (t *SubagentTool) driveBackground(ctx context.Context, b backgroundChild) {
 	if !ok {
 		endOnError(errResult)
 		return
+	}
+	if b.bindAuthority {
+		bound, err := b.authority.Canonical()
+		if err != nil || child.BindAuthority(bound, "") != nil {
+			endOnError(session.NewToolError(b.call.ID, "Subagent: failed to bind child authority"))
+			return
+		}
 	}
 	// The child is attributed to the PARENT session's owner (ADR 0204 decision 4).
 	b.caps.inheritOwner(child)

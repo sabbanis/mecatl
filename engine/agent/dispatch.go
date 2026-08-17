@@ -80,7 +80,7 @@ func (e *Engine) dispatch(ctx context.Context, r *Run, sess *session.Session, en
 	i := 0
 	for i < len(calls) {
 		c := calls[i]
-		t, known := e.lookupTool(r, c.Name)
+		t, known := e.lookupToolContext(ctx, r, c.Name)
 
 		// Mutating (or unknown) tools flush alone, serially — AND a read-only tool
 		// whose THIS call will mutate the parent workspace (parentMutatingCaller, FIX
@@ -103,7 +103,7 @@ func (e *Engine) dispatch(ctx context.Context, r *Run, sess *session.Session, en
 		var batch []session.ToolCall
 		for j < len(calls) {
 			nc := calls[j]
-			nt, ok := e.lookupTool(r, nc.Name)
+			nt, ok := e.lookupToolContext(ctx, r, nc.Name)
 			if !readBatchable(nt, ok, nc) {
 				break
 			}
@@ -147,7 +147,7 @@ func (e *Engine) runReadBatch(ctx context.Context, r *Run, sess *session.Session
 	var toRun []pending
 	for _, c := range batch {
 		c := c // local copy: openCard takes &c, and this loop variable is reused.
-		t, _ := e.lookupTool(r, c.Name)
+		t, _ := e.lookupToolContext(ctx, r, c.Name)
 		// Open the tool card BEFORE the permission/hook gate so any synthesized
 		// failure (a deny result or a PreToolUse veto) lands on a card the client has
 		// already seen — see openCard.
@@ -523,6 +523,12 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 // pre-hook, execute, post-hook. It returns the result and a cancelled flag.
 func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall, t tool.Tool, known bool, enqueue time.Time) (session.ToolResult, bool) {
 	if !known {
+		if decision, ok := e.authorityDecision(ctx, r, c.Name); !ok {
+			e.openCard(r, turnIdx, c)
+			res := denyResult(c, decision.Reason)
+			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+			return res, false
+		}
 		// Open a card for the unknown tool BEFORE its error result, exactly like the
 		// known-tool path opens one before the gate. A client (ACP/mecatui) keys a
 		// tool.result update to a prior tool.call card; without an open card the failure
@@ -632,12 +638,26 @@ func (e *Engine) surfaceAsk(ctx context.Context, r *Run, sess *session.Session, 
 	return verdictResult, true, true
 }
 
+func (e *Engine) authorityDecision(ctx context.Context, r *Run, name string) (governance.PermissionDecision, bool) {
+	if !r.authorityBound {
+		return governance.PermissionDecision{}, true
+	}
+	authority, ok := e.effectiveAuthority(ctx, r)
+	if !ok || !authority.AllowsTool(name) {
+		return governance.PermissionDecision{Effect: governance.Deny, Reason: "denied by authority bound"}, false
+	}
+	return governance.PermissionDecision{}, true
+}
+
 // authorize evaluates the permission policy for a call and, on Ask, pauses the
 // loop until the client approves or denies (or ctx cancels). It returns the
 // effective decision (Allow or Deny — an approved Ask becomes Allow, a denied or
 // cancelled Ask becomes Deny) and a cancelled flag set only when ctx was
 // cancelled while awaiting.
 func (e *Engine) authorize(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall) (governance.PermissionDecision, bool) {
+	if decision, ok := e.authorityDecision(ctx, r, c.Name); !ok {
+		return decision, false
+	}
 	decision := e.deps.Policy.Evaluate(ctx, sess.ID, sess.Mode, c, env.Workspace())
 	if decision.Effect != governance.Ask {
 		// Operator visibility for a policy DENY: the deny reason otherwise reaches
@@ -1035,6 +1055,14 @@ func planApprovedTargetForVerdict(v session.ApprovalVerdict) session.PermissionM
 // annotates (the tool already ran; a block neither undoes nor suppresses the
 // result).
 func (e *Engine) execute(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall, t tool.Tool, enqueue time.Time) session.ToolResult {
+	// A revocation may arrive while a call waits for an approval or a serial
+	// sibling. Recheck immediately before starting the tool; an already-running
+	// call is intentionally not interrupted.
+	if decision, ok := e.authorityDecision(ctx, r, c.Name); !ok {
+		res := denyResult(c, decision.Reason)
+		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+		return res
+	}
 	// Execution begins now. queued is the wait from enqueue (when the call entered
 	// dispatch) to this point — for a mutating call serialized behind an earlier
 	// tool, or any call held behind a permission ask, this is the real queue time
@@ -1164,6 +1192,15 @@ func (e *Engine) parentCaps(r *Run, sess *session.Session, turnIdx int) parentCa
 	// snapshot it before any detach), never inside a detached background goroutine.
 	// nil when no parent session is threaded (plain Execute) — fork then unsupported.
 	if sess != nil {
+		if r.authorityBound {
+			caps.authority = func() (governance.Authority, error) {
+				authority, ok := e.effectiveAuthority(context.Background(), r)
+				if !ok {
+					return governance.NoneAuthority(), errors.New("authority revocation unavailable")
+				}
+				return authority, nil
+			}
+		}
 		caps.forkHistory = func() []session.Message {
 			return session.ForkSnapshot(sess.Conversation)
 		}

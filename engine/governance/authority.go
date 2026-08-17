@@ -159,6 +159,20 @@ func (a Authority) Equal(other Authority) bool {
 	return err == nil && left == right
 }
 
+// WithoutDirectWrite returns a bound with direct-write removed. It is an
+// attenuation only; unrestricted remains unrestricted for compatibility callers.
+func (a Authority) WithoutDirectWrite() (Authority, error) {
+	if _, err := a.Canonical(); err != nil {
+		return Authority{}, err
+	}
+	if a.kind != authorityRestricted {
+		return a, nil
+	}
+	attenuated := a.spec
+	attenuated.Profile.DirectWrite = false
+	return NewAuthority(attenuated)
+}
+
 // Contains reports whether a is at least as permissive as other. None is never
 // treated as a grant, and malformed values fail closed.
 func (a Authority) Contains(other Authority) bool {

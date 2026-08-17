@@ -28,6 +28,11 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   compatibility records and rejects malformed v1 records. New methods are Added
   (minor).
 
+- **Live authority revocation hook** ([ADR 0224](../docs/adr/0224-authority-attenuation-on-current-main.md)) —
+  `agent.Deps.AuthorityRevoker` lets a host supply the current operator ceiling
+  for each bound session before capability disclosure and dispatch. Adding a
+  field to the exported `Deps` struct is Changed (breaking).
+
 - **Configurable learning-trigger policy ([ADR 0114](../docs/adr/0114-configurable-learning-trigger-policy.md))** —
   `learning` adds strict sensitivity, scoped signal detection, closed admission
   request/decision/class/reason contracts, pure threshold/always/never policies,
