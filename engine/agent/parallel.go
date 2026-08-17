@@ -671,6 +671,15 @@ func (t *ParallelTool) run(ctx context.Context, call session.ToolCall, env tool.
 		return session.NewToolError(call.ID,
 			"Parallel: judge selection is unavailable (no judge wired); use join=all and pick a branch yourself"), nil
 	}
+	if caps.authority != nil {
+		parentAuthority, err := caps.authority()
+		if err != nil {
+			return session.NewToolError(call.ID, "Parallel: authority is unavailable; refusing delegation"), nil
+		}
+		if _, err := parallelChildAuthority(parentAuthority); err != nil {
+			return session.NewToolError(call.ID, "Parallel: authority denies delegation"), nil
+		}
+	}
 
 	be := branchEmitter{emit: emit, parentCallID: string(call.ID),
 		childID: func(i int) string { return string(t.childSessionID(caps.parentSessionID, call.ID, i)) }}

@@ -167,9 +167,47 @@ func TestADR_0226_AuthorityAttenuation_Scenario6_ParallelAndTeamCannotWiden(t *t
 	if names := authorityToolNames(specs); !sameAuthorityToolNames(names, []string{"Read"}) {
 		t.Fatalf("team member disclosed tools %v, want [Read]", names)
 	}
+
+	// A denied parent must stop Parallel before routing or factory acquisition.
+	denied := mustAuthority(t, []string{"Parallel", "Team"}, nil, 0, governance.AuthorityProfile{FileSystem: true, Isolated: true})
+	var parallelRoutes, parallelFactories int
+	parallelForker := &authorityCountingForker{}
+	parallel := NewParallelTool(authorityTestEngine(), parallelForker, WithParallelEngineFactory(func(string) (*Engine, bool) {
+		parallelFactories++
+		return authorityTestEngine(), true
+	})).(*ParallelTool)
+	result, err := parallel.ExecuteWithParent(context.Background(), session.NewToolCall("parallel", parallelToolName, json.RawMessage(`{"tasks":["inspect"]}`)), testEnvironment(memfs.NewWorkspace("/ws"), nil), nil, parentCaps{
+		authority: func() (governance.Authority, error) { return denied, nil },
+		routeTask: func(context.Context, string) (string, string, string, bool) {
+			parallelRoutes++
+			return "fast", "mock", "", true
+		},
+	})
+	if err != nil || !result.IsError {
+		t.Fatalf("denied Parallel result = %+v, err = %v", result, err)
+	}
+	if parallelRoutes != 0 || parallelFactories != 0 || parallelForker.calls != 0 {
+		t.Fatalf("denied Parallel acquired route=%d factory=%d fork=%d; authority must preflight first", parallelRoutes, parallelFactories, parallelForker.calls)
+	}
+
+	// A denied Team member must likewise stop before routing or its member factory.
+	var teamRoutes, teamFactories int
+	deniedSupervisor := NewSupervisor(team.New("denied"), testEnvironment(memfs.NewWorkspace("/ws"), nil), func(MemberSpec, string) MemberBuild {
+		teamFactories++
+		return MemberBuild{Engine: authorityTestEngine(read)}
+	}, WithTeamAuthority(denied), withParentCaps(parentCaps{routeTask: func(context.Context, string) (string, string, string, bool) {
+		teamRoutes++
+		return "fast", "mock", "", true
+	}}))
+	if err := deniedSupervisor.AddMember(context.Background(), MemberSpec{Name: "lead", Lead: true}); err == nil {
+		t.Fatal("AddMember succeeded despite exhausted delegation authority")
+	}
+	if teamRoutes != 0 || teamFactories != 0 {
+		t.Fatalf("denied Team acquired route=%d factory=%d; authority must preflight first", teamRoutes, teamFactories)
+	}
 }
 
-func TestADR_0226_AuthorityAttenuation_Scenario6_DirectTeamsHaveOnlyStructuralCoordinationAuthorityAndAreNotResumable(t *testing.T) {
+func TestDirectTeamStructuralCoordinationAuthority(t *testing.T) {
 	t.Parallel()
 	tm := team.New("direct")
 	write := &fakeOverlayTool{name: "Write"}

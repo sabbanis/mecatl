@@ -757,6 +757,13 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 	if _, ok := s.members[spec.Name]; ok {
 		return fmt.Errorf("%w: %q", ErrMemberAlreadyAdded, spec.Name)
 	}
+	// Consume and validate the member's structural hop before enrolling it,
+	// routing its model, building its engine, or acquiring a workspace.
+	if !s.authority.Equal(governance.NoneAuthority()) {
+		if _, err := deriveChildAuthority(s.authority, governance.UnrestrictedAuthority(), childAuthorityRequest{}); err != nil {
+			return fmt.Errorf("agent: team-member authority denies delegation: %w", err)
+		}
+	}
 	if err := s.team.AddMember(spec.Name, spec.AgentType); err != nil {
 		// The team aggregate's sentinels (ErrMemberExists / ErrReservedName /
 		// ErrTooManyMembers) flow through unchanged so a caller can classify them

@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/team"
@@ -312,14 +313,19 @@ func (t *TeamTool) ExecuteObserved(ctx context.Context, call session.ToolCall, e
 	return t.run(ctx, call, env, emit, parentCaps{})
 }
 
-// teamAuthorityOption derives the Team tool's ceiling from the active parent run.
-// A caps-less direct Tool.Execute keeps its compatibility behavior; direct server
-// teams explicitly supply NoneAuthority instead.
+// teamAuthorityOption derives and attenuates the Team tool's ceiling from the
+// active parent run before any team runtime resource is acquired. A caps-less
+// direct Tool.Execute keeps its compatibility behavior; direct server teams
+// explicitly supply their structural authority.
 func teamAuthorityOption(caps parentCaps) (SupervisorOption, error) {
 	if caps.authority == nil {
 		return nil, nil
 	}
-	authority, err := caps.authority()
+	parent, err := caps.authority()
+	if err != nil {
+		return nil, err
+	}
+	authority, err := deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{})
 	if err != nil {
 		return nil, err
 	}

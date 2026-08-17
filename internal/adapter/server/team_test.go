@@ -825,7 +825,7 @@ func TestCreateTeamWithRoster(t *testing.T) {
 	}
 }
 
-func TestDirectServerTeamCoordinatesWithoutOrdinaryToolAuthority(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario6_DirectTeamsHaveOnlyStructuralCoordinationAuthorityAndAreNotResumable(t *testing.T) {
 	ordinary := &scriptTool{name: "OrdinaryProbe", readOnly: true, content: "must not run"}
 	var observed [][]string
 	llm := mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(req port.LLMRequest) {
@@ -842,6 +842,8 @@ func TestDirectServerTeamCoordinatesWithoutOrdinaryToolAuthority(t *testing.T) {
 		mockllm.TextTurn("final synthesis"),
 	)
 	allow := permpolicy.NewPolicy(permpolicy.AllowAllFloorRules(), nil)
+	store := memstore.New()
+	workspaceCalls := 0
 	memberEngine := func(tm *team.Team, spec agent.MemberSpec, _ string) agent.MemberBuild {
 		cat := tool.NewCatalog()
 		cat.MustRegister(ordinary)
@@ -856,8 +858,8 @@ func TestDirectServerTeamCoordinatesWithoutOrdinaryToolAuthority(t *testing.T) {
 		Engine: agent.NewEngine(agent.Deps{
 			LLM: mockllm.New(mockllm.TextTurn("unused")), Catalog: tool.NewCatalog(), Policy: allow, Model: "mock",
 		}),
-		Store:        memstore.New(),
-		Workspaces:   func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		Store:        store,
+		Workspaces:   func(root string) tool.Workspace { workspaceCalls++; return memfs.NewWorkspace(root) },
 		Now:          func() time.Time { return time.Unix(0, 0) },
 		MemberEngine: memberEngine,
 	})
@@ -896,6 +898,12 @@ func TestDirectServerTeamCoordinatesWithoutOrdinaryToolAuthority(t *testing.T) {
 				t.Fatalf("request %d advertised ordinary tool %q in %v", i, name, names)
 			}
 		}
+	}
+	if workspaceCalls != 0 {
+		t.Fatalf("direct server team acquired a workspace %d time(s)", workspaceCalls)
+	}
+	if _, err := store.Load(context.Background(), agent.MemberSessionID(teamID, "lead")); err == nil {
+		t.Fatal("direct server team persisted a member session and became resumable")
 	}
 }
 
@@ -1031,12 +1039,9 @@ func TestSpawnTeammateRaceWithRunTeam(t *testing.T) {
 	}
 }
 
-// TestCreateTeamNilWorkspaceFactoryReturnsErrorNotPanic pins the issue-#462
-// review fix: CreateTeam must NEVER MustEnvironment on a client-derived
-// workspace. When the WorkspaceFactory returns nil (a misconfigured factory, a
-// bad root), CreateTeam returns an ErrInvalidArgument-wrapped error rather than
-// panicking inside MustEnvironment.
-func TestCreateTeamNilWorkspaceFactoryReturnsErrorNotPanic(t *testing.T) {
+// TestCreateTeamDoesNotAcquireClientWorkspace pins the structural direct-team
+// boundary: a server-created team never opens a client workspace.
+func TestCreateTeamDoesNotAcquireClientWorkspace(t *testing.T) {
 	allow := permpolicy.NewPolicy(permpolicy.AllowAllFloorRules(), nil)
 	memberEngine := func(tm *team.Team, spec agent.MemberSpec, _ string) agent.MemberBuild {
 		cat := tool.NewCatalog()
@@ -1068,10 +1073,7 @@ func TestCreateTeamNilWorkspaceFactoryReturnsErrorNotPanic(t *testing.T) {
 	}
 
 	_, _, createErr := svc.CreateTeam(context.Background(), "/repo", "t", "g", 0, nil)
-	if createErr == nil {
-		t.Fatal("CreateTeam with a nil-workspace factory must return an error")
-	}
-	if !errors.Is(createErr, server.ErrInvalidArgument) {
-		t.Fatalf("CreateTeam err = %v, want ErrInvalidArgument", createErr)
+	if createErr != nil {
+		t.Fatalf("CreateTeam with a nil workspace factory: %v", createErr)
 	}
 }
