@@ -2,7 +2,7 @@
 id: 06-root-authority-snapshot
 title: Creation-time root authority snapshot
 blocked_by: []
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
