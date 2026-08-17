@@ -17,6 +17,55 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/server"
 )
 
+func TestADR_0226_AuthorityAttenuation_Scenario1_NewRootPersistsCanonicalMaximum(t *testing.T) {
+	t.Parallel()
+
+	bound, err := governance.NewAuthority(governance.AuthoritySpec{
+		Tools:              []string{"Read", "Write"},
+		Delegates:          []string{"reviewer"},
+		MaxDelegationDepth: 2,
+		Profile:            governance.AuthorityProfile{FileSystem: true, DirectWrite: true, Isolated: true},
+	})
+	if err != nil {
+		t.Fatalf("NewAuthority: %v", err)
+	}
+	canonical, err := bound.Canonical()
+	if err != nil {
+		t.Fatalf("Canonical: %v", err)
+	}
+
+	store := memstore.New()
+	eng := agent.NewEngine(agent.Deps{
+		LLM:     mockllm.New(mockllm.TextTurn("unused")),
+		Catalog: tool.NewCatalog(),
+		Policy:  permpolicy.NewPolicy(nil, nil),
+		Model:   "test-model",
+	})
+	svc, err := server.NewService(server.Config{
+		Engine:        eng,
+		Store:         store,
+		Workspaces:    func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		Now:           func() time.Time { return time.Unix(0, 0) },
+		RootAuthority: canonical,
+	})
+	if err != nil {
+		t.Fatalf("NewService: %v", err)
+	}
+
+	created, err := svc.CreateSession(context.Background(), "/ws", session.ModeDefault, session.Limits{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	persisted, err := store.Load(context.Background(), created.ID)
+	if err != nil {
+		t.Fatalf("Load persisted session: %v", err)
+	}
+	got, definition, legacy := persisted.AuthorityBound()
+	if got != canonical || definition != "" || legacy {
+		t.Fatalf("persisted authority = (%q, %q, legacy=%t), want (%q, empty, false)", got, definition, legacy, canonical)
+	}
+}
+
 func TestADR_0226_AuthorityAttenuation_Scenario6_PeerForkAuthorizesBeforeCopyingSourceMaximum(t *testing.T) {
 	t.Parallel()
 

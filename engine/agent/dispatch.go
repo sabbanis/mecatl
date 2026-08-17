@@ -523,12 +523,9 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 // pre-hook, execute, post-hook. It returns the result and a cancelled flag.
 func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall, t tool.Tool, known bool, enqueue time.Time) (session.ToolResult, bool) {
 	if !known {
-		if decision, ok := e.authorityDecision(ctx, r, c.Name); !ok {
-			e.openCard(r, turnIdx, c)
-			res := denyResult(c, decision.Reason)
-			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-			return res, false
-		}
+		// A catalog miss is already non-disclosive and cannot dispatch. Preserve the
+		// established unknown-tool result rather than relabelling it as an authority
+		// denial merely because the creation-time bound also excludes the name.
 		// Open a card for the unknown tool BEFORE its error result, exactly like the
 		// known-tool path opens one before the gate. A client (ACP/mecatui) keys a
 		// tool.result update to a prior tool.call card; without an open card the failure

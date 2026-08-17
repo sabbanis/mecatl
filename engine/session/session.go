@@ -538,6 +538,9 @@ func (s *Session) RestoreAuthorityBound(authority, definitionIdentity string, co
 		if authority != "" || definitionIdentity != "" {
 			return errors.New("session: legacy authority has bound data")
 		}
+		if s.authority != "" || s.authorityCompatibilityOnly {
+			return errors.New("session: authority already bound")
+		}
 		s.authorityCompatibilityOnly = true
 		return nil
 	}

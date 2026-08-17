@@ -1589,6 +1589,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	svcCfg := server.Config{
 		Engine:            engine,
 		Store:             store,
+		RootAuthority:     assets.rootAuthority,
 		OwnershipEnforced: cfg.OwnershipEnforced,
 		Workspaces:        osfsWorkspaceFactory(cfg.diag()),
 		DefaultWorkspace:  cfg.Workspace, // the launch root; a session on a DIFFERENT root routes through the per-session factory (issue #102, docs/adr/0032)
@@ -2388,6 +2389,11 @@ func sessionEngineFactory(
 			mode:            mode,
 			skillPartitions: skillPartitions,
 		})
+		rootAuthority, err := rootAuthorityForCatalog(cat, noFS)
+		if err != nil {
+			_ = closeFn()
+			return server.SessionEngineResult{}, err
+		}
 
 		// Identical to the main engine in every NON-provider Deps field except the
 		// catalog (which carries the extra client MCP + per-session sub-agent tools):
@@ -2475,8 +2481,9 @@ func sessionEngineFactory(
 			// Echo the mode this engine resolved its model for (ADR 0030 Layer 3), so the
 			// Service stamps sessionEngine.builtForMode from this one source and detects a
 			// later mode→model staleness — the SAME single-source discipline as the ids.
-			BuiltForMode: mode,
-			Close:        closeFn,
+			BuiltForMode:  mode,
+			RootAuthority: rootAuthority,
+			Close:         closeFn,
 		}, nil
 	}
 }
@@ -4703,6 +4710,12 @@ func buildCatalog(ctx context.Context, cfg Config, reg *providerRegistry, provid
 			assets.userModelStore = nil
 		}
 	}
+	rootAuthority, err := rootAuthorityForCatalog(cat, false)
+	if err != nil {
+		mcpClose()
+		return nil, catalogAssets{}, nil, nil, nil, err
+	}
+	assets.rootAuthority = rootAuthority
 
 	return cat, assets, mcpProvider, mcpInventory, mcpClose, nil
 }
