@@ -2,7 +2,7 @@
 id: 07-delegation-preflight
 title: Pre-acquisition authority and resume posture validation
 blocked_by: [06-root-authority-snapshot]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
