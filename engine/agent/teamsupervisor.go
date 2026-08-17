@@ -347,6 +347,11 @@ type Supervisor struct {
 	// synthesis phase and persistence find the lead without re-scanning the roster.
 	leadName string
 
+	// authority is the maximum authority that this team may distribute. It is set
+	// by the in-loop Team tool from its parent run; server-created teams set it to
+	// NoneAuthority and therefore expose no ordinary capabilities.
+	authority governance.Authority
+
 	// caps carries the PARENT run's interactivity + surface back-channel, so a member's
 	// permission ask that A2 (isolation auto-approve) did not resolve is SURFACED to the
 	// human (interactive parent) or auto-denied with the accurate message + operator
@@ -465,6 +470,12 @@ type memberRT struct {
 
 // SupervisorOption configures a Supervisor.
 type SupervisorOption func(*Supervisor)
+
+// WithTeamAuthority sets the ceiling inherited by every member and the lead's
+// synthesis turn. The zero value is deliberately none, not unrestricted.
+func WithTeamAuthority(authority governance.Authority) SupervisorOption {
+	return func(s *Supervisor) { s.authority = authority }
+}
 
 // WithForker injects the workspace-isolation seam used to fork a Mutating member's
 // workspace (force-copy: own `.git`). It is required only if any member is Mutating.
@@ -676,6 +687,7 @@ func NewSupervisor(t *team.Team, base tool.Environment, factory MemberEngine, op
 		team:        t,
 		base:        base,
 		factory:     factory,
+		authority:   governance.UnrestrictedAuthority(),
 		limits:      defaultChildLimits,
 		mode:        session.ModeDefault,
 		maxRounds:   defaultMaxRounds,
@@ -692,6 +704,25 @@ func NewSupervisor(t *team.Team, base tool.Environment, factory MemberEngine, op
 		o(s)
 	}
 	return s
+}
+
+// bindMemberAuthority stamps the team's one-hop attenuation onto a new idle
+// member session. NoneAuthority is intentionally stamped unchanged for direct
+// server-created teams: it denies ordinary tools without becoming a grant.
+func (s *Supervisor) bindMemberAuthority(sess *session.Session) error {
+	memberAuthority := s.authority
+	if !s.authority.Equal(governance.NoneAuthority()) {
+		var err error
+		memberAuthority, err = s.authority.Descend()
+		if err != nil {
+			return fmt.Errorf("agent: attenuate team-member authority: %w", err)
+		}
+	}
+	bound, err := memberAuthority.Canonical()
+	if err != nil || sess.BindAuthority(bound, "") != nil {
+		return errors.New("agent: bind team-member authority")
+	}
+	return nil
 }
 
 // AddMember enrols a member: it registers it on the team roster, builds its engine,
@@ -804,6 +835,13 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 		}
 		s.team.RemoveMember(spec.Name)
 		return fmt.Errorf("agent: stamp team-member relationship: %w", err)
+	}
+	if err := s.bindMemberAuthority(sess); err != nil {
+		if cleanup != nil {
+			_ = cleanup()
+		}
+		s.team.RemoveMember(spec.Name)
+		return err
 	}
 	// The member is attributed to the PARENT session's owner (ADR 0204 decision 4).
 	s.caps.inheritOwner(sess)

@@ -161,6 +161,7 @@ func WithSubagentOwnershipEnforced(ownershipEnforced bool) SubagentOption
 func WithSubagentShellDisabledNote(reason string) SubagentOption
 func WithSubagentStopHook(h port.HookRunner) SubagentOption
 func WithSubagentStore(store port.SessionStore) SubagentOption
+func WithTeamAuthority(authority governance.Authority) SupervisorOption
 func WithTeamConcurrency(n int) SupervisorOption
 func WithTeamGoal(goal string) SupervisorOption
 func WithTeamHooks(h port.HookRunner) SupervisorOption

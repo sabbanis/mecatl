@@ -20,6 +20,10 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   non-activatable evaluator-infrastructure marker. New identifiers are Added (minor); the standard
   app's Auto default changes independently while the engine pipeline zero remains evaluated.
 
+- **Delegated-team authority ceiling** ([ADR 0224](../docs/adr/0224-authority-attenuation-on-current-main.md)) —
+  `agent.WithTeamAuthority` applies a parent-derived maximum to team members and
+  synthesis runs. New exported option: Added (minor).
+
 - **Versioned session authority bound** ([ADR 0224](../docs/adr/0224-authority-attenuation-on-current-main.md)) —
   `governance.Authority`, `AuthoritySpec`, and `AuthorityProfile` provide the
   pure versioned capability vocabulary and canonicalization. `session.(*Session).BindAuthority`, `RestoreAuthorityBound`, and `AuthorityBound`

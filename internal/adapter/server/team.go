@@ -7,6 +7,7 @@ import (
 	"sync"
 
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/team"
 	"github.com/stacklok/mecatl/engine/tool"
@@ -161,6 +162,9 @@ func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, 
 	opts := []agent.SupervisorOption{
 		agent.WithTeamGoal(goal),
 		agent.WithMemberSessionPrefix(agent.TeamSessionPrefix + id),
+		// Server-created teams have no parent run from which authority can flow.
+		// They are process-bound coordination objects, never resumable authority roots.
+		agent.WithTeamAuthority(governance.NoneAuthority()),
 	}
 	// The goal is the team's TRUSTED top-level instruction by default (the deployment
 	// owns the gRPC front door, so the goal's provenance is the operator/principal,

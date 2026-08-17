@@ -1023,6 +1023,24 @@ func (t *ParallelTool) runBranch(ctx context.Context, callID session.ToolCallID,
 	be.branchStart(i, prompt, routedCategory, routedModel, routingReason, branchEngine.Model())
 	start := branchEngine.now()
 
+	branchAuthority := governance.UnrestrictedAuthority()
+	if caps.authority != nil {
+		parentAuthority, err := caps.authority()
+		if err != nil {
+			res.failed = true
+			res.failReason = "parallel branch authority is unavailable"
+			be.branchEnd(res, session.StopError, session.Usage{}, 0, branchEngine.now().Sub(start))
+			return res, session.StopError
+		}
+		branchAuthority, err = parallelChildAuthority(parentAuthority)
+		if err != nil {
+			res.failed = true
+			res.failReason = "parallel branch authority denies delegation"
+			be.branchEnd(res, session.StopError, session.Usage{}, 0, branchEngine.now().Sub(start))
+			return res, session.StopError
+		}
+	}
+
 	// The Parallel branch forker is force-copy (copyTree carries the parent's dirty
 	// state verbatim), so the degraded-fork advisory is never set on this path —
 	// discard it. (A mutating branch is not the read-only-overlay case.)
@@ -1066,6 +1084,15 @@ func (t *ParallelTool) runBranch(ctx context.Context, callID session.ToolCallID,
 		return res, session.StopError
 	}
 	// The branch is attributed to the PARENT session's owner (ADR 0204 decision 4).
+	if caps.authority != nil {
+		bound, bindErr := branchAuthority.Canonical()
+		if bindErr != nil || childSess.BindAuthority(bound, "") != nil {
+			res.failed = true
+			res.failReason = "failed to bind parallel branch authority"
+			be.branchEnd(res, session.StopError, session.Usage{}, 0, branchEngine.now().Sub(start))
+			return res, session.StopError
+		}
+	}
 	caps.inheritOwner(childSess)
 
 	run := branchEngine.Run(ctx, childSess, childEnv, RunRequest{Text: prompt})

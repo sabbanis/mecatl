@@ -52,6 +52,12 @@ func deriveChildAuthority(parent, definition governance.Authority, request child
 	return effective.Descend()
 }
 
+// parallelChildAuthority gives each force-copied Parallel branch one attenuated
+// hop; isolated writes are not direct writes into the parent workspace.
+func parallelChildAuthority(parent governance.Authority) (governance.Authority, error) {
+	return deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{filesystem: true})
+}
+
 // authorityToolSearch filters progressive hydration at execution time. ToolSearch
 // is a catalog query rather than a separate runtime capability, so it must receive
 // the same live maximum as disclosure and dispatch.
