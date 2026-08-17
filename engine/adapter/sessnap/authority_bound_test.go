@@ -68,15 +68,15 @@ func TestADR_0224_AuthorityAttenuation_Scenario7_SnapshotRoundTripPreservesBound
 func TestADR_0224_AuthorityAttenuation_Scenario2_LegacyAndMalformedRecordsStayDistinct(t *testing.T) {
 	t.Parallel()
 
-	snap, err := sessnap.Of(session.New("s1", session.ModeDefault, "/w", session.Limits{}, time.Unix(0, 0).UTC()))
+	legacy, err := sessnap.Of(session.New("legacy", session.ModeDefault, "/w", session.Limits{}, time.Unix(0, 0).UTC()))
 	if err != nil {
 		t.Fatalf("Of: %v", err)
 	}
-	snap.AuthorityVersion = nil
-	snap.AuthorityBound = ""
-	snap.DefinitionIdentity = ""
-	snap.AuthorityCompatibilityOnly = false
-	line, err := json.Marshal(snap)
+	legacy.AuthorityVersion = nil
+	legacy.AuthorityBound = ""
+	legacy.DefinitionIdentity = ""
+	legacy.AuthorityCompatibilityOnly = false
+	line, err := json.Marshal(legacy)
 	if err != nil {
 		t.Fatalf("marshal legacy snapshot: %v", err)
 	}
@@ -87,6 +87,24 @@ func TestADR_0224_AuthorityAttenuation_Scenario2_LegacyAndMalformedRecordsStayDi
 	bound, identity, compatibilityOnly := got.AuthorityBound()
 	if bound != "" || identity != "" || !compatibilityOnly {
 		t.Fatalf("AuthorityBound() = (%q, %q, %t), want legacy compatibility", bound, identity, compatibilityOnly)
+	}
+
+	for _, mutate := range []func(*sessnap.Snapshot){
+		func(s *sessnap.Snapshot) { s.AuthorityBound = "" },
+		func(s *sessnap.Snapshot) { s.AuthorityBound = "not-json" },
+	} {
+		malformed, err := sessnap.Of(newBoundSession(t))
+		if err != nil {
+			t.Fatalf("Of malformed snapshot: %v", err)
+		}
+		mutate(&malformed)
+		line, err := json.Marshal(malformed)
+		if err != nil {
+			t.Fatalf("marshal malformed snapshot: %v", err)
+		}
+		if _, err := sessnap.Unmarshal(line); err == nil {
+			t.Fatal("Unmarshal accepted malformed v1 snapshot as legacy")
+		}
 	}
 }
 
