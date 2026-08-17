@@ -2,7 +2,7 @@
 id: 09-team-parallel-structural-authority
 title: Preflight Parallel and Team authority plus direct-Team profile
 blocked_by: [07-delegation-preflight, 08-managed-team-propagation]
-status: in-progress
+status: completed
 branch: ""
 worktree: ""
 issue: "371"
