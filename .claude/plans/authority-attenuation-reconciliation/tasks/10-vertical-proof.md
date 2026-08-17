@@ -2,7 +2,7 @@
 id: 10-vertical-proof
 title: Authority vertical proof and completion gates
 blocked_by: [06-root-authority-snapshot, 07-delegation-preflight, 08-managed-team-propagation, 09-team-parallel-structural-authority]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
