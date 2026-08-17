@@ -2,8 +2,8 @@
 id: 10-vertical-proof
 title: Authority completion gates
 blocked_by: [06-root-authority-snapshot, 07-delegation-preflight, 08-managed-team-propagation, 09-team-parallel-structural-authority]
-status: in-progress
-branch: ""
+status: done
+branch: plan-authority-attenuation-reconciliation/10-vertical-proof
 worktree: ""
 issue: "371"
 retries: 0
