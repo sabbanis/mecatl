@@ -12,7 +12,7 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
-func TestADR_0224_AuthorityAttenuation_Scenario4_ExtraToolsRequireExactAuthorization(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario4_ExtraToolsRequireExactAuthorization(t *testing.T) {
 	t.Parallel()
 
 	allowed := &fakeOverlayTool{name: "allowed"}

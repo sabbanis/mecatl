@@ -20,10 +20,10 @@ The current accumulator worktree contains partial discovery, proto, generated-co
 ## Acceptance criteria
 
 - AC5.1: A local operator-managed definition can narrow a named child, and the resolved definition identity is persisted as safe tier/name data rather than a path or secret-shaped field.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario5_ManagedLocalDefinitionNarrowsChild`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario5_ManagedLocalDefinitionNarrowsChild`
 - AC5.2: Missing, present-empty, malformed, and valid `authority:` frontmatter remain distinct through discovery and source transport; malformed managed input does not silently become unrestricted.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario5_DefinitionCeilingPresenceIsPreserved`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario5_DefinitionCeilingPresenceIsPreserved`
 - AC5.3: An ordinary remote driver definition retains `driver` provenance and its authority field cannot establish a managed ceiling; no project-trust setting promotes it.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario5_RemoteDriverCannotBecomeManaged`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario5_RemoteDriverCannotBecomeManaged`
 - AC5.4: The optional agent-definition driver protocol field round-trips only the declared ceiling data.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario5_DriverCeilingRoundTrips`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario5_DriverCeilingRoundTrips`

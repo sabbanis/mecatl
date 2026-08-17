@@ -9,7 +9,7 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
-func TestADR_0224_AuthorityAttenuation_Scenario5_DriverCeilingRoundTrips(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario5_DriverCeilingRoundTrips(t *testing.T) {
 	valid, err := governance.NewAuthority(governance.AuthoritySpec{Tools: []string{"Read"}})
 	if err != nil {
 		t.Fatal(err)
@@ -48,7 +48,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario5_DriverCeilingRoundTrips(t *test
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario5_RemoteDriverCannotBecomeManaged(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario5_RemoteDriverCannotBecomeManaged(t *testing.T) {
 	raw := `{"v":1,"kind":"unrestricted"}`
 	src := newHostileAgentClient(t, []*driverv1.AgentDef{{
 		Name:             "reviewer",

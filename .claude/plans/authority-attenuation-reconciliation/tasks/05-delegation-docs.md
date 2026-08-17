@@ -20,8 +20,8 @@ The current accumulator worktree contains partial docs that accurately describe 
 ## Acceptance criteria
 
 - AC6.1: Fresh, background, resumed, named, model-overridden, direct-write, and fork-history Subagent paths derive the same non-widening bound before child construction.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario6_SubagentVariantsCannotWiden`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario6_SubagentVariantsCannotWiden`
 - AC6.2: Parallel branches and Team-tool lead/member/synthesis runs derive from their parent maximum and cannot disclose or execute excluded tools.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario6_ParallelAndTeamCannotWiden`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario6_ParallelAndTeamCannotWiden`
 - AC6.3: Direct server-created teams are explicitly process-bound and start with a zero-capability maximum: their live lead/member/synthesis catalogs neither disclose nor execute ordinary tools. A restart does not re-snapshot authority or resume them with the current catalog.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario6_DirectTeamsHaveZeroCapabilitiesAndAreNotResumable`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario6_DirectTeamsHaveZeroCapabilitiesAndAreNotResumable`

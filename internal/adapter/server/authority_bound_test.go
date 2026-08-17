@@ -17,7 +17,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/server"
 )
 
-func TestADR_0224_AuthorityAttenuation_Scenario6_PeerForkAuthorizesBeforeCopyingSourceMaximum(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario6_PeerForkAuthorizesBeforeCopyingSourceMaximum(t *testing.T) {
 	t.Parallel()
 
 	svc, store := newAuthorityForkService(t, false)
@@ -57,7 +57,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario6_PeerForkAuthorizesBeforeCopying
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario7_OwnershipPrecedesAuthorityParsing(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario7_OwnershipPrecedesAuthorityParsing(t *testing.T) {
 	t.Parallel()
 
 	svc, store := newAuthorityForkService(t, true)

@@ -7,7 +7,7 @@ import (
 	"github.com/stacklok/mecatl/engine/session"
 )
 
-func TestADR_0224_AuthorityAttenuation_Scenario1_CanonicalValueExcludesSensitiveRuntimeData(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario1_CanonicalValueExcludesSensitiveRuntimeData(t *testing.T) {
 	t.Parallel()
 
 	s := session.New("root", session.ModeDefault, "/workspace", session.Limits{}, time.Unix(1, 0).UTC())
@@ -21,7 +21,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario1_CanonicalValueExcludesSensitive
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario1_TerminalRecoveryPreservesMaximum(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario1_TerminalRecoveryPreservesMaximum(t *testing.T) {
 	t.Parallel()
 
 	const bound = `{"v":1,"kind":"restricted","tools":["Read"],"delegates":[],"depth":0,"profile":{"filesystem":true,"direct_write":false,"isolated":true}}`

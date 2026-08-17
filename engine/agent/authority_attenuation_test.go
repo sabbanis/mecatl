@@ -6,7 +6,7 @@ import (
 	"github.com/stacklok/mecatl/engine/governance"
 )
 
-func TestADR_0224_AuthorityAttenuation_Scenario2_RebuildCannotGrantNewTool(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario2_RebuildCannotGrantNewTool(t *testing.T) {
 	t.Parallel()
 	bound := mustAuthority(t, []string{"Read"}, []string{"reviewer"}, 2, governance.AuthorityProfile{FileSystem: true, Isolated: true})
 	if bound.AllowsTool("PublishedLater") {
@@ -14,7 +14,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario2_RebuildCannotGrantNewTool(t *te
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario2_LiveRevocationRecheckedBeforeDispatch(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario2_LiveRevocationRecheckedBeforeDispatch(t *testing.T) {
 	t.Parallel()
 	bound := mustAuthority(t, []string{"Read", "Write"}, nil, 1, governance.AuthorityProfile{FileSystem: true, Isolated: true})
 	revoked := mustAuthority(t, []string{"Read"}, nil, 1, governance.AuthorityProfile{FileSystem: true, Isolated: true})
@@ -24,7 +24,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario2_LiveRevocationRecheckedBeforeDi
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario3_DerivesBeforeRuntimeAcquisition(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario3_DerivesBeforeRuntimeAcquisition(t *testing.T) {
 	t.Parallel()
 	parent := mustAuthority(t, []string{"Read"}, []string{"reviewer"}, 1, governance.AuthorityProfile{FileSystem: true, Isolated: true})
 	child, err := deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{delegate: "reviewer"})
@@ -33,7 +33,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario3_DerivesBeforeRuntimeAcquisition
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario3_EnvironmentPostureCannotWiden(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario3_EnvironmentPostureCannotWiden(t *testing.T) {
 	t.Parallel()
 	parent := mustAuthority(t, []string{"Read"}, nil, 1, governance.AuthorityProfile{Isolated: true})
 	if _, err := deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{directWrite: true}); err == nil {
@@ -41,7 +41,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario3_EnvironmentPostureCannotWiden(t
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario3_ReadOnlyChildCannotResumeWritable(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario3_ReadOnlyChildCannotResumeWritable(t *testing.T) {
 	t.Parallel()
 	parent := mustAuthority(t, []string{"Read"}, nil, 1, governance.AuthorityProfile{FileSystem: true, DirectWrite: true, Isolated: true})
 	child, err := deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{})
@@ -50,7 +50,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario3_ReadOnlyChildCannotResumeWritab
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario3_RejectsEnvironmentMismatchBeforeResolve(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario3_RejectsEnvironmentMismatchBeforeResolve(t *testing.T) {
 	t.Parallel()
 	parent := mustAuthority(t, []string{"Read"}, nil, 1, governance.AuthorityProfile{Isolated: true})
 	if _, err := deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{filesystem: true}); err == nil {
@@ -58,7 +58,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario3_RejectsEnvironmentMismatchBefor
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario4_ChildIsMonotonicIntersection(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario4_ChildIsMonotonicIntersection(t *testing.T) {
 	t.Parallel()
 	parent := mustAuthority(t, []string{"Read"}, []string{"reviewer"}, 2, governance.AuthorityProfile{FileSystem: true, Isolated: true})
 	ceiling := mustAuthority(t, []string{"Read", "Write"}, []string{"reviewer", "other"}, 4, governance.AuthorityProfile{FileSystem: true, DirectWrite: true, Isolated: true})
@@ -68,7 +68,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario4_ChildIsMonotonicIntersection(t 
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario4_ExcludedOrUnknownToolCannotBeDisclosedOrDispatched(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario4_ExcludedOrUnknownToolCannotBeDisclosedOrDispatched(t *testing.T) {
 	t.Parallel()
 	bound := mustAuthority(t, []string{"Read"}, nil, 0, governance.AuthorityProfile{})
 	if bound.AllowsTool("Write") || bound.AllowsTool("forged") {
@@ -76,7 +76,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario4_ExcludedOrUnknownToolCannotBeDi
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario4_DefinitionAndDepthCannotWiden(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario4_DefinitionAndDepthCannotWiden(t *testing.T) {
 	t.Parallel()
 	parent := mustAuthority(t, []string{"Read"}, []string{"reviewer"}, 0, governance.AuthorityProfile{})
 	if _, err := deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{delegate: "other"}); err == nil {

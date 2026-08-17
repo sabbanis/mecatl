@@ -20,11 +20,11 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   non-activatable evaluator-infrastructure marker. New identifiers are Added (minor); the standard
   app's Auto default changes independently while the engine pipeline zero remains evaluated.
 
-- **Delegated-team authority ceiling** ([ADR 0224](../docs/adr/0224-authority-attenuation-on-current-main.md)) —
+- **Delegated-team authority ceiling** ([ADR 0226](../docs/adr/0226-authority-attenuation-on-current-main.md)) —
   `agent.WithTeamAuthority` applies a parent-derived maximum to team members and
   synthesis runs. New exported option: Added (minor).
 
-- **Versioned session authority bound** ([ADR 0224](../docs/adr/0224-authority-attenuation-on-current-main.md)) —
+- **Versioned session authority bound** ([ADR 0226](../docs/adr/0226-authority-attenuation-on-current-main.md)) —
   `governance.Authority`, `AuthoritySpec`, and `AuthorityProfile` provide the
   pure versioned capability vocabulary and canonicalization. `session.(*Session).BindAuthority`, `RestoreAuthorityBound`, and `AuthorityBound`
   persist an opaque canonical authority maximum and safe definition identity. The
@@ -32,7 +32,7 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   compatibility records and rejects malformed v1 records. New methods are Added
   (minor).
 
-- **Live authority revocation hook** ([ADR 0224](../docs/adr/0224-authority-attenuation-on-current-main.md)) —
+- **Live authority revocation hook** ([ADR 0226](../docs/adr/0226-authority-attenuation-on-current-main.md)) —
   `agent.Deps.AuthorityRevoker` lets a host supply the current operator ceiling
   for each bound session before capability disclosure and dispatch. Adding a
   field to the exported `Deps` struct is Changed (breaking).
@@ -761,7 +761,7 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Changed
 
-- **Managed definition authority ceiling ([ADR 0224](../docs/adr/0224-authority-attenuation-on-current-main.md))** —
+- **Managed definition authority ceiling ([ADR 0226](../docs/adr/0226-authority-attenuation-on-current-main.md))** —
   `tool.AgentDef` adds `AuthorityCeiling` and `ManagedAuthorityCeiling`, preserving
   optional declared ceiling data while admitting it as a managed ceiling only from
   operator-configured local definitions. The exported struct field is breaking for

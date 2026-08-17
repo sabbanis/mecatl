@@ -11,7 +11,7 @@ import (
 
 const authorityBound = `{"v":1,"kind":"restricted","tools":["Read"],"delegates":[],"depth":0,"profile":{"filesystem":true,"direct_write":false,"isolated":true}}`
 
-func TestADR_0224_AuthorityAttenuation_Scenario1_ClaimedV1MissingBoundFailsClosed(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario1_ClaimedV1MissingBoundFailsClosed(t *testing.T) {
 	t.Parallel()
 
 	s := newBoundSession(t)
@@ -33,7 +33,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario1_ClaimedV1MissingBoundFailsClose
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario1_NewRootPersistsCanonicalMaximum(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario1_NewRootPersistsCanonicalMaximum(t *testing.T) {
 	t.Parallel()
 
 	s := session.New("s1", session.ModeDefault, "/w", session.Limits{}, time.Unix(0, 0).UTC())
@@ -48,7 +48,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario1_NewRootPersistsCanonicalMaximum
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario7_SnapshotRoundTripPreservesBound(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario7_SnapshotRoundTripPreservesBound(t *testing.T) {
 	t.Parallel()
 
 	line, err := sessnap.Marshal(newBoundSession(t))
@@ -65,7 +65,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario7_SnapshotRoundTripPreservesBound
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario2_LegacyAndMalformedRecordsStayDistinct(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario2_LegacyAndMalformedRecordsStayDistinct(t *testing.T) {
 	t.Parallel()
 
 	legacy, err := sessnap.Of(session.New("legacy", session.ModeDefault, "/w", session.Limits{}, time.Unix(0, 0).UTC()))

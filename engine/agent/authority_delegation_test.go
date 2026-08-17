@@ -16,7 +16,7 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
-func TestADR_0224_AuthorityAttenuation_Scenario6_SubagentVariantsCannotWiden(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario6_SubagentVariantsCannotWiden(t *testing.T) {
 	t.Parallel()
 	parent := mustAuthority(t, []string{"Read", "Subagent"}, []string{"reviewer"}, 2, governance.AuthorityProfile{FileSystem: true, DirectWrite: true, Isolated: true})
 	want, err := parent.Descend()
@@ -60,10 +60,10 @@ func TestADR_0224_AuthorityAttenuation_Scenario6_SubagentVariantsCannotWiden(t *
 	}
 }
 
-// TestADR_0224_AuthorityAttenuation_ResumeRejectsPersistedChildWidening proves
+// TestADR_0226_AuthorityAttenuation_ResumeRejectsPersistedChildWidening proves
 // that both resume paths reject a saved child whose immutable maximum is broader
 // than the current parent before the child can run.
-func TestADR_0224_AuthorityAttenuation_ResumeRejectsPersistedChildWidening(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_ResumeRejectsPersistedChildWidening(t *testing.T) {
 	for _, background := range []bool{false, true} {
 		name := "foreground"
 		if background {
@@ -119,7 +119,7 @@ func TestADR_0224_AuthorityAttenuation_ResumeRejectsPersistedChildWidening(t *te
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario6_ParallelAndTeamCannotWiden(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario6_ParallelAndTeamCannotWiden(t *testing.T) {
 	t.Parallel()
 	parent := mustAuthority(t, []string{"Read", "Parallel", "Team"}, nil, 2, governance.AuthorityProfile{FileSystem: true, Isolated: true})
 
@@ -148,7 +148,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario6_ParallelAndTeamCannotWiden(t *t
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario6_DirectTeamsHaveOnlyStructuralCoordinationAuthorityAndAreNotResumable(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario6_DirectTeamsHaveOnlyStructuralCoordinationAuthorityAndAreNotResumable(t *testing.T) {
 	t.Parallel()
 	tm := team.New("direct")
 	write := &fakeOverlayTool{name: "Write"}

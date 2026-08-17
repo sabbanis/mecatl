@@ -20,12 +20,12 @@ Extend the aggregate through methods rather than public-field mutation. Keep `En
 ## Acceptance criteria
 
 - AC1.1: newly created bound session persists one canonical authority value, version/provenance, and safe resolved-definition identity before its first runnable state.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario1_NewRootPersistsCanonicalMaximum`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario1_NewRootPersistsCanonicalMaximum`
 - AC1.2: the maximum contains canonical capabilities and execution profile only; no sensitive/runtime selection data.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario1_CanonicalValueExcludesSensitiveRuntimeData`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario1_CanonicalValueExcludesSensitiveRuntimeData`
 - AC1.3: claimed-v1 missing/invalid bounds fail closed; genuine pre-feature records classify legacy.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario1_ClaimedV1MissingBoundFailsClosed`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario1_ClaimedV1MissingBoundFailsClosed`
 - AC1.4: terminal recovery leaves the bound unchanged.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario1_TerminalRecoveryPreservesMaximum`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario1_TerminalRecoveryPreservesMaximum`
 - AC7.1: snapshot round-trip preserves authority alongside owner, lineage, EnvironmentRef, and state without a second authority source.
-  - verify: `TestADR_0224_AuthorityAttenuation_Scenario7_SnapshotRoundTripPreservesBound`
+  - verify: `TestADR_0226_AuthorityAttenuation_Scenario7_SnapshotRoundTripPreservesBound`

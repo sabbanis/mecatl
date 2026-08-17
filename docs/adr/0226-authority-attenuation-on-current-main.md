@@ -1,4 +1,4 @@
-# ADR 0224 — Authority attenuation on current main
+# ADR 0226 — Authority attenuation on current main
 
 - Status: Accepted
 - Date: 2026-08-12

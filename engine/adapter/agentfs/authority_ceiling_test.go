@@ -12,7 +12,7 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
-func TestADR_0224_AuthorityAttenuation_Scenario5_ManagedLocalDefinitionNarrowsChild(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario5_ManagedLocalDefinitionNarrowsChild(t *testing.T) {
 	ceiling, err := governance.NewAuthority(governance.AuthoritySpec{Tools: []string{"Read"}})
 	if err != nil {
 		t.Fatal(err)
@@ -80,7 +80,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario5_ManagedLocalDefinitionNarrowsCh
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario5_DefinitionCeilingPresenceIsPreserved(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario5_DefinitionCeilingPresenceIsPreserved(t *testing.T) {
 	valid, err := governance.NewAuthority(governance.AuthoritySpec{Tools: []string{"Read"}})
 	if err != nil {
 		t.Fatal(err)

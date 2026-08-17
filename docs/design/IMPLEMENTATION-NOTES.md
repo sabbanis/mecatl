@@ -19,7 +19,7 @@ Prefer updating the relevant design doc + this file over re-growing CLAUDE.md.
 
 ## Authority-bound sessions (issue #371, partial implementation)
 
-[ADR 0224](../adr/0224-authority-attenuation-on-current-main.md) specifies a broad
+[ADR 0224](../adr/0226-authority-attenuation-on-current-main.md) specifies a broad
 attenuation model. The shipped slice is intentionally narrower: it establishes the
 canonical v1 authority value and projects it over a bound root run's tool surface. It
 must not be read as completing the ADR's child, environment, live-revocation, or

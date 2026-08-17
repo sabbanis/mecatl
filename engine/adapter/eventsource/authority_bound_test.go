@@ -11,7 +11,7 @@ import (
 
 const eventSourceAuthorityBound = `{"v":1,"kind":"restricted","tools":["Read"],"delegates":[],"depth":0,"profile":{"filesystem":true,"direct_write":false,"isolated":true}}`
 
-func TestADR_0224_AuthorityAttenuation_Scenario7_EventFoldRespectsExplicitProvenance(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario7_EventFoldRespectsExplicitProvenance(t *testing.T) {
 	t.Parallel()
 
 	legacyVersion := 0
@@ -47,7 +47,7 @@ func TestADR_0224_AuthorityAttenuation_Scenario7_EventFoldRespectsExplicitProven
 	}
 }
 
-func TestADR_0224_AuthorityAttenuation_Scenario7_EventFoldClaimedV1FailsClosed(t *testing.T) {
+func TestADR_0226_AuthorityAttenuation_Scenario7_EventFoldClaimedV1FailsClosed(t *testing.T) {
 	t.Parallel()
 
 	v1 := 1
