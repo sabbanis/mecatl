@@ -19,8 +19,8 @@ import {
 import { useConfirm } from "@/hooks/use-confirm";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
+import { usePanelWidth } from "@/hooks/use-panel-width";
 import { usePrompt } from "@/hooks/use-prompt";
-import { useSidebarWidth } from "@/hooks/use-sidebar-width";
 import { useAgentDisplayName } from "@/lib/profile-preferences";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { ChatInput } from "../../_components/chat-input";
@@ -301,16 +301,22 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     }
     wasCompactRef.current = isCompact;
   }, [isCompact]);
-  const [sidebarWidth, setSidebarWidth] = useSidebarWidth();
+  const [sidebarWidth, setSidebarWidth] = usePanelWidth();
 
   const handleSessionCreated = useCallback(
     (id: string) => {
       draftMintedIdRef.current = id;
       setSelectedIdState(id);
-      router.replace(chatHref(id));
+      // Native replaceState, deliberately not router.replace: moving the
+      // optional catch-all from zero segments to one changes the route
+      // shape, which remounts this page — and a remount replaces the chat
+      // hook instance, so the in-flight stream would render into dead
+      // state and the pane would sit empty until a reload. The App Router
+      // syncs its state from native history updates without remounting.
+      window.history.replaceState(null, "", chatHref(id));
       void refreshSessions();
     },
-    [router, refreshSessions],
+    [refreshSessions],
   );
 
   // The draft keeps a null hook id even after its session is minted and the
