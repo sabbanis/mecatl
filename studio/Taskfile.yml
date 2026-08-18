@@ -21,7 +21,9 @@ tasks:
     generates:
       - node_modules/.package-lock.json
     cmds:
-      - npm install
+      # Pinned via npx: a system npm 11 rewrites the lockfile in a shape
+      # npm 10 (what CI's Node 22 ships) rejects, breaking npm ci.
+      - npx -y npm@10.9.4 install
 
   dev:
     desc: Start Studio + its mecated supervisor in the background (runs install if needed)
