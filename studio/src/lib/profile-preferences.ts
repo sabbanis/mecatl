@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
  */
 const AGENT_NAME_KEY = "mecatl-studio.agent-name";
 const AVATAR_KEY = "mecatl-studio.user-avatar";
+const SESSION_LIST_SIDE_KEY = "mecatl-studio.session-list-side";
 const DEFAULT_AGENT_NAME = "Mecatl";
 
 function readLocalStorage(key: string): string | null {
@@ -62,4 +63,26 @@ export function useUserAvatar() {
   }, []);
 
   return { avatarUrl, setAvatarUrl };
+}
+
+export type SessionListSide = "left" | "right";
+
+/**
+ * Which side of the chat the session list docks on. The thread and document
+ * panels stay on the right regardless — only the list moves.
+ */
+export function useSessionListSide() {
+  const [side, setSideState] = useState<SessionListSide>("right");
+  useEffect(() => {
+    if (readLocalStorage(SESSION_LIST_SIDE_KEY) === "left") {
+      setSideState("left");
+    }
+  }, []);
+
+  const setSide = useCallback((next: SessionListSide) => {
+    setSideState(next);
+    writeLocalStorage(SESSION_LIST_SIDE_KEY, next === "left" ? "left" : null);
+  }, []);
+
+  return { side, setSide };
 }

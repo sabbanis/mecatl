@@ -16,7 +16,7 @@ export function ResizeHandle({
   width,
   onWidthChange,
   min = 200,
-  max = 500,
+  max = 720,
 }: ResizeHandleProps) {
   const isDraggingRef = useRef(false);
 

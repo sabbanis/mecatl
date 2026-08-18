@@ -9,6 +9,8 @@ import {
   Loader2,
   MessageCircle,
   MessageSquareText,
+  PanelLeftClose,
+  PanelLeftOpen,
   PanelRightClose,
   PanelRightOpen,
   Pencil,
@@ -41,6 +43,7 @@ import type {
   ClarificationRequest,
 } from "@/features/agent";
 import { useIsMobile } from "@/hooks/use-mobile";
+import type { SessionListSide } from "@/lib/profile-preferences";
 import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
@@ -355,6 +358,7 @@ export function ChatView({
   error,
   onRetry,
   sidebarOpen,
+  sidebarSide,
   onToggleSidebar,
   pendingApproval,
   onRespondApproval,
@@ -378,6 +382,7 @@ export function ChatView({
   error?: string | null;
   onRetry?: () => void;
   sidebarOpen: boolean;
+  sidebarSide: SessionListSide;
   onToggleSidebar: () => void;
   pendingApproval: ApprovalRequest | null;
   onRespondApproval: (choice: ApprovalChoice) => void;
@@ -480,7 +485,13 @@ export function ChatView({
                   aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
                 >
                   {sidebarOpen ? (
-                    <PanelRightClose className="size-4" />
+                    sidebarSide === "left" ? (
+                      <PanelLeftClose className="size-4" />
+                    ) : (
+                      <PanelRightClose className="size-4" />
+                    )
+                  ) : sidebarSide === "left" ? (
+                    <PanelLeftOpen className="size-4" />
                   ) : (
                     <PanelRightOpen className="size-4" />
                   )}

@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, PanelRight, SquarePen } from "lucide-react";
+import { Loader2, PanelLeft, PanelRight, SquarePen } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -21,8 +21,13 @@ import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
 import { usePanelWidth } from "@/hooks/use-panel-width";
 import { usePrompt } from "@/hooks/use-prompt";
-import { useAgentDisplayName } from "@/lib/profile-preferences";
+import {
+  type SessionListSide,
+  useAgentDisplayName,
+  useSessionListSide,
+} from "@/lib/profile-preferences";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
+import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ResizeHandle } from "../../_components/resize-handle";
 import { ChatView } from "./chat-view";
@@ -165,6 +170,7 @@ function DraftView({
   onPickSeed,
   error,
   showSidebarButton,
+  sidebarSide,
   onShowSidebar,
 }: {
   onSend: (content: string) => void;
@@ -173,6 +179,7 @@ function DraftView({
   onPickSeed: (text: string) => void;
   error: string | null;
   showSidebarButton: boolean;
+  sidebarSide: SessionListSide;
   onShowSidebar: () => void;
 }) {
   return (
@@ -191,7 +198,11 @@ function DraftView({
             onClick={onShowSidebar}
             aria-label="Show sidebar"
           >
-            <PanelRight className="size-4" />
+            {sidebarSide === "left" ? (
+              <PanelLeft className="size-4" />
+            ) : (
+              <PanelRight className="size-4" />
+            )}
           </Button>
         )}
       </div>
@@ -252,6 +263,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const { agents } = useAgentRoster();
   const router = useRouter();
   const { name: agentName } = useAgentDisplayName();
+  const { side: sidebarSide } = useSessionListSide();
   const isMobile = useIsMobile();
   const isCompact = useIsCompact();
   const { confirm, ConfirmDialog } = useConfirm();
@@ -509,6 +521,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         onSend={sendMessage}
         botName={agentName}
         sidebarOpen={open}
+        sidebarSide={sidebarSide}
         onToggleSidebar={onToggle}
         pendingApproval={pendingApproval}
         onRespondApproval={respondToApproval}
@@ -546,6 +559,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onPickSeed={setDraftSeed}
             error={turnError}
             showSidebarButton
+            sidebarSide={sidebarSide}
             onShowSidebar={() => setSidebarOpen(true)}
           />
         )}
@@ -567,6 +581,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             onPickSeed={setDraftSeed}
             error={turnError}
             showSidebarButton={!sidebarOpen}
+            sidebarSide={sidebarSide}
             onShowSidebar={() => setSidebarOpen(true)}
           />
         )}
@@ -583,12 +598,15 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
               onClick={() => setSidebarOpen(false)}
             />
             <div
-              className="absolute inset-y-0 right-0 z-40 flex flex-col border-l border-border bg-background shadow-lg"
+              className={cn(
+                "absolute inset-y-0 z-40 flex flex-col border-border bg-background shadow-lg",
+                sidebarSide === "left" ? "left-0 border-r" : "right-0 border-l",
+              )}
               style={{ width: sidebarWidth }}
             >
-              {/* Handle on the panel's left edge: dragging left widens */}
+              {/* Handle on the panel's inner edge: dragging inward widens */}
               <ResizeHandle
-                direction="left"
+                direction={sidebarSide === "left" ? "right" : "left"}
                 width={sidebarWidth}
                 onWidthChange={setSidebarWidth}
               />
@@ -597,12 +615,15 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           </>
         ) : (
           <div
-            className="relative flex shrink-0 flex-col border-l border-border bg-background"
+            className={cn(
+              "relative flex shrink-0 flex-col border-border bg-background",
+              sidebarSide === "left" ? "order-first border-r" : "border-l",
+            )}
             style={{ width: sidebarWidth }}
           >
-            {/* Handle on the panel's left edge: dragging left widens */}
+            {/* Handle on the panel's inner edge: dragging inward widens */}
             <ResizeHandle
-              direction="left"
+              direction={sidebarSide === "left" ? "right" : "left"}
               width={sidebarWidth}
               onWidthChange={setSidebarWidth}
             />
