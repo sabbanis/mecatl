@@ -252,13 +252,17 @@ export function useAgentChat(sessionId: string | null) {
       setStatus("idle");
       if (!harnessLive || !harnessId || !approvalId) return;
       try {
-        // The harness verdict is binary. "session"/"always" are UI-level
-        // scope choices it does not model, so they allow this call only —
-        // widening a grant is not something to infer on the operator's behalf.
+        // The daemon's verdict is three-way. "session" and "always" both map
+        // to allow_always — the daemon models one persistent grant scope, and
+        // splitting hairs the backend does not model would be a lie in the UI.
         await respondToHarnessApproval(
           harnessId,
           approvalId,
-          choice !== "deny",
+          choice === "deny"
+            ? "deny"
+            : choice === "once"
+              ? "allow_once"
+              : "allow_always",
         );
       } catch (caught) {
         setError(caught instanceof Error ? caught.message : String(caught));

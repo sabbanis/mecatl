@@ -169,6 +169,17 @@ export async function proxyMecatl(request: Request, path: string[]) {
       headers.set("content-type", "application/json");
     }
   }
+  // Slash-command discovery scans the workspace's command directories; the
+  // workspace is a query parameter there, injected here for the same reason
+  // it is injected into session bodies.
+  if (
+    request.method === "GET" &&
+    path.join("/") === "v1/commands" &&
+    !target.searchParams.get("workspace")
+  ) {
+    const workspace = await resolveWorkspace(external);
+    if (workspace) target.searchParams.set("workspace", workspace);
+  }
   return forward(request, target, headers, bodyOverride);
 }
 

@@ -102,6 +102,9 @@ export type StreamEvent =
       type: "usage";
       inputTokens: number;
       outputTokens: number;
+      cacheReadTokens?: number;
+      cacheWriteTokens?: number;
+      reasoningTokens?: number;
       estimatedCost: number | null;
     }
   | { type: "title"; title: string }
@@ -110,7 +113,29 @@ export type StreamEvent =
       session: AgentSession;
       messages: AgentMessage[];
     }
-  | { type: "error"; message: string; details?: string };
+  | { type: "error"; message: string; details?: string }
+  /** A previously surfaced permission ask was withdrawn by the daemon. */
+  | { type: "retract"; approvalId: string }
+  /** A one-line advisory (tool progress, compaction, unrendered event kinds). */
+  | { type: "notice"; text: string }
+  /** Delegation activity: the run handed work to a child agent. */
+  | {
+      type: "delegation";
+      kind: "subagent" | "team" | "parallel";
+      label: string;
+      detail: string;
+    }
+  /**
+   * The run's terminal frame. `stop === "error"` is a FAILED turn and must
+   * render as one, even when no token ever streamed.
+   */
+  | {
+      type: "run_result";
+      stop: string;
+      text: string;
+      errorText: string;
+      permanent: boolean;
+    };
 
 // ── Projects ────────────────────────────────────────────────────────────────
 

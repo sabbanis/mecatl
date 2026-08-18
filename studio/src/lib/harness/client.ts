@@ -1,43 +1,32 @@
 /**
- * Browser-side client for a locally running mecatl daemon, reached through the
- * /api/harness proxy.
+ * Browser-side client for the mecatl daemon, reached through the same-origin
+ * /api/mecatl proxy (which injects auth and the workspace server-side).
  *
- * mecatl's own SSE frames map almost 1:1 onto this prototype's StreamEvent
- * union, so this module's job is naming and shape translation, not invention:
- * `message.delta` → token, `tool.call`/`tool.result` → tool_call/tool_result,
- * `permission.ask` → approval, `result` → usage + done.
+ * All wire decoding lives in the protocol seam (src/lib/protocol); this
+ * module owns transport: fetch calls, SSE frame buffering, and the stream
+ * robustness rules (idle timeout, terminal-result guard).
  */
 
 import type { StreamEvent } from "@/features/agent/types";
+import {
+  decodeScheduleFire,
+  decodeScheduleFires,
+  decodeScheduleRows,
+  decodeSessionInventory,
+  decodeSessionTranscript,
+  encodeScheduleSpec,
+  parseMecatlEvent,
+  type ScheduleCarriedSpec,
+  type ScheduleFireRow,
+  type ScheduleRow,
+  type ScheduleSpecDraft,
+  type SessionInventoryPage,
+  type SessionSummary,
+  type SessionTranscript,
+  translateEvent,
+} from "@/lib/protocol";
 
 const HARNESS_API = "/api/mecatl";
-
-/** Raw mecatl SSE frame. Field names are snake_case on the wire. */
-interface HarnessEvent {
-  type?: string;
-  seq?: string | number;
-  text?: string;
-  tool_call?: {
-    id?: string;
-    call_id?: string;
-    name?: string;
-    tool?: string;
-    args?: string;
-  };
-  tool_result?: {
-    call_id?: string;
-    tool?: string;
-    content?: string;
-    result?: string;
-    is_error?: boolean;
-  };
-  ask?: { ask_id?: string; tool?: string; args?: string; reason?: string };
-  result?: {
-    text?: string;
-    stop?: string;
-    usage?: { input_tokens?: string | number; output_tokens?: string | number };
-  };
-}
 
 export interface HarnessStatus {
   live: boolean;
@@ -96,83 +85,26 @@ export async function createHarnessSession(
   return body.session_id;
 }
 
-function prettyArgs(raw?: string): string {
-  if (!raw) return "";
-  try {
-    const parsed = JSON.parse(raw) as Record<string, unknown>;
-    return Object.entries(parsed)
-      .map(
-        ([key, value]) =>
-          `${key}: ${typeof value === "string" ? value : JSON.stringify(value)}`,
-      )
-      .join(" · ");
-  } catch {
-    return raw;
-  }
-}
+/**
+ * How long a live stream may go silent before Studio declares it dead. Two
+ * minutes comfortably exceeds a slow tool call's quiet stretch while still
+ * catching a daemon that went away without closing the socket.
+ */
+const STREAM_IDLE_TIMEOUT_MS = 120_000;
 
-/** Translates one mecatl frame into zero or more prototype StreamEvents. */
-function translate(event: HarnessEvent, sessionId: string): StreamEvent[] {
-  switch (event.type) {
-    case "message.delta":
-      return event.text ? [{ type: "token", text: event.text }] : [];
-    case "reasoning.delta":
-      return event.text ? [{ type: "reasoning", text: event.text }] : [];
-    case "tool.call": {
-      const call = event.tool_call;
-      if (!call) return [];
-      return [
-        {
-          type: "tool_call",
-          callId: call.call_id ?? call.id ?? `call-${event.seq ?? ""}`,
-          name: call.tool ?? call.name ?? "Tool",
-          input: call.args ? prettyArgs(call.args) : "",
-        },
-      ];
-    }
-    case "tool.result": {
-      const result = event.tool_result;
-      if (!result) return [];
-      return [
-        {
-          type: "tool_result",
-          callId: result.call_id ?? "",
-          output: result.result ?? result.content ?? "",
-          isError: result.is_error,
-        },
-      ];
-    }
-    case "permission.ask": {
-      const ask = event.ask;
-      if (!ask) return [];
-      return [
-        {
-          type: "approval",
-          approvalId: ask.ask_id ?? "",
-          sessionId,
-          description: `${ask.tool ?? "A tool"} needs your approval.`,
-          details: [ask.reason, prettyArgs(ask.args)]
-            .filter(Boolean)
-            .join("\n\n"),
-        },
-      ];
-    }
-    case "result": {
-      const usage = event.result?.usage;
-      if (!usage) return [];
-      return [
-        {
-          type: "usage",
-          inputTokens: Number(usage.input_tokens ?? 0),
-          outputTokens: Number(usage.output_tokens ?? 0),
-          estimatedCost: null,
-        },
-      ];
-    }
-    default:
-      // turn.start, subagent.*, team.*, compaction.* and friends carry no UI
-      // surface in this prototype yet. Dropping them is deliberate.
-      return [];
+async function readWithIdleTimeout<T>(read: Promise<T>): Promise<T> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () =>
+        reject(new Error("Mecatl stopped sending updates for two minutes.")),
+      STREAM_IDLE_TIMEOUT_MS,
+    );
+  });
+  try {
+    return await Promise.race([read, timeout]);
+  } finally {
+    clearTimeout(timer);
   }
 }
 
@@ -182,6 +114,10 @@ function translate(event: HarnessEvent, sessionId: string): StreamEvent[] {
  * The response is text/event-stream: frames are separated by a blank line and
  * the payload rides a `data:` line, so partial frames must be buffered across
  * reads rather than parsed per chunk.
+ *
+ * Two guards make a dead run fail loudly instead of hanging as "Done.":
+ * each read races the idle timeout, and a stream that closes without a
+ * terminal `result` frame throws — the daemon always ends a run with one.
  */
 export async function streamHarnessPrompt(
   sessionId: string,
@@ -204,9 +140,10 @@ export async function streamHarnessPrompt(
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
   let buffer = "";
+  let sawResult = false;
 
   while (true) {
-    const { value, done } = await reader.read();
+    const { value, done } = await readWithIdleTimeout(reader.read());
     if (done) break;
     buffer += decoder.decode(value, { stream: true });
     const frames = buffer.split("\n\n");
@@ -218,34 +155,136 @@ export async function streamHarnessPrompt(
       if (!line) continue;
       const payload = line.slice("data:".length).trim();
       if (!payload) continue;
-      let parsed: HarnessEvent;
+      let events: StreamEvent[];
       try {
-        parsed = JSON.parse(payload) as HarnessEvent;
+        events = translateEvent(parseMecatlEvent(payload), sessionId);
       } catch {
+        // A frame Studio cannot decode is surfaced, never silently dropped.
+        onEvent({
+          type: "notice",
+          text: "Mecatl sent a frame this Studio version could not decode.",
+        });
         continue;
       }
-      for (const translated of translate(parsed, sessionId)) {
+      for (const translated of events) {
+        if (translated.type === "run_result") sawResult = true;
         onEvent(translated);
       }
     }
   }
+  if (!sawResult) {
+    throw new Error(
+      "The connection closed before Mecatl returned a final result.",
+    );
+  }
 }
 
-/** Resolves a parked permission ask. */
+export type HarnessApprovalVerdict = "allow_once" | "allow_always" | "deny";
+
+/**
+ * Resolves a parked permission ask with the daemon's three-way verdict:
+ * allow_once, allow_always (persists a permission rule), or deny.
+ */
 export async function respondToHarnessApproval(
   sessionId: string,
   askId: string,
-  allow: boolean,
+  verdict: HarnessApprovalVerdict,
 ): Promise<void> {
   const response = await fetch(
     `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/approve`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ask_id: askId, allow }),
+      body: JSON.stringify({ ask_id: askId, verdict }),
     },
   );
   if (!response.ok) throw new Error(await readError(response));
+}
+
+// ── Session inventory / transcripts (daemon session store) ──────────────────
+
+/** One page of `GET /v1/sessions`. */
+export async function fetchSessionInventoryPage(
+  cursor?: string,
+  pageSize = 100,
+  signal?: AbortSignal,
+): Promise<SessionInventoryPage> {
+  const query = new URLSearchParams({ page_size: String(pageSize) });
+  if (cursor) query.set("cursor", cursor);
+  const response = await fetch(`${HARNESS_API}/sessions?${query}`, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  return decodeSessionInventory(await response.json());
+}
+
+/**
+ * Walks the session inventory to completion, bounded so a pathological store
+ * cannot loop the UI forever. Only a COMPLETE walk may be used to conclude a
+ * session is gone — a partial page proves nothing about absent rows.
+ */
+export async function fetchAllSessions(
+  signal?: AbortSignal,
+  maxPages = 25,
+): Promise<{ sessions: SessionSummary[]; complete: boolean }> {
+  const sessions: SessionSummary[] = [];
+  let cursor: string | undefined;
+  for (let page = 0; page < maxPages; page += 1) {
+    const result = await fetchSessionInventoryPage(cursor, 100, signal);
+    sessions.push(...result.sessions);
+    if (!result.nextCursor) return { sessions, complete: true };
+    cursor = result.nextCursor;
+  }
+  return { sessions, complete: false };
+}
+
+/**
+ * Renames a session. Returns the daemon's clamped title echo, which the UI
+ * adopts rather than assuming its input survived unmodified.
+ */
+export async function renameHarnessSession(
+  sessionId: string,
+  title: string,
+): Promise<string> {
+  const response = await fetch(
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/rename`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ title }),
+    },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as { title?: string };
+  return body.title ?? title;
+}
+
+/** Physically deletes a session's snapshot and sidecars. */
+export async function deleteHarnessSession(sessionId: string): Promise<void> {
+  const response = await fetch(
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/delete`,
+    { method: "POST" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+}
+
+/**
+ * Reads the authoritative message-level transcript
+ * (`GET /v1/sessions/{id}/transcript`). This is the store's snapshot, so it
+ * covers scheduler-tick fires whose conversation never reached the durable
+ * event log, and it works identically in external mode.
+ */
+export async function fetchSessionTranscriptMessages(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionTranscript> {
+  const response = await fetch(
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/transcript`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  return decodeSessionTranscript(await response.json());
 }
 
 // ── Memory (user model) ─────────────────────────────────────────────────────
@@ -387,6 +426,98 @@ export async function harnessScheduleAction(
     method: action === "delete" ? "DELETE" : "POST",
   });
   if (!response.ok) throw new Error(await readError(response));
+}
+
+/**
+ * Reads the schedule registry through the full protocol decoder: spec fields
+ * (mode, mutating, workspace, timezone, limits), state, fire stage, and the
+ * carried spec an edit must round-trip. Distinguishes "scheduler not wired"
+ * (non-OK list — the daemon answers 501 without a schedule store) from a
+ * genuinely empty registry.
+ */
+export async function listScheduleRows(
+  signal?: AbortSignal,
+): Promise<ScheduleRow[]> {
+  const response = await fetch(`${HARNESS_API}/schedules`, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  return decodeScheduleRows(await response.json());
+}
+
+/**
+ * Creates (POST) or replaces (PUT) a schedule spec. Requests are protojson —
+ * built by encodeScheduleSpec, never by echoing a decoded response — and an
+ * update must pass the row's `carried` spec or the fields this UI cannot edit
+ * would be silently deleted (PUT replaces the whole spec).
+ */
+export async function saveHarnessSchedule(
+  draft: ScheduleSpecDraft,
+  options: { update: boolean; carried?: ScheduleCarriedSpec },
+): Promise<void> {
+  const body = JSON.stringify(encodeScheduleSpec(draft, options.carried));
+  const response = await fetch(
+    options.update
+      ? `${HARNESS_API}/schedules/${encodeURIComponent(draft.name)}`
+      : `${HARNESS_API}/schedules`,
+    {
+      method: options.update ? "PUT" : "POST",
+      headers: { "Content-Type": "application/json" },
+      body,
+    },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+}
+
+/** Reads a schedule's fire history, newest first. */
+export async function listScheduleFires(
+  name: string,
+  signal?: AbortSignal,
+): Promise<ScheduleFireRow[]> {
+  const response = await fetch(
+    `${HARNESS_API}/schedules/${encodeURIComponent(name)}/fires`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  return decodeScheduleFires(await response.json());
+}
+
+/** Re-reads one fire record (an in-flight fire's stop arrives later). */
+export async function getScheduleFire(
+  name: string,
+  fireId: string,
+  signal?: AbortSignal,
+): Promise<ScheduleFireRow | null> {
+  const response = await fetch(
+    `${HARNESS_API}/schedules/${encodeURIComponent(name)}/fires/${encodeURIComponent(fireId)}`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  return decodeScheduleFire(await response.json());
+}
+
+// ── Slash commands ───────────────────────────────────────────────────────────
+
+/**
+ * Reads the workspace's discovered slash commands. The workspace query is
+ * injected by the proxy — the browser deliberately never knows the path.
+ */
+export async function listHarnessCommands(
+  signal?: AbortSignal,
+): Promise<{ name: string; description: string }[]> {
+  const response = await fetch(`${HARNESS_API}/commands`, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as {
+    commands?: { name?: string; description?: string }[];
+  };
+  return (body.commands ?? []).map((command) => ({
+    name: command.name ?? "",
+    description: command.description ?? "",
+  }));
 }
 
 // ── Skills ──────────────────────────────────────────────────────────────────
