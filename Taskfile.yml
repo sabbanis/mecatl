@@ -18,6 +18,9 @@ includes:
   site:
     taskfile: website/Taskfile.yml
     dir: website
+  studio:
+    taskfile: studio/Taskfile.yml
+    dir: studio
 
 vars:
   PKG: github.com/stacklok/mecatl
