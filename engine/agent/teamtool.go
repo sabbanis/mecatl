@@ -7,6 +7,7 @@ import (
 	"slices"
 	"strings"
 
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/team"
@@ -312,6 +313,33 @@ func (t *TeamTool) ExecuteObserved(ctx context.Context, call session.ToolCall, e
 	return t.run(ctx, call, env, emit, parentCaps{})
 }
 
+// teamAuthorityOption derives and attenuates the Team tool's ceiling from the
+// active parent run before any team runtime resource is acquired. A caps-less
+// direct Tool.Execute keeps its compatibility behavior; direct server teams
+// explicitly supply their structural authority.
+func teamAuthorityOption(caps parentCaps) (SupervisorOption, error) {
+	if caps.authority == nil {
+		return nil, nil
+	}
+	parent, err := caps.authority()
+	if err != nil {
+		return nil, err
+	}
+	authority, err := deriveChildAuthority(parent, governance.UnrestrictedAuthority(), childAuthorityRequest{})
+	if err != nil {
+		return nil, err
+	}
+	return WithTeamAuthority(authority), nil
+}
+
+func appendTeamAuthorityOption(opts []SupervisorOption, caps parentCaps) ([]SupervisorOption, error) {
+	option, err := teamAuthorityOption(caps)
+	if err != nil || option == nil {
+		return opts, err
+	}
+	return append(opts, option), nil
+}
+
 // run is the shared implementation behind Execute (emit == nil) and
 // ExecuteObserved (emit != nil). It validates the roster, builds and drives the
 // Supervisor over the SAME base workspace, optionally forwards a bounded
@@ -357,6 +385,11 @@ func (t *TeamTool) run(ctx context.Context, call session.ToolCall, env tool.Envi
 		// here: the in-loop Team tool's goal is always principal-authored and trusted.
 		WithTeamGoal(args.Goal),
 		WithMemberSessionPrefix(memberSessionIDPrefix + teamID),
+	}
+	var authorityErr error
+	opts, authorityErr = appendTeamAuthorityOption(opts, caps)
+	if authorityErr != nil {
+		return session.NewToolError(call.ID, "Team: authority is unavailable; refusing delegation"), nil
 	}
 	if t.forker != nil {
 		opts = append(opts, WithForker(t.forker))

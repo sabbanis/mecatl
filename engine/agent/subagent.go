@@ -109,6 +109,9 @@ type parentCaps struct {
 	// tool is driven without parent caps (plain Execute/ExecuteObserved) — the
 	// child then simply is not client-cancellable, unchanged behaviour.
 	children *childRunRegistry
+	// authority reads the parent's effective maximum for this run. It is nil for
+	// direct Tool.Execute, which preserves the historical unrestricted host path.
+	authority func() (governance.Authority, error)
 	// diag is the parent run's run-scoped diagnostics, used to emit the headless
 	// auto-deny operator diagnostic (LevelInfo, tagged agent=<child identity>: the child
 	// session id "subagent-<callID>" for Subagent children; the member name / fork label
@@ -190,6 +193,114 @@ type parentCaps struct {
 	// Execute/ExecuteObserved, no parent session threaded) — the legacy
 	// call-id-only id, unaffected outside real dispatch.
 	parentSessionID session.SessionID
+}
+
+type delegationPreflight struct {
+	childID            session.SessionID
+	resuming           bool
+	authority          governance.Authority
+	definitionIdentity string
+}
+
+// preflightDelegation performs the control-plane-only checks which must complete
+// before routing, engine construction, workspace resolution, or child lifecycle
+// acquisition. Resume ownership is checked before parsing its persisted bound.
+func (t *SubagentTool) preflightDelegation(ctx context.Context, call session.ToolCall, env tool.Environment, args subagentArgs, caps parentCaps, writable bool) (delegationPreflight, session.ToolResult, bool) {
+	preflight := delegationPreflight{resuming: strings.TrimSpace(args.Resume) != "", childID: t.childSessionID(caps.parentSessionID, call.ID)}
+	if preflight.resuming {
+		preflight.childID = session.SessionID(args.Resume)
+		if _, result, ok := t.validateResume(call.ID, args); !ok {
+			return delegationPreflight{}, result, false
+		}
+		loaded, result, ok := t.loadOwnedResumeSession(ctx, call.ID, preflight.childID)
+		if !ok {
+			return delegationPreflight{}, result, false
+		}
+		if caps.authority != nil {
+			parent, result, ok := deriveRunChildAuthority(caps, true, args, writable, nil, call.ID)
+			if !ok {
+				return delegationPreflight{}, result, false
+			}
+			if result := resumeChildAuthority(parent, loaded, call.ID); result.IsError {
+				return delegationPreflight{}, result, false
+			}
+			bound, _, _ := loaded.AuthorityBound()
+			saved, err := governance.ParseAuthority(bound)
+			if err != nil {
+				return delegationPreflight{}, session.NewToolError(call.ID, "Subagent: resumed child authority exceeds the parent maximum; refusing delegation"), false
+			}
+			preflight.authority = saved
+		} else {
+			// Pre-authority sessions preserve their established resume behavior. There
+			// is no parent bound to validate and the child is not upgraded by this path.
+			preflight.authority = governance.UnrestrictedAuthority()
+		}
+	} else {
+		definitionCeiling, definitionIdentity := t.agentAuthorityProfile(args.Agent)
+		authority, result, ok := deriveRunChildAuthority(caps, false, args, writable, definitionCeiling, call.ID)
+		if !ok {
+			return delegationPreflight{}, result, false
+		}
+		preflight.authority = authority
+		preflight.definitionIdentity = definitionIdentity
+	}
+	if !authorityAllowsEnvironment(preflight.authority, env, writable, t.childForker != nil) {
+		return delegationPreflight{}, session.NewToolError(call.ID, "Subagent: requested environment posture is not authorized; refusing delegation"), false
+	}
+	return preflight, session.ToolResult{}, true
+}
+
+func authorityAllowsEnvironment(authority governance.Authority, env tool.Environment, writable, hasForker bool) bool {
+	requirement, err := governance.NewAuthority(governance.AuthoritySpec{Profile: governance.AuthorityProfile{
+		FileSystem: env.Workspace().Root() != "", DirectWrite: writable, Isolated: !writable && hasForker,
+	}})
+	return err == nil && authority.Contains(requirement)
+}
+
+func deriveRunChildAuthority(caps parentCaps, resuming bool, args subagentArgs, writable bool, definitionCeiling *string, callID session.ToolCallID) (governance.Authority, session.ToolResult, bool) {
+	definition := governance.UnrestrictedAuthority()
+	if !resuming && definitionCeiling != nil {
+		parsed, err := governance.ParseAuthority(*definitionCeiling)
+		if err != nil {
+			return governance.NoneAuthority(), session.NewToolError(callID, "Subagent: configured agent authority ceiling is invalid; refusing delegation"), false
+		}
+		definition = parsed
+	}
+	if caps.authority == nil {
+		return governance.UnrestrictedAuthority(), session.ToolResult{}, true
+	}
+	parent, err := caps.authority()
+	if err != nil {
+		return governance.NoneAuthority(), session.NewToolError(callID, "Subagent: authority is unavailable; refusing delegation"), false
+	}
+	// A resumed child already consumed its delegation hop when its persisted bound
+	// was created. resumeChildAuthority validates that saved bound against this
+	// parent before the child environment is acquired.
+	if resuming {
+		return parent, session.ToolResult{}, true
+	}
+	child, err := deriveChildAuthority(parent, definition, childAuthorityRequest{
+		delegate: strings.TrimSpace(args.Agent), directWrite: writable,
+	})
+	if err != nil {
+		return governance.NoneAuthority(), session.NewToolError(callID, "Subagent: authority denies this delegation: "+err.Error()), false
+	}
+	return child, session.ToolResult{}, true
+}
+
+// resumeChildAuthority refuses a persisted child bound that is not contained by
+// the caller's current maximum. A resume does not consume another hop, but it
+// must never use a saved child to widen a later-narrowed parent.
+func resumeChildAuthority(parent governance.Authority, child *session.Session, callID session.ToolCallID) session.ToolResult {
+	bound, _, legacy := child.AuthorityBound()
+	if legacy {
+		return session.NewToolError(callID, "Subagent: resumed child has no authority bound; refusing delegation")
+	}
+	saved, err := governance.ParseAuthority(bound)
+	if err != nil || !parent.Contains(saved) {
+		return session.NewToolError(callID, "Subagent: resumed child authority exceeds the parent maximum; refusing delegation")
+	}
+	return session.ToolResult{}
 }
 
 // inheritOwner stamps the parent session's owner onto a freshly-minted child
@@ -484,6 +595,13 @@ type AgentMeta struct {
 	Name string
 	// Description is the one-line summary the model uses to choose a specialist.
 	Description string
+	// AuthorityCeiling is the optional managed-definition ceiling, retained in raw
+	// form so an invalid declaration is rejected at selection time rather than
+	// broadened during startup.
+	AuthorityCeiling *string
+	// DefinitionIdentity is the safe tier/name identity persisted with a managed
+	// ceiling. It contains neither a locator nor definition transport data.
+	DefinitionIdentity string
 	// Limits are the per-def session stop conditions the child session runs under
 	// when this agent is selected. The composition root derives them from the def's
 	// maxTurns/maxToolCalls (per-field falling back to the Subagent tool's default
@@ -2177,7 +2295,7 @@ func (t *SubagentTool) resolveEngineAndLimits(callID session.ToolCallID, args su
 // still on disk — because this is the only place that sees the resumed session's
 // PERSISTED workspace before buildChildSession re-homes it. See editsSurvived's
 // doc-comment on the named result below and resumeWritableNote.
-func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.ToolCall, env tool.Environment, args subagentArgs, resuming, writable bool, childID, parentID session.SessionID, limits session.Limits, forkHistory []session.Message) (child *session.Session, runEnv tool.Environment, cleanup func() error, advisory string, editsSurvived bool, errResult session.ToolResult, ok bool) {
+func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.ToolCall, env tool.Environment, args subagentArgs, resuming, writable bool, childID, parentID session.SessionID, limits session.Limits, forkHistory []session.Message, parentAuthority governance.Authority, enforceAuthority bool) (child *session.Session, runEnv tool.Environment, cleanup func() error, advisory string, editsSurvived bool, errResult session.ToolResult, ok bool) {
 	noop := func() error { return nil }
 	var resumedChild *session.Session
 	// priorWorkspace is the resumed child's PERSISTED workspace root, captured here
@@ -2191,6 +2309,11 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 			return nil, tool.Environment{}, noop, "", false, errRes, false
 		}
 		resumedChild = loaded
+		if enforceAuthority {
+			if result := resumeChildAuthority(parentAuthority, loaded, call.ID); result.IsError {
+				return nil, tool.Environment{}, noop, "", false, result, false
+			}
+		}
 		priorWorkspace = loaded.Workspace
 	}
 	// A mode:"read-write" child runs DIRECTLY against the parent workspace (no fork —
@@ -2236,6 +2359,7 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 	return child, runEnv, cleanupWS, advisory, editsSurvived, session.ToolResult{}, true
 }
 
+//nolint:gocyclo // lifecycle ordering is security-sensitive; authority derivation stays before runtime acquisition.
 func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.Environment, emit func(session.Event), caps parentCaps) (session.ToolResult, error) {
 	var args subagentArgs
 	if msg, ok := session.ParseArgs(call, &args); !ok {
@@ -2266,7 +2390,13 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 		return errResult, nil
 	}
 
-	resuming := strings.TrimSpace(args.Resume) != ""
+	preflight, errResult, ok := t.preflightDelegation(ctx, call, env, args, caps, writable)
+	if !ok {
+		return errResult, nil
+	}
+	resuming := preflight.resuming
+	childAuthority := preflight.authority
+	childID := preflight.childID
 
 	// OPT-IN semantic model router (ADR 0031): for a PLAIN default delegation, classify
 	// the task and mint the child on the routed model via the per-call factory path. The
@@ -2296,19 +2426,8 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 			"Subagent: `background` is not supported on this run (no child registry); omit it to run in the foreground"), nil
 	}
 
-	// Compute the child session id early (a FRESH call derives it from the parent call id;
-	// a RESUME continues the persisted id verbatim) so the in-flight guard can register it
-	// BEFORE acquiring the concurrency slot. The guard rejects a SECOND concurrent run on
-	// the SAME id with a model-visible error rather than waiting: two runs over one unlocked
-	// Session aggregate is a data race (correctness), and waiting would park a dispatcher
-	// goroutine + a gate slot (liveness). Registered BEFORE acquireChildSlot so the conflict
-	// is detected even while the second call would otherwise block on the gate. A BACKGROUND
-	// child holds its id until its detached goroutine ends, so `resume` of a still-running
-	// background child is rejected here, unchanged.
-	childID := t.childSessionID(caps.parentSessionID, call.ID)
-	if resuming {
-		childID = session.SessionID(args.Resume)
-	}
+	// The preflight calculated childID before any runtime acquisition. The in-flight
+	// guard now claims that validated id before the concurrency slot.
 	if !t.tryAcquireChildID(childID) {
 		return session.NewToolError(call.ID,
 			fmt.Sprintf("Subagent: subagent %q is already running; wait for its result before resuming it", childID)), nil
@@ -2348,8 +2467,10 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 		return t.startBackground(ctx, backgroundChild{
 			call: call, env: env, emit: emit, caps: caps, args: args,
 			engine: engine, limits: limits, resuming: resuming, childID: childID,
-			forkHistory:    forkHistory,
-			routedCategory: routedCategory, routedModel: routedModel, routingReason: routingReason,
+			authority: childAuthority, bindAuthority: caps.authority != nil && !resuming,
+			definitionIdentity: preflight.definitionIdentity,
+			forkHistory:        forkHistory,
+			routedCategory:     routedCategory, routedModel: routedModel, routingReason: routingReason,
 			timeoutCtx: timeoutCtx, cancelCall: cancelCall, cancelTimeout: cancelTimeout,
 		}), nil
 	}
@@ -2398,9 +2519,16 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	// Resume load + fork + session build (see prepareChildSession). The cleanup is
 	// always non-nil and tears the worktree down after the child fully drains (the
 	// run is drained below in this call), so a deferred cleanup is correct.
-	child, runEnv, cleanupWS, forkAdvisory, editsSurvived, errResult, ok := t.prepareChildSession(ctx, call, env, args, resuming, writable, childID, caps.parentSessionID, limits, forkHistory)
+	child, runEnv, cleanupWS, forkAdvisory, editsSurvived, errResult, ok := t.prepareChildSession(ctx, call, env, args, resuming, writable, childID, caps.parentSessionID, limits, forkHistory, childAuthority, caps.authority != nil)
 	if !ok {
 		return errResult, nil
+	}
+	if !resuming && caps.authority != nil {
+		bound, err := childAuthority.Canonical()
+		if err != nil || child.BindAuthority(bound, preflight.definitionIdentity) != nil {
+			_ = cleanupWS()
+			return session.NewToolError(call.ID, "Subagent: failed to bind child authority"), nil
+		}
 	}
 	// The child is attributed to the PARENT session's owner (ADR 0204 decision 4).
 	caps.inheritOwner(child)
@@ -2589,6 +2717,11 @@ type backgroundChild struct {
 	engine   *Engine
 	limits   session.Limits
 	resuming bool
+	// authority is the already-derived child maximum. It is bound only for a
+	// fresh child; a resumed session keeps its persisted authority.
+	authority          governance.Authority
+	bindAuthority      bool
+	definitionIdentity string
 	// resumed is the loaded+recovered session on a resume call (loaded SYNCHRONOUSLY
 	// in startBackground so an unknown id / non-resumable state fails fast inline,
 	// not as a collectible background error).
@@ -2656,6 +2789,13 @@ func (t *SubagentTool) startBackground(ctx context.Context, b backgroundChild) s
 			return errResult
 		}
 		b.resumed = loaded
+		if b.caps.authority != nil {
+			if result := resumeChildAuthority(b.authority, loaded, b.call.ID); result.IsError {
+				b.release()
+				abort()
+				return result
+			}
+		}
 	}
 	b.caps.startChildRun(b.childID)
 	// A5: the start event is emitted SYNCHRONOUSLY before the goroutine spawns, so
@@ -2737,6 +2877,13 @@ func (t *SubagentTool) driveBackground(ctx context.Context, b backgroundChild) {
 	if !ok {
 		endOnError(errResult)
 		return
+	}
+	if b.bindAuthority {
+		bound, err := b.authority.Canonical()
+		if err != nil || child.BindAuthority(bound, b.definitionIdentity) != nil {
+			endOnError(session.NewToolError(b.call.ID, "Subagent: failed to bind child authority"))
+			return
+		}
 	}
 	// The child is attributed to the PARENT session's owner (ADR 0204 decision 4).
 	b.caps.inheritOwner(child)
@@ -4454,6 +4601,21 @@ func (t *SubagentTool) persistChild(ctx context.Context, child *session.Session)
 	saveCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), childPersistTimeout)
 	defer cancel()
 	_ = t.store.Save(saveCtx, child)
+}
+
+func (t *SubagentTool) agentAuthorityProfile(name string) (*string, string) {
+	for _, meta := range t.agentMeta {
+		if meta.Name == name && meta.AuthorityCeiling != nil {
+			ceiling := *meta.AuthorityCeiling
+			return &ceiling, meta.DefinitionIdentity
+		}
+	}
+	return nil, ""
+}
+
+func (t *SubagentTool) agentAuthorityCeiling(name string) *string {
+	ceiling, _ := t.agentAuthorityProfile(name)
+	return ceiling
 }
 
 // unknownAgentHint builds the model-addressable error text for a Subagent call that

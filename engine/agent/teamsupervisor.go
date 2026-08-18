@@ -213,6 +213,13 @@ type MemberBuild struct {
 	// the supervisor stays agnostic of agent definitions. A wholly zero Limits leaves
 	// the member on the team default, unchanged.
 	Limits session.Limits
+	// AuthorityCeiling is the optional ceiling from a trusted managed local
+	// definition. Nil means absent; non-nil empty/malformed values remain distinct
+	// and fail closed during member enrolment.
+	AuthorityCeiling *string
+	// DefinitionIdentity is the safe tier/name label persisted with a managed
+	// ceiling. It must not contain a source path or transport detail.
+	DefinitionIdentity string
 	// Close, if non-nil, tears down resources the factory opened for THIS member —
 	// specifically the inline per-agent MCP manager(s) connected for the member's
 	// agent definition (a reference entry opens nothing, so it contributes no Close).
@@ -347,6 +354,11 @@ type Supervisor struct {
 	// synthesis phase and persistence find the lead without re-scanning the roster.
 	leadName string
 
+	// authority is the maximum authority that this team may distribute. It is set
+	// by the in-loop Team tool from its parent run; server-created teams set it to
+	// NoneAuthority and therefore expose no ordinary capabilities.
+	authority governance.Authority
+
 	// caps carries the PARENT run's interactivity + surface back-channel, so a member's
 	// permission ask that A2 (isolation auto-approve) did not resolve is SURFACED to the
 	// human (interactive parent) or auto-denied with the accurate message + operator
@@ -465,6 +477,12 @@ type memberRT struct {
 
 // SupervisorOption configures a Supervisor.
 type SupervisorOption func(*Supervisor)
+
+// WithTeamAuthority sets the ceiling inherited by every member and the lead's
+// synthesis turn. The zero value is deliberately none, not unrestricted.
+func WithTeamAuthority(authority governance.Authority) SupervisorOption {
+	return func(s *Supervisor) { s.authority = authority }
+}
 
 // WithForker injects the workspace-isolation seam used to fork a Mutating member's
 // workspace (force-copy: own `.git`). It is required only if any member is Mutating.
@@ -676,6 +694,7 @@ func NewSupervisor(t *team.Team, base tool.Environment, factory MemberEngine, op
 		team:        t,
 		base:        base,
 		factory:     factory,
+		authority:   governance.UnrestrictedAuthority(),
 		limits:      defaultChildLimits,
 		mode:        session.ModeDefault,
 		maxRounds:   defaultMaxRounds,
@@ -694,6 +713,37 @@ func NewSupervisor(t *team.Team, base tool.Environment, factory MemberEngine, op
 	return s
 }
 
+// bindMemberAuthority stamps the team's one-hop attenuation intersected with the
+// managed definition ceiling and the member's safe identity onto a new idle session.
+func (s *Supervisor) bindMemberAuthority(sess *session.Session, build MemberBuild) error {
+	memberAuthority := s.authority
+	if !s.authority.Equal(governance.NoneAuthority()) {
+		var err error
+		memberAuthority, err = s.authority.Descend()
+		if err != nil {
+			return fmt.Errorf("agent: attenuate team-member authority: %w", err)
+		}
+	}
+	if build.AuthorityCeiling == nil && build.DefinitionIdentity != "" {
+		return errors.New("agent: team-member definition identity requires a managed authority ceiling")
+	}
+	if build.AuthorityCeiling != nil {
+		ceiling, err := governance.ParseAuthority(*build.AuthorityCeiling)
+		if err != nil {
+			return errors.New("agent: invalid managed team-member authority ceiling")
+		}
+		memberAuthority, err = memberAuthority.Intersect(ceiling)
+		if err != nil {
+			return errors.New("agent: intersect team-member authority")
+		}
+	}
+	bound, err := memberAuthority.Canonical()
+	if err != nil || sess.BindAuthority(bound, build.DefinitionIdentity) != nil {
+		return errors.New("agent: bind team-member authority")
+	}
+	return nil
+}
+
 // AddMember enrols a member: it registers it on the team roster, builds its engine,
 // selects its workspace per the three-tier policy (the shared base for a
 // base-sharing read-only member; a worktree fork for a read-only-isolated member; a
@@ -706,6 +756,13 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 	}
 	if _, ok := s.members[spec.Name]; ok {
 		return fmt.Errorf("%w: %q", ErrMemberAlreadyAdded, spec.Name)
+	}
+	// Consume and validate the member's structural hop before enrolling it,
+	// routing its model, building its engine, or acquiring a workspace.
+	if !s.authority.Equal(governance.NoneAuthority()) {
+		if _, err := deriveChildAuthority(s.authority, governance.UnrestrictedAuthority(), childAuthorityRequest{}); err != nil {
+			return fmt.Errorf("agent: team-member authority denies delegation: %w", err)
+		}
 	}
 	if err := s.team.AddMember(spec.Name, spec.AgentType); err != nil {
 		// The team aggregate's sentinels (ErrMemberExists / ErrReservedName /
@@ -769,16 +826,12 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 	// exempt: its mutating tool lands in the isolated fork, never the shared base.
 	// Team coordination tools report ReadOnly() == false but only mutate TEAM state,
 	// so they are exempted by name regardless.
-	if !needFork {
-		if bad := workspaceMutatingTools(eng.catalogTools(), build.MCPToolNames); len(bad) > 0 {
-			if cleanup != nil {
-				_ = cleanup()
-			}
-			s.team.RemoveMember(spec.Name)
-			return fmt.Errorf("%w: read-only member %q was given workspace-mutating tool(s) %s; "+
-				"a base-sharing member must not be able to mutate the shared workspace (mark it Mutating to run in an isolated fork)",
-				ErrReadOnlyMemberMutating, spec.Name, strings.Join(bad, ", "))
+	if err := validateMemberWorkspaceTools(needFork, eng, build, spec); err != nil {
+		if cleanup != nil {
+			_ = cleanup()
 		}
+		s.team.RemoveMember(spec.Name)
+		return err
 	}
 
 	// Per-member permission mode: a member's agent definition may pin a mode (e.g.
@@ -804,6 +857,13 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 		}
 		s.team.RemoveMember(spec.Name)
 		return fmt.Errorf("agent: stamp team-member relationship: %w", err)
+	}
+	if err := s.bindMemberAuthority(sess, build); err != nil {
+		if cleanup != nil {
+			_ = cleanup()
+		}
+		s.team.RemoveMember(spec.Name)
+		return err
 	}
 	// The member is attributed to the PARENT session's owner (ADR 0204 decision 4).
 	s.caps.inheritOwner(sess)
@@ -838,6 +898,19 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 		s.leadName = spec.Name
 	}
 	return nil
+}
+
+func validateMemberWorkspaceTools(needFork bool, eng *Engine, build MemberBuild, spec MemberSpec) error {
+	if needFork {
+		return nil
+	}
+	bad := workspaceMutatingTools(eng.catalogTools(), build.MCPToolNames)
+	if len(bad) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: read-only member %q was given workspace-mutating tool(s) %s; "+
+		"a base-sharing member must not be able to mutate the shared workspace (mark it Mutating to run in an isolated fork)",
+		ErrReadOnlyMemberMutating, spec.Name, strings.Join(bad, ", "))
 }
 
 // maybeRouteMember consults the OPT-IN semantic model router (ADR 0034) for a PLAIN

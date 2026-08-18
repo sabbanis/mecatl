@@ -22,6 +22,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/learning"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/prompt"
@@ -353,6 +354,11 @@ type Deps struct {
 	// default model, exactly the existing miss path.
 	SubagentModelRouter func(ctx context.Context, taskPrompt string) (category, model string, usage session.Usage, missReason string, ok bool)
 
+	// AuthorityRevoker returns the current operator authority ceiling for a bound
+	// session. It is re-evaluated at every disclosure and dispatch boundary; nil
+	// preserves legacy behavior. An error fails closed for that boundary.
+	AuthorityRevoker func(context.Context, session.SessionID) (governance.Authority, error)
+
 	// ProgressiveTools, when true, enables progressive tool disclosure
 	// (pattern 9): the per-turn request advertises lightweight specs for tools
 	// implementing tool.Disclosable plus a built-in ToolSearch tool the model
@@ -626,6 +632,12 @@ type Run struct {
 	// per session" / no-clone-swap discipline applied to run-scoped knobs). The zero
 	// value of the override fields is the legacy run (no override, no extras).
 	req RunRequest
+	// authority is the parsed persistent maximum for this run. legacy sessions
+	// retain the pre-feature behavior; a malformed v1 bound arrives as none and
+	// fails closed at every capability projection.
+	authority          governance.Authority
+	authorityBound     bool
+	authoritySessionID session.SessionID
 	// planApprovedTarget is the permission mode a plan-approval Allow verdict will
 	// flip the session into at the terminal boundary: AllowOnce → ModeDefault,
 	// AllowAlways → ModeAccept. It is RUN-SCOPED (zero/"" = no approval pending),
@@ -961,7 +973,12 @@ func (e *Engine) startRun(ctx context.Context, sess *session.Session, req RunReq
 		// engine, Role != "") to its agent role too. The main engine has Role=="" so
 		// only the "session" key is bound. With on NopDiagnostics returns Nop, so an
 		// engine with no injected sink stays silent.
-		diag: e.bindRunDiag(sess.ID),
+		diag:               e.bindRunDiag(sess.ID),
+		authoritySessionID: sess.ID,
+	}
+	if bound, _, legacy := sess.AuthorityBound(); bound != "" && !legacy {
+		r.authorityBound = true
+		r.authority, _ = governance.ParseAuthority(bound)
 	}
 	// Resolve the trailing askID discriminator once (ADR-0044): a host-supplied,
 	// colon-free value makes the run's askIDs reconstructable across processes;
@@ -1553,21 +1570,56 @@ func (e *Engine) budgetExhausted(r *Run, cumulative session.Usage) bool {
 	return ceiling > 0 && cumulative.TotalTokens() >= ceiling
 }
 
+func (e *Engine) effectiveAuthority(ctx context.Context, r *Run) (governance.Authority, bool) {
+	if !r.authorityBound {
+		return governance.UnrestrictedAuthority(), true
+	}
+	bound := r.authority
+	if e.deps.AuthorityRevoker == nil {
+		return bound, true
+	}
+	revoked, err := e.deps.AuthorityRevoker(ctx, r.authoritySessionID)
+	if err != nil {
+		return governance.NoneAuthority(), false
+	}
+	effective, err := bound.Intersect(revoked)
+	if err != nil {
+		return governance.NoneAuthority(), false
+	}
+	return effective, true
+}
+
 // lookupTool resolves a tool by name for THIS run: the run-scoped ExtraTools overlay
 // is consulted FIRST (so a structured-output SubmitResult, or any per-run tool, wins
 // over a same-named catalog tool for this run only), then the shared catalog. It is
 // the single resolution point dispatch uses so the overlay and the advertised specs
 // (buildRequest) never disagree.
 func (e *Engine) lookupTool(r *Run, name string) (tool.Tool, bool) {
+	return e.lookupToolContext(context.Background(), r, name)
+}
+
+func (e *Engine) lookupToolContext(ctx context.Context, r *Run, name string) (tool.Tool, bool) {
+	authority, authorized := e.effectiveAuthority(ctx, r)
+	if !authorized || r.authorityBound && !authority.AllowsTool(name) {
+		return nil, false
+	}
+	wrap := func(t tool.Tool, ok bool) (tool.Tool, bool) {
+		if !ok || !r.authorityBound || name != tool.ToolSearchName {
+			return t, ok
+		}
+		return authorityToolSearch{inner: t, authority: func(ctx context.Context) (governance.Authority, bool) {
+			return e.effectiveAuthority(ctx, r)
+		}}, true
+	}
 	for _, t := range r.req.ExtraTools {
 		if t.Spec().Name == name {
-			return t, true
+			return wrap(t, true)
 		}
 	}
 	if e.deps.Catalog == nil {
 		return nil, false
 	}
-	return e.deps.Catalog.Lookup(name)
+	return wrap(e.deps.Catalog.Lookup(name))
 }
 
 // preTurnTerminal runs the turn-BOUNDARY stop checks before a model call, in
@@ -1911,6 +1963,44 @@ func (e *Engine) runTurn(ctx context.Context, r *Run, sess *session.Session, env
 	return msg, usage, stop, timing, nil
 }
 
+func filterAuthoritySpecs(specs []tool.ToolSpec, authority governance.Authority) []tool.ToolSpec {
+	out := make([]tool.ToolSpec, 0, len(specs))
+	for _, spec := range specs {
+		if authority.AllowsTool(spec.Name) {
+			out = append(out, spec)
+		}
+	}
+	return out
+}
+
+func (e *Engine) authoritySpecs(ctx context.Context, r *Run, specs []tool.ToolSpec) []tool.ToolSpec {
+	if !r.authorityBound {
+		return specs
+	}
+	authority, ok := e.effectiveAuthority(ctx, r)
+	if !ok {
+		return nil
+	}
+	return filterAuthoritySpecs(specs, authority)
+}
+
+func (e *Engine) authorizedExtraTools(ctx context.Context, r *Run) []tool.Tool {
+	if !r.authorityBound {
+		return r.req.ExtraTools
+	}
+	authority, ok := e.effectiveAuthority(ctx, r)
+	if !ok {
+		return nil
+	}
+	out := make([]tool.Tool, 0, len(r.req.ExtraTools))
+	for _, candidate := range r.req.ExtraTools {
+		if authority.AllowsTool(candidate.Spec().Name) {
+			out = append(out, candidate)
+		}
+	}
+	return out
+}
+
 // buildRequest assembles the provider-neutral LLMRequest for the current turn:
 // the layered system prompt (cache-stable prefix + volatile env suffix), the
 // EPHEMERAL turn-0 instruction fragments prepended ahead of the persisted
@@ -1934,13 +2024,14 @@ func (e *Engine) buildRequest(ctx context.Context, r *Run, sess *session.Session
 	} else {
 		cfg.Tools = e.deps.Catalog.Specs(sess.Mode)
 	}
+	cfg.Tools = e.authoritySpecs(ctx, r, cfg.Tools)
 	// Run-scoped extra tools (RunRequest.ExtraTools) are advertised this run only,
 	// after the catalog specs, so a structured-output SubmitResult (or any per-run
 	// tool) is visible to the model without being registered into the shared catalog.
 	// A name already present in cfg.Tools is REPLACED by the extra's spec (the overlay
 	// wins, matching lookupTool's overlay-first resolution) so the advertised set and
 	// the dispatch resolution never disagree.
-	for _, xt := range r.req.ExtraTools {
+	for _, xt := range e.authorizedExtraTools(ctx, r) {
 		spec := xt.Spec()
 		replaced := false
 		for i := range cfg.Tools {
