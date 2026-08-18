@@ -17,6 +17,58 @@ Prefer updating the relevant design doc + this file over re-growing CLAUDE.md.
 
 ---
 
+## Authority-bound sessions (issue #371, partial implementation)
+
+[ADR 0224](../adr/0226-authority-attenuation-on-current-main.md) specifies a broad
+attenuation model. The shipped slice is intentionally narrower: it establishes the
+canonical v1 authority value and projects it over a bound root run's tool surface. It
+must not be read as completing the ADR's child, environment, live-revocation, or
+peer-fork guarantees.
+
+`governance.Authority` is a pure, strict capability value: its versioned canonical form
+contains exact tool/delegate names, a maximum delegation depth, and boolean filesystem,
+direct-write, and isolation profile flags. Unknown fields, versions, malformed names,
+and an absent/invalid value fail closed. The aggregate stores one canonical string plus
+safe definition identity and an explicit compatibility marker; it does not retain a
+second parsed representation. See `engine/governance/authority.go` (`Authority`) and
+`engine/session/session.go` (`BindAuthority`).
+
+`sessnap.Snapshot` round-trips that provenance. `eventsource.SessionMeta` supplies it
+when an event-log host reconstructs a session because the event stream has no creation
+event. A v1 snapshot or metadata record missing a valid bound is rejected, whereas an
+unmarked pre-feature record remains legacy. See
+`engine/adapter/sessnap/sessnap.go` (`Snapshot`) and
+`engine/adapter/eventsource/eventsource.go` (`SessionMeta`).
+
+At `Engine` run creation, a valid persisted bound is parsed once and filters both
+advertised catalog specs and `lookupTool`; the latter also gates `RunRequest.ExtraTools`.
+A legacy record has no authority projection and keeps prior behavior. This is a
+run-local catalog/lookup gate, not a general dispatch authorization layer.
+
+Delegation is now bound before child runtime acquisition. Subagent fresh, background,
+named, model-override, direct-write, and fork-history variants derive a child maximum;
+a resumed child uses its persisted bound rather than rebuilding authority from the
+current catalog. Parallel branches and all Team-tool member/lead/synthesis drives
+receive an attenuated bound, and their catalogs and lookup share the same filter. The
+direct server `CreateTeam` path is deliberately different: it supplies
+`NoneAuthority`, has zero ordinary tool capability, and remains only in the in-process
+team registry, so it cannot become a resumable authority root after restart. See
+`engine/agent/subagent.go` (`deriveRunChildAuthority`),
+`engine/agent/parallel.go` (`runBranch`),
+`engine/agent/teamsupervisor.go` (`AddMember`), and
+`internal/adapter/server/team.go` (`CreateTeam`).
+
+`tool.AgentDef.AuthorityCeiling` is optional raw transport data only. The local
+filesystem parser and driver protocol preserve absent, empty, malformed, and valid
+frontmatter values. A remote source is always stamped `AgentOriginDriver`, so merely
+carrying this value cannot promote it into a managed definition. No composition path
+currently resolves the field into a child ceiling. See
+`engine/tool/agentsource.go` (`AgentDef`),
+`engine/adapter/agentfs/discover.go` (`parseAgentDef`), and
+`internal/adapter/grpcdriver/agentsource.go` (`ListAgentDefs`).
+
+---
+
 ## Credential store
 
 `internal/adapter/credentialstore` owns a narrow host-internal port; it stays out of

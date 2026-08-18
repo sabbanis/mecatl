@@ -78,6 +78,9 @@ when the code that satisfies the plan has landed.
 - [Session continuity UX](session-continuity-ux.md) — authoritative session-family
   metadata, honest replay/inspection, an active-session copy surface, startup resume,
   and a final session-ID handoff for mecatui. Status: landed.
+- [Authority attenuation on current main](authority-attenuation-reconciliation.md) —
+  immutable local capability maxima for roots, environment-compatible delegation,
+  managed definition ceilings, and non-widening peer forks. Status: draft.
 
 ## See also
 

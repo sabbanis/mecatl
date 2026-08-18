@@ -164,6 +164,42 @@ in `provider/openai`, the native Anthropic Messages API in
 `provider/anthropic` ([multi-provider](architecture/providers.md)) — so the core is provider-agnostic and
 unit-testable against fakes (`mockllm`, `memfs`, `memstore`).
 
+### Authority-bound sessions
+
+A newly bound session may carry one versioned, canonical local capability maximum.
+The domain value has exact tool and delegation names plus a small execution-profile
+ceiling; it intentionally contains no workspace path, credential, runner, catalog, or
+caller claim. `session.Session` owns the persisted canonical value and only exposes it
+through its aggregate methods; `governance.Authority` validates, canonicalizes, and
+intersects the value. See `engine/session/session.go` (`BindAuthority`) and
+`engine/governance/authority.go` (`ParseAuthority`).
+
+The v1 persistence and event-fold paths retain the bound and an optional safe definition
+identity. A supplied v1 record without a valid bound fails closed; an explicitly
+pre-feature record remains a compatibility record. The snapshot mapping is in
+`engine/adapter/sessnap/sessnap.go` (`Snapshot`), while event-log hosts supply the same
+creation metadata to `engine/adapter/eventsource/eventsource.go` (`SessionMeta`).
+
+Bound delegation consumes a hop before a child runtime is acquired. Subagent fresh,
+background, named, model-override, direct-write, and fork-history paths derive their
+child ceiling before construction; a resumed child retains its durable maximum rather
+than acquiring current-catalog authority. Parallel branches and Team-tool members
+likewise receive only an attenuated parent maximum, so their model-visible catalog and
+lookup cannot disclose or execute excluded tools. Direct server-created teams have no
+parent authority root: they are process-bound, non-resumable coordination objects with
+a zero ordinary-capability maximum. The delegation wiring is in
+`engine/agent/subagent.go`, `engine/agent/parallel.go`, and
+`engine/agent/teamsupervisor.go`; direct teams are closed in
+`internal/adapter/server/team.go`.
+
+An agent definition can transport an optional raw `authority:` frontmatter value. The
+filesystem and driver adapters preserve absent, empty, malformed, and valid values
+without treating them as authority grants; remote definitions remain `driver`
+provenance. Definition-ceiling resolution and child attenuation are not implemented
+by this transport field. See `engine/tool/agentsource.go` (`AgentDef`),
+`engine/adapter/agentfs/discover.go` (`parseAgentDef`), and
+`internal/adapter/grpcdriver/agentsource.go` (`ListAgentDefs`).
+
 OpenAI has two deliberately separate registry identities. `openai` uses a public
 API key and the supported public Responses API. Experimental `openai-codex`
 uses a manually supplied ChatGPT Codex access-token snapshot against OpenAI's
