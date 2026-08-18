@@ -4,7 +4,9 @@
 [ADR 0002](adr/0002-documentation-lifecycle.md). Companion to
 [`docs/agent-identity-model.md`](agent-identity-model.md), which this takes as its premise
 and does not restate. Same tier as
-[`docs/scoped-resource-grants.md`](scoped-resource-grants.md).*
+[`docs/scoped-resource-grants.md`](scoped-resource-grants.md). The Cedar/vMCP
+subset question is explored separately in
+[`docs/agent-identity-mcp-policy-attenuation.md`](agent-identity-mcp-policy-attenuation.md).*
 
 ## What this decides
 
