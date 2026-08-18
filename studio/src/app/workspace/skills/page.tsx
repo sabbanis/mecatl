@@ -29,17 +29,9 @@ export default function WorkspaceSkillsPage() {
   return (
     <div className="h-full overflow-y-auto px-4 pt-6 pb-14 min-[500px]:px-8">
       <div className="space-y-5">
-        <div className="space-y-1">
-          <h1
-            className={pageTitleClass("truncate pb-0 text-4xl leading-tight")}
-          >
-            Skills
-          </h1>
-          <p className="text-sm text-muted-foreground">
-            The daemon&apos;s resolved inventory — every skill here is loadable
-            by the agent.
-          </p>
-        </div>
+        <h1 className={pageTitleClass("truncate pb-0 text-4xl leading-tight")}>
+          Skills
+        </h1>
 
         {isLoading ? (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">
@@ -52,9 +44,18 @@ export default function WorkspaceSkillsPage() {
             {error}
           </div>
         ) : sorted.length === 0 ? (
-          <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
-            No skills in this workspace. Skills live in{" "}
-            <code className="font-mono text-xs">.mecatl/skills</code>.
+          <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-16 text-center">
+            <div className="flex size-11 items-center justify-center rounded-full bg-muted">
+              <Sparkles className="size-5 text-muted-foreground" />
+            </div>
+            <div className="space-y-1">
+              <p className="text-sm font-medium">No skills here yet</p>
+              <p className="max-w-sm text-sm text-muted-foreground">
+                Drop a <code className="font-mono text-xs">SKILL.md</code> into{" "}
+                <code className="font-mono text-xs">.mecatl/skills</code> and
+                it'll show up here, ready for the agent to use.
+              </p>
+            </div>
           </div>
         ) : (
           <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3 2xl:grid-cols-4">

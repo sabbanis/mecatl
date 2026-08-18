@@ -214,6 +214,9 @@ const SILENT_EVENT_KINDS = new Set([
   "schedule.fired",
   "schedule.skipped",
   "schedule.failed",
+  // The provider/model a prompt was routed to is an implementation detail,
+  // not something the operator asked to see under every turn.
+  "provider.route",
 ]);
 
 /** Advisory kinds whose `text` is worth a one-line notice in the flow. */
@@ -221,7 +224,6 @@ const ADVISORY_EVENT_KINDS = new Set([
   "tool.progress",
   "compaction",
   "no_progress",
-  "provider.route",
   "recover_notice",
 ]);
 

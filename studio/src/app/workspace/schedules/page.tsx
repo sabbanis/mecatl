@@ -1,6 +1,11 @@
 "use client";
 
-import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
+import {
+  ArrowDown,
+  ArrowUp,
+  CalendarClock,
+  ChevronsUpDown,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
@@ -175,11 +180,29 @@ export default function WorkspaceSchedulesPage() {
               </Select>
             </div>
             {rows.length === 0 ? (
-              <div className="py-12 text-center text-sm text-muted-foreground">
-                {statusFilter === "all"
-                  ? "No schedules yet."
-                  : "No scheduled tasks match this filter."}
-              </div>
+              statusFilter === "all" ? (
+                <div className="flex flex-col items-center gap-3 py-16 text-center">
+                  <div className="flex size-11 items-center justify-center rounded-full bg-muted">
+                    <CalendarClock className="size-5 text-muted-foreground" />
+                  </div>
+                  <div className="space-y-1">
+                    <p className="text-sm font-medium">Nothing scheduled yet</p>
+                    <p className="max-w-sm text-sm text-muted-foreground">
+                      Set up a recurring or one-off task and the agent will run
+                      it unattended — on a cron, or once at a chosen time.
+                    </p>
+                  </div>
+                  {cron.isSupported && cron.harnessLive && (
+                    <CreateScheduleDialog
+                      createFromDraft={cron.createFromDraft}
+                    />
+                  )}
+                </div>
+              ) : (
+                <div className="py-12 text-center text-sm text-muted-foreground">
+                  No scheduled tasks match this filter.
+                </div>
+              )
             ) : (
               <Table>
                 <TableHeader>

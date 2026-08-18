@@ -76,15 +76,6 @@ export default function MemoryDetailPage() {
               </span>
             </div>
           </div>
-          <p className="text-xs text-muted-foreground">
-            Only the key and description are indexed here. The stored value is
-            loaded by the agent itself when it recalls this entry during a turn.
-          </p>
-          <p className="text-xs text-muted-foreground">
-            Read-only by design — the agent curates memory through
-            injection-scanned tool calls. Ask it in chat to remember or forget
-            something.
-          </p>
         </section>
       </div>
     </div>

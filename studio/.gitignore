@@ -52,3 +52,6 @@ helm/*.lock
 
 # Claude Code local settings
 .claude/settings.local.json
+
+# task studio:dev's background log
+dev.log

@@ -503,6 +503,14 @@ export interface HarnessControlStatus {
   operatorSettings: boolean;
   skillsDir: string;
   memoryDir: string;
+  /**
+   * Provider NAMES found in the operator's auth.yaml — never credentials.
+   * Adding or removing one means editing that file on the machine running
+   * mecated; Studio has no write path for it by design (ADR 0228).
+   */
+  configuredProviders: string[];
+  /** Which of those MECATL_STUDIO_PROVIDER currently selects, if set. */
+  selectedProvider: string | null;
 }
 
 export async function fetchHarnessControlStatus(
@@ -523,6 +531,8 @@ export async function fetchHarnessControlStatus(
       operatorSettings?: boolean;
       skills?: { dir?: string };
       memory?: { dir?: string };
+      configuredProviders?: unknown;
+      selectedProvider?: string | null;
     };
     return {
       mode: body.mode === "external" ? "external" : "managed",
@@ -538,6 +548,12 @@ export async function fetchHarnessControlStatus(
           }
         : null,
       operatorSettings: Boolean(body.operatorSettings),
+      configuredProviders: Array.isArray(body.configuredProviders)
+        ? body.configuredProviders.filter(
+            (name): name is string => typeof name === "string",
+          )
+        : [],
+      selectedProvider: body.selectedProvider ?? null,
       skillsDir: body.skills?.dir ?? "",
       memoryDir: body.memory?.dir ?? "",
     };

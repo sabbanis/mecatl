@@ -19,6 +19,7 @@ import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
 import { usePrompt } from "@/hooks/use-prompt";
 import { useSidebarWidth } from "@/hooks/use-sidebar-width";
+import { useAgentDisplayName } from "@/lib/profile-preferences";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { ChatInput } from "../../_components/chat-input";
 import { ResizeHandle } from "../../_components/resize-handle";
@@ -224,6 +225,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     refreshSessions,
   } = useAgentSessions();
   const router = useRouter();
+  const { name: agentName } = useAgentDisplayName();
   const isMobile = useIsMobile();
   const isCompact = useIsCompact();
   const { confirm, ConfirmDialog } = useConfirm();
@@ -472,7 +474,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         error={turnError}
         onRetry={retryLast}
         onSend={sendMessage}
-        botName="Assistant"
+        botName={agentName}
         sidebarOpen={open}
         onToggleSidebar={onToggle}
         pendingApproval={pendingApproval}

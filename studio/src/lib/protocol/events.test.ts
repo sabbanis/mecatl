@@ -163,10 +163,14 @@ describe("translateEvent", () => {
 
   it("passes advisory text through as a notice and keeps lifecycle markers silent", () => {
     expect(
-      translate({ type: "provider.route", text: "routed to small-1" }),
-    ).toEqual([{ type: "notice", text: "routed to small-1" }]);
+      translate({ type: "recover_notice", text: "resumed after a retry" }),
+    ).toEqual([{ type: "notice", text: "resumed after a retry" }]);
     expect(translate({ type: "turn.start" })).toEqual([]);
     expect(translate({ type: "session.init" })).toEqual([]);
+    // Routing is an implementation detail, not something shown per turn.
+    expect(
+      translate({ type: "provider.route", text: "routed to small-1" }),
+    ).toEqual([]);
   });
 
   it("pretty-prints tool args on the call card", () => {

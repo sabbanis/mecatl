@@ -37,6 +37,34 @@ const memoryDir = resolve(workspace, ".scratch/studio-memory");
 const authFile = process.env.XDG_CONFIG_HOME
   ? resolve(process.env.XDG_CONFIG_HOME, "mecatl/auth.yaml")
   : resolve(homedir(), ".config/mecatl/auth.yaml");
+
+/**
+ * Names only of the providers configured in auth.yaml — never their values.
+ * A line scan rather than a YAML parse: this deliberately cannot read a
+ * credential, only detect that a `providers:` block names a key at one
+ * level of indent (the shape every provider entry uses).
+ */
+async function listConfiguredProviderNames() {
+  try {
+    const text = await readFile(authFile, "utf8");
+    const lines = text.split("\n");
+    const providersAt = lines.findIndex((line) => /^providers:\s*$/.test(line));
+    if (providersAt === -1) return [];
+    const names = [];
+    for (const line of lines.slice(providersAt + 1)) {
+      if (/^\s*#/.test(line) || line.trim() === "") continue;
+      const nested = line.match(/^ {2}([A-Za-z0-9_-]+):/);
+      if (nested) {
+        names.push(nested[1]);
+        continue;
+      }
+      if (/^\S/.test(line)) break; // dedented past the providers block
+    }
+    return names;
+  } catch {
+    return [];
+  }
+}
 const configuredProvider =
   process.env.MECATL_STUDIO_PROVIDER?.trim().toLowerCase() || "";
 if (
@@ -960,6 +988,7 @@ const server = http.createServer(async (request, response) => {
     return;
   }
   if (request.method === "GET" && requestURL.pathname === "/status") {
+    const configuredProviders = await listConfiguredProviderNames();
     response.end(
       JSON.stringify({
         mode: "managed",
@@ -967,6 +996,10 @@ const server = http.createServer(async (request, response) => {
         running: Boolean(child),
         startupError,
         authFile,
+        // Names only — never values. What MECATL_STUDIO_PROVIDER may select
+        // among, and which one that env var currently names, if any.
+        configuredProviders,
+        selectedProvider: configuredProvider || null,
         // The client has no other way to learn this: it is resolved from THIS
         // file's location, so a clone anywhere works with no source edit.
         workspace,

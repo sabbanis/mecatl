@@ -1,58 +1,25 @@
 "use client";
 
-import { Brain, RefreshCw } from "lucide-react";
+import { Brain } from "lucide-react";
 import Link from "next/link";
-import { useMemo, useState } from "react";
-import { Button } from "@/components/ui/button";
+import { useMemo } from "react";
 import { type MemoryEntry, useAgentMemory } from "@/features/agent";
 import { pageTitleClass } from "@/lib/typography";
 
-function formatBytes(bytes: number): string {
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
 export default function WorkspaceMemoryPage() {
   const memory = useAgentMemory();
-  const [isRefreshing, setIsRefreshing] = useState(false);
 
   const entries = useMemo(
     () => [...memory.entries].sort((a, b) => a.title.localeCompare(b.title)),
     [memory.entries],
   );
 
-  const handleRefresh = async () => {
-    setIsRefreshing(true);
-    try {
-      await memory.refresh();
-    } finally {
-      setIsRefreshing(false);
-    }
-  };
-
   return (
     <div className="h-full overflow-y-auto px-4 pt-6 pb-14 min-[500px]:px-8">
       <div className="space-y-5">
-        <div className="flex items-start justify-between gap-4">
-          <h1
-            className={pageTitleClass("truncate pb-0 text-4xl leading-tight")}
-          >
-            Memory
-          </h1>
-          <Button
-            variant="outline"
-            size="sm"
-            className="shrink-0 gap-1.5"
-            onClick={handleRefresh}
-            disabled={isRefreshing || memory.isLoading}
-          >
-            <RefreshCw
-              className={isRefreshing ? "size-4 animate-spin" : "size-4"}
-            />
-            Refresh
-          </Button>
-        </div>
+        <h1 className={pageTitleClass("truncate pb-0 text-4xl leading-tight")}>
+          Memory
+        </h1>
 
         {!memory.isSupported ? (
           <div className="rounded-lg border bg-card p-6">
@@ -91,20 +58,6 @@ export default function WorkspaceMemoryPage() {
             ))}
           </div>
         )}
-
-        <div className="space-y-1">
-          <p className="text-xs text-muted-foreground">
-            Read-only by design: the agent curates memory through
-            injection-scanned tool calls. Ask it in chat to remember or forget
-            something.
-          </p>
-          {memory.isSupported && !memory.isLoading && memory.store.sha256 && (
-            <p className="font-mono text-xs text-muted-foreground/70">
-              Store: {formatBytes(memory.store.sizeBytes)} ·{" "}
-              {memory.store.sha256.slice(0, 12)}
-            </p>
-          )}
-        </div>
       </div>
     </div>
   );

@@ -16,14 +16,19 @@ const UNCONFIGURED = new Set(["", "unknown", "none", "mock"]);
 
 /**
  * Read-only by design: provider credentials never cross the browser/controller
- * boundary. mecated reads them from its own auth file on the host, so the only
- * thing this card can honestly offer is status plus that remediation path.
+ * boundary (ADR 0228). There is no add/remove-provider write path anywhere in
+ * mecated or the controller — a key never travels through browser JS or the
+ * Node supervisor process. What this card CAN honestly do: name every
+ * provider block already present in auth.yaml (never their key values), show
+ * which one is active, and say exactly which file and env var to change to
+ * add one or switch.
  */
 export function ProviderSection({ runtime }: { runtime: Runtime }) {
   const status = runtime.status;
   const unconfigured = UNCONFIGURED.has(
     (status?.provider ?? "").trim().toLowerCase(),
   );
+  const configured = status?.configuredProviders ?? [];
 
   return (
     <SettingsCard
@@ -35,7 +40,7 @@ export function ProviderSection({ runtime }: { runtime: Runtime }) {
       ) : status === null ? (
         <Note>Reading the controller&rsquo;s status…</Note>
       ) : (
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <div className="min-w-0">
               <p className="font-mono text-sm font-medium">
@@ -51,20 +56,54 @@ export function ProviderSection({ runtime }: { runtime: Runtime }) {
             </Badge>
           </div>
 
+          {runtime.mode !== "external" && (
+            <div className="space-y-1.5">
+              <p className="text-xs font-medium text-muted-foreground">
+                Configured in{" "}
+                <code className="font-mono">~/.config/mecatl/auth.yaml</code>
+              </p>
+              {configured.length === 0 ? (
+                <p className="text-sm text-muted-foreground">
+                  No provider blocks found.
+                </p>
+              ) : (
+                <ul className="flex flex-wrap gap-1.5">
+                  {configured.map((name) => (
+                    <li key={name}>
+                      <Badge
+                        variant={
+                          name === status.selectedProvider ? "info" : "outline"
+                        }
+                        className="font-mono"
+                      >
+                        {name}
+                        {name === status.selectedProvider && " · active"}
+                      </Badge>
+                    </li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+
           {runtime.mode === "external" ? (
             <ExternalManagedNote />
           ) : unconfigured ? (
             <Note>
-              No provider is configured. Credentials never pass through this UI
-              — add them to{" "}
+              No provider is active. Add a block under{" "}
+              <code className="font-mono">providers:</code> in{" "}
               <code className="font-mono">~/.config/mecatl/auth.yaml</code> on
-              the machine running mecated, then restart it.
+              the machine running mecated, set{" "}
+              <code className="font-mono">MECATL_STUDIO_PROVIDER</code> to its
+              name, then restart Studio.
             </Note>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Credentials are read by mecated from{" "}
-              <code className="font-mono">~/.config/mecatl/auth.yaml</code> and
-              are never entered or shown here.
+              To add another provider, add its block to that file. To switch
+              which one is active, set{" "}
+              <code className="font-mono">MECATL_STUDIO_PROVIDER</code> to its
+              name and restart Studio — credentials themselves are never
+              entered, shown, or removed here.
             </p>
           )}
         </div>

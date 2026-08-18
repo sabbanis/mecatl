@@ -12,6 +12,7 @@ import {
   MessageSquareText,
   Paperclip,
   Pencil,
+  User,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
@@ -24,18 +25,27 @@ import {
 } from "@/components/ui/tooltip";
 import type { AgentMessage, Artifact, Attachment } from "@/features/agent";
 import { formatMessageTime } from "@/lib/formatters";
+import { useUserAvatar } from "@/lib/profile-preferences";
 import { cn } from "@/lib/utils";
 import { mdComponents } from "./markdown-components";
 import { ToolCallList } from "./tool-call-list";
 
 function UserAvatar() {
+  const { avatarUrl } = useUserAvatar();
+  if (avatarUrl) {
+    return (
+      // biome-ignore lint/performance/noImgElement: a locally stored data URL, not a remote image
+      <img
+        src={avatarUrl}
+        alt="You"
+        className="size-7 lg:size-9 shrink-0 rounded-full object-cover"
+      />
+    );
+  }
   return (
-    // biome-ignore lint/performance/noImgElement: static external avatar; not worth a next/image remote-domain config for the demo
-    <img
-      src="https://randomuser.me/api/portraits/men/32.jpg"
-      alt="Michael Carter"
-      className="size-7 lg:size-9 shrink-0 rounded-full object-cover bg-zinc-200 dark:bg-zinc-700"
-    />
+    <div className="flex size-7 lg:size-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
+      <User className="size-4 lg:size-5" />
+    </div>
   );
 }
 
@@ -62,7 +72,7 @@ function ReplyIndicator({
   const last = replies[replies.length - 1];
   const authors: string[] = [];
   for (const r of replies) {
-    const name = r.role === "user" ? "You" : (r.agentName ?? "Assistant");
+    const name = r.role === "user" ? "You" : (r.agentName ?? "Mecatl");
     if (!authors.includes(name)) authors.push(name);
   }
 
@@ -228,7 +238,7 @@ export function MessageBubble({
   onOpenArtifact,
   onOpenAttachment,
   onStartThread,
-  botName = "Assistant",
+  botName = "Mecatl",
   showActivity = true,
 }: {
   message: AgentMessage;
