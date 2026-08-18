@@ -4,11 +4,12 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelHarnessRun,
   createHarnessSession,
-  probeHarness,
+  fetchSessionTranscriptMessages,
   respondToHarnessApproval,
   streamHarnessPrompt,
 } from "@/lib/harness/client";
-import { MOCK_MESSAGES } from "../mock-data";
+import type { SessionTranscript } from "@/lib/protocol";
+import { useRuntimeStatus } from "../runtime-status";
 import type {
   AgentMessage,
   ApprovalChoice,
@@ -25,72 +26,131 @@ type ChatStatus =
   | "waiting_clarification"
   | "error";
 
-/**
- * Chat state for one session.
- *
- * Two backends: a locally running mecatl daemon when one answers on loopback
- * (see /api/harness), and the canned mock responses otherwise. The deployed
- * instance has no daemon, so it keeps the mock behaviour it always had — the
- * probe failing is the normal path there, not an error worth surfacing.
- */
-export function useAgentChat(sessionId: string | null) {
-  const [messages, setMessages] = useState<AgentMessage[]>(
-    sessionId ? (MOCK_MESSAGES[sessionId] ?? []) : [],
-  );
+/** Rebuilds the message list from the daemon's authoritative transcript. */
+function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
+  const messages: AgentMessage[] = [];
+  let sequence = 0;
+  for (const entry of transcript.messages) {
+    sequence += 1;
+    if (entry.role === "user") {
+      messages.push({
+        id: `history-user-${sequence}`,
+        role: "user",
+        content: entry.text,
+        timestamp: 0,
+      });
+      continue;
+    }
+    if (entry.role === "assistant") {
+      messages.push({
+        id: `history-assistant-${sequence}`,
+        role: "assistant",
+        content: entry.text,
+        timestamp: 0,
+        toolCalls: entry.toolCalls.length
+          ? entry.toolCalls.map((call) => ({
+              callId: call.id,
+              name: call.name,
+              input: call.args,
+              status: "completed" as const,
+            }))
+          : undefined,
+      });
+      continue;
+    }
+    // A tool entry resolves the matching call on the latest assistant turn.
+    const result = entry.toolResult;
+    if (!result) continue;
+    for (let index = messages.length - 1; index >= 0; index -= 1) {
+      const message = messages[index];
+      const call = message.toolCalls?.find(
+        (candidate) => candidate.callId === result.callId,
+      );
+      if (call) {
+        call.output = result.content;
+        call.isError = result.isError;
+        call.status = result.isError ? "failed" : "completed";
+        break;
+      }
+    }
+  }
+  if (!transcript.complete && messages.length) {
+    messages[0] = {
+      ...messages[0],
+      notices: [
+        "This transcript could not be proven complete; earlier turns may be missing.",
+        ...(messages[0].notices ?? []),
+      ],
+    };
+  }
+  return messages;
+}
 
-  useEffect(() => {
-    setMessages(sessionId ? (MOCK_MESSAGES[sessionId] ?? []) : []);
-  }, [sessionId]);
+/**
+ * Chat state for one daemon session. Daemon-only: the sidebar id IS the
+ * daemon session id — there is no client-side session mapping and no demo
+ * fallback. Opening a chat rehydrates its history from the authoritative
+ * transcript endpoint; a null id is a draft whose daemon session is minted on
+ * the first send.
+ */
+export function useAgentChat(
+  sessionId: string | null,
+  options?: { onSessionCreated?: (sessionId: string) => void },
+) {
+  const { connected } = useRuntimeStatus();
+  const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [error, setError] = useState<string | null>(null);
-  const [harnessLive, setHarnessLive] = useState(false);
   const [pendingApproval, setPendingApproval] =
-    useState<ApprovalRequest | null>(
-      sessionId === "s2"
-        ? {
-            approvalId: "apr-1",
-            sessionId: "s2",
-            description:
-              "Asta wants to comment on the failing CI run and block review time on your calendar.",
-            details:
-              "GitHub: Comment on PR #482 summarizing the lint fixes and asking for re-review.\nGoogle Calendar: Create a Tuesday afternoon review block for the release branch.",
-          }
-        : null,
-    );
+    useState<ApprovalRequest | null>(null);
   const [pendingClarification] = useState<ClarificationRequest | null>(null);
   const [usage, setUsage] = useState({
     inputTokens: 0,
     outputTokens: 0,
+    cacheReadTokens: 0,
+    cacheWriteTokens: 0,
+    reasoningTokens: 0,
     estimatedCost: null as number | null,
   });
 
-  // This UI's session ids are its own (sidebar-owned); a harness session is
-  // minted lazily per id and remembered so a follow-up prompt continues the same
-  // conversation instead of starting a fresh one.
-  const harnessSessions = useRef(new Map<string, string>());
+  // The daemon session backing this chat: the route id, or the one minted for
+  // a draft on first send. A ref so an in-flight stream keeps its binding
+  // while the parent navigates to the new id.
+  const daemonIdRef = useRef<string | null>(sessionId);
   const abortRef = useRef<AbortController | null>(null);
+  const lastPromptRef = useRef<string | null>(null);
+  const onSessionCreatedRef = useRef(options?.onSessionCreated);
+  onSessionCreatedRef.current = options?.onSessionCreated;
 
+  // Opening a chat (or switching chats) rehydrates from the daemon.
   useEffect(() => {
+    daemonIdRef.current = sessionId;
+    setMessages([]);
+    setPendingApproval(null);
+    setError(null);
+    setStatus("idle");
+    if (!sessionId || !connected) return;
     const controller = new AbortController();
     void (async () => {
-      const probe = await probeHarness(controller.signal);
-      if (controller.signal.aborted) return;
-      setHarnessLive(probe.live);
+      try {
+        const transcript = await fetchSessionTranscriptMessages(
+          sessionId,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        setMessages(messagesFromTranscript(transcript));
+      } catch (caught) {
+        if (controller.signal.aborted) return;
+        setError(caught instanceof Error ? caught.message : String(caught));
+        setStatus("error");
+      }
     })();
     return () => controller.abort();
-  }, []);
-
-  const ensureHarnessSession = useCallback(async (key: string) => {
-    const existing = harnessSessions.current.get(key);
-    if (existing) return existing;
-    const created = await createHarnessSession("default");
-    harnessSessions.current.set(key, created);
-    return created;
-  }, []);
+  }, [sessionId, connected]);
 
   const sendMessage = useCallback(
     async (content: string, attachments?: Attachment[]) => {
-      if (!sessionId || status === "streaming") return;
+      if (status === "streaming" || !connected) return;
 
       const userMessage: AgentMessage = {
         id: `user-${Date.now()}`,
@@ -103,22 +163,7 @@ export function useAgentChat(sessionId: string | null) {
       setMessages((prev) => [...prev, userMessage]);
       setStatus("streaming");
       setError(null);
-
-      if (!harnessLive) {
-        // Simulate a brief delay then add mock assistant response
-        setTimeout(() => {
-          const assistantMessage: AgentMessage = {
-            id: `assistant-${Date.now()}`,
-            role: "assistant",
-            content:
-              "This is a demo environment — agent responses are simulated. In production, this would be a real AI response to your message.",
-            timestamp: Date.now(),
-          };
-          setMessages((prev) => [...prev, assistantMessage]);
-          setStatus("idle");
-        }, 800);
-        return;
-      }
+      lastPromptRef.current = content;
 
       const assistantId = `assistant-${Date.now()}`;
       setMessages((prev) => [
@@ -145,9 +190,14 @@ export function useAgentChat(sessionId: string | null) {
         );
 
       try {
-        const harnessId = await ensureHarnessSession(sessionId);
+        let daemonId = daemonIdRef.current;
+        if (!daemonId) {
+          daemonId = await createHarnessSession("default");
+          daemonIdRef.current = daemonId;
+          onSessionCreatedRef.current?.(daemonId);
+        }
         await streamHarnessPrompt(
-          harnessId,
+          daemonId,
           content,
           (event) => {
             switch (event.type) {
@@ -194,18 +244,78 @@ export function useAgentChat(sessionId: string | null) {
               case "approval":
                 setPendingApproval({
                   approvalId: event.approvalId,
-                  sessionId,
+                  sessionId: daemonId as string,
                   description: event.description,
                   details: event.details,
                 });
                 setStatus("waiting_approval");
                 break;
+              case "retract":
+                // The ask was withdrawn (e.g. its child was cancelled); the
+                // run is still going.
+                setPendingApproval((current) =>
+                  current?.approvalId === event.approvalId ? null : current,
+                );
+                setStatus((current) =>
+                  current === "waiting_approval" ? "streaming" : current,
+                );
+                break;
+              case "notice":
+                patch((message) => ({
+                  ...message,
+                  notices: [...(message.notices ?? []), event.text],
+                }));
+                break;
+              case "delegation":
+                patch((message) => ({
+                  ...message,
+                  delegations: [
+                    ...(message.delegations ?? []),
+                    {
+                      kind: event.kind,
+                      label: event.label,
+                      detail: event.detail,
+                    },
+                  ],
+                }));
+                break;
               case "usage":
                 setUsage({
                   inputTokens: event.inputTokens,
                   outputTokens: event.outputTokens,
+                  cacheReadTokens: event.cacheReadTokens ?? 0,
+                  cacheWriteTokens: event.cacheWriteTokens ?? 0,
+                  reasoningTokens: event.reasoningTokens ?? 0,
                   estimatedCost: event.estimatedCost,
                 });
+                break;
+              case "run_result":
+                if (event.stop === "error") {
+                  const detail =
+                    event.errorText ||
+                    "The run failed without a specific error.";
+                  patch((message) => ({
+                    ...message,
+                    failed: true,
+                    failureDetail: event.permanent
+                      ? `${detail} (permanent — retrying the identical request cannot succeed)`
+                      : detail,
+                    toolCalls: (message.toolCalls ?? []).map((call) =>
+                      call.status === "running"
+                        ? { ...call, status: "failed" as const }
+                        : call,
+                    ),
+                  }));
+                  setError(detail);
+                  setStatus("error");
+                } else if (event.text) {
+                  // A run that produced no deltas (a rehydrated approve, a
+                  // recovered run) still carries its final text here.
+                  patch((message) => ({
+                    ...message,
+                    content: message.content || event.text,
+                  }));
+                }
                 break;
               default:
                 break;
@@ -213,50 +323,84 @@ export function useAgentChat(sessionId: string | null) {
           },
           controller.signal,
         );
-        // A parked approval keeps its own status: the stream ends while the run
-        // is still waiting on the operator, and flipping to idle here would hide
-        // the pending prompt.
+        // A parked approval keeps its own status: the stream ends while the
+        // run is still waiting on the operator, and flipping to idle here
+        // would hide the pending prompt. A failed turn keeps its error state.
         setStatus((current) =>
-          current === "waiting_approval" ? current : "idle",
+          current === "waiting_approval" || current === "error"
+            ? current
+            : "idle",
         );
       } catch (caught) {
         if (controller.signal.aborted) {
           setStatus("idle");
           return;
         }
-        setError(caught instanceof Error ? caught.message : String(caught));
+        const message =
+          caught instanceof Error ? caught.message : String(caught);
+        setError(message);
         setStatus("error");
+        patch((current) => ({
+          ...current,
+          failed: true,
+          failureDetail: current.failureDetail ?? message,
+          toolCalls: (current.toolCalls ?? []).map((call) =>
+            call.status === "running"
+              ? { ...call, status: "failed" as const }
+              : call,
+          ),
+        }));
       } finally {
         abortRef.current = null;
       }
     },
-    [sessionId, status, harnessLive, ensureHarnessSession],
+    [status, connected],
   );
+
+  /** Resends the last prompt after a failure (the error banner's Retry). */
+  const retryLast = useCallback(async () => {
+    const prompt = lastPromptRef.current;
+    if (!prompt || status === "streaming") return;
+    // Drop the failed exchange so the retry replaces it instead of stacking.
+    setMessages((prev) => {
+      const trimmed = [...prev];
+      while (trimmed.length) {
+        const last = trimmed[trimmed.length - 1];
+        if (last.role === "assistant" && (last.failed || !last.content)) {
+          trimmed.pop();
+          continue;
+        }
+        if (last.role === "user" && last.content === prompt) {
+          trimmed.pop();
+        }
+        break;
+      }
+      return trimmed;
+    });
+    setError(null);
+    setStatus("idle");
+    await sendMessage(prompt);
+  }, [sendMessage, status]);
 
   const cancelChat = useCallback(async () => {
     abortRef.current?.abort();
-    const harnessId = sessionId
-      ? harnessSessions.current.get(sessionId)
-      : undefined;
-    if (harnessId) await cancelHarnessRun(harnessId);
+    if (daemonIdRef.current) await cancelHarnessRun(daemonIdRef.current);
     setStatus("idle");
-  }, [sessionId]);
+  }, []);
 
   const respondToApproval = useCallback(
     async (choice: ApprovalChoice) => {
-      const harnessId = sessionId
-        ? harnessSessions.current.get(sessionId)
-        : undefined;
+      const daemonId = daemonIdRef.current;
       const approvalId = pendingApproval?.approvalId;
       setPendingApproval(null);
       setStatus("idle");
-      if (!harnessLive || !harnessId || !approvalId) return;
+      if (!daemonId || !approvalId) return;
       try {
         // The daemon's verdict is three-way. "session" and "always" both map
         // to allow_always — the daemon models one persistent grant scope, and
         // splitting hairs the backend does not model would be a lie in the UI.
         await respondToHarnessApproval(
-          harnessId,
+          daemonId,
           approvalId,
           choice === "deny"
             ? "deny"
@@ -269,7 +413,7 @@ export function useAgentChat(sessionId: string | null) {
         setStatus("error");
       }
     },
-    [harnessLive, pendingApproval, sessionId],
+    [pendingApproval],
   );
 
   const respondToClarification = useCallback(async (_response: string) => {
@@ -281,8 +425,9 @@ export function useAgentChat(sessionId: string | null) {
     isStreaming: status === "streaming",
     status,
     error,
-    harnessLive,
+    harnessLive: connected,
     sendMessage,
+    retryLast,
     cancelChat,
     pendingApproval,
     pendingClarification,

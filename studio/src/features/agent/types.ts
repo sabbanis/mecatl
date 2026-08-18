@@ -20,6 +20,18 @@ export interface AgentSession {
   contextLength: number | null;
   lastPromptTokens: number | null;
   thresholdTokens: number | null;
+  /** Daemon lifecycle state (idle/running/awaiting/completed/failed/cancelled). */
+  state?: string;
+  workspace?: string;
+  /**
+   * Action eligibility comes from the daemon row's capabilities, never
+   * re-derived client-side; an omitted capability is a denial, and the closed
+   * reason strings explain a disabled action.
+   */
+  canRename?: boolean;
+  canDelete?: boolean;
+  renameReason?: string;
+  deleteReason?: string;
 }
 
 export interface CreateSessionOpts {
@@ -55,6 +67,20 @@ export interface AgentMessage {
    * replies in the side thread panel (mirrors the teams view's threading).
    */
   replies?: AgentMessage[];
+  /** One-line advisories from the daemon (tool progress, unrendered events). */
+  notices?: string[];
+  /** Delegation badges: work this turn handed to child agents. */
+  delegations?: Array<{
+    kind: "subagent" | "team" | "parallel";
+    label: string;
+    detail: string;
+  }>;
+  /**
+   * The turn ended with result.stop === "error". A failed turn renders as
+   * failed — never as an empty success.
+   */
+  failed?: boolean;
+  failureDetail?: string;
 }
 
 export interface ToolCallInfo {

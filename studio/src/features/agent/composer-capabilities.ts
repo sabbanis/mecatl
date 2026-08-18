@@ -1,19 +1,28 @@
-import { MOCK_AGENTS } from "@/features/agent/mock-data";
+import { listHarnessAgents, listHarnessCommands } from "@/lib/harness/client";
 
 /**
- * What the chat composer can pull into a message: the `@agent` mentions and the
- * `/slash` commands its autocomplete offers.
+ * What the chat composer can pull into a message: the `@agent` mentions and
+ * the `/slash` commands its autocomplete offers.
  *
- * This lives in the agent feature domain (not the composer UI) so the composer
- * doesn't reach across into other pages' internals — it depends on this
- * capability surface, and the mapping from the underlying agent roster lives
- * here in one place. Swapping the source (e.g. to a live API) touches only this
- * file.
+ * Both come from the daemon — the resolved subagent inventory
+ * (`GET /v1/agents`) and the workspace's discovered slash commands
+ * (`GET /v1/commands`) — refreshed by the runtime-status provider on every
+ * (re)connect, because a daemon restart can change either.
+ *
+ * A module-level registry rather than React state: tiptap's suggestion
+ * plugins read these lists per keystroke from plain callbacks that live
+ * outside the component tree.
  */
 
 export interface AgentMention {
   /** Handle inserted after `@` (the agent slug). */
   readonly handle: string;
+  readonly name: string;
+  readonly description: string;
+}
+
+export interface SlashCommand {
+  /** Name inserted after `/`. */
   readonly name: string;
   readonly description: string;
 }
@@ -26,30 +35,40 @@ function toHandle(name: string): string {
     .replace(/^-+|-+$/g, "");
 }
 
-/** Enabled agents from the roster, offered as `@`-mention autocomplete. */
-export const AGENT_MENTIONS: readonly AgentMention[] = MOCK_AGENTS.filter(
-  (a) => a.enabled,
-).map((a) => ({
-  handle: toHandle(a.name),
-  name: a.name,
-  description: a.description ?? "",
-}));
+let agentMentions: readonly AgentMention[] = [];
+let slashCommands: readonly SlashCommand[] = [];
 
-export interface SlashCommand {
-  /** Name inserted after `/`. */
-  readonly name: string;
-  readonly description: string;
+export function getAgentMentions(): readonly AgentMention[] {
+  return agentMentions;
 }
 
-/** Slash commands / skills, offered as `/`-command autocomplete. */
-export const SLASH_COMMANDS: readonly SlashCommand[] = [
-  { name: "plan", description: "Draft an implementation plan before coding" },
-  { name: "review", description: "Review the pending changes" },
-  { name: "security-review", description: "Security review of the changes" },
-  { name: "test", description: "Write or run tests" },
-  { name: "explain", description: "Explain code or a concept" },
-  { name: "summarize", description: "Summarize this conversation" },
-  { name: "fix", description: "Diagnose and fix a bug" },
-  { name: "refactor", description: "Refactor for clarity and reuse" },
-  { name: "docs", description: "Write or update documentation" },
-];
+export function getSlashCommands(): readonly SlashCommand[] {
+  return slashCommands;
+}
+
+/**
+ * Re-reads both capability lists from the daemon. Either list failing leaves
+ * the previous value in place — an autocomplete that briefly lags a restart
+ * beats one that flickers empty on every transient error.
+ */
+export async function refreshComposerCapabilities(): Promise<void> {
+  const [agents, commands] = await Promise.allSettled([
+    listHarnessAgents(),
+    listHarnessCommands(),
+  ]);
+  if (agents.status === "fulfilled") {
+    agentMentions = agents.value.map((agent) => ({
+      handle: toHandle(agent.name),
+      name: agent.name,
+      description: agent.description,
+    }));
+  }
+  if (commands.status === "fulfilled") {
+    slashCommands = commands.value
+      .filter((command) => command.name)
+      .map((command) => ({
+        name: command.name,
+        description: command.description,
+      }));
+  }
+}

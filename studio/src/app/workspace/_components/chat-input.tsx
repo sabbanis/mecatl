@@ -31,8 +31,8 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
-  AGENT_MENTIONS,
-  SLASH_COMMANDS,
+  getAgentMentions,
+  getSlashCommands,
 } from "@/features/agent/composer-capabilities";
 import { usePrompt } from "@/hooks/use-prompt";
 import { cn } from "@/lib/utils";
@@ -450,25 +450,27 @@ const DEFAULT_PLACEHOLDER =
 /** Filter the agent list for the `@`-mention menu by handle or name. */
 function agentMenuItems(query: string): ComposerMenuItem[] {
   const q = query.toLowerCase();
-  return AGENT_MENTIONS.filter(
-    (a) => a.handle.startsWith(q) || a.name.toLowerCase().includes(q),
-  ).map((a) => ({
-    id: a.handle,
-    label: a.handle,
-    primary: a.name,
-    secondary: a.description,
-  }));
+  return getAgentMentions()
+    .filter((a) => a.handle.startsWith(q) || a.name.toLowerCase().includes(q))
+    .map((a) => ({
+      id: a.handle,
+      label: a.handle,
+      primary: a.name,
+      secondary: a.description,
+    }));
 }
 
 /** Filter the slash-command list for the `/`-command menu by name prefix. */
 function commandMenuItems(query: string): ComposerMenuItem[] {
   const q = query.toLowerCase();
-  return SLASH_COMMANDS.filter((c) => c.name.startsWith(q)).map((c) => ({
-    id: c.name,
-    label: c.name,
-    primary: `/${c.name}`,
-    secondary: c.description,
-  }));
+  return getSlashCommands()
+    .filter((c) => c.name.startsWith(q))
+    .map((c) => ({
+      id: c.name,
+      label: c.name,
+      primary: `/${c.name}`,
+      secondary: c.description,
+    }));
 }
 
 /** Open autocomplete menu state, mirrored from TipTap's suggestion lifecycle. */

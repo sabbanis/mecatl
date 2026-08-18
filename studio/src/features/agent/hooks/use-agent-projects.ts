@@ -1,61 +1,37 @@
 "use client";
 
-import { useCallback, useState } from "react";
-import { MOCK_PROJECTS } from "../mock-data";
+import { useCallback } from "react";
 import type { AgentProject } from "../types";
 
-/** Module mirror so projects survive the chat-workspace remount on navigation
- * (see the note in use-agent-sessions). Resets on a full page reload. */
-let projectStore: AgentProject[] | null = null;
-
+/**
+ * The daemon has no project concept, so the workspace has no project
+ * grouping: the chat sidebar is a flat, recency-ordered session list. This
+ * placeholder keeps the workspace's shape until the grouping UI is removed
+ * with the sidebar rework — the list is always empty, creation returns a
+ * transient handle that is never stored, and assignment is a no-op.
+ */
 export function useAgentProjects() {
-  const [projects, setProjectsState] = useState<AgentProject[]>(
-    () => projectStore ?? MOCK_PROJECTS,
-  );
-  const [isLoading] = useState(false);
+  const createProject = useCallback(async (name: string) => {
+    const project: AgentProject = {
+      id: `project-${Date.now()}`,
+      name,
+      color: "gray",
+      createdAt: Date.now(),
+    };
+    return project;
+  }, []);
 
-  const setProjects = useCallback(
-    (updater: (prev: AgentProject[]) => AgentProject[]) => {
-      setProjectsState((prev) => {
-        const next = updater(prev);
-        projectStore = next;
-        return next;
-      });
-    },
-    [],
-  );
-
-  const createProject = useCallback(
-    async (name: string, color?: string) => {
-      const project: AgentProject = {
-        id: `p-${Date.now()}`,
-        name,
-        color: color ?? "#6b7280",
-        createdAt: Date.now(),
-      };
-      setProjects((prev) => [...prev, project]);
-      return project;
-    },
-    [setProjects],
-  );
-
-  const deleteProject = useCallback(
-    async (id: string) => {
-      setProjects((prev) => prev.filter((p) => p.id !== id));
-    },
-    [setProjects],
-  );
-
+  const deleteProject = useCallback(async (_id: string) => {}, []);
   const assignSessionToProject = useCallback(
     async (_sessionId: string, _projectId: string | null) => {},
     [],
   );
-
   const refreshProjects = useCallback(async () => {}, []);
 
   return {
-    projects,
-    isLoading,
+    projects: [] as AgentProject[],
+    isLoading: false,
+    error: null as string | null,
     createProject,
     deleteProject,
     assignSessionToProject,

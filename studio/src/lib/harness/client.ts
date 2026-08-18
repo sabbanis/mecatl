@@ -297,9 +297,17 @@ export async function fetchSessionTranscriptMessages(
  * There is no write endpoint: the agent curates memory through injection-scanned
  * tool calls, so this is read-only by construction, not by choice.
  */
+export interface HarnessUserModel {
+  entries: { key: string; description: string }[];
+  /** Aggregate byte length of the rendered entries. */
+  sizeBytes: number;
+  /** Lowercase-hex SHA-256 over the rendered entries — change detection. */
+  sha256: string;
+}
+
 export async function fetchHarnessUserModel(
   signal?: AbortSignal,
-): Promise<{ key: string; description: string }[]> {
+): Promise<HarnessUserModel> {
   const response = await fetch(`${HARNESS_API}/usermodel`, {
     signal,
     cache: "no-store",
@@ -307,11 +315,17 @@ export async function fetchHarnessUserModel(
   if (!response.ok) throw new Error(await readError(response));
   const body = (await response.json()) as {
     entries?: { key?: string; description?: string }[];
+    size_bytes?: number | string;
+    sha256?: string;
   };
-  return (body.entries ?? []).map((entry) => ({
-    key: entry.key ?? "",
-    description: entry.description ?? "",
-  }));
+  return {
+    entries: (body.entries ?? []).map((entry) => ({
+      key: entry.key ?? "",
+      description: entry.description ?? "",
+    })),
+    sizeBytes: Number(body.size_bytes ?? 0) || 0,
+    sha256: body.sha256 ?? "",
+  };
 }
 
 // ── Schedules ───────────────────────────────────────────────────────────────
@@ -579,6 +593,8 @@ export const MCP_GATEWAY_URL = "https://connector-gateway.stacklok.dev/gw/mcp";
 export const MCP_GATEWAY_NAME = "gateway";
 
 export interface HarnessControlStatus {
+  /** "external" when Studio proxies to MECATL_BASE_URL; "managed" otherwise. */
+  mode: "managed" | "external";
   provider: string;
   running: boolean;
   gateway: { name: string; url: string } | null;
@@ -598,6 +614,7 @@ export async function fetchHarnessControlStatus(
     });
     if (!response.ok) return null;
     const body = (await response.json()) as {
+      mode?: string;
       provider?: string;
       running?: boolean;
       gateway?: { name?: string; url?: string } | null;
@@ -607,6 +624,7 @@ export async function fetchHarnessControlStatus(
       memory?: { dir?: string };
     };
     return {
+      mode: body.mode === "external" ? "external" : "managed",
       provider: body.provider ?? "unknown",
       running: Boolean(body.running),
       gateway: body.gateway?.url

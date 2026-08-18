@@ -1,47 +1,118 @@
 "use client";
 
-import { useCallback, useState } from "react";
-import { MOCK_SESSIONS } from "../mock-data";
+import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  createHarnessSession,
+  deleteHarnessSession,
+  fetchAllSessions,
+  renameHarnessSession,
+} from "@/lib/harness/client";
+import type { SessionSummary } from "@/lib/protocol";
+import { useRuntimeStatus } from "../runtime-status";
 import type { AgentSession, CreateSessionOpts } from "../types";
 
+const POLL_INTERVAL_MS = 20_000;
+
+function toAgentSession(summary: SessionSummary): AgentSession {
+  return {
+    id: summary.sessionId,
+    title: summary.title || "Untitled chat",
+    projectId: null,
+    model: summary.modelId,
+    createdAt: summary.createdAt,
+    updatedAt: summary.modifiedAt,
+    pinned: false,
+    archived: false,
+    messageCount: summary.turns,
+    isStreaming: summary.state === "running",
+    inputTokens: 0,
+    outputTokens: 0,
+    unread: false,
+    estimatedCost: null,
+    contextLength: null,
+    lastPromptTokens: null,
+    thresholdTokens: null,
+    state: summary.state,
+    workspace: summary.workspace,
+    canRename: summary.canRename,
+    canDelete: summary.canDelete,
+    renameReason: summary.renameReason,
+    deleteReason: summary.deleteReason,
+  };
+}
+
 /**
- * Module-level mirror of the session list. Selecting a chat navigates, and Next
- * remounts the chat workspace when the optional-catch-all route's param count
- * changes — which would otherwise reset this hook's `useState` back to the
- * fixtures, dropping any chat created or edited in-session. Seeding state from
- * (and writing every mutation back to) this mirror keeps those changes alive
- * across the remount. It resets on a full page reload, which is fine for the
- * demo fixtures.
+ * The chat list, backed by the daemon's session store — the record of chats.
+ *
+ * Invariants (from the server-backed-chats design):
+ * - Only chats appear: rows whose one not-a-chat reason is
+ *   `inspect_only_kind` (subagents, team members, scheduled fires) are
+ *   filtered by the decoder.
+ * - A row is removed only when a COMPLETE inventory walk proves it gone; a
+ *   partial walk merges and never deletes.
+ * - Action eligibility (rename/delete) comes from the row's capabilities,
+ *   never re-derived client-side.
+ * - A rename is optimistic but adopts the daemon's clamped title echo, and
+ *   rolls back when the daemon refuses.
  */
-let sessionStore: AgentSession[] | null = null;
-
 export function useAgentSessions() {
-  const [sessions, setSessionsState] = useState<AgentSession[]>(
-    () => sessionStore ?? MOCK_SESSIONS,
-  );
-  const [isLoading] = useState(false);
-  const [error] = useState<string | null>(null);
+  const { connected } = useRuntimeStatus();
+  const [sessions, setSessions] = useState<AgentSession[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const loadedOnce = useRef(false);
 
-  // Persist every update to the module mirror so a remount restores it.
-  const setSessions = useCallback(
-    (updater: (prev: AgentSession[]) => AgentSession[]) => {
-      setSessionsState((prev) => {
-        const next = updater(prev);
-        sessionStore = next;
-        return next;
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const walk = await fetchAllSessions(signal);
+      if (signal?.aborted) return;
+      const chats = walk.sessions
+        .filter((summary) => summary.isChat)
+        .map(toAgentSession);
+      setSessions((previous) => {
+        if (walk.complete) return chats;
+        // Incomplete walk: update what we saw, keep what we did not.
+        const seen = new Map(chats.map((chat) => [chat.id, chat]));
+        const merged = previous.map((chat) => seen.get(chat.id) ?? chat);
+        const known = new Set(previous.map((chat) => chat.id));
+        return [...merged, ...chats.filter((chat) => !known.has(chat.id))];
       });
-    },
-    [],
-  );
+      setError(null);
+      loadedOnce.current = true;
+    } catch (caught) {
+      if (signal?.aborted) return;
+      setError(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      if (!signal?.aborted) setIsLoading(false);
+    }
+  }, []);
 
+  useEffect(() => {
+    if (!connected) return;
+    const controller = new AbortController();
+    void load(controller.signal);
+    const timer = setInterval(() => {
+      void load(controller.signal);
+    }, POLL_INTERVAL_MS);
+    return () => {
+      controller.abort();
+      clearInterval(timer);
+    };
+  }, [connected, load]);
+
+  const refreshSessions = useCallback(async () => {
+    await load();
+  }, [load]);
+
+  /** Creates a daemon session and returns its row. The id IS the daemon id. */
   const createSession = useCallback(
-    async (opts: CreateSessionOpts = {}) => {
+    async (_opts: CreateSessionOpts = {}) => {
+      const sessionId = await createHarnessSession("default");
       const session: AgentSession = {
-        id: `s-${Date.now()}`,
-        title: "New conversation",
-        projectId: opts.projectId ?? null,
-        agentId: opts.agentId,
-        model: opts.model ?? "claude-sonnet-4-6",
+        id: sessionId,
+        title: "Untitled chat",
+        projectId: null,
+        model: "",
         createdAt: Date.now(),
         updatedAt: Date.now(),
         pinned: false,
@@ -52,76 +123,83 @@ export function useAgentSessions() {
         inputTokens: 0,
         outputTokens: 0,
         estimatedCost: null,
-        contextLength: 200_000,
+        contextLength: null,
         lastPromptTokens: null,
-        thresholdTokens: 160_000,
+        thresholdTokens: null,
       };
-      setSessions((prev) => [session, ...prev]);
+      setSessions((previous) => [session, ...previous]);
+      void load();
       return session;
     },
-    [setSessions],
+    [load],
   );
 
-  const deleteSession = useCallback(
-    async (id: string) => {
-      setSessions((prev) => prev.filter((s) => s.id !== id));
-    },
-    [setSessions],
-  );
+  const deleteSession = useCallback(async (id: string) => {
+    try {
+      await deleteHarnessSession(id);
+    } catch (caught) {
+      // Only a 404 proves the session is already gone; any other refusal
+      // keeps the row (the daemon may recover it).
+      const message = caught instanceof Error ? caught.message : String(caught);
+      if (!/not found|404/i.test(message)) {
+        setError(message);
+        throw caught;
+      }
+    }
+    setSessions((previous) => previous.filter((s) => s.id !== id));
+  }, []);
 
-  const renameSession = useCallback(
-    async (id: string, title: string) => {
-      const target = sessions.find((s) => s.id === id);
-      const updated = target
-        ? { ...target, title, updatedAt: Date.now() }
-        : target;
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === id ? { ...s, title, updatedAt: Date.now() } : s,
+  const renameSession = useCallback(async (id: string, title: string) => {
+    let previousTitle = "";
+    setSessions((previous) =>
+      previous.map((session) => {
+        if (session.id !== id) return session;
+        previousTitle = session.title;
+        return { ...session, title, updatedAt: Date.now() };
+      }),
+    );
+    try {
+      const echoed = await renameHarnessSession(id, title);
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === id ? { ...session, title: echoed } : session,
         ),
       );
-      return updated as AgentSession;
-    },
-    [sessions, setSessions],
-  );
-
-  const pinSession = useCallback(
-    async (id: string, pinned: boolean) => {
-      const target = sessions.find((s) => s.id === id);
-      const updated = target
-        ? { ...target, pinned, updatedAt: Date.now() }
-        : target;
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === id ? { ...s, pinned, updatedAt: Date.now() } : s,
+      return undefined;
+    } catch (caught) {
+      setSessions((previous) =>
+        previous.map((session) =>
+          session.id === id ? { ...session, title: previousTitle } : session,
         ),
       );
-      return updated as AgentSession;
-    },
-    [sessions, setSessions],
-  );
+      setError(caught instanceof Error ? caught.message : String(caught));
+      return undefined;
+    }
+  }, []);
 
-  const archiveSession = useCallback(
-    async (id: string, archived: boolean) => {
-      const target = sessions.find((s) => s.id === id);
-      const updated = target
-        ? { ...target, archived, updatedAt: Date.now() }
-        : target;
-      setSessions((prev) =>
-        prev.map((s) =>
-          s.id === id ? { ...s, archived, updatedAt: Date.now() } : s,
-        ),
-      );
-      return updated as AgentSession;
-    },
-    [sessions, setSessions],
-  );
+  // The daemon has no pin/archive concept; these are client-side niceties
+  // that live only for the current page.
+  const pinSession = useCallback(async (id: string, pinned: boolean) => {
+    setSessions((previous) =>
+      previous.map((session) =>
+        session.id === id ? { ...session, pinned } : session,
+      ),
+    );
+    return undefined;
+  }, []);
 
-  const refreshSessions = useCallback(async () => {}, []);
+  const archiveSession = useCallback(async (id: string, archived: boolean) => {
+    setSessions((previous) =>
+      previous.map((session) =>
+        session.id === id ? { ...session, archived } : session,
+      ),
+    );
+    return undefined;
+  }, []);
 
   return {
     sessions,
-    isLoading,
+    isLoading: isLoading && !loadedOnce.current,
     error,
     createSession,
     deleteSession,

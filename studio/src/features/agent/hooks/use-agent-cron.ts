@@ -1,220 +1,163 @@
 "use client";
 
+import { useCallback, useEffect, useState } from "react";
 import {
-  type SetStateAction,
-  useCallback,
-  useEffect,
-  useRef,
-  useState,
-} from "react";
-import {
-  createHarnessSchedule,
   harnessScheduleAction,
-  listHarnessSchedules,
-  probeHarness,
+  listScheduleRows,
+  saveHarnessSchedule,
 } from "@/lib/harness/client";
-import { MOCK_CRON_JOBS } from "../mock-data";
+import {
+  PERMISSION_MODES,
+  type ScheduleRow,
+  type ScheduleSpecDraft,
+} from "@/lib/protocol";
+import { useRuntimeStatus } from "../runtime-status";
 import type { CreateCronOpts, CronJob } from "../types";
 
 /** Fields the create-schedule form supplies on top of the shared opts. */
 export type CreateJobInput = CreateCronOpts & { enabled?: boolean };
 
-/** Module mirror so newly created jobs survive the workspace remount on
- * navigation (same pattern as use-agent-projects). Resets on a full reload. */
-let cronStore: CronJob[] | null = null;
-
-/** Monotonic counter for client-side job ids — stable within a session and
- * collision-free even after deletes, without reading the clock or RNG. */
-let cronSeq = 0;
-
-/** Slugify a job name into an id-safe fragment. */
-function slugify(name: string): string {
-  return (
-    name
-      .toLowerCase()
-      .trim()
-      .replace(/[^a-z0-9]+/g, "-")
-      .replace(/^-+|-+$/g, "")
-      .slice(0, 40) || "job"
-  );
+function toCronJob(row: ScheduleRow): CronJob {
+  return {
+    id: row.name,
+    name: row.name,
+    schedule: row.cron || "one-shot",
+    instruction: row.prompt,
+    enabled: row.enabled,
+    status: row.fireStage === "idle" ? "idle" : "running",
+    lastRunAt: row.lastFireAt,
+    output:
+      row.fireCount > 0
+        ? `${row.fireCount} fire${row.fireCount === 1 ? "" : "s"} so far`
+        : null,
+    lastRunSessionId: row.lastFireSessionId || undefined,
+    prompt: row.prompt,
+  };
 }
 
 /**
- * Scheduled agent runs.
+ * Scheduled agent runs, backed by the daemon's schedule registry.
  *
- * Backed by a local mecatl daemon's schedule registry when one answers, mock
- * jobs otherwise. A live schedule fires an agent run unattended, so this hook
- * reads the daemon's durable state back after every action rather than
- * predicting what an action produced.
+ * A live schedule fires an agent run unattended, so this hook reads the
+ * daemon's durable state back after every action rather than predicting what
+ * an action produced.
+ *
+ * A deployment without a schedule store answers the list with an error
+ * (there is no scheduler to be empty): that is the distinct NOT-WIRED state,
+ * never conflated with an empty registry.
  */
 export function useAgentCron() {
-  const [jobs, setJobsState] = useState<CronJob[]>(
-    () => cronStore ?? MOCK_CRON_JOBS,
-  );
-  const [isLoading, setIsLoading] = useState(false);
-  const [harnessLive, setHarnessLive] = useState(false);
-  const liveRef = useRef(false);
+  const { connected } = useRuntimeStatus();
+  const [rows, setRows] = useState<ScheduleRow[]>([]);
+  const [isLoading, setIsLoading] = useState(true);
+  const [notWired, setNotWired] = useState<string | null>(null);
+  const [error, setError] = useState<string | null>(null);
 
-  /** Mirror every job update into the module store so it outlives remounts. */
-  const setJobs = useCallback((action: SetStateAction<CronJob[]>) => {
-    setJobsState((prev) => {
-      const next =
-        typeof action === "function"
-          ? (action as (p: CronJob[]) => CronJob[])(prev)
-          : action;
-      cronStore = next;
-      return next;
-    });
+  const load = useCallback(async (signal?: AbortSignal) => {
+    try {
+      const schedules = await listScheduleRows(signal);
+      if (signal?.aborted) return;
+      setRows(schedules);
+      setNotWired(null);
+    } catch (caught) {
+      if (signal?.aborted) return;
+      setRows([]);
+      setNotWired(caught instanceof Error ? caught.message : String(caught));
+    } finally {
+      if (!signal?.aborted) setIsLoading(false);
+    }
   }, []);
 
-  const loadFromHarness = useCallback(
-    async (signal?: AbortSignal) => {
-      const schedules = await listHarnessSchedules(signal);
-      if (signal?.aborted) return;
-      setJobs(
-        schedules.map((schedule) => ({
-          id: schedule.name,
-          name: schedule.name,
-          schedule: schedule.cron || "one-shot",
-          instruction: schedule.prompt,
-          enabled: schedule.enabled,
-          status: schedule.live ? ("running" as const) : ("idle" as const),
-          lastRunAt: schedule.lastFireAt,
-          output:
-            schedule.fireCount > 0
-              ? `${schedule.fireCount} fire${schedule.fireCount === 1 ? "" : "s"} so far`
-              : null,
-          lastRunSessionId: schedule.lastFireSessionId || undefined,
-        })),
-      );
-    },
-    [setJobs],
-  );
-
   useEffect(() => {
+    if (!connected) return;
     const controller = new AbortController();
-    void (async () => {
-      const probe = await probeHarness(controller.signal);
-      if (controller.signal.aborted || !probe.live) return;
-      setIsLoading(true);
-      try {
-        await loadFromHarness(controller.signal);
-        if (controller.signal.aborted) return;
-        liveRef.current = true;
-        setHarnessLive(true);
-      } catch {
-        // A daemon with no ScheduleStore answers with an error rather than an
-        // empty list; keep the mock jobs instead of showing a bare panel.
-      } finally {
-        if (!controller.signal.aborted) setIsLoading(false);
-      }
-    })();
+    void load(controller.signal);
     return () => controller.abort();
-  }, [loadFromHarness]);
+  }, [connected, load]);
 
   const refresh = useCallback(async () => {
-    if (!liveRef.current) return;
-    await loadFromHarness();
-  }, [loadFromHarness]);
+    await load();
+  }, [load]);
+
+  /** Runs one action then re-reads durable state; refusals surface verbatim. */
+  const perform = useCallback(
+    async (action: () => Promise<void>) => {
+      setError(null);
+      try {
+        await action();
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+        throw caught;
+      } finally {
+        await load();
+      }
+    },
+    [load],
+  );
 
   const createJob = useCallback(
     async (opts: CreateJobInput) => {
-      cronSeq += 1;
-      const job: CronJob = {
-        id: liveRef.current
-          ? opts.name
-          : `cron-${cronSeq}-${slugify(opts.name)}`,
+      // The quick-create path builds a read-only schedule: plan mode, not
+      // mutating — the pairing the daemon accepts without a write opt-in.
+      const draft: ScheduleSpecDraft = {
         name: opts.name,
-        schedule: opts.schedule,
-        instruction: opts.instruction,
-        enabled: opts.enabled ?? true,
-        status: "idle",
-        lastRunAt: null,
-        output: null,
+        prompt: opts.instruction,
+        trigger: { kind: "cron", cron: opts.schedule, timezone: "" },
+        profile: "",
+        workspace: "",
+        mode: PERMISSION_MODES.PERMISSION_MODE_PLAN,
+        mutating: false,
+        maxFires: 0,
+        limits: { maxTurns: 0, maxToolCalls: 0, maxConsecutiveFailures: 0 },
+        oneShotRetry: false,
+        oneShotMaxRetries: 0,
       };
-      if (liveRef.current) {
-        await createHarnessSchedule(opts.name, opts.schedule, opts.instruction);
-        await loadFromHarness();
-        return job;
-      }
-      // Newest first so a freshly created task lands at the top of the list.
-      setJobs((prev) => [job, ...prev]);
-      return job;
+      await perform(() => saveHarnessSchedule(draft, { update: false }));
+      const job = rows.find((row) => row.name === opts.name);
+      return job ? toCronJob(job) : undefined;
     },
-    [loadFromHarness, setJobs],
+    [perform, rows],
   );
 
   const runJob = useCallback(
     async (jobId: string) => {
-      setJobs((prev) =>
-        prev.map((j) =>
-          j.id === jobId ? { ...j, status: "running" as const } : j,
-        ),
-      );
-      if (liveRef.current) {
-        // FireNow is synchronous on the harness: this await lasts the whole run.
-        await harnessScheduleAction(jobId, "fire");
-        await loadFromHarness();
-        return;
-      }
-      setTimeout(() => {
-        setJobs((prev) =>
-          prev.map((j) =>
-            j.id === jobId
-              ? {
-                  ...j,
-                  status: "idle" as const,
-                  lastRunAt: Date.now(),
-                  output: "Job completed successfully (demo).",
-                }
-              : j,
-          ),
-        );
-      }, 2000);
+      // FireNow is synchronous on the daemon: this await lasts the whole run.
+      await perform(() => harnessScheduleAction(jobId, "fire"));
     },
-    [loadFromHarness, setJobs],
+    [perform],
   );
 
   const deleteJob = useCallback(
     async (jobId: string) => {
-      if (liveRef.current) {
-        await harnessScheduleAction(jobId, "delete");
-        await loadFromHarness();
-        return;
-      }
-      setJobs((prev) => prev.filter((j) => j.id !== jobId));
+      await perform(() => harnessScheduleAction(jobId, "delete"));
     },
-    [loadFromHarness, setJobs],
-  );
-
-  const setEnabled = useCallback(
-    async (jobId: string, enabled: boolean) => {
-      if (liveRef.current) {
-        await harnessScheduleAction(jobId, enabled ? "resume" : "pause");
-        await loadFromHarness();
-        return;
-      }
-      setJobs((prev) =>
-        prev.map((j) => (j.id === jobId ? { ...j, enabled } : j)),
-      );
-    },
-    [loadFromHarness, setJobs],
+    [perform],
   );
 
   const pauseJob = useCallback(
-    async (jobId: string) => setEnabled(jobId, false),
-    [setEnabled],
+    async (jobId: string) => {
+      await perform(() => harnessScheduleAction(jobId, "pause"));
+    },
+    [perform],
   );
+
   const resumeJob = useCallback(
-    async (jobId: string) => setEnabled(jobId, true),
-    [setEnabled],
+    async (jobId: string) => {
+      await perform(() => harnessScheduleAction(jobId, "resume"));
+    },
+    [perform],
   );
 
   return {
-    jobs,
-    isLoading,
-    isSupported: true,
-    harnessLive,
+    jobs: rows.map(toCronJob),
+    /** Full decoded rows: mode/mutating/workspace badges, carried spec for edits. */
+    rows,
+    isLoading: isLoading && connected,
+    isSupported: notWired === null,
+    /** The daemon's own words for why scheduling is unavailable, when it is. */
+    notWired,
+    error,
+    harnessLive: connected,
     createJob,
     runJob,
     deleteJob,

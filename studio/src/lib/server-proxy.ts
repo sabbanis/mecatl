@@ -103,7 +103,11 @@ async function forward(
 // resolved server-side (managed: from the controller's /status; external: from
 // MECATL_WORKSPACE) so a machine-specific absolute path never reaches the
 // client bundle, and so the browser can never choose it.
-const workspaceInjectionPaths = new Set(["v1/sessions", "v1/teams"]);
+const workspaceInjectionPaths = new Set([
+  "v1/sessions",
+  "v1/teams",
+  "v1/schedules",
+]);
 
 async function resolveWorkspace(external: string): Promise<string> {
   if (external) return process.env.MECATL_WORKSPACE?.trim() || "";
