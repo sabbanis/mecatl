@@ -20,7 +20,9 @@ export default function WorkspaceLayout({
   return (
     <RuntimeStatusProvider>
       <ShortcutsProvider>
-        <div className="flex h-dvh min-w-0 flex-col bg-[radial-gradient(120%_140%_at_20%_30%,#006652_0%,#03433e_50%,#06202a_100%)]">
+        {/* The design's green radial gradient; dark mode deepens each stop so
+            the shell recedes behind the dark card instead of outglowing it. */}
+        <div className="flex h-dvh min-w-0 flex-col bg-[radial-gradient(120%_140%_at_20%_30%,#006652_0%,#03433e_50%,#06202a_100%)] dark:bg-[radial-gradient(120%_140%_at_20%_30%,#023d31_0%,#022723_50%,#02141b_100%)]">
           <TopNav />
           {/* relative makes the card the containing block for absolutely-
               positioned descendants with no positioned ancestor of their own

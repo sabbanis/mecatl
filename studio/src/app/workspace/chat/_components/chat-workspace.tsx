@@ -176,47 +176,58 @@ function DraftView({
   onShowSidebar: () => void;
 }) {
   return (
-    <div className="relative flex h-full flex-col items-center justify-center gap-6 px-4 lg:px-8">
-      {showSidebarButton && (
-        <Button
-          variant="ghost"
-          size="icon"
-          className="size-8 text-muted-foreground absolute top-3 right-3"
-          onClick={onShowSidebar}
-          aria-label="Show sidebar"
-        >
-          <PanelRight className="size-4" />
-        </Button>
-      )}
-      <div className="w-full max-w-xl space-y-4">
-        <div className="space-y-1.5 text-center">
-          <h1 className="text-2xl font-semibold">What can I help you with?</h1>
-          <p className="text-sm text-muted-foreground">
-            Start a new chat, or pick a starting point below.
-          </p>
+    <div className="flex h-full flex-col">
+      {/* Same header bar as an open chat, so a draft doesn't lose the title
+          row and its controls. */}
+      <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border px-3 lg:gap-3 lg:px-6">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold select-none">
+          New chat
+        </h2>
+        {showSidebarButton && (
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 shrink-0 text-muted-foreground"
+            onClick={onShowSidebar}
+            aria-label="Show sidebar"
+          >
+            <PanelRight className="size-4" />
+          </Button>
+        )}
+      </div>
+      <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 lg:px-8">
+        <div className="w-full max-w-xl space-y-4">
+          <div className="space-y-1.5 text-center">
+            <h1 className="text-2xl font-semibold">
+              What can I help you with?
+            </h1>
+            <p className="text-sm text-muted-foreground">
+              Start a new chat, or pick a starting point below.
+            </p>
+          </div>
+          <div className="space-y-1.5">
+            <ChatInput
+              rows={3}
+              onSend={onSend}
+              initialText={seed}
+              onInitialTextConsumed={onSeedConsumed}
+              placeholder="Start a new chat..."
+            />
+          </div>
+          <div className="flex flex-wrap justify-center gap-2">
+            {STARTER_PROMPTS.map((p) => (
+              <button
+                key={p}
+                type="button"
+                onClick={() => onPickSeed(p)}
+                className="rounded-full border border-border bg-background px-3.5 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
+              >
+                {p}
+              </button>
+            ))}
+          </div>
+          {error && <p className="text-sm text-destructive px-1">{error}</p>}
         </div>
-        <div className="space-y-1.5">
-          <ChatInput
-            rows={3}
-            onSend={onSend}
-            initialText={seed}
-            onInitialTextConsumed={onSeedConsumed}
-            placeholder="Start a new chat..."
-          />
-        </div>
-        <div className="flex flex-wrap justify-center gap-2">
-          {STARTER_PROMPTS.map((p) => (
-            <button
-              key={p}
-              type="button"
-              onClick={() => onPickSeed(p)}
-              className="rounded-full border border-border bg-background px-3.5 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
-            >
-              {p}
-            </button>
-          ))}
-        </div>
-        {error && <p className="text-sm text-destructive px-1">{error}</p>}
       </div>
     </div>
   );
