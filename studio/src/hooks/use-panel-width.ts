@@ -2,8 +2,13 @@
 
 import { useCallback, useSyncExternalStore } from "react";
 
-const STORAGE_KEY = "workspace-sidebar-width";
-const DEFAULT_WIDTH = 340;
+/**
+ * One persisted width, shared by every resizable chat panel — the session
+ * list and the threaded/file side panels read and write the same setting, so
+ * a resize in one carries to the others and survives reloads.
+ */
+const STORAGE_KEY = "workspace-panel-width";
+const DEFAULT_WIDTH = 400;
 const MIN_WIDTH = 200;
 const MAX_WIDTH = 720;
 
@@ -27,7 +32,7 @@ function subscribe(callback: () => void): () => void {
   return () => listeners.delete(callback);
 }
 
-export function useSidebarWidth() {
+export function usePanelWidth() {
   const width = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 
   const setWidth = useCallback((next: number) => {

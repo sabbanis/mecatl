@@ -1,13 +1,14 @@
 "use client";
 
 import { Fullscreen, Minimize2, X } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useEffect, useRef } from "react";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { usePanelWidth } from "@/hooks/use-panel-width";
 import { cn } from "@/lib/utils";
 
 /** Maximize/restore + close controls, spaced apart so they read as two. */
@@ -73,7 +74,6 @@ export function SidePanel({
   onClose,
   headerExtra,
   toolbar,
-  initialWidth = 520,
   minWidth = 320,
   children,
 }: {
@@ -87,11 +87,12 @@ export function SidePanel({
   headerExtra?: React.ReactNode;
   /** Optional row rendered under the header (e.g. a formatting toolbar). */
   toolbar?: React.ReactNode;
-  initialWidth?: number;
   minWidth?: number;
   children: React.ReactNode;
 }) {
-  const [width, setWidth] = useState(initialWidth);
+  // The persisted width shared with the session list, so one resize setting
+  // carries across every chat panel and across reloads.
+  const [width, setWidth] = usePanelWidth();
   const isDragging = useRef(false);
   const panelRef = useRef<HTMLDivElement>(null);
 
@@ -102,6 +103,8 @@ export function SidePanel({
         panelRef.current.parentElement?.getBoundingClientRect();
       if (!parentRect) return;
       const newWidth = parentRect.right - e.clientX;
+      // The store clamps to its own global bounds; the parent-relative cap
+      // keeps the conversation readable on narrow windows.
       setWidth(Math.max(minWidth, Math.min(newWidth, parentRect.width * 0.75)));
     };
     const handleMouseUp = () => {

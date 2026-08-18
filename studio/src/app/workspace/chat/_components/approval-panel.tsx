@@ -75,9 +75,11 @@ export function ApprovalPanel({
       <p className="mb-2 text-sm">{approval.description}</p>
       {actions.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
-          {actions.map((a) => (
+          {/* Parsed actions can repeat (or parse without a verb), so keys
+              carry the position to stay unique. */}
+          {actions.map((a, index) => (
             <Badge
-              key={`${a.connector}-${a.verb}`}
+              key={`${index}:${a.connector}-${a.verb}`}
               variant="secondary"
               className={cn(
                 "gap-1 border-transparent font-mono text-xs",

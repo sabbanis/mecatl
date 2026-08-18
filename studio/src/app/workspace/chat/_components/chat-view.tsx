@@ -211,7 +211,6 @@ function ThreadPanel({
       maximized={maximized}
       onToggleMaximize={onToggleMaximize}
       onClose={onClose}
-      initialWidth={440}
       minWidth={340}
     >
       {/* Body: root message, replies, composer */}
@@ -450,6 +449,12 @@ export function ChatView({
             >
               <ArrowLeft className="size-4" />
             </Button>
+          )}
+          {isStreaming && (
+            <Loader2
+              aria-label="Generating a response"
+              className="size-4 shrink-0 animate-spin text-brand"
+            />
           )}
           <h2
             className="min-w-0 flex-1 truncate text-sm font-semibold select-none"
