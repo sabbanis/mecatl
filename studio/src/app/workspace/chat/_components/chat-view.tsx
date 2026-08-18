@@ -540,7 +540,7 @@ export function ChatView({
               onAddToChat={(text) => setAppendText(text)}
               onAskInSideChat={(text) => setAppendText(text)}
             />
-            <div className="flex-1 min-w-0 flex flex-col gap-0 w-full max-w-[768px] mx-auto">
+            <div className="flex-1 min-w-0 flex flex-col gap-0 w-full max-w-[768px]">
               {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
@@ -580,7 +580,7 @@ export function ChatView({
             </div>
           </div>
           <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-6 pb-4 lg:pb-6">
-            <div className="max-w-[768px] mx-auto space-y-1.5">
+            <div className="max-w-[768px] space-y-1.5">
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
                   <AlertCircle className="size-4 shrink-0 text-destructive" />

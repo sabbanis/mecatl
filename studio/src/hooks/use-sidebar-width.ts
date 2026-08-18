@@ -5,7 +5,7 @@ import { useCallback, useSyncExternalStore } from "react";
 const STORAGE_KEY = "workspace-sidebar-width";
 const DEFAULT_WIDTH = 340;
 const MIN_WIDTH = 200;
-const MAX_WIDTH = 500;
+const MAX_WIDTH = 720;
 
 const listeners = new Set<() => void>();
 
