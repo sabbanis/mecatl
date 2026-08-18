@@ -435,6 +435,37 @@ export function ChatView({
     onSidePanelOpenChange?.(sidePanelOpen);
   }, [sidePanelOpen, onSidePanelOpenChange]);
 
+  // The sidebar toggle renders on the header edge nearest the panel it
+  // controls: leading when the session list docks left, trailing when right.
+  const sidebarToggle = !isMobile && (
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="size-8 shrink-0 text-muted-foreground"
+          onClick={onToggleSidebar}
+          aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+        >
+          {sidebarOpen ? (
+            sidebarSide === "left" ? (
+              <PanelLeftClose className="size-4" />
+            ) : (
+              <PanelRightClose className="size-4" />
+            )
+          ) : sidebarSide === "left" ? (
+            <PanelLeftOpen className="size-4" />
+          ) : (
+            <PanelRightOpen className="size-4" />
+          )}
+        </Button>
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        {sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+      </TooltipContent>
+    </Tooltip>
+  );
+
   return (
     <div className="flex h-full">
       <div
@@ -455,6 +486,7 @@ export function ChatView({
               <ArrowLeft className="size-4" />
             </Button>
           )}
+          {sidebarSide === "left" && sidebarToggle}
           {isStreaming && (
             <Loader2
               aria-label="Generating a response"
@@ -474,34 +506,7 @@ export function ChatView({
               <ContextWindowIndicator usage={usage} />
             </div>
           )}
-          {!isMobile && (
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  variant="ghost"
-                  size="icon"
-                  className="size-8 shrink-0 text-muted-foreground"
-                  onClick={onToggleSidebar}
-                  aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
-                >
-                  {sidebarOpen ? (
-                    sidebarSide === "left" ? (
-                      <PanelLeftClose className="size-4" />
-                    ) : (
-                      <PanelRightClose className="size-4" />
-                    )
-                  ) : sidebarSide === "left" ? (
-                    <PanelLeftOpen className="size-4" />
-                  ) : (
-                    <PanelRightOpen className="size-4" />
-                  )}
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent side="bottom">
-                {sidebarOpen ? "Hide sidebar" : "Show sidebar"}
-              </TooltipContent>
-            </Tooltip>
-          )}
+          {sidebarSide === "right" && sidebarToggle}
           {!isMobile && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
