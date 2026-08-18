@@ -826,16 +826,12 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 	// exempt: its mutating tool lands in the isolated fork, never the shared base.
 	// Team coordination tools report ReadOnly() == false but only mutate TEAM state,
 	// so they are exempted by name regardless.
-	if !needFork {
-		if bad := workspaceMutatingTools(eng.catalogTools(), build.MCPToolNames); len(bad) > 0 {
-			if cleanup != nil {
-				_ = cleanup()
-			}
-			s.team.RemoveMember(spec.Name)
-			return fmt.Errorf("%w: read-only member %q was given workspace-mutating tool(s) %s; "+
-				"a base-sharing member must not be able to mutate the shared workspace (mark it Mutating to run in an isolated fork)",
-				ErrReadOnlyMemberMutating, spec.Name, strings.Join(bad, ", "))
+	if err := validateMemberWorkspaceTools(needFork, eng, build, spec); err != nil {
+		if cleanup != nil {
+			_ = cleanup()
 		}
+		s.team.RemoveMember(spec.Name)
+		return err
 	}
 
 	// Per-member permission mode: a member's agent definition may pin a mode (e.g.
@@ -902,6 +898,19 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 		s.leadName = spec.Name
 	}
 	return nil
+}
+
+func validateMemberWorkspaceTools(needFork bool, eng *Engine, build MemberBuild, spec MemberSpec) error {
+	if needFork {
+		return nil
+	}
+	bad := workspaceMutatingTools(eng.catalogTools(), build.MCPToolNames)
+	if len(bad) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: read-only member %q was given workspace-mutating tool(s) %s; "+
+		"a base-sharing member must not be able to mutate the shared workspace (mark it Mutating to run in an isolated fork)",
+		ErrReadOnlyMemberMutating, spec.Name, strings.Join(bad, ", "))
 }
 
 // maybeRouteMember consults the OPT-IN semantic model router (ADR 0034) for a PLAIN

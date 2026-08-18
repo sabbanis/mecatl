@@ -133,7 +133,7 @@ type catalogAssets struct {
 	learningAdmission     *learningAdmission
 	reflectionCoordinator *reflectionCoordinator
 	reflectionRepository  learning.ProposalRepository
-	rootAuthority        string
+	rootAuthority         string
 }
 
 // catalogSession is the PER-CATALOG variation: the resolved provider/model the

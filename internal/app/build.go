@@ -2211,6 +2211,22 @@ func selectedProviderModel(reg *providerRegistry, providerID, model string) stri
 	return reg.DefaultModelFor(providerID)
 }
 
+func resolveSessionProvider(reg *providerRegistry, fallback port.LLMProvider, fallbackModel string, sel server.ProviderSelector) (port.LLMProvider, string, string, error) {
+	providerID := reg.Default()
+	if sel.ProviderID == "" {
+		if fallbackModel == "" {
+			provider, model := adoptHealedDefault(reg, providerID, fallback)
+			return provider, providerID, model, nil
+		}
+		return fallback, providerID, fallbackModel, nil
+	}
+	entry, ok := reg.Lookup(sel.ProviderID)
+	if !ok {
+		return nil, "", "", fmt.Errorf("%w: unknown or unavailable provider %q", server.ErrInvalidArgument, sel.ProviderID)
+	}
+	return entry.provider, sel.ProviderID, selectedProviderModel(reg, sel.ProviderID, sel.ModelID), nil
+}
+
 func sessionEngineFactory(
 	cfg Config,
 	reg *providerRegistry,
@@ -2246,21 +2262,9 @@ func sessionEngineFactory(
 		// keeps the default provider + cfg.Model (pre-S3 behaviour). resolvedProviderID
 		// is threaded so the per-session capability intersection (modelCapability) keys
 		// on the right provider — the zero selector uses the registry default.
-		resolvedProvider, resolvedModel := provider, cfg.Model
-		resolvedProviderID := reg.Default()
-		if sel.ProviderID == "" && resolvedModel == "" {
-			resolvedProvider, resolvedModel = adoptHealedDefault(reg, resolvedProviderID, resolvedProvider)
-		}
-		if sel.ProviderID != "" {
-			entry, ok := reg.Lookup(sel.ProviderID)
-			if !ok {
-				return server.SessionEngineResult{}, fmt.Errorf("%w: unknown or unavailable provider %q", server.ErrInvalidArgument, sel.ProviderID)
-			}
-			resolvedProvider = entry.provider
-			resolvedProviderID = sel.ProviderID
-			// Empty model means this selected provider's own default. It must not
-			// inherit cfg.Model, which is resolved for the daemon default provider.
-			resolvedModel = selectedProviderModel(reg, sel.ProviderID, sel.ModelID)
+		resolvedProvider, resolvedProviderID, resolvedModel, err := resolveSessionProvider(reg, provider, cfg.Model, sel)
+		if err != nil {
+			return server.SessionEngineResult{}, err
 		}
 		// MODE→MODEL RE-RESOLUTION (ADR 0030 Layer 3, the opusplan pattern). When the
 		// session's PermissionMode is ModePlan and a `plan` slot resolves, the engine's
@@ -6829,6 +6833,13 @@ func applyMemberRoute(cfg Config, provReg *providerRegistry, parentProviderID, r
 	return rm, childWindowFor(cfg, provReg, parentProviderID, rm), promptConfig(modelCfgFor(cfg, rm), cfg.gitStatus)
 }
 
+func resolveNoFSMemberModel(cfg Config, provReg *providerRegistry, parentProviderID, routedModel, model string, windowFn func() int) (string, func() int) {
+	if routedModel = strings.TrimSpace(routedModel); routedModel != "" {
+		return routedModel, childWindowFor(cfg, provReg, parentProviderID, routedModel)
+	}
+	return model, windowFn
+}
+
 // base-sharing read-only-member backstop stays sound. `a` is read only when noFS.
 func buildMemberEngine(cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, teamHooks port.HookRunner, reg *agents.Registry, skillIdx skillIndex, runner, mutatingRunner tool.CommandRunner, roIsolationAvailable bool, mainMgr *mcp.Manager, a catalogAssets, noFS bool) server.MemberEngineFactory {
 	cfg.operatorProfileSource, _ = a.userModelStore.(prompt.OperatorProfileSource)
@@ -6840,10 +6851,7 @@ func buildMemberEngine(cfg Config, provReg *providerRegistry, provider port.LLMP
 			// the SAME contamination-safe newChildEngineForProvider path the default uses.
 			// (The no-FS member is always undefined here — agent-def adoption is skipped on
 			// this branch — so any routedModel applies.) Empty routedModel = today's default.
-			if rm := strings.TrimSpace(routedModel); rm != "" {
-				model = rm
-				windowFn = childWindowFor(cfg, provReg, parentProviderID, rm)
-			}
+			model, windowFn = resolveNoFSMemberModel(cfg, provReg, parentProviderID, routedModel, model, windowFn)
 			cat := noFSChildCatalog(context.Background(), cfg, a)
 			// Exempt the catalog's non-workspace mutators (memory writers, MCP
 			// tools) BEFORE the coordination tools are added (those are exempted
