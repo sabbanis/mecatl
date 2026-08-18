@@ -1,18 +1,13 @@
 import { defineConfig, devices } from "@playwright/test";
 
-const BASE_URL = process.env.BASE_URL || "http://localhost:3000";
+const BASE_URL = process.env.BASE_URL || "http://127.0.0.1:3300";
+const FIXTURE_PORT = 8099;
 
-async function isServerRunning(): Promise<boolean> {
-  try {
-    await fetch(BASE_URL, { signal: AbortSignal.timeout(2000) });
-    return true;
-  } catch {
-    return false;
-  }
-}
-
-const serverAlreadyRunning = await isServerRunning();
-
+/**
+ * E2E runs the production build in EXTERNAL mode against the fixture daemon
+ * (tests/e2e/fixture-daemon.mjs): browser → real proxy tier → fixture wire.
+ * `npm run test:e2e` builds first.
+ */
 export default defineConfig({
   testDir: "./tests/e2e",
   fullyParallel: true,
@@ -31,17 +26,22 @@ export default defineConfig({
       use: { ...devices["Desktop Chrome"] },
     },
   ],
-  // Runs against a production build (`npm run build` first). The spec brings
-  // its own hermetic fake-daemon fixture; no other servers are involved.
-  webServer: serverAlreadyRunning
-    ? undefined
-    : [
-        {
-          command: "npm run start",
-          url: BASE_URL,
-          timeout: 120_000,
-          stdout: "pipe",
-          stderr: "pipe",
-        },
-      ],
+  webServer: [
+    {
+      command: `node tests/e2e/fixture-daemon.mjs`,
+      url: `http://127.0.0.1:${FIXTURE_PORT}/v1/models`,
+      timeout: 15_000,
+      env: { FIXTURE_DAEMON_PORT: String(FIXTURE_PORT) },
+    },
+    {
+      command: `npx next start -p ${new URL(BASE_URL).port}`,
+      url: BASE_URL,
+      timeout: 120_000,
+      env: {
+        MECATL_BASE_URL: `http://127.0.0.1:${FIXTURE_PORT}`,
+        MECATL_WORKSPACE: "/workspace/fixture",
+        MECATL_STUDIO_PUBLIC_ORIGIN: BASE_URL,
+      },
+    },
+  ],
 });

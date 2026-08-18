@@ -25,7 +25,9 @@ import {
   translateEvent,
 } from "@/lib/protocol";
 
-const HARNESS_API = "/api/mecatl";
+// The daemon API base: the proxy is transparent (no path rewriting), so the
+// /v1 prefix belongs to the client's own URLs.
+const HARNESS_API = "/api/mecatl/v1";
 
 export interface HarnessStatus {
   live: boolean;
