@@ -43,7 +43,9 @@ test("memory renders the user model, read-only", async ({ page }) => {
 test("external mode marks runtime settings as deployment-owned", async ({
   page,
 }) => {
-  await page.goto("/workspace/settings");
+  // Settings is subpages now; the runtime sections live under their own
+  // routes, so the assertion targets the provider page directly.
+  await page.goto("/workspace/settings/provider");
   await expect(
     page.getByText("Managed by the external mecated deployment").first(),
   ).toBeVisible();
