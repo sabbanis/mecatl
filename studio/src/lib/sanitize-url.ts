@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Proprietary
+// SPDX-License-Identifier: Apache-2.0
 
 // Validates a customer-supplied logo / favicon URL: absolute http(s) only.
 // Returns the input unchanged when valid, `undefined` otherwise.
