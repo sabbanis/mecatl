@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2, PanelLeft, SquarePen } from "lucide-react";
+import { Loader2, PanelRight, SquarePen } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -11,7 +11,9 @@ import {
 } from "@/components/ui/tooltip";
 import {
   type AgentSession,
+  type RosterAgent,
   useAgentChat,
+  useAgentRoster,
   useAgentSessions,
 } from "@/features/agent";
 import { useConfirm } from "@/hooks/use-confirm";
@@ -25,6 +27,7 @@ import { ChatInput } from "../../_components/chat-input";
 import { ResizeHandle } from "../../_components/resize-handle";
 import { ChatView } from "./chat-view";
 import {
+  AgentList,
   type SessionActions,
   SessionList,
   SidebarGroup,
@@ -76,6 +79,7 @@ function SidebarContent({
   isLoading,
   error,
   groups,
+  agents,
   selectedId,
   onSelect,
   actions,
@@ -84,14 +88,17 @@ function SidebarContent({
   isLoading: boolean;
   error: string | null;
   groups: { label: string; sessions: AgentSession[] }[];
+  agents: RosterAgent[];
   selectedId: string;
   onSelect: (id: string) => void;
   actions: SessionActions;
 }) {
   return (
     <>
-      <div className="flex h-[60px] lg:h-[65px] shrink-0 items-center gap-0.5 border-b border-border px-3 lg:px-4">
-        <h2 className="min-w-0 flex-1 truncate text-sm font-semibold">Chats</h2>
+      <div className="flex h-16 shrink-0 items-center gap-0.5 border-b border-border px-3 lg:px-4">
+        <h2 className="min-w-0 flex-1 truncate text-sm font-medium">
+          Session List
+        </h2>
         <Tooltip>
           <TooltipTrigger asChild>
             <Button
@@ -138,6 +145,13 @@ function SidebarContent({
             </p>
           )
         )}
+        {!isLoading && agents.length > 0 && (
+          <div className={groups.length > 0 ? "pt-3" : undefined}>
+            <SidebarGroup label="Agents">
+              <AgentList agents={agents} onStartChat={onNewChat} />
+            </SidebarGroup>
+          </div>
+        )}
       </div>
     </>
   );
@@ -167,11 +181,11 @@ function DraftView({
         <Button
           variant="ghost"
           size="icon"
-          className="size-8 text-muted-foreground absolute top-3 left-3"
+          className="size-8 text-muted-foreground absolute top-3 right-3"
           onClick={onShowSidebar}
           aria-label="Show sidebar"
         >
-          <PanelLeft className="size-4" />
+          <PanelRight className="size-4" />
         </Button>
       )}
       <div className="w-full max-w-xl space-y-4">
@@ -224,6 +238,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     renameSession,
     refreshSessions,
   } = useAgentSessions();
+  const { agents } = useAgentRoster();
   const router = useRouter();
   const { name: agentName } = useAgentDisplayName();
   const isMobile = useIsMobile();
@@ -448,6 +463,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     isLoading: sessionsLoading,
     error: sessionsError,
     groups,
+    agents,
     selectedId,
     onSelect: handleSelectSession,
     actions: sessionActions,
@@ -523,40 +539,6 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   return (
     <div className="relative flex h-full">
       {dialogs}
-      {sidebarOpen &&
-        (isCompact ? (
-          <>
-            {/* Backdrop closes the overlay sidebar on outside click */}
-            <button
-              type="button"
-              aria-label="Close sidebar"
-              className="absolute inset-0 z-30 bg-black/20"
-              onClick={() => setSidebarOpen(false)}
-            />
-            <div
-              className="absolute inset-y-0 left-0 z-40 flex flex-col border-r border-border bg-background shadow-lg"
-              style={{ width: sidebarWidth }}
-            >
-              <ResizeHandle
-                width={sidebarWidth}
-                onWidthChange={setSidebarWidth}
-              />
-              <SidebarContent {...sidebarContentProps} />
-            </div>
-          </>
-        ) : (
-          <div
-            className="relative flex shrink-0 flex-col border-r border-border bg-background"
-            style={{ width: sidebarWidth }}
-          >
-            <ResizeHandle
-              width={sidebarWidth}
-              onWidthChange={setSidebarWidth}
-            />
-            <SidebarContent {...sidebarContentProps} />
-          </div>
-        ))}
-
       <div className="flex-1 overflow-hidden">
         {selectedSession ? (
           chatView(sidebarOpen, () => setSidebarOpen((o) => !o))
@@ -572,6 +554,44 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           />
         )}
       </div>
+
+      {sidebarOpen &&
+        (isCompact ? (
+          <>
+            {/* Backdrop closes the overlay sidebar on outside click */}
+            <button
+              type="button"
+              aria-label="Close sidebar"
+              className="absolute inset-0 z-30 bg-black/20"
+              onClick={() => setSidebarOpen(false)}
+            />
+            <div
+              className="absolute inset-y-0 right-0 z-40 flex flex-col border-l border-border bg-background shadow-lg"
+              style={{ width: sidebarWidth }}
+            >
+              {/* Handle on the panel's left edge: dragging left widens */}
+              <ResizeHandle
+                direction="left"
+                width={sidebarWidth}
+                onWidthChange={setSidebarWidth}
+              />
+              <SidebarContent {...sidebarContentProps} />
+            </div>
+          </>
+        ) : (
+          <div
+            className="relative flex shrink-0 flex-col border-l border-border bg-background"
+            style={{ width: sidebarWidth }}
+          >
+            {/* Handle on the panel's left edge: dragging left widens */}
+            <ResizeHandle
+              direction="left"
+              width={sidebarWidth}
+              onWidthChange={setSidebarWidth}
+            />
+            <SidebarContent {...sidebarContentProps} />
+          </div>
+        ))}
     </div>
   );
 }

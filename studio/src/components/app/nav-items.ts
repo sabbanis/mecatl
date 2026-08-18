@@ -1,9 +1,9 @@
 /**
- * The Atrium workspace console's sidebar configuration.
- *
- * The app is Atrium-only: a single rail of workspace destinations — the in-app
- * chat plus the state that outlives a turn (Skills, Memory, Scheduled). The
- * wordmark and home both point at Chats.
+ * The Atrium workspace navigation configuration — the single canonical
+ * nav-items module. The top nav is generic over the `ShellNav` built here:
+ * a single row of workspace destinations — the in-app chat plus the state
+ * that outlives a turn (Skills, Memory, Scheduled). The wordmark and home
+ * both point at Chats.
  */
 
 import {
@@ -13,8 +13,35 @@ import {
   MessageCircle,
   Settings,
 } from "lucide-react";
-import type { ShellNav } from "@/components/shell/nav-items";
+import type { ComponentType } from "react";
 import { ATRIUM_WORKSPACE_HOME } from "@/lib/feature-flags";
+
+interface NavItem {
+  /** Stable key for React keys and test selectors. */
+  readonly key: string;
+  /** Nav label (pill text when active, tooltip when inactive). */
+  readonly label: string;
+  /** Absolute route this destination points at. */
+  readonly href: string;
+  /** Nav icon. */
+  readonly icon: ComponentType<{ className?: string }>;
+}
+
+/**
+ * The console's navigation configuration. One value drives the whole shell:
+ * the top-nav destinations and the wordmark's home link.
+ */
+export interface ShellNav {
+  /** The console's root route (used for the "home" active-state rule). */
+  readonly homeHref: string;
+  /** Where the wordmark links, if different from `homeHref` (e.g. Atrium
+      sends the logo to the workspace chats rather than the gateway home). */
+  readonly logoHref?: string;
+  /** `aria-label` for the `<nav>` landmark. */
+  readonly navLabel: string;
+  /** Ordered nav destinations. */
+  readonly items: readonly NavItem[];
+}
 
 /** Builds the Atrium workspace `ShellNav`. */
 export function buildUserNav(): ShellNav {

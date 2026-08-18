@@ -1,7 +1,17 @@
-import { ConsoleShell } from "@/components/shell/console-shell";
-import { SidebarProvider } from "@/components/ui/sidebar";
+import { TopNav } from "@/components/shell/top-nav";
 import { RuntimeStatusProvider } from "@/features/agent/runtime-status";
+import { ShortcutsProvider } from "@/lib/shortcuts/use-shortcuts";
 
+/**
+ * The workspace shell: a fixed dark-green radial gradient carrying the top
+ * navigation bar, with all five surfaces rendered inside one rounded card
+ * that follows the theme. The gradient itself is a fixed brand colour —
+ * identical in light and dark themes — so only the card interior themes.
+ *
+ * `RuntimeStatusProvider` stays outermost: its offline banner renders above
+ * the top nav at full width. Workspace sections manage their own scrolling
+ * and padding inside the card (`h-full overflow-y-auto …`).
+ */
 export default function WorkspaceLayout({
   children,
 }: Readonly<{
@@ -9,14 +19,19 @@ export default function WorkspaceLayout({
 }>) {
   return (
     <RuntimeStatusProvider>
-      <SidebarProvider defaultOpen={false}>
-        {/* Not SidebarInset: the shell renders the page's one <main>, and
-            SidebarInset is itself a <main>, which would nest them. This div
-            carries the flex sizing the shell layout needs. */}
-        <div className="h-screen min-w-0 flex-1">
-          <ConsoleShell>{children}</ConsoleShell>
+      <ShortcutsProvider>
+        <div className="flex h-dvh min-w-0 flex-col bg-[radial-gradient(120%_140%_at_20%_30%,#006652_0%,#03433e_50%,#06202a_100%)]">
+          <TopNav />
+          {/* relative makes the card the containing block for absolutely-
+              positioned descendants with no positioned ancestor of their own
+              — notably the hidden form-integration checkbox Radix renders
+              beside each Switch inside a <form>. Without it those boxes
+              resolve to the document and grow the page itself. */}
+          <main className="relative mx-5 mb-5 min-h-0 flex-1 overflow-hidden rounded-[20px] bg-background text-foreground">
+            {children}
+          </main>
         </div>
-      </SidebarProvider>
+      </ShortcutsProvider>
     </RuntimeStatusProvider>
   );
 }

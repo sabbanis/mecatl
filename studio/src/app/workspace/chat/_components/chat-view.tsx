@@ -9,7 +9,7 @@ import {
   Loader2,
   MessageCircle,
   MessageSquareText,
-  PanelLeftOpen,
+  PanelRightClose,
   PanelRightOpen,
   Pencil,
   RotateCcw,
@@ -439,39 +439,18 @@ export function ChatView({
           panelMaximized && "hidden",
         )}
       >
-        <div className="flex h-[60px] lg:h-[65px] items-center gap-2 lg:gap-3 border-b border-border px-3 lg:px-6">
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-7 lg:size-9 shrink-0 text-muted-foreground"
-                onClick={onToggleSidebar}
-                aria-label={
-                  isMobile
-                    ? "Back to chats"
-                    : sidebarOpen
-                      ? "Hide sidebar"
-                      : "Show sidebar"
-                }
-              >
-                {isMobile ? (
-                  <ArrowLeft className="size-4" />
-                ) : sidebarOpen ? (
-                  <PanelRightOpen className="size-4" />
-                ) : (
-                  <PanelLeftOpen className="size-4" />
-                )}
-              </Button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom">
-              {isMobile
-                ? "Back to chats"
-                : sidebarOpen
-                  ? "Hide sidebar"
-                  : "Show sidebar"}
-            </TooltipContent>
-          </Tooltip>
+        <div className="flex h-16 items-center gap-2 lg:gap-3 border-b border-border px-3 lg:px-6">
+          {isMobile && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 text-muted-foreground"
+              onClick={onToggleSidebar}
+              aria-label="Back to chats"
+            >
+              <ArrowLeft className="size-4" />
+            </Button>
+          )}
           <h2
             className="min-w-0 flex-1 truncate text-sm font-semibold select-none"
             onDoubleClick={onRename}
@@ -486,12 +465,34 @@ export function ChatView({
             </div>
           )}
           {!isMobile && (
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0 text-muted-foreground"
+                  onClick={onToggleSidebar}
+                  aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+                >
+                  {sidebarOpen ? (
+                    <PanelRightClose className="size-4" />
+                  ) : (
+                    <PanelRightOpen className="size-4" />
+                  )}
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent side="bottom">
+                {sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+              </TooltipContent>
+            </Tooltip>
+          )}
+          {!isMobile && (
             <DropdownMenu>
               <DropdownMenuTrigger asChild>
                 <Button
                   variant="ghost"
                   size="icon"
-                  className="size-8 shrink-0 text-muted-foreground ml-2 lg:ml-4"
+                  className="size-8 shrink-0 text-muted-foreground"
                 >
                   <Ellipsis className="size-4" />
                 </Button>
@@ -539,7 +540,7 @@ export function ChatView({
               onAddToChat={(text) => setAppendText(text)}
               onAskInSideChat={(text) => setAppendText(text)}
             />
-            <div className="flex-1 min-w-0 flex flex-col gap-0 max-w-3xl">
+            <div className="flex-1 min-w-0 flex flex-col gap-0 w-full max-w-[768px] mx-auto">
               {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
@@ -579,7 +580,7 @@ export function ChatView({
             </div>
           </div>
           <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-6 pb-4 lg:pb-6">
-            <div className="max-w-3xl space-y-1.5">
+            <div className="max-w-[768px] mx-auto space-y-1.5">
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
                   <AlertCircle className="size-4 shrink-0 text-destructive" />

@@ -27,6 +27,7 @@ const config: KnipConfig = {
     "@radix-ui/react-checkbox",
     "@radix-ui/react-popover",
     "@radix-ui/react-progress",
+    "@radix-ui/react-separator",
     "@radix-ui/react-toggle",
     "@radix-ui/react-toggle-group",
   ],

@@ -1,6 +1,6 @@
 "use client";
 
-import { Ellipsis, Loader2, Pencil, Trash2 } from "lucide-react";
+import { Bot, Ellipsis, Pencil, Trash2 } from "lucide-react";
 import { useState } from "react";
 import {
   DropdownMenu,
@@ -9,7 +9,7 @@ import {
   DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
-import type { AgentSession } from "@/features/agent";
+import type { AgentSession, RosterAgent } from "@/features/agent";
 import { formatRelativeTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 
@@ -109,12 +109,15 @@ function SessionRow({
   actions: SessionActions;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const isRunning = session.isStreaming || session.state === "running";
 
   return (
     <div
       className={cn(
-        "group flex items-center border-l-[3px] border-transparent py-2 pr-3 lg:pr-2 pl-6 transition-colors",
-        isSelected ? "border-brand-ink bg-accent" : "hover:bg-accent",
+        "group flex items-center border-l-[3px] py-2 pr-3 lg:pr-2 pl-3 transition-colors",
+        isSelected
+          ? "border-brand bg-brand/10"
+          : "border-transparent hover:bg-accent",
       )}
     >
       <button
@@ -127,27 +130,28 @@ function SessionRow({
         }
         aria-current={isSelected ? "true" : undefined}
         aria-label={`Open chat: ${session.title || "Untitled"}${
-          session.isStreaming ? " (running)" : ""
+          isRunning ? " (running)" : ""
         }`}
         className="flex-1 min-w-0 text-left"
       >
         <span
           className={cn(
-            "truncate text-[0.85rem] block select-none",
+            "truncate text-[0.85rem] block select-none font-medium",
             isSelected
-              ? "font-medium text-brand-ink"
-              : "font-medium text-muted-foreground group-hover:text-foreground",
+              ? "text-brand-ink"
+              : "text-muted-foreground group-hover:text-foreground",
           )}
         >
           {session.title || "Untitled"}
         </span>
       </button>
       <div className="shrink-0 ml-2 grid w-8 items-center justify-items-center [grid-template-areas:'slot']">
-        {session.isStreaming ? (
-          <Loader2
+        {isRunning ? (
+          <span
+            role="img"
             aria-label="Running"
             className={cn(
-              "[grid-area:slot] size-3.5 animate-spin text-brand",
+              "[grid-area:slot] size-2 rounded-full bg-brand animate-pulse",
               menuOpen ? "lg:invisible" : "lg:group-hover:invisible",
             )}
           />
@@ -215,11 +219,45 @@ export function SessionList({
         <button
           type="button"
           onClick={() => setShowAll((v) => !v)}
-          className="pl-6 pr-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors text-left"
+          className="pl-[15px] pr-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors text-left"
         >
           {showAll ? "Show less" : `Show ${sessions.length - 8} more`}
         </button>
       )}
+    </div>
+  );
+}
+
+/**
+ * The daemon's real agent roster, listed below the chat groups. Agents are
+ * not chat containers — selecting one simply starts a new chat draft.
+ */
+export function AgentList({
+  agents,
+  onStartChat,
+}: {
+  agents: RosterAgent[];
+  onStartChat: () => void;
+}) {
+  return (
+    <div className="flex flex-col">
+      {agents.map((agent) => (
+        <button
+          key={agent.name}
+          type="button"
+          onClick={onStartChat}
+          title={agent.description || undefined}
+          aria-label={`New chat with ${agent.name}`}
+          className="group flex items-center gap-2.5 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left transition-colors hover:bg-accent"
+        >
+          <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+            <Bot className="size-3.5" />
+          </span>
+          <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground group-hover:text-foreground select-none">
+            {agent.name}
+          </span>
+        </button>
+      ))}
     </div>
   );
 }
