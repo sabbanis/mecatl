@@ -1,4 +1,4 @@
-// SPDX-License-Identifier: Proprietary
+// SPDX-License-Identifier: Apache-2.0
 // Copyright (c) Stacklok, Inc. All rights reserved.
 
 import { expect, it, vi } from "vitest";
