@@ -161,6 +161,7 @@ func WithSubagentOwnershipEnforced(ownershipEnforced bool) SubagentOption
 func WithSubagentShellDisabledNote(reason string) SubagentOption
 func WithSubagentStopHook(h port.HookRunner) SubagentOption
 func WithSubagentStore(store port.SessionStore) SubagentOption
+func WithTeamAuthority(authority governance.Authority) SupervisorOption
 func WithTeamConcurrency(n int) SupervisorOption
 func WithTeamGoal(goal string) SupervisorOption
 func WithTeamHooks(h port.HookRunner) SupervisorOption
@@ -179,7 +180,7 @@ func WithWinnerReaper(s PreservedForkStore) ParallelOption
 func WithWritableChildEngine(e *Engine) SubagentOption
 func WithWritableEngineFactory(f func(model string) (*Engine, bool)) SubagentOption
 func WriteUntrustedBlock(b *strings.Builder, body string)
-type AgentMeta struct{Name string; Description string; Limits session.Limits}
+type AgentMeta struct{Name string; Description string; AuthorityCeiling *string; DefinitionIdentity string; Limits session.Limits}
 type BashStatusTool struct{}
 type BashTool struct{}
 type BranchJudge interface{Judge(ctx context.Context, candidates []BranchSummary, criteria string) (winner int, rationale string, err error)}
@@ -189,7 +190,7 @@ type ChildAskReview struct{Allowed bool; Reason string}
 type ChildAskReviewRequest struct{Ask session.PendingAsk; Isolated bool}
 type ChildAskReviewer interface{Review(ctx context.Context, req ChildAskReviewRequest) (ChildAskReview, error)}
 type Compactor interface{Compact(ctx context.Context, conv *session.Conversation) (compacted []session.Message, summary string, err error)}
-type Deps struct{LLM port.LLMProvider; Catalog *tool.Catalog; Policy port.PermissionPolicy; Hooks port.HookRunner; Store port.SessionStore; Clock port.Clock; ToolCallRecorder port.ToolCallRecorder; Sink port.EventSink; Diagnostics port.Diagnostics; LearningMode learning.Mode; LearningObserver learning.Observer; Compactor Compactor; TokenCounter TokenCounter; Instructions prompt.InstructionAssembler; CommandExpander prompt.CommandExpander; PromptConfig prompt.Config; PromptBuilder prompt.Builder; OperatorProfileSource prompt.OperatorProfileSource; Model string; ContextWindow func() int; CompactionRatio float64; Role string; MaxNoProgressNudges int; Interactive bool; PlanModeAutoApprove bool; ChildAskReviewer ChildAskReviewer; ChildAskReviewMaxDenies int; MaxRunTokens int; SubagentModelRouter func(ctx context.Context, taskPrompt string) (category string, model string, usage session.Usage, missReason string, ok bool); ProgressiveTools bool; DeliveryQueue port.DeliveryQueue}
+type Deps struct{LLM port.LLMProvider; Catalog *tool.Catalog; Policy port.PermissionPolicy; Hooks port.HookRunner; Store port.SessionStore; Clock port.Clock; ToolCallRecorder port.ToolCallRecorder; Sink port.EventSink; Diagnostics port.Diagnostics; LearningMode learning.Mode; LearningObserver learning.Observer; Compactor Compactor; TokenCounter TokenCounter; Instructions prompt.InstructionAssembler; CommandExpander prompt.CommandExpander; PromptConfig prompt.Config; PromptBuilder prompt.Builder; OperatorProfileSource prompt.OperatorProfileSource; Model string; ContextWindow func() int; CompactionRatio float64; Role string; MaxNoProgressNudges int; Interactive bool; PlanModeAutoApprove bool; ChildAskReviewer ChildAskReviewer; ChildAskReviewMaxDenies int; MaxRunTokens int; SubagentModelRouter func(ctx context.Context, taskPrompt string) (category string, model string, usage session.Usage, missReason string, ok bool); AuthorityRevoker func(context.Context, session.SessionID) (governance.Authority, error); ProgressiveTools bool; DeliveryQueue port.DeliveryQueue}
 type Engine struct{}
 type EngineAskReviewerOption func(*engineAskReviewer)
 type EngineJudgeOption func(*engineJudge)
@@ -199,7 +200,7 @@ type HeuristicTokenCounter struct{CharsPerToken int}
 type InspectMemberTool struct{}
 type InspectSubagentTool struct{}
 type LRUForkReaper struct{}
-type MemberBuild struct{Engine *Engine; Mode session.PermissionMode; Limits session.Limits; Close func() error; MCPToolNames []string; IsolateReadOnly bool}
+type MemberBuild struct{Engine *Engine; Mode session.PermissionMode; Limits session.Limits; AuthorityCeiling *string; DefinitionIdentity string; Close func() error; MCPToolNames []string; IsolateReadOnly bool}
 type MemberDisposition string
 type MemberEngine func(spec MemberSpec, routedModel string) MemberBuild
 type MemberOutcome struct{Name string; LastText string; Stopped bool; Disposition MemberDisposition; Reason MemberStopReason; ErrorRounds int; Completed []string; Lead bool}

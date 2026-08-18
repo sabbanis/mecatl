@@ -105,6 +105,12 @@ type SessionMeta struct {
 	// the event stream. An empty kind is legacy and folds to unknown.
 	Kind         session.SessionKind
 	Relationship session.SessionRelationship
+	// AuthorityVersion distinguishes supplied v1 authority provenance from legacy
+	// event metadata. Nil and an explicit zero version are legacy; v1 requires a
+	// valid AuthorityBound and optional safe DefinitionIdentity.
+	AuthorityVersion   *int
+	AuthorityBound     string
+	DefinitionIdentity string
 	// CreatedAt is the creation timestamp.
 	CreatedAt time.Time
 }
@@ -150,6 +156,9 @@ func Fold(meta SessionMeta, events iter.Seq2[session.Event, error]) (*session.Se
 	if err := s.RestoreSessionMetadata(meta.Kind, meta.Relationship); err != nil {
 		return nil, fmt.Errorf("%w: %w", ErrReconstruct, err)
 	}
+	if err := restoreAuthorityProvenance(s, meta); err != nil {
+		return nil, fmt.Errorf("%w: %w", ErrReconstruct, err)
+	}
 	// Inert creation labels — opaque to the domain, restored by direct assignment
 	// exactly as sessnap.Restore does (these are authoritative exported values, not
 	// state transitions).
@@ -188,6 +197,25 @@ func Fold(meta SessionMeta, events iter.Seq2[session.Event, error]) (*session.Se
 	// title survives compaction here (better than the snapshot lazy fallback).
 	s.SetTitle(f.firstGenuineText)
 	return s, nil
+}
+
+func restoreAuthorityProvenance(s *session.Session, meta SessionMeta) error {
+	if meta.AuthorityVersion == nil || *meta.AuthorityVersion == 0 {
+		if meta.AuthorityBound != "" || meta.DefinitionIdentity != "" {
+			return errors.New("authority provenance without v1 version")
+		}
+		return s.RestoreAuthorityBound("", "", true)
+	}
+	if *meta.AuthorityVersion != 1 {
+		return fmt.Errorf("unsupported authority version %d", *meta.AuthorityVersion)
+	}
+	if meta.AuthorityBound == "" {
+		return errors.New("v1 authority provenance has no bound")
+	}
+	if err := s.RestoreAuthorityBound(meta.AuthorityBound, meta.DefinitionIdentity, false); err != nil {
+		return fmt.Errorf("invalid v1 authority provenance: %w", err)
+	}
+	return nil
 }
 
 // reconstructAwaiting rebuilds a session parked on a permission ask. The fold left

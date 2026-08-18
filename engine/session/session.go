@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"slices"
 	"strings"
 	"time"
 )
@@ -421,6 +422,15 @@ type Session struct {
 	// consequences). Nothing in this plan reads or writes it beyond the snapshot
 	// round-trip; the zero value means "unset". Stamped through RestoreLabels.
 	Authority Authority
+	// authority is the canonical, versioned authority maximum. It is opaque here
+	// so session stays independent from governance's capability vocabulary.
+	authority string
+	// definitionIdentity is safe tier/name provenance for a definition ceiling.
+	// It is never a path, credential, header, or raw claim.
+	definitionIdentity string
+	// authorityCompatibilityOnly distinguishes a pre-v1 legacy session from a
+	// v1 session with an invalid or empty authority bound.
+	authorityCompatibilityOnly bool
 	// Kind classifies the trusted producer and continuation posture. New creates
 	// main sessions; delegated/scheduled producers use the validated constructors.
 	Kind SessionKind
@@ -490,6 +500,186 @@ func New(id SessionID, mode PermissionMode, workspace string, limits Limits, cre
 		Kind:         SessionKindMain,
 		CreatedAt:    createdAt,
 	}
+}
+
+// BindAuthority attaches a canonical authority maximum before the session can
+// run. The bound is opaque to session; its capability grammar belongs to the
+// governance layer. It is write-once so supported session paths cannot widen it.
+func (s *Session) BindAuthority(authority, definitionIdentity string) error {
+	if s.State != StateIdle {
+		return fmt.Errorf("%w: BindAuthority from %q", ErrIllegalTransition, s.State)
+	}
+	if authority == "" {
+		return errors.New("session: empty authority bound")
+	}
+	if s.authority != "" || s.authorityCompatibilityOnly {
+		return errors.New("session: authority already bound")
+	}
+	if !safeDefinitionIdentity(definitionIdentity) {
+		return errors.New("session: unsafe definition identity")
+	}
+	canonical, err := canonicalAuthorityBound(authority)
+	if err != nil {
+		return fmt.Errorf("session: invalid authority bound: %w", err)
+	}
+	s.authority = canonical
+	s.definitionIdentity = definitionIdentity
+	return nil
+}
+
+// RestoreAuthorityBound restores authority provenance before snapshot lifecycle
+// replay. compatibilityOnly marks a genuinely pre-v1 record; missing v1 data is
+// rejected by the snapshot adapter rather than silently treated as legacy.
+func (s *Session) RestoreAuthorityBound(authority, definitionIdentity string, compatibilityOnly bool) error {
+	if s.State != StateIdle {
+		return fmt.Errorf("%w: RestoreAuthorityBound from %q", ErrIllegalTransition, s.State)
+	}
+	if compatibilityOnly {
+		if authority != "" || definitionIdentity != "" {
+			return errors.New("session: legacy authority has bound data")
+		}
+		if s.authority != "" || s.authorityCompatibilityOnly {
+			return errors.New("session: authority already bound")
+		}
+		s.authorityCompatibilityOnly = true
+		return nil
+	}
+	return s.BindAuthority(authority, definitionIdentity)
+}
+
+// AuthorityBound returns the persisted canonical maximum, its safe definition
+// identity, and whether this is a pre-v1 compatibility-only session.
+func (s *Session) AuthorityBound() (authority, definitionIdentity string, compatibilityOnly bool) {
+	return s.authority, s.definitionIdentity, s.authorityCompatibilityOnly
+}
+
+func safeDefinitionIdentity(identity string) bool {
+	if identity == "" {
+		return true
+	}
+	if len(identity) > 256 {
+		return false
+	}
+	for _, r := range identity {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == ':' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// authorityBoundProfile and authorityBoundSpec are deliberately private: the
+// Session owns only its persisted canonical representation. Capability algebra
+// consumes that representation through its own domain API rather than a second
+// mutable session field.
+type authorityBoundProfile struct {
+	FileSystem  bool `json:"filesystem"`
+	DirectWrite bool `json:"direct_write"`
+	Isolated    bool `json:"isolated"`
+}
+
+type authorityBoundSpec struct {
+	Tools     []string              `json:"tools"`
+	Delegates []string              `json:"delegates"`
+	Depth     int                   `json:"depth"`
+	Profile   authorityBoundProfile `json:"profile"`
+}
+
+func canonicalAuthorityBound(raw string) (string, error) {
+	var object map[string]json.RawMessage
+	decoder := json.NewDecoder(strings.NewReader(raw))
+	if err := decoder.Decode(&object); err != nil {
+		return "", err
+	}
+	if decoder.More() {
+		return "", errors.New("trailing authority data")
+	}
+	var version int
+	var kind string
+	if err := decodeAuthorityField(object, "v", &version); err != nil || version != 1 {
+		return "", errors.New("unsupported authority version")
+	}
+	if err := decodeAuthorityField(object, "kind", &kind); err != nil {
+		return "", errors.New("missing authority kind")
+	}
+	switch kind {
+	case "none", "unrestricted":
+		if len(object) != 2 {
+			return "", errors.New("unexpected authority fields")
+		}
+		return fmt.Sprintf(`{"v":1,"kind":%q}`, kind), nil
+	case "restricted":
+		return canonicalRestrictedAuthority(object)
+	default:
+		return "", errors.New("unknown authority kind")
+	}
+}
+
+func canonicalRestrictedAuthority(object map[string]json.RawMessage) (string, error) {
+	if len(object) != 6 {
+		return "", errors.New("unexpected restricted authority fields")
+	}
+	var spec authorityBoundSpec
+	if err := decodeAuthorityField(object, "tools", &spec.Tools); err != nil || !canonicalAuthorityNames(spec.Tools) {
+		return "", errors.New("invalid authority tools")
+	}
+	if err := decodeAuthorityField(object, "delegates", &spec.Delegates); err != nil || !canonicalAuthorityNames(spec.Delegates) {
+		return "", errors.New("invalid authority delegates")
+	}
+	if err := decodeAuthorityField(object, "depth", &spec.Depth); err != nil || spec.Depth < 0 {
+		return "", errors.New("invalid authority depth")
+	}
+	profile, ok := object["profile"]
+	if !ok || json.Unmarshal(profile, &spec.Profile) != nil || !validAuthorityProfile(profile) {
+		return "", errors.New("invalid authority profile")
+	}
+	toolsJSON, _ := json.Marshal(canonicalizeAuthorityNames(spec.Tools))
+	delegatesJSON, _ := json.Marshal(canonicalizeAuthorityNames(spec.Delegates))
+	return fmt.Sprintf(`{"v":1,"kind":"restricted","tools":%s,"delegates":%s,"depth":%d,"profile":{"filesystem":%t,"direct_write":%t,"isolated":%t}}`, toolsJSON, delegatesJSON, spec.Depth, spec.Profile.FileSystem, spec.Profile.DirectWrite, spec.Profile.Isolated), nil
+}
+
+func validAuthorityProfile(raw json.RawMessage) bool {
+	var fields map[string]json.RawMessage
+	if json.Unmarshal(raw, &fields) != nil || len(fields) != 3 {
+		return false
+	}
+	for _, name := range []string{"filesystem", "direct_write", "isolated"} {
+		if _, ok := fields[name]; !ok {
+			return false
+		}
+	}
+	return true
+}
+
+func decodeAuthorityField(object map[string]json.RawMessage, name string, target any) error {
+	raw, ok := object[name]
+	if !ok {
+		return errors.New("missing authority field")
+	}
+	return json.Unmarshal(raw, target)
+}
+
+func canonicalAuthorityNames(names []string) bool {
+	for _, name := range names {
+		if name == "" || len(name) > 256 {
+			return false
+		}
+		for _, r := range name {
+			if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == ':' || r == '-' {
+				continue
+			}
+			return false
+		}
+	}
+	return true
+}
+
+func canonicalizeAuthorityNames(names []string) []string {
+	out := make([]string, len(names))
+	copy(out, names)
+	slices.Sort(out)
+	return slices.Compact(out)
 }
 
 // BeginTurn transitions the session into StateRunning at the start of a model

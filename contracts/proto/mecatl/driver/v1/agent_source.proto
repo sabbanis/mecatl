@@ -122,6 +122,13 @@ message AgentDef {
   // driver cannot claim the project/user tiers) — trust is enforced at source
   // CONSTRUCTION in the harness's composition layer, never from this field.
   string origin = 15;
+
+  // authority_ceiling preserves an OPTIONAL declared authority ceiling, including
+  // absent versus explicitly empty values. It is opaque canonical-authority data,
+  // never a path, secret, runner, or runtime handle. A driver declaration does
+  // not establish a managed local ceiling: the harness stamps driver provenance
+  // unconditionally and applies managed ceilings only to admitted local defs.
+  optional string authority_ceiling = 16;
 }
 
 // AgentMCPServer is one entry of a def's mcp_servers, mirroring

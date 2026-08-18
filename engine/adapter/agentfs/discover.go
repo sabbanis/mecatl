@@ -52,6 +52,7 @@ type frontmatter struct {
 	MCPServers      mcpServerList     `yaml:"mcpServers"`
 	Hooks           map[string]string `yaml:"hooks"`
 	Memory          string            `yaml:"memory"`
+	Authority       *string           `yaml:"authority"`
 }
 
 // mcpServerList is the parsed `mcpServers` frontmatter. It accepts THREE forms
@@ -333,6 +334,16 @@ func Discover(dir string) ([]Discovered, []SkipError, error) {
 	return DirSource{Dir: dir}.Agents(context.Background())
 }
 
+// cloneOptionalString preserves absent versus explicitly empty frontmatter
+// without allowing the parsed frontmatter storage to alias the returned def.
+func cloneOptionalString(raw *string) *string {
+	if raw == nil {
+		return nil
+	}
+	value := *raw
+	return &value
+}
+
 // parseAgentDef splits raw into YAML frontmatter and a markdown body and
 // validates the required header fields. It returns a fatal reason string (with a
 // zero AgentDef) on any structural problem so the caller records a SkipError and
@@ -399,21 +410,22 @@ func parseAgentDef(raw []byte, _ string) (AgentDef, string, []string) {
 	}
 
 	return AgentDef{
-		Name:            name,
-		Description:     desc,
-		Tools:           []string(fm.Tools),
-		DisallowedTools: []string(fm.DisallowedTools),
-		Model:           strings.TrimSpace(fm.Model),
-		Provider:        strings.TrimSpace(fm.Provider),
-		PermissionMode:  strings.TrimSpace(fm.PermissionMode),
-		MaxTurns:        fm.MaxTurns,
-		MaxToolCalls:    fm.MaxToolCalls,
-		Color:           strings.TrimSpace(fm.Color),
-		Skills:          []string(fm.Skills),
-		MCPServers:      fm.MCPServers.servers,
-		Hooks:           NormalizeHooks(fm.Hooks),
-		Memory:          mem,
-		Body:            trimmedBody,
+		Name:             name,
+		Description:      desc,
+		Tools:            []string(fm.Tools),
+		DisallowedTools:  []string(fm.DisallowedTools),
+		Model:            strings.TrimSpace(fm.Model),
+		Provider:         strings.TrimSpace(fm.Provider),
+		PermissionMode:   strings.TrimSpace(fm.PermissionMode),
+		MaxTurns:         fm.MaxTurns,
+		MaxToolCalls:     fm.MaxToolCalls,
+		Color:            strings.TrimSpace(fm.Color),
+		Skills:           []string(fm.Skills),
+		MCPServers:       fm.MCPServers.servers,
+		Hooks:            NormalizeHooks(fm.Hooks),
+		Memory:           mem,
+		AuthorityCeiling: cloneOptionalString(fm.Authority),
+		Body:             trimmedBody,
 	}, "", notes
 }
 

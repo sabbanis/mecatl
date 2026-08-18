@@ -20,6 +20,30 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   non-activatable evaluator-infrastructure marker. New identifiers are Added (minor); the standard
   app's Auto default changes independently while the engine pipeline zero remains evaluated.
 
+- **Managed agent-definition authority ceiling** ([ADR 0226](../docs/adr/0226-authority-attenuation-on-current-main.md)) —
+  `agent.AgentMeta.AuthorityCeiling` carries the optional managed-definition
+  ceiling into named Subagent selection, where it is intersected before child
+  runtime resources are acquired. `AgentMeta.DefinitionIdentity` and
+  `MemberBuild`'s corresponding fields preserve only the managed tier/name
+  identity alongside the optional ceiling for child/member authority bindings.
+  Added fields: minor.
+
+  `agent.WithTeamAuthority` applies a parent-derived maximum to team members and
+  synthesis runs. New exported option: Added (minor).
+
+- **Versioned session authority bound** ([ADR 0226](../docs/adr/0226-authority-attenuation-on-current-main.md)) —
+  `governance.Authority`, `AuthoritySpec`, and `AuthorityProfile` provide the
+  pure versioned capability vocabulary and canonicalization. `session.(*Session).BindAuthority`, `RestoreAuthorityBound`, and `AuthorityBound`
+  persist an opaque canonical authority maximum and safe definition identity. The
+  snapshot adapter distinguishes valid v1 authority records from pre-feature
+  compatibility records and rejects malformed v1 records. New methods are Added
+  (minor).
+
+- **Live authority revocation hook** ([ADR 0226](../docs/adr/0226-authority-attenuation-on-current-main.md)) —
+  `agent.Deps.AuthorityRevoker` lets a host supply the current operator ceiling
+  for each bound session before capability disclosure and dispatch. Adding a
+  field to the exported `Deps` struct is Changed (breaking).
+
 - **Configurable learning-trigger policy ([ADR 0114](../docs/adr/0114-configurable-learning-trigger-policy.md))** —
   `learning` adds strict sensitivity, scoped signal detection, closed admission
   request/decision/class/reason contracts, pure threshold/always/never policies,
@@ -743,6 +767,12 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 - **`session.SubagentPayload.RoutingReason` / `session.ParallelPayload.RoutingReason` / `session.TeamMemberSpec.RoutingReason`, the `session.RoutingReason*` gate constants, and `agent.WithPinnedAgents`** (issue #397) — the three delegation-start events now carry a bounded, bare-metadata reason WHY the OPT-IN semantic model router did not classify a delegation: EMPTY on a routed hit, otherwise one of the gate constants (`RoutingReasonPinnedModel` / `RoutingReasonAgentDefPinned` / `RoutingReasonResume` / `RoutingReasonFork` / `RoutingReasonRouterDisabled` / `RoutingReasonTargetUnavailable` / `RoutingReasonBreakerOpen` / `RoutingReasonAborted`) or a static classifier/composition miss code (`RouterMiss*`, `empty-model`, `category-selector-empty`, …). This lets a UI distinguish router-absent from pinned-model from agent-def-pinned from classifier-failure from breaker-open — previously every miss/gate collapsed to empty `routed_*`. `WithPinnedAgents` carries the composition-computed model-pin set separately from the routable set, so provider-switched and inline-MCP defs are not falsely attributed as model-pinned. If a routed engine factory declines its target, routed fields are cleared and `RoutingReasonTargetUnavailable` records the fallback while `Model` names the engine that actually ran. The Subagent gate attributes the explicit choice gates (resume / fork / per-call `model` / agent-def pin) ahead of the router-absent gate, so a pinned delegation is never mislabeled `router-disabled`. The reason is clamped at the emit site (`routingReasonPayload`, 200-rune cap) AND confined to an event-safe allowlist (`routingReasonEventSafe`): because the missReason channel is open to external engine compositions via the exported `Deps.SubagentModelRouter`, known detailed composition reasons are reduced to their static code and every other non-allowlisted reason (a provider error body, classifier output, a task excerpt) is substituted with the generic `routing-miss` label on the wire while the verbatim text stays in operator diagnostics — gauntlet #7. Classified Added per COMPATIBILITY.md (new struct fields, constants, and option constructor are a minor bump). See ADR 0083.
 
 ### Changed
+
+- **Managed definition authority ceiling ([ADR 0226](../docs/adr/0226-authority-attenuation-on-current-main.md))** —
+  `tool.AgentDef` adds `AuthorityCeiling` and `ManagedAuthorityCeiling`, preserving
+  optional declared ceiling data while admitting it as a managed ceiling only from
+  operator-configured local definitions. The exported struct field is breaking for
+  external unkeyed literals; classified Changed for a pre-v1 minor bump.
 
 - **Learning trajectory current-run metadata ([ADR 0114](../docs/adr/0114-configurable-learning-trigger-policy.md))** —
   `learning.Trajectory` adds `Kind`, `Counters`, and `Current`. The fields are
