@@ -10,7 +10,7 @@
 
 import type { StreamEvent } from "@/features/agent/types";
 
-const HARNESS_API = "/api/harness";
+const HARNESS_API = "/api/mecatl";
 
 /** Raw mecatl SSE frame. Field names are snake_case on the wire. */
 interface HarnessEvent {
@@ -434,7 +434,7 @@ export async function listHarnessModels(
 
 // ── Controller: provider, model router, MCP gateway ─────────────────────────
 
-const CONTROL_API = "/api/harness-control";
+const CONTROL_API = "/api/mecatl-control";
 
 /**
  * The MCP gateway this deployment uses. Fixed rather than user-entered: the

@@ -6,9 +6,11 @@
     "node": ">=22.13.0"
   },
   "scripts": {
-    "dev": "next dev",
+    "dev": "node scripts/dev-local.mjs",
+    "dev:web": "next dev",
+    "mecatl": "node scripts/local-controller.mjs",
     "build": "next build",
-    "start": "next start",
+    "start": "node scripts/dev-local.mjs --production",
     "lint": "biome check",
     "format": "biome format --write",
     "test": "vitest",
@@ -54,6 +56,7 @@
     "react-hook-form": "^7.72.1",
     "react-markdown": "^10.1.0",
     "remark-gfm": "^4.0.1",
+    "server-only": "^0.0.1",
     "shiki": "^4.4.3",
     "sonner": "^2.0.7",
     "tailwind-merge": "3.5.0",
