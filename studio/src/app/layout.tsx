@@ -1,19 +1,8 @@
 import type { Metadata } from "next";
-import dynamic from "next/dynamic";
 import { Inter, Merriweather } from "next/font/google";
 import { ClientProviders } from "@/components/client-providers";
 import { ServerProviders } from "@/components/server-providers";
 import "./globals.css";
-
-const shouldShowMockScenarioPanel = process.env.NODE_ENV === "development";
-
-const MockScenarioPanel = shouldShowMockScenarioPanel
-  ? dynamic(() =>
-      import("@/components/dev/mock-scenario-panel").then(
-        (m) => m.MockScenarioPanel,
-      ),
-    )
-  : null;
 
 const inter = Inter({
   variable: "--font-inter",
@@ -28,10 +17,10 @@ const merriweather = Merriweather({
 
 export const metadata: Metadata = {
   title: {
-    template: "%s — Stacklok",
-    default: "Stacklok",
+    template: "%s — Mecatl Studio",
+    default: "Mecatl Studio",
   },
-  description: "ToolHive Cloud UI for managing MCP servers",
+  description: "The web workspace for the Mecatl agent harness",
 };
 
 export default async function RootLayout({
@@ -45,12 +34,7 @@ export default async function RootLayout({
         className={`${inter.variable} ${merriweather.variable} text-sm antialiased`}
       >
         <ServerProviders>
-          <ClientProviders>
-            {children}
-            {shouldShowMockScenarioPanel && MockScenarioPanel && (
-              <MockScenarioPanel />
-            )}
-          </ClientProviders>
+          <ClientProviders>{children}</ClientProviders>
         </ServerProviders>
       </body>
     </html>

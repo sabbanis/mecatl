@@ -19,10 +19,7 @@
       }
     ],
     "paths": {
-      "@/*": ["./src/*"],
-      "@api/*": ["./src/generated/*"],
-      "@mocks": ["./src/mocks"],
-      "@mocks/*": ["./src/mocks/*"]
+      "@/*": ["./src/*"]
     }
   },
   "include": [

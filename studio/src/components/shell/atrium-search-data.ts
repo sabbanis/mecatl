@@ -1,5 +1,5 @@
 import { Brain, Clock, MessageCircle, Sparkles } from "lucide-react";
-import { SKILLS } from "@/app/(authenticated)/workspace/skills/_data/skills";
+import { SKILLS } from "@/app/workspace/skills/_data/skills";
 import {
   MOCK_CRON_JOBS,
   MOCK_MEMORY_ENTRIES,

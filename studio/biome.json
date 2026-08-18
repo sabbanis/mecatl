@@ -11,41 +11,11 @@
   },
   "overrides": [
     {
-      "includes": [
-        "src/generated/**",
-        "src/generated-config-server/**",
-        "src/generated-gateway/**"
-      ],
-      "linter": {
-        "enabled": false
-      }
-    },
-    {
       "includes": ["src/components/ui/sidebar.tsx"],
       "linter": {
         "rules": {
           "suspicious": {
             "noDocumentCookie": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": ["src/mocks/**"],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noConsole": "off"
-          }
-        }
-      }
-    },
-    {
-      "includes": ["renovate.json"],
-      "linter": {
-        "rules": {
-          "suspicious": {
-            "noDuplicateObjectKeys": "off"
           }
         }
       }
