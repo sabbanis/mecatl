@@ -118,7 +118,7 @@ export function SidePanel({
       window.removeEventListener("mousemove", handleMouseMove);
       window.removeEventListener("mouseup", handleMouseUp);
     };
-  }, [minWidth]);
+  }, [minWidth, setWidth]);
 
   return (
     <div

@@ -44,7 +44,12 @@ export function ApprovalPanel({
   approval: ApprovalRequest;
   onRespond: (choice: ApprovalChoice) => void;
 }) {
-  const actions = parseActions(approval.details);
+  // Parsed actions can repeat (or parse without a verb), so each row gets a
+  // positional id up front to keep React keys unique.
+  const actions = parseActions(approval.details).map((action, index) => ({
+    ...action,
+    key: `${index}:${action.connector}-${action.verb}`,
+  }));
   const destructive = actions.some((a) => a.destructive);
 
   return (
@@ -75,11 +80,9 @@ export function ApprovalPanel({
       <p className="mb-2 text-sm">{approval.description}</p>
       {actions.length > 0 && (
         <div className="mb-2 flex flex-wrap gap-1.5">
-          {/* Parsed actions can repeat (or parse without a verb), so keys
-              carry the position to stay unique. */}
-          {actions.map((a, index) => (
+          {actions.map((a) => (
             <Badge
-              key={`${index}:${a.connector}-${a.verb}`}
+              key={a.key}
               variant="secondary"
               className={cn(
                 "gap-1 border-transparent font-mono text-xs",
