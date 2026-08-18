@@ -6,7 +6,9 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/stacklok/mecatl/engine/adapter/nofs"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/team"
 	"github.com/stacklok/mecatl/engine/tool"
@@ -125,26 +127,11 @@ func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, 
 	}
 
 	t := team.New(name)
-	baseWS := s.cfg.Workspaces(workspace)
-	// Build the team's base Environment: bind the runner for the team's root
-	// (the main runner when it's the launch root, a root-bound runner otherwise,
-	// shell-less when no factory is wired for a differing root). The forker builds
-	// its OWN runners for forked members, so this is the base-sharing member
-	// runner only.
-	var baseRunner tool.CommandRunner
-	if workspace == s.cfg.DefaultWorkspace {
-		baseRunner = s.cfg.CommandRunner
-	} else if s.cfg.CommandRunnerFactory != nil {
-		baseRunner = s.cfg.CommandRunnerFactory(workspace)
-	}
-	// The workspace comes from the client-controlled CreateTeam request, so it
-	// MUST NOT panic on a nil return from the Workspaces factory (a misconfigured
-	// factory, a bad root, etc.). NewEnvironment rejects a nil Workspace with a
-	// normal error; wrap it as ErrInvalidArgument so the caller sees a bad-request
-	// status rather than a server crash.
-	base, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: workspace}, baseWS, baseRunner)
+	// A server-created team has no parent execution environment to inherit. Keep it
+	// process-bound and structural: never acquire a caller workspace or shell runner.
+	base, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal}, nofs.New(), nil)
 	if err != nil {
-		return "", nil, fmt.Errorf("%w: team workspace could not be built: %w", ErrInvalidArgument, err)
+		return "", nil, fmt.Errorf("%w: structural team environment: %w", ErrInvalidArgument, err)
 	}
 	factory := func(spec agent.MemberSpec, routedModel string) agent.MemberBuild {
 		return s.cfg.MemberEngine(t, spec, routedModel)
@@ -158,9 +145,29 @@ func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, 
 	// id-minting convention (and thereby in scope for the child-session GC).
 	id := agent.TeamSessionPrefix + string(s.cfg.NewID())
 
+	// Server-created teams have no parent run, but the supervisor still derives each
+	// member (including the lead's later synthesis turn) through one structural child
+	// hop. Grant exactly that depth and the team coordination protocol tools; ordinary
+	// tools remain absent from the authority ceiling.
+	coordinationTools := agent.MemberToolNames()
+	authorizedTools := make([]string, 0, len(coordinationTools))
+	for name := range coordinationTools {
+		authorizedTools = append(authorizedTools, name)
+	}
+	directAuthority, err := governance.NewAuthority(governance.AuthoritySpec{
+		Tools:              authorizedTools,
+		MaxDelegationDepth: 1,
+	})
+	if err != nil {
+		return "", nil, fmt.Errorf("server: build direct-team authority: %w", err)
+	}
+
 	opts := []agent.SupervisorOption{
 		agent.WithTeamGoal(goal),
 		agent.WithMemberSessionPrefix(agent.TeamSessionPrefix + id),
+		// This restricted root is process-bound with the team registry; it does not
+		// make direct server teams resumable after restart.
+		agent.WithTeamAuthority(directAuthority),
 	}
 	// The goal is the team's TRUSTED top-level instruction by default (the deployment
 	// owns the gRPC front door, so the goal's provenance is the operator/principal,
@@ -170,21 +177,9 @@ func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, 
 	if s.cfg.TeamGoalUntrusted {
 		opts = append(opts, agent.WithUntrustedGoal(true))
 	}
-	if s.cfg.Forker != nil {
-		opts = append(opts, agent.WithForker(s.cfg.Forker))
-	}
-	if s.cfg.ReadOnlyForker != nil {
-		opts = append(opts, agent.WithReadOnlyForker(s.cfg.ReadOnlyForker))
-	}
-	if s.cfg.SharedBaseWorkspace != nil {
-		opts = append(opts, agent.WithTeamSharedBaseWorkspace(s.cfg.SharedBaseWorkspace))
-	}
-	if s.cfg.TeamHooks != nil {
-		opts = append(opts, agent.WithTeamHooks(s.cfg.TeamHooks))
-	}
-	if s.cfg.Store != nil {
-		opts = append(opts, agent.WithMemberStore(s.cfg.Store))
-	}
+	// A direct team intentionally has no forkers, workspace view, shell runner,
+	// hooks, or durable member store. Its authority permits coordination only and
+	// its nofs base makes that absence true at the execution seam.
 	// Clamp the per-request budget against the server's ceiling at create time:
 	// tighten-only, so the wire can never loosen the operator's bound.
 	if budget := agent.TightenTeamTokenBudget(s.cfg.TeamTokenBudget, maxTeamTokens); budget > 0 {

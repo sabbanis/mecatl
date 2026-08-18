@@ -779,9 +779,11 @@ func buildAgentSubagentEngines(ctx context.Context, cfg Config, provider port.LL
 		// session by them (per-field falling back to the Subagent default child limits for
 		// any zero field). A def that sets neither yields the default, unchanged.
 		meta = append(meta, agent.AgentMeta{
-			Name:        def.Name,
-			Description: def.Description,
-			Limits:      defLimits(def, agent.DefaultChildLimits()),
+			Name:               def.Name,
+			Description:        def.Description,
+			AuthorityCeiling:   def.ManagedAuthorityCeiling(),
+			DefinitionIdentity: managedDefinitionIdentity(def),
+			Limits:             defLimits(def, agent.DefaultChildLimits()),
 		})
 
 		cfg.diag().Log(ctx, port.LevelInfo, "agent def engine built",
@@ -792,6 +794,13 @@ func buildAgentSubagentEngines(ctx context.Context, cfg Config, provider port.LL
 	// meta in registry (name-sorted) order for a byte-stable Subagent spec.
 	sort.Slice(meta, func(i, j int) bool { return meta[i].Name < meta[j].Name })
 	return engines, meta, closeFn
+}
+
+func managedDefinitionIdentity(def agents.AgentDef) string {
+	if def.ManagedAuthorityCeiling() == nil {
+		return ""
+	}
+	return "explicit:" + def.Name
 }
 
 // buildAgentDefEngine builds ONE def's scoped engine on an already-resolved

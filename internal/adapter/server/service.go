@@ -22,6 +22,7 @@ import (
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/adapter/nofs"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/learning"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
@@ -114,6 +115,9 @@ type SessionEngineResult struct {
 	// session.ModeDefault-equivalent: the Service treats "" as "no mode pin" and the
 	// stale check degrades to never-rebuild-on-mode (byte-identical to pre-Phase-3).
 	BuiltForMode session.PermissionMode
+	// RootAuthority is the canonical restricted root maximum prepared by composition
+	// from this exact per-session catalog and static environment posture.
+	RootAuthority string
 	// Close tears down the session's MCP manager. Never nil (a no-op when no specs).
 	Close func() error
 }
@@ -182,6 +186,10 @@ type Config struct {
 	Engine *agent.Engine
 	// Store persists and looks up sessions. Required.
 	Store port.SessionStore
+	// RootAuthority is the canonical restricted root maximum prepared by composition
+	// from the exact catalog and static environment posture for shared-engine sessions.
+	// The server consumes it as opaque creation data and never inspects a catalog.
+	RootAuthority string
 	// OwnershipEnforced is true only when the request edge has a verifier wired.
 	// Its zero value preserves the ownerless compatibility path. When enabled,
 	// create retries compare the verified issuer/subject pair before exposing an
@@ -1029,6 +1037,19 @@ func NewService(cfg Config) (*Service, error) {
 	if cfg.Workspaces == nil {
 		return nil, fmt.Errorf("%w: Workspaces is required", ErrConfig)
 	}
+	if cfg.RootAuthority == "" {
+		// Composition supplies the exact catalog-derived maximum. Direct Service
+		// consumers without composition receive a fail-closed empty restricted root,
+		// never the former unrestricted v1 root.
+		bound, err := governance.NewAuthority(governance.AuthoritySpec{})
+		if err != nil {
+			return nil, fmt.Errorf("%w: default root authority: %w", ErrConfig, err)
+		}
+		cfg.RootAuthority, err = bound.Canonical()
+		if err != nil {
+			return nil, fmt.Errorf("%w: canonical default root authority: %w", ErrConfig, err)
+		}
+	}
 	if cfg.DefaultMode == "" {
 		cfg.DefaultMode = session.ModeDefault
 	}
@@ -1371,6 +1392,24 @@ func setSessionLabels(sess *session.Session, sel ProviderSelector, profile Sessi
 	return sess.RestoreLabels(owner, "")
 }
 
+func bindRootAuthority(sess *session.Session, bound string) error {
+	if bound == "" {
+		return errors.New("server: missing prepared root authority")
+	}
+	if err := sess.BindAuthority(bound, ""); err != nil {
+		return fmt.Errorf("server: bind root authority: %w", err)
+	}
+	return nil
+}
+
+func copyAuthorityProvenance(dst, src *session.Session) error {
+	bound, definitionIdentity, compatibilityOnly := src.AuthorityBound()
+	if err := dst.RestoreAuthorityBound(bound, definitionIdentity, compatibilityOnly); err != nil {
+		return fmt.Errorf("server: copy authority provenance: %w", err)
+	}
+	return nil
+}
+
 // seedCarryover seeds the freshly-created (idle) session with an optional
 // carryover snapshot (issue #20). A nil snapshot is a no-op (the byte-identical
 // no-carryover default); a non-nil snapshot is seeded via session.SeedHistory,
@@ -1558,6 +1597,9 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 		if err != nil {
 			return nil, fmt.Errorf("server: create session metadata: %w", err)
 		}
+		if err := bindRootAuthority(sess, s.cfg.RootAuthority); err != nil {
+			return nil, err
+		}
 		if err := setSessionLabels(sess, sel, profile, owner); err != nil {
 			return nil, err
 		}
@@ -1616,6 +1658,12 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 	// creation labels on the aggregate, so a restarted process re-derives the SAME
 	// per-session engine via the factory (rehydrateSession) instead of falling to the
 	// default-provider floor / inferring the profile from the empty-workspace pun.
+	if err := bindRootAuthority(sess, res.RootAuthority); err != nil {
+		if closeFn != nil {
+			_ = closeFn()
+		}
+		return nil, err
+	}
 	if err := setSessionLabels(sess, sel, profile, owner); err != nil {
 		if closeFn != nil {
 			_ = closeFn()
@@ -2309,6 +2357,10 @@ func (s *Service) ForkSession(ctx context.Context, srcID session.SessionID, titl
 	}
 	snap := session.ForkSnapshot(src.Conversation)
 	forked := session.New(s.cfg.NewID(), src.Mode, src.Workspace, src.Limits, s.cfg.Now())
+	if err := copyAuthorityProvenance(forked, src); err != nil {
+		return "", err
+	}
+	forked.EnvironmentRef = src.EnvironmentRef
 	if err := forked.SeedHistory(snap); err != nil {
 		return "", fmt.Errorf("server: seed fork history: %w", err)
 	}

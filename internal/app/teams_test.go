@@ -268,12 +268,10 @@ func TestBuildEnableTeamsRunsTeam(t *testing.T) {
 	}
 }
 
-// TestReadOnlyMemberRunsGitInWorktreeEndToEnd is the key proof of this feature: a
-// READ-ONLY team member, driven through the real Service/Supervisor wiring, runs git
-// (log/show) over a cheap git WORKTREE that shares the base repo's .git — so it sees
-// the full commit history — confined to a throwaway checkout, and the worktree is
-// cleaned up afterwards (no leak). The member never edits anything.
-func TestReadOnlyMemberRunsGitInWorktreeEndToEnd(t *testing.T) {
+// TestDirectServerReadOnlyMemberCannotRunBash proves that full composition does not
+// widen a direct server-created team's structural coordination authority merely
+// because its member factory built a read-only worktree engine with Bash.
+func TestDirectServerReadOnlyMemberCannotRunBash(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("git not available")
 	}
@@ -370,29 +368,17 @@ func TestReadOnlyMemberRunsGitInWorktreeEndToEnd(t *testing.T) {
 	}
 
 	got := bashOut.String()
-	for _, want := range []string{"add alpha", "add beta"} {
-		if !strings.Contains(got, want) {
-			t.Errorf("member git output missing %q; got:\n%s", want, got)
+	if count := strings.Count(got, "denied by authority bound"); count != 3 {
+		t.Fatalf("direct server team Bash denials = %d, want 3; got:\n%s", count, got)
+	}
+	for _, forbidden := range []string{"add alpha", "add beta", "beta.txt", "DOTGIT_IS_FILE", "DOTGIT_IS_DIR"} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("unauthorized Bash output contained %q; got:\n%s", forbidden, got)
 		}
 	}
-	// git show --stat HEAD names the file added in the HEAD commit.
-	if !strings.Contains(got, "beta.txt") {
-		t.Errorf("git show --stat HEAD output missing beta.txt; got:\n%s", got)
-	}
 
-	// The member's workspace must be a git WORKTREE (cheap, shares the base .git),
-	// NOT a force-copy: in a worktree the child's `.git` is a FILE (a gitdir
-	// pointer), whereas a recursive copy would leave a `.git` DIRECTORY. The
-	// history/leak checks above pass for a force-copy too, so this is what actually
-	// distinguishes the worktree path.
-	if !strings.Contains(got, "DOTGIT_IS_FILE") {
-		t.Errorf("read-only member workspace is not a git worktree (.git is not a pointer file); got:\n%s", got)
-	}
-	if strings.Contains(got, "DOTGIT_IS_DIR") {
-		t.Errorf("read-only member workspace has a .git DIRECTORY (force-copy), expected a worktree pointer file; got:\n%s", got)
-	}
-
-	// The worktree must be cleaned up: no leftover child dir under worktreeBase.
+	// AddMember still created the configured isolated environment before authority
+	// filtered its ordinary tools, and RunTeam must clean that environment up.
 	entries, err := os.ReadDir(worktreeBase)
 	if err != nil {
 		t.Fatalf("read worktree base: %v", err)

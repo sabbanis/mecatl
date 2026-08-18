@@ -28,21 +28,35 @@ import (
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/team"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/server"
 )
 
+type parkingTeamHooks struct{ park *parkTool }
+
+func (h parkingTeamHooks) Run(ctx context.Context, event governance.HookEvent) (governance.HookOutcome, error) {
+	if event.Phase != governance.PhaseTaskCreated {
+		return governance.HookOutcome{}, nil
+	}
+	h.park.once.Do(func() { close(h.park.started) })
+	<-ctx.Done()
+	return governance.HookOutcome{Block: true, Message: "test parking hook interrupted"}, nil
+}
+
 // cancelTeammateService builds a team-enabled Service with PER-MEMBER providers
 // (round-0 members run concurrently, so they must not race over one shared turn
-// queue), registering the extra tools into every member catalog. It also returns
+// queue). The parking hook blocks the structural AddTask coordination tool, keeping
+// these direct-team tests independent of ordinary-tool authority. It also returns
 // an accessor for the team aggregate the factory bound to, so a test can seed a
 // claimed task and assert its release — the Service creates the aggregate
 // internally and exposes no other handle on it.
-func cancelTeammateService(t *testing.T, providers map[string]*mockllm.Provider, extra ...tool.Tool) (*server.Service, func() *team.Team) {
+func cancelTeammateService(t *testing.T, providers map[string]*mockllm.Provider, park *parkTool) (*server.Service, func() *team.Team) {
 	t.Helper()
 	allow := permpolicy.NewPolicy(permpolicy.AllowAllFloorRules(), nil)
+	hooks := parkingTeamHooks{park: park}
 	var (
 		mu       sync.Mutex
 		captured *team.Team
@@ -56,10 +70,7 @@ func cancelTeammateService(t *testing.T, providers map[string]*mockllm.Provider,
 			t.Fatalf("no provider scripted for member %q", spec.Name)
 		}
 		cat := tool.NewCatalog()
-		for _, tl := range agent.MemberTools(tm, spec.Name, nil) {
-			cat.MustRegister(tl)
-		}
-		for _, tl := range extra {
+		for _, tl := range agent.MemberTools(tm, spec.Name, hooks) {
 			cat.MustRegister(tl)
 		}
 		return agent.MemberBuild{Engine: agent.NewEngine(agent.Deps{
@@ -75,6 +86,7 @@ func cancelTeammateService(t *testing.T, providers map[string]*mockllm.Provider,
 		Workspaces:   func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
 		Now:          func() time.Time { return time.Unix(0, 0) },
 		MemberEngine: memberEngine,
+		TeamHooks:    hooks,
 	})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
@@ -96,7 +108,7 @@ func parkedWorkerProviders() map[string]*mockllm.Provider {
 			mockllm.TextTurn("CONSOLIDATED: worker stopped; partials noted."),
 		),
 		"worker": mockllm.New(
-			mockllm.ToolCallTurn(call("w1", "Park", `{}`)),
+			mockllm.ToolCallTurn(call("w1", "AddTask", `{"description":"park until cancelled"}`)),
 			mockllm.TextTurn("worker: never reached"),
 		),
 	}
@@ -308,8 +320,8 @@ func TestCancelTeammateIdleBetweenRounds(t *testing.T) {
 	workerProv := mockllm.New(mockllm.TextTurn("worker: never reached"))
 	providers := map[string]*mockllm.Provider{
 		"lead": mockllm.New(
-			mockllm.ToolCallTurn(call("l1", "Park", `{}`)), // round 0: park (holds the run live)
-			mockllm.TextTurn("CONSOLIDATED: report"),       // synthesis, if driven
+			mockllm.ToolCallTurn(call("l1", "AddTask", `{"description":"park until cancelled"}`)), // round 0: park (holds the run live)
+			mockllm.TextTurn("CONSOLIDATED: report"),                                              // synthesis, if driven
 		),
 		"worker": workerProv,
 	}
@@ -407,8 +419,8 @@ func TestCancelTeammateFinishedMemberNoOp(t *testing.T) {
 	park := newParkTool()
 	providers := map[string]*mockllm.Provider{
 		"lead": mockllm.New(
-			mockllm.ToolCallTurn(call("l1", "Park", `{}`)), // round 0: park (holds the run live)
-			mockllm.TextTurn("CONSOLIDATED: report"),       // synthesis, if driven
+			mockllm.ToolCallTurn(call("l1", "AddTask", `{"description":"park until cancelled"}`)), // round 0: park (holds the run live)
+			mockllm.TextTurn("CONSOLIDATED: report"),                                              // synthesis, if driven
 		),
 		"worker": mockllm.New(mockllm.TextTurn("worker: done")),
 	}
