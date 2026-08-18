@@ -72,6 +72,8 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0109 — Evidence-backed reflection and durable staged learning](./0109-staged-learning-proposals.md)
 - [0226 — Dream consolidation safety boundary](./0226-dream-consolidation-safety-boundary.md)
 - [0227 — Manual dream review](./0227-manual-dream-review.md)
+- [0228 — Studio: the Atrium workspace as mecatl's daemon-only web client](./0228-studio-atrium-module.md)
+- [0229 — Studio's chat list is the daemon's session store](./0229-studio-server-backed-chats.md)
 - [0110 — Evaluated, versioned agent-owned skills](./0110-evaluated-agent-owned-skills.md) *(superseded by 0111)*
 - [0111 — Hardened publication and recovery for agent-owned skills](./0111-hardened-agent-owned-skill-publication.md)
 

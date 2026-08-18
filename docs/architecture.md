@@ -312,6 +312,22 @@ from proto `Event`s** and are bound by the inward-only layering rule. The
 model/update/view) and `theme` (pure styling) packages import no `engine/...` or `internal/...`
 package and no proto directly. Usage and theming are documented in `docs/tui.md`.
 
+**Studio — the web client (`studio/`).** An optional Next.js *client* of the public
+HTTP/SSE API, in-repo as a Node module (never a Go module — not in `go.work`, the
+layering DAG, depguard, or the api-compat gate). The browser talks only to Studio's
+own server-side proxy routes (`/api/mecatl/*`, `/api/mecatl-control/*`), which pin
+Host/Origin, inject the bearer token and the session workspace server-side, and
+allowlist headers in both directions. Two pure deployment modes: managed (a local
+controller supervises a `mecated` spawned from `bin/mecated` on a random loopback
+port with a generated bearer) or external (`MECATL_BASE_URL`; every local control
+surface answers 409 as deployment-owned). Studio is daemon-only — an unreachable
+daemon renders as an offline state, never demo content — and decodes the wire in
+one typed seam (`studio/src/lib/protocol/`) that surfaces unknown event kinds
+instead of dropping them. Live re-attach to a running session is a stated non-goal
+today: the live tail is gRPC-only (`StreamSessionLive`), so Studio shows running
+state from the session inventory and reads the transcript when the run ends. A
+breaking wire change owes a Studio update in the same PR. See ADR 0228/0229.
+
 **mecatequi — the single-shot headless runner (`cmd/mecatequi`).** A fourth composition
 root and a *peer of `mecademo`* over the same `app.Build`: it runs **one** prompt against
 an in-process `server.Service`, drives it to a terminal state, and emits three
