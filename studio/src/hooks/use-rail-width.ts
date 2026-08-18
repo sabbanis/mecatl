@@ -3,13 +3,11 @@
 import { useCallback, useSyncExternalStore } from "react";
 
 /** Default storage key + expanded width, and the drag bounds. */
-export const RAIL_STORAGE_KEY = "console-rail-width";
-/** Chat starts collapsed, with its own remembered width. */
-export const RAIL_STORAGE_KEY_CHAT = "console-rail-width-chat";
+const RAIL_STORAGE_KEY = "console-rail-width";
 /** Floor for a non-collapsible rail — fits the longest nav label, never icons. */
 export const RAIL_LABELED_MIN = 188;
 /** Starting width: a little more than the labelled minimum. */
-export const RAIL_DEFAULT_WIDTH = 204;
+const RAIL_DEFAULT_WIDTH = 204;
 /** Floor for a collapsible rail (icon strip); kept for the opt-in collapse path. */
 export const RAIL_MIN_WIDTH = 64;
 export const RAIL_MAX_WIDTH = 400;

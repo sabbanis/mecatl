@@ -4,8 +4,8 @@ import { Search } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useMemo, useState } from "react";
 import {
-  ATRIUM_SEARCH_ENTRIES,
   ATRIUM_SEARCH_GROUPS,
+  buildAtriumSearchEntries,
 } from "@/components/shell/atrium-search-data";
 import { createStaticSearchProvider } from "@/components/shell/search-static";
 import type { SearchEntry } from "@/components/shell/search-types";
@@ -17,31 +17,50 @@ import {
   CommandItem,
   CommandList,
 } from "@/components/ui/command";
+import {
+  useAgentCron,
+  useAgentMemory,
+  useAgentSessions,
+} from "@/features/agent";
+import { useAgentSkills } from "@/features/agent/hooks/use-agent-skills";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { cn } from "@/lib/utils";
 
 /** Atrium workspace results. */
 const ALL_GROUPS = [...ATRIUM_SEARCH_GROUPS];
-const provider = createStaticSearchProvider([...ATRIUM_SEARCH_ENTRIES]);
 
 /**
  * The global nav search in the shell topbar. Opens a ⌘/Ctrl-K command palette
- * (built on cmdk) whose filtering is delegated to a `SearchProvider` — the
- * static index today, a server search later — so cmdk's own fuzzy filter is
- * turned off (`shouldFilter={false}`). Chat hits found inside a transcript show
- * a snippet of where the term matched. Selecting a result routes to it.
+ * (built on cmdk) whose filtering is delegated to a `SearchProvider` — an
+ * in-memory index over the live daemon data (sessions, schedules, skills,
+ * memory keys), rebuilt whenever that data changes — so cmdk's own fuzzy
+ * filter is turned off (`shouldFilter={false}`). Transcripts are not indexed:
+ * only titles and metadata match. Selecting a result routes to it.
  */
 export function GlobalSearch() {
   const router = useRouter();
   const [open, setOpen] = useState(false);
   const [query, setQuery] = useState("");
 
+  const { sessions } = useAgentSessions();
+  const { jobs } = useAgentCron();
+  const { skills } = useAgentSkills();
+  const { entries: memories } = useAgentMemory();
+
+  const provider = useMemo(
+    () =>
+      createStaticSearchProvider(
+        buildAtriumSearchEntries({ sessions, jobs, skills, memories }),
+      ),
+    [sessions, jobs, skills, memories],
+  );
+
   // App-wide shortcuts, wired through the central dispatcher: ⌘K toggles the
   // palette; `?` opens the keyboard-shortcuts reference.
   useShortcut("search.open", () => setOpen((prev) => !prev));
   useShortcut("shortcuts.open", () => router.push("/workspace/shortcuts"));
 
-  const results = useMemo(() => provider.query(query), [query]);
+  const results = useMemo(() => provider.query(query), [provider, query]);
   const byCategory = useMemo(() => {
     const map = new Map<string, { entry: SearchEntry; snippet?: string }[]>();
     for (const r of results) {

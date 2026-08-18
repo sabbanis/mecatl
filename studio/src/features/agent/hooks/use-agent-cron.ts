@@ -8,6 +8,7 @@ import {
 } from "@/lib/harness/client";
 import {
   PERMISSION_MODES,
+  type ScheduleCarriedSpec,
   type ScheduleRow,
   type ScheduleSpecDraft,
 } from "@/lib/protocol";
@@ -119,6 +120,27 @@ export function useAgentCron() {
     [perform, rows],
   );
 
+  /** Full authoring path: the dialog builds the draft, the daemon judges it. */
+  const createFromDraft = useCallback(
+    async (draft: ScheduleSpecDraft) => {
+      await perform(() => saveHarnessSchedule(draft, { update: false }));
+    },
+    [perform],
+  );
+
+  /**
+   * PUT replaces the whole spec, so the row's carried fields must ride along
+   * or every field this UI has no control for would be silently deleted.
+   */
+  const updateFromDraft = useCallback(
+    async (draft: ScheduleSpecDraft, carried: ScheduleCarriedSpec) => {
+      await perform(() =>
+        saveHarnessSchedule(draft, { update: true, carried }),
+      );
+    },
+    [perform],
+  );
+
   const runJob = useCallback(
     async (jobId: string) => {
       // FireNow is synchronous on the daemon: this await lasts the whole run.
@@ -159,6 +181,8 @@ export function useAgentCron() {
     error,
     harnessLive: connected,
     createJob,
+    createFromDraft,
+    updateFromDraft,
     runJob,
     deleteJob,
     pauseJob,

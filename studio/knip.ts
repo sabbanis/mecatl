@@ -5,7 +5,6 @@ const config: KnipConfig = {
   entry: [
     "src/app/**/{page,layout,loading,error,not-found,global-error,route}.{ts,tsx}",
     "src/**/*.test.{ts,tsx}",
-    "playwright.config.mts",
   ],
   project: ["src/**/*.{ts,tsx}"],
   paths: {
@@ -23,7 +22,13 @@ const config: KnipConfig = {
     "tailwindcss",
     // Used by shadcn/ui Form and Label components (in src/components/ui/ which knip ignores)
     "react-hook-form",
-    "@radix-ui/react-label",
+    // Used by shadcn/ui components (in src/components/ui/ which knip ignores)
+    "@radix-ui/react-avatar",
+    "@radix-ui/react-checkbox",
+    "@radix-ui/react-popover",
+    "@radix-ui/react-progress",
+    "@radix-ui/react-toggle",
+    "@radix-ui/react-toggle-group",
   ],
 };
 

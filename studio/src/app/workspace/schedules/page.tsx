@@ -4,7 +4,6 @@ import { ArrowDown, ArrowUp, ChevronsUpDown } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useMemo, useState } from "react";
-import { Badge } from "@/components/ui/badge";
 import {
   Select,
   SelectContent,
@@ -20,53 +19,53 @@ import {
   TableHeader,
   TableRow,
 } from "@/components/ui/table";
-import { type CronJob, useAgentCron } from "@/features/agent";
+import { useAgentCron } from "@/features/agent";
 import { describeCron, formatRelativeTime } from "@/lib/formatters";
+import type { ScheduleRow } from "@/lib/protocol";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
 import { CreateScheduleDialog } from "./_components/create-schedule-dialog";
+import {
+  ScheduleMetaBadges,
+  ScheduleStatusBadge,
+  scheduleStatusOf,
+} from "./_components/schedule-badges";
 
 type SortKey = "name" | "schedule" | "status" | "lastRun";
 type SortDir = "asc" | "desc";
 
-interface StatusMeta {
-  label: string;
-  variant: "default" | "secondary" | "success" | "destructive";
-}
-
-function statusOf(job: CronJob): StatusMeta {
-  if (job.status === "running") return { label: "Running", variant: "success" };
-  if (job.status === "error") return { label: "Error", variant: "destructive" };
-  return job.enabled
-    ? { label: "Scheduled", variant: "success" }
-    : { label: "Paused", variant: "secondary" };
-}
-
 /**
- * Sort rank for a status sort. Error is highest priority (sorts to the top
- * ascending) so failing jobs surface first; the rest follow most- to
- * least-active.
+ * Sort rank for a status sort: live fires first (they need eyes), then
+ * schedules that will fire again, then paused.
  */
 const STATUS_RANK: Record<string, number> = {
-  Error: 0,
-  Running: 1,
+  Running: 0,
+  Claimed: 1,
   Scheduled: 2,
   Paused: 3,
 };
 
-/** Status filter options (lowercased values match `statusOf().label`). */
+/** Status filter options (lowercased values match `scheduleStatusOf().label`). */
 const STATUS_FILTERS = [
   { value: "all", label: "All statuses" },
   { value: "running", label: "Running" },
+  { value: "claimed", label: "Claimed" },
   { value: "scheduled", label: "Scheduled" },
   { value: "paused", label: "Paused" },
-  { value: "error", label: "Error" },
 ] as const;
+
+/** One line for the trigger: cron in plain English, or the one-shot instant. */
+function describeTrigger(row: ScheduleRow): string {
+  if (row.cron) return describeCron(row.cron);
+  if (row.oneShotAt !== null)
+    return `Once at ${new Date(row.oneShotAt).toLocaleString()}`;
+  return "—";
+}
 
 export default function WorkspaceSchedulesPage() {
   const cron = useAgentCron();
   const router = useRouter();
-  // Default to status so failing jobs (Error ranks first) surface at the top.
+  // Default to status so live fires surface at the top.
   const [sortKey, setSortKey] = useState<SortKey>("status");
   const [sortDir, setSortDir] = useState<SortDir>("asc");
   const [statusFilter, setStatusFilter] = useState("all");
@@ -75,9 +74,9 @@ export default function WorkspaceSchedulesPage() {
     const dir = sortDir === "asc" ? 1 : -1;
     const filtered =
       statusFilter === "all"
-        ? cron.jobs
-        : cron.jobs.filter(
-            (j) => statusOf(j).label.toLowerCase() === statusFilter,
+        ? cron.rows
+        : cron.rows.filter(
+            (row) => scheduleStatusOf(row).label.toLowerCase() === statusFilter,
           );
     return [...filtered].sort((a, b) => {
       let cmp = 0;
@@ -86,22 +85,20 @@ export default function WorkspaceSchedulesPage() {
           cmp = a.name.localeCompare(b.name);
           break;
         case "schedule":
-          cmp = describeCron(a.schedule).localeCompare(
-            describeCron(b.schedule),
-          );
+          cmp = describeTrigger(a).localeCompare(describeTrigger(b));
           break;
         case "status":
           cmp =
-            (STATUS_RANK[statusOf(a).label] ?? 9) -
-            (STATUS_RANK[statusOf(b).label] ?? 9);
+            (STATUS_RANK[scheduleStatusOf(a).label] ?? 9) -
+            (STATUS_RANK[scheduleStatusOf(b).label] ?? 9);
           break;
         case "lastRun":
-          cmp = (a.lastRunAt ?? 0) - (b.lastRunAt ?? 0);
+          cmp = (a.lastFireAt ?? 0) - (b.lastFireAt ?? 0);
           break;
       }
       return cmp * dir;
     });
-  }, [cron.jobs, sortKey, sortDir, statusFilter]);
+  }, [cron.rows, sortKey, sortDir, statusFilter]);
 
   const toggleSort = (key: SortKey) => {
     if (key === sortKey) {
@@ -109,7 +106,7 @@ export default function WorkspaceSchedulesPage() {
     } else {
       setSortKey(key);
       // Last run defaults to most-recent-first; every other column ascending
-      // (name/schedule A→Z, status with Error first).
+      // (name/schedule A→Z, status with live fires first).
       setSortDir(key === "lastRun" ? "desc" : "asc");
     }
   };
@@ -123,120 +120,153 @@ export default function WorkspaceSchedulesPage() {
           >
             Scheduled
           </h1>
-          <CreateScheduleDialog createJob={cron.createJob} />
-        </div>
-
-        {/* Table card: the status filter lives in a header toolbar, with the
-            table below — matching the admin tables (e.g. organization groups). */}
-        <div className="overflow-hidden rounded-lg border">
-          <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
-            <Select value={statusFilter} onValueChange={setStatusFilter}>
-              <SelectTrigger
-                aria-label="Filter by status"
-                className="h-9 w-[160px]"
-              >
-                <SelectValue placeholder="All statuses" />
-              </SelectTrigger>
-              <SelectContent>
-                {STATUS_FILTERS.map((s) => (
-                  <SelectItem key={s.value} value={s.value}>
-                    {s.label}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-          {rows.length === 0 ? (
-            <div className="py-12 text-center text-sm text-muted-foreground">
-              {statusFilter === "all"
-                ? "Nothing scheduled yet."
-                : "No scheduled tasks match this filter."}
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <SortHead
-                    label="Name"
-                    active={sortKey === "name"}
-                    dir={sortDir}
-                    onClick={() => toggleSort("name")}
-                    className="w-3/5"
-                  />
-                  <SortHead
-                    label="Schedule"
-                    active={sortKey === "schedule"}
-                    dir={sortDir}
-                    onClick={() => toggleSort("schedule")}
-                    className="w-px whitespace-nowrap"
-                  />
-                  <SortHead
-                    label="Status"
-                    active={sortKey === "status"}
-                    dir={sortDir}
-                    onClick={() => toggleSort("status")}
-                    className="w-px whitespace-nowrap"
-                  />
-                  <SortHead
-                    label="Last run"
-                    active={sortKey === "lastRun"}
-                    dir={sortDir}
-                    onClick={() => toggleSort("lastRun")}
-                    className="w-px whitespace-nowrap text-right"
-                  />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rows.map((job) => {
-                  const status = statusOf(job);
-                  const href = `/workspace/schedules/${job.id}`;
-                  return (
-                    <TableRow
-                      key={job.id}
-                      className={cn(
-                        "cursor-pointer",
-                        // Error rows carry a subtle destructive tint.
-                        status.variant === "destructive" &&
-                          "bg-destructive/5 hover:bg-destructive/10",
-                      )}
-                      onClick={() => router.push(href)}
-                    >
-                      <TableCell className="max-w-0">
-                        <Link
-                          href={href}
-                          className="font-medium hover:underline"
-                          onClick={(e) => e.stopPropagation()}
-                        >
-                          {job.name}
-                        </Link>
-                        <p className="line-clamp-2 text-xs text-muted-foreground">
-                          {job.instruction}
-                        </p>
-                      </TableCell>
-                      <TableCell
-                        title={job.schedule}
-                        className="whitespace-nowrap text-sm text-muted-foreground"
-                      >
-                        {describeCron(job.schedule)}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant={status.variant}>{status.label}</Badge>
-                      </TableCell>
-                      <TableCell
-                        suppressHydrationWarning
-                        className="whitespace-nowrap text-right text-sm text-muted-foreground tabular-nums"
-                      >
-                        {job.lastRunAt
-                          ? `${formatRelativeTime(job.lastRunAt)} ago`
-                          : "Never"}
-                      </TableCell>
-                    </TableRow>
-                  );
-                })}
-              </TableBody>
-            </Table>
+          {/* No create button while the daemon has no scheduler to accept it. */}
+          {cron.isSupported && cron.harnessLive && (
+            <CreateScheduleDialog createFromDraft={cron.createFromDraft} />
           )}
         </div>
+
+        {/* Action refusals from the daemon, verbatim — its words are the
+            explanation (frequency floor, bad cron, 412 conflicts). */}
+        {cron.error && (
+          <p className="whitespace-pre-wrap rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
+            {cron.error}
+          </p>
+        )}
+
+        {!cron.harnessLive ? (
+          <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
+            Runtime offline — the schedule registry can&rsquo;t be read.
+          </div>
+        ) : !cron.isSupported ? (
+          // Not-wired is a different fact from empty: the daemon answered the
+          // list with a refusal because it has no schedule store at all.
+          <div className="space-y-2 rounded-lg border border-dashed px-6 py-12 text-center">
+            <p className="text-sm font-medium">
+              Scheduling is not wired on this deployment.
+            </p>
+            <p className="font-mono text-xs text-muted-foreground">
+              {cron.notWired}
+            </p>
+          </div>
+        ) : cron.isLoading ? (
+          <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
+            Loading schedules…
+          </div>
+        ) : (
+          /* Table card: the status filter lives in a header toolbar, with the
+             table below — matching the admin tables (e.g. organization groups). */
+          <div className="overflow-hidden rounded-lg border">
+            <div className="flex flex-wrap items-center gap-2 border-b px-4 py-3">
+              <Select value={statusFilter} onValueChange={setStatusFilter}>
+                <SelectTrigger
+                  aria-label="Filter by status"
+                  className="h-9 w-[160px]"
+                >
+                  <SelectValue placeholder="All statuses" />
+                </SelectTrigger>
+                <SelectContent>
+                  {STATUS_FILTERS.map((s) => (
+                    <SelectItem key={s.value} value={s.value}>
+                      {s.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            {rows.length === 0 ? (
+              <div className="py-12 text-center text-sm text-muted-foreground">
+                {statusFilter === "all"
+                  ? "No schedules yet."
+                  : "No scheduled tasks match this filter."}
+              </div>
+            ) : (
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <SortHead
+                      label="Name"
+                      active={sortKey === "name"}
+                      dir={sortDir}
+                      onClick={() => toggleSort("name")}
+                      className="w-3/5"
+                    />
+                    <SortHead
+                      label="Schedule"
+                      active={sortKey === "schedule"}
+                      dir={sortDir}
+                      onClick={() => toggleSort("schedule")}
+                      className="w-px whitespace-nowrap"
+                    />
+                    <SortHead
+                      label="Status"
+                      active={sortKey === "status"}
+                      dir={sortDir}
+                      onClick={() => toggleSort("status")}
+                      className="w-px whitespace-nowrap"
+                    />
+                    <SortHead
+                      label="Last run"
+                      active={sortKey === "lastRun"}
+                      dir={sortDir}
+                      onClick={() => toggleSort("lastRun")}
+                      className="w-px whitespace-nowrap text-right"
+                    />
+                  </TableRow>
+                </TableHeader>
+                <TableBody>
+                  {rows.map((row) => {
+                    const href = `/workspace/schedules/${encodeURIComponent(row.name)}`;
+                    return (
+                      <TableRow
+                        key={row.name}
+                        className="cursor-pointer"
+                        onClick={() => router.push(href)}
+                      >
+                        <TableCell className="max-w-0">
+                          <Link
+                            href={href}
+                            className="font-medium hover:underline"
+                            onClick={(e) => e.stopPropagation()}
+                          >
+                            {row.name}
+                          </Link>
+                          <p className="line-clamp-2 text-xs text-muted-foreground">
+                            {row.prompt}
+                          </p>
+                          <div className="mt-1.5 flex flex-wrap items-center gap-1.5">
+                            <ScheduleMetaBadges row={row} />
+                          </div>
+                        </TableCell>
+                        <TableCell
+                          title={
+                            row.cron
+                              ? `${row.cron}${row.timezone ? ` (${row.timezone})` : ""}`
+                              : undefined
+                          }
+                          className="whitespace-nowrap text-sm text-muted-foreground"
+                        >
+                          {describeTrigger(row)}
+                        </TableCell>
+                        <TableCell>
+                          <ScheduleStatusBadge row={row} />
+                        </TableCell>
+                        <TableCell
+                          suppressHydrationWarning
+                          className="whitespace-nowrap text-right text-sm text-muted-foreground tabular-nums"
+                        >
+                          {row.lastFireAt
+                            ? `${formatRelativeTime(row.lastFireAt)} ago`
+                            : "Never"}
+                        </TableCell>
+                      </TableRow>
+                    );
+                  })}
+                </TableBody>
+              </Table>
+            )}
+          </div>
+        )}
       </div>
     </div>
   );

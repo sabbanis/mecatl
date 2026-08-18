@@ -17,7 +17,7 @@ import {
   stringFields,
 } from "./internal";
 
-export type MecatlUsage = {
+type MecatlUsage = {
   input_tokens?: string | number;
   output_tokens?: string | number;
   cache_read_tokens?: string | number;
@@ -161,7 +161,7 @@ export function parseMecatlEvent(data: string): MecatlEvent {
 }
 
 /** Renders a tool's JSON args as a compact `key: value · key: value` line. */
-export function prettyArgs(raw?: string): string {
+function prettyArgs(raw?: string): string {
   if (!raw) return "";
   try {
     const parsed = JSON.parse(raw) as Record<string, unknown>;

@@ -13,8 +13,6 @@
  * duplicated key lists.
  */
 
-export type ShortcutScope = "global" | "chat" | "composer";
-
 export interface ShortcutDef {
   readonly id: string;
   readonly combo: string;

@@ -1,33 +1,80 @@
 "use client";
 
-import { Check } from "lucide-react";
-import { notFound, useParams, useRouter } from "next/navigation";
-import { useState } from "react";
+import { BookOpen, Sparkles } from "lucide-react";
+import { useParams, useRouter } from "next/navigation";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { useAgentSkills } from "@/features/agent/hooks/use-agent-skills";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
-import { getSkillById } from "../_data/skills";
+
+/** "pr-feedback" → "Pr Feedback"; the raw slug stays the id/route param. */
+function humanizeSkillName(name: string): string {
+  return name
+    .split(/[-_]+/)
+    .filter(Boolean)
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1))
+    .join(" ");
+}
 
 export default function SkillDetailPage() {
   const router = useRouter();
   const params = useParams<{ skillId: string }>();
-  const skill = getSkillById(params.skillId);
-  const [loaded, setLoaded] = useState(skill?.loaded ?? false);
+  const name = decodeURIComponent(params.skillId);
+  const { skills, isLoading, error } = useAgentSkills();
+  const skill = skills.find((s) => s.name === name);
 
-  if (!skill) return notFound();
-  const Icon = skill.icon;
+  const back = (
+    <Button
+      variant="outline"
+      size="sm"
+      className="w-fit self-start rounded-full h-9 px-4 gap-1"
+      onClick={() => router.back()}
+    >
+      <span aria-hidden="true">‹</span>
+      Back
+    </Button>
+  );
+
+  if (isLoading) {
+    return (
+      <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-8">
+        {back}
+        <Skeleton className="h-12 w-72 rounded-lg" />
+        <Skeleton className="h-24 max-w-[465px] rounded-lg" />
+      </div>
+    );
+  }
+
+  if (error) {
+    return (
+      <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-8">
+        {back}
+        <div className="rounded-lg border border-dashed border-destructive/40 py-12 text-center text-sm text-destructive">
+          {error}
+        </div>
+      </div>
+    );
+  }
+
+  if (!skill) {
+    return (
+      <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-8">
+        {back}
+        <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
+          No skill named <code className="font-mono text-xs">{name}</code> in
+          the daemon&apos;s inventory.
+        </div>
+      </div>
+    );
+  }
+
+  const Icon = skill.agentOwned ? Sparkles : BookOpen;
 
   return (
     <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-8">
-      <Button
-        variant="outline"
-        size="sm"
-        className="w-fit self-start rounded-full h-9 px-4 gap-1"
-        onClick={() => router.back()}
-      >
-        <span aria-hidden="true">‹</span>
-        Back
-      </Button>
+      {back}
 
       {/* Title + metadata pills */}
       <div className="space-y-3">
@@ -36,13 +83,27 @@ export default function SkillDetailPage() {
             <Icon className="size-6 text-foreground" />
           </div>
           <h1 className={pageTitleClass("text-[44px] leading-[1.05]")}>
-            {skill.displayName}
+            {humanizeSkillName(skill.name)}
           </h1>
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <MetaPill className="font-mono">{skill.name}</MetaPill>
-          <MetaPill>{skill.author}</MetaPill>
-          <MetaPill>{loaded ? "Enabled" : "Available"}</MetaPill>
+          {skill.agentOwned ? (
+            <>
+              <Badge variant="info">
+                <Sparkles />
+                Learned
+              </Badge>
+              {skill.ownerAgent ? (
+                <MetaPill>by {skill.ownerAgent}</MetaPill>
+              ) : null}
+              {skill.activeVersion ? (
+                <MetaPill className="font-mono">{skill.activeVersion}</MetaPill>
+              ) : null}
+            </>
+          ) : (
+            <Badge variant="muted">Workspace</Badge>
+          )}
         </div>
       </div>
 
@@ -54,34 +115,15 @@ export default function SkillDetailPage() {
               {skill.description}
             </p>
           </div>
-          <div className="pt-2">
-            {loaded ? (
-              <Button
-                variant="outline"
-                className="rounded-full h-11 px-6 gap-2 text-success border-success/30 hover:bg-success/10 hover:text-success"
-                onClick={() => setLoaded(false)}
-              >
-                <Check className="size-4" />
-                Enabled
-              </Button>
-            ) : (
-              <Button
-                variant="action"
-                className="h-11 px-6"
-                onClick={() => setLoaded(true)}
-              >
-                Enable for agent
-              </Button>
-            )}
-          </div>
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col gap-3">
           <h2 className="text-base font-semibold">SKILL.md</h2>
           <div className="rounded-lg border bg-background p-6">
-            <pre className="whitespace-pre-wrap font-mono text-[13px] leading-[21px] text-muted-foreground">
-              {skill.content}
-            </pre>
+            <p className="text-sm leading-relaxed text-muted-foreground">
+              The daemon&apos;s inventory is metadata-only; the agent reads a
+              skill&apos;s body only when it loads it.
+            </p>
           </div>
         </section>
       </div>

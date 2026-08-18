@@ -1,11 +1,10 @@
 import { ChatWorkspace } from "../_components/chat-workspace";
 
 /**
- * `/workspace/chat` (no conversation) and `/workspace/chat/<sessionId>` are
- * served by one optional-catch-all route, so moving between them keeps
- * `ChatWorkspace` mounted. Its selection and project state survive the
- * navigation — switching to the project overview (which drops the sessionId
- * from the URL) no longer remounts the tree and re-runs the default-select.
+ * `/workspace/chat` (a draft with no daemon session yet) and
+ * `/workspace/chat/<sessionId>` are served by one optional-catch-all route,
+ * so moving between them keeps `ChatWorkspace` mounted — a draft's in-flight
+ * stream survives the router.replace to its freshly minted session id.
  */
 export default async function ChatPage({
   params,

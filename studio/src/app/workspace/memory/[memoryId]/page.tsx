@@ -3,21 +3,35 @@
 import { notFound, useParams, useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { useAgentMemory } from "@/features/agent";
-import { formatRelativeTime } from "@/lib/formatters";
 import { pageTitleClass } from "@/lib/typography";
-import { cn } from "@/lib/utils";
 
 export default function MemoryDetailPage() {
   const router = useRouter();
   const params = useParams<{ memoryId: string }>();
   const memory = useAgentMemory();
-  const entry = memory.entries.find((e) => e.id === params.memoryId);
+  // The route segment arrives URL-encoded; entry ids are the raw store keys.
+  const key = decodeURIComponent(params.memoryId);
+  const entry = memory.entries.find((e) => e.id === key);
 
   if (!entry) {
     if (memory.isLoading) {
       return (
         <div className="flex min-h-[60vh] items-center justify-center text-sm text-muted-foreground">
           Loading…
+        </div>
+      );
+    }
+    if (!memory.isSupported) {
+      return (
+        <div className="flex min-h-[60vh] flex-col items-center justify-center gap-2 px-6 text-center">
+          <p className="text-sm font-medium">
+            Memory is disabled on this daemon
+          </p>
+          {memory.disabledReason && (
+            <p className="text-sm text-muted-foreground">
+              {memory.disabledReason}
+            </p>
+          )}
         </div>
       );
     }
@@ -36,18 +50,9 @@ export default function MemoryDetailPage() {
         Back
       </Button>
 
-      {/* Title + metadata pills */}
-      <div className="space-y-3">
-        <h1 className={pageTitleClass("text-[44px] leading-[1.05]")}>
-          {entry.title}
-        </h1>
-        <div className="flex flex-wrap items-center gap-2">
-          <MetaPill className="capitalize">{entry.section}</MetaPill>
-          <MetaPill suppressHydrationWarning>
-            Updated {formatRelativeTime(entry.updatedAt)} ago
-          </MetaPill>
-        </div>
-      </div>
+      <h1 className={pageTitleClass("break-all text-[44px] leading-[1.05]")}>
+        {entry.title}
+      </h1>
 
       <div className="flex flex-col gap-10 lg:flex-row lg:items-start">
         <aside className="flex w-full max-w-[465px] flex-col gap-6">
@@ -65,51 +70,23 @@ export default function MemoryDetailPage() {
           <h2 className="text-base font-semibold">Details</h2>
           <div className="divide-y rounded-lg border bg-background">
             <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <span className="text-sm text-muted-foreground">Section</span>
-              <span className="text-sm font-medium capitalize">
-                {entry.section}
-              </span>
-            </div>
-            <div className="flex items-center justify-between gap-3 px-4 py-3">
-              <span className="text-sm text-muted-foreground">
-                Last updated
-              </span>
-              <span
-                suppressHydrationWarning
-                className="text-sm font-medium tabular-nums"
-              >
-                {formatRelativeTime(entry.updatedAt)} ago
+              <span className="text-sm text-muted-foreground">Key</span>
+              <span className="break-all text-right text-sm font-medium font-mono">
+                {entry.id}
               </span>
             </div>
           </div>
           <p className="text-xs text-muted-foreground">
-            Read-only — the agent decides what to remember as you work with it.
-            Ask it in chat to remember or forget something.
+            Only the key and description are indexed here. The stored value is
+            loaded by the agent itself when it recalls this entry during a turn.
+          </p>
+          <p className="text-xs text-muted-foreground">
+            Read-only by design — the agent curates memory through
+            injection-scanned tool calls. Ask it in chat to remember or forget
+            something.
           </p>
         </section>
       </div>
     </div>
-  );
-}
-
-function MetaPill({
-  children,
-  className,
-  suppressHydrationWarning,
-}: {
-  children: React.ReactNode;
-  className?: string;
-  suppressHydrationWarning?: boolean;
-}) {
-  return (
-    <span
-      suppressHydrationWarning={suppressHydrationWarning}
-      className={cn(
-        "inline-flex items-center rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground",
-        className,
-      )}
-    >
-      {children}
-    </span>
   );
 }

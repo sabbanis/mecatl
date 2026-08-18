@@ -39,7 +39,7 @@ import { cn } from "@/lib/utils";
  * names the console root so the exact-match rule is not hard-wired to one
  * console.
  */
-export function isNavItemActive(
+function isNavItemActive(
   href: string,
   pathname: string,
   homeHref: string,
@@ -70,7 +70,7 @@ export function isNavItemActive(
  * like `/admin/tools` does not stay lit while on a nested destination such as
  * `/admin/tools/[serverId]`. Returns null when nothing matches.
  */
-export function activeNavItemKey(
+function activeNavItemKey(
   items: readonly NavItem[],
   pathname: string,
   homeHref: string,

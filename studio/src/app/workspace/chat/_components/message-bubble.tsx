@@ -1,18 +1,21 @@
 "use client";
 
 import {
+  AlertCircle,
   Bot,
   Copy,
   ExternalLink,
   FileCode2,
   FileSpreadsheet,
   FileText,
+  GitBranch,
   MessageSquareText,
   Paperclip,
   Pencil,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { Badge } from "@/components/ui/badge";
 import {
   Tooltip,
   TooltipContent,
@@ -25,7 +28,7 @@ import { cn } from "@/lib/utils";
 import { mdComponents } from "./markdown-components";
 import { ToolCallList } from "./tool-call-list";
 
-export function UserAvatar() {
+function UserAvatar() {
   return (
     // biome-ignore lint/performance/noImgElement: static external avatar; not worth a next/image remote-domain config for the demo
     <img
@@ -184,7 +187,7 @@ const ARTIFACT_META: Record<
   },
 };
 
-export function ArtifactCard({
+function ArtifactCard({
   artifact,
   onClick,
 }: {
@@ -241,9 +244,24 @@ export function MessageBubble({
 
   const hasToolCalls = message.toolCalls && message.toolCalls.length > 0;
   const hasContent = message.content?.trim();
+  // Notices and delegations can repeat verbatim within a turn, so rows get
+  // positional ids up front to keep React keys unique.
+  const notices = (message.notices ?? []).map((text, index) => ({
+    id: `${index}:${text}`,
+    text,
+  }));
+  const delegations = (message.delegations ?? []).map((d, index) => ({
+    ...d,
+    id: `${index}:${d.kind}:${d.label}`,
+  }));
+  // A failed turn must always render (never look like an empty success), as
+  // must one that only carries notices or delegation badges.
+  const hasExtras =
+    Boolean(message.failed) || notices.length > 0 || delegations.length > 0;
 
-  if (!isUser && !hasContent && !hasToolCalls) return null;
-  if (!isUser && !hasContent && hasToolCalls && !showActivity) return null;
+  if (!isUser && !hasContent && !hasToolCalls && !hasExtras) return null;
+  if (!isUser && !hasContent && hasToolCalls && !showActivity && !hasExtras)
+    return null;
 
   return (
     <div className="group/msg flex gap-2 lg:gap-3 rounded-lg px-2 lg:px-3 py-2 -mx-2 lg:-mx-3 hover:bg-zinc-50 dark:hover:bg-zinc-800/30 [&:not(:hover)_.msg-actions]:opacity-0">
@@ -278,6 +296,21 @@ export function MessageBubble({
         {hasToolCalls && showActivity && message.toolCalls && (
           <ToolCallList toolCalls={message.toolCalls} />
         )}
+        {delegations.length > 0 && (
+          <div className="mt-1.5 flex flex-wrap gap-1.5">
+            {delegations.map((d) => (
+              <Badge
+                key={d.id}
+                variant="secondary"
+                className="gap-1 border-transparent text-xs font-normal text-muted-foreground"
+              >
+                <GitBranch className="size-3" />
+                {d.kind}: {d.label}
+                {d.detail ? ` · ${d.detail}` : ""}
+              </Badge>
+            ))}
+          </div>
+        )}
         {hasContent && (
           <div className="text-sm lg:text-[15px] mt-0.5 leading-relaxed text-foreground/80">
             {isUser ? (
@@ -290,6 +323,31 @@ export function MessageBubble({
                 {message.content}
               </ReactMarkdown>
             )}
+          </div>
+        )}
+        {notices.length > 0 && (
+          <div className="mt-1.5 flex flex-col gap-0.5">
+            {notices.map((notice) => (
+              <p
+                key={notice.id}
+                className="truncate text-xs text-muted-foreground/70"
+              >
+                {notice.text}
+              </p>
+            ))}
+          </div>
+        )}
+        {message.failed && (
+          <div className="mt-2 flex items-start gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
+            <AlertCircle className="mt-0.5 size-4 shrink-0 text-destructive" />
+            <div className="min-w-0 text-sm">
+              <p className="font-medium text-destructive">This turn failed</p>
+              {message.failureDetail && (
+                <p className="mt-0.5 whitespace-pre-wrap break-words text-destructive/90">
+                  {message.failureDetail}
+                </p>
+              )}
+            </div>
           </div>
         )}
         {message.artifact && (

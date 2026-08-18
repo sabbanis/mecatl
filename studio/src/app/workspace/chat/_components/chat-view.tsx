@@ -1,18 +1,18 @@
 "use client";
 
 import {
+  AlertCircle,
   ArrowLeft,
-  ChevronRight,
   CirclePlus,
   Ellipsis,
   FileText,
-  FolderClosed,
   Loader2,
   MessageCircle,
   MessageSquareText,
   PanelLeftOpen,
   PanelRightOpen,
   Pencil,
+  RotateCcw,
   Trash2,
   Wrench,
 } from "lucide-react";
@@ -23,9 +23,6 @@ import {
   DropdownMenuContent,
   DropdownMenuItem,
   DropdownMenuSeparator,
-  DropdownMenuSub,
-  DropdownMenuSubContent,
-  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -48,6 +45,7 @@ import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
 import { ClarificationPanel } from "./clarification-panel";
+import { ContextWindowIndicator } from "./context-window-indicator";
 import { FilePreview } from "./file-preview";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
 import { BotAvatar, MessageBubble } from "./message-bubble";
@@ -64,20 +62,13 @@ function MobileChatMenu({
   onToggleActivity,
   onRename,
   onDelete,
-  onMove,
-  projects,
-  sessionProjectId,
 }: {
   showActivity: boolean;
   onToggleActivity: () => void;
   onRename?: () => void;
   onDelete?: () => void;
-  onMove?: (projectId: string | null) => void;
-  projects?: Array<{ id: string; name: string }>;
-  sessionProjectId?: string | null;
 }) {
   const [open, setOpen] = useState(false);
-  const [showMoveList, setShowMoveList] = useState(false);
 
   return (
     <>
@@ -85,115 +76,55 @@ function MobileChatMenu({
         variant="ghost"
         size="icon"
         className="size-8 shrink-0 text-muted-foreground"
-        onClick={() => {
-          setOpen(true);
-          setShowMoveList(false);
-        }}
+        onClick={() => setOpen(true)}
       >
         <Ellipsis className="size-4" />
       </Button>
       <Sheet open={open} onOpenChange={setOpen}>
         <SheetContent side="bottom" className="p-0 rounded-t-2xl">
           <SheetTitle className="sr-only">Chat options</SheetTitle>
-          {showMoveList ? (
-            <div>
-              <button
-                type="button"
-                onClick={() => setShowMoveList(false)}
-                className="flex items-center gap-2 px-4 pt-4 pb-2 text-sm text-muted-foreground"
-              >
-                <ArrowLeft className="size-4" />
-                Back
-              </button>
-              <div className="pb-2">
-                <button
-                  type="button"
-                  onClick={() => {
-                    onMove?.(null);
-                    setOpen(false);
-                  }}
-                  className={cn(
-                    "flex w-full items-center gap-3 px-4 py-3 text-sm text-left hover:bg-muted/50 transition-colors",
-                    !sessionProjectId && "font-semibold",
-                  )}
-                >
-                  <FolderClosed className="size-4 text-muted-foreground" />
-                  Chats
-                </button>
-                {projects?.map((p) => (
-                  <button
-                    key={p.id}
-                    type="button"
-                    onClick={() => {
-                      onMove?.(p.id);
-                      setOpen(false);
-                    }}
-                    className={cn(
-                      "flex w-full items-center gap-3 px-4 py-3 text-sm text-left hover:bg-muted/50 transition-colors",
-                      p.id === sessionProjectId && "font-semibold",
-                    )}
-                  >
-                    <FolderClosed className="size-4 text-muted-foreground" />
-                    {p.name}
-                  </button>
-                ))}
-              </div>
-            </div>
-          ) : (
-            <div className="py-2">
+          <div className="py-2">
+            <button
+              type="button"
+              onClick={() => {
+                onToggleActivity();
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-3 px-4 py-3 text-sm hover:bg-muted/50 transition-colors"
+            >
+              <Wrench className="size-4 text-muted-foreground" />
+              {showActivity ? "Hide Tools" : "Show Tools"}
+            </button>
+            {onRename && (
               <button
                 type="button"
                 onClick={() => {
-                  onToggleActivity();
+                  onRename();
                   setOpen(false);
                 }}
                 className="flex w-full items-center gap-3 px-4 py-3 text-sm hover:bg-muted/50 transition-colors"
               >
-                <Wrench className="size-4 text-muted-foreground" />
-                {showActivity ? "Hide Tools" : "Show Tools"}
+                <Pencil className="size-4 text-muted-foreground" />
+                Rename
               </button>
-              {onRename && (
+            )}
+            {onDelete && (
+              <>
+                <div className="h-px bg-border mx-4 my-1" />
                 <button
                   type="button"
                   onClick={() => {
-                    onRename();
+                    onDelete();
                     setOpen(false);
                   }}
-                  className="flex w-full items-center gap-3 px-4 py-3 text-sm hover:bg-muted/50 transition-colors"
+                  className="flex w-full items-center gap-3 px-4 py-3 text-sm text-muted-foreground hover:bg-muted/50 transition-colors"
                 >
-                  <Pencil className="size-4 text-muted-foreground" />
-                  Rename
+                  <Trash2 className="size-4" />
+                  Delete
                 </button>
-              )}
-              {onMove && projects && (
-                <button
-                  type="button"
-                  onClick={() => setShowMoveList(true)}
-                  className="flex w-full items-center gap-3 px-4 py-3 text-sm hover:bg-muted/50 transition-colors"
-                >
-                  <FolderClosed className="size-4 text-muted-foreground" />
-                  <span className="flex-1 text-left">Move</span>
-                  <ChevronRight className="size-4 text-muted-foreground" />
-                </button>
-              )}
-              {onDelete && (
-                <>
-                  <div className="h-px bg-border mx-4 my-1" />
-                  <button
-                    type="button"
-                    onClick={() => {
-                      onDelete();
-                      setOpen(false);
-                    }}
-                    className="flex w-full items-center gap-3 px-4 py-3 text-sm text-muted-foreground hover:bg-muted/50 transition-colors"
-                  >
-                    <Trash2 className="size-4" />
-                    Delete
-                  </button>
-                </>
-              )}
-            </div>
-          )}
+              </>
+            )}
+          </div>
         </SheetContent>
       </Sheet>
     </>
@@ -421,7 +352,9 @@ export function ChatView({
   onSend,
   botName,
   live = false,
-  liveUsage,
+  usage,
+  error,
+  onRetry,
   sidebarOpen,
   onToggleSidebar,
   pendingApproval,
@@ -430,8 +363,6 @@ export function ChatView({
   onRespondClarification,
   onRename,
   onDelete,
-  onMove,
-  projects,
   onSidePanelOpenChange,
   initialDraft,
   onInitialDraftConsumed,
@@ -441,9 +372,12 @@ export function ChatView({
   isStreaming: boolean;
   onSend: (content: string) => void;
   botName: string;
-  /** True when a local harness is answering — demo chrome must not render. */
+  /** True while the daemon connection is up. */
   live?: boolean;
-  liveUsage?: { inputTokens: number; outputTokens: number };
+  usage?: { inputTokens: number; outputTokens: number };
+  /** The last turn failed with this text; rendered as an inline strip. */
+  error?: string | null;
+  onRetry?: () => void;
   sidebarOpen: boolean;
   onToggleSidebar: () => void;
   pendingApproval: ApprovalRequest | null;
@@ -452,8 +386,6 @@ export function ChatView({
   onRespondClarification: (response: string) => void;
   onRename?: () => void;
   onDelete?: () => void;
-  onMove?: (projectId: string | null) => void;
-  projects?: Array<{ id: string; name: string }>;
   /** Fires when the right-hand side panel (artifact/attachment) opens or
       closes, so the parent can collapse the chat list while it's open. */
   onSidePanelOpenChange?: (open: boolean) => void;
@@ -540,7 +472,6 @@ export function ChatView({
                   : "Show sidebar"}
             </TooltipContent>
           </Tooltip>
-          {/* biome-ignore lint/a11y/noStaticElementInteractions: rename is also reachable via the header menu */}
           <h2
             className="min-w-0 flex-1 truncate text-sm font-semibold select-none"
             onDoubleClick={onRename}
@@ -548,15 +479,10 @@ export function ChatView({
           >
             {session.title || "Untitled"}
           </h2>
-          {live && (
-            /* Live sessions show what the harness actually reported. */
-            <div className="hidden sm:flex items-center gap-1.5 shrink-0">
-              <span className="size-1.5 rounded-full bg-emerald-500" />
-              <span className="text-[11px] text-muted-foreground tabular-nums">
-                {liveUsage && liveUsage.inputTokens + liveUsage.outputTokens > 0
-                  ? `${Math.round(liveUsage.inputTokens / 1000)}k in · ${liveUsage.outputTokens} out tokens`
-                  : "Connected · live agent"}
-              </span>
+          {live && usage && (
+            /* Token usage as the daemon reported it; hidden until any lands. */
+            <div className="hidden sm:block shrink-0">
+              <ContextWindowIndicator usage={usage} />
             </div>
           )}
           {!isMobile && (
@@ -581,29 +507,6 @@ export function ChatView({
                     Rename
                   </DropdownMenuItem>
                 )}
-                {onMove && projects && (
-                  <DropdownMenuSub>
-                    <DropdownMenuSubTrigger>
-                      <FolderClosed className="size-4 mr-2 text-muted-foreground" />
-                      Move
-                    </DropdownMenuSubTrigger>
-                    <DropdownMenuSubContent className="min-w-52">
-                      <DropdownMenuItem onClick={() => onMove(null)}>
-                        <FolderClosed className="size-3.5 mr-1.5 text-muted-foreground" />
-                        Chats
-                      </DropdownMenuItem>
-                      {projects.map((p) => (
-                        <DropdownMenuItem
-                          key={p.id}
-                          onClick={() => onMove(p.id)}
-                        >
-                          <FolderClosed className="size-3.5 mr-1.5 text-muted-foreground" />
-                          {p.name}
-                        </DropdownMenuItem>
-                      ))}
-                    </DropdownMenuSubContent>
-                  </DropdownMenuSub>
-                )}
                 {onDelete && (
                   <>
                     <DropdownMenuSeparator />
@@ -622,9 +525,6 @@ export function ChatView({
               onToggleActivity={() => setShowActivity((v) => !v)}
               onRename={onRename}
               onDelete={onDelete}
-              onMove={onMove}
-              projects={projects}
-              sessionProjectId={session.projectId}
             />
           )}
         </div>
@@ -657,7 +557,6 @@ export function ChatView({
               ))}
               {pendingApproval && (
                 <ApprovalPanel
-                  binaryOnly={live}
                   approval={pendingApproval}
                   onRespond={onRespondApproval}
                 />
@@ -681,6 +580,25 @@ export function ChatView({
           </div>
           <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-6 pb-4 lg:pb-6">
             <div className="max-w-3xl space-y-1.5">
+              {error && (
+                <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
+                  <AlertCircle className="size-4 shrink-0 text-destructive" />
+                  <p className="min-w-0 flex-1 text-sm text-destructive break-words">
+                    {error}
+                  </p>
+                  {onRetry && (
+                    <Button
+                      size="sm"
+                      variant="outline"
+                      className="h-7 shrink-0 border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
+                      onClick={onRetry}
+                    >
+                      <RotateCcw className="size-3.5" />
+                      Retry
+                    </Button>
+                  )}
+                </div>
+              )}
               {pendingClarification ? (
                 <ClarificationPanel
                   clarification={pendingClarification}

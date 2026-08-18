@@ -24,7 +24,7 @@ import {
  * "unset", so these are plain numbers: the form, the wire, and the daemon all
  * read 0 as "no cap".
  */
-export type ScheduleLimits = {
+type ScheduleLimits = {
   maxTurns: number;
   maxToolCalls: number;
   maxConsecutiveFailures: number;
@@ -116,7 +116,7 @@ export type ScheduleFireRow = {
  * as two optional fields would let the form build a body the daemon must
  * reject.
  */
-export type ScheduleTriggerDraft =
+type ScheduleTriggerDraft =
   | { kind: "cron"; cron: string; timezone: string }
   | { kind: "one-shot"; at: number };
 
@@ -252,12 +252,6 @@ export function decodeScheduleFires(value: unknown): ScheduleFireRow[] {
     .map(decodeFire)
     .filter((fire): fire is ScheduleFireRow => fire !== undefined)
     .sort((left, right) => (right.firedAt ?? 0) - (left.firedAt ?? 0));
-}
-
-/** `GET /v1/schedules/{name}/fires/{id}` — one fire, re-read on demand. */
-export function decodeScheduleFire(value: unknown): ScheduleFireRow | null {
-  const body = asRecord(value);
-  return decodeFire(body?.fire) ?? null;
 }
 
 /** The edit prefill: the stored row split into the half the form owns. */

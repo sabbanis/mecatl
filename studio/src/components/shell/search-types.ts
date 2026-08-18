@@ -8,7 +8,7 @@ import type { ComponentType } from "react";
  * without touching the UI.
  */
 
-export type SearchSource = "admin" | "atrium";
+type SearchSource = "admin" | "atrium";
 
 export interface SearchEntry {
   /** Stable key for React keys and cmdk values. */

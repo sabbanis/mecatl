@@ -9,7 +9,6 @@
 
 import type { StreamEvent } from "@/features/agent/types";
 import {
-  decodeScheduleFire,
   decodeScheduleFires,
   decodeScheduleRows,
   decodeSessionInventory,
@@ -204,7 +203,7 @@ export async function respondToHarnessApproval(
 // ── Session inventory / transcripts (daemon session store) ──────────────────
 
 /** One page of `GET /v1/sessions`. */
-export async function fetchSessionInventoryPage(
+async function fetchSessionInventoryPage(
   cursor?: string,
   pageSize = 100,
   signal?: AbortSignal,
@@ -330,99 +329,6 @@ export async function fetchHarnessUserModel(
 
 // ── Schedules ───────────────────────────────────────────────────────────────
 
-interface HarnessTimestamp {
-  seconds?: string | number;
-  nanos?: number;
-}
-
-/** proto3 JSON omits a zero Timestamp entirely, which means "never" here. */
-function timestampMillis(value?: HarnessTimestamp): number | null {
-  const seconds = Number(value?.seconds ?? 0);
-  if (!seconds) return null;
-  return seconds * 1000 + Math.floor((value?.nanos ?? 0) / 1e6);
-}
-
-export interface HarnessSchedule {
-  name: string;
-  prompt: string;
-  cron: string;
-  enabled: boolean;
-  fireCount: number;
-  lastFireAt: number | null;
-  nextFireAt: number | null;
-  live: boolean;
-  /** Prior fire's session id — "" while a fire is only claimed ("pending"). */
-  lastFireSessionId: string;
-}
-
-export async function listHarnessSchedules(
-  signal?: AbortSignal,
-): Promise<HarnessSchedule[]> {
-  const response = await fetch(`${HARNESS_API}/schedules`, {
-    signal,
-    cache: "no-store",
-  });
-  if (!response.ok) throw new Error(await readError(response));
-  const body = (await response.json()) as {
-    schedules?: {
-      spec?: {
-        name?: string;
-        prompt?: string;
-        trigger?: { cron?: string };
-      };
-      state?: {
-        enabled?: boolean;
-        fire_count?: number;
-        last_fire_at?: HarnessTimestamp;
-        next_fire_at?: HarnessTimestamp;
-        last_fire_started_at?: HarnessTimestamp;
-        last_fire_session_id?: string;
-      };
-    }[];
-  };
-  return (body.schedules ?? []).map((entry) => ({
-    name: entry.spec?.name ?? "",
-    prompt: entry.spec?.prompt ?? "",
-    cron: entry.spec?.trigger?.cron ?? "",
-    enabled: Boolean(entry.state?.enabled),
-    fireCount: Number(entry.state?.fire_count ?? 0),
-    lastFireAt: timestampMillis(entry.state?.last_fire_at),
-    nextFireAt: timestampMillis(entry.state?.next_fire_at),
-    // A Claim leaves the "pending" sentinel before the run starts; both that and
-    // a set started_at mean a fire is live right now.
-    live:
-      timestampMillis(entry.state?.last_fire_started_at) !== null ||
-      entry.state?.last_fire_session_id === "pending",
-    lastFireSessionId:
-      entry.state?.last_fire_session_id === "pending"
-        ? ""
-        : (entry.state?.last_fire_session_id ?? ""),
-  }));
-}
-
-/**
- * Creates a schedule. Non-mutating schedules MUST run in plan mode — the daemon
- * rejects anything wider — so this always creates the read-only kind and leaves
- * write-capable schedules to a deliberate act elsewhere.
- */
-export async function createHarnessSchedule(
-  name: string,
-  cron: string,
-  prompt: string,
-): Promise<void> {
-  const response = await fetch(`${HARNESS_API}/schedules`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name,
-      prompt,
-      trigger: { cron },
-      mode: "PERMISSION_MODE_PLAN",
-    }),
-  });
-  if (!response.ok) throw new Error(await readError(response));
-}
-
 /**
  * Runs one schedule action. NOTE: "fire" is synchronous on the harness — the
  * request stays open for the whole agent run, which can be minutes.
@@ -497,20 +403,6 @@ export async function listScheduleFires(
   return decodeScheduleFires(await response.json());
 }
 
-/** Re-reads one fire record (an in-flight fire's stop arrives later). */
-export async function getScheduleFire(
-  name: string,
-  fireId: string,
-  signal?: AbortSignal,
-): Promise<ScheduleFireRow | null> {
-  const response = await fetch(
-    `${HARNESS_API}/schedules/${encodeURIComponent(name)}/fires/${encodeURIComponent(fireId)}`,
-    { signal, cache: "no-store" },
-  );
-  if (!response.ok) throw new Error(await readError(response));
-  return decodeScheduleFire(await response.json());
-}
-
 // ── Slash commands ───────────────────────────────────────────────────────────
 
 /**
@@ -541,20 +433,38 @@ export async function listHarnessCommands(
  * The model sees only each skill's name and one-line summary until it chooses to
  * load one, which is exactly what this returns.
  */
+export interface HarnessSkillInfo {
+  name: string;
+  description: string;
+  /** Learned-lifecycle provenance; absent for immutable external skills. */
+  agentOwned: boolean;
+  ownerAgent: string;
+  activeVersion: string;
+}
+
 export async function listHarnessSkills(
   signal?: AbortSignal,
-): Promise<{ name: string; description: string }[]> {
+): Promise<HarnessSkillInfo[]> {
   const response = await fetch(`${HARNESS_API}/skills`, {
     signal,
     cache: "no-store",
   });
   if (!response.ok) throw new Error(await readError(response));
   const body = (await response.json()) as {
-    skills?: { name?: string; description?: string }[];
+    skills?: {
+      name?: string;
+      description?: string;
+      agent_owned?: boolean;
+      owner_agent?: string;
+      active_version?: string;
+    }[];
   };
   return (body.skills ?? []).map((skill) => ({
     name: skill.name ?? "",
     description: skill.description ?? "",
+    agentOwned: skill.agent_owned === true,
+    ownerAgent: skill.owner_agent ?? "",
+    activeVersion: skill.active_version ?? "",
   }));
 }
 
@@ -580,17 +490,6 @@ export async function listHarnessModels(
 // ── Controller: provider, model router, MCP gateway ─────────────────────────
 
 const CONTROL_API = "/api/mecatl-control";
-
-/**
- * The MCP gateway this deployment uses. Fixed rather than user-entered: the
- * connector gateway is the one supported tool source here, and letting an
- * arbitrary URL be typed in invites pointing the agent's tool catalog at
- * something nobody vetted.
- *
- * Streamable HTTP over https, which is the only MCP transport mecatl supports.
- */
-export const MCP_GATEWAY_URL = "https://connector-gateway.stacklok.dev/gw/mcp";
-export const MCP_GATEWAY_NAME = "gateway";
 
 export interface HarnessControlStatus {
   /** "external" when Studio proxies to MECATL_BASE_URL; "managed" otherwise. */
@@ -709,428 +608,20 @@ export async function saveHarnessRouter(
  * The token is passed straight through to the loopback controller and is never
  * stored, logged, or echoed by this UI.
  */
-export async function connectHarnessGateway(token?: string): Promise<void> {
+export async function connectHarnessGateway(
+  name: string,
+  url: string,
+  token?: string,
+): Promise<void> {
   const response = await fetch(`${CONTROL_API}/mcp`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      name: MCP_GATEWAY_NAME,
-      url: MCP_GATEWAY_URL,
+      name,
+      url,
       token: token?.trim() || undefined,
     }),
   });
-  if (!response.ok) throw new Error(await readError(response));
-}
-
-// ── Skill authoring (local files) ───────────────────────────────────────────
-
-const SKILLS_API = "/api/harness-skills";
-
-export interface HarnessSkillFile {
-  name: string;
-  description: string;
-  body: string;
-}
-
-/**
- * Reads skills from DISK, which is deliberately a different source from
- * listHarnessSkills(): the daemon resolves its inventory once at startup, so a
- * freshly authored skill exists on disk while the running agent still cannot see
- * it. Reconciling the two is what lets the UI show a "restart to load" state
- * instead of pretending the write took effect.
- */
-export async function fetchHarnessSkillFiles(
-  signal?: AbortSignal,
-): Promise<{ dir: string; skills: HarnessSkillFile[] }> {
-  const response = await fetch(SKILLS_API, { signal, cache: "no-store" });
-  const body = (await response.json()) as {
-    dir?: string;
-    skills?: HarnessSkillFile[];
-    error?: string;
-  };
-  if (!response.ok) throw new Error(body.error ?? "could not read skills");
-  return { dir: body.dir ?? "", skills: body.skills ?? [] };
-}
-
-/** Creates or overwrites a skill's SKILL.md. */
-export async function saveHarnessSkill(skill: HarnessSkillFile): Promise<void> {
-  const response = await fetch(SKILLS_API, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(skill),
-  });
-  if (!response.ok) throw new Error(await readError(response));
-}
-
-/** Deletes a skill directory. */
-export async function deleteHarnessSkill(name: string): Promise<void> {
-  const response = await fetch(
-    `${SKILLS_API}?name=${encodeURIComponent(name)}`,
-    { method: "DELETE" },
-  );
-  if (!response.ok) throw new Error(await readError(response));
-}
-
-/**
- * Restarts the daemon through the controller so newly written skills are
- * resolved. The controller holds the provider credential in memory, so the
- * daemon comes back with the same provider and gateway.
- */
-export async function reloadHarnessDaemon(): Promise<void> {
-  const response = await fetch(`${CONTROL_API}/restart`, { method: "POST" });
-  if (!response.ok) throw new Error(await readError(response));
-}
-
-// ── Agent runs (real instances in the harness) ──────────────────────────────
-
-/**
- * A running agent is a team member: mecatl has no "run one named definition"
- * endpoint, but a member spec carries `agent_type` — the definition it adopts —
- * and each member gets its own session. So a one-member team IS the supported
- * way to run a definition outside a chat, and that is what this launches.
- */
-export interface HarnessRunMember {
-  name: string;
-  state: string;
-  sessionId: string;
-}
-
-export interface HarnessRun {
-  teamId: string;
-  members: HarnessRunMember[];
-}
-
-export async function launchHarnessRun(input: {
-  name: string;
-  agentType?: string;
-  goal: string;
-  mutating?: boolean;
-}): Promise<HarnessRun> {
-  const response = await fetch(`${HARNESS_API}/teams`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      name: input.name,
-      goal: input.goal,
-      members: [
-        {
-          name: input.name,
-          agent_type: input.agentType || undefined,
-          lead: true,
-          mutating: Boolean(input.mutating),
-          initial_prompt: input.goal,
-        },
-      ],
-    }),
-  });
-  if (!response.ok) throw new Error(await readError(response));
-  const body = (await response.json()) as {
-    team_id?: string;
-    members?: { name?: string; state?: string; session_id?: string }[];
-  };
-  return {
-    teamId: body.team_id ?? "",
-    members: (body.members ?? []).map((member) => ({
-      name: member.name ?? "",
-      state: member.state ?? "",
-      sessionId: member.session_id ?? "",
-    })),
-  };
-}
-
-/**
- * Drives a launched run to completion, reporting each event type as it arrives.
- * The stream ends with a terminal outcome frame.
- */
-export async function streamHarnessRun(
-  teamId: string,
-  onEvent: (kind: string) => void,
-  signal?: AbortSignal,
-): Promise<void> {
-  const response = await fetch(
-    `${HARNESS_API}/teams/${encodeURIComponent(teamId)}/run`,
-    { method: "POST", signal },
-  );
-  if (!response.ok) throw new Error(await readError(response));
-  if (!response.body) throw new Error("run returned no event stream");
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  let buffer = "";
-  while (true) {
-    const { value, done } = await reader.read();
-    if (done) break;
-    buffer += decoder.decode(value, { stream: true });
-    const frames = buffer.split("\n\n");
-    buffer = frames.pop() ?? "";
-    for (const frame of frames) {
-      const line = frame
-        .split("\n")
-        .find((candidate) => candidate.startsWith("data:"));
-      if (!line) continue;
-      const payload = line.slice("data:".length).trim();
-      if (!payload) continue;
-      try {
-        const event = JSON.parse(payload) as { type?: string };
-        onEvent(typeof event.type === "string" ? event.type : "event");
-      } catch {
-        // An unparseable frame is not worth failing the run over.
-      }
-    }
-  }
-}
-
-/** Releases a finished run's resources. Its session transcripts survive. */
-export async function deleteHarnessRun(teamId: string): Promise<void> {
-  await fetch(`${HARNESS_API}/teams/${encodeURIComponent(teamId)}`, {
-    method: "DELETE",
-  }).catch(() => undefined);
-}
-
-export interface HarnessInstance {
-  sessionId: string;
-  kind: "team" | "subagent" | "scheduled" | "chat";
-  /** Human-facing name derived from the id — NOT the raw title, which for
-   * non-chat runs is the goal prompt and can leak absolute paths. */
-  label: string;
-  title: string;
-  state: string;
-  turns: number;
-  modifiedAt: number;
-}
-
-/** Derives a displayable name from a run session id. */
-function instanceLabel(
-  id: string,
-  kind: HarnessInstance["kind"],
-  title: string,
-): string {
-  if (kind === "team") {
-    const member = id.match(/^team-team-[0-9a-f]+-(.+)$/);
-    if (member) return member[1];
-    return id.replace(/^team-/, "");
-  }
-  if (kind === "scheduled") {
-    const sched = id.match(/^sched--(.+)-\d{8}-\d{6}-[0-9a-f]+$/);
-    if (sched) return sched[1];
-    return id.replace(/^sched--/, "");
-  }
-  if (kind === "subagent") return id.replace(/^subagent-/, "");
-  return title || id;
-}
-
-/**
- * Lists agent instances from the session store. Every run the harness performs
- * lands there as a session with a prefixed id, which is the only way to see
- * instances that outlived the page: there is no list-teams endpoint.
- */
-export async function listHarnessInstances(
-  signal?: AbortSignal,
-): Promise<HarnessInstance[]> {
-  const response = await fetch(`${HARNESS_API}/sessions`, {
-    signal,
-    cache: "no-store",
-  });
-  if (!response.ok) throw new Error(await readError(response));
-  const body = (await response.json()) as {
-    sessions?: {
-      session_id?: string;
-      title?: string;
-      state?: string;
-      turns?: number;
-      modified_at_unix?: number | string;
-    }[];
-  };
-  return (body.sessions ?? []).map((session) => {
-    const id = session.session_id ?? "";
-    const kind: HarnessInstance["kind"] = id.startsWith("team-")
-      ? "team"
-      : id.startsWith("subagent-")
-        ? "subagent"
-        : id.startsWith("sched--")
-          ? "scheduled"
-          : "chat";
-    const title = session.title ?? "";
-    return {
-      sessionId: id,
-      kind,
-      label: instanceLabel(id, kind, title),
-      title,
-      state: session.state ?? "",
-      turns: Number(session.turns ?? 0),
-      modifiedAt: Number(session.modified_at_unix ?? 0) * 1000,
-    };
-  });
-}
-
-// ── Transcript replay ────────────────────────────────────────────────────────
-
-export interface TranscriptEntry {
-  role: "user" | "assistant" | "event";
-  text: string;
-}
-
-/**
- * Reconstructs a finished session's conversation from the durable event log
- * (`/events` is a pure replay that ends at the log's tail — no live tail).
- * `user_prompt` and per-turn `result` events carry the clean text; tool calls
- * are summarised as event lines rather than replayed in full.
- */
-export async function fetchHarnessTranscript(
-  sessionId: string,
-  signal?: AbortSignal,
-): Promise<TranscriptEntry[]> {
-  const response = await fetch(
-    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/events`,
-    { signal, cache: "no-store" },
-  );
-  if (!response.ok) throw new Error(await readError(response));
-  const raw = await response.text();
-  const entries: TranscriptEntry[] = [];
-  let toolCalls = 0;
-  const flushTools = () => {
-    if (toolCalls > 0) {
-      entries.push({
-        role: "event",
-        text: `${toolCalls} tool call${toolCalls === 1 ? "" : "s"}`,
-      });
-      toolCalls = 0;
-    }
-  };
-  const parseFrames = (frames: string[]) => frames;
-  for (const frame of parseFrames(raw.split("\n\n"))) {
-    const line = frame
-      .split("\n")
-      .find((candidate) => candidate.startsWith("data:"));
-    if (!line) continue;
-    let event: {
-      type?: string;
-      user_prompt?: { text?: string };
-      result?: { text?: string };
-      schedule?: { kind?: string; stop?: string };
-    };
-    try {
-      event = JSON.parse(line.slice("data:".length).trim());
-    } catch {
-      continue;
-    }
-    switch (event.type) {
-      case "user_prompt":
-        flushTools();
-        entries.push({ role: "user", text: event.user_prompt?.text ?? "" });
-        break;
-      case "result":
-        flushTools();
-        entries.push({ role: "assistant", text: event.result?.text ?? "" });
-        break;
-      case "tool.call":
-        toolCalls += 1;
-        break;
-      case "schedule.fired":
-        entries.push({
-          role: "event",
-          text: `scheduled fire · ${event.schedule?.stop || event.schedule?.kind || "recorded"}`,
-        });
-        break;
-      default:
-        break;
-    }
-  }
-  flushTools();
-  if (entries.some((entry) => entry.role !== "event")) return entries;
-
-  // Nothing conversational in the durable log — a tick-loop fire records only
-  // its outcome there. The full conversation lives in the store's snapshot on
-  // disk, which the snapshot route can read in local development.
-  try {
-    const snapshot = await fetch(
-      `/api/harness-transcript?session=${encodeURIComponent(sessionId)}`,
-      { signal, cache: "no-store" },
-    );
-    if (!snapshot.ok) return entries;
-    const body = (await snapshot.json()) as {
-      entries?: {
-        role: "user" | "assistant";
-        text: string;
-        toolCalls?: number;
-      }[];
-      stop?: string;
-    };
-    const fromSnapshot: TranscriptEntry[] = [];
-    for (const message of body.entries ?? []) {
-      if (message.toolCalls) {
-        fromSnapshot.push({
-          role: "event",
-          text: `${message.toolCalls} tool call${message.toolCalls === 1 ? "" : "s"}`,
-        });
-      }
-      fromSnapshot.push({ role: message.role, text: message.text });
-    }
-    if (fromSnapshot.length === 0) return entries;
-    if (body.stop) {
-      fromSnapshot.push({ role: "event", text: `stop: ${body.stop}` });
-    }
-    return fromSnapshot;
-  } catch {
-    return entries;
-  }
-}
-
-// ── Agent definitions (local files) ─────────────────────────────────────────
-
-const AGENTS_API = "/api/harness-agents";
-
-export interface HarnessAgentFile {
-  name: string;
-  description: string;
-  model: string;
-  body: string;
-  /** Which directory it came from — .mecatl/agents is ours, .claude/agents is shared. */
-  source: string;
-  writable: boolean;
-  /** True when the definition carries a `hooks:` map, which runs ungated shell. */
-  hasHooks: boolean;
-}
-
-/**
- * Reads agent definitions from DISK. Like skills, this is a different source
- * from the daemon's resolved inventory (`/v1/agents`): the daemon discovers
- * definitions once at startup, so a freshly written one exists on disk while the
- * running agent cannot delegate to it yet.
- */
-export async function fetchHarnessAgentFiles(
-  signal?: AbortSignal,
-): Promise<{ dir: string; agents: HarnessAgentFile[] }> {
-  const response = await fetch(AGENTS_API, { signal, cache: "no-store" });
-  const body = (await response.json()) as {
-    dir?: string;
-    agents?: HarnessAgentFile[];
-    error?: string;
-  };
-  if (!response.ok) throw new Error(body.error ?? "could not read agents");
-  return { dir: body.dir ?? "", agents: body.agents ?? [] };
-}
-
-/** Creates or overwrites a definition under .mecatl/agents. */
-export async function saveHarnessAgent(agent: {
-  name: string;
-  description: string;
-  model: string;
-  body: string;
-}): Promise<void> {
-  const response = await fetch(AGENTS_API, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify(agent),
-  });
-  if (!response.ok) throw new Error(await readError(response));
-}
-
-/** Deletes a definition from .mecatl/agents. */
-export async function deleteHarnessAgent(name: string): Promise<void> {
-  const response = await fetch(
-    `${AGENTS_API}?name=${encodeURIComponent(name)}`,
-    { method: "DELETE" },
-  );
   if (!response.ok) throw new Error(await readError(response));
 }
 
@@ -1159,11 +650,11 @@ export async function listHarnessAgents(
  * for the provider to redirect back to its own loopback callback, where it
  * exchanges the code, stores the token and reconnects the daemon.
  */
-export async function startHarnessGatewayOAuth(): Promise<string> {
-  const query = new URLSearchParams({
-    name: MCP_GATEWAY_NAME,
-    url: MCP_GATEWAY_URL,
-  });
+export async function startHarnessGatewayOAuth(
+  name: string,
+  url: string,
+): Promise<string> {
+  const query = new URLSearchParams({ name, url });
   const response = await fetch(`${CONTROL_API}/mcp/oauth/start?${query}`);
   if (!response.ok) throw new Error(await readError(response));
   const body = (await response.json()) as { authorizationUrl?: string };
@@ -1192,16 +683,6 @@ export async function waitForHarnessGateway(
     await new Promise((resolve) => setTimeout(resolve, 1_500));
   }
   return false;
-}
-
-/** Saves the AI provider credential. RESTARTS the daemon. */
-export async function saveHarnessProviderKey(apiKey: string): Promise<void> {
-  const response = await fetch(`${CONTROL_API}/openrouter`, {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ apiKey }),
-  });
-  if (!response.ok) throw new Error(await readError(response));
 }
 
 /** Cancels the in-flight run for a session. */

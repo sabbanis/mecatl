@@ -17,8 +17,8 @@ import { bundledThemes } from "shiki/themes";
  * them with a CSS `.dark` variant, matching the app's class-based theme switch.
  */
 
-export const LIGHT_THEME = "github-light-default";
-export const DARK_THEME = "github-dark-default";
+const LIGHT_THEME = "github-light-default";
+const DARK_THEME = "github-dark-default";
 
 /** File extension → Shiki language id. Unknowns fall back to plain text. */
 const EXT_TO_LANG: Record<string, string> = {
@@ -75,7 +75,7 @@ function getHighlighter(): Promise<HighlighterCore> {
   return highlighterPromise;
 }
 
-export interface HToken {
+interface HToken {
   readonly content: string;
   /** Colour under the light theme (or `"inherit"` for plain text). */
   readonly light: string;

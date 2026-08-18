@@ -1,6 +1,5 @@
 "use client";
 
-import { Plus } from "lucide-react";
 import { useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -11,42 +10,50 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
-  DialogTrigger,
 } from "@/components/ui/dialog";
-import type { ScheduleSpecDraft } from "@/lib/protocol";
+import {
+  type ScheduleCarriedSpec,
+  type ScheduleRow,
+  type ScheduleSpecDraft,
+  scheduleDraftFromRow,
+} from "@/lib/protocol";
 import {
   draftFromForm,
-  emptyScheduleForm,
+  formFromDraft,
   ScheduleFormFields,
   type ScheduleFormValue,
   scheduleFormProblem,
 } from "./schedule-form";
 
 /**
- * Authors a full ScheduleSpecDraft and hands it to the page's own hook
- * instance, so the new row lands in the table the user is looking at. Daemon
- * refusals (frequency floor, bad cron, duplicate name) render verbatim inside
- * the dialog — the daemon's words are the validation.
+ * Edits an existing schedule. The form is seeded from the stored spec and the
+ * save carries the row's `carried` fields verbatim: PUT replaces the whole
+ * spec, so anything not re-sent (a CLI-set model selector, misfire policy,
+ * fire timeout) would be silently deleted. The name is locked — the PUT
+ * targets the stored name, so a rename would address a different spec.
  */
-export function CreateScheduleDialog({
-  createFromDraft,
+export function EditScheduleDialog({
+  row,
+  updateFromDraft,
+  onClose,
 }: {
-  createFromDraft: (draft: ScheduleSpecDraft) => Promise<void>;
+  row: ScheduleRow;
+  updateFromDraft: (
+    draft: ScheduleSpecDraft,
+    carried: ScheduleCarriedSpec,
+  ) => Promise<void>;
+  onClose: () => void;
 }) {
-  const [open, setOpen] = useState(false);
-  const [value, setValue] = useState<ScheduleFormValue>(emptyScheduleForm);
+  // The stored draft is captured once on mount: it seeds the form and supplies
+  // the fields the form has no controls for (profile, workspace, limits).
+  const [storedDraft] = useState(() => scheduleDraftFromRow(row));
+  const [value, setValue] = useState<ScheduleFormValue>(() =>
+    formFromDraft(storedDraft),
+  );
   const [refusal, setRefusal] = useState<string | null>(null);
   const [submitting, setSubmitting] = useState(false);
 
   const problem = scheduleFormProblem(value);
-
-  function handleOpenChange(next: boolean) {
-    setOpen(next);
-    if (!next) {
-      setValue(emptyScheduleForm());
-      setRefusal(null);
-    }
-  }
 
   async function handleSubmit(event: React.FormEvent) {
     event.preventDefault();
@@ -54,9 +61,9 @@ export function CreateScheduleDialog({
     setSubmitting(true);
     setRefusal(null);
     try {
-      await createFromDraft(draftFromForm(value));
-      toast.success(`Scheduled task "${value.name.trim()}" created`);
-      handleOpenChange(false);
+      await updateFromDraft(draftFromForm(value, storedDraft), row.carried);
+      toast.success(`Scheduled task "${row.name}" updated`);
+      onClose();
     } catch (caught) {
       setRefusal(caught instanceof Error ? caught.message : String(caught));
     } finally {
@@ -65,19 +72,14 @@ export function CreateScheduleDialog({
   }
 
   return (
-    <Dialog open={open} onOpenChange={handleOpenChange}>
-      <DialogTrigger asChild>
-        <Button size="sm" variant="action" className="rounded-full">
-          <Plus className="size-4" />
-          New scheduled task
-        </Button>
-      </DialogTrigger>
+    <Dialog open onOpenChange={(open) => !open && onClose()}>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
         <form onSubmit={handleSubmit}>
           <DialogHeader>
-            <DialogTitle>New scheduled task</DialogTitle>
+            <DialogTitle>Edit {row.name}</DialogTitle>
             <DialogDescription>
-              Run a prompt on a schedule, or once at a set time.
+              Changes replace the stored spec; fields this form does not show
+              are preserved as-is.
             </DialogDescription>
           </DialogHeader>
 
@@ -85,6 +87,7 @@ export function CreateScheduleDialog({
             <ScheduleFormFields
               value={value}
               onChange={(patch) => setValue((v) => ({ ...v, ...patch }))}
+              nameLocked
             />
           </div>
 
@@ -99,7 +102,7 @@ export function CreateScheduleDialog({
               type="button"
               variant="outline"
               className="rounded-full"
-              onClick={() => handleOpenChange(false)}
+              onClick={onClose}
             >
               Cancel
             </Button>
@@ -109,7 +112,7 @@ export function CreateScheduleDialog({
               className="rounded-full"
               disabled={problem !== null || submitting}
             >
-              {submitting ? "Creating…" : "Create task"}
+              {submitting ? "Saving…" : "Save changes"}
             </Button>
           </DialogFooter>
         </form>

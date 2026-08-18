@@ -95,7 +95,7 @@ export function decodeSessionInventory(value: unknown): SessionInventoryPage {
 }
 
 /** One conversation entry from `GET /v1/sessions/{id}/transcript`. */
-export type TranscriptMessage = {
+type TranscriptMessage = {
   role: string;
   text: string;
   toolCalls: Array<{ id: string; name: string; args: string }>;

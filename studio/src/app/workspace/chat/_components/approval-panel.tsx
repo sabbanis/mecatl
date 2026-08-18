@@ -32,16 +32,17 @@ function parseActions(
     });
 }
 
+/**
+ * The daemon's verdict is three-way (allow_once / allow_always / deny), so the
+ * panel offers exactly those scopes — no "for session" button, which would
+ * promise a grant scope the backend does not model.
+ */
 export function ApprovalPanel({
   approval,
   onRespond,
-  binaryOnly = false,
 }: {
   approval: ApprovalRequest;
   onRespond: (choice: ApprovalChoice) => void;
-  /** The live harness verdict is allow-once/deny — offering "for session" or
-   * "always" would promise a scope the backend does not grant. */
-  binaryOnly?: boolean;
 }) {
   const actions = parseActions(approval.details);
   const destructive = actions.some((a) => a.destructive);
@@ -90,14 +91,11 @@ export function ApprovalPanel({
           ))}
         </div>
       )}
-      <p
-        className={cn(
-          "mb-3 text-xs font-medium",
-          destructive ? "text-destructive" : "text-warning",
-        )}
-      >
-        This action modifies or deletes data.
-      </p>
+      {destructive && (
+        <p className="mb-3 text-xs font-medium text-destructive">
+          This action modifies or deletes data.
+        </p>
+      )}
       <pre
         className={cn(
           "mb-4 whitespace-pre-wrap rounded-lg border bg-background px-3 py-2.5 font-mono text-xs leading-relaxed",
@@ -119,34 +117,18 @@ export function ApprovalPanel({
         >
           Allow once
         </Button>
-        {!binaryOnly && (
-          <>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onRespond("session")}
-              className={cn(
-                destructive
-                  ? "border-destructive/30 hover:bg-destructive/5"
-                  : "border-warning/30 hover:bg-warning/5",
-              )}
-            >
-              Allow for session
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              onClick={() => onRespond("always")}
-              className={cn(
-                destructive
-                  ? "border-destructive/30 hover:bg-destructive/5"
-                  : "border-warning/30 hover:bg-warning/5",
-              )}
-            >
-              Always allow
-            </Button>
-          </>
-        )}
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => onRespond("always")}
+          className={cn(
+            destructive
+              ? "border-destructive/30 hover:bg-destructive/5"
+              : "border-warning/30 hover:bg-warning/5",
+          )}
+        >
+          Always allow
+        </Button>
         <Button
           size="sm"
           variant="ghost"

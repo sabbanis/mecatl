@@ -28,7 +28,7 @@ export interface NavItem {
 /**
  * The counterpart console the profile menu offers to switch to, if any.
  */
-export interface ConsoleSwitch {
+interface ConsoleSwitch {
   /** Profile-menu item label. */
   readonly label: string;
   /** Absolute route the switcher navigates to. */

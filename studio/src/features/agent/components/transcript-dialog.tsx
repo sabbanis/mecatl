@@ -11,15 +11,19 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  fetchHarnessTranscript,
-  type TranscriptEntry,
-} from "@/lib/harness/client";
+import { fetchSessionTranscriptMessages } from "@/lib/harness/client";
+
+interface TranscriptEntry {
+  role: "user" | "assistant" | "event";
+  text: string;
+}
 
 /**
- * Read-only replay of a finished run's conversation, reconstructed from the
- * daemon's durable event log. This is the payoff for every place the UI says
- * "each run happens in its own session" — the session is actually openable.
+ * Read-only view of a finished run's conversation, from the daemon's
+ * authoritative transcript endpoint (the store snapshot — it also covers
+ * scheduler-tick fires whose conversation never reached the durable event
+ * log). This is the payoff for every place the UI says "each run happens in
+ * its own session" — the session is actually openable.
  */
 export function TranscriptDialog({
   sessionId,
@@ -37,8 +41,33 @@ export function TranscriptDialog({
     const controller = new AbortController();
     void (async () => {
       try {
-        const next = await fetchHarnessTranscript(sessionId, controller.signal);
-        if (!controller.signal.aborted) setEntries(next);
+        const transcript = await fetchSessionTranscriptMessages(
+          sessionId,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        const next: TranscriptEntry[] = [];
+        if (!transcript.complete && transcript.messages.length) {
+          next.push({
+            role: "event",
+            text: "This transcript could not be proven complete; earlier turns may be missing.",
+          });
+        }
+        for (const message of transcript.messages) {
+          const calls = message.toolCalls.length;
+          if (calls) {
+            next.push({
+              role: "event",
+              text: `${calls} tool call${calls === 1 ? "" : "s"}`,
+            });
+          }
+          if (message.role === "user" || message.role === "assistant") {
+            if (message.text) {
+              next.push({ role: message.role, text: message.text });
+            }
+          }
+        }
+        setEntries(next);
       } catch (caught) {
         if (!controller.signal.aborted) {
           setError(caught instanceof Error ? caught.message : String(caught));

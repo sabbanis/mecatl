@@ -1,12 +1,17 @@
 "use client";
 
-import { Bell, Monitor, Moon, Sun } from "lucide-react";
+import { Bell, Loader2, Monitor, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
+import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
+import { GatewaySection } from "./_components/gateway-section";
+import { ModelRouterSection } from "./_components/model-router-section";
+import { ProviderSection } from "./_components/provider-section";
+import { SettingsCard } from "./_components/settings-card";
 
 const THEMES = [
   { value: "light", label: "Light", icon: Sun },
@@ -14,34 +19,16 @@ const THEMES = [
   { value: "system", label: "System", icon: Monitor },
 ] as const;
 
-function SettingsCard({
-  title,
-  description,
-  children,
-}: {
-  title: string;
-  description?: string;
-  children: React.ReactNode;
-}) {
-  return (
-    <section className="overflow-hidden rounded-xl border bg-card">
-      <div className="border-b px-5 py-3">
-        <h2 className="text-sm font-semibold">{title}</h2>
-        {description ? (
-          <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
-        ) : null}
-      </div>
-      <div className="px-5 py-4">{children}</div>
-    </section>
-  );
-}
-
 /**
  * Per-user Settings — crosscutting account preferences (profile, appearance).
  * The display name comes from the session's identity provider.
  */
 export default function UserSettingsPage() {
   const { theme: activeTheme, setTheme } = useTheme();
+
+  // One hook instance shared by the three runtime sections, so they read one
+  // status snapshot and share the busy/notice/error channel for writes.
+  const runtime = useHarnessRuntime();
 
   // next-themes resolves only on the client; gate the active-pill highlight on
   // mount so the selected theme shows instead of nothing on first paint.
@@ -157,6 +144,40 @@ export default function UserSettingsPage() {
               </div>
             )}
           </SettingsCard>
+
+          <div className="flex flex-wrap items-center justify-between gap-2 pt-4">
+            <div>
+              <h2 className="text-lg font-semibold">Agent runtime</h2>
+              <p className="text-xs text-muted-foreground">
+                Provider, model routing and MCP gateway behind the agent.
+                Configuration writes restart the daemon.
+              </p>
+            </div>
+            <div className="flex items-center gap-2">
+              {(runtime.isLoading || runtime.busy) && (
+                <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+              )}
+              <Button
+                size="sm"
+                variant="ghost"
+                onClick={() => void runtime.refresh()}
+                disabled={!runtime.live || runtime.isLoading}
+              >
+                Refresh
+              </Button>
+            </div>
+          </div>
+
+          {runtime.error && (
+            <p className="text-sm text-destructive">{runtime.error}</p>
+          )}
+          {runtime.notice && (
+            <p className="text-sm text-muted-foreground">{runtime.notice}</p>
+          )}
+
+          <ProviderSection runtime={runtime} />
+          <ModelRouterSection runtime={runtime} />
+          <GatewaySection runtime={runtime} />
         </div>
       </div>
     </div>

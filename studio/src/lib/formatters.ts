@@ -14,11 +14,6 @@ export function formatRelativeTime(ts: number): string {
   }
 }
 
-export function formatCost(cost: number | null): string {
-  if (cost == null) return "$0.00";
-  return `$${cost.toFixed(2)}`;
-}
-
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;

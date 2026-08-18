@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import {
   connectHarnessGateway,
   fetchHarnessControlStatus,
@@ -9,18 +9,11 @@ import {
   type HarnessRouterCategory,
   type HarnessRouterConfig,
   listHarnessModels,
-  listHarnessSkills,
-  probeHarness,
-  saveHarnessProviderKey,
   saveHarnessRouter,
   startHarnessGatewayOAuth,
   waitForHarnessGateway,
 } from "@/lib/harness/client";
-
-export interface HarnessSkill {
-  name: string;
-  description: string;
-}
+import { useRuntimeStatus } from "../runtime-status";
 
 export interface HarnessModel {
   id: string;
@@ -30,45 +23,40 @@ export interface HarnessModel {
 
 /**
  * The runtime configuration behind the agent: which provider serves it, how
- * prompts are routed across models, which MCP gateway its tools come from, and
- * which skills it can load.
+ * prompts are routed across models, and which MCP gateway its tools come from.
  *
- * Two backends, deliberately kept distinct because they fail differently:
- * the DAEMON (read-only inventories — skills, models) and the CONTROLLER
- * (config writes, each of which restarts the daemon and drops in-flight runs).
+ * Two backends, deliberately kept distinct because they fail differently: the
+ * DAEMON (read-only model inventory) and the CONTROLLER (config writes, each
+ * of which restarts the daemon and drops in-flight runs). In external mode
+ * every controller write answers 409 — the deployment owns its configuration —
+ * which callers surface as-is.
+ *
+ * There is deliberately NO provider-credential entry here: credentials never
+ * cross the browser/controller boundary. mecated reads them from its auth
+ * file, and the provider card only reports status.
  */
 export function useHarnessRuntime() {
-  const [live, setLive] = useState(false);
+  const { connected, mode } = useRuntimeStatus();
   const [status, setStatus] = useState<HarnessControlStatus | null>(null);
   const [router, setRouter] = useState<HarnessRouterConfig | null>(null);
-  const [skills, setSkills] = useState<HarnessSkill[]>([]);
   const [models, setModels] = useState<HarnessModel[]>([]);
   const [isLoading, setIsLoading] = useState(false);
   const [busy, setBusy] = useState("");
   const [error, setError] = useState<string | null>(null);
   const [notice, setNotice] = useState<string | null>(null);
-  const liveRef = useRef(false);
 
   const load = useCallback(async (signal?: AbortSignal) => {
-    const probe = await probeHarness(signal);
-    if (signal?.aborted) return;
-    liveRef.current = probe.live;
-    setLive(probe.live);
-    if (!probe.live) return;
     setIsLoading(true);
     try {
       // Independent reads, so they go out together rather than in a waterfall.
-      const [nextStatus, nextRouter, nextSkills, nextModels] =
-        await Promise.all([
-          fetchHarnessControlStatus(signal),
-          fetchHarnessRouter(signal).catch(() => null),
-          listHarnessSkills(signal).catch(() => []),
-          listHarnessModels(signal).catch(() => []),
-        ]);
+      const [nextStatus, nextRouter, nextModels] = await Promise.all([
+        fetchHarnessControlStatus(signal),
+        fetchHarnessRouter(signal).catch(() => null),
+        listHarnessModels(signal).catch(() => []),
+      ]);
       if (signal?.aborted) return;
       setStatus(nextStatus);
       setRouter(nextRouter);
-      setSkills(nextSkills);
       setModels(nextModels);
     } finally {
       if (!signal?.aborted) setIsLoading(false);
@@ -76,10 +64,11 @@ export function useHarnessRuntime() {
   }, []);
 
   useEffect(() => {
+    if (!connected) return;
     const controller = new AbortController();
     void load(controller.signal);
     return () => controller.abort();
-  }, [load]);
+  }, [connected, load]);
 
   const refresh = useCallback(async () => {
     await load();
@@ -104,45 +93,45 @@ export function useHarnessRuntime() {
     [load],
   );
 
-  const saveProviderKey = useCallback(
-    async (apiKey: string) =>
-      runWrite(
-        "provider",
-        () => saveHarnessProviderKey(apiKey),
-        "Provider connected. The daemon restarted with the new credential.",
-      ),
-    [runWrite],
-  );
-
-  /** Connects the fixed connector gateway; only the credential varies. */
+  /**
+   * Connects an MCP gateway by name and URL. The URL is user-entered here and
+   * validated by the controller (HTTPS only, no credentials in the URL,
+   * loopback HTTP only behind an operator opt-in).
+   */
   const connectGateway = useCallback(
-    async (token?: string) =>
+    async (name: string, url: string, token?: string) =>
       runWrite(
         "gateway",
-        () => connectHarnessGateway(token),
+        () => connectHarnessGateway(name, url, token),
         "MCP gateway connected. Its tools are now in the agent's catalog.",
       ),
     [runWrite],
   );
 
   /**
-   * Runs the gateway's OAuth flow. `openWindow` is called synchronously by the
+   * Runs the gateway's OAuth flow. `popup` is opened synchronously by the
    * caller before any await, because a popup opened after an await is blocked.
+   * Completion is observed by polling controller status — robust regardless of
+   * which origin the callback page's postMessage targets.
    */
   const connectGatewayOAuth = useCallback(
-    async (popup: {
-      setUrl: (url: string) => void;
-      isClosed: () => boolean;
-    }) => {
+    async (
+      name: string,
+      url: string,
+      popup: {
+        setUrl: (target: string) => void;
+        isClosed: () => boolean;
+      },
+    ) => {
       setBusy("gateway");
       setError(null);
       setNotice(null);
       try {
-        popup.setUrl(await startHarnessGatewayOAuth());
-        const connected = await waitForHarnessGateway(popup.isClosed);
+        popup.setUrl(await startHarnessGatewayOAuth(name, url));
+        const gatewayConnected = await waitForHarnessGateway(popup.isClosed);
         await load();
         setNotice(
-          connected
+          gatewayConnected
             ? "Gateway connected. Its tools are now in the agent's catalog."
             : "Sign-in did not complete — no gateway was connected.",
         );
@@ -171,17 +160,17 @@ export function useHarnessRuntime() {
   );
 
   return {
-    live,
+    live: connected,
+    /** "external": config is owned by the deployment; writes answer 409. */
+    mode,
     status,
     router,
-    skills,
     models,
     isLoading,
     busy,
     error,
     notice,
     refresh,
-    saveProviderKey,
     connectGateway,
     connectGatewayOAuth,
     saveRouter,
