@@ -8,10 +8,7 @@ export default function ProviderSettingsPage() {
   const runtime = useHarnessRuntime();
   return (
     <>
-      <RuntimeStatusLine
-        description="The model provider serving the agent. Credentials never enter Studio: mecated reads them from its auth file."
-        runtime={runtime}
-      />
+      <RuntimeStatusLine runtime={runtime} />
       <ProviderSection runtime={runtime} />
     </>
   );

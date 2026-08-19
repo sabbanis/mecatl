@@ -50,10 +50,7 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
   };
 
   return (
-    <SettingsCard
-      title="MCP gateway"
-      description="Where the agent's external tools come from."
-    >
+    <SettingsCard title="MCP gateway">
       {!runtime.live ? (
         <OfflineNote />
       ) : (
@@ -109,12 +106,6 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
                 >
                   {busy ? "Waiting for sign-in…" : "Sign in to gateway"}
                 </Button>
-                <p className="text-xs text-muted-foreground">
-                  The gateway answers <code>401</code> without a credential, so
-                  sign-in is the normal path: the controller registers a client,
-                  takes you to the provider, then exchanges the code and
-                  reconnects the daemon.
-                </p>
               </div>
 
               <details className="rounded-md border p-3">
@@ -155,11 +146,11 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
                 </form>
               </details>
 
+              {/* The one explainer kept: writes restart the daemon (a rule —
+                  surfaces warn before writes that restart). */}
               <p className="text-xs text-muted-foreground">
-                The token goes to the loopback controller only and is never
-                echoed back. Connecting restarts the daemon and invalidates
-                in-flight sessions; a failed handshake rolls the previous
-                gateway back.
+                Connecting restarts the daemon and invalidates in-flight
+                sessions.
               </p>
             </>
           )}

@@ -178,10 +178,7 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
 
   if (router?.managedByOperator) {
     return (
-      <SettingsCard
-        title="Model router"
-        description="Routes each prompt to a category's model via a small classifier."
-      >
+      <SettingsCard title="Model router">
         <div className="flex flex-col gap-3">
           <p className="text-sm font-medium">
             Managed by an operator settings file
@@ -213,10 +210,7 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
   }
 
   return (
-    <SettingsCard
-      title="Model router"
-      description="Before each prompt runs, a small classifier picks a category — so cheap work lands on a cheap model without choosing per message."
-    >
+    <SettingsCard title="Model router">
       <div className="flex flex-col gap-4">
         <div className="flex items-center justify-between gap-3">
           <Label htmlFor="routing-enabled" className="text-sm font-normal">
@@ -260,9 +254,6 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
                   ))}
               </SelectContent>
             </Select>
-            <p className="text-xs text-muted-foreground">
-              Used when the classifier cannot decide.
-            </p>
           </div>
         </div>
 
@@ -343,10 +334,6 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
                   placeholder="Mechanical edits, quick lookups, formatting…"
                   className="min-h-16 text-sm"
                 />
-                <p className="text-xs text-muted-foreground">
-                  This is what the classifier matches a prompt against —
-                  distinct descriptions route better than clever names.
-                </p>
               </div>
               {view.categories.length > 2 && (
                 <div>

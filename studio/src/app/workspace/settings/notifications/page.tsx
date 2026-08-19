@@ -47,23 +47,19 @@ export default function NotificationSettingsPage() {
   }
 
   return (
-    <SettingsCard
-      title="Notifications"
-      description="Get a desktop alert when a scheduled task or agent run finishes."
-    >
+    <SettingsCard title="Notifications">
       {notifyPermission === "unsupported" ? (
         <p className="text-sm text-muted-foreground">
           This browser doesn't support notifications.
         </p>
       ) : (
         <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="max-w-md text-sm text-muted-foreground">
-            {notifyPermission === "granted"
-              ? "Browser notifications are on. You'll be alerted when background work completes."
-              : notifyPermission === "denied"
-                ? "Notifications are blocked. Re-enable them for this site in your browser settings."
-                : "Allow browser notifications to be alerted when background work completes."}
-          </p>
+          {notifyPermission === "denied" && (
+            <p className="max-w-md text-sm text-muted-foreground">
+              Notifications are blocked. Re-enable them for this site in your
+              browser settings.
+            </p>
+          )}
           <div className="flex items-center gap-2">
             <Button
               variant="outline"

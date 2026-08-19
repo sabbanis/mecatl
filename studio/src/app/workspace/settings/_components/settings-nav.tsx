@@ -15,7 +15,10 @@ export function SettingsNav() {
   return (
     <nav
       aria-label="Settings sections"
-      className="flex shrink-0 gap-6 overflow-x-auto max-[499px]:hidden sm:w-44 sm:flex-col sm:gap-5 sm:overflow-visible"
+      // hidden + min-[500px]:flex (not max-[499px]:hidden): both this nav and
+      // the index drill-down list pivot on the SAME 500px edge, so a
+      // fractional viewport width can never render both at once.
+      className="hidden shrink-0 gap-6 overflow-x-auto min-[500px]:flex sm:w-44 sm:flex-col sm:gap-5 sm:overflow-visible"
     >
       {SETTINGS_GROUPS.map((group) => (
         <div key={group.label} className="space-y-1">

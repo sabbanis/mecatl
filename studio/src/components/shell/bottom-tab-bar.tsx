@@ -49,7 +49,9 @@ export function BottomTabBar() {
             </span>
             <span
               className={cn(
-                "truncate text-[10px] font-medium leading-none",
+                // truncate clips overflow, so the line box must clear
+                // descenders — no leading-none here.
+                "truncate text-[10px] leading-normal font-medium",
                 active ? "text-white" : "text-[#a5b8b4]",
               )}
             >

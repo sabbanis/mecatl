@@ -8,10 +8,7 @@ export default function GatewaySettingsPage() {
   const runtime = useHarnessRuntime();
   return (
     <>
-      <RuntimeStatusLine
-        description="The MCP gateway the agent's tools come from. Connecting restarts the daemon."
-        runtime={runtime}
-      />
+      <RuntimeStatusLine runtime={runtime} />
       <GatewaySection runtime={runtime} />
     </>
   );

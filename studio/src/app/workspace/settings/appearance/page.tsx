@@ -95,10 +95,6 @@ export default function AppearanceSettingsPage() {
                 />
               ))}
             </PillGroup>
-            <p className="text-xs text-muted-foreground">
-              Which side of the chat the session list docks on. Threads and
-              document panels stay on the right.
-            </p>
           </div>
         </div>
       </SettingsCard>

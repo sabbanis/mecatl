@@ -31,10 +31,7 @@ export function ProviderSection({ runtime }: { runtime: Runtime }) {
   const configured = status?.configuredProviders ?? [];
 
   return (
-    <SettingsCard
-      title="Model provider"
-      description="The AI provider serving the agent's models."
-    >
+    <SettingsCard title="Model provider">
       {!runtime.live ? (
         <OfflineNote />
       ) : status === null ? (
@@ -97,15 +94,7 @@ export function ProviderSection({ runtime }: { runtime: Runtime }) {
               <code className="font-mono">MECATL_STUDIO_PROVIDER</code> to its
               name, then restart Studio.
             </Note>
-          ) : (
-            <p className="text-xs text-muted-foreground">
-              To add another provider, add its block to that file. To switch
-              which one is active, set{" "}
-              <code className="font-mono">MECATL_STUDIO_PROVIDER</code> to its
-              name and restart Studio — credentials themselves are never
-              entered, shown, or removed here.
-            </p>
-          )}
+          ) : null}
         </div>
       )}
     </SettingsCard>

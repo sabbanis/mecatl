@@ -8,10 +8,7 @@ export default function ModelRouterSettingsPage() {
   const runtime = useHarnessRuntime();
   return (
     <>
-      <RuntimeStatusLine
-        description="Semantic routing across model tiers. Saving restarts the daemon and invalidates in-flight sessions."
-        runtime={runtime}
-      />
+      <RuntimeStatusLine runtime={runtime} />
       <ModelRouterSection runtime={runtime} />
     </>
   );
