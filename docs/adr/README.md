@@ -34,6 +34,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0229 — Redis migration uses fenced renewable ownership and indexed coverage](./0229-redis-migration-fencing.md) *(superseded by 0230)*
 - [0230 — Redis migration ownership and coverage are proved before mutation](./0230-redis-migration-atomic-ownership-and-coverage.md) *(superseded by 0231)*
 - [0231 — Redis readiness requires exact owner-index coverage](./0231-redis-owner-index-exact-coverage.md)
+- [0234 — Projects group one working source with explicit read-only references](./0234-project-working-and-reference-folders.md) *(proposed)*
 - [0207 — Operator-owned exact context-window overrides](./0207-context-window-overrides.md)
 - [0209 — Attribute schedule origins through the run context](./0209-schedule-origin-run-context.md) *(supersedes ADR 0075's origin-binding mechanism)*
 - [0218 — Internal encrypted credential-store substrate](./0218-credential-store.md)
