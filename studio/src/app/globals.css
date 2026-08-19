@@ -207,15 +207,15 @@
   html.dark body {
     background-color: #02141b;
   }
-  /* Mobile is read at arm's length — bump the default root size toward
-     native body text (~17pt). An explicit Text size choice writes an
-     inline font-size on <html>, which overrides this. */
+  /* Mobile is read at arm's length — bump the default root size past
+     native body text (~17pt). The Interface scale slider multiplies
+     through --ui-scale rather than replacing the base. */
   html {
     font-size: calc(100% * var(--ui-scale, 1));
   }
   @media (max-width: 499px) {
     html {
-      font-size: calc(17px * var(--ui-scale, 1));
+      font-size: calc(18px * var(--ui-scale, 1));
     }
   }
 }
