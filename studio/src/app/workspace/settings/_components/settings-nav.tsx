@@ -18,14 +18,14 @@ export function SettingsNav() {
       // hidden + min-[500px]:flex (not max-[499px]:hidden): both this nav and
       // the index drill-down list pivot on the SAME 500px edge, so a
       // fractional viewport width can never render both at once.
-      className="hidden shrink-0 gap-6 overflow-x-auto min-[500px]:flex sm:w-44 sm:flex-col sm:gap-5 sm:overflow-visible"
+      className="hidden w-44 shrink-0 flex-col gap-5 min-[500px]:flex"
     >
       {SETTINGS_GROUPS.map((group) => (
         <div key={group.label} className="space-y-1">
           <p className="px-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
             {group.label}
           </p>
-          <ul className="flex gap-1 sm:flex-col">
+          <ul className="flex flex-col gap-1">
             {group.items.map((item) => {
               const isActive =
                 pathname === item.href || pathname?.startsWith(`${item.href}/`);

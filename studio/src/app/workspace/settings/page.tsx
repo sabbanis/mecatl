@@ -41,9 +41,9 @@ export default function SettingsIndexPage() {
                   href={item.href}
                   className="group flex items-center gap-3 pl-4 transition-colors active:bg-black/[0.04] dark:active:bg-white/[0.06]"
                 >
-                  <span className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-muted text-muted-foreground">
-                    <Icon className="size-4" />
-                  </span>
+                  {/* Bare glyph, sized explicitly so the global mobile
+                      size-4 bump doesn't inflate it. */}
+                  <Icon className="size-[18px] shrink-0 text-muted-foreground" />
                   {/* The divider hangs off the row body so it stays inset
                       to the text edge, native-list style. */}
                   <span
@@ -52,7 +52,7 @@ export default function SettingsIndexPage() {
                       index > 0 && "border-t border-border/60",
                     )}
                   >
-                    <span className="min-w-0 flex-1 truncate text-[15px] leading-none">
+                    <span className="min-w-0 flex-1 truncate text-[15px] leading-normal">
                       {item.label}
                     </span>
                     <ChevronRight className="size-4 shrink-0 text-muted-foreground/50" />

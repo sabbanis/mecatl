@@ -10,14 +10,16 @@ export function SettingsCard({
   children: React.ReactNode;
 }) {
   return (
-    <section className="overflow-hidden rounded-xl border bg-card">
-      <div className="border-b px-5 py-3">
+    // On mobile the card chrome is redundant — the back bar already names
+    // the section — so the box and header dissolve into the page.
+    <section className="overflow-hidden rounded-xl border bg-card max-[499px]:rounded-none max-[499px]:border-0 max-[499px]:bg-transparent">
+      <div className="border-b px-5 py-3 max-[499px]:hidden">
         <h2 className="text-sm font-semibold">{title}</h2>
         {description ? (
           <p className="mt-0.5 text-xs text-muted-foreground">{description}</p>
         ) : null}
       </div>
-      <div className="px-5 py-4">{children}</div>
+      <div className="px-5 py-4 max-[499px]:p-0">{children}</div>
     </section>
   );
 }

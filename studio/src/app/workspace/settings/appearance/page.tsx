@@ -3,128 +3,88 @@
 import { Monitor, Moon, PanelLeft, PanelRight, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
+import { Button } from "@/components/ui/button";
 import {
-  type FontScale,
-  useFontScale,
+  UI_SCALE_MAX,
+  UI_SCALE_MIN,
   useSessionListSide,
+  useUiScale,
 } from "@/lib/profile-preferences";
-import { cn } from "@/lib/utils";
+import { OptionField } from "../_components/option-field";
 import { SettingsCard } from "../_components/settings-card";
 
-const THEMES = [
+const THEME_OPTIONS = [
   { value: "light", label: "Light", icon: Sun },
   { value: "dark", label: "Dark", icon: Moon },
   { value: "system", label: "System", icon: Monitor },
 ] as const;
 
-const SESSION_LIST_SIDES = [
+const SIDE_OPTIONS = [
   { value: "left", label: "Left", icon: PanelLeft },
   { value: "right", label: "Right", icon: PanelRight },
 ] as const;
 
-const FONT_SCALES: ReadonlyArray<{ value: FontScale; label: string }> = [
-  { value: "s", label: "Small" },
-  { value: "m", label: "Default" },
-  { value: "l", label: "Large" },
-  { value: "xl", label: "Extra large" },
-];
-
-function PillGroup({ children }: { children: React.ReactNode }) {
-  return (
-    <div className="inline-flex w-max items-center gap-1 rounded-full bg-muted p-1">
-      {children}
-    </div>
-  );
-}
-
-function Pill({
-  isActive,
-  onClick,
-  icon: Icon,
-  label,
-}: {
-  isActive: boolean;
-  onClick: () => void;
-  icon?: React.ComponentType<{ className?: string }>;
-  label: string;
-}) {
-  return (
-    <button
-      type="button"
-      onClick={onClick}
-      className={cn(
-        "flex items-center gap-1.5 rounded-full px-3.5 py-1.5 text-sm font-medium transition-colors",
-        isActive
-          ? "bg-background text-foreground shadow-sm"
-          : "text-muted-foreground hover:text-foreground",
-      )}
-    >
-      {Icon && <Icon className="size-3.5" />}
-      {label}
-    </button>
-  );
-}
-
 export default function AppearanceSettingsPage() {
   const { theme: activeTheme, setTheme } = useTheme();
   const { side, setSide } = useSessionListSide();
-  const { scale, setScale } = useFontScale();
+  const { scale, setScale } = useUiScale();
 
-  // next-themes resolves only on the client; gate the active-pill highlight on
-  // mount so the selected theme shows instead of nothing on first paint.
+  // next-themes resolves only on the client; gate the current value on mount
+  // so the trigger shows the real choice instead of a flash of "system".
   const [mounted, setMounted] = useState(false);
   useEffect(() => setMounted(true), []);
 
   return (
-    <>
-      <SettingsCard title="Appearance">
-        <div className="space-y-4">
-          <div className="space-y-1.5">
-            <p className="text-sm font-medium">Theme</p>
-            <PillGroup>
-              {THEMES.map(({ value, label, icon }) => (
-                <Pill
-                  key={value}
-                  isActive={mounted && activeTheme === value}
-                  onClick={() => setTheme(value)}
-                  icon={icon}
-                  label={label}
-                />
-              ))}
-            </PillGroup>
-          </div>
+    <SettingsCard title="Appearance">
+      <div className="space-y-5">
+        <div className="flex items-center justify-between gap-3">
+          <p className="text-sm font-medium">Theme</p>
+          <OptionField
+            label="Theme"
+            value={mounted ? (activeTheme ?? "system") : "system"}
+            options={THEME_OPTIONS}
+            onChange={setTheme}
+          />
+        </div>
 
-          <div className="space-y-1.5">
-            <p className="text-sm font-medium">Text size</p>
-            <PillGroup>
-              {FONT_SCALES.map(({ value, label }) => (
-                <Pill
-                  key={value}
-                  isActive={mounted && scale === value}
-                  onClick={() => setScale(value)}
-                  label={label}
-                />
-              ))}
-            </PillGroup>
-          </div>
-
-          {/* Meaningless on mobile — the session list is full-screen there. */}
-          <div className="space-y-1.5 max-[499px]:hidden">
-            <p className="text-sm font-medium">Session list position</p>
-            <PillGroup>
-              {SESSION_LIST_SIDES.map(({ value, label, icon }) => (
-                <Pill
-                  key={value}
-                  isActive={mounted && side === value}
-                  onClick={() => setSide(value)}
-                  icon={icon}
-                  label={label}
-                />
-              ))}
-            </PillGroup>
+        <div className="space-y-2">
+          <p className="text-sm font-medium">Interface scale</p>
+          <div className="flex items-center gap-3">
+            <input
+              type="range"
+              aria-label="Interface scale"
+              min={UI_SCALE_MIN}
+              max={UI_SCALE_MAX}
+              step={0.05}
+              value={scale}
+              onChange={(event) => setScale(Number(event.target.value))}
+              className="h-2 w-full max-w-64 cursor-pointer accent-brand"
+            />
+            <span className="w-11 shrink-0 text-right text-sm tabular-nums text-muted-foreground">
+              {Math.round(scale * 100)}%
+            </span>
+            <Button
+              variant="ghost"
+              size="sm"
+              disabled={scale === 1}
+              onClick={() => setScale(1)}
+            >
+              Reset
+            </Button>
           </div>
         </div>
-      </SettingsCard>
-    </>
+
+        {/* Meaningless on mobile — the session list is full-screen there. */}
+        <div className="flex items-center justify-between gap-3 max-[499px]:hidden">
+          <p className="text-sm font-medium">Session list position</p>
+          <OptionField
+            label="Session list position"
+            value={side}
+            options={SIDE_OPTIONS}
+            onChange={(next) => setSide(next as "left" | "right")}
+          />
+        </div>
+      </div>
+    </SettingsCard>
   );
 }

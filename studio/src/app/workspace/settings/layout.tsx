@@ -17,7 +17,7 @@ export default function SettingsLayout({
       <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-14 min-[500px]:px-8">
         <div className="space-y-6">
           <SettingsTitle />
-          <div className="flex flex-col gap-6 sm:flex-row sm:gap-10">
+          <div className="flex flex-col gap-6 min-[500px]:flex-row min-[500px]:gap-10">
             <SettingsNav />
             <div className="min-w-0 flex-1 space-y-5">{children}</div>
           </div>

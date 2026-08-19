@@ -210,9 +210,12 @@
   /* Mobile is read at arm's length — bump the default root size toward
      native body text (~17pt). An explicit Text size choice writes an
      inline font-size on <html>, which overrides this. */
+  html {
+    font-size: calc(100% * var(--ui-scale, 1));
+  }
   @media (max-width: 499px) {
     html {
-      font-size: 17px;
+      font-size: calc(17px * var(--ui-scale, 1));
     }
   }
 }

@@ -198,7 +198,11 @@ export default function ScheduleDetailPage() {
 
         {/* Header: title + metadata pills, matching the agent detail page. */}
         <div className="space-y-3">
-          <h1 className={pageTitleClass("text-[44px] leading-[1.05]")}>
+          <h1
+            className={pageTitleClass(
+              "text-[44px] leading-[1.05] max-[499px]:text-3xl",
+            )}
+          >
             {row.name}
           </h1>
           <div className="flex flex-wrap items-center gap-2">

@@ -51,7 +51,11 @@ export default function MemoryDetailPage() {
         Back
       </Button>
 
-      <h1 className={pageTitleClass("break-all text-[44px] leading-[1.05]")}>
+      <h1
+        className={pageTitleClass(
+          "break-all text-[44px] leading-[1.05] max-[499px]:text-3xl",
+        )}
+      >
         {entry.title}
       </h1>
 

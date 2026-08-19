@@ -3,11 +3,11 @@
 import { ThemeProvider, useTheme } from "next-themes";
 import { type ReactNode, Suspense } from "react";
 import { Toaster } from "sonner";
-import { useFontScale } from "@/lib/profile-preferences";
+import { useUiScale } from "@/lib/profile-preferences";
 
-/** Applies the stored UI text-size preference to the root on load. */
-function FontScaleInit() {
-  useFontScale();
+/** Applies the stored interface-scale preference to the root on load. */
+function UiScaleInit() {
+  useUiScale();
   return null;
 }
 
@@ -37,7 +37,7 @@ export function ClientProviders({ children }: ClientProvidersProps) {
       disableTransitionOnChange
     >
       <Suspense fallback={null}>
-        <FontScaleInit />
+        <UiScaleInit />
         {children}
         <ThemedToaster />
       </Suspense>

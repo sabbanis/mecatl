@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
  */
 const AGENT_NAME_KEY = "mecatl-studio.agent-name";
 const AVATAR_KEY = "mecatl-studio.user-avatar";
+const AGENT_AVATAR_KEY = "mecatl-studio.agent-avatar";
 const SESSION_LIST_SIDE_KEY = "mecatl-studio.session-list-side";
 const DEFAULT_AGENT_NAME = "Mecatl";
 
@@ -50,58 +51,77 @@ export function useAgentDisplayName() {
   return { name, setName, defaultName: DEFAULT_AGENT_NAME };
 }
 
-/** The user's profile picture, stored as a data URL (no upload endpoint exists). */
-export function useUserAvatar() {
+function useStoredAvatar(key: string) {
   const [avatarUrl, setAvatarUrlState] = useState<string | null>(null);
   useEffect(() => {
-    setAvatarUrlState(readLocalStorage(AVATAR_KEY));
-  }, []);
+    setAvatarUrlState(readLocalStorage(key));
+  }, [key]);
 
-  const setAvatarUrl = useCallback((next: string | null) => {
-    setAvatarUrlState(next);
-    writeLocalStorage(AVATAR_KEY, next);
-  }, []);
+  const setAvatarUrl = useCallback(
+    (next: string | null) => {
+      setAvatarUrlState(next);
+      writeLocalStorage(key, next);
+    },
+    [key],
+  );
 
   return { avatarUrl, setAvatarUrl };
 }
 
-export type FontScale = "s" | "m" | "l" | "xl";
+/** The user's profile picture, stored as a data URL (no upload endpoint exists). */
+export function useUserAvatar() {
+  return useStoredAvatar(AVATAR_KEY);
+}
 
-const FONT_SCALE_KEY = "mecatl-studio.font-scale";
-/** Root font-size per step; everything downstream is rem-based, so scaling
- *  the root scales the whole UI. */
-const FONT_SCALE_SIZE: Record<FontScale, string> = {
-  s: "87.5%",
-  m: "",
-  l: "112.5%",
-  xl: "125%",
-};
+/** The agent's picture, replacing the default bot mark in chat when set. */
+export function useAgentAvatar() {
+  return useStoredAvatar(AGENT_AVATAR_KEY);
+}
 
-function applyFontScale(scale: FontScale) {
+export const UI_SCALE_MIN = 0.85;
+export const UI_SCALE_MAX = 1.3;
+
+const UI_SCALE_KEY = "mecatl-studio.ui-scale";
+
+/** The root font-size is calc()'d against --ui-scale (see globals.css), so
+ *  the multiplier composes with the per-viewport defaults instead of
+ *  replacing them. */
+function applyUiScale(scale: number) {
   if (typeof document === "undefined") return;
-  document.documentElement.style.fontSize = FONT_SCALE_SIZE[scale];
+  if (scale === 1) {
+    document.documentElement.style.removeProperty("--ui-scale");
+  } else {
+    document.documentElement.style.setProperty("--ui-scale", String(scale));
+  }
+}
+
+function clampUiScale(value: number): number {
+  const stepped = Math.round(value * 20) / 20;
+  return Math.min(UI_SCALE_MAX, Math.max(UI_SCALE_MIN, stepped));
 }
 
 /**
- * UI text-size preference, browser-local. The hook both stores the choice
- * and applies it to the root element; mount one instance app-wide (see
- * ClientProviders) so the stored scale takes effect on load.
+ * Interface scale preference, browser-local: a multiplier over the UI's
+ * default type scale (everything downstream is rem-based). Mount one
+ * instance app-wide (see ClientProviders) so the stored scale applies on
+ * load.
  */
-export function useFontScale() {
-  const [scale, setScaleState] = useState<FontScale>("m");
+export function useUiScale() {
+  const [scale, setScaleState] = useState(1);
   useEffect(() => {
-    const stored = readLocalStorage(FONT_SCALE_KEY);
-    if (stored && stored in FONT_SCALE_SIZE) {
-      const value = stored as FontScale;
+    const stored = Number.parseFloat(readLocalStorage(UI_SCALE_KEY) ?? "");
+    if (Number.isFinite(stored)) {
+      const value = clampUiScale(stored);
       setScaleState(value);
-      applyFontScale(value);
+      applyUiScale(value);
     }
   }, []);
 
-  const setScale = useCallback((next: FontScale) => {
-    setScaleState(next);
-    writeLocalStorage(FONT_SCALE_KEY, next === "m" ? null : next);
-    applyFontScale(next);
+  const setScale = useCallback((next: number) => {
+    const value = clampUiScale(next);
+    setScaleState(value);
+    writeLocalStorage(UI_SCALE_KEY, value === 1 ? null : String(value));
+    applyUiScale(value);
   }, []);
 
   return { scale, setScale };

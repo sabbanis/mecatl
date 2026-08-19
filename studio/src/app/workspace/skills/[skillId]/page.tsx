@@ -82,7 +82,11 @@ export default function SkillDetailPage() {
           <div className="flex size-11 shrink-0 items-center justify-center rounded-lg border bg-background">
             <Icon className="size-6 text-foreground" />
           </div>
-          <h1 className={pageTitleClass("text-[44px] leading-[1.05]")}>
+          <h1
+            className={pageTitleClass(
+              "text-[44px] leading-[1.05] max-[499px]:text-3xl",
+            )}
+          >
             {humanizeSkillName(skill.name)}
           </h1>
         </div>
