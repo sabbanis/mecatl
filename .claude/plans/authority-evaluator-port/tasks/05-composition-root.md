@@ -2,12 +2,12 @@
 id: 05-delegation-derivation
 title: Derive authority at all child and resume seams
 blocked_by: [04-composition-root]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/05-delegation-derivation"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: ""
+last_error: "task test baseline blockers: macOS /var symlink checks and skills lifecycle workspace test; task docs cannot fetch matlatl"
 accumulator: acc/authority-evaluator-port
 ---
 
