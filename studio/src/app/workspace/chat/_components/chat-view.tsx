@@ -225,7 +225,7 @@ function ThreadPanel({
     >
       {/* Body: root message, replies, composer */}
       <div className="relative flex-1 min-h-0">
-        <div className="h-full overflow-y-auto px-3 lg:px-4 pt-3 pb-40">
+        <div className="h-full overflow-y-auto px-3 pt-3 pb-40 max-[499px]:pb-24 lg:px-4">
           <div className="rounded-lg border border-dashed border-border/70 px-1 py-1">
             <MessageBubble message={rootMessage} botName={botName} />
           </div>
@@ -570,7 +570,7 @@ export function ChatView({
                 el.scrollHeight - el.scrollTop - el.clientHeight < 80,
               );
             }}
-            className="h-full overflow-y-auto px-3 lg:px-6 pt-1 lg:pt-2 pb-48 lg:pb-56"
+            className="h-full overflow-y-auto px-3 pt-1 pb-48 max-[499px]:pb-24 lg:px-6 lg:pt-2 lg:pb-56"
           >
             <TextSelectionToolbar
               containerRef={messagesContainerRef}
