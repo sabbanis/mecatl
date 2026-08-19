@@ -2,12 +2,12 @@
 id: 04-delegation-derivation
 title: Derive authority at all child and resume seams
 blocked_by: [03-execution-evaluator]
-status: in-progress
+status: blocked
 branch: ""
 worktree: ""
 issue: "371"
 retries: 0
-last_error: ""
+last_error: "mis-decomposition: direct server-created teams have no carried parent authority; root minting must precede child derivation, and managed definition tier is not represented"
 accumulator: acc/authority-evaluator-port
 ---
 
