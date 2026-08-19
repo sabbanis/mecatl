@@ -34,9 +34,11 @@ export default function WorkspaceLayout({
               — notably the hidden form-integration checkbox Radix renders
               beside each Switch inside a <form>. Without it those boxes
               resolve to the document and grow the page itself. */}
-          {/* On mobile the bottom tab bar sits right below, so the card keeps
-              only a sliver of gradient there (the bar brings its own padding). */}
-          <main className="relative mx-2.5 mb-1 min-h-0 flex-1 overflow-hidden rounded-[20px] bg-background text-foreground min-[500px]:mx-5 min-[500px]:mb-5">
+          {/* On mobile the card goes full-bleed — no gradient margin, only
+              the top corners stay rounded where it meets the nav band — so
+              content spans the screen; the gradient survives only behind the
+              top nav and the tab bar. The inset card is a ≥500px treatment. */}
+          <main className="relative min-h-0 flex-1 overflow-hidden rounded-t-[20px] bg-background text-foreground min-[500px]:mx-5 min-[500px]:mb-5 min-[500px]:rounded-[20px]">
             {children}
           </main>
           {/* Mobile-only: the five surfaces as a native-style bottom tab bar
