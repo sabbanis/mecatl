@@ -2,12 +2,12 @@
 id: 16-ownerless-authority-composition
 title: Preserve ordinary ownerless sessions while Cedar requires identity
 blocked_by: [14-authority-evaluator-presence]
-status: pending
-branch: ""
+status: done
+branch: plan-authority-evaluator-port/16-ownerless-authority-composition
 worktree: ""
 issue: "371"
 retries: 0
-last_error: "review-2 blocker: unconditional ownerless guard denies ordinary app.Build sessions"
+last_error: ""
 accumulator: acc/authority-evaluator-port
 ---
 
