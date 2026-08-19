@@ -2,12 +2,12 @@
 id: 04-composition-root
 title: Establish managed definition tier and mint authority roots
 blocked_by: [03-execution-evaluator]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/04-composition-root"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: ""
+last_error: "task test baseline blockers: macOS /var symlink checks and skills lifecycle workspace test; task docs cannot fetch matlatl"
 accumulator: acc/authority-evaluator-port
 ---
 
