@@ -1637,10 +1637,22 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	cfg.storageMaintenance = &storageMaintenanceState{}
 	dreamReviewer, dreamCapabilities := buildDreamReview(cfg, assets, provider != nil)
 	svcCfg := server.Config{
-		Engine:            engine,
-		Store:             store,
-		OwnershipEnforced: cfg.OwnershipEnforced,
-		Workspaces:        osfsWorkspaceFactory(cfg.diag()),
+		Engine:                              engine,
+		Store:                               store,
+		OwnershipEnforced:                   cfg.OwnershipEnforced,
+		StorageManagementAuthorized:         storageManagementAuthorizer(cfg),
+		LocalStorageMaintenanceSingleWriter: localStorageMaintenanceSingleWriter(store),
+		SessionLiveness:                     cfg.sessionLiveness,
+		RetentionPolicy: server.RetentionPolicy{
+			Version:    "retention/v1",
+			MainMaxAge: cfg.MainRetention, MainMaxCount: cfg.MainRetentionMaxTotal,
+			ChildMaxAge: cfg.ChildRetention, ChildMaxCount: cfg.ChildRetentionMaxPerFamily,
+			ScheduledMaxAge: cfg.ScheduleFireRetention, ScheduledMaxCount: cfg.ScheduleFireRetentionMaxTotal,
+			SweepCadence: cfg.ChildGCInterval,
+		},
+		StorageMaintenanceStatus: cfg.storageMaintenance.snapshot,
+		StorageMaintenanceUpdate: cfg.storageMaintenance.update,
+		Workspaces:               osfsWorkspaceFactory(cfg.diag()),
 		RootAuthority: func(kind session.SessionKind) session.Authority {
 			return mintRootAuthority(assets.rootCatalog, mcpResourceCapabilities(assets.globalMgr), kind)
 		},

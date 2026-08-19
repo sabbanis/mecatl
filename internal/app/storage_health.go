@@ -125,6 +125,32 @@ func (s *storageMaintenanceState) refreshActiveLocked() {
 	s.status.ActiveJob = strings.Join(parts, ",")
 }
 
+func (s *storageMaintenanceState) update(event server.StorageMaintenanceEvent) {
+	switch event.State {
+	case server.StorageMaintenanceStarted, server.StorageMaintenanceProgress:
+		s.start(event.Kind, event.Key)
+	case server.StorageMaintenanceCompleted, server.StorageMaintenanceCancelled:
+		s.finish(event.Kind, event.Key, event.Failure)
+	case server.StorageMaintenanceFailed:
+		// A failed resumable migration remains active; terminal cleanup failures do not.
+		if event.Resumable {
+			if s == nil || event.Kind == "" || event.Key == "" {
+				return
+			}
+			s.mu.Lock()
+			if s.active == nil {
+				s.active = make(map[string]string)
+			}
+			s.active[maintenanceKey(event.Kind, event.Key)] = event.Kind
+			s.status.LastFailure = event.Failure
+			s.refreshActiveLocked()
+			s.mu.Unlock()
+		} else {
+			s.finish(event.Kind, event.Key, event.Failure)
+		}
+	}
+}
+
 func (s *storageMaintenanceState) snapshot() server.StorageMaintenanceStatus {
 	if s == nil {
 		return server.StorageMaintenanceStatus{}

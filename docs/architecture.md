@@ -213,6 +213,8 @@ is checked against its reconstructed `mcp__<server>__<tool>` target, not as blan
 access to a server. See [ADR 0232](adr/0232-authority-evaluator-port.md).
 
 
+## 2. The big picture
+
 ```mermaid
 flowchart LR
   subgraph CMD["composition — internal/app + cmd/"]

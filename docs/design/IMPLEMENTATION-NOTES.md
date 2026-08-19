@@ -321,6 +321,8 @@ policy path. See
 [ADR 0232](../adr/0232-authority-evaluator-port.md).
 
 
+## Domain — `engine/prompt/`
+
 Two-layer prompt assembly + AGENTS.md/CLAUDE.md discovery; the turn-0 `InstructionAssembler`
 chain and its consumer-local ports (`MemoryIndexSource`, `SoulSource` — issue #14 Phase 1's
 read-only persona seam, `UserModelSource` — issue #14 Phase 2's cross-project operator-FACTS

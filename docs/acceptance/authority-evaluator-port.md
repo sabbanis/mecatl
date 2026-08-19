@@ -3,7 +3,7 @@
 **Phase:** capability — in-process delegated authority, decision behind a port
 **Status:** in-progress, 2026-08-19 (defect-repair pass applied; see *Resolved defects*). Successor to the unmerged `review/authority-attenuation-reconciliation` branch.
 **Issue:** [stacklok/mecatl#371](https://github.com/stacklok/mecatl/issues/371) — *An agent cannot widen its own authority.*
-**ADR:** ADR-0232 (to be written by this plan) — derived capability sets, decision behind a swappable evaluator port.
+**ADR:** ADR-0232 — derived capability sets, decision behind a swappable evaluator port.
 **Salvage source:** branch `review/authority-attenuation-reconciliation` (commits `d8966606..5dbef5f6`), worktree `.worktrees/sensitivity`. **Not merged, and not to be merged.**
 **Branch:** `feat/authority-evaluator-port`, off `origin/main`.
 
@@ -182,7 +182,6 @@ dispatch boundary reconstructs the namespaced name and re-checks it.
 - AC3.7: A call to `CallMcpWithQuery` is authorized against the remote tool it targets, not against the meta-tool's own name: the decorator reconstructs `mcp__<server>__<tool>` from the call arguments and applies the same predicate as `execute`, refusing with a message naming the reconstructed target. The meta-tool is a transport helper, not a second grant, and is disclosed only when a reachable target exists.
   - verify: `TestADR_0232_AuthorityEvaluator_Scenario3_MetaToolIsAuthorizedAgainstItsTarget`
 - AC3.8: A bound run reaches MCP resources through a derived per-server resource capability carried in its set. Resource-only servers are reachable when their own capability is present; aggregate resource operations require a concrete server. The evaluator receives that capability separately from the resource operation action, and no separately authored grant exists.
-  - verify: `TestADR_0232_AuthorityEvaluator_Scenario3_ResourceReachDerivesFromToolNames`
   - verify: `TestADR_0232_AuthorityEvaluator_Scenario3_ResourceReachDerivesFromToolNames`
 
 ---
@@ -474,9 +473,9 @@ implementer:
 
 ## Documentation work this plan owns
 
-1. **Write ADR-0232.** Not a port of the salvage branch's ADR — a new record.
-   `0226` is taken on `main` by the dream-consolidation ADR, and the salvage
-   branch's `0226` never merged, so there is nothing to supersede.
+1. **ADR-0232 records this decision.** It is not a port of the salvage branch's
+   ADR: `0226` is taken on `main` by the dream-consolidation ADR, and the salvage
+   branch's `0226` never merged, so there was nothing to supersede.
 2. **Do not restate the salvage ADR's decision 4.** It required enforcement at
    advertised specs, lookup, hydration, and dispatch, and called that defence in
    depth. It was not: all four invoked the same predicate, so it was one layer
