@@ -66,7 +66,7 @@ export function buildAtriumSearchEntries(input: {
       category: "memory",
       title: entry.title,
       subtitle: entry.content,
-      href: `/workspace/memory/${encodeURIComponent(entry.id)}`,
+      href: `/workspace/settings/memory/${encodeURIComponent(entry.id)}`,
       icon: Brain,
     });
   }

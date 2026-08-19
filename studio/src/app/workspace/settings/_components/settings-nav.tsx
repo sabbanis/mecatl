@@ -27,7 +27,8 @@ export function SettingsNav() {
           </p>
           <ul className="flex gap-1 sm:flex-col">
             {group.items.map((item) => {
-              const isActive = pathname === item.href;
+              const isActive =
+                pathname === item.href || pathname?.startsWith(`${item.href}/`);
               return (
                 <li key={item.href}>
                   <Link

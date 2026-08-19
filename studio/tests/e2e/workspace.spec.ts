@@ -34,7 +34,7 @@ test("skills render the resolved inventory", async ({ page }) => {
 });
 
 test("memory renders the user model, read-only", async ({ page }) => {
-  await page.goto("/workspace/memory");
+  await page.goto("/workspace/settings/memory");
   await expect(
     page.getByText("prefers tabs over spaces", { exact: false }),
   ).toBeVisible();

@@ -82,7 +82,8 @@ export default function AppearanceSettingsPage() {
             </PillGroup>
           </div>
 
-          <div className="space-y-1.5">
+          {/* Meaningless on mobile — the session list is full-screen there. */}
+          <div className="space-y-1.5 max-[499px]:hidden">
             <p className="text-sm font-medium">Session list position</p>
             <PillGroup>
               {SESSION_LIST_SIDES.map(({ value, label, icon }) => (

@@ -6,13 +6,7 @@
  * both point at Chats.
  */
 
-import {
-  Brain,
-  Clock,
-  GraduationCap,
-  MessageCircle,
-  Settings,
-} from "lucide-react";
+import { Clock, GraduationCap, MessageCircle, Settings } from "lucide-react";
 import type { ComponentType } from "react";
 import { ATRIUM_WORKSPACE_HOME } from "@/lib/feature-flags";
 
@@ -70,12 +64,6 @@ export function buildUserNav(): ShellNav {
         label: "Skills",
         href: "/workspace/skills",
         icon: GraduationCap,
-      },
-      {
-        key: "agent-memory",
-        label: "Memory",
-        href: "/workspace/memory",
-        icon: Brain,
       },
       {
         key: "settings",

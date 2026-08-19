@@ -1,9 +1,20 @@
-import { Bell, Network, Palette, Route, Server, UserRound } from "lucide-react";
+import {
+  Bell,
+  Brain,
+  Network,
+  Palette,
+  Route,
+  Server,
+  UserRound,
+} from "lucide-react";
 
 export interface SettingsSection {
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
+  /** Solid background class for the icon square in the mobile list
+   *  (native settings convention: white glyph on a per-item tint). */
+  tint: string;
 }
 
 /**
@@ -22,42 +33,66 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/profile",
         label: "Profile",
         icon: UserRound,
+        tint: "bg-blue-500",
       },
       {
         href: "/workspace/settings/appearance",
         label: "Appearance",
         icon: Palette,
+        tint: "bg-purple-500",
       },
       {
         href: "/workspace/settings/notifications",
         label: "Notifications",
         icon: Bell,
+        tint: "bg-red-500",
       },
     ],
   },
   {
     label: "Agent runtime",
     items: [
-      { href: "/workspace/settings/provider", label: "Provider", icon: Server },
+      {
+        href: "/workspace/settings/memory",
+        label: "Memory",
+        icon: Brain,
+        tint: "bg-pink-500",
+      },
+      {
+        href: "/workspace/settings/provider",
+        label: "Provider",
+        icon: Server,
+        tint: "bg-emerald-600",
+      },
       {
         href: "/workspace/settings/model-router",
         label: "Model router",
         icon: Route,
+        tint: "bg-orange-500",
       },
       {
         href: "/workspace/settings/gateway",
         label: "MCP gateway",
         icon: Network,
+        tint: "bg-sky-500",
       },
     ],
   },
 ];
 
-/** Subpage label by pathname, for the mobile back-header. */
-export function settingsSectionLabel(pathname: string): string | undefined {
+/**
+ * The section a pathname belongs to, for the mobile back-header and the
+ * desktop nav active state. Prefix-aware so a section's deeper pages
+ * (e.g. a memory entry) still resolve to their section.
+ */
+export function settingsSectionFor(
+  pathname: string,
+): SettingsSection | undefined {
   for (const group of SETTINGS_GROUPS) {
-    const hit = group.items.find((item) => item.href === pathname);
-    if (hit) return hit.label;
+    const hit = group.items.find(
+      (item) => item.href === pathname || pathname.startsWith(`${item.href}/`),
+    );
+    if (hit) return hit;
   }
   return undefined;
 }

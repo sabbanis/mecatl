@@ -4,15 +4,17 @@ import { ChevronRight } from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect } from "react";
+import { cn } from "@/lib/utils";
 import { SETTINGS_GROUPS } from "./_components/settings-sections";
 
 /**
  * The settings index. On mobile it is the first level of a native-style
- * drill-down: grouped inset lists of tappable rows (icon chip, label,
- * chevron) linking to each subpage, which renders with a back header.
- * Desktop keeps the old behaviour — land on the first section, with the
- * left secondary nav for switching — via a client redirect (the split is
- * a viewport question, so the server cannot decide it).
+ * drill-down, following the inset-grouped-list convention: filled cards
+ * (no border), a solid per-item tinted icon square with a white glyph,
+ * and hairline dividers inset to the text edge. Desktop keeps the old
+ * behaviour — land on the first section, with the left secondary nav for
+ * switching — via a client redirect (the split is a viewport question,
+ * so the server cannot decide it).
  */
 export default function SettingsIndexPage() {
   const router = useRouter();
@@ -24,28 +26,42 @@ export default function SettingsIndexPage() {
   }, [router]);
 
   return (
-    <div className="space-y-6 min-[500px]:hidden">
+    <div className="space-y-7 min-[500px]:hidden">
       {SETTINGS_GROUPS.map((group) => (
-        <section key={group.label} className="space-y-1.5">
-          <p className="px-4 text-[13px] font-medium text-muted-foreground">
+        <section key={group.label}>
+          <p className="px-4 pb-2 text-[13px] font-medium text-muted-foreground">
             {group.label}
           </p>
-          <div className="divide-y divide-border overflow-hidden rounded-xl border border-border bg-card">
-            {group.items.map((item) => {
+          <div className="overflow-hidden rounded-2xl bg-muted/50">
+            {group.items.map((item, index) => {
               const Icon = item.icon;
               return (
                 <Link
                   key={item.href}
                   href={item.href}
-                  className="flex min-h-12 items-center gap-3 px-4 py-2.5 transition-colors active:bg-muted"
+                  className="group flex items-center gap-3 pl-4 transition-colors active:bg-black/[0.04] dark:active:bg-white/[0.06]"
                 >
-                  <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted text-muted-foreground">
+                  <span
+                    className={cn(
+                      "flex size-7 shrink-0 items-center justify-center rounded-[8px] text-white",
+                      item.tint,
+                    )}
+                  >
                     <Icon className="size-4" />
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-[15px]">
-                    {item.label}
+                  {/* The divider hangs off the row body so it stays inset
+                      to the text edge, native-list style. */}
+                  <span
+                    className={cn(
+                      "flex min-h-[46px] min-w-0 flex-1 items-center gap-3 pr-4",
+                      index > 0 && "border-t border-border/60",
+                    )}
+                  >
+                    <span className="min-w-0 flex-1 truncate text-[15px] leading-none">
+                      {item.label}
+                    </span>
+                    <ChevronRight className="size-4 shrink-0 text-muted-foreground/50" />
                   </span>
-                  <ChevronRight className="size-4 shrink-0 text-muted-foreground/60" />
                 </Link>
               );
             })}
