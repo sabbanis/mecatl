@@ -171,6 +171,8 @@ var flagMetaByFlag = map[string]flagMeta{
 	"import-claude-permissions": {group: groupPermissions, common: false, acp: acpInclude},
 	"permission-config":         {group: groupPermissions, common: false, acp: acpInclude},
 	"plan-mode-auto-approve":    {group: groupPermissions, common: false, acp: acpInclude},
+	"authority-evaluator":       {group: groupPermissions, common: false, acp: acpExclude},
+	"cedar-authority-policy":    {group: groupPermissions, common: false, acp: acpExclude},
 
 	// ── Guardrails (both) ────────────────────────────────────────────────
 	"guardrails-model": {group: groupGuardrails, common: false, acp: acpInclude},

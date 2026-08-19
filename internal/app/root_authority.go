@@ -2,6 +2,7 @@ package app
 
 import (
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/stacklok/mecatl/engine/adapter/localauthority"
@@ -10,6 +11,7 @@ import (
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
+	"github.com/stacklok/mecatl/internal/adapter/cedarauthority"
 )
 
 const (
@@ -19,17 +21,30 @@ const (
 )
 
 func authorityEvaluatorPostureLine(adapter string) string {
-	return fmt.Sprintf("authority evaluator posture: adapter=%s enforcement=%t", adapter, adapter == "local")
+	return fmt.Sprintf("authority evaluator posture: adapter=%s enforcement=%t", adapter, adapter == "local" || adapter == "cedar")
 }
 
-func selectAuthorityEvaluator(mode string) (port.AuthorityEvaluator, string, error) {
+func selectAuthorityEvaluator(mode, cedarPolicyPath string) (port.AuthorityEvaluator, string, error) {
 	switch strings.ToLower(strings.TrimSpace(mode)) {
 	case "", "local":
 		return localauthority.New(), "local", nil
 	case "noop":
 		return noopauthority.New(), "noop", nil
+	case "cedar":
+		if strings.TrimSpace(cedarPolicyPath) == "" {
+			return nil, "", fmt.Errorf("cedar authority evaluator requires an operator policy file")
+		}
+		policy, err := os.ReadFile(cedarPolicyPath)
+		if err != nil {
+			return nil, "", fmt.Errorf("load Cedar authority policy %q: %w", cedarPolicyPath, err)
+		}
+		evaluator, err := cedarauthority.New(policy)
+		if err != nil {
+			return nil, "", err
+		}
+		return evaluator, "cedar", nil
 	default:
-		return nil, "", fmt.Errorf("unknown authority evaluator %q (supported: local, noop)", mode)
+		return nil, "", fmt.Errorf("unknown authority evaluator %q (supported: local, noop, cedar)", mode)
 	}
 }
 

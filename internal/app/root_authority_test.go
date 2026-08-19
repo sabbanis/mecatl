@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"os"
 	"testing"
 
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
@@ -104,14 +105,14 @@ func TestADR_0228_AuthorityEvaluator_Scenario6_NonSpawnDerivationPointsAreExplic
 }
 
 func TestADR_0228_AuthorityEvaluator_Scenario3_AbsentEvaluatorIsExplicitAndAnnounced(t *testing.T) {
-	evaluator, adapter, err := selectAuthorityEvaluator("noop")
+	evaluator, adapter, err := selectAuthorityEvaluator("noop", "")
 	if err != nil || evaluator == nil {
 		t.Fatalf("select noop evaluator = (%T, %q, %v), want explicit evaluator", evaluator, adapter, err)
 	}
 	if adapter != "noop" {
 		t.Fatalf("adapter = %q, want noop", adapter)
 	}
-	if _, _, err := selectAuthorityEvaluator("missing"); err == nil {
+	if _, _, err := selectAuthorityEvaluator("missing", ""); err == nil {
 		t.Fatal("unknown evaluator silently selected")
 	}
 	diag := &rootAuthorityDiag{}
@@ -132,6 +133,26 @@ func TestADR_0228_AuthorityEvaluator_Scenario6_PostureLineReportsEvaluator(t *te
 	if got := authorityEvaluatorPostureLine("noop"); got != "authority evaluator posture: adapter=noop enforcement=false" {
 		t.Fatalf("noop posture = %q", got)
 	}
+}
+
+func TestADR_0228_AuthorityEvaluator_Scenario7_PolicyLoadFailureIsFatal(t *testing.T) {
+	t.Parallel()
+
+	if _, _, err := selectAuthorityEvaluator("cedar", ""); err == nil {
+		t.Fatal("cedar selection without an operator policy succeeded")
+	}
+	if _, _, err := selectAuthorityEvaluator("cedar", t.TempDir()+"/missing.cedar"); err == nil {
+		t.Fatal("cedar selection with a missing policy succeeded")
+	}
+	policyPath := t.TempDir() + "/authority.cedar"
+	if err := os.WriteFile(policyPath, []byte(`permit(principal, action, resource);`), 0o600); err != nil {
+		t.Fatalf("write policy: %v", err)
+	}
+	built, err := Build(context.Background(), Config{Workspace: t.TempDir(), UseMock: true, AuthorityEvaluator: "cedar", CedarAuthorityPolicy: policyPath})
+	if err != nil {
+		t.Fatalf("Build(cedar authority evaluator): %v", err)
+	}
+	defer built.Close()
 }
 
 func rootAuthorityCatalog(t *testing.T) *tool.Catalog {

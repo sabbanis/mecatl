@@ -153,10 +153,12 @@ type Config struct {
 	Shell    string
 	NoBash   bool
 	// AuthorityEvaluator selects the authority evaluator adapter: "local" enforces
-	// minted sets, while "noop" deliberately disables enforcement. Empty selects
-	// local; the no-op mode is never inferred from a missing evaluator.
-	AuthorityEvaluator string
-	authorityEvaluator port.AuthorityEvaluator
+	// minted sets, while "noop" deliberately disables enforcement. "cedar" loads
+	// CedarAuthorityPolicy at startup and fails closed when it cannot be loaded.
+	// Empty selects local; the no-op mode is never inferred from a missing evaluator.
+	AuthorityEvaluator   string
+	CedarAuthorityPolicy string
+	authorityEvaluator   port.AuthorityEvaluator
 	// OwnershipEnforced enables application caller isolation when the command edge
 	// has configured the fail-closed OIDC verifier. Its zero value preserves
 	// existing ownerless deployments and hand-built test configurations.
@@ -1255,7 +1257,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	}
 	var authorityMode string
 	var authorityErr error
-	cfg.authorityEvaluator, authorityMode, authorityErr = selectAuthorityEvaluator(cfg.AuthorityEvaluator)
+	cfg.authorityEvaluator, authorityMode, authorityErr = selectAuthorityEvaluator(cfg.AuthorityEvaluator, cfg.CedarAuthorityPolicy)
 	if authorityErr != nil {
 		return nil, authorityErr
 	}
