@@ -247,12 +247,13 @@ export function MessageBubble({
 }) {
   const isUser = message.role === "user";
 
-  if (message.role === "tool") return null;
-
   // Touch has no hover: a horizontal-dominant left swipe reveals the action
   // row instead (right swipe or a new swipe elsewhere hides it again).
+  // Hooks stay above the tool-message early return (rules of hooks).
   const [swipeRevealed, setSwipeRevealed] = useState(false);
   const touchStart = useRef<{ x: number; y: number } | null>(null);
+
+  if (message.role === "tool") return null;
   const onTouchStart = (event: React.TouchEvent) => {
     const touch = event.touches[0];
     touchStart.current = { x: touch.clientX, y: touch.clientY };

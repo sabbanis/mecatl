@@ -25,7 +25,6 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
-  DropdownMenuSeparator,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
@@ -186,19 +185,17 @@ function MobileChatMenu({
               </button>
             )}
             {onDelete && (
-              <>
-                <button
-                  type="button"
-                  onClick={() => {
-                    onDelete();
-                    setOpen(false);
-                  }}
-                  className="flex w-full items-center gap-3 px-4 py-3 text-sm text-muted-foreground hover:bg-muted/50 transition-colors"
-                >
-                  <Trash2 className="size-4" />
-                  Delete
-                </button>
-              </>
+              <button
+                type="button"
+                onClick={() => {
+                  onDelete();
+                  setOpen(false);
+                }}
+                className="flex w-full items-center gap-3 px-4 py-3 text-sm text-muted-foreground hover:bg-muted/50 transition-colors"
+              >
+                <Trash2 className="size-4" />
+                Delete
+              </button>
             )}
           </div>
         </SheetContent>
@@ -624,12 +621,10 @@ export function ChatView({
                   </DropdownMenuItem>
                 )}
                 {onDelete && (
-                  <>
-                    <DropdownMenuItem onClick={onDelete}>
-                      <Trash2 className="size-4 mr-2" />
-                      Delete
-                    </DropdownMenuItem>
-                  </>
+                  <DropdownMenuItem onClick={onDelete}>
+                    <Trash2 className="size-4 mr-2" />
+                    Delete
+                  </DropdownMenuItem>
                 )}
               </DropdownMenuContent>
             </DropdownMenu>

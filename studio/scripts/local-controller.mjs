@@ -276,7 +276,7 @@ async function persistModelRouter(config) {
   const yamlTemp = `${routerSettingsFile}.tmp`;
   const jsonTemp = `${routerStateFile}.tmp`;
   await writeFile(yamlTemp, renderModelRouterYAML(config), { mode: 0o600 });
-  await writeFile(jsonTemp, JSON.stringify(config, null, 2) + "\n", {
+  await writeFile(jsonTemp, `${JSON.stringify(config, null, 2)}\n`, {
     mode: 0o600,
   });
   await rename(yamlTemp, routerSettingsFile);
