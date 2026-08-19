@@ -2,12 +2,12 @@
 id: 14-authority-evaluator-presence
 title: Fail closed for bound sessions without an evaluator
 blocked_by: [11-vertical-repair]
-status: in-progress
-branch: ""
+status: done
+branch: plan-authority-evaluator-port/14-authority-evaluator-presence
 worktree: ""
 issue: "371"
 retries: 0
-last_error: "panel blocker: nil evaluator bypasses bound authority"
+last_error: ""
 accumulator: acc/authority-evaluator-port
 ---
 
