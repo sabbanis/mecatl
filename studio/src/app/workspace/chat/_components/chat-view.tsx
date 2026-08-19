@@ -119,7 +119,7 @@ function UsageMenuRow({
 }) {
   if (!usage || usage.inputTokens + usage.outputTokens <= 0) return null;
   return (
-    <div className="px-3 py-2">
+    <div className="mb-1 border-b border-border/60 px-3 py-2">
       <p className="text-xs font-medium text-muted-foreground">Token usage</p>
       <p className="mt-1 text-sm tabular-nums">
         {formatTokens(usage.inputTokens)} input
@@ -187,7 +187,6 @@ function MobileChatMenu({
             )}
             {onDelete && (
               <>
-                <div className="h-px bg-border mx-4 my-1" />
                 <button
                   type="button"
                   onClick={() => {
@@ -453,7 +452,7 @@ export function ChatView({
   session: AgentSession;
   messages: AgentMessage[];
   isStreaming: boolean;
-  onSend: (content: string) => void;
+  onSend: (content: string, files?: File[]) => void;
   botName: string;
   /** True while the daemon connection is up. */
   live?: boolean;
@@ -613,12 +612,7 @@ export function ChatView({
               <DropdownMenuContent align="end" className="w-52">
                 {/* Token usage as the daemon reported it (was a header pill;
                     it lives in the menu now). Hidden until any lands. */}
-                {live && usage && (
-                  <>
-                    <UsageMenuRow usage={usage} />
-                    <DropdownMenuSeparator />
-                  </>
-                )}
+                <UsageMenuRow usage={usage} />
                 <DropdownMenuItem onClick={() => setShowActivity((v) => !v)}>
                   <Wrench className="size-4 mr-2 text-muted-foreground" />
                   {showActivity ? "Hide Tools" : "Show Tools"}
@@ -631,7 +625,6 @@ export function ChatView({
                 )}
                 {onDelete && (
                   <>
-                    <DropdownMenuSeparator />
                     <DropdownMenuItem onClick={onDelete}>
                       <Trash2 className="size-4 mr-2" />
                       Delete
@@ -647,7 +640,7 @@ export function ChatView({
               onToggleActivity={() => setShowActivity((v) => !v)}
               onRename={onRename}
               onDelete={onDelete}
-              usage={live ? usage : null}
+              usage={usage}
             />
           )}
         </div>

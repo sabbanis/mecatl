@@ -5,6 +5,7 @@ import {
   cancelHarnessRun,
   createHarnessSession,
   fetchSessionTranscriptMessages,
+  type PromptPart,
   respondToHarnessApproval,
   streamHarnessPrompt,
 } from "@/lib/harness/client";
@@ -27,6 +28,23 @@ type ChatStatus =
   | "error";
 
 /** Rebuilds the message list from the daemon's authoritative transcript. */
+/** Client-side ceiling per image; the daemon enforces its own caps too. */
+const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+
+/** Encode one picked image as a daemon prompt part (standard base64). */
+async function imageToPart(file: File): Promise<PromptPart> {
+  if (file.size > MAX_IMAGE_BYTES) {
+    throw new Error(`${file.name} is over 5 MB — attach a smaller image.`);
+  }
+  const bytes = new Uint8Array(await file.arrayBuffer());
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return { kind: "image", mime_type: file.type, data: btoa(binary) };
+}
+
 function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
   const messages: AgentMessage[] = [];
   let sequence = 0;
@@ -149,8 +167,25 @@ export function useAgentChat(
   }, [sessionId, connected]);
 
   const sendMessage = useCallback(
-    async (content: string, attachments?: Attachment[]) => {
+    async (content: string, files?: File[]) => {
       if (status === "streaming" || !connected) return;
+
+      // Only images cross the wire — the daemon's prompt parts are
+      // image/audio only (documents are a daemon capability gap).
+      const images = (files ?? []).filter((file) =>
+        file.type.startsWith("image/"),
+      );
+      let parts: PromptPart[];
+      try {
+        parts = await Promise.all(images.map(imageToPart));
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+        return;
+      }
+      const attachments: Attachment[] | undefined =
+        images.length > 0
+          ? images.map((file) => ({ name: file.name, type: file.type }))
+          : undefined;
 
       const userMessage: AgentMessage = {
         id: `user-${Date.now()}`,
@@ -199,6 +234,7 @@ export function useAgentChat(
         await streamHarnessPrompt(
           daemonId,
           content,
+          parts,
           (event) => {
             switch (event.type) {
               case "token":
@@ -280,14 +316,20 @@ export function useAgentChat(
                 }));
                 break;
               case "usage":
-                setUsage({
-                  inputTokens: event.inputTokens,
-                  outputTokens: event.outputTokens,
-                  cacheReadTokens: event.cacheReadTokens ?? 0,
-                  cacheWriteTokens: event.cacheWriteTokens ?? 0,
-                  reasoningTokens: event.reasoningTokens ?? 0,
+                // The daemon reports per-run figures; the chat total is
+                // their sum. (Lost on reload: the HTTP read surface does
+                // not expose the session's cumulative usage yet.)
+                setUsage((prev) => ({
+                  inputTokens: prev.inputTokens + event.inputTokens,
+                  outputTokens: prev.outputTokens + event.outputTokens,
+                  cacheReadTokens:
+                    prev.cacheReadTokens + (event.cacheReadTokens ?? 0),
+                  cacheWriteTokens:
+                    prev.cacheWriteTokens + (event.cacheWriteTokens ?? 0),
+                  reasoningTokens:
+                    prev.reasoningTokens + (event.reasoningTokens ?? 0),
                   estimatedCost: event.estimatedCost,
-                });
+                }));
                 break;
               case "run_result":
                 if (event.stop === "error") {

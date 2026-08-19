@@ -104,6 +104,7 @@ function FilesDropdown({
         ref={fileInputRef}
         type="file"
         multiple
+        accept="image/*"
         className="hidden"
         onChange={(e) => {
           const selected = e.target.files;
@@ -380,6 +381,7 @@ function MobileComposerMenu({
         ref={fileInputRef}
         type="file"
         multiple
+        accept="image/*"
         className="hidden"
         onChange={(event) => {
           const files = Array.from(event.target.files ?? []);
@@ -1001,7 +1003,11 @@ export function ChatInput({
         e.preventDefault();
         dragCountRef.current = 0;
         setIsDragOver(false);
-        const droppedFiles = Array.from(e.dataTransfer.files);
+        // Only images can cross the wire (the daemon's prompt parts are
+        // image/audio only), so only images attach.
+        const droppedFiles = Array.from(e.dataTransfer.files).filter((f) =>
+          f.type.startsWith("image/"),
+        );
         if (droppedFiles.length > 0) {
           setAttachedFiles((prev) => [...prev, ...droppedFiles]);
         }

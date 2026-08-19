@@ -120,9 +120,17 @@ async function readWithIdleTimeout<T>(read: Promise<T>): Promise<T> {
  * each read races the idle timeout, and a stream that closes without a
  * terminal `result` frame throws — the daemon always ends a run with one.
  */
+export interface PromptPart {
+  kind: "image" | "audio";
+  mime_type: string;
+  /** Standard base64 (the daemon decodes JSON strings into bytes). */
+  data: string;
+}
+
 export async function streamHarnessPrompt(
   sessionId: string,
   text: string,
+  parts: PromptPart[],
   onEvent: (event: StreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
@@ -131,7 +139,7 @@ export async function streamHarnessPrompt(
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text }),
+      body: JSON.stringify(parts.length > 0 ? { text, parts } : { text }),
       signal,
     },
   );
