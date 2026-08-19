@@ -5636,10 +5636,11 @@ func childEngineDeps(cfg Config, role string, provider port.LLMProvider, cat *to
 		// AudienceSubagent pin + the workspace-pinned config resolver (issue #32)
 		// so `subagent:`-block rules bind children; with no config it is the
 		// historical allow-all shape.
-		Policy:       childPermPolicy(cfg),
-		Hooks:        hooks,
-		PromptConfig: pc,
-		Model:        model,
+		Policy:             childPermPolicy(cfg),
+		AuthorityEvaluator: cfg.authorityEvaluator,
+		Hooks:              hooks,
+		PromptConfig:       pc,
+		Model:              model,
 		// Diagnostics is LIVE for child engines (correlated by session + the agent
 		// role below) so interleaved child diagnostics are readable on the operator
 		// channel — this is DISTINCT from Sink/ToolCallRecorder (telemetry/audit),

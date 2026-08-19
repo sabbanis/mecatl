@@ -293,7 +293,30 @@ and discards revision/undo history (not the active values). Lifecycle mutation t
 added to the built-in allow floor; the existing permission fold therefore governs them without
 loosening policy.
 
-## Domain — `engine/prompt/`
+
+## Delegated authority
+
+ADR 0228 adds a second, narrower decision to permission policy. `PermissionPolicy`
+continues to resolve user/operator approval rules; authority answers whether this bound
+run carries a capability at all. A session's `Authority` persists one plain
+`governance.CapabilitySet` with provenance and definition identity. Delegation derives
+by intersection only, consumes a hop before any child resource is allocated, and stamps
+the derived set beside the independently-derived owner. A resumed child preserves its
+persisted set and is rejected if it no longer fits the caller's current set; it neither
+re-applies a specialist ceiling nor consumes another hop.
+
+The loop calls `port.AuthorityEvaluator` only at tool execution. Local exact-name
+checking is the default; explicit `noop` disables enforcement; optional Cedar loads a
+static operator policy at startup. The evaluator request holds the carried set, action,
+depth, non-secret principal, and an optional normalized filesystem resource. It has no
+raw arguments, credentials, catalog, runner, or Cedar type. A Cedar policy can tighten
+an allowed capability, including a path boundary, but the carried-set check runs first
+and prevents it from granting an omitted capability. `CallMcpWithQuery` is checked as
+its reconstructed remote tool name, and MCP resource access derives from the carried
+names. `TestADR_0228_AuthorityEvaluator_VerticalSlice` is the real `app.Build` offline
+proof; the Cedar counterpart pins the policy path. See
+[ADR 0228](../adr/0228-authority-evaluator-port.md).
+
 
 Two-layer prompt assembly + AGENTS.md/CLAUDE.md discovery; the turn-0 `InstructionAssembler`
 chain and its consumer-local ports (`MemoryIndexSource`, `SoulSource` — issue #14 Phase 1's
