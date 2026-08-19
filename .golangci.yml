@@ -914,7 +914,7 @@ linters:
       # on the injected port.Diagnostics seam, not to police the mains.
       - linters:
           - forbidigo
-        path: ^cmd/
+        path: (^|.*/)cmd/
       # Test files may name the banned patterns in literals/messages (e.g. the guard
       # test asserting the rule bites, or doc-comments referencing slog.Warn).
       - linters:
