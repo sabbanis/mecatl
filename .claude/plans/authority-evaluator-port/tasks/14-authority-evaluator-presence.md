@@ -2,7 +2,7 @@
 id: 14-authority-evaluator-presence
 title: Fail closed for bound sessions without an evaluator
 blocked_by: [11-vertical-repair]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
