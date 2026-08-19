@@ -28,21 +28,82 @@ type ChatStatus =
   | "error";
 
 /** Rebuilds the message list from the daemon's authoritative transcript. */
-/** Client-side ceiling per image; the daemon enforces its own caps too. */
-const MAX_IMAGE_BYTES = 5 * 1024 * 1024;
+/** Formats every vision provider accepts; anything else gets re-encoded. */
+const WIRE_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
+/** Above this, re-encode: phone photos are 4–12 MB and base64 inflates by
+ *  a third — big payloads 413 at the daemon's byte budget. */
+const MAX_INLINE_BYTES = 1_500_000;
+/** Longest edge after a re-encode; ample for vision models. */
+const MAX_IMAGE_EDGE = 1600;
 
-/** Encode one picked image as a daemon prompt part (standard base64). */
-async function imageToPart(file: File): Promise<PromptPart> {
-  if (file.size > MAX_IMAGE_BYTES) {
-    throw new Error(`${file.name} is over 5 MB — attach a smaller image.`);
-  }
-  const bytes = new Uint8Array(await file.arrayBuffer());
+function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
   const CHUNK = 0x8000;
   for (let i = 0; i < bytes.length; i += CHUNK) {
     binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
   }
-  return { kind: "image", mime_type: file.type, data: btoa(binary) };
+  return btoa(binary);
+}
+
+/**
+ * Encode one picked image as a daemon prompt part. A small image in a
+ * provider-friendly format goes as-is; everything else — big photos, HEIC
+ * from iPhones — is downscaled onto a canvas and re-encoded as JPEG (the
+ * browser decodes whatever the platform can, so Safari transcodes HEIC
+ * here; a browser that cannot decode the format fails loudly instead).
+ */
+async function imageToPart(file: File): Promise<PromptPart> {
+  if (WIRE_IMAGE_TYPES.has(file.type) && file.size <= MAX_INLINE_BYTES) {
+    return {
+      kind: "image",
+      mime_type: file.type,
+      data: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
+    };
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () =>
+        reject(
+          new Error(
+            `${file.name}: this browser cannot decode ${file.type || "that format"} — attach a JPEG or PNG instead.`,
+          ),
+        );
+      el.src = url;
+    });
+    const scale = Math.min(
+      1,
+      MAX_IMAGE_EDGE / Math.max(img.naturalWidth, img.naturalHeight),
+    );
+    const width = Math.max(1, Math.round(img.naturalWidth * scale));
+    const height = Math.max(1, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("canvas unavailable");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.85),
+    );
+    if (!blob) throw new Error(`${file.name}: could not encode the image.`);
+    return {
+      kind: "image",
+      mime_type: "image/jpeg",
+      data: bytesToBase64(new Uint8Array(await blob.arrayBuffer())),
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
 }
 
 function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
