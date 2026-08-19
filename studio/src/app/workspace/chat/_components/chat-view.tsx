@@ -407,8 +407,11 @@ export function ChatView({
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Whether the transcript is scrolled to (near) the bottom; when it isn't,
-  // a floating control above the composer jumps back down.
+  // a floating control above the composer jumps back down. The ref mirror is
+  // what the follow effect reads — it must see the value as of the latest
+  // scroll, not the latest render.
   const [atBottom, setAtBottom] = useState(true);
+  const atBottomRef = useRef(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [showActivity, setShowActivity] = useState(false);
   // The single right-hand panel — a discriminated union makes "one panel at a
@@ -436,7 +439,19 @@ export function ChatView({
   // biome-ignore lint/correctness/useExhaustiveDependencies: scrolling is intentionally driven by session.id changes
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "instant" });
+    atBottomRef.current = true;
+    setAtBottom(true);
   }, [session.id]);
+
+  // Pinned-follow: while the user sits at the bottom, a sent message and the
+  // streaming response keep the view pinned there; once they scroll up, their
+  // position holds (the floating arrow offers the way back down).
+  // biome-ignore lint/correctness/useExhaustiveDependencies: re-runs on every transcript update by design
+  useEffect(() => {
+    if (!atBottomRef.current) return;
+    const el = messagesContainerRef.current;
+    if (el) el.scrollTop = el.scrollHeight;
+  }, [messages]);
 
   // The right-hand panel only renders on non-mobile layouts; let the parent
   // collapse the chat list while it's open so both panels fit side by side.
@@ -566,9 +581,10 @@ export function ChatView({
             ref={messagesContainerRef}
             onScroll={(event) => {
               const el = event.currentTarget;
-              setAtBottom(
-                el.scrollHeight - el.scrollTop - el.clientHeight < 80,
-              );
+              const pinned =
+                el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+              atBottomRef.current = pinned;
+              setAtBottom(pinned);
             }}
             className="h-full overflow-y-auto px-3 pt-1 pb-48 max-[499px]:pb-24 lg:px-6 lg:pt-2 lg:pb-56"
           >
