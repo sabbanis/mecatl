@@ -2,12 +2,12 @@
 id: 11-vertical-repair
 title: Complete the feasible authority vertical proof
 blocked_by: [09-mcp-resource-authority, 10-authority-disclosure]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/11-vertical-repair"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: "repair-wave-1: review finding 3"
+last_error: "task test baseline macOS /var symlink failures; task docs requires GOPRIVATE"
 accumulator: acc/authority-evaluator-port
 ---
 
