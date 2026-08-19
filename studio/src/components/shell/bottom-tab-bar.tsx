@@ -2,8 +2,46 @@
 
 import Link from "next/link";
 import { usePathname } from "next/navigation";
+import { useEffect, useState } from "react";
 import { buildUserNav } from "@/components/app/nav-items";
 import { cn } from "@/lib/utils";
+
+function isEditable(el: EventTarget | null): boolean {
+  return (
+    el instanceof HTMLElement &&
+    (el.tagName === "INPUT" ||
+      el.tagName === "TEXTAREA" ||
+      el.isContentEditable)
+  );
+}
+
+/**
+ * Whether a text input currently holds focus — the on-screen keyboard is
+ * (about to be) up, so the tab bar should get out of its way. Focus-based
+ * rather than visualViewport-based: it also covers the browsers that resize
+ * the layout viewport for the keyboard, where the bar would otherwise eat
+ * the little height that remains.
+ */
+function useEditableFocused() {
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    const onFocusIn = (event: FocusEvent) => {
+      if (isEditable(event.target)) setFocused(true);
+    };
+    const onFocusOut = () => {
+      // Defer: focus may be moving between two inputs.
+      setTimeout(() => setFocused(isEditable(document.activeElement)), 0);
+    };
+    document.addEventListener("focusin", onFocusIn);
+    document.addEventListener("focusout", onFocusOut);
+    setFocused(isEditable(document.activeElement));
+    return () => {
+      document.removeEventListener("focusin", onFocusIn);
+      document.removeEventListener("focusout", onFocusOut);
+    };
+  }, []);
+  return focused;
+}
 
 /**
  * The mobile bottom tab bar (below the 500px breakpoint the top nav's icon
@@ -19,11 +57,17 @@ import { cn } from "@/lib/utils";
 export function BottomTabBar() {
   const pathname = usePathname() ?? "";
   const nav = buildUserNav();
+  const keyboardUp = useEditableFocused();
 
   return (
     <nav
       aria-label={nav.navLabel}
-      className="hidden shrink-0 items-stretch justify-around px-1 pt-0.5 pb-[max(env(safe-area-inset-bottom),0.375rem)] max-[499px]:flex"
+      className={cn(
+        "hidden shrink-0 items-stretch justify-around px-1 pt-0.5 pb-[max(env(safe-area-inset-bottom),0.375rem)]",
+        // While a text input holds focus the on-screen keyboard owns the
+        // bottom of the screen — the bar gets out of its way.
+        !keyboardUp && "max-[499px]:flex",
+      )}
     >
       {nav.items.map((item) => {
         const active =
