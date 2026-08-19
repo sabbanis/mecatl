@@ -1,4 +1,5 @@
     ifacemethod func (AuthorityEvaluator).AuthorizeTool(context.Context, AuthorityRequest) (AuthorityDecision, error)
+    ifacemethod func (AuthorityOwnerRequirement).RequiresOwnerIdentity() bool
     ifacemethod func (Clock).Now() time.Time
     ifacemethod func (ConditionalPrunableStore).DeleteSessionIfUnchanged(ctx context.Context, expected SessionDiscoveryMeta) (bool, error)
     ifacemethod func (DeliveryQueue).Enqueue(ctx context.Context, origin session.SessionID, text string) (DeliveryNote, error)
@@ -103,6 +104,7 @@ func SessionIDFromContext(ctx context.Context) (session.SessionID, bool)
 func WithSessionID(ctx context.Context, id session.SessionID) context.Context
 type AuthorityDecision struct{Allowed bool; Reason string}
 type AuthorityEvaluator interface{AuthorizeTool(context.Context, AuthorityRequest) (AuthorityDecision, error)}
+type AuthorityOwnerRequirement interface{RequiresOwnerIdentity() bool}
 type AuthorityPrincipal struct{Definition string; Instance string; OwnerIssuer string; OwnerSubject string}
 type AuthorityRequest struct{CapabilitySet governance.CapabilitySet; ToolName string; Action string; DelegationDepth int; Principal AuthorityPrincipal; Resource *AuthorityResource}
 type AuthorityResource struct{Kind AuthorityResourceKind; Path string; Workspace string}

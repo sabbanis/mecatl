@@ -34,6 +34,25 @@ func Run(t *testing.T, newEvaluator func(t *testing.T) port.AuthorityEvaluator) 
 		}
 	})
 
+	t.Run("handles ownerless requests according to its declared requirement", func(t *testing.T) {
+		ownerless := valid
+		ownerless.Principal.OwnerIssuer = ""
+		ownerless.Principal.OwnerSubject = ""
+		decision, err := newEvaluator(t).AuthorizeTool(ctx, ownerless)
+		if err != nil {
+			t.Fatalf("AuthorizeTool ownerless: %v", err)
+		}
+		if requirement, requiresOwner := newEvaluator(t).(port.AuthorityOwnerRequirement); requiresOwner && requirement.RequiresOwnerIdentity() {
+			if decision.Allowed {
+				t.Fatalf("AuthorizeTool allowed ownerless request despite requiring an owner: %+v", decision)
+			}
+			return
+		}
+		if !decision.Allowed {
+			t.Fatalf("AuthorizeTool denied ownerless request without requiring an owner: %+v", decision)
+		}
+	})
+
 	t.Run("fails closed on a malformed request", func(t *testing.T) {
 		malformed := valid
 		malformed.ToolName = ""

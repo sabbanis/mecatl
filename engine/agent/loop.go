@@ -1946,15 +1946,14 @@ func (e *Engine) buildRequest(ctx context.Context, r *Run, sess *session.Session
 		cfg.Tools = e.deps.Catalog.Specs(sess.Mode)
 	}
 	authority, authorityBound := sess.BoundAuthority()
-	missingAuthorityEvaluator := authorityBound && e.deps.AuthorityEvaluator == nil
-	cfg.Tools = authoritySpecs(cfg.Tools, authority.CapabilitySet, authorityBound, missingAuthorityEvaluator)
+	cfg.Tools = authoritySpecs(cfg.Tools, authority.CapabilitySet, authorityBound)
 	// Run-scoped extra tools (RunRequest.ExtraTools) are advertised this run only,
 	// after the catalog specs, so a structured-output SubmitResult (or any per-run
 	// tool) is visible to the model without being registered into the shared catalog.
 	// A name already present in cfg.Tools is REPLACED by the extra's spec (the overlay
 	// wins, matching lookupTool's overlay-first resolution) so the advertised set and
 	// the dispatch resolution never disagree.
-	cfg.Tools = authorityOverlaySpecs(cfg.Tools, r.req.ExtraTools, missingAuthorityEvaluator)
+	cfg.Tools = authorityOverlaySpecs(cfg.Tools, r.req.ExtraTools)
 	// Shell-less Environment (issue #462 review): the CAPABILITY TRUTH for whether
 	// this turn has a shell is the LIVE tool.Environment handed to Run, NOT the
 	// shared Engine's catalog/prompt (which were built once from server config and

@@ -234,6 +234,99 @@ forbid(principal, action, resource) when { resource.path like "` + filepath.ToSl
 	t.Fatal("missing child Read result")
 }
 
+func TestADR_0228_AuthorityEvaluator_OwnerlessCompositionUsesLocalEvaluator(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("ownerless readable\n"), 0o600); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+	built, err := Build(context.Background(), Config{
+		Workspace:     workspace,
+		StoreDir:      filepath.Join(t.TempDir(), "sessions"),
+		MockProvider:  mockllm.New(mockllm.ToolCallTurn(session.NewToolCall("read", "Read", []byte(`{"path":"README.md"}`))), mockllm.TextTurn("done")),
+		NoSoul:        true,
+		AllowAllTools: true,
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer built.Close()
+
+	sess, err := built.Service.CreateSession(context.Background(), workspace, session.ModeDefault, defaultLimits())
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	if sess.Owner != nil {
+		t.Fatalf("ownerless composition session owner = %+v, want nil", sess.Owner)
+	}
+	run, err := built.Service.StartRun(context.Background(), sess.ID, "read")
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	if got := drainRun(run); got != "done" {
+		t.Fatalf("terminal text = %q, want done", got)
+	}
+	stored, err := built.Service.GetSession(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	for _, message := range stored.Conversation.Messages {
+		if message.Role == session.RoleTool && message.ToolResult != nil && message.ToolResult.CallID == "read" {
+			if message.ToolResult.IsError || !strings.Contains(message.ToolResult.Content, "ownerless readable") {
+				t.Fatalf("ownerless local authority result = %+v, want successful Read", message.ToolResult)
+			}
+			return
+		}
+	}
+	t.Fatal("missing ownerless local Read result")
+}
+
+func TestADR_0228_AuthorityEvaluator_OwnerlessCedarSessionFailsClosed(t *testing.T) {
+	workspace := t.TempDir()
+	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("not read\n"), 0o600); err != nil {
+		t.Fatalf("write workspace file: %v", err)
+	}
+	policyPath := filepath.Join(t.TempDir(), "authority.cedar")
+	if err := os.WriteFile(policyPath, []byte(`permit(principal, action, resource);`), 0o600); err != nil {
+		t.Fatalf("write Cedar policy: %v", err)
+	}
+	built, err := Build(context.Background(), Config{
+		Workspace:            workspace,
+		StoreDir:             filepath.Join(t.TempDir(), "sessions"),
+		MockProvider:         mockllm.New(mockllm.ToolCallTurn(session.NewToolCall("read", "Read", []byte(`{"path":"README.md"}`))), mockllm.TextTurn("done")),
+		NoSoul:               true,
+		AllowAllTools:        true,
+		AuthorityEvaluator:   "cedar",
+		CedarAuthorityPolicy: policyPath,
+	})
+	if err != nil {
+		t.Fatalf("Build(Cedar): %v", err)
+	}
+	defer built.Close()
+
+	sess, err := built.Service.CreateSession(context.Background(), workspace, session.ModeDefault, defaultLimits())
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	run, err := built.Service.StartRun(context.Background(), sess.ID, "read")
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	drainRun(run)
+	stored, err := built.Service.GetSession(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	for _, message := range stored.Conversation.Messages {
+		if message.Role == session.RoleTool && message.ToolResult != nil && message.ToolResult.CallID == "read" {
+			if !message.ToolResult.IsError || !strings.Contains(message.ToolResult.Content, "owner identity is unavailable") {
+				t.Fatalf("ownerless Cedar authority result = %+v, want fail-closed identity error", message.ToolResult)
+			}
+			return
+		}
+	}
+	t.Fatal("missing ownerless Cedar Read result")
+}
+
 func authorityVerticalMCPServer(t *testing.T) (string, *atomic.Int32) {
 	t.Helper()
 

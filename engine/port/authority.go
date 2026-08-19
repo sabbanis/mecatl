@@ -64,6 +64,14 @@ type AuthorityDecision struct {
 	Reason  string
 }
 
+// AuthorityOwnerRequirement is an optional AuthorityEvaluator capability for
+// evaluators whose policy cannot safely authorize an ownerless request. Evaluators
+// that do not implement it must accept an absent owner identity when their other
+// request requirements are met.
+type AuthorityOwnerRequirement interface {
+	RequiresOwnerIdentity() bool
+}
+
 // AuthorityEvaluator authorizes one tool execution against a carried capability
 // set. Implementations may only tighten the set's authority; they must not use
 // external policy to grant a tool the set omits.

@@ -26,6 +26,11 @@ type Evaluator struct {
 }
 
 var _ port.AuthorityEvaluator = (*Evaluator)(nil)
+var _ port.AuthorityOwnerRequirement = (*Evaluator)(nil)
+
+// RequiresOwnerIdentity reports that Cedar policies receive owner entities and
+// therefore cannot safely evaluate an ownerless request.
+func (*Evaluator) RequiresOwnerIdentity() bool { return true }
 
 // New parses an operator-owned static policy set. Definition-group permits are
 // rejected because instance membership in a definition would widen authority.

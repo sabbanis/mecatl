@@ -1117,7 +1117,13 @@ func (e *Engine) authorizeExecution(ctx context.Context, r *Run, sess *session.S
 	if err != nil {
 		return session.NewToolError(call.ID, fmt.Sprintf("tool %q denied by authority: %v", target, err)), true
 	}
-	if sess.Owner == nil || sess.Owner.Issuer == "" || sess.Owner.Subject == "" {
+	ownerIssuer := ""
+	ownerSubject := ""
+	if sess.Owner != nil {
+		ownerIssuer = sess.Owner.Issuer
+		ownerSubject = sess.Owner.Subject
+	}
+	if requirement, required := e.deps.AuthorityEvaluator.(port.AuthorityOwnerRequirement); required && requirement.RequiresOwnerIdentity() && (ownerIssuer == "" || ownerSubject == "") {
 		return session.NewToolError(call.ID, fmt.Sprintf("tool %q denied by authority: owner identity is unavailable", target)), true
 	}
 	request := port.AuthorityRequest{
@@ -1128,8 +1134,8 @@ func (e *Engine) authorizeExecution(ctx context.Context, r *Run, sess *session.S
 		Principal: port.AuthorityPrincipal{
 			Definition:   authorityDefinition(authority),
 			Instance:     string(sess.ID),
-			OwnerIssuer:  sess.Owner.Issuer,
-			OwnerSubject: sess.Owner.Subject,
+			OwnerIssuer:  ownerIssuer,
+			OwnerSubject: ownerSubject,
 		},
 		Resource: resource,
 	}

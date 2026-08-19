@@ -13,6 +13,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Optional authority-owner requirement (ADR 0228)** — `port.AuthorityOwnerRequirement` lets an authority evaluator explicitly require a verified owner identity while preserving ownerless operation for evaluators that do not need one. Added (minor).
+
 - **Delegation authority tightening (ADR 0228)** — `agent.DelegationTightening` and the additive `AgentMeta` authority-ceiling fields let composition supply an explicit specialist ceiling and callers request only narrower child authority. Added (minor).
 
 - **Direct-team authority root (ADR 0228)** — `agent.WithRootAuthority` lets composition stamp a pre-minted root capability set on members of a directly server-created team while intentionally leaving parent-driven child derivation to its dedicated seam. Added (minor).

@@ -108,7 +108,7 @@ func TestADR_0228_AuthorityEvaluator_Scenario3_EveryDispatchPathConsultsTheEvalu
 }
 
 func TestADR_0228_AuthorityEvaluator_BoundSessionWithoutEvaluatorFailsClosed(t *testing.T) {
-	t.Run("nil evaluator hides capabilities and rejects forged calls", func(t *testing.T) {
+	t.Run("nil evaluator retains authority-shaped request and rejects forged calls", func(t *testing.T) {
 		read := &authorityTool{name: "Read"}
 		omitted := &authorityTool{name: "Write"}
 		var request port.LLMRequest
@@ -120,8 +120,11 @@ func TestADR_0228_AuthorityEvaluator_BoundSessionWithoutEvaluatorFailsClosed(t *
 		})
 
 		events := drain(eng.Run(context.Background(), authoritySession(t, "Read"), agent.MemEnv("/ws"), agent.RunRequest{Text: "write"}))
-		if _, ok := specByName(request.Tools, "Read"); ok {
-			t.Fatal("bound session disclosed a capability tool without an authority evaluator")
+		if _, ok := specByName(request.Tools, "Read"); !ok {
+			t.Fatal("bound session did not retain its authority-shaped tool request without an evaluator")
+		}
+		if _, ok := specByName(request.Tools, "Write"); ok {
+			t.Fatal("bound session disclosed a tool absent from its authority without an evaluator")
 		}
 		if got := omitted.ran.Load(); got != 0 {
 			t.Fatalf("omitted tool executions = %d, want 0 when a bound session has no evaluator", got)
@@ -158,7 +161,7 @@ func TestADR_0228_AuthorityEvaluator_BoundSessionWithoutEvaluatorFailsClosed(t *
 	})
 }
 
-func TestADR_0228_AuthorityEvaluator_OwnerlessBoundSessionFailsClosed(t *testing.T) {
+func TestADR_0228_AuthorityEvaluator_OwnerlessBoundSessionUsesEvaluator(t *testing.T) {
 	read := &authorityTool{name: "Read"}
 	evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Allowed: true}}
 	sess := newSession(t, session.Limits{})
@@ -174,22 +177,16 @@ func TestADR_0228_AuthorityEvaluator_OwnerlessBoundSessionFailsClosed(t *testing
 		AuthorityEvaluator: evaluator,
 	})
 
-	events := drain(eng.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "read"}))
-	if got := evaluator.calls(); got != 0 {
-		t.Fatalf("evaluator calls = %d, want 0 for ownerless bound session", got)
+	drain(eng.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "read"}))
+	if got := evaluator.calls(); got != 1 {
+		t.Fatalf("evaluator calls = %d, want 1 for an ownerless bound session", got)
 	}
-	if got := read.ran.Load(); got != 0 {
-		t.Fatalf("tool executions = %d, want 0 for ownerless bound session", got)
+	if got := read.ran.Load(); got != 1 {
+		t.Fatalf("tool executions = %d, want 1 for an ownerless bound session", got)
 	}
-	for _, event := range events {
-		if event.ToolResult != nil && event.ToolResult.CallID == "read" {
-			if !strings.Contains(event.ToolResult.Content, "owner identity is unavailable") {
-				t.Fatalf("ownerless result = %q, want fail-closed owner identity error", event.ToolResult.Content)
-			}
-			return
-		}
+	if got := evaluator.requests[0].Principal; got.OwnerIssuer != "" || got.OwnerSubject != "" {
+		t.Fatalf("ownerless request owner = (%q, %q), want absent", got.OwnerIssuer, got.OwnerSubject)
 	}
-	t.Fatal("missing ownerless authority result")
 }
 
 func TestADR_0228_AuthorityEvaluator_Scenario3_UnavailableEvaluatorIsDistinctFromDenial(t *testing.T) {
