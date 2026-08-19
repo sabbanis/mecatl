@@ -2,12 +2,12 @@
 id: 06-resource-attribute
 title: Derive a neutral resource attribute at the execution boundary
 blocked_by: [03-execution-evaluator, 05-delegation-derivation]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/06-resource-attribute"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: ""
+last_error: "task test baseline blockers: macOS /var symlink checks and skills lifecycle workspace test; task docs cannot fetch matlatl"
 accumulator: acc/authority-evaluator-port
 ---
 
