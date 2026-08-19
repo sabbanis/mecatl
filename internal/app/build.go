@@ -152,6 +152,11 @@ type Config struct {
 	RedisURL string
 	Shell    string
 	NoBash   bool
+	// AuthorityEvaluator selects the authority evaluator adapter: "local" enforces
+	// minted sets, while "noop" deliberately disables enforcement. Empty selects
+	// local; the no-op mode is never inferred from a missing evaluator.
+	AuthorityEvaluator string
+	authorityEvaluator port.AuthorityEvaluator
 	// OwnershipEnforced enables application caller isolation when the command edge
 	// has configured the fail-closed OIDC verifier. Its zero value preserves
 	// existing ownerless deployments and hand-built test configurations.
@@ -1248,6 +1253,13 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	if cfg.Diagnostics == nil {
 		cfg.Diagnostics = port.NopDiagnostics{}
 	}
+	var authorityMode string
+	var authorityErr error
+	cfg.authorityEvaluator, authorityMode, authorityErr = selectAuthorityEvaluator(cfg.AuthorityEvaluator)
+	if authorityErr != nil {
+		return nil, authorityErr
+	}
+	cfg.diag().Log(ctx, port.LevelInfo, authorityEvaluatorPostureLine(authorityMode))
 
 	// Operator POSTURE ladder (strict < trusted < auto < yolo): resolved BEFORE the
 	// trust fold so applyPosture's raised TrustProject feeds resolveTrust + the
@@ -1623,23 +1635,14 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	cfg.storageMaintenance = &storageMaintenanceState{}
 	dreamReviewer, dreamCapabilities := buildDreamReview(cfg, assets, provider != nil)
 	svcCfg := server.Config{
-		Engine:                              engine,
-		Store:                               store,
-		OwnershipEnforced:                   cfg.OwnershipEnforced,
-		StorageManagementAuthorized:         storageManagementAuthorizer(cfg),
-		LocalStorageMaintenanceSingleWriter: localStorageMaintenanceSingleWriter(store),
-		SessionLiveness:                     cfg.sessionLiveness,
-		RetentionPolicy: server.RetentionPolicy{
-			Version:    "retention/v1",
-			MainMaxAge: cfg.MainRetention, MainMaxCount: cfg.MainRetentionMaxTotal,
-			ChildMaxAge: cfg.ChildRetention, ChildMaxCount: cfg.ChildRetentionMaxPerFamily,
-			ScheduledMaxAge: cfg.ScheduleFireRetention, ScheduledMaxCount: cfg.ScheduleFireRetentionMaxTotal,
-			SweepCadence: cfg.ChildGCInterval,
+		Engine:            engine,
+		Store:             store,
+		OwnershipEnforced: cfg.OwnershipEnforced,
+		Workspaces:        osfsWorkspaceFactory(cfg.diag()),
+		RootAuthority: func(kind session.SessionKind) session.Authority {
+			return mintRootAuthority(assets.rootCatalog, kind)
 		},
-		StorageMaintenanceStatus: cfg.storageMaintenance.snapshot,
-		StorageMaintenanceUpdate: cfg.storageMaintenance.update,
-		Workspaces:               osfsWorkspaceFactory(cfg.diag()),
-		DefaultWorkspace:         cfg.Workspace, // the launch root; a session on a DIFFERENT root routes through the per-session factory (issue #102, docs/adr/0032)
+		DefaultWorkspace: cfg.Workspace, // the launch root; a session on a DIFFERENT root routes through the per-session factory (issue #102, docs/adr/0032)
 		// CommandRunner (issue #462): the MAIN session's bound runner — the
 		// Environment seam hands it to Tool.Execute so Bash observes the session
 		// namespace. nil when Bash is disabled (the catalog omits Bash and the
@@ -3181,6 +3184,7 @@ func buildEngine(ctx context.Context, cfg Config, reg *providerRegistry, provide
 	// untrusted project tier before the seam was built). Empty on the
 	// no-skills path (the bridge is a no-op).
 	cfg.skillCommandInputs = skillCommandInputs{metas: assets.skills, source: assets.skillSource}
+	assets.rootCatalog = cat
 	// Fold the schedule-tool override conn close into the engine teardown chain
 	// (mcpClose). The close is once-guarded by driverConns, so this AND
 	// buildScheduler's schedClose close the shared conn exactly once (the dedup
@@ -3646,10 +3650,11 @@ func engineDepsForProvider(
 		compactorCounter = buildTokenCounter(compactorCfg)
 	}
 	return agent.Deps{
-		LLM:          provider,
-		Policy:       policy,
-		Hooks:        hooks,
-		Instructions: instructions,
+		LLM:                provider,
+		Policy:             policy,
+		AuthorityEvaluator: cfg.authorityEvaluator,
+		Hooks:              hooks,
+		Instructions:       instructions,
 		// Persist mid-run transitions (tool results, terminal state) so a durable
 		// store (StoreDir) holds current state. The Service additionally persists on
 		// entering awaiting and at run end; both share this store, so the latest
