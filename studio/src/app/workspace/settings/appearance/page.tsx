@@ -1,6 +1,14 @@
 "use client";
 
-import { Monitor, Moon, PanelLeft, PanelRight, Sun } from "lucide-react";
+import {
+  Minus,
+  Monitor,
+  Moon,
+  PanelLeft,
+  PanelRight,
+  Plus,
+  Sun,
+} from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -28,18 +36,6 @@ export default function AppearanceSettingsPage() {
   const { theme: activeTheme, setTheme } = useTheme();
   const { side, setSide } = useSessionListSide();
   const { scale, setScale } = useUiScale();
-  // Dragging the scale slider must not rescale the page under the thumb —
-  // the relayout moves the slider itself and the drag jitters. The drag
-  // updates a local preview (the % label follows live); the scale applies
-  // once on release.
-  const [scalePreview, setScalePreview] = useState<number | null>(null);
-  const shownScale = scalePreview ?? scale;
-  const commitScale = () => {
-    if (scalePreview !== null) {
-      setScale(scalePreview);
-      setScalePreview(null);
-    }
-  };
 
   // next-themes resolves only on the client; gate the current value on mount
   // so the trigger shows the real choice instead of a flash of "system".
@@ -59,35 +55,31 @@ export default function AppearanceSettingsPage() {
           />
         </div>
 
-        <div className="space-y-2">
+        <div className="flex items-center justify-between gap-3">
           <p className="text-sm font-medium">Interface scale</p>
-          <div className="flex items-center gap-3">
-            <input
-              type="range"
-              aria-label="Interface scale"
-              min={UI_SCALE_MIN}
-              max={UI_SCALE_MAX}
-              step={0.05}
-              value={shownScale}
-              onChange={(event) => setScalePreview(Number(event.target.value))}
-              onPointerUp={commitScale}
-              onKeyUp={commitScale}
-              onBlur={commitScale}
-              className="h-2 w-full max-w-64 cursor-pointer accent-brand"
-            />
-            <span className="w-11 shrink-0 text-right text-sm tabular-nums text-muted-foreground">
-              {Math.round(shownScale * 100)}%
+          <div className="flex items-center gap-1">
+            <Button
+              variant="outline"
+              size="icon"
+              className="size-8 rounded-lg"
+              aria-label="Decrease interface scale"
+              disabled={scale <= UI_SCALE_MIN}
+              onClick={() => setScale(scale - 0.05)}
+            >
+              <Minus className="size-4" />
+            </Button>
+            <span className="w-12 text-center text-sm tabular-nums">
+              {Math.round(scale * 100)}%
             </span>
             <Button
-              variant="ghost"
-              size="sm"
-              disabled={shownScale === 1}
-              onClick={() => {
-                setScalePreview(null);
-                setScale(1);
-              }}
+              variant="outline"
+              size="icon"
+              className="size-8 rounded-lg"
+              aria-label="Increase interface scale"
+              disabled={scale >= UI_SCALE_MAX}
+              onClick={() => setScale(scale + 0.05)}
             >
-              Reset
+              <Plus className="size-4" />
             </Button>
           </div>
         </div>
