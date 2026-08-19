@@ -2,12 +2,12 @@
 id: 10-authority-disclosure
 title: Filter disclosed tools and ToolSearch by authority
 blocked_by: [09-mcp-resource-authority]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/10-authority-disclosure"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: "repair-wave-1: review finding 4 and clarified finding 6"
+last_error: "task test baseline macOS /var symlink failures"
 accumulator: acc/authority-evaluator-port
 ---
 
