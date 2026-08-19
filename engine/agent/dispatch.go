@@ -1243,23 +1243,26 @@ func authorityPath(args json.RawMessage) (string, error) {
 	return path, nil
 }
 
-// authorityWorkspaceResource resolves a recognized local target and binds it to
-// the live workspace identity. A relaxed Workspace may deliberately permit an
-// out-of-root target, so the descriptor preserves that normalized target rather
-// than introducing a second confinement policy ahead of the Workspace.
+// authorityWorkspaceResource delegates physical identity derivation to the live
+// workspace so the policy descriptor names the same confined target filesystem
+// access will use. A bound authority must not fall back to lexical normalization:
+// an unavailable or ambiguous resolver fails the call closed.
 func authorityWorkspaceResource(path string, env tool.Environment) (*port.AuthorityResource, error) {
-	root := filepath.Clean(env.Workspace().Root())
-	if !filepath.IsAbs(root) {
-		return nil, errors.New("session workspace identity is invalid")
+	resolver, ok := env.Workspace().(tool.AuthorityResourceResolver)
+	if !ok {
+		return nil, errors.New("session workspace cannot derive an authority resource identity")
 	}
-	target := filepath.Clean(path)
-	if !filepath.IsAbs(target) {
-		target = filepath.Join(root, target)
+	target, workspace, err := resolver.AuthorityResourcePath(path)
+	if err != nil {
+		return nil, fmt.Errorf("derive authority resource identity: %w", err)
+	}
+	if target == "" || workspace == "" || !filepath.IsAbs(target) || !filepath.IsAbs(workspace) {
+		return nil, errors.New("session workspace returned an invalid authority resource identity")
 	}
 	return &port.AuthorityResource{
 		Kind:      port.AuthorityResourceWorkspaceFile,
 		Path:      filepath.ToSlash(target),
-		Workspace: filepath.ToSlash(root),
+		Workspace: filepath.ToSlash(workspace),
 	}, nil
 }
 

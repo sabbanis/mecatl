@@ -234,6 +234,71 @@ forbid(principal, action, resource) when { resource.path like "` + filepath.ToSl
 	t.Fatal("missing child Read result")
 }
 
+func TestADR_0228_AuthorityEvaluator_Scenario7_CedarDeniesSymlinkedTarget(t *testing.T) {
+	ctx := session.WithPrincipal(context.Background(), &session.Principal{Issuer: "test", Subject: "owner", GrantType: session.GrantTypeUser})
+	workspace := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(workspace, "vendor"), 0o700); err != nil {
+		t.Fatalf("create vendor directory: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(workspace, "vendor", "blocked.go"), []byte("package vendor\n"), 0o600); err != nil {
+		t.Fatalf("write vendor file: %v", err)
+	}
+	if err := os.Symlink("vendor", filepath.Join(workspace, "review")); err != nil {
+		t.Fatalf("create in-workspace symlink: %v", err)
+	}
+	resolvedWorkspace, err := filepath.EvalSymlinks(workspace)
+	if err != nil {
+		t.Fatalf("resolve workspace: %v", err)
+	}
+	policyPath := filepath.Join(t.TempDir(), "authority.cedar")
+	policy := `permit(principal, action, resource);
+forbid(principal, action, resource) when { resource.path like "` + filepath.ToSlash(filepath.Join(resolvedWorkspace, "vendor")) + `/*" };`
+	if err := os.WriteFile(policyPath, []byte(policy), 0o600); err != nil {
+		t.Fatalf("write Cedar policy: %v", err)
+	}
+
+	built, err := Build(ctx, Config{
+		Workspace:            workspace,
+		StoreDir:             filepath.Join(t.TempDir(), "sessions"),
+		MockProvider:         mockllm.New(mockllm.ToolCallTurn(session.NewToolCall("read", "Read", []byte(`{"path":"review/blocked.go"}`))), mockllm.TextTurn("complete")),
+		NoSoul:               true,
+		AllowAllTools:        true,
+		AuthorityEvaluator:   "cedar",
+		CedarAuthorityPolicy: policyPath,
+	})
+	if err != nil {
+		t.Fatalf("Build(Cedar): %v", err)
+	}
+	defer built.Close()
+
+	sess, err := built.Service.CreateSession(ctx, workspace, session.ModeDefault, defaultLimits())
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	run, err := built.Service.StartRun(ctx, sess.ID, "read through symlink")
+	if err != nil {
+		t.Fatalf("StartRun: %v", err)
+	}
+	if got := drainRun(run); got != "complete" {
+		t.Fatalf("terminal text = %q, want complete", got)
+	}
+
+	stored, err := built.Service.GetSession(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("GetSession: %v", err)
+	}
+	for _, message := range stored.Conversation.Messages {
+		if message.Role != session.RoleTool || message.ToolResult == nil || message.ToolResult.CallID != "read" {
+			continue
+		}
+		if !message.ToolResult.IsError || !strings.Contains(message.ToolResult.Content, "denied by authority") || !strings.Contains(message.ToolResult.Content, "Cedar") {
+			t.Fatalf("Cedar symlinked vendor result = %+v, want a distinct authority denial", message.ToolResult)
+		}
+		return
+	}
+	t.Fatal("missing Read result")
+}
+
 func TestADR_0228_AuthorityEvaluator_OwnerlessCompositionUsesLocalEvaluator(t *testing.T) {
 	workspace := t.TempDir()
 	if err := os.WriteFile(filepath.Join(workspace, "README.md"), []byte("ownerless readable\n"), 0o600); err != nil {

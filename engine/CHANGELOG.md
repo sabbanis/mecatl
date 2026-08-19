@@ -13,6 +13,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Physical authority resource identity (ADR 0228)** — `tool.AuthorityResourceResolver` is an optional Workspace extension that derives a physical, workspace-confined local resource identity for authority evaluation. New identifier: Added (minor).
+
 - **Optional authority-owner requirement (ADR 0228)** — `port.AuthorityOwnerRequirement` lets an authority evaluator explicitly require a verified owner identity while preserving ownerless operation for evaluators that do not need one. Added (minor).
 
 - **Delegation authority tightening (ADR 0228)** — `agent.DelegationTightening` and the additive `AgentMeta` authority-ceiling fields let composition supply an explicit specialist ceiling and callers request only narrower child authority. Added (minor).

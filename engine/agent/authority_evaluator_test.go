@@ -299,7 +299,7 @@ func TestADR_0228_AuthorityEvaluator_Scenario7_ResourceAttributeIsDerivedWithout
 		write := &authorityTool{name: "Write"}
 		evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Allowed: true}}
 		eng := newEngine(agent.Deps{
-			LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("write", "Write", `{"path":"./docs/../README.md","content":"credential=must-not-leak"}`))),
+			LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("write", "Write", `{"path":"./README.md","content":"credential=must-not-leak"}`))),
 			Catalog:            catalogWith(t, write),
 			AuthorityEvaluator: evaluator,
 		})
