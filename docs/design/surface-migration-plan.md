@@ -422,6 +422,16 @@ register the overlay:
 - ANY change to the approval surface (this phase is soul-only).
 - The stale "ADR 0108" citation (docs cleanup flagged, not done).
 
+**Phase-3 note (placement primitive):** lipgloss/v2's `Compositor`/`Layer`
+(`charm.land/lipgloss/v2`) is the natural placement + z-aware mouse-routing
+primitive for the tiling/focus phase: the parent builds a `Canvas` of layers
+(`X`/`Y`/`Z`), the compositor renders them stacked and answers "which layer at
+(x,y)" for hit-test. The `surface` interface is placement-agnostic — surfaces
+size, parents place — so swapping the parent's placement policy from
+`centerCard` (Phase 2, centered one-at-a-time) to a compositor (Phase 3, tiled
++ stacked) is a `view.go`-only change; the interface and surface regions
+(frame-relative) are already compositor-ready.
+
 ## 8. Acceptance checklist (a new surface touches ONE file + ONE registration point)
 
 For a surface to be done; soul is the proof:
