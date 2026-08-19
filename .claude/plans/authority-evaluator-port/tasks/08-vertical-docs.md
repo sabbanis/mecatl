@@ -2,12 +2,12 @@
 id: 08-vertical-docs
 title: Prove the vertical slices and document the authority design
 blocked_by: [05-delegation-derivation, 07-cedar-adapter]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/08-vertical-docs"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: ""
+last_error: "aggregate blockers: task test fails baseline macOS /var symlink and skills lifecycle tests; task docs cannot fetch matlatl"
 accumulator: acc/authority-evaluator-port
 ---
 
