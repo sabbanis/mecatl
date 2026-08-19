@@ -1,5 +1,6 @@
 import {
   Bell,
+  Bot,
   Brain,
   Network,
   Palette,
@@ -46,6 +47,11 @@ export const SETTINGS_GROUPS: Array<{
   {
     label: "Agent runtime",
     items: [
+      {
+        href: "/workspace/settings/agent",
+        label: "Agent",
+        icon: Bot,
+      },
       {
         href: "/workspace/settings/memory",
         label: "Memory",

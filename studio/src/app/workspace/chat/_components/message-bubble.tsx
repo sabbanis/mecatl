@@ -25,7 +25,7 @@ import {
 } from "@/components/ui/tooltip";
 import type { AgentMessage, Artifact, Attachment } from "@/features/agent";
 import { formatMessageTime } from "@/lib/formatters";
-import { useUserAvatar } from "@/lib/profile-preferences";
+import { useAgentAvatar, useUserAvatar } from "@/lib/profile-preferences";
 import { cn } from "@/lib/utils";
 import { mdComponents } from "./markdown-components";
 import { ToolCallList } from "./tool-call-list";
@@ -50,6 +50,17 @@ function UserAvatar() {
 }
 
 export function BotAvatar() {
+  const { avatarUrl } = useAgentAvatar();
+  if (avatarUrl) {
+    return (
+      // biome-ignore lint/performance/noImgElement: a locally stored data URL, not a remote image
+      <img
+        src={avatarUrl}
+        alt=""
+        className="size-7 lg:size-9 shrink-0 rounded-full object-cover"
+      />
+    );
+  }
   return (
     <div className="flex size-7 lg:size-9 shrink-0 items-center justify-center rounded-full bg-brand text-white">
       <Bot className="size-4 lg:size-5" />
