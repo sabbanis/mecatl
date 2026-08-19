@@ -50,7 +50,7 @@ export function TopNav() {
             stay up here. */}
         <nav
           aria-label={nav.navLabel}
-          className="flex min-w-0 items-center overflow-x-auto max-[499px]:hidden"
+          className="flex min-w-0 items-center gap-1 overflow-x-auto max-[499px]:hidden"
         >
           {nav.items.map((item) => {
             const active =

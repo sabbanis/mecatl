@@ -69,7 +69,8 @@ export function CreateScheduleDialog({
       <DialogTrigger asChild>
         <Button size="sm" variant="action" className="rounded-full">
           <Plus className="size-4" />
-          New scheduled task
+          <span className="max-[499px]:hidden">New scheduled task</span>
+          <span className="min-[500px]:hidden">New</span>
         </Button>
       </DialogTrigger>
       <DialogContent className="max-h-[90vh] overflow-y-auto sm:max-w-lg">
