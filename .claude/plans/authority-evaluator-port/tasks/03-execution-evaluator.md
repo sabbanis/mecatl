@@ -2,7 +2,7 @@
 id: 03-execution-evaluator
 title: Enforce authority once at the execution chokepoint
 blocked_by: [01-authority-domain, 02-session-persistence]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
