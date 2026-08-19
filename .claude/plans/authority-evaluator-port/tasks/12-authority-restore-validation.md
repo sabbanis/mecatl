@@ -2,7 +2,7 @@
 id: 12-authority-restore-validation
 title: Fail closed on incomplete persisted authority
 blocked_by: [11-vertical-repair]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
