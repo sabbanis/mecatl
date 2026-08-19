@@ -2,12 +2,12 @@
 id: 09-mcp-resource-authority
 title: Separate MCP resource capability from operation action
 blocked_by: [08-vertical-docs]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/09-mcp-resource-authority"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: "repair-wave-1: review findings 1, 2, and 5"
+last_error: "task test baseline macOS /var symlink failures; task docs requires GOPRIVATE"
 accumulator: acc/authority-evaluator-port
 ---
 
