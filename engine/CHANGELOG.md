@@ -13,66 +13,7 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
-- **Engine-child lifecycle exclusion** ([ADR 0027](../docs/adr/0027-cloud-native.md)) —
-  `port.SessionLiveness`, `agent.Deps.SessionLiveness`, and
-  `agent.WithMemberLiveness` let a host protect engine-owned Subagent, Parallel,
-  and Team session lifecycles (including direct `RunTeam` supervisors) from destructive
-  maintenance. Composition now backs that inward port with the configured
-  `port.SessionLease`, so queued, running, between-round, and synthesis children hold
-  distributed exclusion until teardown. Added (minor); the final `Register` contract
-  change is classified below.
-
-- **Context-bound session-migration ownership** ([ADR 0230](../docs/adr/0230-redis-migration-atomic-ownership-and-coverage.md)) —
-  `port.SessionMigrationStore.AcquireSessionMigrationJob` binds the exact
-  ownership-checking acquisition to a context required by mutations and durable
-  checkpoints. Redis renews and atomically fences that acquisition; jsonlstore
-  binds its stable flock through the same coherent port contract. Added (minor).
-- **Resumable session-storage migration** (issue #589, [ADR 0226](../docs/adr/0226-session-storage-maintenance.md)) —
-  `port.SessionMigrationStore` and its plan/family/job value objects define an
-  optional server-side v1-to-v2 physical-maintenance capability with durable bounded
-  progress, sanitized item errors, and a stable job-scoped cross-process exclusion
-  around each mutating load-to-checkpoint sequence, without widening `SessionStore`.
-  Added (minor).
-- **Retention byte estimates and atomic cleanup** (issue #590, [ADR 0226](../docs/adr/0226-session-storage-maintenance.md)) —
-  `port.SessionDiscoveryMeta.EstimatedBytes` lets indexed adapters project a
-  content-free deletion estimate to the shared cleanup planner. The optional
-  `port.ConditionalPrunableStore` and `SessionDiscoveryMetaEqual` keep durable
-  metadata revalidation under the backend family exclusion through deletion.
-  The field addition is classified Changed below for unkeyed external literals.
-  The reference `memstore.WithDeleteFailure` option scripts deterministic offline
-  maintenance failures for conformance tests. Added (minor).
-
-- **Bounded session-storage health** (issue #592, [ADR 0226](../docs/adr/0226-session-storage-maintenance.md)) —
-  `port.SessionStorageHealth`, `SessionStorageHealthProvider`, and explicit
-  availability fields let optional backends expose content-free indexed aggregate
-  status without widening `SessionStore` or fabricating zero values. Added (minor).
-- **Legacy-session adoption audit labels** (issue #593, [ADR 0226](../docs/adr/0226-session-storage-maintenance.md)) —
-  optional `session.Session.Adoption` metadata persists the source relationship and
-  caller/source/request-bound retry proof on explicitly adopted main sessions.
-  Existing sessions leave the pointer nil. `session.AdoptionMetadata` and its
-  nil-preserving `Clone` method are Added (minor); replacing the two inline Session
-  fields with the pointer is classified Changed below.
-
-- **Generation-bound session metadata continuation** (issue #587, [ADR 0226](../docs/adr/0226-session-storage-maintenance.md)) —
-  `port.ErrSessionMetadataCursorRestart` makes stale/filter-mismatched continuation
-  explicit, and `PaginateSessionMetadataBound(rows, request, generation string)`
-  gives scan-based adapters the same generation and ownership-scope contract as
-  indexed stores. The caller supplies its own cheap monotonic generation signal
-  (e.g. a counter bumped on mutation) rather than the helper deriving one by
-  JSON-encoding and SHA-256-hashing the full filtered row set on every call — a
-  large constant-factor cost removed from every page after the first on
-  memstore, the one adapter that used this helper (the row copy/sort itself
-  stays O(rows) per call either way, so this is not an asymptotic change).
-  Added (minor).
-
-- **Shared session-metadata ordering and owner-scope hashing** ([ADR 0226](../docs/adr/0226-session-storage-maintenance.md)) —
-  `port.CompareSessionMetadataOrder` is the one comparator for the pagination
-  ordering (`ModifiedAt` DESC, `ID` ASC) that `port`, jsonlstore, and redisstore
-  already had to agree on independently; `session.PrincipalScopeHash` is the raw
-  `sha256(Issuer + "\x00" + Subject)` primitive `port`, jsonlstore, and redisstore
-  build their own prefixed/truncated owner scope keys on top of. Both are
-  extractions of pre-existing, unchanged behavior — no on-disk or wire format
-  changed. Added (minor).
+- **Authority evaluator port (ADR 0228)** — `governance.CapabilitySet` provides pure monotone narrowing and delegation-hop consumption, while `port.AuthorityEvaluator` carries a provider-neutral authority request and decision contract. The noop and local set-check reference adapters are available for explicit composition choices. New identifiers are Added (minor).
 
 - **Validated automatic learned-skill activation ([ADR 0224](../docs/adr/0224-validated-automatic-skill-activation.md))** —
   `learning.SkillActivationPolicy` adds the closed validated/evaluated assurance vocabulary and
