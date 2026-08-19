@@ -345,7 +345,7 @@ export function MessageBubble({
           </div>
         )}
         {hasContent && (
-          <div className="text-sm lg:text-[15px] mt-0.5 leading-relaxed text-foreground/80">
+          <div className="text-sm lg:text-[15px] mt-0.5 leading-[1.75] text-foreground/80">
             {isUser ? (
               <div className="whitespace-pre-wrap">{message.content}</div>
             ) : (

@@ -44,15 +44,15 @@ import type {
   ClarificationRequest,
 } from "@/features/agent";
 import { useIsMobile } from "@/hooks/use-mobile";
+import { formatTokens } from "@/lib/formatters";
 import type { SessionListSide } from "@/lib/profile-preferences";
 import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
 import { ClarificationPanel } from "./clarification-panel";
-import { ContextWindowIndicator } from "./context-window-indicator";
 import { FilePreview } from "./file-preview";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
-import { BotAvatar, MessageBubble } from "./message-bubble";
+import { MessageBubble } from "./message-bubble";
 import { SidePanel } from "./side-panel";
 
 /** The single right-hand panel: exactly one kind is open at a time, or none. */
@@ -61,16 +61,88 @@ type ActivePanel =
   | { kind: "attachment"; attachment: Attachment }
   | { kind: "thread"; message: AgentMessage };
 
+/**
+ * Bottom-of-transcript activity line while a turn is running: three
+ * staggered pulsing dots, a phase label derived from the streaming
+ * assistant message (thinking / running tools / writing), and elapsed time.
+ */
+function StreamingIndicator({ message }: { message?: AgentMessage }) {
+  const [elapsed, setElapsed] = useState(0);
+  const startedAt = message?.timestamp;
+  useEffect(() => {
+    if (!startedAt) return;
+    const tick = () =>
+      setElapsed(Math.max(0, Math.round((Date.now() - startedAt) / 1000)));
+    tick();
+    const timer = setInterval(tick, 1000);
+    return () => clearInterval(timer);
+  }, [startedAt]);
+
+  const runningTool = message?.toolCalls?.some(
+    (call) => call.status === "running",
+  );
+  const phase = runningTool
+    ? "Running tools"
+    : message?.content
+      ? "Writing"
+      : "Thinking";
+  const time =
+    elapsed >= 60
+      ? `${Math.floor(elapsed / 60)}m ${elapsed % 60}s`
+      : `${elapsed}s`;
+
+  return (
+    <div className="flex items-center gap-3 px-3 py-2">
+      <span className="flex items-center gap-1" aria-hidden="true">
+        {[0, 1, 2].map((i) => (
+          <span
+            key={i}
+            className="size-1.5 animate-bounce rounded-full bg-brand [animation-duration:1s]"
+            style={{ animationDelay: `${i * 160}ms` }}
+          />
+        ))}
+      </span>
+      <span className="text-sm text-muted-foreground">
+        {phase}
+        <span className="mx-1.5 text-muted-foreground/50">·</span>
+        <span className="tabular-nums text-muted-foreground/70">{time}</span>
+      </span>
+    </div>
+  );
+}
+
+/** Token counts as a read-only info row inside the chat context menus. */
+function UsageMenuRow({
+  usage,
+}: {
+  usage?: { inputTokens: number; outputTokens: number } | null;
+}) {
+  if (!usage || usage.inputTokens + usage.outputTokens <= 0) return null;
+  return (
+    <div className="px-3 py-2">
+      <p className="text-xs font-medium text-muted-foreground">Token usage</p>
+      <p className="mt-1 text-sm tabular-nums">
+        {formatTokens(usage.inputTokens)} input
+      </p>
+      <p className="text-sm tabular-nums">
+        {formatTokens(usage.outputTokens)} output
+      </p>
+    </div>
+  );
+}
+
 function MobileChatMenu({
   showActivity,
   onToggleActivity,
   onRename,
   onDelete,
+  usage,
 }: {
   showActivity: boolean;
   onToggleActivity: () => void;
   onRename?: () => void;
   onDelete?: () => void;
+  usage?: { inputTokens: number; outputTokens: number } | null;
 }) {
   const [open, setOpen] = useState(false);
 
@@ -88,6 +160,7 @@ function MobileChatMenu({
         <SheetContent side="bottom" className="p-0">
           <SheetTitle className="sr-only">Chat options</SheetTitle>
           <div className="py-2">
+            <UsageMenuRow usage={usage} />
             <button
               type="button"
               onClick={() => {
@@ -525,12 +598,6 @@ export function ChatView({
           >
             {session.title || "Untitled"}
           </h2>
-          {live && usage && (
-            /* Token usage as the daemon reported it; hidden until any lands. */
-            <div className="hidden sm:block shrink-0">
-              <ContextWindowIndicator usage={usage} />
-            </div>
-          )}
           {sidebarSide === "right" && sidebarToggle}
           {!isMobile && (
             <DropdownMenu>
@@ -544,6 +611,14 @@ export function ChatView({
                 </Button>
               </DropdownMenuTrigger>
               <DropdownMenuContent align="end" className="w-52">
+                {/* Token usage as the daemon reported it (was a header pill;
+                    it lives in the menu now). Hidden until any lands. */}
+                {live && usage && (
+                  <>
+                    <UsageMenuRow usage={usage} />
+                    <DropdownMenuSeparator />
+                  </>
+                )}
                 <DropdownMenuItem onClick={() => setShowActivity((v) => !v)}>
                   <Wrench className="size-4 mr-2 text-muted-foreground" />
                   {showActivity ? "Hide Tools" : "Show Tools"}
@@ -572,6 +647,7 @@ export function ChatView({
               onToggleActivity={() => setShowActivity((v) => !v)}
               onRename={onRename}
               onDelete={onDelete}
+              usage={live ? usage : null}
             />
           )}
         </div>
@@ -615,20 +691,15 @@ export function ChatView({
                   onRespond={onRespondApproval}
                 />
               )}
-              {isStreaming &&
-                messages[messages.length - 1]?.role !== "assistant" && (
-                  <div className="flex gap-3 px-3 py-1.5 -mx-3">
-                    <div className="pt-0.5">
-                      <BotAvatar />
-                    </div>
-                    <div className="flex items-center gap-2 pt-2">
-                      <Loader2 className="size-4 animate-spin text-muted-foreground" />
-                      <span className="text-sm text-muted-foreground">
-                        Thinking...
-                      </span>
-                    </div>
-                  </div>
-                )}
+              {isStreaming && (
+                <StreamingIndicator
+                  message={
+                    messages[messages.length - 1]?.role === "assistant"
+                      ? messages[messages.length - 1]
+                      : undefined
+                  }
+                />
+              )}
               <div ref={messagesEndRef} />
             </div>
           </div>

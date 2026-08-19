@@ -38,7 +38,6 @@ import {
   getAgentMentions,
   getSlashCommands,
 } from "@/features/agent/composer-capabilities";
-import { useIsMobile } from "@/hooks/use-mobile";
 import { usePrompt } from "@/hooks/use-prompt";
 import { cn } from "@/lib/utils";
 import {
@@ -1059,7 +1058,7 @@ export function ChatInput({
           input box's bottom edge, sharing a single visible line. */}
       <div
         className={cn(
-          "relative rounded-2xl border bg-background transition-colors focus-within:border-zinc-500 dark:focus-within:border-zinc-400",
+          "relative rounded-2xl border bg-background transition-colors focus-within:border-zinc-400 dark:focus-within:border-zinc-600",
           // Docked mobile composer: full-bleed, only the top hairline
           // separates it from the conversation above; it owns the
           // home-indicator safe area now that it touches the screen edge.
