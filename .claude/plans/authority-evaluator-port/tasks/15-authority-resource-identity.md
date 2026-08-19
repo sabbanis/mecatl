@@ -2,12 +2,12 @@
 id: 15-authority-resource-identity
 title: Bind Cedar file resources to physical workspace identity
 blocked_by: [11-vertical-repair]
-status: pending
-branch: ""
+status: done
+branch: plan-authority-evaluator-port/15-authority-resource-identity
 worktree: ""
 issue: "371"
 retries: 0
-last_error: "panel blocker: lexical path descriptor permits symlink policy bypass"
+last_error: ""
 accumulator: acc/authority-evaluator-port
 ---
 
