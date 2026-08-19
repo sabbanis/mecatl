@@ -2,12 +2,12 @@
 id: 01-authority-domain
 title: Pure authority value and neutral evaluator port
 blocked_by: []
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/01-authority-domain"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: ""
+last_error: "task test baseline blocker: cmd/mecatui learning-settings tests reject macOS /var symlink"
 accumulator: acc/authority-evaluator-port
 ---
 
