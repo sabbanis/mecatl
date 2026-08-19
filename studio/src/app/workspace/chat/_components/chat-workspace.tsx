@@ -272,6 +272,12 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // Selection is URL-driven; the state mirror keeps it in sync while also
   // allowing an optimistic update before the client navigation settles.
   const [selectedId, setSelectedIdState] = useState(sessionId ?? "");
+  // Mirror for effects that must read the current selection without
+  // re-firing on every selection change.
+  const selectedIdRef = useRef(selectedId);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
   // The id minted for a draft on first send. While the URL settles on that id
   // the chat hook keeps its draft binding (it already owns the live stream);
   // re-keying it would wipe the in-flight messages with a transcript refetch.
@@ -281,16 +287,28 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     if (sessionId !== draftMintedIdRef.current) draftMintedIdRef.current = null;
   }, [sessionId]);
 
-  /** Select a chat: optimistic state + a route push so the URL leads. */
-  const selectId = useCallback(
-    (id: string) => {
-      setSelectedIdState(id);
-      router.push(chatHref(id));
-    },
-    [router],
-  );
+  /**
+   * Select a chat: optimistic state + a native history push. Deliberately not
+   * router.push — moving the optional catch-all between zero and one segments
+   * changes the route shape, which remounts this page; the remount re-runs
+   * the pre-measurement useState inits (sidebarOpen assumes desktop until the
+   * viewport is measured), so on a phone the list rendered straight over the
+   * chat that was just tapped. The App Router syncs its state from native
+   * history updates without remounting.
+   */
+  const selectId = useCallback((id: string) => {
+    setSelectedIdState(id);
+    window.history.pushState(null, "", chatHref(id));
+  }, []);
 
   const [sidebarOpen, setSidebarOpen] = useState(!isMobile && !isCompact);
+  // The init above runs before the viewport is measured (useIsMobile is
+  // undefined on the first render), so a phone mounts with the list open even
+  // over a deep-linked chat. Once mobile is a measured fact, the selection
+  // wins; a list the user opens later is untouched.
+  useEffect(() => {
+    if (isMobile && selectedIdRef.current) setSidebarOpen(false);
+  }, [isMobile]);
   const wasCompactRef = useRef(isCompact);
   // Mirrors `sidebarOpen` for reads inside the stable side-panel handler.
   const sidebarOpenRef = useRef(sidebarOpen);

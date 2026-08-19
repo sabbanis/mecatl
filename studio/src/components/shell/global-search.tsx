@@ -88,14 +88,14 @@ export function GlobalSearch() {
         className={cn(
           "flex h-9 items-center gap-2 rounded-md border border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring",
           // Icon-only on narrow screens; a full search field from `sm` up.
-          "size-9 justify-center px-0 sm:w-64 sm:justify-start sm:px-3",
+          "size-9 justify-center px-0 min-[500px]:w-64 min-[500px]:justify-start min-[500px]:px-3",
         )}
       >
         <Search className="size-4 shrink-0" />
-        <span className="hidden flex-1 text-left text-sm sm:inline">
+        <span className="hidden flex-1 text-left text-sm min-[500px]:inline">
           Search…
         </span>
-        <kbd className="pointer-events-none hidden select-none items-center gap-0.5 rounded border border-border bg-muted px-1.5 font-mono text-[0.65rem] font-medium text-muted-foreground sm:inline-flex">
+        <kbd className="pointer-events-none hidden select-none items-center gap-0.5 rounded border border-border bg-muted px-1.5 font-mono text-[0.65rem] font-medium text-muted-foreground min-[500px]:inline-flex">
           <span className="text-xs">⌘</span>K
         </kbd>
       </button>
@@ -106,13 +106,17 @@ export function GlobalSearch() {
         title="Global search"
         description="Search chats, memory, skills, connectors, and more"
         shouldFilter={false}
+        // Below the mobile breakpoint the palette takes the whole screen:
+        // the on-screen keyboard eats half the viewport, so a floating
+        // dialog leaves no room for results.
+        className="max-[499px]:inset-0 max-[499px]:top-0 max-[499px]:left-0 max-[499px]:h-dvh max-[499px]:max-h-none max-[499px]:w-full max-[499px]:max-w-none max-[499px]:translate-x-0 max-[499px]:translate-y-0 max-[499px]:rounded-none max-[499px]:border-0 max-[499px]:[&>[data-slot=command]]:h-full"
       >
         <CommandInput
           placeholder="Search chats, memory, skills, connectors…"
           value={query}
           onValueChange={setQuery}
         />
-        <CommandList>
+        <CommandList className="max-[499px]:max-h-none max-[499px]:flex-1">
           <CommandEmpty>No results found.</CommandEmpty>
           {ALL_GROUPS.map(({ category, heading }) => {
             const hits = byCategory.get(category);

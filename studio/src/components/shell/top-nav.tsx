@@ -32,7 +32,7 @@ export function TopNav() {
   const nav = buildUserNav();
 
   return (
-    <header className="flex h-16 shrink-0 items-center justify-between gap-3 px-5">
+    <header className="flex h-16 shrink-0 items-center justify-between gap-3 px-2.5 min-[500px]:px-5">
       <Link
         href={nav.logoHref ?? nav.homeHref}
         aria-label="Stacklok — go to Chats"
@@ -44,7 +44,7 @@ export function TopNav() {
         />
       </Link>
 
-      <div className="flex min-w-0 items-center gap-3 sm:gap-5">
+      <div className="flex min-w-0 items-center gap-3 min-[500px]:gap-5">
         <nav
           aria-label={nav.navLabel}
           className="flex min-w-0 items-center overflow-x-auto"
@@ -60,11 +60,15 @@ export function TopNav() {
                   key={item.key}
                   href={item.href}
                   aria-current="page"
-                  className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full bg-[#cadfd8] px-0 text-[13px] font-semibold text-[#03433e] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 max-sm:w-12 sm:px-4"
+                  className="flex h-9 shrink-0 items-center justify-center gap-1.5 rounded-full bg-[#cadfd8] px-0 text-[13px] font-semibold text-[#03433e] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-white/60 max-[499px]:w-12 min-[500px]:px-4"
                 >
                   <Icon className="size-[17px] shrink-0" />
-                  <span className="hidden sm:inline">{item.label}</span>
-                  <span className="sr-only sm:hidden">{item.label}</span>
+                  <span className="hidden min-[500px]:inline">
+                    {item.label}
+                  </span>
+                  <span className="sr-only min-[500px]:hidden">
+                    {item.label}
+                  </span>
                 </Link>
               );
             }
@@ -90,7 +94,7 @@ export function TopNav() {
             styled for a light surface, so restyle the trigger (and its kbd
             chip) from outside for the dark gradient band. Below `sm` the
             trigger already collapses to an icon-only button. */}
-        <div className="shrink-0 [&_kbd]:rounded-full [&_kbd]:border-transparent [&_kbd]:bg-[#3f605a] [&_kbd]:text-[#a5b8b4] [&>button]:rounded-full [&>button]:border-[#6e807d] [&>button]:bg-transparent [&>button]:text-[#b4c0c1] [&>button]:hover:bg-white/10 [&>button]:hover:text-white [&>button]:focus-visible:ring-white/60 [&>button]:sm:w-[214px]">
+        <div className="shrink-0 [&_kbd]:rounded-full [&_kbd]:border-transparent [&_kbd]:bg-[#3f605a] [&_kbd]:text-[#a5b8b4] [&>button]:rounded-full [&>button]:border-[#6e807d] [&>button]:bg-transparent [&>button]:text-[#b4c0c1] [&>button]:hover:bg-white/10 [&>button]:hover:text-white [&>button]:focus-visible:ring-white/60 [&>button]:min-[500px]:w-[214px]">
           <GlobalSearch />
         </div>
       </div>

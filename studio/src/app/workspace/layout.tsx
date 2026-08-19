@@ -29,7 +29,7 @@ export default function WorkspaceLayout({
               — notably the hidden form-integration checkbox Radix renders
               beside each Switch inside a <form>. Without it those boxes
               resolve to the document and grow the page itself. */}
-          <main className="relative mx-5 mb-5 min-h-0 flex-1 overflow-hidden rounded-[20px] bg-background text-foreground">
+          <main className="relative mx-2.5 mb-2.5 min-h-0 flex-1 overflow-hidden rounded-[20px] bg-background text-foreground min-[500px]:mx-5 min-[500px]:mb-5">
             {children}
           </main>
         </div>
