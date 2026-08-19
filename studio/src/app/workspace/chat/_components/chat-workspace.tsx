@@ -380,6 +380,11 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     pendingClarification,
     respondToClarification,
     usage,
+    queuedMessages,
+    queueMessage,
+    deleteQueued,
+    takeQueued,
+    steerQueued,
   } = useAgentChat(hookSessionId, { onSessionCreated: handleSessionCreated });
 
   useNavReopenSidebar(setSidebarOpen);
@@ -539,6 +544,11 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         error={turnError}
         onRetry={retryLast}
         onSend={sendMessage}
+        queuedMessages={queuedMessages}
+        onQueueMessage={queueMessage}
+        onSteerQueued={steerQueued}
+        onDeleteQueued={deleteQueued}
+        onTakeQueued={takeQueued}
         botName={agentName}
         sidebarOpen={open}
         sidebarSide={sidebarSide}

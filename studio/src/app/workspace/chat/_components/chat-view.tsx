@@ -5,8 +5,10 @@ import {
   ArrowDown,
   ArrowLeft,
   CirclePlus,
+  CornerDownRight,
   Ellipsis,
   FileText,
+  ListEnd,
   Loader2,
   MessageCircle,
   MessageSquareText,
@@ -42,6 +44,7 @@ import type {
   Attachment,
   ClarificationRequest,
 } from "@/features/agent";
+import type { QueuedMessage } from "@/features/agent/hooks/use-agent-chat";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { formatTokens } from "@/lib/formatters";
 import type { SessionListSide } from "@/lib/profile-preferences";
@@ -126,6 +129,71 @@ function UsageMenuRow({
       <p className="text-sm tabular-nums">
         {formatTokens(usage.outputTokens)} output
       </p>
+    </div>
+  );
+}
+
+/**
+ * Messages held while a run is active, shown above the composer. Each row
+ * offers Steer (interrupt the run and send now), Edit (back into the
+ * composer), and Delete. They drain in order as runs complete.
+ */
+function QueuedMessageStrip({
+  queued,
+  onSteer,
+  onEdit,
+  onDelete,
+}: {
+  queued: QueuedMessage[];
+  onSteer: (id: string) => void;
+  onEdit: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  if (queued.length === 0) return null;
+  return (
+    <div className="space-y-1.5 max-[499px]:px-3">
+      {queued.map((message) => (
+        <div
+          key={message.id}
+          className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 py-1 pr-1 pl-3"
+        >
+          <ListEnd className="size-4 shrink-0 text-muted-foreground" />
+          <span
+            className="min-w-0 flex-1 truncate text-sm"
+            title={message.text}
+          >
+            {message.text}
+          </span>
+          <Button
+            variant="ghost"
+            size="sm"
+            className="h-7 shrink-0 gap-1 px-2 text-muted-foreground hover:text-foreground"
+            onClick={() => onSteer(message.id)}
+            title="Interrupt the current response and send now"
+          >
+            <CornerDownRight className="size-3.5" />
+            Steer
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0 text-muted-foreground"
+            aria-label="Edit queued message"
+            onClick={() => onEdit(message.id)}
+          >
+            <Pencil className="size-3.5" />
+          </Button>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-7 shrink-0 text-muted-foreground"
+            aria-label="Delete queued message"
+            onClick={() => onDelete(message.id)}
+          >
+            <Trash2 className="size-3.5" />
+          </Button>
+        </div>
+      ))}
     </div>
   );
 }
@@ -445,6 +513,11 @@ export function ChatView({
   onSidePanelOpenChange,
   initialDraft,
   onInitialDraftConsumed,
+  queuedMessages = [],
+  onQueueMessage,
+  onSteerQueued,
+  onDeleteQueued,
+  onTakeQueued,
 }: {
   session: AgentSession;
   messages: AgentMessage[];
@@ -473,6 +546,13 @@ export function ChatView({
       chip that seeds the message without sending it). */
   initialDraft?: string | null;
   onInitialDraftConsumed?: () => void;
+  /** Messages held while a run is active (see QueuedMessageStrip). */
+  queuedMessages?: QueuedMessage[];
+  onQueueMessage?: (text: string) => void;
+  onSteerQueued?: (id: string) => void;
+  onDeleteQueued?: (id: string) => void;
+  /** Removes a queued message and returns its text (the Edit action). */
+  onTakeQueued?: (id: string) => string | null;
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Whether the transcript is scrolled to (near) the bottom; when it isn't,
@@ -487,6 +567,12 @@ export function ChatView({
   // time" structural rather than something to coordinate by hand.
   const [panel, setPanel] = useState<ActivePanel | null>(null);
   const [appendText, setAppendText] = useState<string | null>(null);
+  // Editing a queued message pulls it out of the queue into the composer.
+  const [editSeed, setEditSeed] = useState<string | null>(null);
+  const handleEditQueued = (id: string) => {
+    const text = onTakeQueued?.(id);
+    if (text) setEditSeed(text);
+  };
   // When maximized, the panel fills the pane and the conversation column is
   // hidden. Always reset when the panel is closed.
   const [panelMaximized, setPanelMaximized] = useState(false);
@@ -709,6 +795,12 @@ export function ChatView({
               </div>
             )}
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
+              <QueuedMessageStrip
+                queued={queuedMessages}
+                onSteer={(id) => onSteerQueued?.(id)}
+                onEdit={handleEditQueued}
+                onDelete={(id) => onDeleteQueued?.(id)}
+              />
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
                   <AlertCircle className="size-4 shrink-0 text-destructive" />
@@ -736,7 +828,7 @@ export function ChatView({
               ) : (
                 <ChatInput
                   onSend={onSend}
-                  onQueue={onSend}
+                  onQueue={onQueueMessage}
                   focusKey={session.id}
                   mobileDocked
                   modelLockedLabel={live ? "Auto-routed" : undefined}
@@ -745,8 +837,11 @@ export function ChatView({
                   disabled={!!pendingApproval}
                   appendText={appendText}
                   onAppendConsumed={handleAppendConsumed}
-                  initialText={initialDraft}
-                  onInitialTextConsumed={onInitialDraftConsumed}
+                  initialText={editSeed ?? initialDraft}
+                  onInitialTextConsumed={() => {
+                    if (editSeed !== null) setEditSeed(null);
+                    else onInitialDraftConsumed?.();
+                  }}
                   placeholder={
                     isStreaming ? "Queue a message..." : "Send a message..."
                   }

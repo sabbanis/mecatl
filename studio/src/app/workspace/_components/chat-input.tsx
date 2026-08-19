@@ -775,10 +775,9 @@ export function ChatInput({
 }: ChatInputProps) {
   const placeholder = placeholderProp ?? DEFAULT_PLACEHOLDER;
   // Plain-text mirror of the editor, kept in sync via onUpdate. Used only for
-  // "is there something to send" checks and the queued/streaming border state;
+  // "is there something to send" checks and the streaming border state;
   // the editor document is the source of truth for the message itself.
   const [text, setText] = useState("");
-  const [queued, setQueued] = useState(false);
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
   const [isWindowDrag, setIsWindowDrag] = useState(false);
@@ -872,10 +871,6 @@ export function ChatInput({
   }, [editor, disabled]);
 
   useEffect(() => {
-    if (!isStreaming) setQueued(false);
-  }, [isStreaming]);
-
-  useEffect(() => {
     if (appendText && editor) {
       const raw = editor.getText({ blockSeparator: "\n" });
       const sep = raw && !raw.endsWith("\n") ? "\n" : "";
@@ -938,7 +933,6 @@ export function ChatInput({
     if (!trimmed || disabled) return;
     if (isStreaming && onQueue) {
       onQueue(trimmed);
-      setQueued(true);
       editor?.commands.clearContent();
       setText("");
       return;
@@ -947,7 +941,6 @@ export function ChatInput({
     editor?.commands.clearContent();
     setText("");
     setAttachedFiles([]);
-    setQueued(false);
   }, [editor, disabled, isStreaming, onQueue, onSend, attachedFiles]);
 
   // Menu nav + Enter-to-send are wired with a native capture-phase keydown
@@ -1076,7 +1069,7 @@ export function ChatInput({
             ? "border-brand bg-brand/5 dark:bg-brand/10 ring-2 ring-brand/20"
             : isWindowDrag
               ? "border-brand/50 ring-1 ring-brand/10"
-              : queued || (isStreaming && hasText)
+              : isStreaming && hasText
                 ? "border-warning shadow-warning/10"
                 : "border-zinc-300 dark:border-zinc-700",
         )}
@@ -1086,14 +1079,6 @@ export function ChatInput({
             <span className="size-2 rounded-full bg-brand animate-pulse" />
             <span className="text-xs font-medium text-brand dark:text-brand">
               Listening
-            </span>
-          </div>
-        )}
-        {queued && (
-          <div className="flex items-center gap-2 px-4 pt-3 pb-1">
-            <span className="size-2 rounded-full bg-warning" />
-            <span className="text-xs font-medium text-warning">
-              Message queued — will send when agent finishes
             </span>
           </div>
         )}

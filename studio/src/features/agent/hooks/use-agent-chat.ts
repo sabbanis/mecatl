@@ -28,6 +28,11 @@ type ChatStatus =
   | "error";
 
 /** Rebuilds the message list from the daemon's authoritative transcript. */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+}
+
 /** Formats every vision provider accepts; anything else gets re-encoded. */
 const WIRE_IMAGE_TYPES = new Set([
   "image/png",
@@ -485,11 +490,81 @@ export function useAgentChat(
     await sendMessage(prompt);
   }, [sendMessage, status]);
 
+  /** A message typed while a run was active, held client-side: the daemon is
+   *  strictly one-run-at-a-time (a mid-run prompt answers 412), so the queue
+   *  lives here and drains one message per completed run. */
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const flushingRef = useRef(false);
+
+  const queueMessage = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setQueuedMessages((prev) => [
+      ...prev,
+      { id: `queued-${Date.now()}-${prev.length}`, text: trimmed },
+    ]);
+  }, []);
+
+  const deleteQueued = useCallback((id: string) => {
+    setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+  }, []);
+
+  /** Removes the message from the queue and returns its text (for editing). */
+  const takeQueued = useCallback(
+    (id: string) => {
+      const hit = queuedMessages.find((m) => m.id === id);
+      if (hit) setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+      return hit?.text ?? null;
+    },
+    [queuedMessages],
+  );
+
   const cancelChat = useCallback(async () => {
     abortRef.current?.abort();
     if (daemonIdRef.current) await cancelHarnessRun(daemonIdRef.current);
     setStatus("idle");
   }, []);
+
+  /** "Send now": interrupt the in-flight run and let this message continue
+   *  the conversation from the partial progress. The daemon has no mid-run
+   *  injection — steer is cancel → recover-at-run-entry → prompt. */
+  const steerQueued = useCallback(
+    (id: string) => {
+      if (status === "streaming" || status === "waiting_approval") {
+        setQueuedMessages((prev) => {
+          const hit = prev.find((m) => m.id === id);
+          if (!hit) return prev;
+          return [hit, ...prev.filter((m) => m.id !== id)];
+        });
+        void cancelChat();
+        return;
+      }
+      const text = takeQueued(id);
+      if (text) void sendMessage(text);
+    },
+    [status, cancelChat, takeQueued, sendMessage],
+  );
+
+  // Drain the queue one message per completed run. Only a clean idle flushes:
+  // an error waits for the user (retry/edit), a parked approval waits for the
+  // verdict. flushingRef bridges the async gap before sendMessage flips the
+  // status, so a re-render can't double-send.
+  useEffect(() => {
+    if (
+      status !== "idle" ||
+      !connected ||
+      queuedMessages.length === 0 ||
+      flushingRef.current
+    ) {
+      return;
+    }
+    flushingRef.current = true;
+    const next = queuedMessages[0];
+    setQueuedMessages((prev) => prev.filter((m) => m.id !== next.id));
+    void sendMessage(next.text).finally(() => {
+      flushingRef.current = false;
+    });
+  }, [status, connected, queuedMessages, sendMessage]);
 
   const respondToApproval = useCallback(
     async (choice: ApprovalChoice) => {
@@ -526,6 +601,11 @@ export function useAgentChat(
   return {
     messages,
     isStreaming: status === "streaming",
+    queuedMessages,
+    queueMessage,
+    deleteQueued,
+    takeQueued,
+    steerQueued,
     status,
     error,
     harnessLive: connected,
