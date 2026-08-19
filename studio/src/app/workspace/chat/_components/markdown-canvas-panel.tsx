@@ -233,11 +233,13 @@ export function MarkdownCanvasPanel({
   onClose,
   maximized,
   onToggleMaximize,
+  windowControls,
 }: {
   artifact: Artifact;
   onClose: () => void;
   maximized: boolean;
   onToggleMaximize: () => void;
+  windowControls?: boolean;
 }) {
   const isDocument = artifact.type === "document";
   const [mode, setMode] = useState<"raw" | "styled">("styled");
@@ -397,6 +399,7 @@ export function MarkdownCanvasPanel({
           </div>
         ) : undefined
       }
+      windowControls={windowControls}
     >
       {/* Content — both editor and textarea always mounted; visibility toggled via CSS */}
       <div className="flex-1 overflow-hidden relative">

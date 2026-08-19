@@ -84,7 +84,7 @@ function MobileChatMenu({
         <Ellipsis className="size-4" />
       </Button>
       <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="bottom" className="p-0 rounded-t-2xl">
+        <SheetContent side="bottom" className="p-0">
           <SheetTitle className="sr-only">Chat options</SheetTitle>
           <div className="py-2">
             <button
@@ -139,11 +139,13 @@ function AttachmentPanel({
   onClose,
   maximized,
   onToggleMaximize,
+  windowControls,
 }: {
   attachment: Attachment;
   onClose: () => void;
   maximized: boolean;
   onToggleMaximize: () => void;
+  windowControls?: boolean;
 }) {
   return (
     <SidePanel
@@ -153,6 +155,7 @@ function AttachmentPanel({
       maximized={maximized}
       onToggleMaximize={onToggleMaximize}
       onClose={onClose}
+      windowControls={windowControls}
     >
       <div className="flex-1 overflow-auto">
         <FilePreview name={attachment.name} content={attachment.content} />
@@ -172,12 +175,14 @@ function ThreadPanel({
   onClose,
   maximized,
   onToggleMaximize,
+  windowControls,
 }: {
   rootMessage: AgentMessage;
   botName: string;
   onClose: () => void;
   maximized: boolean;
   onToggleMaximize: () => void;
+  windowControls?: boolean;
 }) {
   const [replies, setReplies] = useState<AgentMessage[]>(
     rootMessage.replies ?? [],
@@ -215,6 +220,7 @@ function ThreadPanel({
       onToggleMaximize={onToggleMaximize}
       onClose={onClose}
       minWidth={340}
+      windowControls={windowControls}
     >
       {/* Body: root message, replies, composer */}
       <div className="relative flex-1 min-h-0">
@@ -236,7 +242,6 @@ function ThreadPanel({
         </div>
         <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4">
           <ChatInput
-            compact
             rows={1}
             onSend={handleSend}
             onModelChange={() => {}}
@@ -630,6 +635,7 @@ export function ChatView({
                 <ChatInput
                   onSend={onSend}
                   onQueue={onSend}
+                  focusKey={session.id}
                   modelLockedLabel={live ? "Auto-routed" : undefined}
                   onModelChange={() => {}}
                   isStreaming={isStreaming}
@@ -656,6 +662,37 @@ export function ChatView({
           onToggleMaximize={toggleMaximize}
         />
       )}
+      {/* On mobile the same panels render as a full-height bottom sheet: the
+          grab handle owns dismissal (no window controls), and dvh keeps the
+          thread composer above the on-screen keyboard. */}
+      {isMobile && panel !== null && (
+        <Sheet
+          open
+          onOpenChange={(open) => {
+            if (!open) closeSidePanel();
+          }}
+        >
+          <SheetContent side="bottom" className="flex h-[94dvh] flex-col p-0">
+            <SheetTitle className="sr-only">
+              {panel.kind === "thread"
+                ? "Thread"
+                : panel.kind === "attachment"
+                  ? panel.attachment.name
+                  : panel.artifact.name}
+            </SheetTitle>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <SidePanelForKind
+                panel={panel}
+                botName={botName}
+                onClose={closeSidePanel}
+                maximized
+                onToggleMaximize={() => {}}
+                windowControls={false}
+              />
+            </div>
+          </SheetContent>
+        </Sheet>
+      )}
     </div>
   );
 }
@@ -667,14 +704,16 @@ function SidePanelForKind({
   onClose,
   maximized,
   onToggleMaximize,
+  windowControls,
 }: {
   panel: ActivePanel;
   botName: string;
   onClose: () => void;
   maximized: boolean;
   onToggleMaximize: () => void;
+  windowControls?: boolean;
 }) {
-  const shared = { onClose, maximized, onToggleMaximize };
+  const shared = { onClose, maximized, onToggleMaximize, windowControls };
   switch (panel.kind) {
     case "artifact":
       return <MarkdownCanvasPanel artifact={panel.artifact} {...shared} />;

@@ -75,6 +75,7 @@ export function SidePanel({
   headerExtra,
   toolbar,
   minWidth = 320,
+  windowControls = true,
   children,
 }: {
   icon: React.ComponentType<{ className?: string }>;
@@ -88,6 +89,8 @@ export function SidePanel({
   /** Optional row rendered under the header (e.g. a formatting toolbar). */
   toolbar?: React.ReactNode;
   minWidth?: number;
+  /** False inside the mobile sheet, whose grab handle owns dismissal. */
+  windowControls?: boolean;
   children: React.ReactNode;
 }) {
   // The persisted width shared with the session list, so one resize setting
@@ -149,12 +152,14 @@ export function SidePanel({
         <Icon className="size-4 text-muted-foreground shrink-0" />
         <h3 className="text-sm font-semibold truncate flex-1">{title}</h3>
         {headerExtra}
-        <PanelWindowControls
-          maximized={maximized}
-          onToggleMaximize={onToggleMaximize}
-          onClose={onClose}
-          closeLabel={closeLabel}
-        />
+        {windowControls && (
+          <PanelWindowControls
+            maximized={maximized}
+            onToggleMaximize={onToggleMaximize}
+            onClose={onClose}
+            closeLabel={closeLabel}
+          />
+        )}
       </div>
 
       {toolbar}

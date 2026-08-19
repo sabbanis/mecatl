@@ -57,6 +57,8 @@ interface ChatInputProps {
   onSelectProject?: (id: string | null) => void;
   onCreateProject?: (name: string) => void;
   compact?: boolean;
+  /** Refocuses the field when this changes (e.g. the open chat's id). */
+  focusKey?: string;
   onSend?: (content: string, files?: File[]) => void;
   onQueue?: (content: string) => void;
   onModelChange?: (alias: string) => void;
@@ -525,6 +527,7 @@ export function ChatInput({
   onSelectProject,
   onCreateProject,
   compact = false,
+  focusKey,
   onSend,
   onQueue,
   onModelChange,
@@ -598,6 +601,7 @@ export function ChatInput({
 
   const editor = useEditor({
     immediatelyRender: false,
+    autofocus: "end",
     extensions: [
       // A deliberately plain field: keep the editing primitives (undo, hard
       // break, drop/gap cursors) but drop every rich-text mark and block so
@@ -622,6 +626,12 @@ export function ChatInput({
     ],
     onUpdate: ({ editor }) => setText(editor.getText({ blockSeparator: "\n" })),
   });
+
+  // Entering a chat or thread puts the caret in the field; autofocus only
+  // covers the first mount, so a change of target refocuses explicitly.
+  useEffect(() => {
+    if (focusKey !== undefined) editor?.commands.focus("end");
+  }, [focusKey, editor]);
 
   useEffect(() => {
     editor?.setEditable(!disabled);

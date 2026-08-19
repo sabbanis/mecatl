@@ -11,9 +11,9 @@ import {
   GitBranch,
   MessageSquareText,
   Paperclip,
-  Pencil,
   User,
 } from "lucide-react";
+import { useRef, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import { Badge } from "@/components/ui/badge";
@@ -112,11 +112,9 @@ function ReplyIndicator({
 
 function MessageActions({
   message,
-  isUser,
   onStartThread,
 }: {
   message: AgentMessage;
-  isUser: boolean;
   onStartThread?: () => void;
 }) {
   const copyContent = () => {
@@ -129,18 +127,6 @@ function MessageActions({
   return (
     <TooltipProvider delayDuration={300}>
       <div className="msg-actions flex items-center gap-1 h-6 transition-opacity">
-        {isUser && (
-          <Tooltip>
-            <TooltipTrigger asChild>
-              <button type="button" className={btnClass}>
-                <Pencil className="size-3.5" />
-              </button>
-            </TooltipTrigger>
-            <TooltipContent side="bottom" className="text-xs">
-              Edit
-            </TooltipContent>
-          </Tooltip>
-        )}
         <Tooltip>
           <TooltipTrigger asChild>
             <button type="button" onClick={copyContent} className={btnClass}>
@@ -252,6 +238,25 @@ export function MessageBubble({
 
   if (message.role === "tool") return null;
 
+  // Touch has no hover: a horizontal-dominant left swipe reveals the action
+  // row instead (right swipe or a new swipe elsewhere hides it again).
+  const [swipeRevealed, setSwipeRevealed] = useState(false);
+  const touchStart = useRef<{ x: number; y: number } | null>(null);
+  const onTouchStart = (event: React.TouchEvent) => {
+    const touch = event.touches[0];
+    touchStart.current = { x: touch.clientX, y: touch.clientY };
+  };
+  const onTouchMove = (event: React.TouchEvent) => {
+    const start = touchStart.current;
+    if (!start) return;
+    const touch = event.touches[0];
+    const dx = touch.clientX - start.x;
+    const dy = touch.clientY - start.y;
+    if (Math.abs(dx) < 40 || Math.abs(dx) < Math.abs(dy) * 1.5) return;
+    setSwipeRevealed(dx < 0);
+    touchStart.current = null;
+  };
+
   const hasToolCalls = message.toolCalls && message.toolCalls.length > 0;
   const hasContent = message.content?.trim();
   // Notices and delegations can repeat verbatim within a turn, so rows get
@@ -274,7 +279,14 @@ export function MessageBubble({
     return null;
 
   return (
-    <div className="group/msg flex gap-2 lg:gap-3 rounded-lg px-2 lg:px-3 py-2 -mx-2 lg:-mx-3 hover:bg-zinc-50 dark:hover:bg-zinc-800/30 [&:not(:hover)_.msg-actions]:opacity-0">
+    <div
+      className={cn(
+        "group/msg flex gap-2 lg:gap-3 rounded-lg px-2 lg:px-3 py-2 -mx-2 lg:-mx-3 hover:bg-zinc-50 dark:hover:bg-zinc-800/30",
+        !swipeRevealed && "[&:not(:hover)_.msg-actions]:opacity-0",
+      )}
+      onTouchStart={onTouchStart}
+      onTouchMove={onTouchMove}
+    >
       <div className="pt-0.5">{isUser ? <UserAvatar /> : <BotAvatar />}</div>
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
@@ -382,7 +394,6 @@ export function MessageBubble({
       <div className="shrink-0 pt-0.5">
         <MessageActions
           message={message}
-          isUser={isUser}
           onStartThread={
             onStartThread ? () => onStartThread(message) : undefined
           }
