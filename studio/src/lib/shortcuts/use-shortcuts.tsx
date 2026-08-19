@@ -1,12 +1,6 @@
 "use client";
 
-import {
-  createContext,
-  useCallback,
-  useContext,
-  useEffect,
-  useRef,
-} from "react";
+import { createContext, useContext, useEffect, useRef } from "react";
 import { comboUsesMod, matchCombo, SHORTCUTS } from "./registry";
 
 type Registry = {

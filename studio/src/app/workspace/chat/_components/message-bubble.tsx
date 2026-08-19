@@ -49,7 +49,7 @@ function UserAvatar() {
   );
 }
 
-export function BotAvatar() {
+function BotAvatar() {
   const { avatarUrl } = useAgentAvatar();
   if (avatarUrl) {
     return (
