@@ -304,16 +304,17 @@ func (m Model) runSkills() (tea.Model, tea.Cmd) {
 
 // runSoul is the Open transition for the read-only soul (persona) surface. It
 // validates (idle + fetcher wired), blurs the textarea, constructs the state
-// dynamically (never a pre-declared Model field), installs it on m.active, and
-// fires the GetSoul RPC; the result lands on soulState.HandleMsg. Only
-// registered when caps.Soul && the soul collaborator is wired, so the nil/idle
-// guards are belt-and-braces here.
+// dynamically (never a pre-declared Model field), installs it on m.modal, sizes
+// it via Resize (parents place, surfaces size), and fires the GetSoul RPC; the
+// result lands on soulState.HandleMsg. Only registered when caps.Soul && the
+// soul collaborator is wired, so the nil/idle guards are belt-and-braces here.
 func (m Model) runSoul() (tea.Model, tea.Cmd) {
 	if m.phase != phaseIdle || m.deps.Soul == nil {
 		return m, nil
 	}
-	m.ta.Blur() // overlay owns the keyboard while open
-	m.active = &soulState{view: soulPanel, loading: true}
+	m.ta.Blur() // modal owns the keyboard while open
+	m.modal = &soulState{view: soulPanel, loading: true}
+	m.modal.Resize(m.width, m.vp.Height())
 	return m, client.GetSoulCmd(m.deps.Ctx, m.deps.Soul)
 }
 

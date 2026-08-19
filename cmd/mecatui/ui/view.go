@@ -78,9 +78,12 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// renderBody picks the viewport body: an overlay (help/picker/panel), the
+// renderBody picks the viewport body: a help/picker/panel overlay, the modal
+// surface (soul today, the first migrator) centered by the PARENT via centerCard, the
 // permission-modal card (generic) or the full-screen scrollable plan-review
-// view (a plan ask), or the conversation.
+// view (a plan ask), or the conversation. "Parents place, surfaces size":
+// a modal returns its CENTER-READY body (sized by its last Resize); view.go
+// then centers it here with the conversation geometry.
 func (m Model) renderBody() string {
 	if m.phase == phaseAwaitingApproval {
 		return m.renderApprovalBody()
@@ -98,9 +101,9 @@ func (m Model) renderBody() string {
 		return renderAgentsInvOverlay(m.deps.Theme, m.agentsInv, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.skills.view != skillsNone:
 		return renderSkillsOverlay(m.deps.Theme, m.skills, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
-	case m.active != nil:
-		body, _ := m.active.Render(m.surfaceDeps(), m.width, m.vp.Height())
-		return body
+	case m.modal != nil:
+		body, _ := m.modal.Render(m.surfaceDeps())
+		return centerCard(m.deps.Theme, body, m.width, m.vp.Height())
 	case m.userModel.view != userModelNone:
 		return renderUserModelOverlay(m.deps.Theme, m.userModel, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.reflections.view != reflectionsNone:

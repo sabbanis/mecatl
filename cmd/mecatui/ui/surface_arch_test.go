@@ -19,8 +19,8 @@ import (
 )
 
 // surfaceFileHomes is the set of files a declaration carrying the surface/soul
-// vocabulary may live in. view.go's m.active.Render(...) and update.go's
-// m.active.HandleKey/HandleMsg(...) routing are vocabulary-free call sites and
+// vocabulary may live in. view.go's m.modal.Render(...) and update.go's
+// m.modal.HandleKey/HandleMsg(...) routing are vocabulary-free call sites and
 // need no exception.
 var surfaceFileHomes = map[string]bool{
 	"surface.go": true,
@@ -87,10 +87,10 @@ func TestSurfaceSymbolsLiveInSurfaceFiles(t *testing.T) {
 	}
 }
 
-// TestModelHasOneActiveSurfaceField asserts Model holds the migrating overlay in
-// exactly ONE field of the `surface` interface type. A second surface field is
-// the Phase-3 stack drift this kills.
-func TestModelHasOneActiveSurfaceField(t *testing.T) {
+// TestModelHasOneModalSurfaceField asserts Model holds the migrating overlay in
+// exactly ONE field of the `surface` interface type ("modal"). A second surface
+// field is the Phase-3 stack drift this kills.
+func TestModelHasOneModalSurfaceField(t *testing.T) {
 	st := reflect.TypeOf(Model{})
 	var count int
 	for i := 0; i < st.NumField(); i++ {
@@ -108,7 +108,7 @@ func TestModelHasOneActiveSurfaceField(t *testing.T) {
 }
 
 // TestModelHasNoSoulStateField asserts Model holds NO soulState field — the
-// dynamic-Open decision means the soul state lives ONLY in m.active; a
+// dynamic-Open decision means the soul state lives ONLY in m.modal; a
 // pre-declared m.soul field is the tombstone drift this kills. Matches by
 // reflect Type.Name() (the same idiom approval_arch_test.go uses for
 // approvalState).
@@ -122,6 +122,6 @@ func TestModelHasNoSoulStateField(t *testing.T) {
 		}
 	}
 	if count != 0 {
-		t.Errorf("Model has %d soulState fields, want exactly 0 (soul state lives only in m.active)", count)
+		t.Errorf("Model has %d soulState fields, want exactly 0 (soul state lives only in m.modal)", count)
 	}
 }

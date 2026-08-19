@@ -421,10 +421,11 @@ type Model struct {
 	subagents       subagentState  // Subagents-tab state of the unified agents overlay (roster | focus)
 	parallel        parallelState  // Parallel-tab state of the unified agents overlay (roster | group focus)
 	agentsInv       agentsInvState // agent-definition inventory overlay state (view==agentsInvNone when closed)
-	// active is the ONE open surface-migrated overlay (nil = none); soul is the
-	// first. A surface's state is created at Open and lives ONLY inside this
-	// interface field — never a pre-declared tombstone field (surface.go).
-	active         surface
+	// modal is the ONE open modal overlay (nil = none). Stack/tiling/focus-tree
+	// is later; the field carries the one migrated surface. A surface's state is
+	// created at Open and lives ONLY inside this interface field — never a
+	// pre-declared tombstone field (surface.go).
+	modal          surface
 	userModel      userModelState // user-model inspection overlay state (view==userModelNone when closed)
 	userModelGen   uint64         // monotonic request generation; invalidates delayed detail/index responses
 	reflections    reflectionsState

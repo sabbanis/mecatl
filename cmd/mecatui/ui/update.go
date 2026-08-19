@@ -319,9 +319,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // overlays accrue (each helper returns handled=false for a non-matching msg, so
 // at most one consumes).
 func (m Model) dispatchNonInputMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// A surface-migrated overlay (soul today) routes every non-key/wheel Msg
-	// through m.active BEFORE the Model's generic reducer; handled=false falls
-	// through to the rest of the chain.
+	// The open modal surface routes every non-key/wheel Msg through m.modal
+	// BEFORE the Model's generic reducer; handled=false falls through to the
+	// rest of the chain.
 	if mm, cmd, handled := m.dispatchSurfaceMsg(msg); handled {
 		return mm, cmd
 	}
@@ -1082,6 +1082,11 @@ func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	// height-equality guard (relayout calls refreshView, which also invalidates, but
 	// onResize must invalidate here too in case relayout short-circuits on height match).
 	m.rend.invalidateVPView()
+	// Fan the geometry to the open modal surface (parents place, surfaces size —
+	// the surface sizes itself from its own geometry field, view.go centers).
+	if m.modal != nil {
+		m.modal.Resize(m.width, m.vp.Height())
+	}
 	// The input textarea is wrapped in the mode-coloured left rail (renderInput),
 	// which adds its horizontal frame (border + padding). Shrink the textarea width by
 	// that frame so the railed input stays within the terminal width instead of
@@ -1365,9 +1370,9 @@ func (m Model) dispatchPhaseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 // /models picker is the only SELECTING one (cursor + enter); the rest are read-only
 // / esc-only. Returns handled=false when no overlay is open so onKey falls through.
 func (m Model) onOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
-	// A surface-migrated overlay (soul today) routes through m.active BEFORE the
-	// legacy per-overlay route list; the closed path nils the field and refocuses
-	// via the surface's Close cmd.
+	// The open modal surface routes through m.modal BEFORE the legacy per-overlay
+	// route list; the closed path nils the field and refocuses via the surface's
+	// Close cmd.
 	if mm, cmd, handled := m.dispatchSurfaceKey(msg); handled {
 		return mm, cmd, true
 	}
@@ -1394,41 +1399,41 @@ func (m Model) onOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	return m, nil, false
 }
 
-// dispatchSurfaceKey routes a KeyPressMsg through the active surface-migrated
-// overlay when one is open. On handled+closed it nils the field and batches the
-// surface Close cmd (the textarea refocus). Extracted from onOverlayKey so
-// update() stays under the cyclomatic cap; onOverlayKey reads it.
+// dispatchSurfaceKey routes a KeyPressMsg through the open modal surface when
+// one is open. On handled+closed it nils the field and batches the surface Close
+// cmd (the textarea refocus). Extracted from onOverlayKey so update() stays under
+// the cyclomatic cap; onOverlayKey reads it.
 func (m Model) dispatchSurfaceKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
-	if m.active == nil {
+	if m.modal == nil {
 		return m, nil, false
 	}
-	cmd, handled, closed := m.active.HandleKey(msg, m.surfaceDeps())
+	cmd, handled, closed := m.modal.HandleKey(msg, m.surfaceDeps())
 	if !handled {
 		return m, nil, false
 	}
 	if closed {
-		closeCmd := m.active.Close(m.surfaceDeps())
-		m.active = nil
+		closeCmd := m.modal.Close(m.surfaceDeps())
+		m.modal = nil
 		return m, tea.Batch(cmd, closeCmd), true
 	}
 	return m, cmd, true
 }
 
-// dispatchSurfaceMsg routes a NON-input Msg through the active surface-migrated
-// overlay before the Model's generic reducer; handled=false falls through. On
+// dispatchSurfaceMsg routes a NON-input Msg through the open modal surface
+// before the Model's generic reducer; handled=false falls through. On
 // handled+closed it nils the field and batches the surface Close cmd. Extracted
 // so update() stays under the cyclomatic cap.
 func (m Model) dispatchSurfaceMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
-	if m.active == nil {
+	if m.modal == nil {
 		return m, nil, false
 	}
-	cmd, handled, closed := m.active.HandleMsg(msg, m.surfaceDeps())
+	cmd, handled, closed := m.modal.HandleMsg(msg, m.surfaceDeps())
 	if !handled {
 		return m, nil, false
 	}
 	if closed {
-		closeCmd := m.active.Close(m.surfaceDeps())
-		m.active = nil
+		closeCmd := m.modal.Close(m.surfaceDeps())
+		m.modal = nil
 		return m, tea.Batch(cmd, closeCmd), true
 	}
 	return m, cmd, true
@@ -3089,20 +3094,20 @@ func (m Model) endRun(stop string) Model {
 // half; a wheel the modal does not claim falls through to the conversation
 // viewport behind it (so a wheel elsewhere keeps scrolling the transcript).
 //
-// A surface-migrated overlay (soul today) gets the wheel before the viewport;
-// handled=true consumes it. soul has no scroll surface (HandleWheel returns
-// false), so the wheel falls through to the viewport unchanged.
+// The open modal surface gets the wheel before the viewport; handled=true
+// consumes it. The migrated overlays without a scroll surface return
+// handled=false (soul today: no scroll surface), so the wheel falls through.
 func (m Model) onMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	if m.phase == phaseAwaitingApproval {
 		if cmd, approval := (&m.approval).approvalWheel(msg, (&m).approvalDeps()); approval {
 			return m, cmd
 		}
 	}
-	// A surface-migrated overlay (soul today) gets the wheel BEFORE the conversation
+	// Open modal surface gets the wheel BEFORE the conversation
 	// viewport; handled=true consumes it. soul's HandleWheel always returns false (no
 	// scroll surface), so the wheel falls through to the viewport — zero behavior change.
-	if m.active != nil {
-		if cmd, handled := m.active.HandleWheel(msg, m.surfaceDeps()); handled {
+	if m.modal != nil {
+		if cmd, handled := m.modal.HandleWheel(msg, m.surfaceDeps()); handled {
 			return m, cmd
 		}
 	}

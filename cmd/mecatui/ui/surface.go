@@ -1,7 +1,7 @@
 package ui
 
 // surface.go is the ONE file the issue #555 Phase-2 surface interface owns: the
-// `surface` interface an overlay implements (Render/HandleKey/HandleMsg/
+// `surface` interface an overlay implements (Resize/Render/HandleKey/HandleMsg/
 // HandleWheel/Close) plus the shared `surfaceDeps` collaborator struct and the
 // Model.surfaceDeps() builder. Migrating an overlay (soul is the proof) touches
 // this file for the interface and its own file for the state/behaviour; the
@@ -17,18 +17,24 @@ import (
 )
 
 // surface is an overlay that owns the conversation region while open: it
-// renders a centered card, consumes keys/wheel/msgs, and holds its teardown.
-// Model holds at most ONE (the active surface field); nil-vs-set IS the active
+// renders a center-ready body, consumes keys/wheel/msgs, and holds its teardown.
+// Model holds at most ONE (the modal surface field); nil-vs-set IS the active
 // predicate. Implemented by value-state structs (soulState today) on POINTER
 // receivers strictly so the Model can call them on the single instance the
 // interface value holds and mutate it in place — no copy-back ceremony.
+// Geometry is a state-setting method (Resize), mirroring how bubbletea's
+// WindowSizeMsg arrives: parents place (the Model centers), surfaces size.
 type surface interface {
-	// Render returns the centered body and the regions it built in the SAME
-	// layout pass, given the offered geometry (width, height of the conversation
-	// region). Regions are frame-relative; the parent offsets them to screen
-	// coordinates if it ever hit-tests them. nil regions = not clickable. deps
-	// is rebuilt per call.
-	Render(deps surfaceDeps, width, height int) (body string, regions []ClickableRegion)
+	// Resize records the offered geometry (width, height of the conversation
+	// region) on the surface's state. Render then reads it with NO geometry
+	// params — the same one-way WindowSizeMsg flow bubbletea uses.
+	Resize(width, height int)
+
+	// Render returns the center-ready body and the regions it built in the SAME
+	// layout pass, reading the geometry the LAST Resize recorded. Regions are
+	// frame-relative; the parent offsets them to screen coordinates if it ever
+	// hit-tests them. nil regions = not clickable. deps is rebuilt per call.
+	Render(deps surfaceDeps) (body string, regions []ClickableRegion)
 
 	// HandleKey consumes or passes a key press. handled=true means the surface
 	// swallowed it (idle input never sees it). Close is driven INSIDE HandleKey
@@ -43,7 +49,7 @@ type surface interface {
 
 	// HandleMsg consumes or passes a NON-input message: an RPC result
 	// (client.SoulMsg), a timer tick, a status notice. The Model routes every
-	// non-key/wheel Msg through the active surface BEFORE its own generic
+	// non-key/wheel Msg through the open modal BEFORE its own generic
 	// reducer, so the surface owns its RPC-backed state and can be created
 	// dynamically at Open with no pre-declared Model field. The surface
 	// consumes (handled), kills (closed), or passes (handled=false); on closed

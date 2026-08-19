@@ -22,9 +22,9 @@ type soulView int
 
 const (
 	// soulNone is the zero value of soulView and represents "overlay closed". It is
-	// NOT read by production code (the closed state is m.active == nil, not
+	// NOT read by production code (the closed state is m.modal == nil, not
 	// view == soulNone — the surface is created with view: soulPanel and torn down
-	// by nil-ing m.active). It is kept because the iota zero value is load-bearing
+	// by nil-ing m.modal). It is kept because the iota zero value is load-bearing
 	// for Render's defense-in-depth: Render guards `if s.view != soulPanel` so a
 	// zero/uninitialized soulState renders empty rather than as an open panel. If
 	// soulNone were removed, soulPanel would become the zero value and that guard
@@ -41,28 +41,39 @@ const (
 const soulBodyLines = 12
 
 // soulState holds the soul overlay state. It is NOT a Model field: it is
-// constructed at Open (runSoul sets m.active = &soulState{view: soulPanel,
-// loading: true}) and lives ONLY inside the Model's one `active surface`
+// constructed at Open (runSoul sets m.modal = &soulState{view: soulPanel,
+// loading: true}) and lives ONLY inside the Model's one `modal surface`
 // interface field. The Soul value is replaced wholesale on each RPC result
 // (never mutated in place) so the value semantics hold. scroll is the 0-based
-// index of the first visible content line. soulState implements `surface` on
-// POINTER receivers.
+// index of the first visible content line; width/height are the geometry the
+// Model's Resize fan delivered (parents place, surfaces size). soulState
+// implements `surface` on POINTER receivers.
 type soulState struct {
 	view    soulView
 	loading bool // the GetSoul RPC is in flight
 	err     error
 	soul    client.Soul
 	scroll  int // first visible content line (clamped in HandleKey)
+	width   int // conversation region width (set by Model.Resize fan)
+	height  int // conversation region height (set by Model.Resize fan)
 }
 
-// Render draws the soul panel body centred over the conversation region via
-// centerCard. All server-derived strings are terminal-sanitized. Regions are
-// nil (read-only, not clickable).
-func (s *soulState) Render(deps surfaceDeps, width, height int) (string, []ClickableRegion) {
+// Resize records the offered geometry (the conversation region's width/height)
+// so Render reads it with NO geometry params — the one-way WindowSizeMsg flow
+// parents place, surfaces size.
+func (s *soulState) Resize(width, height int) {
+	s.width = width
+	s.height = height
+}
+
+// Render draws the soul panel body CENTER-READY: the parent centers it via
+// centerCard in view.go's renderBody arm. All server-derived strings are
+// terminal-sanitized. Regions are nil (read-only, not clickable).
+func (s *soulState) Render(deps surfaceDeps) (string, []ClickableRegion) {
 	if s.view != soulPanel {
 		return "", nil
 	}
-	return centerCard(deps.theme, renderSoulPanel(deps.theme, *s, deps.caps, deps.marks, width), width, height), nil
+	return renderSoulPanel(deps.theme, *s, deps.caps, deps.marks, s.width), nil
 }
 
 // HandleKey routes key presses while the soul overlay is open. esc self-closes

@@ -299,7 +299,7 @@ func TestSoulSlashCommandEndToEnd(t *testing.T) {
 	m = feedCmd(t, mm.(Model), cmd)
 
 	if s := soulActive(m); s == nil || s.view != soulPanel {
-		t.Fatalf("/soul+enter should open the persona panel (active), got %+v", m.active)
+		t.Fatalf("/soul+enter should open the persona panel (modal), got %+v", m.modal)
 	}
 	if fs.calls != 1 {
 		t.Errorf("GetSoul calls = %d, want 1 (the /soul built-in fired the RPC)", fs.calls)

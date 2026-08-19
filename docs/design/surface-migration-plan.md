@@ -1,8 +1,9 @@
-# Surface migration — `/soul` proof-of-pattern (issue #555 Phase 2)
+# Surface migration — the general template (issue #555 Phase 2)
 
-**Status:** plan (no production code). **Scope:** introduce the `surface` interface
-in `cmd/mecatui/ui` and migrate the `/soul` overlay onto it. Later phases migrate the
-other overlays in the checklist below.
+**Status:** plan (no production code). **Scope:** the GENERAL migration template
+for moving a `cmd/mecatui/ui` overlay onto the `surface` interface. Soul is the
+FIRST migrator (the proof-of-pattern that pins the interface); section 6 is the
+checklist for the rest.
 
 Issue #555 describes "ADR 0108" as the surface-migration ADR; that is a stale
 reference. `docs/adr/0108-on-demand-logical-skill-assets.md` is the skill-assets ADR.
@@ -12,12 +13,12 @@ The stale citation needs a docs fix; it is deliberately **not** fixed here.
 
 1. **One surface at a time, no stack.** `closeOverlays`-style mutual exclusion already
    holds (each overlay's `view != None` arm is exclusive; opening one closes the
-   rest). Model holds ONE optional active surface, not a stack. The approval ask queue
+   rest). Model holds ONE optional modal surface, not a stack. The approval ask queue
    is asks-behind-one-approval-surface. Stack/tiling/focus-tree is Phase 3.
 2. **No stored pointer-to-surface field on Model; surface state is created
    dynamically at Open.** The Model has NO permanent `m.soul`-style pre-declared
    tombstone field. The surface's state (`soulState`) is constructed at the Open
-   transition and lives ONLY inside the ONE `active surface` interface field. A
+   transition and lives ONLY inside the ONE `modal surface` interface field. A
    pointer receiver is used per-call on that interface value (the `&m.approval`
    idiom) so `HandleKey`/`HandleMsg` can mutate it, but no `*soulState` is ever a
    Model field. Mutations happen through the per-call pointer; there is no copy-back
@@ -52,7 +53,7 @@ The stale citation needs a docs fix; it is deliberately **not** fixed here.
 
 New file `cmd/mecatui/ui/surface.go`. All methods take the deps struct by value;
 the receiver is the surface's own state (value semantics — the method set is
-declared on a POINTER receiver so `m.active.HandleKey(...)` can mutate the
+declared on a POINTER receiver so `m.modal.HandleKey(...)` can mutate the
 instance the interface holds,
 mirroring `approvalState.onApprovalKey`'s `*approvalState` receiver; the state
 itself still lives on Model as a value field, copied on assignment back).
@@ -62,8 +63,8 @@ package ui
 
 // surface is an overlay that owns the conversation region while open: it
 // renders a centered card, consumes keys/wheel, and holds its teardown.
-// Model holds at most ONE (active surface field); nil-vs-set IS the
-// active predicate. Implemented by value-state structs (soulState today).
+// Model holds at most ONE (modal surface field); nil-vs-set IS the
+// open predicate. Implemented by value-state structs (soulState today).
 // Methods are on a pointer receiver strictly so the Model can call them on
 // its value-embedded state field without copying it out.
 type surface interface {
@@ -87,7 +88,7 @@ type surface interface {
 
     // HandleMsg consumes or passes a NON-input message: an RPC result
     // (client.SoulMsg), a timer tick, a status notice. The Model routes
-    // every non-key/wheel Msg through the active surface BEFORE its own
+    // every non-key/wheel Msg through the open modal BEFORE its own
     // generic reducer, so the surface owns its RPC-backed state and can be
     // created dynamically at Open with no pre-declared Model field. The
     // surface consumes (handled), kills (closed), or passes (handled=false);
@@ -120,7 +121,7 @@ Justification per method:
   teardown means. For surfaces whose teardown has no cmd, return nil.
 - **No `Open()`/`active()` method, no `tea.Model` return.** "Open" is a Model-side
   transition (install the surface, blur the textarea, fire the initial RPC); the
-  active predicate is `active != nil`. A surface method returning `tea.Model` would
+  open predicate is `modal != nil`. A surface method returning `tea.Model` would
   invite it to pretend to be the Model — it returns `tea.Cmd`/flags only, and the
   Model stays the `tea.Model`.
 
@@ -163,7 +164,7 @@ interface forbids; when a surface needs an RPC func (like approval's
 routed through the surface (consume/kill/defer) so the surface owns its RPC-backed
 state and can be created dynamically at Open with NO pre-declared Model field —
 the requirement dynamic views demand. The Model's generic reducer only sees a Msg
-the active surface passes on (`handled=false`). This is the OO-style consume/kill/
+the open modal passes on (`handled=false`). This is the OO-style consume/kill/
 defer routing; the alternative (a per-overlay `switch msg.(type)` in update.go) is
 the spaghetti issue #555 is killing. `client.SoulMsg` therefore mutates the
 `soulState` the interface already holds — the same pointer-receiver idiom as
@@ -172,18 +173,18 @@ the spaghetti issue #555 is killing. `client.SoulMsg` therefore mutates the
 
 ## 2. How the Model routes through it
 
-Model gains ONE field (name: `active`; type: `surface`; placement: next to the
+Model gains ONE field (name: `modal`; type: `surface`; placement: next to the
 overlay states in `model.go`, with a comment). Its nil-vs-set IS the "an overlay
 is open" predicate. The interface holds the ONE live surface state instance;
 there is NO `m.soul`-style pre-declared tombstone field — the surface state is
 constructed at Open and discarded at Close.
 
 ```go
-active surface // the ONE open overlay (nil = none); soul is the first surface
+modal surface // the ONE open modal overlay (nil = none)
 ```
 
 Soul's arm moves; the other overlays stay pre-migration and are routed by their
-existing arms. `activeSurface` receives ONLY the migrated surfaces.
+existing arms. `modal` receives ONLY the migrated surfaces.
 
 ### Before/after per touchpoint for soul
 
@@ -199,13 +200,13 @@ case m.soul.view != soulNone:
 After:
 
 ```go
-case m.active != nil:
-    body, _ := m.active.Render(m.surfaceDeps(), m.width, m.vp.Height())
+case m.modal != nil:
+    body, _ := m.modal.Render(m.surfaceDeps(), m.width, m.vp.Height())
     return body
 ```
 
 The soul-specific `renderSoulOverlay` call and the `m.soul.view != soulNone`
-predicate collapse into the `active != nil` arm. Regions are ignored here (soul
+predicate collapse into the `modal != nil` arm. Regions are ignored here (soul
 has nil regions; clickable-surface migration will offset+consume them). Remaining
 unmigrated overlay arms stay.
 
@@ -215,14 +216,14 @@ Before: `onOverlayKey` iterates a list of per-overlay routes, including
 `m.onSoulKey`.
 
 After: BEFORE the loop over the remaining legacy routes, route through the
-active surface:
+open modal:
 
 ```go
-if m.active != nil {
-    cmd, handled, closed := m.active.HandleKey(msg, m.surfaceDeps())
+if m.modal != nil {
+    cmd, handled, closed := m.modal.HandleKey(msg, m.surfaceDeps())
     if handled {
         if closed {
-            m.active = nil
+            m.modal = nil
             return m, tea.Batch(cmd, m.ta.Focus()), true
         }
         return m, cmd, true
@@ -238,14 +239,14 @@ instance (a pointer receiver), mutations land on it directly — no copy-back.
 
 **Message routing (`HandleMsg`).** In `Update`'s message dispatch, BEFORE the
 Model's own generic reducer (and after the stream-event arm), route every
-non-key/wheel Msg through the active surface:
+non-key/wheel Msg through the open modal:
 
 ```go
-if m.active != nil {
-    cmd, handled, closed := m.active.HandleMsg(msg, m.surfaceDeps())
+if m.modal != nil {
+    cmd, handled, closed := m.modal.HandleMsg(msg, m.surfaceDeps())
     if handled {
         if closed {
-            m.active = nil
+            m.modal = nil
             return m, tea.Batch(cmd, m.ta.Focus())
         }
         return m, cmd
@@ -264,7 +265,7 @@ the Msg; only its consumer moves.)
 
 Before: `m.soul.view == soulNone &&` is one conjunct in the overlay predicate.
 
-After: replace that one conjunct with `m.active == nil &&`. The OTHER conjuncts
+After: replace that one conjunct with `m.modal == nil &&`. The OTHER conjuncts
 (unmigrated overlays) remain until their phase. The semantic is unchanged: no
 selection may start while a surface owns the body.
 
@@ -280,7 +281,7 @@ Model calls `Close()` on a close transition, then nils the field.
 
 **Builtin registration (`builtins.go:137-143`).** `Model.runSoul` stays the
 registration seam; it becomes the Open transition: it validates (idle + wired),
-blurs the textarea, constructs the state, sets `m.active = &soulState{view:
+blurs the textarea, constructs the state, sets `m.modal = &soulState{view:
 soulPanel, loading: true}`, and returns the GetSoul RPC cmd (today
 `client.GetSoulCmd`). The builtin list does NOT change shape — still `{name,
 desc, run}` where `run` is a Model method. The state is created HERE (dynamic),
@@ -302,7 +303,7 @@ Changes:
    HandleKey(...)`, `func (s *soulState) HandleMsg(...)`, `func (s *soulState)
    HandleWheel(...) (returns handled=false always)`, `func (s *soulState)
    Close(...) tea.Cmd`. The Model stores NO `soulState` field; `runSoul`
-   constructs `m.active = &soulState{view: soulPanel, loading: true}` at Open and
+   constructs `m.modal = &soulState{view: soulPanel, loading: true}` at Open and
    the interface holds the only instance. The pointer is transient (the `&`
    address-of at Open), never a stored Model field — the discipline Phase 1
    already uses (`&m.approval` per call), here applied to an interface value.
@@ -320,7 +321,7 @@ Changes:
    Open transition helper if one is generalized; otherwise the Open helper is
    inlined in `builtins.go`'s `runSoul`).
 
-The Model holds exactly ONE `active surface` field and NO `soulState` field. The
+The Model holds exactly ONE `modal surface` field and NO `soulState` field. The
 gate (below) asserts the one `surface` field; there is no soul-field assertion
 because there is no soul field to count (the gate instead asserts soul
 vocabulary lives only in soul.go).
@@ -336,15 +337,15 @@ New `cmd/mecatui/ui/surface_arch_test.go`, imitating `approval_arch_test.go`:
    renderSoulOverlay|soulDisabledNote|soulTrustLabel|renderSoulPanel|
    renderSoulMeta|renderSoulBody|surface|surfaceDeps` — every declaration
    matching the vocabulary lives in `surface.go` or `soul.go`. The delegation
-   exceptions mirror approval: `view.go`'s `m.active.Render(...)` call is
-   vocabulary-free; `update.go`'s `m.active.HandleKey/HandleMsg(...)` route is
+   exceptions mirror approval: `view.go`'s `m.modal.Render(...)` call is
+   vocabulary-free; `update.go`'s `m.modal.HandleKey/HandleMsg(...)` route is
    vocabulary-free.
-2. `TestModelHasOneActiveSurfaceField`: reflect over `Model`; count fields
+2. `TestModelHasOneModalSurfaceField`: reflect over `Model`; count fields
    whose type is the `surface` interface (the type NAME is `surface`); require
    exactly 1. A second `surface` field is Phase-3 stack drift.
 3. `TestModelHasNoSoulField`: reflect over `Model`; count fields whose type
    NAME is `soulState`; require exactly 0. The dynamic-Open decision means the
-   soul state lives ONLY in `m.active`; a pre-declared `m.soul` field is the
+   soul state lives ONLY in `m.modal`; a pre-declared `m.soul` field is the
    tombstone drift this kills.
 
 Naming the assertions IS the visible decision (the loud gate).
@@ -361,7 +362,7 @@ path is `Model.View()` end-to-end, so the proof of no drift is:
    ./cmd/mecatui/ui/` stay green.
 3. `go run ./cmd/mecademo` (still prints a full session).
 4. The route test updates in `soul_test.go` (open renders through
-   `m.active.Render`, close nils `m.active`) stay byte-identical in output.
+   `m.modal.Render`, close nils `m.modal`) stay byte-identical in output.
 
 If any golden drifts, the refactor moved a render decision into the Model —
 find it and move it back into the surface before proceeding.
@@ -400,7 +401,7 @@ register the overlay:
 
 ## 8. Acceptance checklist (a new surface touches ONE file + ONE registration point)
 
-For `/soul` to be done:
+For a surface to be done; soul is the proof:
 
 1. `cmd/mecatui/ui/surface.go` exists with `surface` interface + `surfaceDeps`.
 2. `cmd/mecatui/ui/soul.go` carries every soul-vocabulary declaration
@@ -409,7 +410,7 @@ For `/soul` to be done:
    field.
 4. `cmd/mecatui/ui/surface_arch_test.go` exists and passes.
 5. The legacy `m.onSoulKey` route and the `m.soul.view != soulNone` arms in
-   `renderBody`/`selectable` are removed (soul route is through `m.active`).
+   `renderBody`/`selectable` are removed (soul route is through `m.modal`).
 6. `builtins.go` has exactly one registration of soul (`runSoul`), unchanged
    shape.
 7. All three soul goldens unchanged (`task test:golden` proves it).
