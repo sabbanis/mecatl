@@ -19,6 +19,7 @@ func TestEvaluatorDeniesToolOutsideCapabilitySet(t *testing.T) {
 	decision, err := New().AuthorizeTool(context.Background(), port.AuthorityRequest{
 		CapabilitySet: governance.CapabilitySet{Tools: []string{"Read"}},
 		ToolName:      "Write",
+		Action:        "Write",
 		Principal:     port.AuthorityPrincipal{Definition: "definition", Instance: "instance", Owner: "owner"},
 	})
 	if err != nil {

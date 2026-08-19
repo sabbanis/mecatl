@@ -1,10 +1,19 @@
 package governance
 
-import "errors"
+import (
+	"errors"
+	"strings"
+)
 
 // ErrDelegationDepthExhausted reports an attempt to derive a child after all
 // remaining delegation hops have been consumed.
 var ErrDelegationDepthExhausted = errors.New("governance: delegation depth exhausted")
+
+// MCPResourceCapability returns the reserved opaque capability for resources
+// exposed by one named MCP server. It is a capability only, never a catalog tool.
+func MCPResourceCapability(server string) string {
+	return "mcp_resource__" + strings.TrimSpace(server)
+}
 
 // CapabilitySet is the authority carried by a run. It is a plain value: tool
 // names are exact capabilities, RemainingDelegationDepth is the number of child

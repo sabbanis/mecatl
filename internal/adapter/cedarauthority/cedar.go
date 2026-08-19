@@ -58,7 +58,7 @@ func (e *Evaluator) AuthorizeTool(_ context.Context, request port.AuthorityReque
 
 	decision, diagnostics := cedar.Authorize(e.policies, entities(request), cedar.Request{
 		Principal: cedar.NewEntityUID("Instance", cedar.String(request.Principal.Instance)),
-		Action:    cedar.NewEntityUID("Tool", cedar.String(request.ToolName)),
+		Action:    cedar.NewEntityUID("Tool", cedar.String(request.Action)),
 		Resource:  cedar.NewEntityUID("Resource", cedar.String(resourceID(request))),
 		Context:   cedar.NewRecord(cedar.RecordMap{}),
 	})
@@ -72,7 +72,7 @@ func (e *Evaluator) AuthorizeTool(_ context.Context, request port.AuthorityReque
 }
 
 func malformed(request port.AuthorityRequest) bool {
-	return request.ToolName == "" || request.Principal.Definition == "" || request.Principal.Instance == "" || request.Principal.Owner == ""
+	return request.ToolName == "" || request.Action == "" || request.Principal.Definition == "" || request.Principal.Instance == "" || request.Principal.Owner == ""
 }
 
 func entities(request port.AuthorityRequest) cedar.EntityMap {

@@ -19,6 +19,7 @@ func Run(t *testing.T, newEvaluator func(t *testing.T) port.AuthorityEvaluator) 
 	valid := port.AuthorityRequest{
 		CapabilitySet:   governance.CapabilitySet{Tools: []string{"Read"}, RemainingDelegationDepth: 1},
 		ToolName:        "Read",
+		Action:          "Read",
 		DelegationDepth: 1,
 		Principal:       port.AuthorityPrincipal{Definition: "definition", Instance: "instance", Owner: "owner"},
 	}

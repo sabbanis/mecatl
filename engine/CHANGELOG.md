@@ -750,6 +750,12 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Changed
 
+- **Authority evaluator resource actions (ADR 0228)** — `port.AuthorityRequest`
+  adds `Action`, distinct from the capability-selected `ToolName`, so policy adapters
+  receive the real resource meta-operation while retaining the carried capability
+  precheck. Adding a field to an exported struct is source-breaking for unkeyed
+  literals and is classified Changed (pre-v1 minor).
+
 - **Authority evaluator wiring (ADR 0228)** — `agent.Deps.AuthorityEvaluator`
   adds the optional execution-time authority evaluator dependency. The added field
   is source-breaking for external unkeyed `Deps` literals and is therefore

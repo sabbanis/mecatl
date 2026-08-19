@@ -39,13 +39,16 @@ type AuthorityResource struct {
 
 // AuthorityRequest is the provider-neutral input to AuthorityEvaluator. The
 // carried capability set is the complete local authority fact; evaluators do not
-// look it up from mutable state. ToolName and DelegationDepth provide the action
-// context, while Principal carries attribution without credentials or raw tool
-// arguments. Resource is present only when the execution boundary can derive an
-// unambiguous non-secret local target.
+// look it up from mutable state. ToolName selects the carried capability while
+// Action identifies the operation the caller requested. They differ for derived
+// capabilities such as a named MCP server's resources. DelegationDepth provides
+// additional action context; Principal carries attribution without credentials or
+// raw tool arguments. Resource is present only when the execution boundary can
+// derive an unambiguous non-secret local target.
 type AuthorityRequest struct {
 	CapabilitySet   governance.CapabilitySet
 	ToolName        string
+	Action          string
 	DelegationDepth int
 	Principal       AuthorityPrincipal
 	Resource        *AuthorityResource

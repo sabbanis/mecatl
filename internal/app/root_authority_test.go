@@ -20,12 +20,13 @@ func TestADR_0228_AuthorityEvaluator_Scenario6_MintPopulatesEveryFieldExplicitly
 	catalog.MustRegister(rootAuthorityTestTool{name: "Read", readOnly: true})
 	catalog.MustRegister(rootAuthorityTestTool{name: "Write"})
 
-	got := mintRootAuthority(catalog, session.SessionKindMain)
+	resourceCapability := governance.MCPResourceCapability("resource-only")
+	got := mintRootAuthority(catalog, []string{resourceCapability}, session.SessionKindMain)
 	if got.Provenance != rootAuthorityProvenance || got.DefinitionIdentity != rootAuthorityDefinition {
 		t.Fatalf("root labels = %+v, want explicit root provenance and definition", got)
 	}
 	set := got.CapabilitySet
-	if len(set.Tools) != 2 || set.Tools[0] != "Read" || set.Tools[1] != "Write" {
+	if len(set.Tools) != 3 || set.Tools[0] != "Read" || set.Tools[1] != "Write" || set.Tools[2] != resourceCapability {
 		t.Fatalf("root tools = %v, want complete catalog inventory", set.Tools)
 	}
 	if set.RemainingDelegationDepth != rootDelegationDepth {
@@ -43,14 +44,14 @@ func TestADR_0228_AuthorityEvaluator_Scenario6_MintPopulatesEveryFieldExplicitly
 
 func TestAgentDefinitionAuthorityCeilingUsesResolvedToolsAndMCP(t *testing.T) {
 	def := tool.AgentDef{Origin: tool.AgentOriginExplicit, DisallowedTools: []string{"Write"}}
-	got := agentDefinitionAuthorityCeiling(def, []string{"Read", "Write", "mcp__github__issues", "mcp__github__issues"})
-	if got.AllowsTool("Write") || !got.AllowsTool("Read") || !got.AllowsTool("mcp__github__issues") || len(got.Tools) != 2 {
+	got := agentDefinitionAuthorityCeiling(def, []string{"Read", "Write", "mcp__github__issues", "mcp__github__issues"}, []string{governance.MCPResourceCapability("github")})
+	if got.AllowsTool("Write") || !got.AllowsTool("Read") || !got.AllowsTool("mcp__github__issues") || !got.AllowsTool(governance.MCPResourceCapability("github")) || len(got.Tools) != 3 {
 		t.Fatalf("ceiling = %+v", got)
 	}
 }
 
 func TestADR_0228_AuthorityEvaluator_Scenario6_MintedRootCanDescend(t *testing.T) {
-	root := mintRootAuthority(rootAuthorityCatalog(t), session.SessionKindMain)
+	root := mintRootAuthority(rootAuthorityCatalog(t), nil, session.SessionKindMain)
 	child, err := governance.ConsumeDelegationHop(root.CapabilitySet)
 	if err != nil {
 		t.Fatalf("ConsumeDelegationHop(root): %v", err)
@@ -61,7 +62,7 @@ func TestADR_0228_AuthorityEvaluator_Scenario6_MintedRootCanDescend(t *testing.T
 }
 
 func TestADR_0228_AuthorityEvaluator_Scenario6_NonSpawnDerivationPointsAreExplicit(t *testing.T) {
-	root := mintRootAuthority(rootAuthorityCatalog(t), session.SessionKindMain)
+	root := mintRootAuthority(rootAuthorityCatalog(t), nil, session.SessionKindMain)
 	svc, err := server.NewService(server.Config{
 		Engine:        agent.NewEngine(agent.Deps{Catalog: tool.NewCatalog()}),
 		Store:         memstore.New(),

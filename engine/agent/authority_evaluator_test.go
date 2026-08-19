@@ -257,3 +257,77 @@ func TestADR_0228_AuthorityEvaluator_Scenario3_DisclosureIsNotLoadBearing(t *tes
 	}
 	t.Fatal("missing authority denial result")
 }
+
+func TestADR_0228_AuthorityEvaluator_Scenario3_ResourceReachDerivesFromToolNames(t *testing.T) {
+	const server = "resource-only"
+	capability := governance.MCPResourceCapability(server)
+
+	t.Run("resource-only server is authorized by its derived capability", func(t *testing.T) {
+		resourceTool := &authorityTool{name: "ReadMcpResource"}
+		evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Allowed: true}}
+		eng := newEngine(agent.Deps{
+			LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("resource", "ReadMcpResource", `{"server":"resource-only","uri":"secret://must-not-forward"}`))),
+			Catalog:            catalogWith(t, resourceTool),
+			AuthorityEvaluator: evaluator,
+		})
+
+		drain(eng.Run(context.Background(), authoritySession(t, capability), agent.MemEnv("/ws"), agent.RunRequest{Text: "read resource"}))
+		if got := resourceTool.ran.Load(); got != 1 {
+			t.Fatalf("resource-only server execution = %d, want 1", got)
+		}
+		evaluator.mu.Lock()
+		defer evaluator.mu.Unlock()
+		if len(evaluator.requests) != 1 {
+			t.Fatalf("evaluator requests = %d, want 1", len(evaluator.requests))
+		}
+		request := evaluator.requests[0]
+		if request.ToolName != capability || request.Action != "ReadMcpResource" {
+			t.Fatalf("request capability/action = %q/%q, want %q/ReadMcpResource", request.ToolName, request.Action, capability)
+		}
+		encoded, err := json.Marshal(request)
+		if err != nil {
+			t.Fatalf("marshal authority request: %v", err)
+		}
+		if strings.Contains(string(encoded), "secret://must-not-forward") {
+			t.Fatalf("authority request forwarded resource URI: %s", encoded)
+		}
+	})
+
+	t.Run("local evaluator checks the derived capability", func(t *testing.T) {
+		resourceTool := &authorityTool{name: "ListMcpResources"}
+		eng := newEngine(agent.Deps{
+			LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("local", "ListMcpResources", `{"server":"resource-only"}`))),
+			Catalog:            catalogWith(t, resourceTool),
+			AuthorityEvaluator: localauthority.New(),
+		})
+
+		drain(eng.Run(context.Background(), authoritySession(t, capability), agent.MemEnv("/ws"), agent.RunRequest{Text: "list resource"}))
+		if got := resourceTool.ran.Load(); got != 1 {
+			t.Fatalf("local evaluator resource execution = %d, want 1", got)
+		}
+	})
+
+	t.Run("aggregate resource operation fails closed before evaluation", func(t *testing.T) {
+		resourceTool := &authorityTool{name: "ListMcpResources"}
+		evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Allowed: true}}
+		eng := newEngine(agent.Deps{
+			LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("aggregate", "ListMcpResources", `{}`))),
+			Catalog:            catalogWith(t, resourceTool),
+			AuthorityEvaluator: evaluator,
+		})
+
+		events := drain(eng.Run(context.Background(), authoritySession(t, capability), agent.MemEnv("/ws"), agent.RunRequest{Text: "list resources"}))
+		if resourceTool.ran.Load() != 0 || evaluator.calls() != 0 {
+			t.Fatalf("aggregate resource call ran=%d evaluations=%d, want 0/0", resourceTool.ran.Load(), evaluator.calls())
+		}
+		for _, event := range events {
+			if event.ToolResult != nil && event.ToolResult.CallID == "aggregate" {
+				if !strings.Contains(event.ToolResult.Content, "target is invalid") {
+					t.Fatalf("aggregate result = %q, want concrete-server failure", event.ToolResult.Content)
+				}
+				return
+			}
+		}
+		t.Fatal("missing aggregate resource denial")
+	})
+}

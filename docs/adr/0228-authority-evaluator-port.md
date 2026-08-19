@@ -29,10 +29,11 @@ resources. Persist the set and provenance with the session. Resume checks the
 persisted child set against the caller's current set without consuming another hop.
 
 Authorize each execution through `port.AuthorityEvaluator` at the engine execution
-chokepoint. The request contains the carried set, tool name, delegation depth,
-principal, and only a normalized non-secret resource descriptor where one is known.
-It never contains raw tool arguments or credentials. A denial is distinct from an
-evaluator failure; failures fail closed and are diagnosable.
+chokepoint. The request contains the carried set, the capability-selected tool name,
+the distinct operation action, delegation depth, principal, and only a normalized
+non-secret resource descriptor where one is known. It never contains raw tool
+arguments or credentials. A denial is distinct from an evaluator failure; failures
+fail closed and are diagnosable.
 
 Select an evaluator explicitly in composition. `local` is the default in-process
 exact-name evaluator. `noop` is an explicit no-enforcement deployment mode. `cedar`
@@ -43,8 +44,10 @@ The Cedar dependency remains outside the engine module.
 
 For `CallMcpWithQuery`, reconstruct the addressed `mcp__<server>__<tool>` name at the
 dispatch boundary and authorize that target rather than authorizing the meta-tool as a
-whole. MCP resource reach derives from names in the carried set; it is not an
-independent grant.
+whole. MCP resources use a reserved opaque per-server derived capability minted from
+the resolved resource snapshot; it is not a catalog tool or independently authored
+grant. Resource operations require a named server, select that capability, and retain
+`ListMcpResources` or `ReadMcpResource` as their evaluator action.
 
 ## Consequences
 

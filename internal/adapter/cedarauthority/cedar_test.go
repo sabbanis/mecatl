@@ -59,6 +59,27 @@ forbid(principal, action, resource) when { resource.path like "/workspace/vendor
 	}
 }
 
+func TestADR_0228_AuthorityEvaluator_Scenario7_CedarReceivesResourceOperationAction(t *testing.T) {
+	t.Parallel()
+
+	evaluator, err := New([]byte(`
+permit(principal, action, resource);
+forbid(principal, action == Tool::"ReadMcpResource", resource);
+`))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+	request := validRequest(governance.MCPResourceCapability("resource-only"))
+	request.Action = "ReadMcpResource"
+	decision, err := evaluator.AuthorizeTool(context.Background(), request)
+	if err != nil {
+		t.Fatalf("AuthorizeTool: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatalf("Cedar allowed resource read despite action-specific forbid: %+v", decision)
+	}
+}
+
 func TestADR_0228_AuthorityEvaluator_Scenario7_DefinitionGroupGrantIsRejected(t *testing.T) {
 	t.Parallel()
 
@@ -95,6 +116,7 @@ func validRequest(tool string) port.AuthorityRequest {
 	return port.AuthorityRequest{
 		CapabilitySet:   governance.CapabilitySet{Tools: []string{"Read"}, RemainingDelegationDepth: 1},
 		ToolName:        tool,
+		Action:          tool,
 		DelegationDepth: 1,
 		Principal:       port.AuthorityPrincipal{Definition: "reviewer", Instance: "instance", Owner: "owner"},
 	}

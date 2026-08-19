@@ -1111,6 +1111,7 @@ func (e *Engine) authorizeExecution(ctx context.Context, r *Run, sess *session.S
 	request := port.AuthorityRequest{
 		CapabilitySet:   authority.CapabilitySet,
 		ToolName:        target,
+		Action:          call.Name,
 		DelegationDepth: authority.CapabilitySet.RemainingDelegationDepth,
 		Principal: port.AuthorityPrincipal{
 			Definition: authorityDefinition(authority),
@@ -1149,8 +1150,9 @@ func authorityOwner(owner *session.Principal) string {
 }
 
 // authorityTarget translates meta-tools whose actual reach is named in their
-// arguments. Resource reach is selected only from carried MCP tool names.
-func authorityTarget(call session.ToolCall, set governance.CapabilitySet) (string, error) {
+// arguments. Resource operations authorize the server's opaque derived capability,
+// while retaining their actual meta-tool name as the evaluator action.
+func authorityTarget(call session.ToolCall, _ governance.CapabilitySet) (string, error) {
 	switch call.Name {
 	case callMcpWithQueryToolName:
 		var args struct {
@@ -1168,10 +1170,7 @@ func authorityTarget(call session.ToolCall, set governance.CapabilitySet) (strin
 		if err := json.Unmarshal(call.Args, &args); err != nil || strings.TrimSpace(args.Server) == "" {
 			return "", errors.New("MCP resource target is invalid")
 		}
-		if target, ok := authorityMCPToolName(set, strings.TrimSpace(args.Server)); ok {
-			return target, nil
-		}
-		return "", fmt.Errorf("MCP resources for server %q are absent from the capability set", strings.TrimSpace(args.Server))
+		return governance.MCPResourceCapability(strings.TrimSpace(args.Server)), nil
 	default:
 		return call.Name, nil
 	}
@@ -1250,26 +1249,6 @@ func authorityWorkspaceResource(path string, env tool.Environment) (*port.Author
 		Path:      filepath.ToSlash(target),
 		Workspace: filepath.ToSlash(root),
 	}, nil
-}
-
-// authorityMCPToolName returns a carried tool name for server. It is the sole
-// derivation of that server's resource reach; resource tools add no grant.
-func authorityMCPToolName(set governance.CapabilitySet, server string) (string, bool) {
-	prefix := "mcp__" + strings.TrimSpace(server) + "__"
-	if prefix == "mcp____" {
-		return "", false
-	}
-	for _, name := range set.Tools {
-		if strings.HasPrefix(name, prefix) && len(name) > len(prefix) {
-			return name, true
-		}
-	}
-	return "", false
-}
-
-func authorityAllowsMCPResources(set governance.CapabilitySet, server string) bool {
-	_, ok := authorityMCPToolName(set, server)
-	return ok
 }
 
 // timeExecute runs the tool and reports its elapsed wall time as (Clock.Now −

@@ -18,6 +18,7 @@ func TestADR_0228_AuthorityEvaluator_Scenario3_RequestShapeIsNeutralAndCarriesTh
 			FileSystem:               true,
 		},
 		ToolName:        "Read",
+		Action:          "Read",
 		DelegationDepth: 1,
 		Principal: port.AuthorityPrincipal{
 			Definition: "code-reviewer",
