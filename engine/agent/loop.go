@@ -1945,6 +1945,8 @@ func (e *Engine) buildRequest(ctx context.Context, r *Run, sess *session.Session
 	} else {
 		cfg.Tools = e.deps.Catalog.Specs(sess.Mode)
 	}
+	authority, authorityBound := sess.BoundAuthority()
+	cfg.Tools = authoritySpecs(cfg.Tools, authority.CapabilitySet, authorityBound)
 	// Run-scoped extra tools (RunRequest.ExtraTools) are advertised this run only,
 	// after the catalog specs, so a structured-output SubmitResult (or any per-run
 	// tool) is visible to the model without being registered into the shared catalog.

@@ -148,25 +148,68 @@ func TestADR_0228_AuthorityEvaluator_Scenario3_AdaptersSatisfyConformanceSuite(t
 }
 
 func TestADR_0228_AuthorityEvaluator_Scenario3_MetaToolIsAuthorizedAgainstItsTarget(t *testing.T) {
-	meta := &authorityTool{name: "CallMcpWithQuery"}
-	evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Reason: "target is absent"}}
-	eng := newEngine(agent.Deps{
-		LLM:     mockllm.New(mockllm.ToolCallTurn(toolCall("meta", "CallMcpWithQuery", `{"server":"github","tool":"create_issue"}`))),
-		Catalog: catalogWith(t, meta), AuthorityEvaluator: evaluator,
-	})
-	events := drain(eng.Run(context.Background(), authoritySession(t, "CallMcpWithQuery"), agent.MemEnv("/ws"), agent.RunRequest{Text: "call"}))
-	if meta.ran.Load() != 0 || evaluator.calls() != 1 {
-		t.Fatalf("meta tool ran %d times with %d evaluator calls, want 0 and 1", meta.ran.Load(), evaluator.calls())
-	}
-	for _, event := range events {
-		if event.ToolResult != nil && event.ToolResult.CallID == "meta" {
-			if !strings.Contains(event.ToolResult.Content, `mcp__github__create_issue`) {
-				t.Fatalf("target denial did not name reconstructed target: %q", event.ToolResult.Content)
-			}
-			return
+	const (
+		metaTool      = "CallMcpWithQuery"
+		allowedTarget = "mcp__github__create_issue"
+		deniedTarget  = "mcp__github__list_issues"
+	)
+
+	t.Run("allowed target works while the meta-tool is absent", func(t *testing.T) {
+		var request port.LLMRequest
+		meta := &authorityTool{name: metaTool}
+		eng := newEngine(agent.Deps{
+			LLM: mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(got port.LLMRequest) {
+				request = got
+			})}, mockllm.ToolCallTurn(toolCall("meta", metaTool, `{"server":"github","tool":"create_issue"}`)), mockllm.TextTurn("done")),
+			Catalog:            catalogWith(t, meta),
+			AuthorityEvaluator: localauthority.New(),
+		})
+
+		drain(eng.Run(context.Background(), authoritySession(t, allowedTarget), agent.MemEnv("/ws"), agent.RunRequest{Text: "call"}))
+		if meta.ran.Load() != 1 {
+			t.Fatalf("allowed target did not execute through the meta-tool: ran %d times", meta.ran.Load())
 		}
-	}
-	t.Fatal("missing meta tool result")
+		if _, ok := specByName(request.Tools, metaTool); !ok {
+			t.Fatal("meta-tool was not disclosed despite a reachable remote target")
+		}
+	})
+
+	t.Run("denied target is refused while the meta-tool is absent", func(t *testing.T) {
+		meta := &authorityTool{name: metaTool}
+		eng := newEngine(agent.Deps{
+			LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("meta", metaTool, `{"server":"github","tool":"list_issues"}`))),
+			Catalog:            catalogWith(t, meta),
+			AuthorityEvaluator: localauthority.New(),
+		})
+
+		events := drain(eng.Run(context.Background(), authoritySession(t, allowedTarget), agent.MemEnv("/ws"), agent.RunRequest{Text: "call"}))
+		if meta.ran.Load() != 0 {
+			t.Fatalf("denied target executed through the meta-tool %d times", meta.ran.Load())
+		}
+		for _, event := range events {
+			if event.ToolResult != nil && event.ToolResult.CallID == "meta" {
+				if !strings.Contains(event.ToolResult.Content, deniedTarget) {
+					t.Fatalf("target denial did not name reconstructed target: %q", event.ToolResult.Content)
+				}
+				return
+			}
+		}
+		t.Fatal("missing meta tool result")
+	})
+
+	t.Run("meta-tool is hidden without a reachable target", func(t *testing.T) {
+		var request port.LLMRequest
+		eng := newEngine(agent.Deps{
+			LLM: mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(got port.LLMRequest) {
+				request = got
+			})}, mockllm.TextTurn("done")),
+			Catalog: catalogWith(t, &authorityTool{name: metaTool}),
+		})
+		drain(eng.Run(context.Background(), authoritySession(t, "Read"), agent.MemEnv("/ws"), agent.RunRequest{Text: "call"}))
+		if _, ok := specByName(request.Tools, metaTool); ok {
+			t.Fatal("meta-tool was disclosed without a reachable remote target")
+		}
+	})
 }
 
 func TestADR_0228_AuthorityEvaluator_Scenario7_ResourceAttributeIsDerivedWithoutRawArguments(t *testing.T) {
@@ -232,30 +275,92 @@ func TestADR_0228_AuthorityEvaluator_Scenario7_ResourceAttributeIsDerivedWithout
 }
 
 func TestADR_0228_AuthorityEvaluator_Scenario3_DisclosureIsNotLoadBearing(t *testing.T) {
-	denied := &authorityTool{name: "Write"}
-	evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Reason: "tool is absent from the capability set"}}
-	eng := newEngine(agent.Deps{
-		LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", "Write", `{"path":"README.md","content":"x"}`))),
-		Catalog:            catalogWith(t, denied),
-		AuthorityEvaluator: evaluator,
+	t.Run("required control tools remain disclosed", func(t *testing.T) {
+		var request port.LLMRequest
+		eng := newEngine(agent.Deps{
+			LLM: mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(got port.LLMRequest) {
+				request = got
+			})}, mockllm.TextTurn("done")),
+			Catalog:            catalogWith(t, &authorityTool{name: "Read"}),
+			AuthorityEvaluator: localauthority.New(),
+			ProgressiveTools:   true,
+		})
+		drain(eng.Run(context.Background(), authoritySession(t, "Read"), agent.MemEnv("/ws"), agent.RunRequest{
+			Text:       "work",
+			ExtraTools: []tool.Tool{&authorityTool{name: "RunControl"}},
+		}))
+		if _, ok := specByName(request.Tools, tool.ToolSearchName); !ok {
+			t.Fatal("required ToolSearch control tool is missing from the request")
+		}
+		if _, ok := specByName(request.Tools, "RunControl"); !ok {
+			t.Fatal("run-scoped control tool is missing from the request")
+		}
 	})
 
-	events := drain(eng.Run(context.Background(), authoritySession(t, "Read"), agent.MemEnv("/ws"), agent.RunRequest{Text: "write"}))
-	if got := denied.ran.Load(); got != 0 {
-		t.Fatalf("disclosed tool executed %d times despite authority denial", got)
-	}
-	if got := evaluator.calls(); got != 1 {
-		t.Fatalf("evaluator calls = %d, want 1", got)
-	}
-	for _, event := range events {
-		if event.ToolResult != nil && event.ToolResult.CallID == "call-1" {
-			if !event.ToolResult.IsError || !strings.Contains(event.ToolResult.Content, "denied by authority") {
-				t.Fatalf("authority result = %+v, want distinct authority denial", event.ToolResult)
+	t.Run("request and ToolSearch expose only carried tools", func(t *testing.T) {
+		var request port.LLMRequest
+		read := &authorityTool{name: "Read"}
+		write := &authorityTool{name: "Write"}
+		eng := newEngine(agent.Deps{
+			LLM: mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(got port.LLMRequest) {
+				request = got
+			})}, mockllm.ToolCallTurn(toolCall("search", tool.ToolSearchName, `{"query":""}`)), mockllm.TextTurn("done")),
+			Catalog:            catalogWith(t, read, write),
+			AuthorityEvaluator: localauthority.New(),
+			ProgressiveTools:   true,
+		})
+
+		events := drain(eng.Run(context.Background(), authoritySession(t, "Read", tool.ToolSearchName), agent.MemEnv("/ws"), agent.RunRequest{Text: "search"}))
+		if _, ok := specByName(request.Tools, "Read"); !ok {
+			t.Fatal("carried tool is missing from the request")
+		}
+		if _, ok := specByName(request.Tools, "Write"); ok {
+			t.Fatal("tool absent from carried authority was disclosed")
+		}
+		if _, ok := specByName(request.Tools, tool.ToolSearchName); !ok {
+			t.Fatal("required ToolSearch control tool is missing from the request")
+		}
+		for _, event := range events {
+			if event.ToolResult == nil || event.ToolResult.CallID != "search" {
+				continue
+			}
+			if strings.Contains(event.ToolResult.Content, `"name":"Write"`) {
+				t.Fatalf("ToolSearch returned tool absent from carried authority: %s", event.ToolResult.Content)
+			}
+			if !strings.Contains(event.ToolResult.Content, `"name":"Read"`) {
+				t.Fatalf("ToolSearch omitted carried tool: %s", event.ToolResult.Content)
 			}
 			return
 		}
-	}
-	t.Fatal("missing authority denial result")
+		t.Fatal("missing ToolSearch result")
+	})
+
+	t.Run("stale call is independently refused at execute", func(t *testing.T) {
+		denied := &authorityTool{name: "Write"}
+		evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Reason: "tool is absent from the capability set"}}
+		eng := newEngine(agent.Deps{
+			LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", "Write", `{"path":"README.md","content":"x"}`))),
+			Catalog:            catalogWith(t, denied),
+			AuthorityEvaluator: evaluator,
+		})
+
+		events := drain(eng.Run(context.Background(), authoritySession(t, "Read"), agent.MemEnv("/ws"), agent.RunRequest{Text: "write"}))
+		if got := denied.ran.Load(); got != 0 {
+			t.Fatalf("undisclosed stale tool executed %d times despite authority denial", got)
+		}
+		if got := evaluator.calls(); got != 1 {
+			t.Fatalf("evaluator calls = %d, want 1", got)
+		}
+		for _, event := range events {
+			if event.ToolResult != nil && event.ToolResult.CallID == "call-1" {
+				if !event.ToolResult.IsError || !strings.Contains(event.ToolResult.Content, "denied by authority") {
+					t.Fatalf("authority result = %+v, want distinct authority denial", event.ToolResult)
+				}
+				return
+			}
+		}
+		t.Fatal("missing authority denial result")
+	})
 }
 
 func TestADR_0228_AuthorityEvaluator_Scenario3_ResourceReachDerivesFromToolNames(t *testing.T) {

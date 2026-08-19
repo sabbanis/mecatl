@@ -1060,6 +1060,12 @@ func (e *Engine) execute(ctx context.Context, r *Run, sess *session.Session, env
 	var dur time.Duration
 	if authorityResult != nil {
 		res = *authorityResult
+	} else if _, ok := t.(*tool.Search); ok {
+		if authority, bound := sess.BoundAuthority(); bound {
+			res = authorityToolSearch(c, e.deps.Catalog, authority.CapabilitySet)
+		} else {
+			res, dur = e.timeExecute(ctx, r, sess, env, turnIdx, c, t, execStart)
+		}
 	} else {
 		res, dur = e.timeExecute(ctx, r, sess, env, turnIdx, c, t, execStart)
 	}
