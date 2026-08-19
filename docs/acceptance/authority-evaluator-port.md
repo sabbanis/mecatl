@@ -155,11 +155,10 @@ The decision moves behind `port.AuthorityEvaluator`. It is consulted at
 nowhere else. The request carries the derived set, so the evaluator checks a
 carried value rather than looking one up.
 
-Disclosure and ToolSearch still filter, but as request construction rather than
-enforcement: sending the model a tool that will be refused is a wrong request,
-not a safe one. What makes that honest is AC3.6 — the proof that a disclosed
-tool absent from the set is refused anyway, so disclosure may be stale or
-over-broad without being unsafe.
+Disclosure and ToolSearch filter to the carried capability set as request construction,
+but `execute` remains the enforcement boundary: an omitted or stale tool call is
+still independently refused. Sending the model a capability that will be refused
+is a wrong request, not a safe one.
 
 One tool addresses its target by argument instead of by name. `CallMcpWithQuery`
 takes `{server, tool}` and dispatches to any connected server, so a name
@@ -180,9 +179,10 @@ dispatch boundary reconstructs the namespaced name and re-checks it.
   - verify: `TestADR_0228_AuthorityEvaluator_Scenario3_AdaptersSatisfyConformanceSuite`
 - AC3.6: Capability filtering at disclosure and at ToolSearch shapes the request only and is never relied on for enforcement. Dispatch refuses independently: a tool that is disclosed but absent from the derived set is still refused at `execute`, and no enforcement site survives between lookup and dispatch.
   - verify: `TestADR_0228_AuthorityEvaluator_Scenario3_DisclosureIsNotLoadBearing`
-- AC3.7: A call to the `CallMcpWithQuery` meta-tool is authorized against the remote tool it targets, not against the meta-tool's own name: the decorator reconstructs `mcp__<server>__<tool>` from the call arguments and applies the same predicate as `execute`, refusing with a message naming the reconstructed target.
+- AC3.7: A call to `CallMcpWithQuery` is authorized against the remote tool it targets, not against the meta-tool's own name: the decorator reconstructs `mcp__<server>__<tool>` from the call arguments and applies the same predicate as `execute`, refusing with a message naming the reconstructed target. The meta-tool is a transport helper, not a second grant, and is disclosed only when a reachable target exists.
   - verify: `TestADR_0228_AuthorityEvaluator_Scenario3_MetaToolIsAuthorizedAgainstItsTarget`
-- AC3.8: A bound run may reach an MCP server's resources only if its derived set contains at least one tool name from that server; the reach is derived from the carried names and is not a separately authored grant.
+- AC3.8: A bound run reaches MCP resources through a derived per-server resource capability carried in its set. Resource-only servers are reachable when their own capability is present; aggregate resource operations require a concrete server. The evaluator receives that capability separately from the resource operation action, and no separately authored grant exists.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario3_ResourceReachDerivesFromToolNames`
   - verify: `TestADR_0228_AuthorityEvaluator_Scenario3_ResourceReachDerivesFromToolNames`
 
 ---
