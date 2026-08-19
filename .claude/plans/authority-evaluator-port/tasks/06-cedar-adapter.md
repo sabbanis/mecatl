@@ -2,7 +2,7 @@
 id: 06-resource-attribute
 title: Derive a neutral resource attribute at the execution boundary
 blocked_by: [03-execution-evaluator, 05-delegation-derivation]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
