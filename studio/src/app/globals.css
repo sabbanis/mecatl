@@ -193,6 +193,16 @@
     @apply bg-background text-foreground;
     font-family: var(--font-inter), sans-serif;
   }
+  /* Paint the canvas behind the app with the shell gradient's terminal
+     colour: in the installed iOS PWA, 100dvh can under-report and leave a
+     strip below the app uncovered, and overscroll exposes the canvas too.
+     Matching the gradient's end keeps both invisible. */
+  html {
+    background-color: #06202a;
+  }
+  html.dark {
+    background-color: #02141b;
+  }
 }
 
 @layer utilities {
