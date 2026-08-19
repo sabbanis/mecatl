@@ -12,13 +12,11 @@ import (
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
 )
 
-// runSoul is the Open transition for the read-only soul (persona) surface. It
-// validates (idle + fetcher wired), blurs the textarea, constructs the state
-// dynamically (never a pre-declared Model field), installs it on m.modal, and
-// fires the GetSoul RPC; the result lands on soulState.HandleMsg. Only
-// registered when caps.Soul && the soul collaborator is wired, so the nil/idle
-// guards are belt-and-braces. The deps base is set once here (deps-held-on-
-// state), built over &m.
+// runSoul is the Open transition for the soul (persona) surface. It validates
+// (idle + fetcher wired), blurs the textarea, constructs the state dynamically
+// (never a pre-declared Model field), installs it on m.modal, and fires the
+// GetSoul RPC; the result lands on soulState.HandleMsg. Only registered when
+// caps.Soul && the soul collaborator is wired.
 func (m Model) runSoul() (tea.Model, tea.Cmd) {
 	if m.phase != phaseIdle || m.deps.Soul == nil {
 		return m, nil
@@ -28,23 +26,17 @@ func (m Model) runSoul() (tea.Model, tea.Cmd) {
 	return m, client.GetSoulCmd(m.deps.Ctx, m.deps.Soul)
 }
 
-// soulView is the active soul (persona) inspection overlay (none = closed). Like
-// the /skills and /agents panels it is a read-only inventory layered over the
-// conversation: idle-only, esc to dismiss. UNLIKE those (short lists) the soul is a
-// multi-KB BODY of persona text, so this panel is SCROLLABLE: a line-window over
-// the content with pgup/pgdown (and up/down, home/end) moving the viewport. The
-// soul is agent-read-only; the panel only displays it, never edits it.
+// soulView is the soul panel's view discriminator. The soul panel is a
+// read-only, scrollable persona inspector: idle-only, esc to dismiss, a
+// line-window over the content with pgup/pgdown (and up/down, home/end) moving
+// the viewport. The soul is agent-read-only; the panel only displays it.
 type soulView int
 
 const (
-	// soulNone is the zero value of soulView and represents "overlay closed". It is
-	// NOT read by production code (the closed state is m.modal == nil, not
-	// view == soulNone — the surface is created with view: soulPanel and torn down
-	// by nil-ing m.modal). It is kept because the iota zero value is load-bearing
-	// for Render's defense-in-depth: Render guards `if s.view != soulPanel` so a
-	// zero/uninitialized soulState renders empty rather than as an open panel. If
-	// soulNone were removed, soulPanel would become the zero value and that guard
-	// would no longer catch a zero soulState.
+	// soulNone is the iota zero value; it is load-bearing for Render's
+	// defense-in-depth guard (`if s.view != soulPanel`), so a zero/uninitialized
+	// soulState renders empty rather than as an open panel. The closed state is
+	// m.modal == nil, not view == soulNone.
 	soulNone  soulView = iota
 	soulPanel          // read-only, scrollable persona inspector
 )
@@ -56,17 +48,12 @@ const (
 // this scrolls; shorter content shows in full with no scroll indicator.
 const soulBodyLines = 12
 
-// soulState holds the soul overlay state plus its deps: it is constructed at
-// Open (runSoul sets m.modal = &soulState{view: soulPanel, loading: true,
-// deps: (&m).surfaceDeps()}) and lives ONLY inside the Model's one
-// `modal surface` interface field — never a Model field. The deps field holds
-// the SHARED ambient base (theme/keys/marks/caps), set once at Open — the
-// deps-held-on-state contract, so the interface methods below take NO deps
-// param; geometry is a per-call Render input (immediate-mode — no resize
-// event). The Soul value is replaced
-// wholesale on each RPC result (never mutated in place) so the value semantics
-// hold. scroll is the 0-based index of the first visible content line.
-// soulState implements `surface` on POINTER receivers.
+// soulState is the soul overlay's state: it is constructed at Open (runSoul)
+// and lives ONLY inside the Model's one `modal surface` interface field —
+// never a pre-declared Model field. deps is the shared ambient base
+// (theme/keys/marks/caps), set once at Open. The Soul value is replaced
+// wholesale on each RPC result (never mutated in place). soulState implements
+// `surface` on POINTER receivers.
 type soulState struct {
 	view    soulView
 	loading bool // the GetSoul RPC is in flight
@@ -76,17 +63,13 @@ type soulState struct {
 	deps    surfaceDeps // the shared ambient base, set once at Open
 }
 
-// Render draws the soul panel body UNSCENTERED, sized from the offered geometry
-// (width drives the card text budget; the scroll window stays the fixed
-// soulBodyLines-height line window over the wrapped content): the parent
-// centers it via centerCard in view.go's renderBody arm. All server-derived
+// Render returns the soul panel body sized from the offered geometry: width
+// drives the card text budget; the scroll window stays the fixed
+// soulBodyLines-height line window over the wrapped content. All server-derived
 // strings are terminal-sanitized. Regions are nil (read-only, not clickable).
-// The height param goes unused BY DESIGN: the soul panel's scroll window is the
-// FIXED soulBodyLines line budget (deterministic goldens, terminal-height-
-// independent), not a function of terminal height. The signature still takes it
-// because the surface contract offers the full conversation geometry — taller
-// scrolling surfaces (approval/plan at their migration) will read it. No deps
-// param: Render reads the ambient base from s.deps.
+// The height param goes unused by design: the scroll window is the FIXED
+// soulBodyLines line budget (deterministic goldens, terminal-height-
+// independent), not a function of terminal height.
 func (s *soulState) Render(width, _ int) (string, []ClickableRegion) {
 	if s.view != soulPanel {
 		return "", nil
@@ -95,10 +78,9 @@ func (s *soulState) Render(width, _ int) (string, []ClickableRegion) {
 }
 
 // HandleKey routes key presses while the soul overlay is open. esc self-closes
-// (closed=true; the parent refocuses — Close returns nothing); the scroll keys
-// (pgup/pgdown, up/down, home/end) move the content window. Every other key is
-// swallowed (handled=true) so it never leaks into idle input. Key bindings and
-// bindings read from s.deps, not a param.
+// (closed=true); the scroll keys (pgup/pgdown, up/down, home/end) move the
+// content window. Every other key is swallowed (handled=true) so it never leaks
+// into idle input. Key bindings read from s.deps.
 func (s *soulState) HandleKey(msg tea.KeyPressMsg) (cmd tea.Cmd, handled bool, closed bool) {
 	switch {
 	case key.Matches(msg, s.deps.keys.Close):
@@ -119,11 +101,8 @@ func (s *soulState) HandleKey(msg tea.KeyPressMsg) (cmd tea.Cmd, handled bool, c
 	return nil, true, false
 }
 
-// HandleWheel consumes the wheel while the soul modal is open: a modal
-// captures input, so the wheel behind it is DEAD — handled=true is the
-// default-consume contract. (Pre-redesign soul returned false and the wheel
-// fell through to the conversation viewport; that is now only allowed when a
-// surface deliberately delegates.)
+// HandleWheel consumes the wheel while the soul modal is open: the modal
+// captures input, so it returns handled=true.
 func (*soulState) HandleWheel(tea.MouseWheelMsg) (cmd tea.Cmd, handled bool) {
 	return nil, true
 }
@@ -147,11 +126,9 @@ func (s *soulState) HandleMsg(msg tea.Msg) (cmd tea.Cmd, handled bool, closed bo
 	return nil, true, false
 }
 
-// Close tears the overlay down and returns NOTHING: teardown here is a no-op
-// (the Model owns the textarea, so the parent dispatchSurfaceKey/
-// dispatchSurfaceMsg refocus path — m.ta.Focus() — is Model-authored, not a
-// cmd the surface manufactures). A GetSoul RPC that lands after close falls
-// through HandleMsg's handled=false and is dropped at the Model.
+// Close tears the overlay down; teardown is a no-op for soul (the surface
+// holds no resource). A GetSoul RPC that lands after close falls through
+// HandleMsg's handled=false and is dropped at the Model.
 func (*soulState) Close() {}
 
 // soulMaxScroll is the largest valid scroll offset for content: total lines minus

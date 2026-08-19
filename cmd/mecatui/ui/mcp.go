@@ -407,41 +407,6 @@ func (m Model) updateMCPMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	}
 }
 
-// updateInventoryMsgs is the legacy fallback chain for the UNMIGRATED inventory
-// overlays (agentsInv, userModel, reflections, dream, worktrees, schedule,
-// sessions), in one fall-through chain so dispatchNonInputMsg stays under the
-// cyclomatic cap. Each per-overlay helper returns handled=false for a non-matching
-// msg; most carry no follow-up command (the cmd slot is nil), while /schedule's
-// ScheduleActionMsg re-lists on success so the cmd is propagated. Surfaces
-// migrated onto the modal (soul today) no longer ride this chain — HandleMsg
-// owns their routing. Lives here (over the inventory family) rather than
-// worktrees.go: the chain is a generic inventory dispatcher, not a worktrees
-// concern.
-func (m Model) updateInventoryMsgs(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
-	if mm, handled := m.updateAgentsInvMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, handled := m.updateUserModelMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, handled := m.updateReflectionsMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, handled := m.updateDreamMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, handled := m.updateWorktreesMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, cmd, handled := m.updateScheduleMsg(msg); handled {
-		return mm, cmd, true
-	}
-	if mm, cmd, handled := m.updateSessionsMsg(msg); handled {
-		return mm, cmd, true
-	}
-	return m, nil, false
-}
-
 // joinContents flattens read-resource contents into a previewable string. Binary
 // blobs (no Text) are summarised rather than dumped.
 func joinContents(cs []client.MCPResourceContents) string {

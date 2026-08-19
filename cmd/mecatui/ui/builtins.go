@@ -302,9 +302,6 @@ func (m Model) runSkills() (tea.Model, tea.Cmd) {
 	return m.openSkills()
 }
 
-// runSoul: the Open transition lives in soul.go (one-file-owns-it); this file
-// keeps only the {name, desc, run: Model.runSoul} registration.
-
 // runUserModel opens the read-only user-model inspection panel. Only registered
 // when caps.UserModel && the user-model collaborator is wired, so openUserModel's
 // own nil/idle guards are belt-and-braces here.

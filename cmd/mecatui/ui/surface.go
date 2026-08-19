@@ -19,19 +19,18 @@ import (
 )
 
 // surface is an overlay that owns the conversation region while open: it
-// renders a center-ready body, consumes keys/wheel/msgs, and holds its teardown.
-// Model holds at most ONE (the modal surface field); nil-vs-set IS the active
-// predicate. Implemented by value-state structs (soulState today) on POINTER
-// receivers strictly so the Model can call them on the single instance the
-// interface value holds and mutate it in place — no copy-back ceremony.
+// renders a body, consumes keys/wheel/msgs, and holds its teardown. The Model
+// holds at most ONE (the modal surface field); nil-vs-set IS the active
+// predicate. Implemented by state structs on POINTER receivers strictly so the
+// Model can call them on the single instance the interface value holds and
+// mutate it in place — no copy-back ceremony.
 // GEOMETRY (immediate-mode, the ImGui discipline): geometry flows through
 // Render on EVERY frame — there is NO resize event. A surface sizes itself
 // from the offered width/height args inline on every call and MUST NOT center
-// its own output (view.go centers via centerCard). Geometry-dependent view
-// state is re-derived at the TOP of Render from the fresh args (marked
-// `// view cache:` on the struct), so it can never be stale and needs no
-// event. Parents place, surfaces size. Region coordinates are frame-relative;
-// the parent offsets them.
+// its own output. Geometry-dependent view state is re-derived at the TOP of
+// Render from the fresh args (marked `// view cache:` on the struct), so it
+// can never be stale and needs no event. Parents place, surfaces size. Region
+// coordinates are frame-relative; the parent offsets them.
 type surface interface {
 	// Render is the size QUERY: returns the center-ready body and the regions
 	// it built in the SAME layout pass, given the offered geometry. The surface
@@ -43,8 +42,8 @@ type surface interface {
 
 	// HandleKey consumes or passes a key press. handled=true means the surface
 	// swallowed it (idle input never sees it). Close is driven INSIDE HandleKey
-	// (esc self-closes): the returned closed flag tells the Model to nil the
-	// field and re-focus the textarea (Close owns no cmd — see below).
+	// (esc self-closes): the returned closed flag tells the Model to tear the
+	// surface down.
 	HandleKey(msg tea.KeyPressMsg) (cmd tea.Cmd, handled bool, closed bool)
 
 	// HandleMsg consumes or passes a NON-input message: an RPC result
@@ -52,8 +51,8 @@ type surface interface {
 	// non-key/wheel Msg through the open modal BEFORE its own generic reducer,
 	// so the surface owns its RPC-backed state and can be created dynamically
 	// at Open with no pre-declared Model field. The surface consumes (handled),
-	// kills (closed), or passes (handled=false); on closed the Model nils the
-	// field + refocuses, exactly as the HandleKey closed path.
+	// kills (closed), or passes (handled=false); on closed the Model tears the
+	// surface down, exactly as the HandleKey closed path.
 	HandleMsg(msg tea.Msg) (cmd tea.Cmd, handled bool, closed bool)
 
 	// HandleWheel returns handled=true to CONSUME the event (the default: a
@@ -63,21 +62,17 @@ type surface interface {
 	// moved (the surface CONSUMES unless it says otherwise).
 	HandleWheel(msg tea.MouseWheelMsg) (cmd tea.Cmd, handled bool)
 
-	// Close tears the surface down and returns NOTHING: teardown is
-	// surface-authored (no Model-authored cmd rides a return). The parent
-	// closed-path in dispatchSurfaceKey/dispatchSurfaceMsg does the textarea
-	// refocus (m.ta.Focus()) itself. RPC fetch results that arrive after close
-	// are dropped at the reducer. A surface with nothing to release implements
-	// an empty body.
+	// Close tears the surface down; teardown is surface-authored. RPC results
+	// that arrive after close are dropped at the reducer. A surface with
+	// nothing to release implements an empty body.
 	Close()
 }
 
 // surfaceDeps is the SHARED ambient base every surface may reach, built once at
 // Open by (m *Model).surfaceDeps() and held on the surface state as its deps
-// field (deps-per-call is archived). Fields are ambient collaborators only;
-// surface-SPECIFIC deps (focus hooks, RPC contexts, lifecycles, epochs) are
-// fields on the surface's own state struct, set next to deps in the same Open
-// literal — the interface stays uniformly structured. Mirrors approvalDeps
+// field. Fields are ambient collaborators only; surface-SPECIFIC deps (RPC
+// contexts, lifecycle clients, epoch mints) are fields on the surface's own
+// state struct, set next to deps in the same Open literal. Mirrors approvalDeps
 // (approval_surface.go).
 type surfaceDeps struct {
 	theme theme.Theme

@@ -353,6 +353,38 @@ func (m Model) dispatchNonInputMsg(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.updateStreamEvent(msg)
 }
 
+// updateInventoryMsgs is the fall-through chain for the unmigrated inventory
+// overlays (agentsInv, userModel, reflections, dream, worktrees, schedule,
+// sessions): each per-overlay helper returns handled=false for a non-matching
+// msg, so at most one consumes. Most carry no follow-up command; /schedule's
+// ScheduleActionMsg re-lists on success so the cmd is propagated. Surfaces
+// migrated onto the modal no longer ride this chain — HandleMsg owns their
+// routing.
+func (m Model) updateInventoryMsgs(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
+	if mm, handled := m.updateAgentsInvMsg(msg); handled {
+		return mm, nil, true
+	}
+	if mm, handled := m.updateUserModelMsg(msg); handled {
+		return mm, nil, true
+	}
+	if mm, handled := m.updateReflectionsMsg(msg); handled {
+		return mm, nil, true
+	}
+	if mm, handled := m.updateDreamMsg(msg); handled {
+		return mm, nil, true
+	}
+	if mm, handled := m.updateWorktreesMsg(msg); handled {
+		return mm, nil, true
+	}
+	if mm, cmd, handled := m.updateScheduleMsg(msg); handled {
+		return mm, cmd, true
+	}
+	if mm, cmd, handled := m.updateSessionsMsg(msg); handled {
+		return mm, cmd, true
+	}
+	return m, nil, false
+}
+
 func (m Model) finishStartupResume() (tea.Model, tea.Cmd) {
 	cmd := (&m).maybeKittyTransmit()
 	if liveCmd := (&m).armLiveFeed(); liveCmd != nil {
