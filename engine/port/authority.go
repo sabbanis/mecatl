@@ -8,12 +8,14 @@ import (
 
 // AuthorityPrincipal identifies the authority under which a tool is requested.
 // Definition is the resolved agent-definition identity, Instance identifies this
-// concrete run, and Owner identifies the caller that owns it. They are distinct
-// from the capability set and intentionally contain no credentials.
+// concrete run, and OwnerIssuer and OwnerSubject are the exact verified caller
+// identity pair that owns it. They are distinct from the capability set and
+// intentionally contain no credentials.
 type AuthorityPrincipal struct {
-	Definition string
-	Instance   string
-	Owner      string
+	Definition   string
+	Instance     string
+	OwnerIssuer  string
+	OwnerSubject string
 }
 
 // AuthorityResourceKind identifies the non-secret target class in an authority

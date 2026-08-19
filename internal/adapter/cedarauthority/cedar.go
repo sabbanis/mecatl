@@ -72,13 +72,14 @@ func (e *Evaluator) AuthorizeTool(_ context.Context, request port.AuthorityReque
 }
 
 func malformed(request port.AuthorityRequest) bool {
-	return request.ToolName == "" || request.Action == "" || request.Principal.Definition == "" || request.Principal.Instance == "" || request.Principal.Owner == ""
+	return request.ToolName == "" || request.Action == "" || request.Principal.Definition == "" || request.Principal.Instance == "" || request.Principal.OwnerIssuer == "" || request.Principal.OwnerSubject == ""
 }
 
 func entities(request port.AuthorityRequest) cedar.EntityMap {
 	instance := cedar.NewEntityUID("Instance", cedar.String(request.Principal.Instance))
 	definition := cedar.NewEntityUID("Definition", cedar.String(request.Principal.Definition))
-	owner := cedar.NewEntityUID("Owner", cedar.String(request.Principal.Owner))
+	ownerIssuer := cedar.NewEntityUID("OwnerIssuer", cedar.String(request.Principal.OwnerIssuer))
+	ownerSubject := cedar.NewEntityUID("OwnerSubject", cedar.String(request.Principal.OwnerSubject))
 	resource := cedar.NewEntityUID("Resource", cedar.String(resourceID(request)))
 	path := ""
 	workspace := ""
@@ -89,10 +90,11 @@ func entities(request port.AuthorityRequest) cedar.EntityMap {
 		kind = string(request.Resource.Kind)
 	}
 	return cedar.EntityMap{
-		instance:   {UID: instance, Parents: cedar.NewEntityUIDSet(definition), Attributes: cedar.NewRecord(cedar.RecordMap{"owner": owner})},
-		definition: {UID: definition, Parents: cedar.NewEntityUIDSet(), Attributes: cedar.NewRecord(cedar.RecordMap{})},
-		owner:      {UID: owner, Parents: cedar.NewEntityUIDSet(), Attributes: cedar.NewRecord(cedar.RecordMap{})},
-		resource:   {UID: resource, Parents: cedar.NewEntityUIDSet(), Attributes: cedar.NewRecord(cedar.RecordMap{"path": cedar.String(path), "workspace": cedar.String(workspace), "kind": cedar.String(kind)})},
+		instance:     {UID: instance, Parents: cedar.NewEntityUIDSet(definition), Attributes: cedar.NewRecord(cedar.RecordMap{"owner_issuer": ownerIssuer, "owner_subject": ownerSubject})},
+		definition:   {UID: definition, Parents: cedar.NewEntityUIDSet(), Attributes: cedar.NewRecord(cedar.RecordMap{})},
+		ownerIssuer:  {UID: ownerIssuer, Parents: cedar.NewEntityUIDSet(), Attributes: cedar.NewRecord(cedar.RecordMap{})},
+		ownerSubject: {UID: ownerSubject, Parents: cedar.NewEntityUIDSet(), Attributes: cedar.NewRecord(cedar.RecordMap{})},
+		resource:     {UID: resource, Parents: cedar.NewEntityUIDSet(), Attributes: cedar.NewRecord(cedar.RecordMap{"path": cedar.String(path), "workspace": cedar.String(workspace), "kind": cedar.String(kind)})},
 	}
 }
 

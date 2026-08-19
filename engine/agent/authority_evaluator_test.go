@@ -107,6 +107,40 @@ func TestADR_0228_AuthorityEvaluator_Scenario3_EveryDispatchPathConsultsTheEvalu
 	})
 }
 
+func TestADR_0228_AuthorityEvaluator_OwnerlessBoundSessionFailsClosed(t *testing.T) {
+	read := &authorityTool{name: "Read"}
+	evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Allowed: true}}
+	sess := newSession(t, session.Limits{})
+	if err := sess.RestoreLabels(nil, session.Authority{
+		CapabilitySet: governance.CapabilitySet{Tools: []string{"Read"}, RemainingDelegationDepth: 1},
+		Provenance:    "test",
+	}); err != nil {
+		t.Fatalf("RestoreLabels: %v", err)
+	}
+	eng := newEngine(agent.Deps{
+		LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("read", "Read", `{"path":"README.md"}`))),
+		Catalog:            catalogWith(t, read),
+		AuthorityEvaluator: evaluator,
+	})
+
+	events := drain(eng.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "read"}))
+	if got := evaluator.calls(); got != 0 {
+		t.Fatalf("evaluator calls = %d, want 0 for ownerless bound session", got)
+	}
+	if got := read.ran.Load(); got != 0 {
+		t.Fatalf("tool executions = %d, want 0 for ownerless bound session", got)
+	}
+	for _, event := range events {
+		if event.ToolResult != nil && event.ToolResult.CallID == "read" {
+			if !strings.Contains(event.ToolResult.Content, "owner identity is unavailable") {
+				t.Fatalf("ownerless result = %q, want fail-closed owner identity error", event.ToolResult.Content)
+			}
+			return
+		}
+	}
+	t.Fatal("missing ownerless authority result")
+}
+
 func TestADR_0228_AuthorityEvaluator_Scenario3_UnavailableEvaluatorIsDistinctFromDenial(t *testing.T) {
 	readTool := &authorityTool{name: "Read"}
 	unavailable := &recordingAuthorityEvaluator{err: context.DeadlineExceeded}

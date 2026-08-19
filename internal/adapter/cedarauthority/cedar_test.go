@@ -59,6 +59,43 @@ forbid(principal, action, resource) when { resource.path like "/workspace/vendor
 	}
 }
 
+func TestADR_0228_AuthorityEvaluator_PrincipalIdentityIsInjective(t *testing.T) {
+	t.Parallel()
+
+	evaluator, err := New([]byte(`
+permit(principal, action, resource);
+forbid(principal, action, resource) when {
+    principal.owner_issuer == OwnerIssuer::"issuer:subject"
+    && principal.owner_subject == OwnerSubject::"x"
+};
+`))
+	if err != nil {
+		t.Fatalf("New: %v", err)
+	}
+
+	denied := validRequest("Read")
+	denied.Principal.OwnerIssuer = "issuer:subject"
+	denied.Principal.OwnerSubject = "x"
+	decision, err := evaluator.AuthorizeTool(context.Background(), denied)
+	if err != nil {
+		t.Fatalf("AuthorizeTool denied identity: %v", err)
+	}
+	if decision.Allowed {
+		t.Fatalf("Cedar allowed explicitly forbidden issuer/subject pair: %+v", decision)
+	}
+
+	allowed := denied
+	allowed.Principal.OwnerIssuer = "issuer"
+	allowed.Principal.OwnerSubject = "subject:x"
+	decision, err = evaluator.AuthorizeTool(context.Background(), allowed)
+	if err != nil {
+		t.Fatalf("AuthorizeTool colliding identity: %v", err)
+	}
+	if !decision.Allowed {
+		t.Fatalf("Cedar conflated distinct issuer/subject pair: %+v", decision)
+	}
+}
+
 func TestADR_0228_AuthorityEvaluator_Scenario7_CedarReceivesResourceOperationAction(t *testing.T) {
 	t.Parallel()
 
@@ -118,6 +155,6 @@ func validRequest(tool string) port.AuthorityRequest {
 		ToolName:        tool,
 		Action:          tool,
 		DelegationDepth: 1,
-		Principal:       port.AuthorityPrincipal{Definition: "reviewer", Instance: "instance", Owner: "owner"},
+		Principal:       port.AuthorityPrincipal{Definition: "reviewer", Instance: "instance", OwnerIssuer: "issuer", OwnerSubject: "subject"},
 	}
 }

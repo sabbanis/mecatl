@@ -1114,15 +1114,19 @@ func (e *Engine) authorizeExecution(ctx context.Context, r *Run, sess *session.S
 	if err != nil {
 		return session.NewToolError(call.ID, fmt.Sprintf("tool %q denied by authority: %v", target, err)), true
 	}
+	if sess.Owner == nil || sess.Owner.Issuer == "" || sess.Owner.Subject == "" {
+		return session.NewToolError(call.ID, fmt.Sprintf("tool %q denied by authority: owner identity is unavailable", target)), true
+	}
 	request := port.AuthorityRequest{
 		CapabilitySet:   authority.CapabilitySet,
 		ToolName:        target,
 		Action:          call.Name,
 		DelegationDepth: authority.CapabilitySet.RemainingDelegationDepth,
 		Principal: port.AuthorityPrincipal{
-			Definition: authorityDefinition(authority),
-			Instance:   string(sess.ID),
-			Owner:      authorityOwner(sess.Owner),
+			Definition:   authorityDefinition(authority),
+			Instance:     string(sess.ID),
+			OwnerIssuer:  sess.Owner.Issuer,
+			OwnerSubject: sess.Owner.Subject,
 		},
 		Resource: resource,
 	}
@@ -1146,13 +1150,6 @@ func authorityDefinition(authority session.Authority) string {
 		return authority.DefinitionIdentity
 	}
 	return "root"
-}
-
-func authorityOwner(owner *session.Principal) string {
-	if owner == nil {
-		return "unowned"
-	}
-	return owner.Issuer + ":" + owner.Subject
 }
 
 // authorityTarget translates meta-tools whose actual reach is named in their

@@ -21,9 +21,10 @@ func TestADR_0228_AuthorityEvaluator_Scenario3_RequestShapeIsNeutralAndCarriesTh
 		Action:          "Read",
 		DelegationDepth: 1,
 		Principal: port.AuthorityPrincipal{
-			Definition: "code-reviewer",
-			Instance:   "subagent-1",
-			Owner:      "owner-1",
+			Definition:   "code-reviewer",
+			Instance:     "subagent-1",
+			OwnerIssuer:  "https://issuer.example",
+			OwnerSubject: "owner-1",
 		},
 		Resource: &port.AuthorityResource{
 			Kind:      port.AuthorityResourceWorkspaceFile,
@@ -38,8 +39,8 @@ func TestADR_0228_AuthorityEvaluator_Scenario3_RequestShapeIsNeutralAndCarriesTh
 	if request.DelegationDepth != request.CapabilitySet.RemainingDelegationDepth {
 		t.Fatalf("request delegation depth = %d, want carried set depth %d", request.DelegationDepth, request.CapabilitySet.RemainingDelegationDepth)
 	}
-	if request.Principal.Definition == "" || request.Principal.Instance == "" || request.Principal.Owner == "" {
-		t.Fatalf("principal %+v must carry definition, instance, and owner", request.Principal)
+	if request.Principal.Definition == "" || request.Principal.Instance == "" || request.Principal.OwnerIssuer == "" || request.Principal.OwnerSubject == "" {
+		t.Fatalf("principal %+v must carry definition, instance, owner issuer, and owner subject", request.Principal)
 	}
 	if request.Resource == nil || request.Resource.Kind != port.AuthorityResourceWorkspaceFile || request.Resource.Path != "/workspace/README.md" || request.Resource.Workspace != "/workspace" {
 		t.Fatalf("resource = %+v, want normalized workspace file", request.Resource)

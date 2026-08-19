@@ -20,7 +20,7 @@ func TestEvaluatorDeniesToolOutsideCapabilitySet(t *testing.T) {
 		CapabilitySet: governance.CapabilitySet{Tools: []string{"Read"}},
 		ToolName:      "Write",
 		Action:        "Write",
-		Principal:     port.AuthorityPrincipal{Definition: "definition", Instance: "instance", Owner: "owner"},
+		Principal:     port.AuthorityPrincipal{Definition: "definition", Instance: "instance", OwnerIssuer: "issuer", OwnerSubject: "subject"},
 	})
 	if err != nil {
 		t.Fatalf("AuthorizeTool: %v", err)

@@ -750,6 +750,11 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Changed
 
+- **Authority evaluator principal identity (ADR 0228)** — `port.AuthorityPrincipal`
+  replaces its ambiguous composite `Owner` field with exact `OwnerIssuer` and
+  `OwnerSubject` fields. This changes an existing exported struct and is
+  source-breaking, classified Changed (pre-v1 minor).
+
 - **Authority evaluator resource actions (ADR 0228)** — `port.AuthorityRequest`
   adds `Action`, distinct from the capability-selected `ToolName`, so policy adapters
   receive the real resource meta-operation while retaining the carried capability

@@ -28,5 +28,5 @@ func (*Evaluator) AuthorizeTool(_ context.Context, request port.AuthorityRequest
 }
 
 func malformed(request port.AuthorityRequest) bool {
-	return request.ToolName == "" || request.Action == "" || request.Principal.Definition == "" || request.Principal.Instance == "" || request.Principal.Owner == ""
+	return request.ToolName == "" || request.Action == "" || request.Principal.Definition == "" || request.Principal.Instance == "" || request.Principal.OwnerIssuer == "" || request.Principal.OwnerSubject == ""
 }

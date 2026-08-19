@@ -21,7 +21,7 @@ func Run(t *testing.T, newEvaluator func(t *testing.T) port.AuthorityEvaluator) 
 		ToolName:        "Read",
 		Action:          "Read",
 		DelegationDepth: 1,
-		Principal:       port.AuthorityPrincipal{Definition: "definition", Instance: "instance", Owner: "owner"},
+		Principal:       port.AuthorityPrincipal{Definition: "definition", Instance: "instance", OwnerIssuer: "issuer", OwnerSubject: "subject"},
 	}
 
 	t.Run("permits a valid in-set request", func(t *testing.T) {
