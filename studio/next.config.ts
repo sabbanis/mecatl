@@ -23,9 +23,29 @@ const cspHeader = `
   .replace(/\s{2,}/g, " ")
   .trim();
 
+/**
+ * Hostnames allowed to request dev-server assets, derived from the same
+ * MECATL_STUDIO_PUBLIC_ORIGIN allowlist the API proxy trusts — one knob for
+ * LAN access. Without this, Next's dev cross-origin protection 403s the
+ * /_next/* chunks for a non-localhost Host, so the page renders but never
+ * hydrates. Dev-only: `next start` has no such gate.
+ */
+const allowedDevOrigins = (process.env.MECATL_STUDIO_PUBLIC_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+  .map((origin) => {
+    try {
+      return new URL(origin).hostname;
+    } catch {
+      return origin;
+    }
+  });
+
 const nextConfig: NextConfig = {
   reactCompiler: true,
   poweredByHeader: false,
+  ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
   async headers() {
     return [
       {
