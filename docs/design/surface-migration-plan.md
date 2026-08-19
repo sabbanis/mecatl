@@ -6,8 +6,10 @@ FIRST migrator (the proof-of-pattern that pins the interface); section 6 is the
 checklist for the rest.
 
 Issue #555 describes "ADR 0108" as the surface-migration ADR; that is a stale
-reference. `docs/adr/0108-on-demand-logical-skill-assets.md` is the skill-assets ADR.
-The stale citation needs a docs fix; it is deliberately **not** fixed here.
+reference. [`0108-on-demand-logical-skill-assets`](../adr/0108-on-demand-logical-skill-assets.md)
+is the skill-assets ADR (see the [ADR index](../adr/README.md)). The stale
+citation needs a docs fix; it is deliberately **not** fixed here. This plan
+follows the [design conventions in this folder](./README.md).
 
 ## Binding decisions (already made — do not reopen)
 
