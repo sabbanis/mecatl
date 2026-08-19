@@ -45,8 +45,8 @@ const soulBodyLines = 12
 // loading: true}) and lives ONLY inside the Model's one `modal surface`
 // interface field. The Soul value is replaced wholesale on each RPC result
 // (never mutated in place) so the value semantics hold. scroll is the 0-based
-// index of the first visible content line; width/height are the geometry the
-// Model's Resize fan delivered (parents place, surfaces size). soulState
+// index of the first visible content line. Geometry (width/height) is pure
+// Render input — parents place, surfaces size — never soulState state. soulState
 // implements `surface` on POINTER receivers.
 type soulState struct {
 	view    soulView
@@ -54,26 +54,23 @@ type soulState struct {
 	err     error
 	soul    client.Soul
 	scroll  int // first visible content line (clamped in HandleKey)
-	width   int // conversation region width (set by Model.Resize fan)
-	height  int // conversation region height (set by Model.Resize fan)
 }
 
-// Resize records the offered geometry (the conversation region's width/height)
-// so Render reads it with NO geometry params — the one-way WindowSizeMsg flow
-// parents place, surfaces size.
-func (s *soulState) Resize(width, height int) {
-	s.width = width
-	s.height = height
-}
-
-// Render draws the soul panel body CENTER-READY: the parent centers it via
-// centerCard in view.go's renderBody arm. All server-derived strings are
-// terminal-sanitized. Regions are nil (read-only, not clickable).
-func (s *soulState) Render(deps surfaceDeps) (string, []ClickableRegion) {
+// Render draws the soul panel body UNSCENTERED, sized from the offered geometry
+// (width drives the card text budget; the scroll window stays the fixed
+// soulBodyLines-height line window over the wrapped content): the parent
+// centers it via centerCard in view.go's renderBody arm. All server-derived
+// strings are terminal-sanitized. Regions are nil (read-only, not clickable).
+// The height param goes unused BY DESIGN: the soul panel's scroll window is the
+// FIXED soulBodyLines line budget (deterministic goldens, terminal-height-
+// independent), not a function of terminal height. The signature still takes it
+// because the surface contract offers the full conversation geometry — taller
+// scrolling surfaces (approval/plan at their migration) will read it.
+func (s *soulState) Render(deps surfaceDeps, width, _ int) (string, []ClickableRegion) {
 	if s.view != soulPanel {
 		return "", nil
 	}
-	return renderSoulPanel(deps.theme, *s, deps.caps, deps.marks, s.width), nil
+	return renderSoulPanel(deps.theme, *s, deps.caps, deps.marks, width), nil
 }
 
 // HandleKey routes key presses while the soul overlay is open. esc self-closes

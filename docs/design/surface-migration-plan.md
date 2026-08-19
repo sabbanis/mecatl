@@ -28,10 +28,12 @@ The stale citation needs a docs fix; it is deliberately **not** fixed here.
    fresh per call by a Model method and holds ONLY what surfaces may touch. No
    `surfaceHost` interface. (Section 1 below names it `surfaceDeps`, not a
    per-surface `soulDeps`.)
-4. **"Surfaces size, parents place."** The surface knows its offered geometry
-   (width/height) but NOT its screen position. `Model`/view.go centres the returned
-   body today via `centerCard`. Region coordinates are frame-relative; the parent
-   offsets to screen coords.
+4. **"Surfaces size, parents place."** The surface sizes itself from the geometry
+   (width/height) offered to `Render` on EVERY call — pure-function geometry, no
+   stored size state and no `Resize` method — but never knows its screen position.
+   The PARENT (view.go's `renderBody` modal arm) centers the returned body via
+   `centerCard`; the surface MUST NOT call `centerCard` internally. Region
+   coordinates are frame-relative; the parent offsets to screen coords.
 5. **Render returns body + regions together (measure-once).** The layout pass that
    builds the body also emits hit-test regions so render and hit-test never drift —
    the invariant `permissionModalBodyParts` owns today. For soul, regions are empty
@@ -58,17 +60,29 @@ instance the interface holds,
 mirroring `approvalState.onApprovalKey`'s `*approvalState` receiver; the state
 itself still lives on Model as a value field, copied on assignment back).
 
+Geometry is **pure-function**: `Render` takes the offered width/height on every
+call and sizes itself from them. There is **no `Resize`** — an earlier draft
+carried one and it was reverted: a state-setting geometry method adds a second
+channel (set once, read later) for what is genuinely a per-call input, and a
+surface that records its own last geometry can silently go stale when the parent
+resizes without re-rendering through it. Parents place (the Model centers via
+`centerCard`), surfaces size — from the Render arguments, nothing else.
+
 ```go
 package ui
 
 // surface is an overlay that owns the conversation region while open: it
-// renders a centered card, consumes keys/wheel, and holds its teardown.
+// renders a center-ready body, consumes keys/wheel, and holds its teardown.
 // Model holds at most ONE (modal surface field); nil-vs-set IS the
 // open predicate. Implemented by value-state structs (soulState today).
 // Methods are on a pointer receiver strictly so the Model can call them on
 // its value-embedded state field without copying it out.
+// GEOMETRY CONTRACT: (a) the surface sizes itself from the width/height
+// offered to Render on every call (pure input, no stored geometry, no
+// Resize); (b) the PARENT centers the returned body — it owns placement;
+// (c) the surface MUST NOT call centerCard internally.
 type surface interface {
-    // Render returns the centered body and the regions it built in the SAME
+    // Render returns the center-ready body and the regions it built in the SAME
     // layout pass, given the offered geometry (width, height of the
     // conversation region). Regions are frame-relative; the parent offsets
     // them to screen coordinates if it ever hit-tests them. nil regions =
@@ -110,8 +124,9 @@ Justification per method:
 - **Render(body + regions, geometry):** the single pass that owns both the bytes the
   user sees and where a click lands. Soul returns `regions == nil`; the signature
   is ready for the clickable surfaces (approval already builds
-  `[]ClickableRegion`). Parents place; surfaces size — hence width/height in,
-  placed-ready body out.
+  `[]ClickableRegion`). Parents place (center via `centerCard`); surfaces size
+  (read the offered width/height inline) — width/height in, uncentered body out,
+  placement applied by the parent.
 - **HandleKey:** consume-or-pass is how `onOverlayKey` works today. `closed` as a
   third return makes Close self-driven from keys (esc) without a Model check for
   which key closed it.
@@ -202,13 +217,15 @@ After:
 ```go
 case m.modal != nil:
     body, _ := m.modal.Render(m.surfaceDeps(), m.width, m.vp.Height())
-    return body
+    return centerCard(m.deps.Theme, body, m.width, m.vp.Height())
 ```
 
 The soul-specific `renderSoulOverlay` call and the `m.soul.view != soulNone`
 predicate collapse into the `modal != nil` arm. Regions are ignored here (soul
 has nil regions; clickable-surface migration will offset+consume them). Remaining
-unmigrated overlay arms stay.
+unmigrated overlay arms stay. The PARENT applies `centerCard` — the surface
+returns its UNSCENTERED body sized from the width/height it was offered; only
+the parent owns placement.
 
 **`onOverlayKey` (update.go:1359-1382).**
 
@@ -283,9 +300,10 @@ Model calls `Close()` on a close transition, then nils the field.
 registration seam; it becomes the Open transition: it validates (idle + wired),
 blurs the textarea, constructs the state, sets `m.modal = &soulState{view:
 soulPanel, loading: true}`, and returns the GetSoul RPC cmd (today
-`client.GetSoulCmd`). The builtin list does NOT change shape — still `{name,
-desc, run}` where `run` is a Model method. The state is created HERE (dynamic),
-not held on Model.
+`client.GetSoulCmd`). No geometry is set at Open (there is no `Resize`); Render
+receives the current conversation width/height on every frame. The builtin
+list does NOT change shape — still `{name, desc, run}` where `run` is a Model
+method. The state is created HERE (dynamic), not held on Model.
 
 ## 3. The soul surface refactor (file-level)
 
@@ -314,9 +332,14 @@ Changes:
    closed-path; `onSoulKey`'s scroll clamps move onto `*soulState.HandleKey`;
    `updateSoulMsg`'s RPC write moves onto `*soulState.HandleMsg`).
 3. `renderSoulOverlay` becomes `func (s *soulState) Render(deps surfaceDeps,
-   width, height int) (string, []ClickableRegion)` returning `(body, nil)`.
-   The inner helpers (`renderSoulPanel`/`renderSoulBody`/`renderSoulMeta`) are
-   unchanged; only the entry signature changes.
+   width, height int) (string, []ClickableRegion)` returning `(body, nil)` —
+   the UNSCENTERED body, sized from the offered width (the card text budget)
+   while the scroll window stays the fixed `soulBodyLines` window over the
+   wrapped content (the pre-migration behaviour `view_test` goldens rely on).
+   `soulState` carries NO width/height fields and there is NO `Resize` method:
+   geometry is a per-call input, state stays content-only. The inner helpers
+   (`renderSoulPanel`/`renderSoulBody`/`renderSoulMeta`) are unchanged; only the
+   entry signature changes.
 4. `surface.go` is the ONLY new production file (interface + deps struct + the
    Open transition helper if one is generalized; otherwise the Open helper is
    inlined in `builtins.go`'s `runSoul`).

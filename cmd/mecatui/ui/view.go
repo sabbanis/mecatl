@@ -82,7 +82,7 @@ func (m Model) View() tea.View {
 // surface (soul today, the first migrator) centered by the PARENT via centerCard, the
 // permission-modal card (generic) or the full-screen scrollable plan-review
 // view (a plan ask), or the conversation. "Parents place, surfaces size":
-// a modal returns its CENTER-READY body (sized by its last Resize); view.go
+// a modal returns its UNSCENTERED body sized from the offered geometry; view.go
 // then centers it here with the conversation geometry.
 func (m Model) renderBody() string {
 	if m.phase == phaseAwaitingApproval {
@@ -102,7 +102,7 @@ func (m Model) renderBody() string {
 	case m.skills.view != skillsNone:
 		return renderSkillsOverlay(m.deps.Theme, m.skills, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.modal != nil:
-		body, _ := m.modal.Render(m.surfaceDeps())
+		body, _ := m.modal.Render(m.surfaceDeps(), m.width, m.vp.Height())
 		return centerCard(m.deps.Theme, body, m.width, m.vp.Height())
 	case m.userModel.view != userModelNone:
 		return renderUserModelOverlay(m.deps.Theme, m.userModel, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())

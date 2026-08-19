@@ -1082,11 +1082,6 @@ func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	// height-equality guard (relayout calls refreshView, which also invalidates, but
 	// onResize must invalidate here too in case relayout short-circuits on height match).
 	m.rend.invalidateVPView()
-	// Fan the geometry to the open modal surface (parents place, surfaces size —
-	// the surface sizes itself from its own geometry field, view.go centers).
-	if m.modal != nil {
-		m.modal.Resize(m.width, m.vp.Height())
-	}
 	// The input textarea is wrapped in the mode-coloured left rail (renderInput),
 	// which adds its horizontal frame (border + padding). Shrink the textarea width by
 	// that frame so the railed input stays within the terminal width instead of

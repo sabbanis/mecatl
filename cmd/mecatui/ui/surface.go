@@ -1,7 +1,7 @@
 package ui
 
 // surface.go is the ONE file the issue #555 Phase-2 surface interface owns: the
-// `surface` interface an overlay implements (Resize/Render/HandleKey/HandleMsg/
+// `surface` interface an overlay implements (Render/HandleKey/HandleMsg/
 // HandleWheel/Close) plus the shared `surfaceDeps` collaborator struct and the
 // Model.surfaceDeps() builder. Migrating an overlay (soul is the proof) touches
 // this file for the interface and its own file for the state/behaviour; the
@@ -22,19 +22,22 @@ import (
 // predicate. Implemented by value-state structs (soulState today) on POINTER
 // receivers strictly so the Model can call them on the single instance the
 // interface value holds and mutate it in place — no copy-back ceremony.
-// Geometry is a state-setting method (Resize), mirroring how bubbletea's
-// WindowSizeMsg arrives: parents place (the Model centers), surfaces size.
+// GEOMETRY CONTRACT (parents place, surfaces size): (a) a surface sizes itself
+// from the width/height offered to Render on EVERY call — geometry is pure
+// input, never state the surface must record (there is no Resize); (b) the
+// PARENT centers the returned body in view.go's renderBody arm via centerCard —
+// the parent owns placement; (c) a surface MUST NOT call centerCard internally:
+// it returns its UNSCENTERED body sized to the offered geometry, and the parent
+// places it. Region coordinates are frame-relative; the parent offsets them to
+// screen coordinates.
 type surface interface {
-	// Resize records the offered geometry (width, height of the conversation
-	// region) on the surface's state. Render then reads it with NO geometry
-	// params — the same one-way WindowSizeMsg flow bubbletea uses.
-	Resize(width, height int)
-
 	// Render returns the center-ready body and the regions it built in the SAME
-	// layout pass, reading the geometry the LAST Resize recorded. Regions are
+	// layout pass, given the offered geometry (width, height of the
+	// conversation region). The surface reads the geometry inline on every call
+	// (no geometry state) and MUST NOT center its own output. Regions are
 	// frame-relative; the parent offsets them to screen coordinates if it ever
 	// hit-tests them. nil regions = not clickable. deps is rebuilt per call.
-	Render(deps surfaceDeps) (body string, regions []ClickableRegion)
+	Render(deps surfaceDeps, width, height int) (body string, regions []ClickableRegion)
 
 	// HandleKey consumes or passes a key press. handled=true means the surface
 	// swallowed it (idle input never sees it). Close is driven INSIDE HandleKey
