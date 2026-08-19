@@ -2,12 +2,12 @@
 id: 13-authority-principal-identity
 title: Preserve exact owner identity in evaluator requests
 blocked_by: [11-vertical-repair]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/13-authority-principal-identity"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: "panel blockers: fabricated owner and ambiguous issuer/subject encoding"
+last_error: "task test baseline macOS /var symlink failures"
 accumulator: acc/authority-evaluator-port
 ---
 
