@@ -302,21 +302,8 @@ func (m Model) runSkills() (tea.Model, tea.Cmd) {
 	return m.openSkills()
 }
 
-// runSoul is the Open transition for the read-only soul (persona) surface. It
-// validates (idle + fetcher wired), blurs the textarea, constructs the state
-// dynamically (never a pre-declared Model field), installs it on m.modal, and
-// fires the GetSoul RPC; the result lands on soulState.HandleMsg. Geometry is
-// NOT set here (there is no Resize): Render receives the current conversation
-// width/height on every call. Only registered when caps.Soul && the soul
-// collaborator is wired, so the nil/idle guards are belt-and-braces here.
-func (m Model) runSoul() (tea.Model, tea.Cmd) {
-	if m.phase != phaseIdle || m.deps.Soul == nil {
-		return m, nil
-	}
-	m.ta.Blur() // modal owns the keyboard while open
-	m.modal = &soulState{view: soulPanel, loading: true}
-	return m, client.GetSoulCmd(m.deps.Ctx, m.deps.Soul)
-}
+// runSoul: the Open transition lives in soul.go (one-file-owns-it); this file
+// keeps only the {name, desc, run: Model.runSoul} registration.
 
 // runUserModel opens the read-only user-model inspection panel. Only registered
 // when caps.UserModel && the user-model collaborator is wired, so openUserModel's

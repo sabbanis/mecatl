@@ -102,7 +102,7 @@ func (m Model) renderBody() string {
 	case m.skills.view != skillsNone:
 		return renderSkillsOverlay(m.deps.Theme, m.skills, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.modal != nil:
-		body, _ := m.modal.Render(m.surfaceDeps(), m.width, m.vp.Height())
+		body, _ := m.modal.Render(m.width, m.vp.Height())
 		return centerCard(m.deps.Theme, body, m.width, m.vp.Height())
 	case m.userModel.view != userModelNone:
 		return renderUserModelOverlay(m.deps.Theme, m.userModel, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())

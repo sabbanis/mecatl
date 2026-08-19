@@ -2,12 +2,14 @@ package ui
 
 // surface.go is the ONE file the issue #555 Phase-2 surface interface owns: the
 // `surface` interface an overlay implements (Render/HandleKey/HandleMsg/
-// HandleWheel/Close) plus the shared `surfaceDeps` collaborator struct and the
-// Model.surfaceDeps() builder. Migrating an overlay (soul is the proof) touches
-// this file for the interface and its own file for the state/behaviour; the
-// Model-side routing (view/update/builtins/selection) is the thin registration
+// HandleWheel/Close) plus the shared `surfaceDeps` collaborator struct and
+// the (m *Model).surfaceDeps() builder. Migrating an overlay (soul is the proof)
+// touches this file for the interface and its own file for the state/behaviour;
+// the Model-side routing (view/update/builtins/selection) is the thin registration
 // point. The structural gate (surface_arch_test.go) confines surface/soul
-// vocabulary to surface.go + soul.go.
+// vocabulary to surface.go + the surface's own file. The deps are held ON THE
+// SURFACE STATE (set once at Open): a surface non-Render method with a deps
+// param is archived-past design, not current (see docs/design/surface-migration-plan.md).
 
 import (
 	tea "charm.land/bubbletea/v2"
@@ -22,78 +24,77 @@ import (
 // predicate. Implemented by value-state structs (soulState today) on POINTER
 // receivers strictly so the Model can call them on the single instance the
 // interface value holds and mutate it in place — no copy-back ceremony.
-// GEOMETRY CONTRACT (parents place, surfaces size): (a) a surface sizes itself
-// from the width/height offered to Render on EVERY call — geometry is pure
-// input, never state the surface must record (there is no Resize); (b) the
-// PARENT centers the returned body in view.go's renderBody arm via centerCard —
-// the parent owns placement; (c) a surface MUST NOT call centerCard internally:
-// it returns its UNSCENTERED body sized to the offered geometry, and the parent
-// places it. Region coordinates are frame-relative; the parent offsets them to
-// screen coordinates.
+// GEOMETRY (immediate-mode, the ImGui discipline): geometry flows through
+// Render on EVERY frame — there is NO resize event. A surface sizes itself
+// from the offered width/height args inline on every call and MUST NOT center
+// its own output (view.go centers via centerCard). Geometry-dependent view
+// state is re-derived at the TOP of Render from the fresh args (marked
+// `// view cache:` on the struct), so it can never be stale and needs no
+// event. Parents place, surfaces size. Region coordinates are frame-relative;
+// the parent offsets them.
 type surface interface {
-	// Render returns the center-ready body and the regions it built in the SAME
-	// layout pass, given the offered geometry (width, height of the
-	// conversation region). The surface reads the geometry inline on every call
-	// (no geometry state) and MUST NOT center its own output. Regions are
-	// frame-relative; the parent offsets them to screen coordinates if it ever
-	// hit-tests them. nil regions = not clickable. deps is rebuilt per call.
-	Render(deps surfaceDeps, width, height int) (body string, regions []ClickableRegion)
+	// Render is the size QUERY: returns the center-ready body and the regions
+	// it built in the SAME layout pass, given the offered geometry. The surface
+	// sizes itself from the width/height inline on EVERY call and MUST NOT
+	// center its own output. Regions are frame-relative; the parent offsets
+	// them to screen coordinates if it ever hit-tests them. nil regions = not
+	// clickable.
+	Render(width, height int) (body string, regions []ClickableRegion)
 
 	// HandleKey consumes or passes a key press. handled=true means the surface
 	// swallowed it (idle input never sees it). Close is driven INSIDE HandleKey
 	// (esc self-closes): the returned closed flag tells the Model to nil the
-	// field and re-focus the textarea.
-	HandleKey(msg tea.KeyPressMsg, deps surfaceDeps) (cmd tea.Cmd, handled bool, closed bool)
-
-	// HandleWheel consumes or passes a mouse wheel event. Overlays without
-	// their own scroll surface return handled=false so the event falls through
-	// to the conversation viewport (soul today: always false).
-	HandleWheel(msg tea.MouseWheelMsg, deps surfaceDeps) (cmd tea.Cmd, handled bool)
+	// field and re-focus the textarea (Close owns no cmd — see below).
+	HandleKey(msg tea.KeyPressMsg) (cmd tea.Cmd, handled bool, closed bool)
 
 	// HandleMsg consumes or passes a NON-input message: an RPC result
 	// (client.SoulMsg), a timer tick, a status notice. The Model routes every
-	// non-key/wheel Msg through the open modal BEFORE its own generic
-	// reducer, so the surface owns its RPC-backed state and can be created
-	// dynamically at Open with no pre-declared Model field. The surface
-	// consumes (handled), kills (closed), or passes (handled=false); on closed
-	// the Model nils the field + refocuses, exactly as the HandleKey closed
-	// path.
-	HandleMsg(msg tea.Msg, deps surfaceDeps) (cmd tea.Cmd, handled bool, closed bool)
+	// non-key/wheel Msg through the open modal BEFORE its own generic reducer,
+	// so the surface owns its RPC-backed state and can be created dynamically
+	// at Open with no pre-declared Model field. The surface consumes (handled),
+	// kills (closed), or passes (handled=false); on closed the Model nils the
+	// field + refocuses, exactly as the HandleKey closed path.
+	HandleMsg(msg tea.Msg) (cmd tea.Cmd, handled bool, closed bool)
 
-	// Close tears the surface down with NO side effects beyond what the Model
-	// owns: the state is zeroed by the caller (the Model), the returned cmd
-	// re-focuses the textarea (today ta.Focus()). The surface holds no resource
-	// the Model must clean up — rpc fetch results that arrive after close are
-	// dropped at the reducer.
-	Close(deps surfaceDeps) tea.Cmd
+	// HandleWheel returns handled=true to CONSUME the event (the default: a
+	// modal captures input and the wheel behind it is DEAD while the modal is
+	// open), handled=false ONLY if the surface deliberately delegates to the
+	// conversation viewport. The boolean preserves delegation; the default
+	// moved (the surface CONSUMES unless it says otherwise).
+	HandleWheel(msg tea.MouseWheelMsg) (cmd tea.Cmd, handled bool)
+
+	// Close tears the surface down and returns NOTHING: teardown is
+	// surface-authored (no Model-authored cmd rides a return). The parent
+	// closed-path in dispatchSurfaceKey/dispatchSurfaceMsg does the textarea
+	// refocus (m.ta.Focus()) itself. RPC fetch results that arrive after close
+	// are dropped at the reducer. A surface with nothing to release implements
+	// an empty body.
+	Close()
 }
 
-// surfaceDeps is the explicit list of what ANY surface may touch, built fresh
-// per call by Model.surfaceDeps() and never stored. Fields are the superset of
-// what the migrated surfaces need; each surface reads only its own subset.
-// Mirrors approvalDeps (approval_surface.go). focusInput is the sanctioned way
-// a surface reaches the Model's textarea without a *Model back-reference (the
-// approvalDeps.sendApproval precedent).
+// surfaceDeps is the SHARED ambient base every surface may reach, built once at
+// Open by (m *Model).surfaceDeps() and held on the surface state as its deps
+// field (deps-per-call is archived). Fields are ambient collaborators only;
+// surface-SPECIFIC deps (focus hooks, RPC contexts, lifecycles, epochs) are
+// fields on the surface's own state struct, set next to deps in the same Open
+// literal — the interface stays uniformly structured. Mirrors approvalDeps
+// (approval_surface.go).
 type surfaceDeps struct {
 	theme theme.Theme
 	keys  keyMap              // for key.Matches
 	marks helpKeys            // render hints (helpKeyMarkings)
 	caps  client.Capabilities // capability-gated copy
-	// focusInput returns the cmd the surface-was-closed path batches to re-focus
-	// the prompt textarea (m.ta.Focus()). Built per call over &m so the closure
-	// survives the value-Model copies.
-	focusInput func() tea.Cmd
 }
 
-// surfaceDeps builds a surface's collaborators from the live Model. It is a
-// pointer receiver so its focusInput closure can bluff past the Elm value-Model
-// copies the same way approvalDeps() does (&m).
+// surfaceDeps builds the surface's shared ambient base from the live Model. It
+// is a POINTER receiver so a future deps field that bluffs past the Elm
+// value-Model copies (the approvalDeps / &m.sendApproval idiom) works the same
+// way; callers take &m at the Open transition.
 func (m *Model) surfaceDeps() surfaceDeps {
 	return surfaceDeps{
-		theme:      m.deps.Theme,
-		keys:       m.keys,
-		marks:      m.helpKeyMarkings(),
-		caps:       m.caps,
-		focusInput: func() tea.Cmd { return m.ta.Focus() },
+		theme: m.deps.Theme,
+		keys:  m.keys,
+		marks: m.helpKeyMarkings(),
+		caps:  m.caps,
 	}
 }

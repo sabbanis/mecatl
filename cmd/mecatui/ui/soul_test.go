@@ -119,11 +119,11 @@ func keySoul(m Model, msg tea.KeyPressMsg) (Model, tea.Cmd, bool, bool) {
 		return m, nil, false, false
 	}
 	s := m.modal
-	cmd, handled, closed := s.HandleKey(msg, m.surfaceDeps())
+	cmd, handled, closed := s.HandleKey(msg)
 	if handled && closed {
-		closeCmd := s.Close(m.surfaceDeps())
+		s.Close()
 		m.modal = nil
-		return m, tea.Batch(cmd, closeCmd), true, true
+		return m, tea.Batch(cmd, m.ta.Focus()), true, true
 	}
 	return m, cmd, handled, closed
 }
@@ -249,15 +249,15 @@ func TestSoulScrollViaUpdate(t *testing.T) {
 	}
 }
 
-// TestSoulWheelFallsThroughToViewport asserts a mouse wheel while the soul panel
-// is open reaches the open modal's HandleWheel (which returns false — soul has
-// no scroll surface) and then falls through to the conversation viewport. It pins
-// the onMouseWheel m.modal routing arm (update.go): handled=false must NOT
-// consume the wheel, and the panel must stay open while the viewport scrolls.
-func TestSoulWheelFallsThroughToViewport(t *testing.T) {
+// TestSoulWheelConsumedWhileOpen asserts a mouse wheel while the soul modal is
+// open is CONSUMED by the modal (the default-consume contract: handled=true),
+// never delegates to the conversation viewport. It pins the onMouseWheel
+// m.modal routing arm (update.go): handled=true consumes, and the panel stays
+// open while the viewport stays put.
+func TestSoulWheelConsumedWhileOpen(t *testing.T) {
 	m := newSoulModel(t, sampleSoul(), client.Capabilities{Soul: true})
-	// Long transcript so the viewport is scrollable (taller than its ~22-row
-	// height); start stuck at the bottom like a fresh stream.
+	// Long transcript so the viewport WOULD be scrollable if the wheel fell
+	// through; start stuck at the bottom like a fresh stream.
 	m.conv.addUser("show me a long answer")
 	m.conv.appendAssistant(strings.Repeat("line of streamed output\n", 120))
 	m.phase = phaseIdle
@@ -274,17 +274,17 @@ func TestSoulWheelFallsThroughToViewport(t *testing.T) {
 	}
 
 	// Wheel up through the REAL Update path (onMouseMsg → onMouseWheel → the
-	// m.modal.HandleWheel arm → falls through to m.vp.Update).
+	// m.modal.HandleWheel arm → CONSUMED by soul).
 	mm2, _ := m.Update(tea.MouseWheelMsg{Button: tea.MouseWheelUp})
 	m = mm2.(Model)
 	if soulActive(m) == nil {
-		t.Fatal("a wheel must not close the soul panel")
+		t.Fatal("a consumed wheel must not close the soul panel")
 	}
-	if m.stuck {
-		t.Error("a wheel-up that fell through to the viewport should unstick the view")
+	if !m.stuck {
+		t.Error("a consumed wheel-up must NOT unstick the view (the modal eats it)")
 	}
-	if m.vp.AtBottom() {
-		t.Error("a wheel-up that fell through to the viewport should scroll off the bottom")
+	if !m.vp.AtBottom() {
+		t.Error("a consumed wheel-up must NOT scroll the viewport (the modal eats it)")
 	}
 }
 

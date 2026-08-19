@@ -1096,6 +1096,10 @@ func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	// the header arithmetic are GONE; the heights are measured via lipgloss.Height of
 	// the rendered regions in chrome().
 	m.relayout()
+	// No geometry event is fanned to the open modal surface: the interface is
+	// immediate-mode — Render receives the fresh width/height on every frame and
+	// re-derives geometry-dependent view state at its top, so nothing is stale.
+	// Pre-migration overlays re-derive per render as before.
 	return m, m.maybeKittyTransmit()
 }
 
@@ -1395,41 +1399,43 @@ func (m Model) onOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 }
 
 // dispatchSurfaceKey routes a KeyPressMsg through the open modal surface when
-// one is open. On handled+closed it nils the field and batches the surface Close
-// cmd (the textarea refocus). Extracted from onOverlayKey so update() stays under
-// the cyclomatic cap; onOverlayKey reads it.
+// one is open. On handled+closed it runs the surface's (no-return) Close, nils
+// the field, and batches the textarea refocus — the parent refocuses because
+// the returned cmd belongs to the surface, not the close. Extracted from
+// onOverlayKey so update() stays under the cyclomatic cap; onOverlayKey reads it.
 func (m Model) dispatchSurfaceKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 	if m.modal == nil {
 		return m, nil, false
 	}
-	cmd, handled, closed := m.modal.HandleKey(msg, m.surfaceDeps())
+	cmd, handled, closed := m.modal.HandleKey(msg)
 	if !handled {
 		return m, nil, false
 	}
 	if closed {
-		closeCmd := m.modal.Close(m.surfaceDeps())
+		m.modal.Close()
 		m.modal = nil
-		return m, tea.Batch(cmd, closeCmd), true
+		return m, tea.Batch(cmd, m.ta.Focus()), true
 	}
 	return m, cmd, true
 }
 
 // dispatchSurfaceMsg routes a NON-input Msg through the open modal surface
 // before the Model's generic reducer; handled=false falls through. On
-// handled+closed it nils the field and batches the surface Close cmd. Extracted
-// so update() stays under the cyclomatic cap.
+// handled+closed it runs the surface's (no-return) Close, nils the field, and
+// batches the textarea refocus (same parent-refocuses path as
+// dispatchSurfaceKey). Extracted so update() stays under the cyclomatic cap.
 func (m Model) dispatchSurfaceMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	if m.modal == nil {
 		return m, nil, false
 	}
-	cmd, handled, closed := m.modal.HandleMsg(msg, m.surfaceDeps())
+	cmd, handled, closed := m.modal.HandleMsg(msg)
 	if !handled {
 		return m, nil, false
 	}
 	if closed {
-		closeCmd := m.modal.Close(m.surfaceDeps())
+		m.modal.Close()
 		m.modal = nil
-		return m, tea.Batch(cmd, closeCmd), true
+		return m, tea.Batch(cmd, m.ta.Focus()), true
 	}
 	return m, cmd, true
 }
@@ -3089,20 +3095,19 @@ func (m Model) endRun(stop string) Model {
 // half; a wheel the modal does not claim falls through to the conversation
 // viewport behind it (so a wheel elsewhere keeps scrolling the transcript).
 //
-// The open modal surface gets the wheel before the viewport; handled=true
-// consumes it. The migrated overlays without a scroll surface return
-// handled=false (soul today: no scroll surface), so the wheel falls through.
+// The open modal surface gets the wheel before the viewport and CONSUMES it by
+// default (handled=true: a modal captures input, so the wheel behind it is
+// DEAD); handled=false is allowed only when the surface deliberately delegates
+// (approval's plateau-only claim below is its own seam, pre-migration).
 func (m Model) onMouseWheel(msg tea.MouseWheelMsg) (tea.Model, tea.Cmd) {
 	if m.phase == phaseAwaitingApproval {
 		if cmd, approval := (&m.approval).approvalWheel(msg, (&m).approvalDeps()); approval {
 			return m, cmd
 		}
 	}
-	// Open modal surface gets the wheel BEFORE the conversation
-	// viewport; handled=true consumes it. soul's HandleWheel always returns false (no
-	// scroll surface), so the wheel falls through to the viewport — zero behavior change.
+	// Open modal surface gets the wheel BEFORE the conversation viewport.
 	if m.modal != nil {
-		if cmd, handled := m.modal.HandleWheel(msg, m.surfaceDeps()); handled {
+		if cmd, handled := m.modal.HandleWheel(msg); handled {
 			return m, cmd
 		}
 	}
