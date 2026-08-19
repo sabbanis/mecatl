@@ -2,7 +2,7 @@
 id: 01-authority-domain
 title: Pure authority value and neutral evaluator port
 blocked_by: []
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
