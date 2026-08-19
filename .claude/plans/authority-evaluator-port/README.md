@@ -1,0 +1,17 @@
+# Authority evaluator port
+
+Accumulator: `acc/authority-evaluator-port`
+
+This plan implements `docs/acceptance/authority-evaluator-port.md` for #371.
+Tasks follow the dependency order needed to keep the engine module independent of
+Cedar and to make the evaluator enforce one carried, durable capability set.
+
+| Task | Scope | Depends on |
+|---|---|---|
+| 01-authority-domain | Pure authority value and neutral evaluator port | — |
+| 02-session-persistence | Durable session authority payload and restoration | 01-authority-domain |
+| 03-execution-evaluator | Local/noop adapters and single execute chokepoint | 01-authority-domain, 02-session-persistence |
+| 04-delegation-derivation | Child derivation, ceilings, resume, meta-tool/resource reach | 03-execution-evaluator |
+| 05-composition-root | Root minting, flags, posture and all derivation entry points | 04-delegation-derivation |
+| 06-cedar-adapter | Opt-in Cedar adapter and static operator policy | 03-execution-evaluator, 05-composition-root |
+| 07-vertical-docs | Vertical proofs and ADR/living/user documentation | 05-composition-root, 06-cedar-adapter |

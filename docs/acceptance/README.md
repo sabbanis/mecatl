@@ -78,9 +78,10 @@ when the code that satisfies the plan has landed.
 - [Session continuity UX](session-continuity-ux.md) — authoritative session-family
   metadata, honest replay/inspection, an active-session copy surface, startup resume,
   and a final session-ID handoff for mecatui. Status: landed.
-- [Session storage continuity](session-storage-continuity.md) — bounded current
-  snapshots, indexed progressive inventory, resumable migration/cleanup, configurable
-  retention, and explicit legacy-chat adoption. Status: draft.
+- [Authority evaluator port](authority-evaluator-port.md) — derived capability sets
+  narrowed at every delegation seam, with the decision behind one swappable
+  evaluator port at the single dispatch chokepoint; Cedar is an opt-in adapter.
+  Status: draft.
 
 ## See also
 
