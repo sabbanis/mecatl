@@ -2,7 +2,7 @@
 id: 04-composition-root
 title: Establish managed definition tier and mint authority roots
 blocked_by: [03-execution-evaluator]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
