@@ -735,6 +735,8 @@ func NewSupervisor(t *team.Team, base tool.Environment, factory MemberEngine, op
 // force-copy fork for a Mutating one), constructs its session, and records it. It
 // must be called before Run. A Mutating member without s.forker, or a
 // read-only-isolated member without s.roForker, is an error.
+//
+//nolint:gocyclo // Enrolment ordering keeps authority derivation before runtime acquisition.
 func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 	if strings.TrimSpace(spec.Name) == "" {
 		return ErrMemberNameRequired
@@ -747,6 +749,15 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 		// ErrTooManyMembers) flow through unchanged so a caller can classify them
 		// with errors.Is.
 		return fmt.Errorf("agent: enrol member: %w", err)
+	}
+	var delegatedAuthority session.Authority
+	if s.caps.parentSessionID != "" && s.caps.authorityBound {
+		var authorityErr error
+		delegatedAuthority, authorityErr = deriveDelegatedAuthority(s.caps.authority, s.caps.authority.CapabilitySet, nil, nil)
+		if authorityErr != nil {
+			s.team.RemoveMember(spec.Name)
+			return fmt.Errorf("agent: derive team-member authority: %w", authorityErr)
+		}
 	}
 
 	// OPT-IN model router (ADR 0034): classify this member ONCE here, before the engine
@@ -840,8 +851,17 @@ func (s *Supervisor) AddMember(ctx context.Context, spec MemberSpec) error {
 		s.team.RemoveMember(spec.Name)
 		return fmt.Errorf("agent: stamp team-member relationship: %w", err)
 	}
-	// The member is attributed to the PARENT session's owner (ADR 0204 decision 4).
-	s.caps.inheritOwner(sess)
+	if s.caps.parentSessionID != "" && s.caps.authorityBound {
+		if authorityErr := stampDelegatedLabels(sess, s.caps.owner, delegatedAuthority); authorityErr != nil {
+			if cleanup != nil {
+				_ = cleanup()
+			}
+			s.team.RemoveMember(spec.Name)
+			return fmt.Errorf("agent: stamp team-member authority: %w", authorityErr)
+		}
+	} else {
+		s.caps.inheritOwner(sess)
+	}
 	if err := s.stampDirectTeamRoot(sess, cleanup, spec.Name); err != nil {
 		return err
 	}

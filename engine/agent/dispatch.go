@@ -1285,6 +1285,7 @@ func (e *Engine) parentCaps(r *Run, sess *session.Session, turnIdx int) parentCa
 		// child session it spawns is attributed to the SAME principal. Read off
 		// the aggregate, never off the ambient context — see parentCaps.owner.
 		caps.owner = sess.Owner
+		caps.authority, caps.authorityBound = sess.BoundAuthority()
 		// The parent session's OWN id rides down too (review finding 2, issue
 		// #368) so every derived child/branch/member id is namespaced under a
 		// value that is already collision-safe across owners — see

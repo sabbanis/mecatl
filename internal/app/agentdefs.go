@@ -779,9 +779,11 @@ func buildAgentSubagentEngines(ctx context.Context, cfg Config, provider port.LL
 		// session by them (per-field falling back to the Subagent default child limits for
 		// any zero field). A def that sets neither yields the default, unchanged.
 		meta = append(meta, agent.AgentMeta{
-			Name:        def.Name,
-			Description: def.Description,
-			Limits:      defLimits(def, agent.DefaultChildLimits()),
+			Name:             def.Name,
+			Description:      def.Description,
+			Limits:           defLimits(def, agent.DefaultChildLimits()),
+			AuthorityCeiling: agentDefinitionAuthorityCeiling(def, names),
+			Managed:          managedDefinitionAuthority(def),
 		})
 
 		cfg.diag().Log(ctx, port.LevelInfo, "agent def engine built",
@@ -863,7 +865,9 @@ func buildAgentDefEngine(ctx context.Context, cfg Config, def agents.AgentDef, r
 		if err := cat.Register(mt); err != nil {
 			cfg.diag().Log(ctx, port.LevelWarn, "agent def MCP tool registration failed; skipped",
 				"agent", def.Name, "tool", mt.Spec().Name, "err", err)
+			continue
 		}
+		names = append(names, mt.Spec().Name)
 	}
 
 	bodies, missing := preloadedSkillBodies(def, skillIdx)

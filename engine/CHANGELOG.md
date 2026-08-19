@@ -13,6 +13,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Delegation authority tightening (ADR 0228)** — `agent.DelegationTightening` and the additive `AgentMeta` authority-ceiling fields let composition supply an explicit specialist ceiling and callers request only narrower child authority. Added (minor).
+
 - **Direct-team authority root (ADR 0228)** — `agent.WithRootAuthority` lets composition stamp a pre-minted root capability set on members of a directly server-created team while intentionally leaving parent-driven child derivation to its dedicated seam. Added (minor).
 
 - **Authority evaluator port (ADR 0228)** — `governance.CapabilitySet` provides pure monotone narrowing and delegation-hop consumption, while `port.AuthorityEvaluator` carries a provider-neutral authority request and decision contract. The noop and local set-check reference adapters are available for explicit composition choices. New identifiers are Added (minor).

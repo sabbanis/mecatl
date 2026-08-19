@@ -40,6 +40,14 @@ func TestADR_0228_AuthorityEvaluator_Scenario6_MintPopulatesEveryFieldExplicitly
 	}
 }
 
+func TestAgentDefinitionAuthorityCeilingUsesResolvedToolsAndMCP(t *testing.T) {
+	def := tool.AgentDef{Origin: tool.AgentOriginExplicit, DisallowedTools: []string{"Write"}}
+	got := agentDefinitionAuthorityCeiling(def, []string{"Read", "Write", "mcp__github__issues", "mcp__github__issues"})
+	if got.AllowsTool("Write") || !got.AllowsTool("Read") || !got.AllowsTool("mcp__github__issues") || len(got.Tools) != 2 {
+		t.Fatalf("ceiling = %+v", got)
+	}
+}
+
 func TestADR_0228_AuthorityEvaluator_Scenario6_MintedRootCanDescend(t *testing.T) {
 	root := mintRootAuthority(rootAuthorityCatalog(t), session.SessionKindMain)
 	child, err := governance.ConsumeDelegationHop(root.CapabilitySet)

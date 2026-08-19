@@ -37,6 +37,30 @@ func managedDefinitionAuthority(def tool.AgentDef) bool {
 	return def.Origin == tool.AgentOriginExplicit
 }
 
+// agentDefinitionAuthorityCeiling projects the fully resolved specialist catalog
+// into the authority representation. Explicit definitions alone may establish this
+// ceiling; callers enforce that tier bit independently so a lower tier cannot gain
+// one by choosing a colliding name.
+func agentDefinitionAuthorityCeiling(def tool.AgentDef, resolved []string) governance.CapabilitySet {
+	disallowed := make(map[string]struct{}, len(def.DisallowedTools))
+	for _, name := range def.DisallowedTools {
+		disallowed[name] = struct{}{}
+	}
+	seen := make(map[string]struct{}, len(resolved))
+	tools := make([]string, 0, len(resolved))
+	for _, name := range resolved {
+		if _, denied := disallowed[name]; denied {
+			continue
+		}
+		if _, duplicate := seen[name]; duplicate {
+			continue
+		}
+		seen[name] = struct{}{}
+		tools = append(tools, name)
+	}
+	return governance.CapabilitySet{Tools: tools, RemainingDelegationDepth: rootDelegationDepth, FileSystem: true, DirectWrite: true}
+}
+
 // mintRootAuthority establishes a complete root capability set from the catalog
 // assembled for the session. Child derivation consumes this carried value later;
 // it is not performed at the composition root.
