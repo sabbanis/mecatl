@@ -2,12 +2,12 @@
 id: 12-authority-restore-validation
 title: Fail closed on incomplete persisted authority
 blocked_by: [11-vertical-repair]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/12-authority-restore-validation"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: "panel blocker: malformed authority binds empty set"
+last_error: "task test baseline macOS /var symlink failures"
 accumulator: acc/authority-evaluator-port
 ---
 
