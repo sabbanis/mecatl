@@ -162,7 +162,7 @@ function SidebarContent({
   );
 }
 
-/** Centered composer for a draft chat (no daemon session yet). */
+/** Draft chat (no daemon session yet): greeting + starter chips, composer docked. */
 function DraftView({
   onSend,
   seed,
@@ -173,7 +173,7 @@ function DraftView({
   sidebarSide,
   onShowSidebar,
 }: {
-  onSend: (content: string) => void;
+  onSend: (content: string, files?: File[]) => void;
   seed: string | null;
   onSeedConsumed: () => void;
   onPickSeed: (text: string) => void;
@@ -206,38 +206,40 @@ function DraftView({
           </Button>
         )}
       </div>
-      <div className="flex flex-1 flex-col items-center justify-center gap-6 px-4 lg:px-8">
-        <div className="w-full max-w-xl space-y-4">
-          <div className="space-y-1.5 text-center">
-            <h1 className="text-2xl font-semibold">
+      {/* The composer docks at the bottom exactly like an open chat, so the
+          draft-to-chat transition doesn't move the input under your hands. */}
+      <div className="relative min-h-0 flex-1">
+        <div className="flex h-full flex-col items-center justify-center gap-6 overflow-y-auto px-4 pb-40 max-[499px]:pb-24 lg:px-8">
+          <div className="w-full max-w-xl space-y-4">
+            <h1 className="text-center text-2xl font-semibold">
               What can I help you with?
             </h1>
-            <p className="text-sm text-muted-foreground">
-              Start a new chat, or pick a starting point below.
-            </p>
+            <div className="flex flex-wrap justify-center gap-2">
+              {STARTER_PROMPTS.map((p) => (
+                <button
+                  key={p}
+                  type="button"
+                  onClick={() => onPickSeed(p)}
+                  className="rounded-full border border-border bg-background px-3.5 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
+                >
+                  {p}
+                </button>
+              ))}
+            </div>
           </div>
-          <div className="space-y-1.5">
+        </div>
+        <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-6 pb-4 lg:pb-6 max-[499px]:px-0 max-[499px]:pb-0">
+          <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
+            {error && <p className="px-1 text-sm text-destructive">{error}</p>}
             <ChatInput
-              rows={3}
+              rows={1}
               onSend={onSend}
               initialText={seed}
               onInitialTextConsumed={onSeedConsumed}
               placeholder="Start a new chat..."
+              mobileDocked
             />
           </div>
-          <div className="flex flex-wrap justify-center gap-2">
-            {STARTER_PROMPTS.map((p) => (
-              <button
-                key={p}
-                type="button"
-                onClick={() => onPickSeed(p)}
-                className="rounded-full border border-border bg-background px-3.5 py-1.5 text-sm text-muted-foreground transition-colors hover:border-foreground/20 hover:text-foreground"
-              >
-                {p}
-              </button>
-            ))}
-          </div>
-          {error && <p className="text-sm text-destructive px-1">{error}</p>}
         </div>
       </div>
     </div>
