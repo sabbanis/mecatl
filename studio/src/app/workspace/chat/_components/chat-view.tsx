@@ -2,6 +2,7 @@
 
 import {
   AlertCircle,
+  ArrowDown,
   ArrowLeft,
   CirclePlus,
   Ellipsis,
@@ -405,6 +406,9 @@ export function ChatView({
   onInitialDraftConsumed?: () => void;
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
+  // Whether the transcript is scrolled to (near) the bottom; when it isn't,
+  // a floating control above the composer jumps back down.
+  const [atBottom, setAtBottom] = useState(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [showActivity, setShowActivity] = useState(false);
   // The single right-hand panel — a discriminated union makes "one panel at a
@@ -560,6 +564,12 @@ export function ChatView({
         <div className="relative flex-1 min-h-0">
           <div
             ref={messagesContainerRef}
+            onScroll={(event) => {
+              const el = event.currentTarget;
+              setAtBottom(
+                el.scrollHeight - el.scrollTop - el.clientHeight < 80,
+              );
+            }}
             className="h-full overflow-y-auto px-3 lg:px-6 pt-1 lg:pt-2 pb-48 lg:pb-56"
           >
             <TextSelectionToolbar
@@ -607,6 +617,22 @@ export function ChatView({
             </div>
           </div>
           <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-6 pb-4 lg:pb-6 max-[499px]:px-0 max-[499px]:pb-0">
+            {!atBottom && (
+              <div className="pointer-events-none absolute -top-12 left-0 right-0 flex justify-center">
+                <Button
+                  size="icon"
+                  onClick={() =>
+                    messagesEndRef.current?.scrollIntoView({
+                      behavior: "smooth",
+                    })
+                  }
+                  aria-label="Scroll to bottom"
+                  className="pointer-events-auto size-9 rounded-full border border-border bg-background text-muted-foreground shadow-md hover:bg-muted"
+                >
+                  <ArrowDown className="size-4" />
+                </Button>
+              </div>
+            )}
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
