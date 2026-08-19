@@ -65,6 +65,48 @@ export function useUserAvatar() {
   return { avatarUrl, setAvatarUrl };
 }
 
+export type FontScale = "s" | "m" | "l" | "xl";
+
+const FONT_SCALE_KEY = "mecatl-studio.font-scale";
+/** Root font-size per step; everything downstream is rem-based, so scaling
+ *  the root scales the whole UI. */
+const FONT_SCALE_SIZE: Record<FontScale, string> = {
+  s: "87.5%",
+  m: "",
+  l: "112.5%",
+  xl: "125%",
+};
+
+function applyFontScale(scale: FontScale) {
+  if (typeof document === "undefined") return;
+  document.documentElement.style.fontSize = FONT_SCALE_SIZE[scale];
+}
+
+/**
+ * UI text-size preference, browser-local. The hook both stores the choice
+ * and applies it to the root element; mount one instance app-wide (see
+ * ClientProviders) so the stored scale takes effect on load.
+ */
+export function useFontScale() {
+  const [scale, setScaleState] = useState<FontScale>("m");
+  useEffect(() => {
+    const stored = readLocalStorage(FONT_SCALE_KEY);
+    if (stored && stored in FONT_SCALE_SIZE) {
+      const value = stored as FontScale;
+      setScaleState(value);
+      applyFontScale(value);
+    }
+  }, []);
+
+  const setScale = useCallback((next: FontScale) => {
+    setScaleState(next);
+    writeLocalStorage(FONT_SCALE_KEY, next === "m" ? null : next);
+    applyFontScale(next);
+  }, []);
+
+  return { scale, setScale };
+}
+
 export type SessionListSide = "left" | "right";
 
 /**

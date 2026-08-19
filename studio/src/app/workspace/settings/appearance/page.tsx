@@ -3,7 +3,11 @@
 import { Monitor, Moon, PanelLeft, PanelRight, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
-import { useSessionListSide } from "@/lib/profile-preferences";
+import {
+  type FontScale,
+  useFontScale,
+  useSessionListSide,
+} from "@/lib/profile-preferences";
 import { cn } from "@/lib/utils";
 import { SettingsCard } from "../_components/settings-card";
 
@@ -17,6 +21,13 @@ const SESSION_LIST_SIDES = [
   { value: "left", label: "Left", icon: PanelLeft },
   { value: "right", label: "Right", icon: PanelRight },
 ] as const;
+
+const FONT_SCALES: ReadonlyArray<{ value: FontScale; label: string }> = [
+  { value: "s", label: "Small" },
+  { value: "m", label: "Default" },
+  { value: "l", label: "Large" },
+  { value: "xl", label: "Extra large" },
+];
 
 function PillGroup({ children }: { children: React.ReactNode }) {
   return (
@@ -34,7 +45,7 @@ function Pill({
 }: {
   isActive: boolean;
   onClick: () => void;
-  icon: React.ComponentType<{ className?: string }>;
+  icon?: React.ComponentType<{ className?: string }>;
   label: string;
 }) {
   return (
@@ -48,7 +59,7 @@ function Pill({
           : "text-muted-foreground hover:text-foreground",
       )}
     >
-      <Icon className="size-3.5" />
+      {Icon && <Icon className="size-3.5" />}
       {label}
     </button>
   );
@@ -57,6 +68,7 @@ function Pill({
 export default function AppearanceSettingsPage() {
   const { theme: activeTheme, setTheme } = useTheme();
   const { side, setSide } = useSessionListSide();
+  const { scale, setScale } = useFontScale();
 
   // next-themes resolves only on the client; gate the active-pill highlight on
   // mount so the selected theme shows instead of nothing on first paint.
@@ -76,6 +88,20 @@ export default function AppearanceSettingsPage() {
                   isActive={mounted && activeTheme === value}
                   onClick={() => setTheme(value)}
                   icon={icon}
+                  label={label}
+                />
+              ))}
+            </PillGroup>
+          </div>
+
+          <div className="space-y-1.5">
+            <p className="text-sm font-medium">Text size</p>
+            <PillGroup>
+              {FONT_SCALES.map(({ value, label }) => (
+                <Pill
+                  key={value}
+                  isActive={mounted && scale === value}
+                  onClick={() => setScale(value)}
                   label={label}
                 />
               ))}
