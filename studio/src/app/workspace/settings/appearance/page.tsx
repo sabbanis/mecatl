@@ -28,6 +28,18 @@ export default function AppearanceSettingsPage() {
   const { theme: activeTheme, setTheme } = useTheme();
   const { side, setSide } = useSessionListSide();
   const { scale, setScale } = useUiScale();
+  // Dragging the scale slider must not rescale the page under the thumb —
+  // the relayout moves the slider itself and the drag jitters. The drag
+  // updates a local preview (the % label follows live); the scale applies
+  // once on release.
+  const [scalePreview, setScalePreview] = useState<number | null>(null);
+  const shownScale = scalePreview ?? scale;
+  const commitScale = () => {
+    if (scalePreview !== null) {
+      setScale(scalePreview);
+      setScalePreview(null);
+    }
+  };
 
   // next-themes resolves only on the client; gate the current value on mount
   // so the trigger shows the real choice instead of a flash of "system".
@@ -56,18 +68,24 @@ export default function AppearanceSettingsPage() {
               min={UI_SCALE_MIN}
               max={UI_SCALE_MAX}
               step={0.05}
-              value={scale}
-              onChange={(event) => setScale(Number(event.target.value))}
+              value={shownScale}
+              onChange={(event) => setScalePreview(Number(event.target.value))}
+              onPointerUp={commitScale}
+              onKeyUp={commitScale}
+              onBlur={commitScale}
               className="h-2 w-full max-w-64 cursor-pointer accent-brand"
             />
             <span className="w-11 shrink-0 text-right text-sm tabular-nums text-muted-foreground">
-              {Math.round(scale * 100)}%
+              {Math.round(shownScale * 100)}%
             </span>
             <Button
               variant="ghost"
               size="sm"
-              disabled={scale === 1}
-              onClick={() => setScale(1)}
+              disabled={shownScale === 1}
+              onClick={() => {
+                setScalePreview(null);
+                setScale(1);
+              }}
             >
               Reset
             </Button>
