@@ -112,7 +112,7 @@ func TestADR_0228_AuthorityEvaluator_Scenario3_UnavailableEvaluatorIsDistinctFro
 	unavailable := &recordingAuthorityEvaluator{err: context.DeadlineExceeded}
 	diagnostics := &recordingDiagnostics{}
 	eng := newEngine(agent.Deps{
-		LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("unavailable", "Read", `{}`))),
+		LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("unavailable", "Read", `{"path":"README.md"}`))),
 		Catalog:            catalogWith(t, readTool),
 		AuthorityEvaluator: unavailable,
 		Diagnostics:        diagnostics,
@@ -169,11 +169,73 @@ func TestADR_0228_AuthorityEvaluator_Scenario3_MetaToolIsAuthorizedAgainstItsTar
 	t.Fatal("missing meta tool result")
 }
 
+func TestADR_0228_AuthorityEvaluator_Scenario7_ResourceAttributeIsDerivedWithoutRawArguments(t *testing.T) {
+	t.Run("normalized workspace target", func(t *testing.T) {
+		write := &authorityTool{name: "Write"}
+		evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Allowed: true}}
+		eng := newEngine(agent.Deps{
+			LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("write", "Write", `{"path":"./docs/../README.md","content":"credential=must-not-leak"}`))),
+			Catalog:            catalogWith(t, write),
+			AuthorityEvaluator: evaluator,
+		})
+
+		drain(eng.Run(context.Background(), authoritySession(t, "Write"), agent.MemEnv("/workspace"), agent.RunRequest{Text: "write"}))
+		if got := write.ran.Load(); got != 1 {
+			t.Fatalf("write executions = %d, want 1", got)
+		}
+		if got := evaluator.calls(); got != 1 {
+			t.Fatalf("evaluator calls = %d, want 1", got)
+		}
+		evaluator.mu.Lock()
+		defer evaluator.mu.Unlock()
+		request := evaluator.requests[0]
+		encoded, err := json.Marshal(request)
+		if err != nil {
+			t.Fatalf("marshal authority request: %v", err)
+		}
+		if strings.Contains(string(encoded), "must-not-leak") {
+			t.Fatalf("authority request forwarded raw tool content: %s", encoded)
+		}
+		if request.ToolName != "Write" {
+			t.Fatalf("tool name = %q, want exact tool name Write", request.ToolName)
+		}
+		if request.Resource == nil {
+			t.Fatal("resource descriptor is missing")
+		}
+		if request.Resource.Kind != port.AuthorityResourceWorkspaceFile || request.Resource.Path != "/workspace/README.md" || request.Resource.Workspace != "/workspace" {
+			t.Fatalf("resource = %+v, want normalized workspace file /workspace/README.md", request.Resource)
+		}
+	})
+
+	for _, args := range []string{
+		`{"path":42}`,
+		`{"path":"one","path":"two"}`,
+	} {
+		t.Run("malformed or ambiguous path is fail closed", func(t *testing.T) {
+			read := &authorityTool{name: "Read"}
+			evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Allowed: true}}
+			eng := newEngine(agent.Deps{
+				LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("read", "Read", args))),
+				Catalog:            catalogWith(t, read),
+				AuthorityEvaluator: evaluator,
+			})
+
+			drain(eng.Run(context.Background(), authoritySession(t, "Read"), agent.MemEnv("/workspace"), agent.RunRequest{Text: "read"}))
+			if got := read.ran.Load(); got != 0 {
+				t.Fatalf("read executions = %d, want 0", got)
+			}
+			if got := evaluator.calls(); got != 0 {
+				t.Fatalf("evaluator calls = %d, want 0", got)
+			}
+		})
+	}
+}
+
 func TestADR_0228_AuthorityEvaluator_Scenario3_DisclosureIsNotLoadBearing(t *testing.T) {
 	denied := &authorityTool{name: "Write"}
 	evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Reason: "tool is absent from the capability set"}}
 	eng := newEngine(agent.Deps{
-		LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", "Write", `{}`))),
+		LLM:                mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", "Write", `{"path":"README.md","content":"x"}`))),
 		Catalog:            catalogWith(t, denied),
 		AuthorityEvaluator: evaluator,
 	})

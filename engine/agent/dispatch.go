@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -1050,7 +1052,7 @@ func (e *Engine) execute(ctx context.Context, r *Run, sess *session.Session, env
 	}
 
 	var authorityResult *session.ToolResult
-	if result, checked := e.authorizeExecution(ctx, r, sess, turnIdx, c); checked {
+	if result, checked := e.authorizeExecution(ctx, r, sess, env, turnIdx, c); checked {
 		authorityResult = &result
 	}
 
@@ -1092,7 +1094,7 @@ const callMcpWithQueryToolName = "CallMcpWithQuery"
 // authorizeExecution is the single authority-enforcement boundary. Permission
 // and hook gates decide whether a call may reach execution; a bound session's
 // carried authority independently decides which exact tool it may execute.
-func (e *Engine) authorizeExecution(ctx context.Context, r *Run, sess *session.Session, turnIdx int, call session.ToolCall) (session.ToolResult, bool) {
+func (e *Engine) authorizeExecution(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, call session.ToolCall) (session.ToolResult, bool) {
 	authority, bound := sess.BoundAuthority()
 	if !bound || e.deps.AuthorityEvaluator == nil {
 		return session.ToolResult{}, false
@@ -1101,6 +1103,10 @@ func (e *Engine) authorizeExecution(ctx context.Context, r *Run, sess *session.S
 	target, err := authorityTarget(call, authority.CapabilitySet)
 	if err != nil {
 		return session.NewToolError(call.ID, fmt.Sprintf("tool %q denied by authority: %v", call.Name, err)), true
+	}
+	resource, err := authorityResource(call, env)
+	if err != nil {
+		return session.NewToolError(call.ID, fmt.Sprintf("tool %q denied by authority: %v", target, err)), true
 	}
 	request := port.AuthorityRequest{
 		CapabilitySet:   authority.CapabilitySet,
@@ -1111,6 +1117,7 @@ func (e *Engine) authorizeExecution(ctx context.Context, r *Run, sess *session.S
 			Instance:   string(sess.ID),
 			Owner:      authorityOwner(sess.Owner),
 		},
+		Resource: resource,
 	}
 	decision, err := e.deps.AuthorityEvaluator.AuthorizeTool(ctx, request)
 	if err != nil {
@@ -1168,6 +1175,81 @@ func authorityTarget(call session.ToolCall, set governance.CapabilitySet) (strin
 	default:
 		return call.Name, nil
 	}
+}
+
+func authorityResource(call session.ToolCall, env tool.Environment) (*port.AuthorityResource, error) {
+	switch call.Name {
+	case "Read", "Edit", "Write":
+		path, err := authorityPath(call.Args)
+		if err != nil {
+			return nil, err
+		}
+		return authorityWorkspaceResource(path, env)
+	default:
+		return nil, nil
+	}
+}
+
+// authorityPath reads only the path field from the known local-file tool shapes.
+// It refuses duplicate, missing, non-string, or trailing values so an evaluator
+// never receives a target selected from ambiguous JSON.
+func authorityPath(args json.RawMessage) (string, error) {
+	decoder := json.NewDecoder(strings.NewReader(string(args)))
+	token, err := decoder.Token()
+	if err != nil || token != json.Delim('{') {
+		return "", errors.New("local resource arguments are invalid")
+	}
+
+	var path string
+	pathCount := 0
+	for decoder.More() {
+		key, err := decoder.Token()
+		if err != nil {
+			return "", errors.New("local resource arguments are invalid")
+		}
+		var value json.RawMessage
+		if err := decoder.Decode(&value); err != nil {
+			return "", errors.New("local resource arguments are invalid")
+		}
+		if key != "path" {
+			continue
+		}
+		pathCount++
+		if pathCount != 1 || json.Unmarshal(value, &path) != nil {
+			return "", errors.New("local resource path is ambiguous")
+		}
+	}
+	if token, err := decoder.Token(); err != nil || token != json.Delim('}') {
+		return "", errors.New("local resource arguments are invalid")
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); err != io.EOF {
+		return "", errors.New("local resource arguments are invalid")
+	}
+	if pathCount != 1 || path == "" || len(path) > 4096 || strings.IndexByte(path, 0) >= 0 {
+		return "", errors.New("local resource path is invalid")
+	}
+	return path, nil
+}
+
+// authorityWorkspaceResource resolves a recognized local target and binds it to
+// the live workspace identity. A relaxed Workspace may deliberately permit an
+// out-of-root target, so the descriptor preserves that normalized target rather
+// than introducing a second confinement policy ahead of the Workspace.
+func authorityWorkspaceResource(path string, env tool.Environment) (*port.AuthorityResource, error) {
+	root := filepath.Clean(env.Workspace().Root())
+	if !filepath.IsAbs(root) {
+		return nil, errors.New("session workspace identity is invalid")
+	}
+	target := filepath.Clean(path)
+	if !filepath.IsAbs(target) {
+		target = filepath.Join(root, target)
+	}
+	return &port.AuthorityResource{
+		Kind:      port.AuthorityResourceWorkspaceFile,
+		Path:      filepath.ToSlash(target),
+		Workspace: filepath.ToSlash(root),
+	}, nil
 }
 
 // authorityMCPToolName returns a carried tool name for server. It is the sole
