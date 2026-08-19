@@ -480,7 +480,7 @@ export function ChatView({
           panelMaximized && "hidden",
         )}
       >
-        <div className="flex h-16 items-center gap-2 lg:gap-3 border-b border-border px-3 lg:px-6">
+        <div className="flex h-16 items-center gap-2 border-b border-border px-3 max-[499px]:h-14 lg:gap-3 lg:px-6">
           {isMobile && (
             <Button
               variant="ghost"

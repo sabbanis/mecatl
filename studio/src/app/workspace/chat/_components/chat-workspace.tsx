@@ -100,7 +100,7 @@ function SidebarContent({
 }) {
   return (
     <>
-      <div className="flex h-16 shrink-0 items-center gap-0.5 border-b border-border px-3 lg:px-4">
+      <div className="flex h-16 shrink-0 items-center gap-0.5 border-b border-border px-3 max-[499px]:h-14 lg:px-4">
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium">
           Session List
         </h2>
@@ -186,7 +186,7 @@ function DraftView({
     <div className="flex h-full flex-col">
       {/* Same header bar as an open chat, so a draft doesn't lose the title
           row and its controls. */}
-      <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border px-3 lg:gap-3 lg:px-6">
+      <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border px-3 max-[499px]:h-14 lg:gap-3 lg:px-6">
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold select-none">
           New chat
         </h2>

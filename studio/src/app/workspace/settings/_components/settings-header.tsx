@@ -10,7 +10,7 @@ import { settingsSectionFor } from "./settings-sections";
 
 /**
  * Mobile-only subpage header, styled like the chat header: a full-bleed
- * h-16 bar with a back arrow and the section title. On a section's deeper
+ * h-14 bar with a back arrow and the section title. On a section's deeper
  * pages (e.g. a memory entry) the arrow goes up to the section; on the
  * section page itself it goes back to the settings index. Renders nothing
  * on the index or from 500px up.
@@ -24,7 +24,7 @@ export function SettingsMobileBar() {
     pathname === section.href ? "/workspace/settings" : section.href;
 
   return (
-    <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border px-3 min-[500px]:hidden">
+    <div className="flex h-14 shrink-0 items-center gap-2 border-b border-border px-3 min-[500px]:hidden">
       <Button
         variant="ghost"
         size="icon"

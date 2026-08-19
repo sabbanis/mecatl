@@ -17,6 +17,7 @@ import {
   Paperclip,
   Plus,
   RotateCcw,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -393,7 +394,9 @@ function MobileComposerMenu({
         onClick={() => setMenuOpen(true)}
         aria-label="Composer options"
       >
-        <Plus className="size-4" />
+        {/* Not a +: on desktop + means attach, here it opens the options
+            menu, so it gets a distinct options glyph. */}
+        <SlidersHorizontal className="size-4" />
       </Button>
 
       <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
@@ -1060,8 +1063,10 @@ export function ChatInput({
           // Docked mobile composer: full-bleed, only the top hairline
           // separates it from the conversation above; it owns the
           // home-indicator safe area now that it touches the screen edge.
+          // The hairline matches the chat title bar's divider (border-border),
+          // steady across focus — the docked bar is chrome, not a field.
           mobileDocked &&
-            "max-[499px]:rounded-none max-[499px]:border-x-0 max-[499px]:border-b-0 max-[499px]:pb-[env(safe-area-inset-bottom)]",
+            "max-[499px]:rounded-none max-[499px]:border-x-0 max-[499px]:border-b-0 max-[499px]:border-border max-[499px]:focus-within:border-border max-[499px]:pb-[env(safe-area-inset-bottom)]",
           isDragOver
             ? "border-brand bg-brand/5 dark:bg-brand/10 ring-2 ring-brand/20"
             : isWindowDrag
@@ -1122,9 +1127,9 @@ export function ChatInput({
             single right slot that is the mic until there is text, then the
             send button (native messaging convention). Desktop keeps the
             two-row layout below. */}
-        {/* min-h-16 mirrors the chat header bar, so the docked composer and
+        {/* min-h-14 mirrors the chat header bar, so the docked composer and
             the title bar read as symmetric top/bottom bands. */}
-        <div className="flex flex-wrap items-start gap-1.5 px-4 pt-4 pb-2 max-[499px]:min-h-16 max-[499px]:flex-nowrap max-[499px]:items-center max-[499px]:gap-1 max-[499px]:px-2 max-[499px]:py-1.5">
+        <div className="flex flex-wrap items-start gap-1.5 px-4 pt-4 pb-2 max-[499px]:min-h-14 max-[499px]:flex-nowrap max-[499px]:items-center max-[499px]:gap-1 max-[499px]:px-2 max-[499px]:py-1.5">
           <div className="hidden max-[499px]:block">
             <MobileComposerMenu
               onFilesSelected={(newFiles) =>

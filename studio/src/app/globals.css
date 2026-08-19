@@ -207,6 +207,14 @@
   html.dark body {
     background-color: #02141b;
   }
+  /* Mobile is read at arm's length — bump the default root size toward
+     native body text (~17pt). An explicit Text size choice writes an
+     inline font-size on <html>, which overrides this. */
+  @media (max-width: 499px) {
+    html {
+      font-size: 17px;
+    }
+  }
 }
 
 @layer utilities {
@@ -365,4 +373,19 @@
   pointer-events: none;
   float: left;
   height: 0;
+}
+
+/* Mobile: small UI glyphs step up one notch for touch legibility. Unlayered
+   on purpose — it must override the size-* utilities, which live in a
+   cascade layer; larger deliberate icon sizes are untouched. */
+@media (max-width: 499px) {
+  svg.lucide.size-4,
+  svg.lucide.size-\[17px\] {
+    width: 1.25rem;
+    height: 1.25rem;
+  }
+  svg.lucide.size-3\.5 {
+    width: 1.125rem;
+    height: 1.125rem;
+  }
 }
