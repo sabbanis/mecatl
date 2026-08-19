@@ -37,6 +37,9 @@ export const viewport: Viewport = {
     { media: "(prefers-color-scheme: dark)", color: "#02141b" },
   ],
   viewportFit: "cover",
+  // App-like surface: pinch-zoom off (text sizes stay OS-controlled).
+  maximumScale: 1,
+  userScalable: false,
 };
 
 export default async function RootLayout({

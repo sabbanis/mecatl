@@ -190,17 +190,21 @@
     @apply border-border outline-ring/50;
   }
   body {
-    @apply bg-background text-foreground;
+    @apply text-foreground;
     font-family: var(--font-inter), sans-serif;
   }
-  /* Paint the canvas behind the app with the shell gradient's terminal
-     colour: in the installed iOS PWA, 100dvh can under-report and leave a
-     strip below the app uncovered, and overscroll exposes the canvas too.
-     Matching the gradient's end keeps both invisible. */
-  html {
+  /* Paint the canvas AND body with the shell gradient's terminal colour:
+     iOS standalone computes dvh stale at launch (self-corrects on first
+     scroll), leaving a strip beside/below the app, and overscroll exposes
+     the canvas too. Every visible surface (the card, panels, dialogs)
+     declares its own bg-background, so nothing reads body's background —
+     matching the gradient's end keeps the stale strip invisible. */
+  html,
+  body {
     background-color: #06202a;
   }
-  html.dark {
+  html.dark,
+  html.dark body {
     background-color: #02141b;
   }
 }
