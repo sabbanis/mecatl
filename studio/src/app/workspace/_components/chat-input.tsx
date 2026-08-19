@@ -7,8 +7,10 @@ import type { SuggestionProps } from "@tiptap/suggestion";
 import {
   ArrowUp,
   Bot,
+  Brain,
   Check,
   ChevronDown,
+  ChevronRight,
   FolderClosed,
   FolderPlus,
   Mic,
@@ -59,6 +61,9 @@ interface ChatInputProps {
   onSelectProject?: (id: string | null) => void;
   onCreateProject?: (name: string) => void;
   compact?: boolean;
+  /** Docked at a screen edge on mobile: full-bleed single row with only a
+      hairline top border, instead of the floating rounded box. */
+  mobileDocked?: boolean;
   /** Refocuses the field when this changes (e.g. the open chat's id). */
   focusKey?: string;
   onSend?: (content: string, files?: File[]) => void;
@@ -200,8 +205,6 @@ function ModelEffortSelector({
 }) {
   const [model, setModel] = useState<ModelId>(DEFAULT_MODEL_ID);
   const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const isMobile = useIsMobile();
   const selectedModel = MODELS.find((m) => m.id === model) ?? MODELS[0];
   const selectedEffort =
     EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
@@ -212,65 +215,6 @@ function ModelEffortSelector({
       <Button size="sm" className={GHOST_TRIGGER_CLASS} disabled>
         {lockedLabel}
       </Button>
-    );
-  }
-
-  if (isMobile) {
-    return (
-      <>
-        <Button
-          size="sm"
-          className={GHOST_TRIGGER_CLASS}
-          onClick={() => setSheetOpen(true)}
-        >
-          {selectedModel.label}
-          <span className="text-muted-foreground">{selectedEffort.label}</span>
-          <ChevronDown className="size-3.5 text-muted-foreground" />
-        </Button>
-        <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-          <SheetContent side="bottom" className="p-0">
-            <SheetTitle className="sr-only">Model and effort</SheetTitle>
-            <div className="max-h-[70dvh] overflow-y-auto pb-2">
-              <SheetSectionLabel>Model</SheetSectionLabel>
-              {MODELS.map((m) => (
-                <SheetOptionRow
-                  key={m.id}
-                  label={m.label}
-                  selected={m.id === model}
-                  onSelect={() => {
-                    setModel(m.id);
-                    onModelChange?.(m.id);
-                  }}
-                />
-              ))}
-              <SheetSectionLabel>Effort</SheetSectionLabel>
-              {EFFORT_LEVELS.map((e) => (
-                <SheetOptionRow
-                  key={e.id}
-                  label={e.label}
-                  selected={e.id === effort}
-                  onSelect={() => setEffort(e.id)}
-                />
-              ))}
-              <div className="mx-4 my-1 h-px bg-border" />
-              <button
-                type="button"
-                disabled={isDefault}
-                onClick={() => {
-                  setModel(DEFAULT_MODEL_ID);
-                  setEffort(DEFAULT_EFFORT_ID);
-                  onModelChange?.(DEFAULT_MODEL_ID);
-                  setSheetOpen(false);
-                }}
-                className="flex w-full items-center gap-3 px-4 py-3 text-sm text-muted-foreground transition-colors hover:bg-muted/50 disabled:opacity-50"
-              >
-                <RotateCcw className="size-4" />
-                Reset to default
-              </button>
-            </div>
-          </SheetContent>
-        </Sheet>
-      </>
     );
   }
 
@@ -371,43 +315,6 @@ function ModelEffortSelector({
  */
 function MemoryToggle() {
   const [on, setOn] = useState(true);
-  const [sheetOpen, setSheetOpen] = useState(false);
-  const isMobile = useIsMobile();
-
-  if (isMobile) {
-    return (
-      <>
-        <Button
-          size="sm"
-          className={GHOST_TRIGGER_CLASS}
-          onClick={() => setSheetOpen(true)}
-        >
-          Memory
-          <span className="text-muted-foreground">{on ? "On" : "Off"}</span>
-          <ChevronDown className="size-3.5 text-muted-foreground" />
-        </Button>
-        <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
-          <SheetContent side="bottom" className="p-0">
-            <SheetTitle className="sr-only">Memory</SheetTitle>
-            <div className="py-2">
-              {[true, false].map((value) => (
-                <SheetOptionRow
-                  key={String(value)}
-                  label={value ? "On" : "Off"}
-                  selected={on === value}
-                  onSelect={() => {
-                    setOn(value);
-                    setSheetOpen(false);
-                  }}
-                />
-              ))}
-            </div>
-          </SheetContent>
-        </Sheet>
-      </>
-    );
-  }
-
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -435,6 +342,186 @@ function MemoryToggle() {
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * The mobile composer's left-hand options button: a + that opens a bottom
+ * sheet with the composer's secondary actions — Add a file, Model, Memory —
+ * replacing the desktop toolbar row (hidden on mobile). Model and Memory
+ * drill into their own sheets; a routed model renders display-only.
+ */
+function MobileComposerMenu({
+  onFilesSelected,
+  onModelChange,
+  modelLockedLabel,
+}: {
+  onFilesSelected: (files: File[]) => void;
+  onModelChange?: (id: ModelId) => void;
+  modelLockedLabel?: string;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [sub, setSub] = useState<"model" | "memory" | null>(null);
+  const [model, setModel] = useState<ModelId>(DEFAULT_MODEL_ID);
+  const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
+  const [memoryOn, setMemoryOn] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const selectedModel = MODELS.find((m) => m.id === model) ?? MODELS[0];
+  const selectedEffort =
+    EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
+  const isDefault = model === DEFAULT_MODEL_ID && effort === DEFAULT_EFFORT_ID;
+
+  const menuRow =
+    "flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50 disabled:opacity-50";
+
+  return (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        className="hidden"
+        onChange={(event) => {
+          const files = Array.from(event.target.files ?? []);
+          event.target.value = "";
+          if (files.length > 0) onFilesSelected(files);
+        }}
+      />
+      <Button
+        size="icon"
+        className="size-8 rounded-full border-0 bg-transparent text-muted-foreground shadow-none hover:bg-muted/60"
+        onClick={() => setMenuOpen(true)}
+        aria-label="Composer options"
+      >
+        <Plus className="size-4" />
+      </Button>
+
+      <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
+        <SheetContent side="bottom" className="p-0">
+          <SheetTitle className="sr-only">Composer options</SheetTitle>
+          <div className="py-2">
+            <button
+              type="button"
+              className={menuRow}
+              onClick={() => {
+                setMenuOpen(false);
+                fileInputRef.current?.click();
+              }}
+            >
+              <Paperclip className="size-4 text-muted-foreground" />
+              Add a file
+            </button>
+            <button
+              type="button"
+              className={menuRow}
+              disabled={!!modelLockedLabel}
+              onClick={() => {
+                setMenuOpen(false);
+                setSub("model");
+              }}
+            >
+              <Bot className="size-4 text-muted-foreground" />
+              <span className="flex-1 text-left">Model</span>
+              <span className="text-muted-foreground">
+                {modelLockedLabel ??
+                  `${selectedModel.label} ${selectedEffort.label}`}
+              </span>
+              {!modelLockedLabel && (
+                <ChevronRight className="size-4 text-muted-foreground/60" />
+              )}
+            </button>
+            <button
+              type="button"
+              className={menuRow}
+              onClick={() => {
+                setMenuOpen(false);
+                setSub("memory");
+              }}
+            >
+              <Brain className="size-4 text-muted-foreground" />
+              <span className="flex-1 text-left">Memory</span>
+              <span className="text-muted-foreground">
+                {memoryOn ? "On" : "Off"}
+              </span>
+              <ChevronRight className="size-4 text-muted-foreground/60" />
+            </button>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet
+        open={sub === "model"}
+        onOpenChange={(open) => {
+          if (!open) setSub(null);
+        }}
+      >
+        <SheetContent side="bottom" className="p-0">
+          <SheetTitle className="sr-only">Model and effort</SheetTitle>
+          <div className="max-h-[70dvh] overflow-y-auto pb-2">
+            <SheetSectionLabel>Model</SheetSectionLabel>
+            {MODELS.map((m) => (
+              <SheetOptionRow
+                key={m.id}
+                label={m.label}
+                selected={m.id === model}
+                onSelect={() => {
+                  setModel(m.id);
+                  onModelChange?.(m.id);
+                }}
+              />
+            ))}
+            <SheetSectionLabel>Effort</SheetSectionLabel>
+            {EFFORT_LEVELS.map((e) => (
+              <SheetOptionRow
+                key={e.id}
+                label={e.label}
+                selected={e.id === effort}
+                onSelect={() => setEffort(e.id)}
+              />
+            ))}
+            <div className="mx-4 my-1 h-px bg-border" />
+            <button
+              type="button"
+              disabled={isDefault}
+              onClick={() => {
+                setModel(DEFAULT_MODEL_ID);
+                setEffort(DEFAULT_EFFORT_ID);
+                onModelChange?.(DEFAULT_MODEL_ID);
+                setSub(null);
+              }}
+              className={cn(menuRow, "text-muted-foreground")}
+            >
+              <RotateCcw className="size-4" />
+              Reset to default
+            </button>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet
+        open={sub === "memory"}
+        onOpenChange={(open) => {
+          if (!open) setSub(null);
+        }}
+      >
+        <SheetContent side="bottom" className="p-0">
+          <SheetTitle className="sr-only">Memory</SheetTitle>
+          <div className="py-2">
+            {[true, false].map((value) => (
+              <SheetOptionRow
+                key={String(value)}
+                label={value ? "On" : "Off"}
+                selected={memoryOn === value}
+                onSelect={() => {
+                  setMemoryOn(value);
+                  setSub(null);
+                }}
+              />
+            ))}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </>
   );
 }
 
@@ -669,6 +756,7 @@ export function ChatInput({
   onSelectProject,
   onCreateProject,
   compact = false,
+  mobileDocked = false,
   focusKey,
   onSend,
   onQueue,
@@ -916,7 +1004,10 @@ export function ChatInput({
           setAttachedFiles((prev) => [...prev, ...droppedFiles]);
         }
       }}
-      className="relative rounded-2xl bg-zinc-50 dark:bg-zinc-900"
+      className={cn(
+        "relative rounded-2xl bg-zinc-50 dark:bg-zinc-900",
+        mobileDocked && "max-[499px]:rounded-none max-[499px]:bg-transparent",
+      )}
     >
       {/* Autocomplete popover (agent @-mentions or slash commands), floating
           above the input box. Driven by TipTap's suggestion lifecycle. */}
@@ -966,6 +1057,11 @@ export function ChatInput({
       <div
         className={cn(
           "relative rounded-2xl border bg-background transition-colors focus-within:border-zinc-500 dark:focus-within:border-zinc-400",
+          // Docked mobile composer: full-bleed, only the top hairline
+          // separates it from the conversation above; it owns the
+          // home-indicator safe area now that it touches the screen edge.
+          mobileDocked &&
+            "max-[499px]:rounded-none max-[499px]:border-x-0 max-[499px]:border-b-0 max-[499px]:pb-[env(safe-area-inset-bottom)]",
           isDragOver
             ? "border-brand bg-brand/5 dark:bg-brand/10 ring-2 ring-brand/20"
             : isWindowDrag
@@ -1026,12 +1122,16 @@ export function ChatInput({
             single right slot that is the mic until there is text, then the
             send button (native messaging convention). Desktop keeps the
             two-row layout below. */}
-        <div className="flex flex-wrap items-start gap-1.5 px-4 pt-4 pb-2 max-[499px]:flex-nowrap max-[499px]:items-end max-[499px]:gap-1 max-[499px]:px-2 max-[499px]:py-1.5">
+        {/* min-h-16 mirrors the chat header bar, so the docked composer and
+            the title bar read as symmetric top/bottom bands. */}
+        <div className="flex flex-wrap items-start gap-1.5 px-4 pt-4 pb-2 max-[499px]:min-h-16 max-[499px]:flex-nowrap max-[499px]:items-center max-[499px]:gap-1 max-[499px]:px-2 max-[499px]:py-1.5">
           <div className="hidden max-[499px]:block">
-            <FilesDropdown
+            <MobileComposerMenu
               onFilesSelected={(newFiles) =>
                 setAttachedFiles((prev) => [...prev, ...newFiles])
               }
+              onModelChange={onModelChange}
+              modelLockedLabel={modelLockedLabel}
             />
           </div>
           {/* TipTap composer: resolved @agent / /skill mentions are atomic
@@ -1113,7 +1213,8 @@ export function ChatInput({
       {/* Toolbar sits BEHIND the input box: negative top margin pulls it up
           so its top edge overlaps the input box's bottom rounded corners,
           making the two boxes appear to share a single outline. */}
-      <div className="-mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1 rounded-b-2xl border border-t-0 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 overflow-x-auto hide-scrollbar">
+      {/* Hidden on mobile: Model and Memory live in the + options sheet. */}
+      <div className="-mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1 rounded-b-2xl border border-t-0 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 overflow-x-auto hide-scrollbar max-[499px]:hidden">
         {projects && (
           <ProjectsDropdown
             projects={projects}

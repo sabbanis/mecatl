@@ -240,12 +240,13 @@ function ThreadPanel({
           ))}
           <div ref={endRef} />
         </div>
-        <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4">
+        <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
           <ChatInput
             rows={1}
             onSend={handleSend}
             onModelChange={() => {}}
             placeholder="Reply in thread…"
+            mobileDocked
           />
         </div>
       </div>
@@ -605,8 +606,8 @@ export function ChatView({
               <div ref={messagesEndRef} />
             </div>
           </div>
-          <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-6 pb-4 lg:pb-6">
-            <div className="max-w-[768px] space-y-1.5">
+          <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-6 pb-4 lg:pb-6 max-[499px]:px-0 max-[499px]:pb-0">
+            <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
                   <AlertCircle className="size-4 shrink-0 text-destructive" />
@@ -636,6 +637,7 @@ export function ChatView({
                   onSend={onSend}
                   onQueue={onSend}
                   focusKey={session.id}
+                  mobileDocked
                   modelLockedLabel={live ? "Auto-routed" : undefined}
                   onModelChange={() => {}}
                   isStreaming={isStreaming}
