@@ -2,7 +2,7 @@
 id: 11-vertical-repair
 title: Complete the feasible authority vertical proof
 blocked_by: [09-mcp-resource-authority, 10-authority-disclosure]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
