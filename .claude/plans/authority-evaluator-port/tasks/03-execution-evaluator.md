@@ -2,12 +2,12 @@
 id: 03-execution-evaluator
 title: Enforce authority once at the execution chokepoint
 blocked_by: [01-authority-domain, 02-session-persistence]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-authority-evaluator-port/03-execution-evaluator"
 worktree: ""
 issue: "371"
 retries: 0
-last_error: ""
+last_error: "task test baseline blockers: macOS /var symlink checks and skills lifecycle workspace test; task docs cannot fetch matlatl"
 accumulator: acc/authority-evaluator-port
 ---
 
