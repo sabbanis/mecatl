@@ -18,6 +18,7 @@
 package sessnap
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -272,8 +273,28 @@ func restoreAuthority(s *session.Session, authority *session.Authority) error {
 	if authority == nil {
 		return nil // Pre-feature record: legacy, deliberately unbound.
 	}
+	if err := ValidatePersistedAuthority(authority); err != nil {
+		return fmt.Errorf("sessnap: restore authority: %w", err)
+	}
 	if err := s.BindAuthority(*authority); err != nil {
 		return fmt.Errorf("sessnap: restore authority: %w", err)
+	}
+	return nil
+}
+
+// ValidatePersistedAuthority rejects an authority claim that cannot represent a
+// usable derived capability set. Callers must distinguish a nil authority
+// pointer caused by a genuinely absent legacy field before calling it.
+func ValidatePersistedAuthority(authority *session.Authority) error {
+	if authority == nil {
+		return errors.New("missing authority claim")
+	}
+	set := authority.CapabilitySet
+	if len(set.Tools) == 0 && set.RemainingDelegationDepth == 0 && !set.FileSystem && !set.DirectWrite {
+		return errors.New("missing or empty capability set")
+	}
+	if !authority.Valid() {
+		return errors.New("invalid authority payload")
 	}
 	return nil
 }
@@ -397,11 +418,39 @@ func Marshal(s *session.Session) ([]byte, error) {
 
 // Unmarshal decodes a JSON snapshot line and restores it into a Session.
 func Unmarshal(line []byte) (*session.Session, error) {
+	var wire struct {
+		Authority json.RawMessage `json:"authority"`
+	}
+	if err := json.Unmarshal(line, &wire); err != nil {
+		return nil, fmt.Errorf("sessnap: decode snapshot: %w", err)
+	}
+	if err := validateAuthorityWireClaim(wire.Authority); err != nil {
+		return nil, fmt.Errorf("sessnap: decode authority: %w", err)
+	}
+
 	var snap Snapshot
 	if err := json.Unmarshal(line, &snap); err != nil {
 		return nil, fmt.Errorf("sessnap: decode snapshot: %w", err)
 	}
 	return snap.Restore()
+}
+
+func validateAuthorityWireClaim(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil // Genuinely pre-feature record: no authority field.
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("null authority claim")
+	}
+	var claim map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &claim); err != nil {
+		return err
+	}
+	set, ok := claim["capability_set"]
+	if !ok || bytes.Equal(bytes.TrimSpace(set), []byte("null")) || bytes.Equal(bytes.TrimSpace(set), []byte("{}")) {
+		return errors.New("missing or empty capability set")
+	}
+	return nil
 }
 
 func toDTO(m session.Message) messageDTO {

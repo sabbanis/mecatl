@@ -92,6 +92,36 @@ func TestADR_0228_AuthorityEvaluator_Scenario2_NoSilentBoundButEmptyState(t *tes
 	}
 }
 
+func TestADR_0228_AuthorityEvaluator_Scenario2_RestoreRejectsIncompleteAuthorityClaims(t *testing.T) {
+	t.Parallel()
+	const snapshotPrefix = `{"id":"incomplete","state":"idle","mode":"default","limits":{},"counters":{},"workspace":"/workspace","created_at":"1970-01-01T00:00:01Z",`
+	for name, authority := range map[string]string{
+		"null authority claim":                    `null`,
+		"authority object without capability set": `{}`,
+		"null capability set":                     `{"capability_set":null,"provenance":"derived"}`,
+		"empty capability set":                    `{"capability_set":{},"provenance":"derived"}`,
+		"malformed capability set":                `{"capability_set":{"tools":"not-a-list"},"provenance":"derived"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			restored, err := sessnap.Unmarshal([]byte(snapshotPrefix + `"authority":` + authority + `}`))
+			if err == nil {
+				t.Fatal("incomplete authority claim restored successfully")
+			}
+			if restored != nil {
+				t.Fatal("incomplete authority claim returned a session")
+			}
+		})
+	}
+
+	legacy, err := sessnap.Unmarshal([]byte(snapshotPrefix + `"profile":"default"}`))
+	if err != nil {
+		t.Fatalf("legacy snapshot restore: %v", err)
+	}
+	if _, bound := legacy.BoundAuthority(); bound {
+		t.Fatal("authority-absent legacy snapshot restored as bound")
+	}
+}
+
 func TestADR_0228_AuthorityEvaluator_Scenario2_TerminalRecoveryPreservesSet(t *testing.T) {
 	t.Parallel()
 	cases := []struct {

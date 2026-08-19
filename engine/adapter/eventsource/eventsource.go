@@ -207,6 +207,9 @@ func restoreAuthority(s *session.Session, authority *session.Authority) error {
 	if authority == nil {
 		return nil
 	}
+	if err := sessnap.ValidatePersistedAuthority(authority); err != nil {
+		return fmt.Errorf("restore authority: %w", err)
+	}
 	if err := s.BindAuthority(*authority); err != nil {
 		return fmt.Errorf("restore authority: %w", err)
 	}
