@@ -30,10 +30,12 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   getAgentMentions,
   getSlashCommands,
 } from "@/features/agent/composer-capabilities";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { usePrompt } from "@/hooks/use-prompt";
 import { cn } from "@/lib/utils";
 import {
@@ -141,11 +143,53 @@ type EffortId = (typeof EFFORT_LEVELS)[number]["id"];
 
 const DEFAULT_EFFORT_ID: EffortId = "medium";
 
+/** One tappable choice row inside a mobile picker sheet (MobileChatMenu's
+ *  row idiom plus a trailing checkmark). */
+function SheetOptionRow({
+  label,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50"
+    >
+      <span className="min-w-0 flex-1 truncate text-left font-medium">
+        {label}
+      </span>
+      <Check
+        className={cn(
+          "size-4 shrink-0",
+          selected ? "text-foreground" : "text-transparent",
+        )}
+      />
+    </button>
+  );
+}
+
+/** Muted section heading inside a mobile picker sheet. */
+function SheetSectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="px-4 pt-3 pb-1 text-xs font-medium text-muted-foreground">
+      {children}
+    </p>
+  );
+}
+
 /**
  * Combined model + effort picker in a single menu: the trigger reads
  * "{model} {effort}", and the menu drills into a Model submenu and an Effort
  * submenu, with a reset. When `lockedLabel` is set (a live harness routes the
- * model server-side) the trigger is display-only.
+ * model server-side) the trigger is display-only. On mobile the menu is a
+ * bottom sheet instead (the MobileChatMenu convention) with the submenus
+ * flattened into sections — it stays open across taps so model and effort
+ * can be set in one visit.
  */
 function ModelEffortSelector({
   onModelChange,
@@ -156,6 +200,8 @@ function ModelEffortSelector({
 }) {
   const [model, setModel] = useState<ModelId>(DEFAULT_MODEL_ID);
   const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const isMobile = useIsMobile();
   const selectedModel = MODELS.find((m) => m.id === model) ?? MODELS[0];
   const selectedEffort =
     EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
@@ -166,6 +212,65 @@ function ModelEffortSelector({
       <Button size="sm" className={GHOST_TRIGGER_CLASS} disabled>
         {lockedLabel}
       </Button>
+    );
+  }
+
+  if (isMobile) {
+    return (
+      <>
+        <Button
+          size="sm"
+          className={GHOST_TRIGGER_CLASS}
+          onClick={() => setSheetOpen(true)}
+        >
+          {selectedModel.label}
+          <span className="text-muted-foreground">{selectedEffort.label}</span>
+          <ChevronDown className="size-3.5 text-muted-foreground" />
+        </Button>
+        <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+          <SheetContent side="bottom" className="p-0">
+            <SheetTitle className="sr-only">Model and effort</SheetTitle>
+            <div className="max-h-[70dvh] overflow-y-auto pb-2">
+              <SheetSectionLabel>Model</SheetSectionLabel>
+              {MODELS.map((m) => (
+                <SheetOptionRow
+                  key={m.id}
+                  label={m.label}
+                  selected={m.id === model}
+                  onSelect={() => {
+                    setModel(m.id);
+                    onModelChange?.(m.id);
+                  }}
+                />
+              ))}
+              <SheetSectionLabel>Effort</SheetSectionLabel>
+              {EFFORT_LEVELS.map((e) => (
+                <SheetOptionRow
+                  key={e.id}
+                  label={e.label}
+                  selected={e.id === effort}
+                  onSelect={() => setEffort(e.id)}
+                />
+              ))}
+              <div className="mx-4 my-1 h-px bg-border" />
+              <button
+                type="button"
+                disabled={isDefault}
+                onClick={() => {
+                  setModel(DEFAULT_MODEL_ID);
+                  setEffort(DEFAULT_EFFORT_ID);
+                  onModelChange?.(DEFAULT_MODEL_ID);
+                  setSheetOpen(false);
+                }}
+                className="flex w-full items-center gap-3 px-4 py-3 text-sm text-muted-foreground transition-colors hover:bg-muted/50 disabled:opacity-50"
+              >
+                <RotateCcw className="size-4" />
+                Reset to default
+              </button>
+            </div>
+          </SheetContent>
+        </Sheet>
+      </>
     );
   }
 
@@ -266,6 +371,43 @@ function ModelEffortSelector({
  */
 function MemoryToggle() {
   const [on, setOn] = useState(true);
+  const [sheetOpen, setSheetOpen] = useState(false);
+  const isMobile = useIsMobile();
+
+  if (isMobile) {
+    return (
+      <>
+        <Button
+          size="sm"
+          className={GHOST_TRIGGER_CLASS}
+          onClick={() => setSheetOpen(true)}
+        >
+          Memory
+          <span className="text-muted-foreground">{on ? "On" : "Off"}</span>
+          <ChevronDown className="size-3.5 text-muted-foreground" />
+        </Button>
+        <Sheet open={sheetOpen} onOpenChange={setSheetOpen}>
+          <SheetContent side="bottom" className="p-0">
+            <SheetTitle className="sr-only">Memory</SheetTitle>
+            <div className="py-2">
+              {[true, false].map((value) => (
+                <SheetOptionRow
+                  key={String(value)}
+                  label={value ? "On" : "Off"}
+                  selected={on === value}
+                  onSelect={() => {
+                    setOn(value);
+                    setSheetOpen(false);
+                  }}
+                />
+              ))}
+            </div>
+          </SheetContent>
+        </Sheet>
+      </>
+    );
+  }
+
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -880,21 +1022,62 @@ export function ChatInput({
             ))}
           </div>
         )}
-        <div className="flex flex-wrap items-start gap-1.5 px-4 pt-4 pb-2">
+        {/* Mobile consolidates to ONE line — + on the left, the field, and a
+            single right slot that is the mic until there is text, then the
+            send button (native messaging convention). Desktop keeps the
+            two-row layout below. */}
+        <div className="flex flex-wrap items-start gap-1.5 px-4 pt-4 pb-2 max-[499px]:flex-nowrap max-[499px]:items-end max-[499px]:gap-1 max-[499px]:px-2 max-[499px]:py-1.5">
+          <div className="hidden max-[499px]:block">
+            <FilesDropdown
+              onFilesSelected={(newFiles) =>
+                setAttachedFiles((prev) => [...prev, ...newFiles])
+              }
+            />
+          </div>
           {/* TipTap composer: resolved @agent / /skill mentions are atomic
               green chips (Backspace removes a whole chip); Enter sends and
               Shift+Enter inserts a newline (handled in the editor keymap). */}
           <div
             className={cn(
-              "relative flex-1 min-w-[120px] self-center",
+              "relative flex-1 min-w-[120px] self-center max-[499px]:py-1",
               disabled && "opacity-50",
             )}
           >
             <EditorContent editor={editor} className="composer-editor" />
           </div>
+          <div className="hidden max-[499px]:block">
+            {!hasText && voice.isSupported ? (
+              <Button
+                size="icon"
+                className={cn(
+                  "size-8 rounded-full border-0 shadow-none",
+                  voice.isListening
+                    ? "bg-brand/10 text-brand hover:bg-brand/20"
+                    : "bg-transparent text-muted-foreground hover:bg-muted/60",
+                )}
+                onClick={voice.toggle}
+                disabled={disabled}
+                aria-label={
+                  voice.isListening ? "Stop listening" : "Voice input"
+                }
+              >
+                <Mic className="size-4" />
+              </Button>
+            ) : (
+              <Button
+                size="icon"
+                className="size-8 rounded-full bg-brand text-brand-foreground hover:bg-brand/90 disabled:opacity-50"
+                onClick={handleSend}
+                disabled={disabled || !hasText}
+                aria-label="Send message"
+              >
+                <ArrowUp className="size-4" />
+              </Button>
+            )}
+          </div>
         </div>
-        {/* Inline bottom row: attach (+), mic on the left; send on the right */}
-        <div className="flex items-center gap-1 px-2 pb-2">
+        {/* Desktop-only bottom row: attach (+), mic on the left; send right */}
+        <div className="flex items-center gap-1 px-2 pb-2 max-[499px]:hidden">
           <FilesDropdown
             onFilesSelected={(newFiles) =>
               setAttachedFiles((prev) => [...prev, ...newFiles])
