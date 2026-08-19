@@ -98,8 +98,9 @@ func (m Model) renderBody() string {
 		return renderAgentsInvOverlay(m.deps.Theme, m.agentsInv, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.skills.view != skillsNone:
 		return renderSkillsOverlay(m.deps.Theme, m.skills, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
-	case m.soul.view != soulNone:
-		return renderSoulOverlay(m.deps.Theme, m.soul, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
+	case m.active != nil:
+		body, _ := m.active.Render(m.surfaceDeps(), m.width, m.vp.Height())
+		return body
 	case m.userModel.view != userModelNone:
 		return renderUserModelOverlay(m.deps.Theme, m.userModel, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.reflections.view != reflectionsNone:
