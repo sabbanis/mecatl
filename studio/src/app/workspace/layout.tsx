@@ -37,7 +37,7 @@ export default function WorkspaceLayout({
               the top corners stay rounded where it meets the nav band — so
               content spans the screen; the gradient survives only behind the
               top nav and the tab bar. The inset card is a ≥500px treatment. */}
-          <main className="relative min-h-0 flex-1 overflow-hidden rounded-t-xl bg-background text-foreground min-[500px]:mx-5 min-[500px]:mb-5 min-[500px]:rounded-[20px]">
+          <main className="relative min-h-0 flex-1 overflow-hidden rounded-t-xl bg-background text-foreground min-[500px]:mx-3 min-[500px]:mb-3 min-[500px]:rounded-[20px]">
             {children}
           </main>
         </div>
