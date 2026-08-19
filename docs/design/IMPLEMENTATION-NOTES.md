@@ -314,7 +314,10 @@ an allowed capability, including a path boundary, but the carried-set check runs
 and prevents it from granting an omitted capability. `CallMcpWithQuery` is checked as
 its reconstructed remote tool name, and MCP resource access derives from the carried
 names. `TestADR_0228_AuthorityEvaluator_VerticalSlice` is the real `app.Build` offline
-proof; the Cedar counterpart pins the policy path. See
+proof of composition, execution, stale disclosure, meta-target denial, restart, and
+narrowed resume; evaluator-outage injection remains the engine-adapter proof because
+composition selects only configured production adapters. The Cedar counterpart pins the
+policy path. See
 [ADR 0228](../adr/0228-authority-evaluator-port.md).
 
 

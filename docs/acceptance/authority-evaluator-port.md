@@ -295,41 +295,40 @@ fail if any layer regresses.
 3. **Spawn** `Subagent{agent:"code-reviewer", mode:"read-only"}`. Assert the
    child's derived set is exactly `{Grep, Read}` with one hop spent, and that the
    child's owner matches the parent's.
-4. **Deny at dispatch** — the child calls `Write`. Assert refusal at `execute`
-   with the authority reason, that the tool body never ran, and that the refusal
-   is not reported as an unknown tool.
+4. **Deny at dispatch / stale disclosure** — the specialist's inline MCP catalog
+   exposes `mcp__slack__post_message`, although the composed parent never held that
+   inline-server capability. Assert refusal at `execute` with the authority reason,
+   that the remote body never runs, and that the refusal is not reported as an unknown
+   tool.
 5. **Allow at dispatch** — the child calls `Read`. Assert it executes.
-6. **Disclosure is not load-bearing** — hand the child a request that discloses
-   `Write` anyway. Assert `execute` still refuses it, so a stale or over-broad
-   disclosure is not an escalation.
-7. **Deny through the meta-tool** — give the child `CallMcpWithQuery` and a
-   connected server absent from its set, and call
-   `{server:"slack", tool:"post_message"}`. Assert refusal names the
-   reconstructed `mcp__slack__post_message`, and that the remote call never
-   left the process.
-8. **Restart** — persist, drop the process state, reload from the snapshot.
-   Assert the child's set survives byte-equivalently.
-9. **Resume under a narrowed parent** — narrow the parent to `{Read}` and resume
-   the child. Assert the resume is refused because the persisted set is no longer
-   contained.
-10. **Swap the adapter** — rerun steps 3–7 against the Cedar adapter with the
-    shipped static policy. Assert byte-identical decisions.
-11. **Operator rule** — add an operator policy confining `code-reviewer` away
-    from `/workspace/vendor`. Assert a `Read` the carried set permits is now
-    refused, and that no policy can grant `Write` back.
-12. **Evaluator failure** — inject an evaluator that errors. Assert the call
-    fails closed, the message is distinguishable from a denial, and an operator
-    diagnostic is emitted.
+6. **Deny through the meta-tool** — in a second ordinary `app.Build` run, narrow a
+   persisted root snapshot so `mcp__slack__post_message` is absent, then call
+   `CallMcpWithQuery{server:"slack", tool:"post_message"}`. Assert refusal names
+   the reconstructed target and that the remote call never left the process.
+7. **Restart** — persist, drop the process state, reload from the snapshot. Assert
+   the child's set survives byte-equivalently.
+8. **Resume under a narrowed parent** — write a new current parent snapshot with
+   `Grep` removed and resume the child. Assert the resume is refused because
+   the persisted child set is no longer contained. There is deliberately no broad
+   production evaluator or authority-mutation injection seam: the snapshot models an
+   externally persisted narrowing, while evaluator-outage proof remains at the engine
+   adapter seam (`TestADR_0228_AuthorityEvaluator_Scenario3_UnavailableEvaluatorIsDistinctFromDenial`).
+9. **Swap the adapter** — rerun the composed policy case against Cedar in
+   `TestADR_0228_AuthorityEvaluator_VerticalSlice_Cedar`.
+10. **Operator rule** — add an operator policy confining `code-reviewer` away from
+    `/workspace/vendor`. Assert a `Read` the carried set permits is now refused, and
+    that no policy can grant `Write` back.
 
-Steps 10 and 11 need the Cedar adapter, which Scenario 7 may land separately, so
-they are a **second test** — `TestADR_0228_AuthorityEvaluator_VerticalSlice_Cedar`
-— and the slice above stops at step 9 plus the evaluator-failure step. Renumbered
-for the split, the two tests are:
+Steps 9 and 10 need the Cedar adapter, which Scenario 7 may land separately, so
+the policy proof is a **second test** — `TestADR_0228_AuthorityEvaluator_VerticalSlice_Cedar`.
+The evaluator-outage proof remains an engine-adapter test because `app.Build` selects
+only configured production adapters; it intentionally exposes no evaluator-injection
+seam solely for a vertical test. The two tests are:
 
-- `TestADR_0228_AuthorityEvaluator_VerticalSlice` — steps 1–9, then step 12 as
-  its step 10. Proves scenarios 1–6 end to end with no Cedar dependency, so it
-  gates the #371 work on its own.
-- `TestADR_0228_AuthorityEvaluator_VerticalSlice_Cedar` — steps 10 and 11, run
+- `TestADR_0228_AuthorityEvaluator_VerticalSlice` — steps 1–8. Proves the ordinary
+  `app.Build` composition, execution, stale disclosure, meta-target, persistence, and
+  narrowed-resume paths with no Cedar dependency.
+- `TestADR_0228_AuthorityEvaluator_VerticalSlice_Cedar` — steps 9 and 10, run
   against the same composed session. Gates Scenario 7.
 
 Keeping them one test would make the #371 proof depend on an optional scenario.
