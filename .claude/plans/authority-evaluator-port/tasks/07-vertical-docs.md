@@ -1,7 +1,7 @@
 ---
-id: 07-vertical-docs
-title: Prove the vertical slices and document the authority design
-blocked_by: [05-delegation-derivation, 06-cedar-adapter]
+id: 07-cedar-adapter
+title: Add opt-in static Cedar authority adapter
+blocked_by: [05-delegation-derivation, 06-resource-attribute]
 status: pending
 branch: ""
 worktree: ""
@@ -13,21 +13,25 @@ accumulator: acc/authority-evaluator-port
 
 # Task brief
 
-Add the two offline vertical-slice tests through the real `app.Build` path: one
-for scenarios 1–6 with the local evaluator, and one for Cedar scenarios 7. The
-local slice must cover managed-specialist child derivation, denial and allowance
-at dispatch, stale disclosure, meta-tool target authorization, restart/resume
-narrowing, and evaluator failure. The Cedar slice must cover the shipped policy
-and an operator path rule.
-
-Write accepted ADR-0228 and update the living architecture, implementation
-notes, and user-facing documentation for the evaluator selector and operator
-policy file. Follow documentation citation rules; do not cite salvage-only
-paths. Regenerate documentation through the Taskfile.
+Implement the optional Cedar AuthorityEvaluator entirely under `internal/`.
+Load static operator-owned policy at startup and make a policy-load failure fatal
+when Cedar is selected. Cedar can tighten a carried set but cannot grant a tool
+omitted from it; provide a shipped guard/lint rejecting definition-group grants.
+Use the resource descriptor derived by task 06 for a path-subtree deny rule,
+without generated policy text or per-subagent registrations. Register the
+adapter in composition behind an explicit operator-facing selector. Keep the
+engine module dependency closure unchanged and make the shared evaluator
+conformance suite pass.
 
 ## Acceptance criteria
 
-- The final vertical proof exercises the local adapter from ordinary composition through managed-specialist child derivation, denied and allowed dispatch, stale disclosure, meta-tool target authorization, restart/resume narrowing, and evaluator failure.
-  - verify: `TestADR_0228_AuthorityEvaluator_VerticalSlice`
-- The Cedar vertical proof reruns the shared stack with the shipped policy and an operator path rule.
-  - verify: `TestADR_0228_AuthorityEvaluator_VerticalSlice_Cedar`
+- AC7.1: The shipped policy set is static and contains no generated text; per-call variation rides request-scoped entity attributes derived from the carried set, and nothing is registered or removed per subagent.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario7_PolicyIsStaticAndDataIsPerRequest`
+- AC7.2: An operator rule can deny a capability the carried set permits — including confining a definition to a path subtree — and cannot grant one the carried set omits.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario7_OperatorRuleTightensButCannotGrant`
+- AC7.3: An entity hierarchy linking an instance to its definition is used only for tightening; a policy granting a capability to a definition group is rejected by a shipped lint or guarded test, because Cedar membership widens.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario7_DefinitionGroupGrantIsRejected`
+- AC7.4: The Cedar dependency appears only in the adapter under `internal/`; the engine module's dependency closure is unchanged and its standalone build still passes.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario7_CedarStaysOutOfTheEngineModule`
+- AC7.5: The adapter is off by default and selected by an explicit flag; a policy set that fails to load is a startup failure, not a silent fallback to permit.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario7_PolicyLoadFailureIsFatal`

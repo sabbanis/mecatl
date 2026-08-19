@@ -259,8 +259,10 @@ well-formed.
 ### Scenario 7 — Cedar expresses what a capability set cannot
 
 The Cedar adapter adds operator-editable rules — most importantly path scoping,
-which a tool-name set cannot express. Policies are static and shipped; only the
-request data is per-call.
+which a tool-name set cannot express. Policies are static and only the request
+data is per-call. For resource-sensitive rules, the execution boundary supplies
+a normalized, non-secret resource descriptor for recognized calls; it never
+forwards raw tool arguments to the evaluator.
 
 **Acceptance:**
 
