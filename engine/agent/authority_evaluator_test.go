@@ -107,6 +107,57 @@ func TestADR_0228_AuthorityEvaluator_Scenario3_EveryDispatchPathConsultsTheEvalu
 	})
 }
 
+func TestADR_0228_AuthorityEvaluator_BoundSessionWithoutEvaluatorFailsClosed(t *testing.T) {
+	t.Run("nil evaluator hides capabilities and rejects forged calls", func(t *testing.T) {
+		read := &authorityTool{name: "Read"}
+		omitted := &authorityTool{name: "Write"}
+		var request port.LLMRequest
+		eng := newEngine(agent.Deps{
+			LLM: mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(got port.LLMRequest) {
+				request = got
+			})}, mockllm.ToolCallTurn(toolCall("write", "Write", `{"path":"README.md"}`))),
+			Catalog: catalogWith(t, read, omitted),
+		})
+
+		events := drain(eng.Run(context.Background(), authoritySession(t, "Read"), agent.MemEnv("/ws"), agent.RunRequest{Text: "write"}))
+		if _, ok := specByName(request.Tools, "Read"); ok {
+			t.Fatal("bound session disclosed a capability tool without an authority evaluator")
+		}
+		if got := omitted.ran.Load(); got != 0 {
+			t.Fatalf("omitted tool executions = %d, want 0 when a bound session has no evaluator", got)
+		}
+		for _, event := range events {
+			if event.ToolResult != nil && event.ToolResult.CallID == "write" {
+				if !strings.Contains(event.ToolResult.Content, "authority evaluator is not configured") {
+					t.Fatalf("missing evaluator result = %q, want a fail-closed configuration error", event.ToolResult.Content)
+				}
+				return
+			}
+		}
+		t.Fatal("missing fail-closed authority result")
+	})
+
+	t.Run("explicit noop evaluator remains valid", func(t *testing.T) {
+		read := &authorityTool{name: "Read"}
+		var request port.LLMRequest
+		eng := newEngine(agent.Deps{
+			LLM: mockllm.NewWith([]mockllm.Option{mockllm.WithRequestObserver(func(got port.LLMRequest) {
+				request = got
+			})}, mockllm.ToolCallTurn(toolCall("read", "Read", `{"path":"README.md"}`))),
+			Catalog:            catalogWith(t, read),
+			AuthorityEvaluator: noopauthority.New(),
+		})
+
+		drain(eng.Run(context.Background(), authoritySession(t, "Read"), agent.MemEnv("/ws"), agent.RunRequest{Text: "read"}))
+		if _, ok := specByName(request.Tools, "Read"); !ok {
+			t.Fatal("explicit noop evaluator did not disclose the capability tool")
+		}
+		if got := read.ran.Load(); got != 1 {
+			t.Fatalf("explicit noop evaluator tool executions = %d, want 1", got)
+		}
+	})
+}
+
 func TestADR_0228_AuthorityEvaluator_OwnerlessBoundSessionFailsClosed(t *testing.T) {
 	read := &authorityTool{name: "Read"}
 	evaluator := &recordingAuthorityEvaluator{decision: port.AuthorityDecision{Allowed: true}}

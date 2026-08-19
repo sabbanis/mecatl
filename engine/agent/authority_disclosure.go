@@ -11,8 +11,13 @@ import (
 )
 
 // authoritySpecs projects a bound session's catalog view to its carried authority.
-// Execution remains independently authorized at execute for stale or forged calls.
-func authoritySpecs(specs []tool.ToolSpec, set governance.CapabilitySet, bound bool) []tool.ToolSpec {
+// A bound session without an evaluator exposes no tools because it cannot authorize
+// any execution. Execution remains independently authorized at execute for stale or
+// forged calls.
+func authoritySpecs(specs []tool.ToolSpec, set governance.CapabilitySet, bound, missingEvaluator bool) []tool.ToolSpec {
+	if missingEvaluator {
+		return nil
+	}
 	if !bound {
 		return specs
 	}
@@ -23,6 +28,29 @@ func authoritySpecs(specs []tool.ToolSpec, set governance.CapabilitySet, bound b
 		}
 	}
 	return filtered
+}
+
+// authorityOverlaySpecs adds per-run tools unless a missing evaluator has disabled
+// the bound session's tool surface.
+func authorityOverlaySpecs(specs []tool.ToolSpec, extras []tool.Tool, missingEvaluator bool) []tool.ToolSpec {
+	if missingEvaluator {
+		return specs
+	}
+	for _, extra := range extras {
+		spec := extra.Spec()
+		replaced := false
+		for i := range specs {
+			if specs[i].Name == spec.Name {
+				specs[i] = spec
+				replaced = true
+				break
+			}
+		}
+		if !replaced {
+			specs = append(specs, spec)
+		}
+	}
+	return specs
 }
 
 func authorityDisclosesTool(name string, set governance.CapabilitySet) bool {

@@ -1102,8 +1102,11 @@ const callMcpWithQueryToolName = "CallMcpWithQuery"
 // carried authority independently decides which exact tool it may execute.
 func (e *Engine) authorizeExecution(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, call session.ToolCall) (session.ToolResult, bool) {
 	authority, bound := sess.BoundAuthority()
-	if !bound || e.deps.AuthorityEvaluator == nil {
+	if !bound {
 		return session.ToolResult{}, false
+	}
+	if e.deps.AuthorityEvaluator == nil {
+		return session.NewToolError(call.ID, fmt.Sprintf("tool %q was not executed: authority evaluator is not configured", call.Name)), true
 	}
 
 	target, err := authorityTarget(call, authority.CapabilitySet)
