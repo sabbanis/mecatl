@@ -1,4 +1,4 @@
-import type { Metadata } from "next";
+import type { Metadata, Viewport } from "next";
 import { Inter, Merriweather } from "next/font/google";
 import { ClientProviders } from "@/components/client-providers";
 import { ServerProviders } from "@/components/server-providers";
@@ -21,6 +21,22 @@ export const metadata: Metadata = {
     default: "Mecatl Studio",
   },
   description: "The web workspace for the Mecatl agent harness",
+  icons: {
+    apple: "/apple-touch-icon.png",
+  },
+  appleWebApp: {
+    capable: true,
+    statusBarStyle: "black-translucent",
+    title: "Studio",
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: [
+    { media: "(prefers-color-scheme: light)", color: "#03433e" },
+    { media: "(prefers-color-scheme: dark)", color: "#02141b" },
+  ],
+  viewportFit: "cover",
 };
 
 export default async function RootLayout({
