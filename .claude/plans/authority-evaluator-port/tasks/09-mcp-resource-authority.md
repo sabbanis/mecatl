@@ -2,7 +2,7 @@
 id: 09-mcp-resource-authority
 title: Separate MCP resource capability from operation action
 blocked_by: [08-vertical-docs]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
