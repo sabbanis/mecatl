@@ -186,7 +186,8 @@ func Of(s *session.Session) (Snapshot, error) {
 		CreatedAt:       s.CreatedAt,
 		// Owner is a pointer for true omitempty; Clone so the snapshot cannot
 		// alias (and later mutate) the aggregate's own principal.
-		Owner: s.Owner.Clone(),
+		Owner:            s.Owner.Clone(),
+		AdoptionMetadata: s.Adoption.Clone(),
 	}
 	if authority, ok := s.BoundAuthority(); ok {
 		snap.Authority = &authority

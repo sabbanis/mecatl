@@ -109,6 +109,11 @@ type SessionMeta struct {
 	// metadata. Nil is a documented pre-feature legacy record; a present payload
 	// is validated and bound before reconstruction proceeds.
 	Authority *session.Authority
+	// AdoptionSourceID and AdoptionRequestDigest are the immutable legacy-session
+	// adoption proof. They mirror sessnap's flat AdoptionMetadata fields because
+	// events do not carry creation metadata.
+	AdoptionSourceID      session.SessionID
+	AdoptionRequestDigest string
 	// CreatedAt is the creation timestamp.
 	CreatedAt time.Time
 }

@@ -75,6 +75,9 @@ when the code that satisfies the plan has landed.
   application sessions, schedules, teams, memory, event streams, live runs, and
   model-facing object access; remote-driver enforcement is deferred to #452. Status:
   draft.
+- [Session storage continuity](session-storage-continuity.md) — bounded current snapshots,
+  indexed metadata, maintenance jobs, and writable legacy-session adoption. Status:
+  landed.
 - [Session continuity UX](session-continuity-ux.md) — authoritative session-family
   metadata, honest replay/inspection, an active-session copy surface, startup resume,
   and a final session-ID handoff for mecatui. Status: landed.
