@@ -191,7 +191,12 @@ dispatch boundary reconstructs the namespaced name and re-checks it.
 
 Subagent (every variant), Parallel branches, the Team tool, and server-created
 team members all derive their child's set before a worktree, engine,
-environment, or runner is created. A refusal costs nothing.
+environment, or runner is created. A refusal costs nothing. Root creation is a
+prior seam: it mints and stamps a complete carried set before this child
+derivation begins. For this plan, the operator-managed definition tier is the
+existing `AgentOriginExplicit` tier only; `driver` remains excluded even though
+it is operator-configured, because a remote driver cannot establish a local
+capability ceiling.
 
 **Acceptance:**
 

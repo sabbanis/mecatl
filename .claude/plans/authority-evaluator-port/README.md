@@ -11,7 +11,7 @@ Cedar and to make the evaluator enforce one carried, durable capability set.
 | 01-authority-domain | Pure authority value and neutral evaluator port | — |
 | 02-session-persistence | Durable session authority payload and restoration | 01-authority-domain |
 | 03-execution-evaluator | Local/noop adapters and single execute chokepoint | 01-authority-domain, 02-session-persistence |
-| 04-delegation-derivation | Child derivation, ceilings, resume, meta-tool/resource reach | 03-execution-evaluator |
-| 05-composition-root | Root minting, flags, posture and all derivation entry points | 04-delegation-derivation |
-| 06-cedar-adapter | Opt-in Cedar adapter and static operator policy | 03-execution-evaluator, 05-composition-root |
-| 07-vertical-docs | Vertical proofs and ADR/living/user documentation | 05-composition-root, 06-cedar-adapter |
+| 04-composition-root | Managed definition tier, authority root minting, and evaluator posture | 03-execution-evaluator |
+| 05-delegation-derivation | Child derivation, ceilings, per-call tightening, and resume containment | 04-composition-root |
+| 06-cedar-adapter | Opt-in Cedar adapter and static operator policy | 03-execution-evaluator, 05-delegation-derivation |
+| 07-vertical-docs | Vertical proofs and ADR/living/user documentation | 05-delegation-derivation, 06-cedar-adapter |

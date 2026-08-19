@@ -1,7 +1,7 @@
 ---
-id: 05-composition-root
-title: Mint complete roots and select evaluator posture
-blocked_by: [04-delegation-derivation]
+id: 05-delegation-derivation
+title: Derive authority at all child and resume seams
+blocked_by: [04-composition-root]
 status: pending
 branch: ""
 worktree: ""
@@ -13,23 +13,33 @@ accumulator: acc/authority-evaluator-port
 
 # Task brief
 
-Compose a complete usable root authority set from the resolved catalog and wire
-the evaluator deployment mode explicitly. The normal composition path must
-support default and managed Subagent, Parallel, Team, server-created team, peer
-fork, and scheduled fire derivation. Add explicit operator flag/config selection
-for an absent/noop evaluator and active local evaluator, with a build-once
-posture line. Preserve the engine module boundary. Do not add Cedar; task 06
-owns that adapter.
+Consume the carried root or parent authority established by task 04 before
+acquiring a child worktree, engine, environment, runner, or session. Derive all
+Subagent variants, Parallel branches, the in-loop Team tool, and server-created
+team members by narrowing that carried set, then consuming precisely one hop.
+Use the `AgentOriginExplicit` managed-definition tier defined in task 04 for a
+specialist ceiling: `Tools` minus `DisallowedTools`, plus resolved MCP tool
+names. Implement per-call tightening and resume containment without reapplying
+the ceiling or spending a second hop. Stamp owner and authority independently.
+Do not alter root minting or adapter selection.
 
 ## Acceptance criteria
 
-- AC3.4: An absent evaluator is a deliberate deployment mode selected by an explicit flag and reported in the build-once posture line; it is never a silent default.
-  - verify: `TestADR_0228_AuthorityEvaluator_Scenario3_AbsentEvaluatorIsExplicitAndAnnounced`
+- AC4.1: A parent spawning a child that asks for more than the parent holds yields the intersection, on every seam and every Subagent variant including background, fork, structured-output, and per-call model override.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario4_ChildGetsIntersectionOnEverySeam`
+- AC4.2: Derivation completes before any runtime resource is acquired; a refused delegation creates no worktree, engine, environment, runner, or child session.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario4_RefusalAcquiresNoRuntimeResource`
+- AC4.3: The definition ceiling is the resolved `Tools` allowlist minus `DisallowedTools`, plus the expanded tool names of the definition's resolved `mcpServers:`, from an operator-managed definition tier only; a project-, user-, or driver-tier definition cannot establish a ceiling, and a lower-tier definition cannot occupy a higher-tier name.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario4_OnlyManagedTierSuppliesACeiling`
+- AC4.4: A per-call request may only tighten; a call asking for a capability, delegate, or execution posture outside the derived set is refused with a reason naming which check refused it.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario4_CallTighteningCannotWiden`
+- AC4.5: The child's owner and its capability set are stamped at the same seam and neither is inferred from the other.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario4_OwnerAndSetAreIndependentlyStamped`
+- AC5.1: A resumed child whose persisted set is not contained by the caller's current set is refused; a child persisted before this feature is refused rather than upgraded.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario5_ResumedChildCannotExceedCurrentParent`
+- AC5.2: A resume consumes no additional delegation hop and does not re-derive against the definition ceiling.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario5_ResumeSpendsNoAdditionalHop`
+- AC5.3: The property holds across a process restart, on both the snapshot path and the event-fold path.
+  - verify: `TestADR_0228_AuthorityEvaluator_Scenario5_NoWideningAcrossRestart`
 - AC6.1: A session created through the ordinary composition path can spawn a default read-only subagent, a named managed specialist, a Parallel branch, and a Team, and each child receives a non-empty derived set.
   - verify: `TestADR_0228_AuthorityEvaluator_Scenario6_ComposedRootCanDelegateOnEverySeam`
-- AC6.2: Every field of a minted root set is populated explicitly at the mint site, and the minted root can consume one delegation hop.
-  - verify: `TestADR_0228_AuthorityEvaluator_Scenario6_MintPopulatesEveryFieldExplicitly`, `TestADR_0228_AuthorityEvaluator_Scenario6_MintedRootCanDescend`
-- AC6.3: A server-created team, a peer fork, and a scheduled fire each receive a set whose provenance is recorded and whose derivation point is documented; a fork copies its source's set and safe provenance without re-deriving.
-  - verify: `TestADR_0228_AuthorityEvaluator_Scenario6_NonSpawnDerivationPointsAreExplicit`
-- AC6.4: The composition posture line reports which evaluator adapter is active and whether enforcement is on.
-  - verify: `TestADR_0228_AuthorityEvaluator_Scenario6_PostureLineReportsEvaluator`
