@@ -40,6 +40,12 @@ export const viewport: Viewport = {
   // App-like surface: pinch-zoom off (text sizes stay OS-controlled).
   maximumScale: 1,
   userScalable: false,
+  // Android Chrome's default keeps the LAYOUT viewport fixed under the
+  // on-screen keyboard (only the visual viewport shrinks), which buries the
+  // docked composer behind it. resizes-content restores layout resize so
+  // h-dvh — and the composer with it — shrinks above the keyboard. iOS
+  // ignores this key.
+  interactiveWidget: "resizes-content",
 };
 
 export default async function RootLayout({
