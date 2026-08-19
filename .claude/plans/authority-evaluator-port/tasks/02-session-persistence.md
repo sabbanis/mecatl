@@ -2,7 +2,7 @@
 id: 02-session-persistence
 title: Persist and restore the carried authority set
 blocked_by: [01-authority-domain]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
