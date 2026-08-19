@@ -23,11 +23,7 @@ export default function KeyboardShortcutsPage() {
     <div className="h-full overflow-y-auto px-4 pt-6 pb-14 min-[500px]:px-8">
       <div className="max-w-3xl space-y-6">
         <div className="space-y-1">
-          <h1
-            className={pageTitleClass(
-              "pb-0 text-3xl leading-tight",
-            )}
-          >
+          <h1 className={pageTitleClass("pb-0 text-3xl leading-tight")}>
             Keyboard shortcuts
           </h1>
           <p className="text-sm text-muted-foreground">

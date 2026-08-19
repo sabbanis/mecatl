@@ -29,11 +29,7 @@ export default function WorkspaceSkillsPage() {
   return (
     <div className="h-full overflow-y-auto px-4 pt-6 pb-14 min-[500px]:px-8">
       <div className="space-y-5">
-        <h1
-          className={pageTitleClass(
-            "truncate pb-0 text-3xl leading-tight",
-          )}
-        >
+        <h1 className={pageTitleClass("truncate pb-0 text-3xl leading-tight")}>
           Skills
         </h1>
 
