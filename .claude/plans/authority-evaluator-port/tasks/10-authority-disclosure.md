@@ -2,7 +2,7 @@
 id: 10-authority-disclosure
 title: Filter disclosed tools and ToolSearch by authority
 blocked_by: [09-mcp-resource-authority]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
