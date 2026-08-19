@@ -45,9 +45,12 @@ export function TopNav() {
       </Link>
 
       <div className="flex min-w-0 items-center gap-3 min-[500px]:gap-5">
+        {/* Below the mobile breakpoint the surface icons live in the
+            BottomTabBar instead (native convention); only logo + search
+            stay up here. */}
         <nav
           aria-label={nav.navLabel}
-          className="flex min-w-0 items-center overflow-x-auto"
+          className="flex min-w-0 items-center overflow-x-auto max-[499px]:hidden"
         >
           {nav.items.map((item) => {
             const active =

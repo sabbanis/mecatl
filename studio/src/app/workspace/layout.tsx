@@ -1,3 +1,4 @@
+import { BottomTabBar } from "@/components/shell/bottom-tab-bar";
 import { TopNav } from "@/components/shell/top-nav";
 import { RuntimeStatusProvider } from "@/features/agent/runtime-status";
 import { ShortcutsProvider } from "@/lib/shortcuts/use-shortcuts";
@@ -29,9 +30,14 @@ export default function WorkspaceLayout({
               — notably the hidden form-integration checkbox Radix renders
               beside each Switch inside a <form>. Without it those boxes
               resolve to the document and grow the page itself. */}
-          <main className="relative mx-2.5 mb-2.5 min-h-0 flex-1 overflow-hidden rounded-[20px] bg-background text-foreground min-[500px]:mx-5 min-[500px]:mb-5">
+          {/* On mobile the bottom tab bar sits right below, so the card keeps
+              only a sliver of gradient there (the bar brings its own padding). */}
+          <main className="relative mx-2.5 mb-1 min-h-0 flex-1 overflow-hidden rounded-[20px] bg-background text-foreground min-[500px]:mx-5 min-[500px]:mb-5">
             {children}
           </main>
+          {/* Mobile-only: the five surfaces as a native-style bottom tab bar
+              sitting on the same gradient (hidden from 500px up). */}
+          <BottomTabBar />
         </div>
       </ShortcutsProvider>
     </RuntimeStatusProvider>

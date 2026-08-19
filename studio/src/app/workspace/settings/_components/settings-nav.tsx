@@ -3,37 +3,21 @@
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 import { cn } from "@/lib/utils";
+import { SETTINGS_GROUPS } from "./settings-sections";
 
-const GROUPS: Array<{
-  label: string;
-  items: Array<{ href: string; label: string }>;
-}> = [
-  {
-    label: "Preferences",
-    items: [
-      { href: "/workspace/settings/appearance", label: "Appearance" },
-      { href: "/workspace/settings/notifications", label: "Notifications" },
-    ],
-  },
-  {
-    label: "Agent runtime",
-    items: [
-      { href: "/workspace/settings/provider", label: "Provider" },
-      { href: "/workspace/settings/model-router", label: "Model router" },
-      { href: "/workspace/settings/gateway", label: "MCP gateway" },
-    ],
-  },
-];
-
-/** The settings sections as a left secondary menu; one subpage per section. */
+/**
+ * The settings sections as a left secondary menu; one subpage per section.
+ * Hidden on mobile, where the settings index renders the same sections as a
+ * drill-down list instead (see `settings/page.tsx`).
+ */
 export function SettingsNav() {
   const pathname = usePathname();
   return (
     <nav
       aria-label="Settings sections"
-      className="flex shrink-0 gap-6 overflow-x-auto sm:w-44 sm:flex-col sm:gap-5 sm:overflow-visible"
+      className="flex shrink-0 gap-6 overflow-x-auto max-[499px]:hidden sm:w-44 sm:flex-col sm:gap-5 sm:overflow-visible"
     >
-      {GROUPS.map((group) => (
+      {SETTINGS_GROUPS.map((group) => (
         <div key={group.label} className="space-y-1">
           <p className="px-2 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
             {group.label}

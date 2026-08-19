@@ -5,7 +5,6 @@ import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { useSessionListSide } from "@/lib/profile-preferences";
 import { cn } from "@/lib/utils";
-import { ProfileSection } from "../_components/profile-section";
 import { SettingsCard } from "../_components/settings-card";
 
 const THEMES = [
@@ -66,7 +65,6 @@ export default function AppearanceSettingsPage() {
 
   return (
     <>
-      <ProfileSection />
       <SettingsCard title="Appearance">
         <div className="space-y-4">
           <div className="space-y-1.5">
