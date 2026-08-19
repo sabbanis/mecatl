@@ -122,7 +122,7 @@ export default function WorkspaceSchedulesPage() {
         <div className="flex items-center justify-between gap-4">
           <h1
             className={pageTitleClass(
-              "truncate pb-0 text-4xl leading-tight max-[499px]:text-3xl",
+              "truncate pb-0 text-3xl leading-tight",
             )}
           >
             Scheduled

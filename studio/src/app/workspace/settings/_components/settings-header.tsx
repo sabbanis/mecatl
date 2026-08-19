@@ -54,7 +54,7 @@ export function SettingsTitle() {
     <h1
       className={cn(
         pageTitleClass(
-          "truncate pb-0 text-4xl leading-tight max-[499px]:text-3xl",
+          "truncate pb-0 text-3xl leading-tight",
         ),
         section && "max-[499px]:hidden",
       )}

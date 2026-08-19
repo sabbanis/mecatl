@@ -31,7 +31,7 @@ export default function WorkspaceSkillsPage() {
       <div className="space-y-5">
         <h1
           className={pageTitleClass(
-            "truncate pb-0 text-4xl leading-tight max-[499px]:text-3xl",
+            "truncate pb-0 text-3xl leading-tight",
           )}
         >
           Skills

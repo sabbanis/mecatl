@@ -25,7 +25,7 @@ export default function KeyboardShortcutsPage() {
         <div className="space-y-1">
           <h1
             className={pageTitleClass(
-              "pb-0 text-4xl leading-tight max-[499px]:text-3xl",
+              "pb-0 text-3xl leading-tight",
             )}
           >
             Keyboard shortcuts
