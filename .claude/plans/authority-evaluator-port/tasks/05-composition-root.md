@@ -2,7 +2,7 @@
 id: 05-delegation-derivation
 title: Derive authority at all child and resume seams
 blocked_by: [04-composition-root]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
