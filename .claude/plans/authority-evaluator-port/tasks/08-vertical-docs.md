@@ -2,7 +2,7 @@
 id: 08-vertical-docs
 title: Prove the vertical slices and document the authority design
 blocked_by: [05-delegation-derivation, 07-cedar-adapter]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
