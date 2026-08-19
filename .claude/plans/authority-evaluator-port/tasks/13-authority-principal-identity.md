@@ -2,7 +2,7 @@
 id: 13-authority-principal-identity
 title: Preserve exact owner identity in evaluator requests
 blocked_by: [11-vertical-repair]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
