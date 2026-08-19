@@ -1049,7 +1049,18 @@ func (e *Engine) execute(ctx context.Context, r *Run, sess *session.Session, env
 		}
 	}
 
-	res, dur := e.timeExecute(ctx, r, sess, env, turnIdx, c, t, execStart)
+	var authorityResult *session.ToolResult
+	if result, checked := e.authorizeExecution(ctx, r, sess, turnIdx, c); checked {
+		authorityResult = &result
+	}
+
+	var res session.ToolResult
+	var dur time.Duration
+	if authorityResult != nil {
+		res = *authorityResult
+	} else {
+		res, dur = e.timeExecute(ctx, r, sess, env, turnIdx, c, t, execStart)
+	}
 
 	// PostToolUse may rewrite the result. The effective (possibly rewritten) result
 	// is what we log, emit, and return, so the audit log, the client event stream,
@@ -1074,6 +1085,109 @@ func (e *Engine) execute(ctx context.Context, r *Run, sess *session.Session, env
 
 	e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
 	return res
+}
+
+const callMcpWithQueryToolName = "CallMcpWithQuery"
+
+// authorizeExecution is the single authority-enforcement boundary. Permission
+// and hook gates decide whether a call may reach execution; a bound session's
+// carried authority independently decides which exact tool it may execute.
+func (e *Engine) authorizeExecution(ctx context.Context, r *Run, sess *session.Session, turnIdx int, call session.ToolCall) (session.ToolResult, bool) {
+	authority, bound := sess.BoundAuthority()
+	if !bound || e.deps.AuthorityEvaluator == nil {
+		return session.ToolResult{}, false
+	}
+
+	target, err := authorityTarget(call, authority.CapabilitySet)
+	if err != nil {
+		return session.NewToolError(call.ID, fmt.Sprintf("tool %q denied by authority: %v", call.Name, err)), true
+	}
+	request := port.AuthorityRequest{
+		CapabilitySet:   authority.CapabilitySet,
+		ToolName:        target,
+		DelegationDepth: authority.CapabilitySet.RemainingDelegationDepth,
+		Principal: port.AuthorityPrincipal{
+			Definition: authorityDefinition(authority),
+			Instance:   string(sess.ID),
+			Owner:      authorityOwner(sess.Owner),
+		},
+	}
+	decision, err := e.deps.AuthorityEvaluator.AuthorizeTool(ctx, request)
+	if err != nil {
+		r.diag.Log(ctx, port.LevelWarn, "authority evaluator unavailable", "tool", target, "turn", turnIdx, "err", err)
+		return session.NewToolError(call.ID, fmt.Sprintf("tool %q was not executed: authority evaluator unavailable", target)), true
+	}
+	if !decision.Allowed {
+		reason := decision.Reason
+		if reason == "" {
+			reason = "authorization denied"
+		}
+		return session.NewToolError(call.ID, fmt.Sprintf("tool %q denied by authority: %s", target, reason)), true
+	}
+	return session.ToolResult{}, false
+}
+
+func authorityDefinition(authority session.Authority) string {
+	if authority.DefinitionIdentity != "" {
+		return authority.DefinitionIdentity
+	}
+	return "root"
+}
+
+func authorityOwner(owner *session.Principal) string {
+	if owner == nil {
+		return "unowned"
+	}
+	return owner.Issuer + ":" + owner.Subject
+}
+
+// authorityTarget translates meta-tools whose actual reach is named in their
+// arguments. Resource reach is selected only from carried MCP tool names.
+func authorityTarget(call session.ToolCall, set governance.CapabilitySet) (string, error) {
+	switch call.Name {
+	case callMcpWithQueryToolName:
+		var args struct {
+			Server string `json:"server"`
+			Tool   string `json:"tool"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil || strings.TrimSpace(args.Server) == "" || strings.TrimSpace(args.Tool) == "" {
+			return "", errors.New("CallMcpWithQuery target is invalid")
+		}
+		return "mcp__" + strings.TrimSpace(args.Server) + "__" + strings.TrimSpace(args.Tool), nil
+	case "ListMcpResources", "ReadMcpResource":
+		var args struct {
+			Server string `json:"server"`
+		}
+		if err := json.Unmarshal(call.Args, &args); err != nil || strings.TrimSpace(args.Server) == "" {
+			return "", errors.New("MCP resource target is invalid")
+		}
+		if target, ok := authorityMCPToolName(set, strings.TrimSpace(args.Server)); ok {
+			return target, nil
+		}
+		return "", fmt.Errorf("MCP resources for server %q are absent from the capability set", strings.TrimSpace(args.Server))
+	default:
+		return call.Name, nil
+	}
+}
+
+// authorityMCPToolName returns a carried tool name for server. It is the sole
+// derivation of that server's resource reach; resource tools add no grant.
+func authorityMCPToolName(set governance.CapabilitySet, server string) (string, bool) {
+	prefix := "mcp__" + strings.TrimSpace(server) + "__"
+	if prefix == "mcp____" {
+		return "", false
+	}
+	for _, name := range set.Tools {
+		if strings.HasPrefix(name, prefix) && len(name) > len(prefix) {
+			return name, true
+		}
+	}
+	return "", false
+}
+
+func authorityAllowsMCPResources(set governance.CapabilitySet, server string) bool {
+	_, ok := authorityMCPToolName(set, server)
+	return ok
 }
 
 // timeExecute runs the tool and reports its elapsed wall time as (Clock.Now −

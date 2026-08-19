@@ -162,6 +162,10 @@ type Deps struct {
 	Catalog *tool.Catalog
 	// Policy evaluates each tool call (deny → ask → allow).
 	Policy port.PermissionPolicy
+	// AuthorityEvaluator authorizes executions for sessions carrying a derived
+	// authority set. Nil preserves legacy unbound-session behaviour; composition
+	// selects an explicit evaluator when it mints bound sessions.
+	AuthorityEvaluator port.AuthorityEvaluator
 	// Hooks runs the PreToolUse / PostToolUse lifecycle hooks.
 	Hooks port.HookRunner
 	// Store persists session state (optional; nil disables persistence).

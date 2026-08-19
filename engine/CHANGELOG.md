@@ -746,6 +746,11 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Changed
 
+- **Authority evaluator wiring (ADR 0228)** — `agent.Deps.AuthorityEvaluator`
+  adds the optional execution-time authority evaluator dependency. The added field
+  is source-breaking for external unkeyed `Deps` literals and is therefore
+  classified Changed (pre-v1 minor).
+
 - **Durable authority payload (ADR 0228)** — `session.Authority` replaces the
   inert string placeholder with the plain carried `governance.CapabilitySet`,
   provenance, and definition identity payload; `Session.BindAuthority` and
