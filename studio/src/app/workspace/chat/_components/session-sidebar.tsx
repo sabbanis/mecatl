@@ -293,7 +293,9 @@ function SessionRow({
             aria-label="Running"
             className={cn(
               "[grid-area:slot] size-2 rounded-full bg-brand animate-pulse",
-              menuOpen ? "lg:invisible" : "lg:group-hover:invisible",
+              menuOpen
+                ? "min-[500px]:invisible"
+                : "min-[500px]:group-hover:invisible",
             )}
           />
         ) : (
@@ -301,7 +303,9 @@ function SessionRow({
             suppressHydrationWarning
             className={cn(
               "[grid-area:slot] text-xs text-muted-foreground/50 tabular-nums",
-              menuOpen ? "lg:invisible" : "lg:group-hover:invisible",
+              menuOpen
+                ? "min-[500px]:invisible"
+                : "min-[500px]:group-hover:invisible",
             )}
           >
             {formatRelativeTime(session.updatedAt)}
@@ -319,7 +323,7 @@ function SessionRow({
               "[grid-area:slot] flex items-center justify-center w-7 rounded text-muted-foreground hover:text-foreground",
               menuOpen
                 ? "opacity-100"
-                : "opacity-0 pointer-events-none lg:group-hover:opacity-100 lg:group-hover:pointer-events-auto",
+                : "opacity-0 pointer-events-none min-[500px]:group-hover:opacity-100 min-[500px]:group-hover:pointer-events-auto",
             )}
             onClick={(e) => e.stopPropagation()}
           >
