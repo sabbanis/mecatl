@@ -12,9 +12,6 @@ export interface SettingsSection {
   href: string;
   label: string;
   icon: React.ComponentType<{ className?: string }>;
-  /** Solid background class for the icon square in the mobile list
-   *  (native settings convention: white glyph on a per-item tint). */
-  tint: string;
 }
 
 /**
@@ -33,19 +30,16 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/profile",
         label: "Profile",
         icon: UserRound,
-        tint: "bg-blue-500",
       },
       {
         href: "/workspace/settings/appearance",
         label: "Appearance",
         icon: Palette,
-        tint: "bg-purple-500",
       },
       {
         href: "/workspace/settings/notifications",
         label: "Notifications",
         icon: Bell,
-        tint: "bg-red-500",
       },
     ],
   },
@@ -56,25 +50,21 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/memory",
         label: "Memory",
         icon: Brain,
-        tint: "bg-pink-500",
       },
       {
         href: "/workspace/settings/provider",
         label: "Provider",
         icon: Server,
-        tint: "bg-emerald-600",
       },
       {
         href: "/workspace/settings/model-router",
         label: "Model router",
         icon: Route,
-        tint: "bg-orange-500",
       },
       {
         href: "/workspace/settings/gateway",
         label: "MCP gateway",
         icon: Network,
-        tint: "bg-sky-500",
       },
     ],
   },

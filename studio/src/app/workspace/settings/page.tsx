@@ -10,8 +10,8 @@ import { SETTINGS_GROUPS } from "./_components/settings-sections";
 /**
  * The settings index. On mobile it is the first level of a native-style
  * drill-down, following the inset-grouped-list convention: filled cards
- * (no border), a solid per-item tinted icon square with a white glyph,
- * and hairline dividers inset to the text edge. Desktop keeps the old
+ * (no border), a neutral icon square, and hairline dividers inset to the
+ * text edge. Desktop keeps the old
  * behaviour — land on the first section, with the left secondary nav for
  * switching — via a client redirect (the split is a viewport question,
  * so the server cannot decide it).
@@ -41,12 +41,7 @@ export default function SettingsIndexPage() {
                   href={item.href}
                   className="group flex items-center gap-3 pl-4 transition-colors active:bg-black/[0.04] dark:active:bg-white/[0.06]"
                 >
-                  <span
-                    className={cn(
-                      "flex size-7 shrink-0 items-center justify-center rounded-[8px] text-white",
-                      item.tint,
-                    )}
-                  >
+                  <span className="flex size-7 shrink-0 items-center justify-center rounded-[8px] bg-muted text-muted-foreground">
                     <Icon className="size-4" />
                   </span>
                   {/* The divider hangs off the row body so it stays inset
