@@ -549,7 +549,7 @@ func RunMetadataPager(t *testing.T, newStore func(t *testing.T) port.SessionStor
 		{id: "ownerless"},
 	} {
 		s := newSession(fixture.id)
-		if err := s.RestoreLabels(fixture.owner, session.Authority("")); err != nil {
+		if err := s.RestoreLabels(fixture.owner, session.Authority{}); err != nil {
 			t.Fatalf("RestoreLabels(%q): %v", fixture.id, err)
 		}
 		if err := st.Save(ctx, s); err != nil {

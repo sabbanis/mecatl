@@ -879,7 +879,7 @@ if principal == nil {
     return errUnauthenticated
 }
 ctx = session.WithPrincipal(ctx, principal)      // context passed to Engine.Run
-if err := sess.RestoreLabels(principal, ""); err != nil {
+if err := sess.RestoreLabels(principal, session.Authority{}); err != nil {
     return err
 }
 run := eng.Run(ctx, sess, workspace, request)

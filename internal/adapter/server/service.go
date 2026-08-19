@@ -1405,7 +1405,7 @@ func setSessionLabels(sess *session.Session, sel ProviderSelector, profile Sessi
 	// empty, so this cannot collide; the error is propagated rather than dropped so
 	// a future caller that re-labels a LOADED session fails loudly instead of
 	// silently re-owning it. A nil owner leaves the session ownerless.
-	return sess.RestoreLabels(owner, "")
+	return sess.RestoreLabels(owner, session.Authority{})
 }
 
 // seedCarryover seeds the freshly-created (idle) session with an optional

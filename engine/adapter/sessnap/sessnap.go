@@ -96,10 +96,10 @@ type Snapshot struct {
 	// entry under engine/COMPATIBILITY.md; a direct-assignment field is
 	// Added/minor).
 	Owner *session.Principal `json:"owner,omitempty"`
-	// Authority is Track C's inert label, round-tripped here so the contended
-	// generated-file regeneration is paid once. omitempty keeps a pre-ship
-	// snapshot with no "authority" key decoding to the zero value.
-	Authority session.Authority `json:"authority,omitempty"`
+	// Authority is the plain, derived capability payload. A nil pointer is a
+	// genuinely pre-feature legacy record; a present payload must decode to the
+	// one governance.CapabilitySet representation or restore fails closed.
+	Authority *session.Authority `json:"authority,omitempty"`
 	// EnvironmentRef is the resolved execution-environment identity this session
 	// runs against (ADR 0214, issue #462 phase 3). The ref is a value type
 	// (EnvironmentKind + opaque ID); a zero ref {Kind:"", ID:""} is the
@@ -167,27 +167,28 @@ func Of(s *session.Session) (Snapshot, error) {
 		relationship.BranchIndex = &branchIndex
 	}
 	snap := Snapshot{
-		ID:               s.ID,
-		State:            s.State,
-		Mode:             s.Mode,
-		Limits:           s.Limits,
-		Counters:         s.Counters,
-		Workspace:        s.Workspace,
-		EnvironmentRef:   s.EnvironmentRef,
-		Profile:          s.Profile,
-		ProviderID:       s.ProviderID,
-		ModelID:          s.ModelID,
-		ReasoningEffort:  s.ReasoningEffort,
-		Title:            s.Title,
-		TitleProvenance:  s.TitleProvenance,
-		Authority:        s.Authority,
-		Kind:             s.Kind,
-		Relationship:     relationship,
-		AdoptionMetadata: s.Adoption.Clone(),
-		CreatedAt:        s.CreatedAt,
+		ID:              s.ID,
+		State:           s.State,
+		Mode:            s.Mode,
+		Limits:          s.Limits,
+		Counters:        s.Counters,
+		Workspace:       s.Workspace,
+		EnvironmentRef:  s.EnvironmentRef,
+		Profile:         s.Profile,
+		ProviderID:      s.ProviderID,
+		ModelID:         s.ModelID,
+		ReasoningEffort: s.ReasoningEffort,
+		Title:           s.Title,
+		TitleProvenance: s.TitleProvenance,
+		Kind:            s.Kind,
+		Relationship:    relationship,
+		CreatedAt:       s.CreatedAt,
 		// Owner is a pointer for true omitempty; Clone so the snapshot cannot
 		// alias (and later mutate) the aggregate's own principal.
 		Owner: s.Owner.Clone(),
+	}
+	if authority, ok := s.BoundAuthority(); ok {
+		snap.Authority = &authority
 	}
 	// Usage is a pointer for true omitempty: only emit the key when there is spend
 	// to persist, so a zero-usage snapshot stays byte-identical to a pre-Usage one.
@@ -224,6 +225,10 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 		return nil, fmt.Errorf("sessnap: restore session metadata: %w", err)
 	}
 
+	if err := restoreAuthority(s, snap.Authority); err != nil {
+		return nil, err
+	}
+
 	// Rebuild the conversation history verbatim.
 	for _, dto := range snap.Messages {
 		s.Conversation.Append(fromDTO(dto))
@@ -242,7 +247,7 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 	// The identity labels go through the WRITE-ONCE aggregate method rather than a
 	// field poke (Session is an aggregate) and rather than a RestoreState
 	// parameter (that widening is Changed/breaking; this stays Added/minor).
-	if err := s.RestoreLabels(snap.Owner, snap.Authority); err != nil {
+	if err := s.RestoreLabels(snap.Owner, session.Authority{}); err != nil {
 		return nil, fmt.Errorf("sessnap: restore labels: %w", err)
 	}
 
@@ -261,6 +266,16 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 		return nil, err
 	}
 	return s, nil
+}
+
+func restoreAuthority(s *session.Session, authority *session.Authority) error {
+	if authority == nil {
+		return nil // Pre-feature record: legacy, deliberately unbound.
+	}
+	if err := s.BindAuthority(*authority); err != nil {
+		return fmt.Errorf("sessnap: restore authority: %w", err)
+	}
+	return nil
 }
 
 // RestoreState drives a freshly-constructed (StateIdle) Session through the state

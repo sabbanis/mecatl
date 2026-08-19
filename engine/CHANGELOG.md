@@ -746,36 +746,12 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Changed
 
-- **`port.SessionLiveness.Register` lifecycle acquisition** ([ADR 0027](../docs/adr/0027-cloud-native.md)) —
-  `Register` now accepts the lifecycle context and cancellation function and returns
-  an error, allowing a host to acquire distributed exclusion before a child becomes
-  runnable and cancel it on renewal loss. This breaks external implementations and
-  is classified Changed for a pre-v1 minor bump.
-
-- **Session migration job exclusion** (issue #589, [ADR 0226](../docs/adr/0226-session-storage-maintenance.md)) —
-  `port.SessionMigrationStore` adds `LockSessionMigrationJob`, requiring optional
-  migration adapters to hold stable cross-process job exclusion around every mutating
-  load-to-checkpoint sequence. The interface addition is breaking for external
-  implementations and is classified Changed for a pre-v1 minor bump.
-
-- **Session discovery byte estimate** (issue #590, [ADR 0226](../docs/adr/0226-session-storage-maintenance.md)) —
-  `port.SessionDiscoveryMeta` adds `EstimatedBytes`. Keyed literals remain source
-  compatible; external unkeyed literals are breaking, so this is Changed for a
-  pre-v1 minor bump.
-
-- **Optional adoption audit metadata on `session.Session`** (issue #593) —
-  the inline `AdoptionSourceID` and `AdoptionRequestDigest` fields are replaced by
-  `Adoption *AdoptionMetadata`, keeping ordinary sessions on the pre-adoption hot-path
-  layout while preserving the same persisted labels. The field replacement is
-  breaking for external literals and classified Changed for a pre-v1 minor bump.
-
-- **Opaque session metadata continuation** (issue #587, [ADR 0226](../docs/adr/0226-session-storage-maintenance.md)) —
-  `port.SessionMetadataCursor` retains neutral ordering, generation, and ownership-scope
-  bindings while replacing the storage-specific numeric position with an opaque
-  pager-owned `Continuation`. Jsonlstore privately encodes and validates its direct
-  byte continuation; other adapters neither expose nor interpret that representation.
-  The field change is breaking for external literals and is classified Changed for a
-  pre-v1 minor bump; `port.SessionStore` remains unchanged.
+- **Durable authority payload (ADR 0228)** — `session.Authority` replaces the
+  inert string placeholder with the plain carried `governance.CapabilitySet`,
+  provenance, and definition identity payload; `Session.BindAuthority` and
+  `BoundAuthority` make binding explicit and preserve the legacy-unbound state.
+  This changes the existing exported type and `RestoreLabels` argument, so it is
+  breaking under the compatibility contract.
 
 - **Learning trajectory current-run metadata ([ADR 0114](../docs/adr/0114-configurable-learning-trigger-policy.md))** —
   `learning.Trajectory` adds `Kind`, `Counters`, and `Current`. The fields are

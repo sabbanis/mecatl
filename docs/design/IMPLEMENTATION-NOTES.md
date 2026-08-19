@@ -93,7 +93,7 @@ missing, empty, or non-string identity claims and deriving only `user` or
 `client_credentials`; it never verifies a token and never mints `system`. An embedder
 puts that principal on the run context with `session.WithPrincipal`. If it constructs a
 session aggregate itself, it also seeds durable ownership through
-`Session.RestoreLabels(principal, "")`; children, forks, and resumed sessions inherit
+`Session.RestoreLabels(principal, session.Authority{})`; children, forks, and resumed sessions inherit
 that owner.
 
 OIDC/JWKS mechanics live in the opt-in `authn/oidc` module (ADR 0206), not engine and
