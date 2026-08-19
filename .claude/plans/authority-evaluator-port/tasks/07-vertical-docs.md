@@ -2,7 +2,7 @@
 id: 07-cedar-adapter
 title: Add opt-in static Cedar authority adapter
 blocked_by: [05-delegation-derivation, 06-resource-attribute]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "371"
