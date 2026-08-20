@@ -1,9 +1,9 @@
 # Project working MVP — acceptance plan
 
-**Phase:** working-source-only Projects for Studio and mecatui  
-**Status:** in-progress  
-**Issue:** [stacklok/mecatl#620](https://github.com/stacklok/mecatl/issues/620)  
-**ADR:** [ADR-0230](../adr/0230-project-working-and-reference-folders.md) — one working source, captured Session bindings, opaque source identity, and independently paged navigation.  
+**Phase:** working-source-only Projects for Studio and mecatui
+**Status:** in-progress
+**Issue:** [stacklok/mecatl#620](https://github.com/stacklok/mecatl/issues/620)
+**ADR:** [ADR-0234](../adr/0234-project-working-and-reference-folders.md) — one working source, captured Session bindings, opaque source identity, and independently paged navigation.
 **External Studio evidence:** pending — replace with the Studio commit and green workflow URL before `landed`.
 
 The smallest end-to-end slice that lets Studio and mecatui manage Projects and open durable
@@ -15,7 +15,7 @@ after Project edits or server restart.
 
 ## Why these scope cuts
 
-- [ADR-0230](../adr/0230-project-working-and-reference-folders.md) keeps one honest
+- [ADR-0234](../adr/0234-project-working-and-reference-folders.md) keeps one honest
   `tool.Environment`; this plan does not build a writable union or make a reference into
   another Workspace.
 - The first source registry exposes only the daemon's canonical launch root, and this
@@ -28,7 +28,7 @@ after Project edits or server restart.
   broker, both reference tools, bounds, fencing, audit, and delegation propagation must
   land together later; this phase does not accept inert reference data that the agent
   cannot use.
-- Project state remains above the loop, as required by ADR-0230. The loop receives an
+- Project state remains above the loop, as required by ADR-0234. The loop receives an
   already-resolved Environment and does not gain a Project store dependency.
 - Studio is an external client and owns its browser workflow test. Mecatui is the in-repo
   reference client and manual acceptance surface: its `/projects` UI must exercise the same
@@ -97,14 +97,14 @@ These decisions close the implementation ambiguities needed for a fast first sli
 
 Studio detects Project support, discovers the canonical working source, creates a Project,
 reads it, replaces it with revision checking, pages its Projects, and deletes it. This follows
-[ADR-0230 decisions 1–2](../adr/0230-project-working-and-reference-folders.md) and the
+[ADR-0234 decisions 1–2](../adr/0234-project-working-and-reference-folders.md) and the
 existing caller-ownership decision in [ADR-0212](../adr/0212-caller-ownership-enforcement.md).
 
 **Acceptance:**
 
 - AC1.1: session-free `GetServerCapabilities` and `GET /v1/capabilities` advertise Projects only when the Project-store, authorized-working-source, and Project-Session factory/resolver seams are all wired. The first implementation satisfies that only for an ownerless `mecated --store-dir` deployment with the canonical source; capability means Build-time configuration, not transient health. Older/unimplemented, in-memory, Redis, driver, mecak8s, and ownership-enforced deployments remain Project-disabled while their ordinary APIs stay usable, without hard-coding those backend names into the capability decision.
   - verify: `TestProjectWorkingMVP_Scenario1_CapabilityBootstrapMatrix`
-- AC1.2: bounded source discovery returns only server-minted opaque IDs, bounded labels, and working eligibility. Public responses and model-visible values contain no physical path, URI, endpoint, EnvironmentRef, environment value, or credential; operator diagnostics may name a scrubbed physical failure under ADR-0230 but never credentials.
+- AC1.2: bounded source discovery returns only server-minted opaque IDs, bounded labels, and working eligibility. Public responses and model-visible values contain no physical path, URI, endpoint, EnvironmentRef, environment value, or credential; operator diagnostics may name a scrubbed physical failure under ADR-0234 but never credentials.
   - verify: `TestInvariant_project_source_discovery_is_locator_free`
 - AC1.3: Create derives Owner from context and the working label from the registry, rejects invalid names and unknown/non-working source IDs, starts at revision 1, and permits multiple ownerless Projects to use the same canonical source; the endpoint is unavailable rather than sharing that writable source when ownership enforcement is active.
   - verify: `TestProjectWorkingMVP_Scenario1_CreateValidatedServerOwnedFields`
@@ -125,7 +125,7 @@ existing caller-ownership decision in [ADR-0212](../adr/0212-caller-ownership-en
 
 Studio opens a Project and creates a Session without selecting a host path. The server
 resolves the Project's source and publishes no Session resources until the fully-labelled
-aggregate is durable. This implements [ADR-0230 decision 4](../adr/0230-project-working-and-reference-folders.md)
+aggregate is durable. This implements [ADR-0234 decision 4](../adr/0234-project-working-and-reference-folders.md)
 and preserves the execution-environment seams in [ADR-0211](../adr/0211-execution-environment-runtime-seam.md)
 and [ADR-0214](../adr/0214-environment-persistence.md).
 
@@ -151,7 +151,7 @@ and [ADR-0214](../adr/0214-environment-persistence.md).
 A caller renames, replaces, or deletes a Project after creating a Session. The old Session
 keeps its creation-time association and exact working environment. Restart and fork use the
 captured binding rather than rereading the live Project, as required by
-[ADR-0230 decision 5](../adr/0230-project-working-and-reference-folders.md).
+[ADR-0234 decision 5](../adr/0234-project-working-and-reference-folders.md).
 
 **Acceptance:**
 
@@ -174,7 +174,7 @@ captured binding rather than rereading the live Project, as required by
 
 Studio opens one Project and lazily requests only its Session children. Project roots and
 Session pages remain independent; the server never assembles a complete tree. This implements
-[ADR-0230 decision 9](../adr/0230-project-working-and-reference-folders.md).
+[ADR-0234 decision 9](../adr/0234-project-working-and-reference-folders.md).
 
 **Acceptance:**
 
@@ -217,7 +217,7 @@ HTTP; external Studio evidence is recorded before this plan lands.
 
 An operator starts embedded or connected mecatui against the local durable deployment and
 uses `/projects` to complete the same working-Project journey without a browser or raw API
-client. The UI follows [ADR-0230's independently paged navigation](../adr/0230-project-working-and-reference-folders.md)
+client. The UI follows [ADR-0234's independently paged navigation](../adr/0234-project-working-and-reference-folders.md)
 and the proto-free client boundary in [the architecture guide](../architecture.md).
 
 **Acceptance:**
@@ -243,15 +243,15 @@ and the proto-free client boundary in [the architecture guide](../architecture.m
 
 | Item | Defer-to | ADR / decision |
 |---|---|---|
-| Ordered Project references in create/replace | Project references acceptance plan | [ADR-0230 decisions 1, 7–8](../adr/0230-project-working-and-reference-folders.md) |
-| `ProjectReferenceList` / `ProjectReferenceRead`, broker, bounds, fencing, permissions, audit, and child propagation | same Project references plan; these ship together | [ADR-0230 decisions 7–8](../adr/0230-project-working-and-reference-folders.md) |
-| Alternate local working roots and their no-steering posture | next working-source plan | [ADR-0230 decision 6](../adr/0230-project-working-and-reference-folders.md) |
-| Ownership-enforced/multi-caller working sources and source-audience policy | same next working-source plan; never share the canonical writable root implicitly | [ADR-0230 context](../adr/0230-project-working-and-reference-folders.md) |
-| Kubernetes mounts and mecak8s Project-store/source configuration | deployment follow-up | [ADR-0230 rollout](../adr/0230-project-working-and-reference-folders.md) |
-| MCP, object-store, Git, HTTP, Google Document, personal, or searchable references | source-adapter follow-ups | [ADR-0230 decisions 2–3 and 7](../adr/0230-project-working-and-reference-folders.md) |
-| User-managed source enrollment, organizations, sharing, ACLs, archive/restore | future tenancy/source-service decisions | [ADR-0230 context and decision 1](../adr/0230-project-working-and-reference-folders.md) |
-| Conversation carryover into `CreateSessionFromProject` | separate workflow if Studio demonstrates the need | [ADR-0230 decision 4](../adr/0230-project-working-and-reference-folders.md) |
-| Removal of paths from legacy compatibility APIs | separate redacted-projection design | [ADR-0230 decision 10](../adr/0230-project-working-and-reference-folders.md) |
+| Ordered Project references in create/replace | Project references acceptance plan | [ADR-0234 decisions 1, 7–8](../adr/0234-project-working-and-reference-folders.md) |
+| `ProjectReferenceList` / `ProjectReferenceRead`, broker, bounds, fencing, permissions, audit, and child propagation | same Project references plan; these ship together | [ADR-0234 decisions 7–8](../adr/0234-project-working-and-reference-folders.md) |
+| Alternate local working roots and their no-steering posture | next working-source plan | [ADR-0234 decision 6](../adr/0234-project-working-and-reference-folders.md) |
+| Ownership-enforced/multi-caller working sources and source-audience policy | same next working-source plan; never share the canonical writable root implicitly | [ADR-0234 context](../adr/0234-project-working-and-reference-folders.md) |
+| Kubernetes mounts and mecak8s Project-store/source configuration | deployment follow-up | [ADR-0234 rollout](../adr/0234-project-working-and-reference-folders.md) |
+| MCP, object-store, Git, HTTP, Google Document, personal, or searchable references | source-adapter follow-ups | [ADR-0234 decisions 2–3 and 7](../adr/0234-project-working-and-reference-folders.md) |
+| User-managed source enrollment, organizations, sharing, ACLs, archive/restore | future tenancy/source-service decisions | [ADR-0234 context and decision 1](../adr/0234-project-working-and-reference-folders.md) |
+| Conversation carryover into `CreateSessionFromProject` | separate workflow if Studio demonstrates the need | [ADR-0234 decision 4](../adr/0234-project-working-and-reference-folders.md) |
+| Removal of paths from legacy compatibility APIs | separate redacted-projection design | [ADR-0234 decision 10](../adr/0234-project-working-and-reference-folders.md) |
 
 ## Kubernetes fast-follow boundary
 
@@ -276,7 +276,7 @@ policy; the first cut must not encode ownerless operation as the Project domain 
 
 ## Cross-cutting deliverables
 
-- Before orchestration, correct ADR-0230's rollout so `CreateSessionFromProject` and the
+- Before orchestration, correct ADR-0234's rollout so `CreateSessionFromProject` and the
   captured Session binding cannot land in separate releases. Promote it to Accepted only
   when that combined contract lands; after acceptance it is frozen.
 - Keep Project domain/store/registry behavior above the agent loop. Define backend-neutral

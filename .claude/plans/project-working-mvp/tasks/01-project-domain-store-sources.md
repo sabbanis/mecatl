@@ -17,4 +17,4 @@ Implement only the dependency-safe foundation for the combined Project release: 
 
 ## Acceptance criteria
 
-None independently. This foundation is required by the combined AC1/AC2 lifecycle task so ADR-0230's no-partial-release rule remains enforceable.
+None independently. This foundation is required by the combined AC1/AC2 lifecycle task so ADR-0234's no-partial-release rule remains enforceable.
