@@ -460,7 +460,9 @@ function MockProjectChatRow({ chat }: { chat: MockProjectChat }) {
   return (
     <div
       className={cn(
-        "group flex items-center border-l-[3px] py-1.5 pr-3 pl-8 transition-colors",
+        // py-2 matches the real SessionRow height so the two lists read as
+        // one rhythm.
+        "group flex items-center border-l-[3px] py-2 pr-3 pl-8 transition-colors",
         chat.selected
           ? "border-brand bg-brand/10"
           : "border-transparent hover:bg-accent",
@@ -494,13 +496,13 @@ function MockProjectChatRow({ chat }: { chat: MockProjectChat }) {
 }
 
 /** A collapsible mock project folder; clicking the row toggles it open.
- *  The green treatment marks the project holding the SELECTED chat, never
- *  mere openness — an open project without the active chat stays plain. */
+ *  The header itself never takes the green treatment — the highlight
+ *  belongs to exactly one row, the SELECTED chat inside; openness is
+ *  carried by the folder icon alone. */
 function MockProjectItem({ project }: { project: MockProject }) {
   const [open, setOpenState] = useState(
     () => mockProjectOpenStore.get(project.id) ?? false,
   );
-  const active = open && project.chats.some((chat) => chat.selected);
   const toggle = () =>
     setOpenState((prev) => {
       const next = !prev;
@@ -515,31 +517,14 @@ function MockProjectItem({ project }: { project: MockProject }) {
         onClick={toggle}
         aria-expanded={open}
         aria-label={`${open ? "Collapse" : "Expand"} project: ${project.name}`}
-        className={cn(
-          "group flex items-center gap-2 border-l-[3px] py-2 pr-3 pl-3 text-left transition-colors",
-          active
-            ? "border-brand bg-brand/10"
-            : "border-transparent hover:bg-accent",
-        )}
+        className="group flex items-center gap-2 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left transition-colors hover:bg-accent"
       >
         {open ? (
-          <FolderOpen
-            className={cn(
-              "size-4 shrink-0",
-              active ? "text-brand-ink" : "text-muted-foreground",
-            )}
-          />
+          <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
         ) : (
           <FolderClosed className="size-4 shrink-0 text-muted-foreground" />
         )}
-        <span
-          className={cn(
-            "min-w-0 flex-1 truncate text-[0.85rem] font-medium select-none",
-            active
-              ? "text-brand-ink"
-              : "text-muted-foreground group-hover:text-foreground",
-          )}
-        >
+        <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground select-none group-hover:text-foreground">
           {project.name}
         </span>
       </button>
