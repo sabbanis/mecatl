@@ -49,3 +49,10 @@ user-docs/
 
 # website/CLAUDE.md is agent guidance for the Docusaurus site, not product docs.
 website/CLAUDE.md
+
+# Studio's managed-mode working state (the controller pins the project skills
+# and memory dirs here) and ad-hoc local attachment drops — machine-local
+# state, not documentation. CI checkouts never contain them; ignoring them
+# keeps local `check`/`index` runs byte-identical to CI's.
+/.mecatl/
+/attachments/
