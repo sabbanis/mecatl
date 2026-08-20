@@ -2,12 +2,12 @@
 id: 01-project-domain-store-sources
 title: Project domain, source registry, durable store, and discovery APIs
 blocked_by: []
-status: in-progress
+status: blocked
 branch: ""
 worktree: ""
 issue: "620"
 retries: 0
-last_error: ""
+last_error: "mis-decomposition: AC1.1 requires the task-02 Project Session factory/captured binding; ADR-0230 requires them in one release, and generated contract work overlaps task 05"
 accumulator: acc/project-working-mvp
 ---
 
