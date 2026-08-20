@@ -2,7 +2,7 @@
 id: 05-project-lifecycle-acceptance
 title: Integrated Project lifecycle acceptance and rollback proof
 blocked_by: [04-project-contract-wiring]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "620"
