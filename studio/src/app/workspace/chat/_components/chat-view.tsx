@@ -63,6 +63,7 @@ import {
   getThreadSession,
   registerThreadSession,
   sliceThreadReplies,
+  stripRootQuote,
   syncThreadActivity,
   threadKeyForMessage,
   threadTitleFromRoot,
@@ -402,7 +403,11 @@ function ThreadPanel({
   // The thread session's history starts with the seeded parent conversation;
   // only the thread's own exchange (from the quoted first message) renders.
   const replies = useMemo(
-    () => sliceThreadReplies(messages, rootMessage.content),
+    () =>
+      stripRootQuote(
+        sliceThreadReplies(messages, rootMessage.content),
+        rootMessage.content,
+      ),
     [messages, rootMessage.content],
   );
 

@@ -7,6 +7,7 @@ import {
   readThreadMap,
   registerThreadSession,
   sliceThreadReplies,
+  stripRootQuote,
   syncThreadActivity,
   threadKeyForMessage,
   threadTitleFromRoot,
@@ -276,5 +277,24 @@ describe("thread session registry", () => {
         window.localStorage.getItem("mecatl-studio.thread-sessions") ?? "[]",
       ),
     ).toEqual(["ok", "thread-new"]);
+  });
+});
+
+describe("stripRootQuote", () => {
+  it("removes the root's own quote from a reply, keeping the words", () => {
+    const root = "the original message";
+    const composed = composeThreadPrompt(root, "my question");
+    const [stripped] = stripRootQuote(
+      [{ role: "user", content: composed }],
+      root,
+    );
+    expect(stripped.content).toBe("my question");
+  });
+  it("keeps quotes of other text and non-user replies", () => {
+    const replies = [
+      { role: "user", content: "> some other selection\n\nthoughts?" },
+      { role: "assistant", content: "> not touched" },
+    ];
+    expect(stripRootQuote(replies, "the original message")).toEqual(replies);
   });
 });

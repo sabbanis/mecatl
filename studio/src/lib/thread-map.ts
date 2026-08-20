@@ -105,6 +105,26 @@ export function composeThreadPrompt(
  * with the root quote block (the deterministic composeThreadPrompt prefix).
  * Returns the messages from that boundary — empty when no reply landed yet.
  */
+/**
+ * Display transform for thread replies: the root-quote block
+ * composeThreadPrompt prepends is REDUNDANT inside the panel (the root
+ * message is pinned right above), so a user reply that opens with the
+ * root's own quote renders without it. Quotes of OTHER text (add-to-thread
+ * selections) are meaningful and stay.
+ */
+export function stripRootQuote<T extends { role: string; content: string }>(
+  replies: T[],
+  rootContent: string,
+): T[] {
+  const rootQuote = quoteRoot(rootContent);
+  return replies.map((reply) => {
+    if (reply.role !== "user") return reply;
+    if (!reply.content.startsWith(rootQuote)) return reply;
+    const rest = reply.content.slice(rootQuote.length).replace(/^\n+/, "");
+    return rest ? { ...reply, content: rest } : reply;
+  });
+}
+
 export function sliceThreadReplies(
   messages: AgentMessage[],
   rootContent: string,
