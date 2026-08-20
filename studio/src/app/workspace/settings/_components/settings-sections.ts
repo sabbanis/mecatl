@@ -31,7 +31,7 @@ export const SETTINGS_GROUPS: Array<{
     items: [
       {
         href: "/workspace/settings/profile",
-        label: "Profile",
+        label: "You",
         icon: UserRound,
       },
       {
@@ -50,11 +50,6 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/notifications",
         label: "Notifications",
         icon: Bell,
-      },
-      {
-        href: "/workspace/settings/labs",
-        label: "Labs",
-        icon: FlaskConical,
       },
     ],
   },
@@ -85,6 +80,16 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/gateway",
         label: "MCP gateway",
         icon: Network,
+      },
+    ],
+  },
+  {
+    label: "Experimental",
+    items: [
+      {
+        href: "/workspace/settings/labs",
+        label: "Labs",
+        icon: FlaskConical,
       },
     ],
   },

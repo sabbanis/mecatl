@@ -56,6 +56,8 @@ export default function MemoryDetailPage() {
           Back
         </Button>
 
+        {/* The schedules/skills detail grammar: serif title, pill row, the
+            content leading unlabelled as its own card, then grouped facts. */}
         <h1
           className={pageTitleClass(
             "break-all text-[44px] leading-[1.05] max-[499px]:text-3xl",
@@ -64,31 +66,30 @@ export default function MemoryDetailPage() {
           {entry.title}
         </h1>
 
-        <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
-          <aside className="flex w-full max-w-[465px] flex-col gap-6">
-            <div className="space-y-2">
-              <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
-                What the agent remembers
-              </h2>
-              <p className="text-sm leading-relaxed text-foreground">
-                {entry.content || "No description recorded."}
-              </p>
-            </div>
-          </aside>
+        <div className="max-w-4xl space-y-8">
+          <p className="rounded-xl border bg-card p-5 text-sm leading-relaxed whitespace-pre-wrap">
+            {entry.content || "No description recorded."}
+          </p>
 
-          <section className="flex min-w-0 flex-1 flex-col gap-2">
-            <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+          <div className="space-y-2">
+            <h2 className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
               Details
             </h2>
-            <div className="divide-y divide-border/60 rounded-xl border bg-card">
+            <div className="divide-y rounded-lg border bg-background">
               <div className="flex items-center justify-between gap-3 px-4 py-3">
-                <span className="text-sm text-muted-foreground">Key</span>
-                <span className="break-all text-right text-sm font-medium font-mono">
+                <span className="text-sm">Key</span>
+                <span className="break-all text-right font-mono text-sm text-muted-foreground">
                   {entry.id}
                 </span>
               </div>
+              <div className="flex items-center justify-between gap-3 px-4 py-3">
+                <span className="text-sm">Source</span>
+                <span className="text-right text-sm text-muted-foreground">
+                  Learned in conversation
+                </span>
+              </div>
             </div>
-          </section>
+          </div>
         </div>
       </div>
     </div>

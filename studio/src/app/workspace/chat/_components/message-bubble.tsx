@@ -26,7 +26,11 @@ import {
 import type { AgentMessage, Artifact, Attachment } from "@/features/agent";
 import { fileKindMeta } from "@/lib/file-meta";
 import { formatMessageTime } from "@/lib/formatters";
-import { useAgentAvatar, useUserAvatar } from "@/lib/profile-preferences";
+import {
+  useAgentAvatar,
+  useUserAvatar,
+  useUserDisplayName,
+} from "@/lib/profile-preferences";
 import type { ThreadSummary } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
 import { mdComponents } from "./markdown-components";
@@ -335,6 +339,7 @@ export function MessageBubble({
   showActivity?: boolean;
 }) {
   const isUser = message.role === "user";
+  const { name: userName } = useUserDisplayName();
 
   // Touch has no hover: a horizontal-dominant left swipe reveals the action
   // row instead (right swipe or a new swipe elsewhere hides it again).
@@ -392,7 +397,7 @@ export function MessageBubble({
       <div className="flex-1 min-w-0">
         <div className="flex items-center gap-2">
           <span className="text-sm lg:text-[15px] font-bold">
-            {isUser ? "You" : (message.agentName ?? botName)}
+            {isUser ? userName || "You" : (message.agentName ?? botName)}
           </span>
           <span
             suppressHydrationWarning

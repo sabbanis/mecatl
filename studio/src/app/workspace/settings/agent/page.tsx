@@ -21,11 +21,7 @@ export default function AgentSettingsPage() {
       description="Cosmetic identity, stored in this browser only."
     >
       <div className="divide-y divide-border/60">
-        <SettingsRow
-          label="Name"
-          htmlFor="agent-display-name"
-          description="Replaces the default agent name in chat."
-        >
+        <SettingsRow label="Agent name" htmlFor="agent-display-name">
           <Input
             id="agent-display-name"
             value={name}

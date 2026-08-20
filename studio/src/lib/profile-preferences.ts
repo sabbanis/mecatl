@@ -10,6 +10,7 @@ import { useCallback, useEffect, useState } from "react";
  */
 const AGENT_NAME_KEY = "mecatl-studio.agent-name";
 const AVATAR_KEY = "mecatl-studio.user-avatar";
+const USER_NAME_KEY = "mecatl-studio.user-name";
 const AGENT_AVATAR_KEY = "mecatl-studio.agent-avatar";
 const SESSION_LIST_SIDE_KEY = "mecatl-studio.session-list-side";
 const DEFAULT_AGENT_NAME = "Mecatl";
@@ -200,4 +201,24 @@ export function useEnterSendBehavior() {
   }, []);
 
   return { behavior, setBehavior };
+}
+
+/**
+ * The user's display name — browser-local, cosmetic. It labels your chat
+ * messages in Studio; the AGENT learns your name in conversation (its memory
+ * stores user/identity/name itself — Studio has no write path into the
+ * daemon's user model by design).
+ */
+export function useUserDisplayName() {
+  const [name, setNameState] = useState("");
+  useEffect(() => {
+    const stored = readLocalStorage(USER_NAME_KEY);
+    if (stored) setNameState(stored);
+  }, []);
+  const setName = useCallback((value: string) => {
+    setNameState(value);
+    const trimmed = value.trim();
+    writeLocalStorage(USER_NAME_KEY, trimmed ? value : null);
+  }, []);
+  return { name, setName };
 }
