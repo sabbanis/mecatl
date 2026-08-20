@@ -44,7 +44,7 @@ export function OptionField({
   const trigger = (
     <Button
       variant="outline"
-      className="h-9 min-w-36 justify-between gap-2 rounded-lg px-3 font-normal"
+      className="h-9 w-44 justify-between gap-2 rounded-lg px-3 font-normal"
       aria-label={label}
       onClick={isMobile ? () => setSheetOpen(true) : undefined}
     >

@@ -427,196 +427,218 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
     );
   }
 
+  // The save footer covers the whole draft. It normally lives in the
+  // Categories card; while routing is off that card is hidden, so the footer
+  // (and, for an incomplete draft, an honest gate explanation) moves up into
+  // the router card — hiding the setup is presentation, never data loss.
+  const saveFooter = (
+    <div className="flex flex-wrap items-center justify-end gap-2">
+      {editing && (
+        <Button
+          variant="outline"
+          className="rounded-full"
+          onClick={() => setDraft(null)}
+        >
+          Discard changes
+        </Button>
+      )}
+      <Button
+        variant="action"
+        disabled={!editing || problem !== null || runtime.busy === "router"}
+        onClick={async () => {
+          await runtime.saveRouter({
+            enabled: view.enabled,
+            classifierModel: view.classifierModel.trim(),
+            defaultCategory: view.defaultCategory.trim().toLowerCase(),
+            categories: view.categories.map((category) => ({
+              name: category.name.trim().toLowerCase(),
+              description: category.description.trim(),
+              model: category.model.trim(),
+            })),
+          });
+          setDraft(null);
+        }}
+      >
+        {runtime.busy === "router" ? "Saving…" : "Save routing"}
+      </Button>
+    </div>
+  );
+
   return (
     <>
       <SettingsCard title="Model router">
-        <div className="divide-y divide-border/60">
-          <SettingsRow
-            label="Semantic routing"
-            htmlFor="routing-enabled"
-            description="Route each prompt to the right model."
-          >
-            <Switch
-              id="routing-enabled"
-              checked={view.enabled}
-              onCheckedChange={(checked) => patch({ enabled: checked })}
-              aria-label="Enable semantic model routing"
-            />
-          </SettingsRow>
-
-          <SettingsRow
-            label="Classifier model"
-            htmlFor="routing-classifier"
-            description="The small, fast model that categorizes each prompt."
-          >
-            <div className="w-52 min-[500px]:w-72">
-              <ModelSelect
-                id="routing-classifier"
-                value={view.classifierModel}
-                onChange={(next) => patch({ classifierModel: next })}
-                models={models}
-                placeholder="a small, fast model"
-              />
-            </div>
-          </SettingsRow>
-        </div>
-      </SettingsCard>
-
-      <SettingsCard title="Categories">
         <div className="flex flex-col gap-4">
-          {view.categories.length > 0 && view.categories.length < 8 && (
-            <div className="flex justify-end">
-              <Button
-                size="sm"
-                variant="outline"
-                className="rounded-full"
-                onClick={openAdd}
-              >
-                Add category
-              </Button>
-            </div>
-          )}
-
-          {view.categories.length === 0 ? (
-            <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed px-6 py-12 text-center">
-              <div className="flex size-11 items-center justify-center rounded-full bg-muted">
-                <Split className="size-5 text-muted-foreground" />
-              </div>
-              <div className="space-y-1">
-                <p className="text-sm font-medium">No categories yet</p>
-                <p className="max-w-sm text-sm text-muted-foreground">
-                  Routing needs at least two categories — say what belongs in
-                  each and which model should handle it.
-                </p>
-              </div>
-              <Button
-                size="sm"
-                variant="outline"
-                className="rounded-full"
-                onClick={openAdd}
-              >
-                Add category
-              </Button>
-            </div>
-          ) : (
-            <div className="divide-y overflow-hidden rounded-lg border">
-              {displayCategories.map((category) => {
-                const isDef = isDefault(category);
-                // Display names come from the live inventory (unfiltered —
-                // a disabled model still labels correctly); a model the
-                // daemon no longer reports falls back to its raw id, in
-                // mono because it IS an id.
-                const displayName = runtime.models.find(
-                  (model) => model.id === category.model,
-                )?.displayName;
-                return (
-                  <div
-                    key={category.key}
-                    className="flex items-center gap-3 px-4 py-3"
-                  >
-                    <div className="min-w-0 flex-1">
-                      <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
-                        <span className="truncate font-mono text-sm font-medium">
-                          {category.name || "(unnamed)"}
-                        </span>
-                        {category.model && (
-                          <Badge variant="outline" className="max-w-48">
-                            <span
-                              className={
-                                displayName ? "truncate" : "truncate font-mono"
-                              }
-                            >
-                              {displayName ?? category.model}
-                            </span>
-                          </Badge>
-                        )}
-                        {isDef && <Badge variant="info">default</Badge>}
-                      </span>
-                      <p className="line-clamp-2 text-xs text-muted-foreground">
-                        {category.description}
-                      </p>
-                    </div>
-                    <DropdownMenu modal={false}>
-                      <DropdownMenuTrigger asChild>
-                        <Button
-                          variant="ghost"
-                          size="icon"
-                          className="size-8 shrink-0"
-                          aria-label={`Actions for category ${category.name}`}
-                        >
-                          <Ellipsis className="size-4" />
-                        </Button>
-                      </DropdownMenuTrigger>
-                      <DropdownMenuContent align="end">
-                        <DropdownMenuItem
-                          disabled={isDef}
-                          onClick={() =>
-                            patch({
-                              defaultCategory: normalizeName(category.name),
-                            })
-                          }
-                        >
-                          Set as default
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          onClick={() => setEditor({ category })}
-                        >
-                          Edit
-                        </DropdownMenuItem>
-                        <DropdownMenuItem
-                          variant="destructive"
-                          onClick={() => removeCategory(category)}
-                        >
-                          Delete
-                        </DropdownMenuItem>
-                      </DropdownMenuContent>
-                    </DropdownMenu>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {/* The gate below always holds (the controller hard-rejects an
-              invalid config), but the message only nags while routing is
-              actually on. */}
-          {view.enabled && problem && (
-            <p className="text-sm text-destructive">{problem}</p>
-          )}
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {editing && (
-              <Button
-                variant="outline"
-                className="rounded-full"
-                onClick={() => setDraft(null)}
-              >
-                Discard changes
-              </Button>
-            )}
-            <Button
-              variant="action"
-              disabled={
-                !editing || problem !== null || runtime.busy === "router"
-              }
-              onClick={async () => {
-                await runtime.saveRouter({
-                  enabled: view.enabled,
-                  classifierModel: view.classifierModel.trim(),
-                  defaultCategory: view.defaultCategory.trim().toLowerCase(),
-                  categories: view.categories.map((category) => ({
-                    name: category.name.trim().toLowerCase(),
-                    description: category.description.trim(),
-                    model: category.model.trim(),
-                  })),
-                });
-                setDraft(null);
-              }}
+          <div className="divide-y divide-border/60">
+            <SettingsRow
+              label="Semantic routing"
+              htmlFor="routing-enabled"
+              description="Route each prompt to the right model."
             >
-              {runtime.busy === "router" ? "Saving…" : "Save routing"}
-            </Button>
+              <Switch
+                id="routing-enabled"
+                checked={view.enabled}
+                onCheckedChange={(checked) => patch({ enabled: checked })}
+                aria-label="Enable semantic model routing"
+              />
+            </SettingsRow>
+
+            {view.enabled && (
+              <SettingsRow
+                label="Classifier model"
+                htmlFor="routing-classifier"
+                description="The small, fast model that categorizes each prompt."
+              >
+                <div className="w-52 min-[500px]:w-72">
+                  <ModelSelect
+                    id="routing-classifier"
+                    value={view.classifierModel}
+                    onChange={(next) => patch({ classifierModel: next })}
+                    models={models}
+                    placeholder="a small, fast model"
+                  />
+                </div>
+              </SettingsRow>
+            )}
           </div>
+
+          {/* The controller validates the config unconditionally, so an
+              incomplete draft cannot persist even disabled — the gate holds
+              and this line says why the hidden fields still matter. */}
+          {!view.enabled && editing && problem && (
+            <p className="text-sm text-destructive">
+              Routing setup is incomplete, so it cannot be saved yet. {problem}
+            </p>
+          )}
+          {!view.enabled && editing && saveFooter}
         </div>
       </SettingsCard>
+
+      {view.enabled && (
+        <SettingsCard title="Categories">
+          <div className="flex flex-col gap-4">
+            {view.categories.length > 0 && view.categories.length < 8 && (
+              <div className="flex justify-end">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="rounded-full"
+                  onClick={openAdd}
+                >
+                  Add category
+                </Button>
+              </div>
+            )}
+
+            {view.categories.length === 0 ? (
+              <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed px-6 py-12 text-center">
+                <div className="flex size-11 items-center justify-center rounded-full bg-muted">
+                  <Split className="size-5 text-muted-foreground" />
+                </div>
+                <div className="space-y-1">
+                  <p className="text-sm font-medium">No categories yet</p>
+                  <p className="max-w-sm text-sm text-muted-foreground">
+                    Routing needs at least two categories — say what belongs in
+                    each and which model should handle it.
+                  </p>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="rounded-full"
+                  onClick={openAdd}
+                >
+                  Add category
+                </Button>
+              </div>
+            ) : (
+              <div className="divide-y overflow-hidden rounded-lg border">
+                {displayCategories.map((category) => {
+                  const isDef = isDefault(category);
+                  // Display names come from the live inventory (unfiltered —
+                  // a disabled model still labels correctly); a model the
+                  // daemon no longer reports falls back to its raw id, in
+                  // mono because it IS an id.
+                  const displayName = runtime.models.find(
+                    (model) => model.id === category.model,
+                  )?.displayName;
+                  return (
+                    <div
+                      key={category.key}
+                      className="flex items-center gap-3 px-4 py-3"
+                    >
+                      <div className="min-w-0 flex-1">
+                        <span className="flex flex-wrap items-center gap-x-2 gap-y-1">
+                          <span className="truncate font-mono text-sm font-medium">
+                            {category.name || "(unnamed)"}
+                          </span>
+                          {category.model && (
+                            <Badge variant="outline" className="max-w-48">
+                              <span
+                                className={
+                                  displayName
+                                    ? "truncate"
+                                    : "truncate font-mono"
+                                }
+                              >
+                                {displayName ?? category.model}
+                              </span>
+                            </Badge>
+                          )}
+                          {isDef && <Badge variant="info">default</Badge>}
+                        </span>
+                        <p className="line-clamp-2 text-xs text-muted-foreground">
+                          {category.description}
+                        </p>
+                      </div>
+                      <DropdownMenu modal={false}>
+                        <DropdownMenuTrigger asChild>
+                          <Button
+                            variant="ghost"
+                            size="icon"
+                            className="size-8 shrink-0"
+                            aria-label={`Actions for category ${category.name}`}
+                          >
+                            <Ellipsis className="size-4" />
+                          </Button>
+                        </DropdownMenuTrigger>
+                        <DropdownMenuContent align="end">
+                          <DropdownMenuItem
+                            disabled={isDef}
+                            onClick={() =>
+                              patch({
+                                defaultCategory: normalizeName(category.name),
+                              })
+                            }
+                          >
+                            Set as default
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            onClick={() => setEditor({ category })}
+                          >
+                            Edit
+                          </DropdownMenuItem>
+                          <DropdownMenuItem
+                            variant="destructive"
+                            onClick={() => removeCategory(category)}
+                          >
+                            Delete
+                          </DropdownMenuItem>
+                        </DropdownMenuContent>
+                      </DropdownMenu>
+                    </div>
+                  );
+                })}
+              </div>
+            )}
+
+            {/* The Save gate always holds (the controller hard-rejects an
+                invalid config); this card only exists while routing is on,
+                so the message never nags a disabled router. */}
+            {problem && <p className="text-sm text-destructive">{problem}</p>}
+            {saveFooter}
+          </div>
+        </SettingsCard>
+      )}
 
       {editor && (
         <CategoryDialog

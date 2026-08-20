@@ -115,7 +115,7 @@ export default function AppearanceSettingsPage() {
         >
           {/* Same footprint as the OptionField triggers so the control
               column lines up. */}
-          <div className="flex min-w-36 items-center justify-between gap-1">
+          <div className="flex w-44 items-center justify-between gap-1">
             <Button
               variant="outline"
               size="icon"
@@ -177,26 +177,28 @@ export default function AppearanceSettingsPage() {
                 : "Get a browser alert when a run or scheduled task finishes."
             }
           >
-            <Button
-              variant="outline"
-              className="rounded-full"
-              onClick={enableNotifications}
-              disabled={notifyPermission === "granted"}
-            >
-              <Bell className="size-4" />
-              {notifyPermission === "granted" ? "Enabled" : "Enable"}
-            </Button>
-            <Button
-              variant="outline"
-              size="icon"
-              className="size-9 rounded-full"
-              aria-label="Send a test notification"
-              title="Send a test notification"
-              onClick={sendTestNotification}
-              disabled={notifyPermission !== "granted"}
-            >
-              <BellRing className="size-4" />
-            </Button>
+            <div className="flex w-44 items-center gap-2">
+              <Button
+                variant="outline"
+                className="flex-1 rounded-full"
+                onClick={enableNotifications}
+                disabled={notifyPermission === "granted"}
+              >
+                <Bell className="size-4" />
+                {notifyPermission === "granted" ? "Enabled" : "Enable"}
+              </Button>
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-9 shrink-0 rounded-full"
+                aria-label="Send a test notification"
+                title="Send a test notification"
+                onClick={sendTestNotification}
+                disabled={notifyPermission !== "granted"}
+              >
+                <BellRing className="size-4" />
+              </Button>
+            </div>
           </SettingsRow>
         )}
       </div>
