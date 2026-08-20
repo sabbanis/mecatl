@@ -15,12 +15,12 @@ export const mdComponents: Components = {
   ),
   p: ({ children }) => <p className="my-0.5">{children}</p>,
   ul: ({ children }) => (
-    <ul className="my-2 ml-4 list-disc space-y-0.5 text-sm lg:text-[15px]">
+    <ul className="my-2 ml-4 list-disc space-y-0.5 text-sm leading-[1.75] lg:text-[15px]">
       {children}
     </ul>
   ),
   ol: ({ children }) => (
-    <ol className="my-2 ml-4 list-decimal space-y-0.5 text-sm lg:text-[15px]">
+    <ol className="my-2 ml-4 list-decimal space-y-0.5 text-sm leading-[1.75] lg:text-[15px]">
       {children}
     </ol>
   ),

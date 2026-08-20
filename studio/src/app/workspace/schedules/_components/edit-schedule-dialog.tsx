@@ -51,7 +51,7 @@ export function EditScheduleDialog({
       onOpenChange={(open) => {
         if (!open) onClose();
       }}
-      title={`Edit ${row.name}`}
+      title="Edit Schedule"
       submitLabel="Save changes"
       submittingLabel="Saving…"
       initialValue={() => formFromDraft(storedDraft)}

@@ -10,7 +10,6 @@ import {
   SelectTrigger,
   SelectValue,
 } from "@/components/ui/select";
-import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import {
@@ -194,32 +193,11 @@ function localDate(d: Date): string {
   const pad = (n: number) => String(n).padStart(2, "0");
   return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
 }
-function localTime(d: Date): string {
-  const pad = (n: number) => String(n).padStart(2, "0");
-  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-}
 
 /** Compose the datetime-local string, defaulting the missing half sensibly. */
 function joinOneShot(date: string, time: string): string {
   if (!date && !time) return "";
   return `${date || localDate(new Date())}T${time || "09:00"}`;
-}
-
-/** One-click fills for the common "run once" cases. */
-function oneShotPresets(): { label: string; at: string }[] {
-  const inOneHour = new Date(Date.now() + 60 * 60 * 1000);
-  const tonight = new Date();
-  tonight.setHours(18, 0, 0, 0);
-  if (tonight.getTime() < Date.now()) tonight.setDate(tonight.getDate() + 1);
-  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
-  return [
-    {
-      label: "In 1 hour",
-      at: `${localDate(inOneHour)}T${localTime(inOneHour)}`,
-    },
-    { label: "Tonight 18:00", at: `${localDate(tonight)}T18:00` },
-    { label: "Tomorrow 09:00", at: `${localDate(tomorrow)}T09:00` },
-  ];
 }
 
 export function ScheduleFormFields({
@@ -284,27 +262,6 @@ export function ScheduleFormFields({
               cron={value.cron}
               onCronChange={(cron) => onChange({ cron })}
             />
-            <div className="space-y-3">
-              <Label htmlFor="schedule-timezone">Timezone (IANA)</Label>
-              <Input
-                id="schedule-timezone"
-                value={value.timezone}
-                onChange={(e) => onChange({ timezone: e.target.value })}
-                placeholder="Europe/London"
-              />
-            </div>
-            <div className="space-y-3">
-              <Label htmlFor="schedule-max-fires">Max runs</Label>
-              <Input
-                id="schedule-max-fires"
-                type="number"
-                min={0}
-                value={value.maxFires}
-                onChange={(e) => onChange({ maxFires: e.target.value })}
-                placeholder="unlimited"
-                className="w-[130px]"
-              />
-            </div>
           </div>
         ) : (
           <div className="space-y-3">
@@ -333,97 +290,20 @@ export function ScheduleFormFields({
                   aria-label="Time"
                   type="time"
                   value={oneShotParts(value.oneShotAt).time}
-                  onChange={(e) =>
+                  onChange={(e) => {
+                    if (!e.target.value) return;
                     onChange({
                       oneShotAt: joinOneShot(
                         oneShotParts(value.oneShotAt).date,
                         e.target.value,
                       ),
-                    })
-                  }
+                    });
+                  }}
                   className="w-fit"
                   required
                 />
               </div>
-              <div className="flex flex-wrap gap-1.5">
-                {oneShotPresets().map((preset) => (
-                  <button
-                    key={preset.label}
-                    type="button"
-                    onClick={() => onChange({ oneShotAt: preset.at })}
-                    className="h-7 rounded-full border px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
-                  >
-                    {preset.label}
-                  </button>
-                ))}
-              </div>
             </div>
-            <div className="flex items-center justify-between rounded-lg border px-3 py-2.5">
-              <div className="space-y-0.5">
-                <Label htmlFor="schedule-one-shot-retry">
-                  Retry on failure
-                </Label>
-              </div>
-              <div className="flex items-center gap-3">
-                {value.oneShotRetry && (
-                  <Input
-                    aria-label="Max retries"
-                    type="number"
-                    min={0}
-                    value={value.oneShotMaxRetries}
-                    onChange={(e) =>
-                      onChange({ oneShotMaxRetries: e.target.value })
-                    }
-                    className="w-[80px]"
-                  />
-                )}
-                <Switch
-                  id="schedule-one-shot-retry"
-                  checked={value.oneShotRetry}
-                  onCheckedChange={(checked) =>
-                    onChange({ oneShotRetry: checked })
-                  }
-                />
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-
-      <div className="space-y-3 rounded-lg border px-3 py-2.5">
-        <div className="flex items-center justify-between">
-          <div className="space-y-0.5">
-            <Label htmlFor="schedule-allow-writes">
-              Allow file and shell writes
-            </Label>
-          </div>
-          <Switch
-            id="schedule-allow-writes"
-            checked={value.allowWrites}
-            onCheckedChange={(checked) => onChange({ allowWrites: checked })}
-          />
-        </div>
-        {value.allowWrites && (
-          <div className="space-y-2">
-            <Label htmlFor="schedule-write-mode">Permission mode</Label>
-            <Select
-              value={value.writeMode}
-              onValueChange={(v) =>
-                onChange({ writeMode: v as ScheduleFormValue["writeMode"] })
-              }
-            >
-              <SelectTrigger id="schedule-write-mode" className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value="accept_edits">
-                  Accept edits — file edits proceed without approval
-                </SelectItem>
-                <SelectItem value="default">
-                  Default — standard permission rules apply
-                </SelectItem>
-              </SelectContent>
-            </Select>
           </div>
         )}
       </div>
@@ -491,7 +371,7 @@ function CronBuilderFields({
   return (
     <div className="space-y-3">
       <div className="flex flex-wrap gap-3">
-        <div className="min-w-[130px] flex-1 space-y-2">
+        <div className="min-w-[130px] flex-1 space-y-3">
           <Label htmlFor="schedule-repeat">Repeat</Label>
           <Select
             value={repeat}
@@ -519,7 +399,7 @@ function CronBuilderFields({
         </div>
 
         {repeat === "weekly" && (
-          <div className="min-w-[130px] flex-1 space-y-2">
+          <div className="min-w-[130px] flex-1 space-y-3">
             <Label htmlFor="schedule-weekday">On</Label>
             <Select
               value={String(parsed.weekday)}
@@ -540,7 +420,7 @@ function CronBuilderFields({
         )}
 
         {repeat === "monthly" && (
-          <div className="min-w-[130px] flex-1 space-y-2">
+          <div className="min-w-[130px] flex-1 space-y-3">
             <Label htmlFor="schedule-monthday">On the</Label>
             <Select
               value={String(parsed.monthday)}
@@ -561,20 +441,24 @@ function CronBuilderFields({
         )}
 
         {repeat !== "custom" && (
-          <div className="w-[120px] space-y-2">
+          <div className="w-[120px] space-y-3">
             <Label htmlFor="schedule-time">At</Label>
             <Input
               id="schedule-time"
               type="time"
               value={parsed.time}
-              onChange={(e) => rebuild({ time: e.target.value })}
+              onChange={(e) => {
+                // Segment editing fires transient empty values; rebuilding on
+                // those snaps the field back to the default mid-edit.
+                if (e.target.value) rebuild({ time: e.target.value });
+              }}
             />
           </div>
         )}
       </div>
 
       {repeat === "custom" && (
-        <div className="space-y-2">
+        <div className="space-y-3">
           <Label htmlFor="schedule-cron">Cron expression</Label>
           <Input
             id="schedule-cron"
