@@ -2,7 +2,7 @@ import type { AgentMessage, AgentSession } from "./types";
 
 /**
  * The Labs "mock features" tour: a single synthetic, clearly-labeled chat
- * demonstrating file cards, canvas previews, attachment chips, and threads.
+ * demonstrating file cards, canvas previews, and attachment chips.
  * Everything in this module is browser-local demo content — the session id
  * must NEVER reach the daemon (the chat workspace nulls the hook id for it),
  * and the tour renders only while the Labs toggle is on. This is the one
@@ -88,7 +88,7 @@ export class Logger {
 const MIGRATION_NOTES_MD = `# Auth migration notes
 
 Moving token verification from \`jsonwebtoken\` to \`jose\`. This is the
-working plan — comment in the thread if a step looks off.
+working plan — flag anything that looks off.
 
 ## Why
 
@@ -295,29 +295,8 @@ export const MOCK_TOUR_MESSAGES: AgentMessage[] = [
     id: "mock-6",
     role: "assistant",
     content:
-      "That's the whole tour: file cards open in the canvas panel, attachment chips preview in place, and this message carries a thread — open the replies below.",
+      "That's the whole tour: file cards open in the canvas panel and attachment chips preview in place. Threads are the real thing — start one from any message's reply action.",
     timestamp: minutesAgo(20),
-    replies: [
-      {
-        id: "mock-6-r1",
-        role: "user",
-        content: "Do we keep the 5s clock-tolerance allowance?",
-        timestamp: minutesAgo(18),
-      },
-      {
-        id: "mock-6-r2",
-        role: "assistant",
-        content:
-          "Yes — jose takes `clockTolerance: 5` in the verify options, so it carries over unchanged.",
-        timestamp: minutesAgo(17),
-      },
-      {
-        id: "mock-6-r3",
-        role: "user",
-        content: "Great, ship step 1 behind the flag then.",
-        timestamp: minutesAgo(15),
-      },
-    ],
   },
 ];
 

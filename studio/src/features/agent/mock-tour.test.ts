@@ -57,13 +57,10 @@ describe("mock feature tour", () => {
     expect(image?.url ?? image?.content).toMatch(/^data:image\//);
   });
 
-  it("carries a threaded assistant message with canned replies", () => {
-    const threaded = MOCK_TOUR_MESSAGES.find(
-      (m) => (m.replies?.length ?? 0) > 0,
-    );
-    expect(threaded).toBeDefined();
-    expect(threaded?.role).toBe("assistant");
-    expect(threaded?.replies?.length).toBeGreaterThanOrEqual(2);
+  it("carries no canned thread — threads are the real feature now", () => {
+    expect(
+      MOCK_TOUR_MESSAGES.every((m) => (m.replies?.length ?? 0) === 0),
+    ).toBe(true);
   });
 
   it("keeps the embedded PDF tiny", () => {
