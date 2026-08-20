@@ -115,12 +115,17 @@ function StreamingIndicator({ message }: { message?: AgentMessage }) {
       : `${elapsed}s`;
 
   return (
-    <div className="flex items-center gap-3 px-3 py-2">
-      <span className="flex items-center gap-1" aria-hidden="true">
+    // Mirrors the message-row geometry (avatar column + gap) so the label
+    // lines up with message text; the dots sit centered in the avatar slot.
+    <div className="flex items-center gap-2 py-2 lg:gap-3">
+      <span
+        className="flex w-7 shrink-0 items-center justify-center gap-0.5 lg:w-9"
+        aria-hidden="true"
+      >
         {[0, 1, 2].map((i) => (
           <span
             key={i}
-            className="size-1.5 animate-[thinking-bounce_0.9s_infinite] rounded-full bg-brand"
+            className="size-1 animate-[thinking-bounce_0.9s_infinite] rounded-full bg-brand"
             style={{ animationDelay: `${i * 160}ms` }}
           />
         ))}
