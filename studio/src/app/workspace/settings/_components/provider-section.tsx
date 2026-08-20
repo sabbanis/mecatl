@@ -94,7 +94,6 @@ export function ProviderSection({
   const [removing, setRemoving] = useState<HarnessProviderInfo | null>(null);
   // Mock is the fallback the daemon runs on whenever no real provider is
   // active, so status.isMock IS "no provider is active" here.
-  const unconfigured = status?.isMock ?? false;
 
   const modelsFor = (name: string) =>
     runtime.models.filter((model) => model.providerId === name).length;
@@ -115,48 +114,12 @@ export function ProviderSection({
       ) : status === null ? (
         <Note>Reading the controller&rsquo;s status…</Note>
       ) : (
-        <div className="flex flex-col gap-4">
-          <div className="divide-y divide-border/60">
-            <SettingsRow
-              label={
-                <span className="font-mono">
-                  {status.provider || "unknown"}
-                </span>
-              }
-              description={`${runtime.models.length} model${
-                runtime.models.length === 1 ? "" : "s"
-              } available to the agent`}
-            >
-              <Badge variant={status.running ? "default" : "secondary"}>
-                {status.running ? "running" : "stopped"}
-              </Badge>
-              {runtime.mode !== "external" && !unconfigured && (
-                <Button
-                  size="sm"
-                  variant="outline"
-                  className="h-7"
-                  disabled={management.busy === "activate:mock"}
-                  onClick={() => void activateProvider("mock")}
-                >
-                  {management.busy === "activate:mock"
-                    ? "Switching…"
-                    : "Switch to mock"}
-                </Button>
-              )}
-            </SettingsRow>
-
-            {runtime.mode !== "external" && (
-              <SettingsRow
-                label="Configured providers"
-                description={
-                  <>
-                    In{" "}
-                    <code className="font-mono">
-                      {status.authFile || "~/.config/mecatl/auth.yaml"}
-                    </code>
-                  </>
-                }
-              >
+        <div className="flex flex-col gap-3">
+          {runtime.mode === "external" ? (
+            <ExternalManagedNote />
+          ) : (
+            <>
+              <div className="flex justify-end">
                 <AddProviderDialog
                   known={management.known}
                   configured={management.providers.map((p) => p.name)}
@@ -165,14 +128,7 @@ export function ProviderSection({
                   restartDaemon={management.restartDaemon}
                   restarting={management.busy === "restart"}
                 />
-              </SettingsRow>
-            )}
-          </div>
-
-          {runtime.mode === "external" ? (
-            <ExternalManagedNote />
-          ) : (
-            <>
+              </div>
               {management.error && (
                 <p className="whitespace-pre-wrap text-sm text-destructive">
                   {management.error}
@@ -184,43 +140,28 @@ export function ProviderSection({
                 </p>
               )}
 
-              {management.providers.length === 0 ? (
-                <Note>
-                  No provider blocks found
-                  {management.isLoading ? " yet…" : "."}{" "}
-                  {!management.isLoading &&
-                    "Add one to move off the offline mock."}
-                </Note>
-              ) : (
-                <ul className="divide-y overflow-hidden rounded-lg border">
-                  {management.providers.map((row) => (
-                    <ProviderRow
-                      key={row.name}
-                      row={row}
-                      active={row.name === status.selectedProvider}
-                      modelCount={modelsFor(row.name)}
-                      health={management.health[row.name]}
-                      busy={management.busy}
-                      onTest={() => void management.testKey(row.name)}
-                      onActivate={() => void activateProvider(row.name)}
-                      onRemove={() => setRemoving(row)}
-                    />
-                  ))}
-                </ul>
-              )}
-
-              {unconfigured && management.providers.length > 0 && (
-                <Note>
-                  No provider is active. Pick &ldquo;Set as active&rdquo; from a
-                  provider&rsquo;s menu above to switch to it.
-                </Note>
-              )}
-              {unconfigured && management.providers.length === 0 && (
-                <Note>
-                  No provider is active. Add a provider above to move off the
-                  offline mock.
-                </Note>
-              )}
+              <ul className="divide-y overflow-hidden rounded-lg border">
+                {management.providers.map((row) => (
+                  <ProviderRow
+                    key={row.name}
+                    row={row}
+                    active={row.name === status.selectedProvider}
+                    running={status.running}
+                    modelCount={modelsFor(row.name)}
+                    health={management.health[row.name]}
+                    busy={management.busy}
+                    onTest={() => void management.testKey(row.name)}
+                    onActivate={() => void activateProvider(row.name)}
+                    onRemove={() => setRemoving(row)}
+                  />
+                ))}
+                <MockProviderRow
+                  active={status.isMock}
+                  running={status.running}
+                  busy={management.busy}
+                  onActivate={() => void activateProvider("mock")}
+                />
+              </ul>
             </>
           )}
         </div>
@@ -268,9 +209,70 @@ export function ProviderSection({
  * whole row is a Link so click-through works everywhere; kebab clicks stop
  * propagation.
  */
+/**
+ * The offline mock is built into the daemon — no key, no auth.yaml block —
+ * but it IS a provider you can switch to, so it lists like one.
+ */
+function MockProviderRow({
+  active,
+  running,
+  busy,
+  onActivate,
+}: {
+  active: boolean;
+  running: boolean;
+  busy: string;
+  onActivate: () => void;
+}) {
+  const activating = busy === "activate:mock";
+  return (
+    <li className="flex items-center gap-3 px-4 py-3">
+      <span
+        aria-hidden="true"
+        className="size-2 shrink-0 rounded-full bg-muted-foreground/50"
+      />
+      <div className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-x-2">
+          <span className="truncate font-mono text-sm font-medium">mock</span>
+          {active && <Badge variant="info">active</Badge>}
+          {active && (
+            <Badge variant={running ? "default" : "secondary"}>
+              {running ? "running" : "stopped"}
+            </Badge>
+          )}
+        </span>
+        <span className="block truncate text-xs text-muted-foreground">
+          built in · canned replies, no key needed
+        </span>
+      </div>
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 shrink-0"
+            aria-label="Actions for the offline mock"
+          >
+            <Ellipsis className="size-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            disabled={active || activating}
+            onClick={onActivate}
+          >
+            {activating ? "Switching…" : "Set as active"}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </li>
+  );
+}
+
 function ProviderRow({
   row,
   active,
+  running,
   modelCount,
   health,
   busy,
@@ -280,6 +282,7 @@ function ProviderRow({
 }: {
   row: HarnessProviderInfo;
   active: boolean;
+  running: boolean;
   modelCount: number;
   health: ProviderKeyHealth | undefined;
   busy: string;
@@ -306,6 +309,11 @@ function ProviderRow({
             {row.name}
           </span>
           {active && <Badge variant="info">active</Badge>}
+          {active && (
+            <Badge variant={running ? "default" : "secondary"}>
+              {running ? "running" : "stopped"}
+            </Badge>
+          )}
         </span>
         <span
           className="block truncate text-xs text-muted-foreground"

@@ -312,7 +312,7 @@ export function useAgentChat(
       setError(null);
       lastPromptRef.current = content;
 
-      const assistantId = `assistant-${Date.now()}`;
+      let assistantId = `assistant-${Date.now()}`;
       setMessages((prev) => [
         ...prev,
         {
@@ -413,8 +413,10 @@ export function useAgentChat(
                 break;
               case "steer":
                 // The daemon drained the pending steer bundle into the run:
-                // show the merged text as a user turn and drop every pending
-                // steer up to and including the watermark id.
+                // show the merged text as a user turn, then SPLIT the stream —
+                // a fresh assistant bubble takes every later token, so the
+                // reply to the injected message renders below it instead of
+                // the pre-steer bubble growing above it.
                 if (event.text) {
                   const echo: AgentMessage = {
                     id: `steer-echo-${Date.now()}`,
@@ -422,7 +424,18 @@ export function useAgentChat(
                     content: event.text,
                     timestamp: Date.now(),
                   };
-                  setMessages((prev) => [...prev, echo]);
+                  const nextAssistantId = `assistant-${Date.now() + 1}`;
+                  assistantId = nextAssistantId;
+                  setMessages((prev) => [
+                    ...prev,
+                    echo,
+                    {
+                      id: nextAssistantId,
+                      role: "assistant",
+                      content: "",
+                      timestamp: Date.now() + 1,
+                    },
+                  ]);
                 }
                 setPendingSteers((prev) =>
                   splitPendingSteersOnWatermark(prev, event.messageId),
