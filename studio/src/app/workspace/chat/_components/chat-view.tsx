@@ -67,6 +67,7 @@ import {
   syncThreadActivity,
   threadKeyForMessage,
   threadTitleFromRoot,
+  unregisterThreadSession,
   useThreadMap,
 } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
@@ -353,6 +354,7 @@ function ThreadPanel({
   rootMessage,
   botName,
   onClose,
+  onConvertToChat,
   maximized,
   onToggleMaximize,
   windowControls,
@@ -361,10 +363,13 @@ function ThreadPanel({
   rootMessage: AgentMessage;
   botName: string;
   onClose: () => void;
+  /** Detach the thread and open its session as an ordinary chat. */
+  onConvertToChat?: (threadSessionId: string) => void;
   maximized: boolean;
   onToggleMaximize: () => void;
   windowControls?: boolean;
 }) {
+  const [showTools, setShowTools] = useState(false);
   const rootKey = threadKeyForMessage(rootMessage);
   // The persisted thread session, when this root message already has one —
   // the hook rehydrates its transcript. A session minted DURING this panel's
@@ -491,6 +496,36 @@ function ThreadPanel({
       onClose={onClose}
       minWidth={340}
       windowControls={windowControls}
+      headerExtra={
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 text-muted-foreground"
+              aria-label="Thread options"
+            >
+              <Ellipsis className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setShowTools((v) => !v)}>
+              {showTools ? "Hide Tools" : "Show Tools"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!onConvertToChat}
+              onClick={() => {
+                const threadId = threadIdRef.current;
+                if (!threadId || !onConvertToChat) return;
+                unregisterThreadSession(parentSessionId, threadId);
+                onConvertToChat(threadId);
+              }}
+            >
+              Open as full chat
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      }
     >
       {/* Body: root message, live replies, composer */}
       <div className="relative flex-1 min-h-0">
@@ -509,7 +544,12 @@ function ThreadPanel({
             </div>
           )}
           {replies.map((reply) => (
-            <MessageBubble key={reply.id} message={reply} botName={botName} />
+            <MessageBubble
+              key={reply.id}
+              message={reply}
+              botName={botName}
+              showActivity={showTools}
+            />
           ))}
           {pendingApproval && (
             <ApprovalPanel
@@ -774,6 +814,7 @@ export function ChatView({
   onInitialDraftConsumed,
   queuedMessages = [],
   onQueueMessage,
+  onOpenSession,
   onSteerQueued,
   onDeleteQueued,
   onTakeQueued,
@@ -813,6 +854,8 @@ export function ChatView({
   /** Messages held while a run is active (see QueuedMessageStrip). */
   queuedMessages?: QueuedMessage[];
   onQueueMessage?: (text: string) => void;
+  /** Open a session as the main chat (thread → full chat conversion). */
+  onOpenSession?: (sessionId: string) => void;
   onSteerQueued?: (id: string) => void;
   onDeleteQueued?: (id: string) => void;
   /** Removes a queued message and returns its text (the Edit action). */
@@ -889,6 +932,14 @@ export function ChatView({
       });
     },
     [releasePreviewUrl],
+  );
+
+  const handleConvertThread = useCallback(
+    (threadSessionId: string) => {
+      setPanel(null);
+      onOpenSession?.(threadSessionId);
+    },
+    [onOpenSession],
   );
 
   const handleStartThread = useCallback(
@@ -1192,6 +1243,7 @@ export function ChatView({
           parentSessionId={session.id}
           botName={botName}
           onClose={closeSidePanel}
+          onConvertToChat={handleConvertThread}
           maximized={panelMaximized}
           onToggleMaximize={toggleMaximize}
         />
@@ -1220,6 +1272,7 @@ export function ChatView({
                 parentSessionId={session.id}
                 botName={botName}
                 onClose={closeSidePanel}
+                onConvertToChat={handleConvertThread}
                 maximized
                 onToggleMaximize={() => {}}
                 windowControls={false}
@@ -1238,6 +1291,7 @@ function SidePanelForKind({
   parentSessionId,
   botName,
   onClose,
+  onConvertToChat,
   maximized,
   onToggleMaximize,
   windowControls,
@@ -1246,6 +1300,7 @@ function SidePanelForKind({
   parentSessionId: string;
   botName: string;
   onClose: () => void;
+  onConvertToChat?: (threadSessionId: string) => void;
   maximized: boolean;
   onToggleMaximize: () => void;
   windowControls?: boolean;
@@ -1275,6 +1330,7 @@ function SidePanelForKind({
           parentSessionId={parentSessionId}
           rootMessage={panel.message}
           botName={botName}
+          onConvertToChat={onConvertToChat}
           {...shared}
         />
       );

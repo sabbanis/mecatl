@@ -276,6 +276,31 @@ export function registerThreadSession(
 }
 
 /**
+ * Detaches a thread from its root message — the "convert to a full chat"
+ * path: the id leaves the flat registry (so the sidebar shows it) and the
+ * per-parent record goes (so the reply indicator does too). The session
+ * itself is untouched; it was always a real daemon session.
+ */
+export function unregisterThreadSession(
+  parentSessionId: string,
+  threadSessionId: string,
+) {
+  const ids = readThreadSessionIds();
+  if (ids.delete(threadSessionId)) {
+    writeStorage(SESSIONS_KEY, JSON.stringify([...ids]));
+  }
+  const map = readThreadMap(parentSessionId);
+  let changed = false;
+  for (const [key, record] of Object.entries(map)) {
+    if (record.sessionId === threadSessionId) {
+      delete map[key];
+      changed = true;
+    }
+  }
+  if (changed || ids.size >= 0) writeThreadMap(parentSessionId, map);
+}
+
+/**
  * Mirrors the thread's observed activity into the map. Set semantics for the
  * count — the caller derives it from the authoritative reply list, so it
  * self-heals on rehydration — while lastReplyAt only ever advances, because

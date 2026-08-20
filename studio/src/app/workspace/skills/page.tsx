@@ -276,7 +276,7 @@ export default function WorkspaceSkillsPage() {
                           label="Name"
                           sortKey="name"
                           sort={sort}
-                          className="w-[280px] lg:w-[320px]"
+                          className="w-px whitespace-nowrap"
                         />
                         <SortableHead
                           label="Description"
@@ -421,7 +421,7 @@ function SkillTableRow({
       className={cn("cursor-pointer", !row.enabled && "opacity-60")}
       onClick={() => router.push(href)}
     >
-      <TableCell className="max-w-0">
+      <TableCell className="w-px max-w-[360px] whitespace-nowrap pr-6">
         <Link
           href={href}
           className="block truncate text-sm font-medium hover:underline"
@@ -433,7 +433,7 @@ function SkillTableRow({
           {row.name}
         </p>
       </TableCell>
-      <TableCell className="max-w-0">
+      <TableCell className="w-full max-w-0">
         <p className="line-clamp-1 whitespace-normal text-xs text-muted-foreground">
           {row.description}
         </p>

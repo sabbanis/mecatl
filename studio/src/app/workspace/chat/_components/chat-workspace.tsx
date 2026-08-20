@@ -673,6 +673,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onSend={sendMessage}
           queuedMessages={queuedMessages}
           onQueueMessage={queueMessage}
+          onOpenSession={handleSelectSession}
           onSteerQueued={steerQueued}
           onDeleteQueued={deleteQueued}
           onTakeQueued={takeQueued}
