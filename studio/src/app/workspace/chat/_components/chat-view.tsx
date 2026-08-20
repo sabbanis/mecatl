@@ -136,7 +136,7 @@ function StreamingIndicator({ message }: { message?: AgentMessage }) {
           />
         ))}
       </span>
-      <span className="text-sm text-muted-foreground">
+      <span className="text-sm text-muted-foreground lg:text-[15px]">
         {phase}
         <span className="mx-1.5 text-muted-foreground/50">·</span>
         <span className="tabular-nums text-muted-foreground/70">{time}</span>

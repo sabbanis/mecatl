@@ -1,6 +1,13 @@
 "use client";
 
-import { Loader2, PanelLeft, PanelRight, SquarePen } from "lucide-react";
+import {
+  ChevronDown,
+  FolderPlus,
+  Loader2,
+  PanelLeft,
+  PanelRight,
+  SquarePen,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -95,6 +102,51 @@ function groupSessionsByRecency(
     .map((l) => ({ label: l, sessions: buckets[l] }));
 }
 
+/** How many chats the mock-mode "Chat" group shows before "Show more". */
+const mockModeChatCap = 7;
+
+/**
+ * Mock mode's flattened chat list: every real session under one "Chat"
+ * header (the date groups return when mock features are off), capped at
+ * mockModeChatCap rows with a Show-more expander so the demo's Projects
+ * section stays above the fold.
+ */
+function MockModeChatGroup({
+  sessions,
+  selectedId,
+  onSelect,
+  actions,
+}: {
+  sessions: AgentSession[];
+  selectedId: string;
+  onSelect: (id: string) => void;
+  actions: SessionActions;
+}) {
+  const [showAll, setShowAll] = useState(false);
+  const visible = showAll ? sessions : sessions.slice(0, mockModeChatCap);
+  const hidden = sessions.length - visible.length;
+  return (
+    <SidebarGroup label="Chat">
+      <SessionList
+        sessions={visible}
+        selectedId={selectedId}
+        onSelect={onSelect}
+        actions={actions}
+      />
+      {hidden > 0 && (
+        <button
+          type="button"
+          onClick={() => setShowAll(true)}
+          className="flex w-full items-center gap-2 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left text-[0.85rem] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+        >
+          <ChevronDown className="size-4 shrink-0" />
+          Show {hidden} more
+        </button>
+      )}
+    </SidebarGroup>
+  );
+}
+
 function SidebarContent({
   onNewChat,
   isLoading,
@@ -137,6 +189,23 @@ function SidebarContent({
           </TooltipTrigger>
           <TooltipContent side="bottom">New chat</TooltipContent>
         </Tooltip>
+        {/* Part of the Labs mock Projects demo: presentational only — there
+            is no project system to create into, so the button is inert. */}
+        {showMockProjects && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0 text-muted-foreground"
+                aria-label="New project"
+              >
+                <FolderPlus className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">New project</TooltipContent>
+          </Tooltip>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto py-3">
@@ -145,38 +214,50 @@ function SidebarContent({
             {error}
           </p>
         )}
+        {/* The Labs mock Projects section leads the list: local demo
+            content, never daemon rows — same gate and labeling discipline
+            as the mock tour group. */}
+        {!isLoading && showMockProjects && (
+          <SidebarGroup label="Projects">
+            <MockProjectList />
+          </SidebarGroup>
+        )}
         {isLoading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="size-5 animate-spin text-muted-foreground" />
           </div>
         ) : groups.length > 0 ? (
-          <div className="flex flex-col gap-3">
-            {groups.map((group) => (
-              <SidebarGroup key={group.label} label={group.label}>
-                <SessionList
-                  sessions={group.sessions}
-                  selectedId={selectedId}
-                  onSelect={onSelect}
-                  actions={actions}
-                />
-              </SidebarGroup>
-            ))}
-          </div>
+          showMockProjects ? (
+            // Mock mode flattens the date groups under one "Chat" header so
+            // the demo's Projects/Chat split reads like the reference UI.
+            <div className="pt-3">
+              <MockModeChatGroup
+                sessions={groups.flatMap((group) => group.sessions)}
+                selectedId={selectedId}
+                onSelect={onSelect}
+                actions={actions}
+              />
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {groups.map((group) => (
+                <SidebarGroup key={group.label} label={group.label}>
+                  <SessionList
+                    sessions={group.sessions}
+                    selectedId={selectedId}
+                    onSelect={onSelect}
+                    actions={actions}
+                  />
+                </SidebarGroup>
+              ))}
+            </div>
+          )
         ) : (
           !error && (
             <p className="text-center text-sm text-muted-foreground/50 py-8">
               No chats yet
             </p>
           )
-        )}
-        {/* The Labs mock Projects section: local demo content, never daemon
-            rows — same gate and labeling discipline as the mock tour group. */}
-        {!isLoading && showMockProjects && (
-          <div className={groups.length > 0 ? "pt-3" : undefined}>
-            <SidebarGroup label="Projects">
-              <MockProjectList />
-            </SidebarGroup>
-          </div>
         )}
         {!isLoading && agents.length > 0 && (
           <div

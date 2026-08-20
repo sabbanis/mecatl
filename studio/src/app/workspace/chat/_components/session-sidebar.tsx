@@ -458,8 +458,22 @@ const mockProjectOpenStore = new Map<string, boolean>([
  */
 function MockProjectChatRow({ chat }: { chat: MockProjectChat }) {
   return (
-    <div className="group flex items-center border-l-[3px] border-transparent py-1.5 pr-3 pl-8 transition-colors hover:bg-accent">
-      <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground group-hover:text-foreground select-none">
+    <div
+      className={cn(
+        "group flex items-center border-l-[3px] py-1.5 pr-3 pl-8 transition-colors",
+        chat.selected
+          ? "border-brand bg-brand/10"
+          : "border-transparent hover:bg-accent",
+      )}
+    >
+      <span
+        className={cn(
+          "min-w-0 flex-1 truncate text-[0.85rem] font-medium select-none",
+          chat.selected
+            ? "text-brand-ink"
+            : "text-muted-foreground group-hover:text-foreground",
+        )}
+      >
         {chat.title}
       </span>
       <span className="ml-2 flex w-8 shrink-0 items-center justify-center">
@@ -479,11 +493,14 @@ function MockProjectChatRow({ chat }: { chat: MockProjectChat }) {
   );
 }
 
-/** A collapsible mock project folder; clicking the row toggles it open. */
+/** A collapsible mock project folder; clicking the row toggles it open.
+ *  The green treatment marks the project holding the SELECTED chat, never
+ *  mere openness — an open project without the active chat stays plain. */
 function MockProjectItem({ project }: { project: MockProject }) {
   const [open, setOpenState] = useState(
     () => mockProjectOpenStore.get(project.id) ?? false,
   );
+  const active = open && project.chats.some((chat) => chat.selected);
   const toggle = () =>
     setOpenState((prev) => {
       const next = !prev;
@@ -500,20 +517,25 @@ function MockProjectItem({ project }: { project: MockProject }) {
         aria-label={`${open ? "Collapse" : "Expand"} project: ${project.name}`}
         className={cn(
           "group flex items-center gap-2 border-l-[3px] py-2 pr-3 pl-3 text-left transition-colors",
-          open
+          active
             ? "border-brand bg-brand/10"
             : "border-transparent hover:bg-accent",
         )}
       >
         {open ? (
-          <FolderOpen className="size-4 shrink-0 text-brand-ink" />
+          <FolderOpen
+            className={cn(
+              "size-4 shrink-0",
+              active ? "text-brand-ink" : "text-muted-foreground",
+            )}
+          />
         ) : (
           <FolderClosed className="size-4 shrink-0 text-muted-foreground" />
         )}
         <span
           className={cn(
             "min-w-0 flex-1 truncate text-[0.85rem] font-medium select-none",
-            open
+            active
               ? "text-brand-ink"
               : "text-muted-foreground group-hover:text-foreground",
           )}
