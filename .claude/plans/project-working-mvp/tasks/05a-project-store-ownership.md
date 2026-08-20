@@ -2,7 +2,7 @@
 id: 05a-project-store-ownership
 title: Owner-aware atomic Project-store operations
 blocked_by: [04-project-contract-wiring]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "620"
