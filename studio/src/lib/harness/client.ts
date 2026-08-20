@@ -632,7 +632,9 @@ export interface HarnessControlStatus {
    * owns the file server-side); no key value ever crosses this boundary.
    */
   configuredProviders: string[];
-  /** Which of those MECATL_STUDIO_PROVIDER currently selects, if set. */
+  /** Which provider is active right now — "mock", "toolhive", or one of
+   *  `configuredProviders` — seeded from MECATL_STUDIO_PROVIDER at startup
+   *  but changeable at runtime via setActiveHarnessProvider. */
   selectedProvider: string | null;
   /** The auth.yaml path on the controller's machine (guided-add copy). */
   authFile: string;
@@ -906,6 +908,31 @@ export async function removeHarnessProvider(name: string): Promise<void> {
 export async function restartHarnessDaemon(): Promise<void> {
   const response = await fetch(`${CONTROL_API}/restart`, { method: "POST" });
   if (!response.ok) throw new Error(await readError(response));
+}
+
+/**
+ * Switches the daemon's active provider — "mock", "toolhive", or any name
+ * already configured in auth.yaml — and restarts it on the spot. This is the
+ * live equivalent of setting MECATL_STUDIO_PROVIDER and restarting `npm run
+ * dev`: no credential travels with the request, only the chosen name.
+ */
+export async function setActiveHarnessProvider(
+  kind: string,
+): Promise<{ provider: string; selectedProvider: string | null }> {
+  const response = await fetch(`${CONTROL_API}/providers/active`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ kind }),
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as {
+    provider?: string;
+    selectedProvider?: string | null;
+  };
+  return {
+    provider: body.provider ?? "",
+    selectedProvider: body.selectedProvider ?? null,
+  };
 }
 
 // ── Controller: workspace skills management ─────────────────────────────────

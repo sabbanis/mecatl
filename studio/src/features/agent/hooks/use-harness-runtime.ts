@@ -19,6 +19,12 @@ export interface HarnessModel {
   id: string;
   providerId: string;
   displayName: string;
+  /** Total context window in tokens (0 = unknown). */
+  contextLimit: number;
+  /** Accepts image prompt input. */
+  image: boolean;
+  /** Emits reasoning/thinking. */
+  reasoning: boolean;
 }
 
 /**
