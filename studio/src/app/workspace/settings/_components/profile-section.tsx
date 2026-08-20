@@ -21,7 +21,7 @@ export function ProfileSection() {
         <SettingsRow
           label="Your name"
           htmlFor="user-display-name"
-          description="Labels your messages in chat."
+          description="What should the agent call you?"
         >
           <Input
             id="user-display-name"
