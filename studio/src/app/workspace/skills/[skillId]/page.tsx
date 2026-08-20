@@ -80,7 +80,7 @@ export default function SkillDetailPage() {
 
   if (isLoading) {
     return (
-      <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-8">
+      <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-6">
         {back}
         <Skeleton className="h-12 w-72 rounded-lg" />
         <Skeleton className="h-24 max-w-[465px] rounded-lg" />
@@ -90,7 +90,7 @@ export default function SkillDetailPage() {
 
   if (error) {
     return (
-      <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-8">
+      <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-6">
         {back}
         <div className="rounded-lg border border-dashed border-destructive/40 py-12 text-center text-sm text-destructive">
           {error}
@@ -101,7 +101,7 @@ export default function SkillDetailPage() {
 
   if (!skill) {
     return (
-      <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-8">
+      <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-6">
         {back}
         <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
           No skill named <code className="font-mono text-xs">{name}</code> in
@@ -114,7 +114,7 @@ export default function SkillDetailPage() {
   const agentOwned = enabledSkill?.agentOwned === true;
 
   return (
-    <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-8">
+    <div className="space-y-5 px-4 pt-6 pb-8 min-[500px]:px-6">
       {back}
 
       {/* Title + metadata pills */}

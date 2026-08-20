@@ -14,7 +14,7 @@ export default function SettingsLayout({
       {/* Mobile subpages get a chat-style back header, full-bleed so its
           border spans the card; the scroll area below keeps the padding. */}
       <SettingsMobileBar />
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-14 min-[500px]:px-8">
+      <div className="min-h-0 flex-1 overflow-y-auto px-4 pt-6 pb-14 min-[500px]:px-6">
         <div className="space-y-6">
           <SettingsTitle />
           <div className="flex flex-col gap-6 min-[500px]:flex-row min-[500px]:gap-10">

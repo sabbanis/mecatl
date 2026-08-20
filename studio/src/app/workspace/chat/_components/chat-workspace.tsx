@@ -36,6 +36,7 @@ import {
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { useThreadSessionIds } from "@/lib/thread-map";
+import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ResizeHandle } from "../../_components/resize-handle";
@@ -225,7 +226,11 @@ function DraftView({
       <div className="relative min-h-0 flex-1">
         <div className="flex h-full flex-col items-center justify-center gap-6 overflow-y-auto px-4 pb-40 max-[499px]:pb-24 lg:px-8">
           <div className="w-full max-w-xl space-y-4">
-            <h1 className="text-center text-2xl font-semibold">
+            <h1
+              className={pageTitleClass(
+                "pb-0 text-center text-3xl leading-tight",
+              )}
+            >
               What can I help you with?
             </h1>
             <div className="flex flex-wrap justify-center gap-2">
