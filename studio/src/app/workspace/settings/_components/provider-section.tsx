@@ -34,7 +34,6 @@ import {
   Note,
   OfflineNote,
   SettingsCard,
-  SettingsRow,
 } from "./settings-card";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;

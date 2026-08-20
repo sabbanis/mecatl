@@ -114,6 +114,7 @@ export type StreamEvent =
       type: "approval";
       approvalId: string;
       sessionId: string;
+      toolName: string;
       description: string;
       details: string;
     }
@@ -210,6 +211,8 @@ export type ApprovalChoice = "once" | "session" | "always" | "deny";
 export interface ApprovalRequest {
   approvalId: string;
   sessionId: string;
+  /** The tool being authorized ("" when the daemon did not name one). */
+  toolName?: string;
   description: string;
   details: string;
 }

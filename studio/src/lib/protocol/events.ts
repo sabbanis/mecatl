@@ -279,6 +279,7 @@ export function translateEvent(
           type: "approval",
           approvalId: ask.ask_id ?? "",
           sessionId,
+          toolName: ask.tool ?? "",
           description: `${ask.tool ?? "A tool"} needs your approval.`,
           details: [ask.reason, prettyArgs(ask.args)]
             .filter(Boolean)

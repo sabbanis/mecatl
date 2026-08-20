@@ -92,6 +92,7 @@ describe("translateEvent", () => {
         type: "approval",
         approvalId: "a1",
         sessionId: "session-1",
+        toolName: "bash",
         description: "bash needs your approval.",
         details: "runs a command",
       },

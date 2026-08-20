@@ -5,7 +5,6 @@ import {
   ArrowDown,
   ArrowLeft,
   CirclePlus,
-  CornerDownRight,
   Ellipsis,
   FileText,
   ListEnd,
@@ -20,7 +19,6 @@ import {
   RotateCcw,
   Trash2,
   Wrench,
-  X,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -46,10 +44,7 @@ import {
   type ClarificationRequest,
   useAgentChat,
 } from "@/features/agent";
-import type {
-  PendingSteer,
-  QueuedMessage,
-} from "@/features/agent/hooks/use-agent-chat";
+import type { QueuedMessage } from "@/features/agent/hooks/use-agent-chat";
 import { isMockTourSession } from "@/features/agent/mock-tour";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { formatTokens } from "@/lib/formatters";
@@ -169,58 +164,21 @@ function UsageMenuRow({
  */
 function QueuedMessageStrip({
   queued,
-  pending,
   onSteer,
   onEdit,
   onDelete,
-  onCancelSteers,
 }: {
   queued: QueuedMessage[];
-  pending: PendingSteer[];
   onSteer: (id: string) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
-  onCancelSteers?: () => void;
 }) {
-  if (queued.length === 0 && pending.length === 0) return null;
+  if (queued.length === 0) return null;
   return (
     // ONE opaque group (the strip floats over the transcript): pending steers
     // first, then the queue, as divided rows — never a stack of panels.
     <div className="max-[499px]:mx-3">
       <div className="divide-y overflow-hidden rounded-xl border bg-background">
-        {pending.length > 0 && (
-          <div className="flex items-start gap-2 bg-brand/5 py-1 pr-1 pl-3">
-            <div className="min-w-0 flex-1 space-y-0.5 py-0.5">
-              {pending.map((steer) => (
-                <div key={steer.id} className="flex items-center gap-2">
-                  <CornerDownRight className="size-4 shrink-0 text-brand" />
-                  <span
-                    className="min-w-0 flex-1 truncate text-sm"
-                    title={steer.text}
-                  >
-                    {steer.text}
-                  </span>
-                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-                    <span className="size-1.5 animate-pulse rounded-full bg-current" />
-                    steering…
-                  </span>
-                </div>
-              ))}
-            </div>
-            {onCancelSteers && (
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-7 shrink-0 text-muted-foreground"
-                aria-label="Retract steered messages"
-                title="Retract steered messages that haven't been applied yet"
-                onClick={onCancelSteers}
-              >
-                <X className="size-3.5" />
-              </Button>
-            )}
-          </div>
-        )}
         {queued.map((message) => (
           <div
             key={message.id}
@@ -577,7 +535,6 @@ function ThreadPanel({
           <div className="space-y-1.5">
             <QueuedMessageStrip
               queued={queuedMessages}
-              pending={[]}
               onSteer={steerQueued}
               onEdit={handleEditQueued}
               onDelete={deleteQueued}
@@ -810,9 +767,7 @@ export function ChatView({
   onSteerQueued,
   onDeleteQueued,
   onTakeQueued,
-  pendingSteers = [],
   onSteerMessage,
-  onCancelPendingSteers,
   onCancelRun,
   readOnlyPlaceholder,
   mode,
@@ -853,11 +808,9 @@ export function ChatView({
   /** Removes a queued message and returns its text (the Edit action). */
   onTakeQueued?: (id: string) => string | null;
   /** Steers the daemon accepted but has not yet applied to the run. */
-  pendingSteers?: PendingSteer[];
   /** Injects composer text into the in-flight run at the next step. */
   onSteerMessage?: (text: string) => void;
   /** Retracts the whole pending steer bundle. */
-  onCancelPendingSteers?: () => void;
   /** Cancels the in-flight run (Esc with no panel open). */
   onCancelRun?: () => void;
   /** Disables the composer and shows this placeholder instead (the Labs
@@ -1133,11 +1086,9 @@ export function ChatView({
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
               <QueuedMessageStrip
                 queued={queuedMessages}
-                pending={pendingSteers}
                 onSteer={(id) => onSteerQueued?.(id)}
                 onEdit={handleEditQueued}
                 onDelete={(id) => onDeleteQueued?.(id)}
-                onCancelSteers={onCancelPendingSteers}
               />
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-background bg-gradient-to-b from-destructive/5 to-destructive/5 px-3 py-2">

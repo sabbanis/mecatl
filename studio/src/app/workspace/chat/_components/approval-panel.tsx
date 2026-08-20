@@ -6,31 +6,7 @@ import { Button } from "@/components/ui/button";
 import type { ApprovalChoice, ApprovalRequest } from "@/features/agent";
 import { cn } from "@/lib/utils";
 
-const DELETE_WORDS = /\b(delete|remove|drop|revoke|destroy|purge)\b/i;
-
-/** One line of `details` is "Connector: verb the rest…" — parse it for badges. */
-function parseActions(
-  details: string,
-): { connector: string; verb: string; destructive: boolean }[] {
-  return details
-    .split("\n")
-    .map((line) => line.trim())
-    .filter(Boolean)
-    .map((line) => {
-      const [rawConnector, ...rest] = line.split(":");
-      const action = rest.join(":").trim();
-      const connector = rest.length > 0 ? rawConnector.trim() : "Tool";
-      const verbMatch = action.match(/[a-zA-Z_]+/);
-      const verb = (verbMatch ? verbMatch[0] : action)
-        .toLowerCase()
-        .replace(/_/g, " ");
-      return {
-        connector,
-        verb,
-        destructive: DELETE_WORDS.test(line),
-      };
-    });
-}
+const DELETE_WORDS = /\b(delete|remove|drop|revoke|destroy|purge|rm)\b/i;
 
 /**
  * The daemon's verdict is three-way (allow_once / allow_always / deny), so the
@@ -44,13 +20,15 @@ export function ApprovalPanel({
   approval: ApprovalRequest;
   onRespond: (choice: ApprovalChoice) => void;
 }) {
-  // Parsed actions can repeat (or parse without a verb), so each row gets a
-  // positional id up front to keep React keys unique.
-  const actions = parseActions(approval.details).map((action, index) => ({
-    ...action,
-    key: `${index}:${action.connector}-${action.verb}`,
-  }));
-  const destructive = actions.some((a) => a.destructive);
+  // ONE ask = ONE tool call. The pill names the tool; the args belong in the
+  // preview block below, never badge-ified (a Write ask's args are a whole
+  // file). Destructiveness is judged on the tool name alone — scanning file
+  // CONTENT for the word "delete" painted harmless writes red.
+  const toolName =
+    approval.toolName ||
+    approval.description.replace(/ needs your approval\.?$/i, "").trim() ||
+    "Tool";
+  const destructive = DELETE_WORDS.test(toolName);
 
   return (
     <div
@@ -78,24 +56,19 @@ export function ApprovalPanel({
         </span>
       </div>
       <p className="mb-2 text-sm">{approval.description}</p>
-      {actions.length > 0 && (
-        <div className="mb-2 flex flex-wrap gap-1.5">
-          {actions.map((a) => (
-            <Badge
-              key={a.key}
-              variant="secondary"
-              className={cn(
-                "gap-1 border-transparent font-mono text-xs",
-                a.destructive
-                  ? "bg-destructive/15 text-destructive"
-                  : "bg-warning/15 text-warning",
-              )}
-            >
-              {a.connector} · {a.verb}
-            </Badge>
-          ))}
-        </div>
-      )}
+      <div className="mb-2 flex flex-wrap gap-1.5">
+        <Badge
+          variant="secondary"
+          className={cn(
+            "gap-1 border-transparent font-mono text-xs",
+            destructive
+              ? "bg-destructive/15 text-destructive"
+              : "bg-warning/15 text-warning",
+          )}
+        >
+          {toolName}
+        </Badge>
+      </div>
       {destructive && (
         <p className="mb-3 text-xs font-medium text-destructive">
           This action modifies or deletes data.
@@ -103,7 +76,7 @@ export function ApprovalPanel({
       )}
       <pre
         className={cn(
-          "mb-4 whitespace-pre-wrap rounded-lg border bg-background px-3 py-2.5 font-mono text-xs leading-relaxed",
+          "mb-4 max-h-56 overflow-y-auto whitespace-pre-wrap rounded-lg border bg-background px-3 py-2.5 font-mono text-xs leading-relaxed",
           destructive ? "border-destructive/20" : "border-warning/20",
         )}
       >

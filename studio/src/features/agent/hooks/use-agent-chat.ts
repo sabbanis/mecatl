@@ -278,9 +278,25 @@ export function useAgentChat(
     return () => controller.abort();
   }, [sessionId, connected]);
 
+  const queueMessage = useCallback((text: string) => {
+    const trimmed = text.trim();
+    if (!trimmed) return;
+    setQueuedMessages((prev) => [
+      ...prev,
+      { id: `queued-${Date.now()}-${prev.length}`, text: trimmed },
+    ]);
+  }, []);
+
   const sendMessage = useCallback(
     async (content: string, files?: File[]) => {
-      if (status === "streaming" || !connected) return;
+      if (!connected) return;
+      if (status === "streaming" || status === "waiting_approval") {
+        // Defense in depth behind the composer's own routing: text sent while
+        // a run is live is HELD, never fired into the funnel (which would
+        // refuse with "already has an active run") and never dropped.
+        queueMessage(content);
+        return;
+      }
 
       // Only images cross the wire — the daemon's prompt parts are
       // image/audio only (documents are a daemon capability gap).
@@ -396,6 +412,7 @@ export function useAgentChat(
                 setPendingApproval({
                   approvalId: event.approvalId,
                   sessionId: daemonId as string,
+                  toolName: event.toolName,
                   description: event.description,
                   details: event.details,
                 });
@@ -411,36 +428,62 @@ export function useAgentChat(
                   current === "waiting_approval" ? "streaming" : current,
                 );
                 break;
-              case "steer":
-                // The daemon drained the pending steer bundle into the run:
-                // show the merged text as a user turn, then SPLIT the stream —
-                // a fresh assistant bubble takes every later token, so the
-                // reply to the injected message renders below it instead of
-                // the pre-steer bubble growing above it.
-                if (event.text) {
-                  const echo: AgentMessage = {
-                    id: `steer-echo-${Date.now()}`,
-                    role: "user",
-                    content: event.text,
-                    timestamp: Date.now(),
-                  };
-                  const nextAssistantId = `assistant-${Date.now() + 1}`;
-                  assistantId = nextAssistantId;
-                  setMessages((prev) => [
-                    ...prev,
-                    echo,
-                    {
-                      id: nextAssistantId,
-                      role: "assistant",
-                      content: "",
-                      timestamp: Date.now() + 1,
-                    },
-                  ]);
-                }
-                setPendingSteers((prev) =>
-                  splitPendingSteersOnWatermark(prev, event.messageId),
-                );
+              case "steer": {
+                // The daemon drained the pending steer bundle into the run.
+                // The accepted steers are already optimistic user bubbles;
+                // MOVE them to the drain boundary and open a fresh assistant
+                // bubble there, so the reply to the injection streams below
+                // it in reading order. No duplicate echo message is added —
+                // the optimistic bubbles carry the same text the echo merges.
+                const nextAssistantId = `assistant-${Date.now() + 1}`;
+                assistantId = nextAssistantId;
+                setPendingSteers((prev) => {
+                  const remaining = splitPendingSteersOnWatermark(
+                    prev,
+                    event.messageId,
+                  );
+                  const remainingIds = new Set(remaining.map((p) => p.id));
+                  const drained = prev.filter((p) => !remainingIds.has(p.id));
+                  const drainedBubbleIds = new Set(
+                    drained.map((p) => `steer-user-${p.id}`),
+                  );
+                  setMessages((msgs) => {
+                    const moved = msgs.filter((m) =>
+                      drainedBubbleIds.has(m.id),
+                    );
+                    const rest = msgs.filter(
+                      (m) => !drainedBubbleIds.has(m.id),
+                    );
+                    // A steer accepted by the daemon but missing locally
+                    // (e.g. after a reload) still surfaces via the echo text.
+                    const bubbles =
+                      moved.length > 0
+                        ? moved
+                        : event.text
+                          ? [
+                              {
+                                id: `steer-echo-${Date.now()}`,
+                                role: "user" as const,
+                                content: event.text,
+                                timestamp: Date.now(),
+                              },
+                            ]
+                          : [];
+                    return [
+                      ...rest,
+                      ...bubbles,
+                      {
+                        id: nextAssistantId,
+                        role: "assistant",
+                        content: "",
+                        timestamp: Date.now() + 1,
+                      },
+                    ];
+                  });
+                  return remaining;
+                });
                 break;
+              }
               case "notice":
                 patch((message) => ({
                   ...message,
@@ -541,7 +584,7 @@ export function useAgentChat(
         abortRef.current = null;
       }
     },
-    [status, connected],
+    [status, connected, queueMessage],
   );
 
   /**
@@ -588,15 +631,6 @@ export function useAgentChat(
   const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
   const flushingRef = useRef(false);
 
-  const queueMessage = useCallback((text: string) => {
-    const trimmed = text.trim();
-    if (!trimmed) return;
-    setQueuedMessages((prev) => [
-      ...prev,
-      { id: `queued-${Date.now()}-${prev.length}`, text: trimmed },
-    ]);
-  }, []);
-
   const deleteQueued = useCallback((id: string) => {
     setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
   }, []);
@@ -637,6 +671,18 @@ export function useAgentChat(
       try {
         const { outcome } = await steerHarnessRun(daemonId, trimmed, id);
         if (outcome === "accepted" || outcome === "appended") {
+          // The injected text IS a chat message — show it in the transcript
+          // right away. pendingSteers stays as internal bookkeeping only
+          // (watermark reconciliation at the drain echo), never a strip row.
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `steer-user-${id}`,
+              role: "user",
+              content: trimmed,
+              timestamp: Date.now(),
+            },
+          ]);
           setPendingSteers((prev) => [...prev, { id, text: trimmed }]);
           return;
         }
@@ -694,6 +740,10 @@ export function useAgentChat(
     if (pendingSteers.length === 0) return;
     const orphaned = pendingSteers;
     setPendingSteers([]);
+    // Their optimistic bubbles come out of the transcript too — the daemon
+    // dropped these with the run, so the queue (visible) owns the text now.
+    const bubbleIds = new Set(orphaned.map((p) => `steer-user-${p.id}`));
+    setMessages((prev) => prev.filter((m) => !bubbleIds.has(m.id)));
     setQueuedMessages((prev) => [
       ...orphaned.map((steer) => ({
         id: `queued-${steer.id}`,
@@ -769,7 +819,9 @@ export function useAgentChat(
 
   return {
     messages,
-    isStreaming: status === "streaming",
+    // A parked approval is still an in-flight run daemon-side; the composer
+    // treats both as "run active" (queue/steer, never a raw prompt).
+    isStreaming: status === "streaming" || status === "waiting_approval",
     queuedMessages,
     queueMessage,
     deleteQueued,

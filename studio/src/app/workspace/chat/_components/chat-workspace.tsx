@@ -460,9 +460,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     deleteQueued,
     takeQueued,
     steerQueued,
-    pendingSteers,
     steerMessage,
-    cancelPendingSteers,
     cancelChat,
   } = useAgentChat(hookSessionId, {
     onSessionCreated: handleSessionCreated,
@@ -678,9 +676,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onSteerQueued={steerQueued}
           onDeleteQueued={deleteQueued}
           onTakeQueued={takeQueued}
-          pendingSteers={pendingSteers}
           onSteerMessage={steerMessage}
-          onCancelPendingSteers={cancelPendingSteers}
           onCancelRun={handleCancelRun}
           botName={agentName}
           sidebarOpen={open}
