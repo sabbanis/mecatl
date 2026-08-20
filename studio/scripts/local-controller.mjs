@@ -1251,6 +1251,7 @@ const server = http.createServer(async (request, response) => {
       JSON.stringify({
         mode: "managed",
         provider,
+        isMock: provider === "offline mock",
         running: Boolean(child),
         startupError,
         authFile,
@@ -1303,6 +1304,69 @@ const server = http.createServer(async (request, response) => {
   // (a <YOUR_KEY> placeholder — this route never sees a real credential).
   if (request.method === "GET" && requestURL.pathname === "/providers/known") {
     response.end(JSON.stringify({ known: KNOWN_AUTH_PROVIDERS }));
+    return;
+  }
+  // Live provider switch: POST /providers/active { kind }. Unlike
+  // MECATL_STUDIO_PROVIDER (fixed for the process's lifetime), this
+  // reassigns activeProviderOverride and restarts mecated on the spot — the
+  // Studio settings UI's "switch to mock" / "switch to <provider>" control.
+  // Checked BEFORE the /providers/{name} regex below, which would otherwise
+  // match "active" as a provider name and 404 it first.
+  if (
+    request.method === "POST" &&
+    requestURL.pathname === "/providers/active"
+  ) {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const input = JSON.parse(
+        (await readBody(request, 4096)).toString("utf8"),
+      );
+      const kind =
+        typeof input?.kind === "string" ? input.kind.trim().toLowerCase() : "";
+      const configuredNames = await listConfiguredProviderNames();
+      if (!kind || !isSelectableProviderKind(kind, configuredNames)) {
+        throw Object.assign(
+          new Error(
+            kind === "toolhive"
+              ? "The ToolHive LLM gateway is not reachable right now"
+              : `"${kind || "(empty)"}" is not mock, toolhive, or a provider configured in ${authFile}`,
+          ),
+          { statusCode: 400 },
+        );
+      }
+      await queueRestart(async () => {
+        const previous = activeProviderOverride;
+        activeProviderOverride = kind;
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          activeProviderOverride = previous;
+          await startMecatl(preferredKind());
+          throw error;
+        }
+      });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          provider,
+          selectedProvider: activeProviderOverride,
+        }),
+      );
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not switch provider",
+      );
+    }
     return;
   }
   // Key test + removal: POST /providers/{name}/test, DELETE /providers/{name}.
@@ -1384,67 +1448,6 @@ const server = http.createServer(async (request, response) => {
     }
     response.statusCode = 404;
     response.end(JSON.stringify({ error: "not found" }));
-    return;
-  }
-  // Live provider switch: POST /providers/active { kind }. Unlike
-  // MECATL_STUDIO_PROVIDER (fixed for the process's lifetime), this
-  // reassigns activeProviderOverride and restarts mecated on the spot — the
-  // Studio settings UI's "switch to mock" / "switch to <provider>" control.
-  if (
-    request.method === "POST" &&
-    requestURL.pathname === "/providers/active"
-  ) {
-    try {
-      if (
-        !String(request.headers["content-type"] || "")
-          .toLowerCase()
-          .startsWith("application/json")
-      )
-        throw Object.assign(
-          new Error("Content-Type must be application/json"),
-          { statusCode: 415 },
-        );
-      const input = JSON.parse(
-        (await readBody(request, 4096)).toString("utf8"),
-      );
-      const kind =
-        typeof input?.kind === "string" ? input.kind.trim().toLowerCase() : "";
-      const configuredNames = await listConfiguredProviderNames();
-      if (!kind || !isSelectableProviderKind(kind, configuredNames)) {
-        throw Object.assign(
-          new Error(
-            kind === "toolhive"
-              ? "The ToolHive LLM gateway is not reachable right now"
-              : `"${kind || "(empty)"}" is not mock, toolhive, or a provider configured in ${authFile}`,
-          ),
-          { statusCode: 400 },
-        );
-      }
-      await queueRestart(async () => {
-        const previous = activeProviderOverride;
-        activeProviderOverride = kind;
-        try {
-          await startMecatl(preferredKind());
-        } catch (error) {
-          activeProviderOverride = previous;
-          await startMecatl(preferredKind());
-          throw error;
-        }
-      });
-      response.end(
-        JSON.stringify({
-          ok: true,
-          provider,
-          selectedProvider: activeProviderOverride,
-        }),
-      );
-    } catch (error) {
-      jsonError(
-        response,
-        error.statusCode || 400,
-        error.message || "Could not switch provider",
-      );
-    }
     return;
   }
   // The disabled-skill inventory. Like every controller route this sits
