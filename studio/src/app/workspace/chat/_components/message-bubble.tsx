@@ -99,6 +99,28 @@ function BotAvatar({ small = false }: { small?: boolean }) {
  * when a message genuinely carries them, or by the browser-local thread-map
  * `summary` for a daemon-backed side thread.
  */
+/**
+ * Splits the leading "> " blockquote lines off a user message. Add-to-chat
+ * and thread-root quoting compose messages as a quote block, a blank line,
+ * then the user's own words — user text otherwise stays plain (never
+ * markdown-interpreted), so only this one deterministic shape gets styling.
+ */
+export function splitLeadingQuote(content: string): {
+  quote: string | null;
+  rest: string;
+} {
+  const lines = content.split("\n");
+  let i = 0;
+  while (i < lines.length && /^>\s?/.test(lines[i])) i++;
+  if (i === 0) return { quote: null, rest: content };
+  const quote = lines
+    .slice(0, i)
+    .map((line) => line.replace(/^>\s?/, ""))
+    .join("\n");
+  const rest = lines.slice(i).join("\n").replace(/^\n+/, "");
+  return { quote, rest };
+}
+
 function ReplyIndicator({
   replies,
   summary,
@@ -438,7 +460,19 @@ export function MessageBubble({
         {hasContent && (
           <div className="text-sm lg:text-[15px] mt-0.5 leading-[1.75] text-foreground/80">
             {isUser ? (
-              <div className="whitespace-pre-wrap">{message.content}</div>
+              (() => {
+                const { quote, rest } = splitLeadingQuote(message.content);
+                return (
+                  <div className="flex flex-col gap-1.5">
+                    {quote && (
+                      <blockquote className="border-l-2 border-border pl-3 text-sm whitespace-pre-wrap text-muted-foreground">
+                        {quote}
+                      </blockquote>
+                    )}
+                    <div className="whitespace-pre-wrap">{rest}</div>
+                  </div>
+                );
+              })()
             ) : (
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}

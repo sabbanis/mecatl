@@ -130,7 +130,10 @@ export function SidePanel({
         "relative flex flex-col bg-background",
         // When maximized the panel is the leftmost element, so its own left
         // border would double up with the shell/nav border.
-        maximized ? "flex-1" : "shrink-0 border-l border-border",
+        // min-h-0 lets the panel CONSTRAIN inside a flex column (the mobile
+        // bottom sheet) instead of growing past it — without it the inner
+        // overflow-y-auto never engages and the thread can't scroll.
+        maximized ? "min-h-0 flex-1" : "shrink-0 border-l border-border",
       )}
       style={maximized ? undefined : { width }}
     >
