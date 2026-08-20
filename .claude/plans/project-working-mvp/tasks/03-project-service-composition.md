@@ -2,8 +2,8 @@
 id: 03-project-service-composition
 title: Project service, ownership, source resolution, and capability composition
 blocked_by: [02-project-session-creation]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-project-working-mvp/03-project-service-composition"
 worktree: ""
 issue: "620"
 retries: 0
