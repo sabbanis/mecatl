@@ -392,3 +392,18 @@
     height: 1.125rem;
   }
 }
+
+/* Thinking-indicator dots: Tailwind's animate-bounce moves 25% of the
+   element's own height — invisible on a 6px dot. A fixed 5px hop with a
+   squash-and-stretch easing reads as an actual bounce. */
+@keyframes thinking-bounce {
+  0%,
+  100% {
+    transform: translateY(0);
+    animation-timing-function: cubic-bezier(0.8, 0, 1, 1);
+  }
+  50% {
+    transform: translateY(-5px);
+    animation-timing-function: cubic-bezier(0, 0, 0.2, 1);
+  }
+}

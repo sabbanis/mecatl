@@ -125,7 +125,7 @@ function StreamingIndicator({ message }: { message?: AgentMessage }) {
         {[0, 1, 2].map((i) => (
           <span
             key={i}
-            className="size-1.5 animate-bounce rounded-full bg-brand [animation-duration:1s]"
+            className="size-1.5 animate-[thinking-bounce_0.9s_infinite] rounded-full bg-brand"
             style={{ animationDelay: `${i * 160}ms` }}
           />
         ))}
