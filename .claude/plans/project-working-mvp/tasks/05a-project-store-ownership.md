@@ -2,8 +2,8 @@
 id: 05a-project-store-ownership
 title: Owner-aware atomic Project-store operations
 blocked_by: [04-project-contract-wiring]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-project-working-mvp/05a-project-store-ownership"
 worktree: ""
 issue: "620"
 retries: 0
