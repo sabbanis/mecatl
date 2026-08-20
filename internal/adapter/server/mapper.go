@@ -166,7 +166,18 @@ func toProto(ev session.Event) *mecatlv1.Event {
 	if ev.CompactionArchive != nil {
 		out.CompactionArchive = toProtoCompactionArchive(*ev.CompactionArchive)
 	}
+	if ev.Steer != nil {
+		out.Steer = toProtoSteer(*ev.Steer)
+	}
 	return out
+}
+
+// toProtoSteer maps a session.SteerPayload to its proto SteerEcho form: the
+// CLIENT-VISIBLE, authoritative echo of the committed operator steer (EvSteer).
+// The text is operator-supplied (producer-influenced), so it rides the valid()
+// backstop like every other non-harness string.
+func toProtoSteer(p session.SteerPayload) *mecatlv1.SteerEcho {
+	return &mecatlv1.SteerEcho{Text: valid(p.Text)}
 }
 
 // toProtoParallel maps a session.ParallelPayload to its proto Parallel form: the
@@ -441,7 +452,7 @@ func toProtoTeamMemberStopReason(r string) mecatlv1.TeamMemberStopReason {
 	switch r {
 	case "error":
 		return mecatlv1.TeamMemberStopReason_TEAM_MEMBER_STOP_REASON_ERROR
-	case "cancelled":
+	case cleanupStateCancelled:
 		return mecatlv1.TeamMemberStopReason_TEAM_MEMBER_STOP_REASON_CANCELLED
 	case "budget":
 		return mecatlv1.TeamMemberStopReason_TEAM_MEMBER_STOP_REASON_BUDGET
@@ -734,18 +745,19 @@ func toProtoUsage(u session.Usage) *mecatlv1.Usage {
 // toProtoSession maps a session.Session aggregate to its proto snapshot.
 func toProtoSession(s *session.Session, rm ResolvedModel, caps *mecatlv1.ServerCapabilities) *mecatlv1.Session {
 	return &mecatlv1.Session{
-		SessionId:       string(s.ID),
-		State:           string(s.State),
-		Mode:            modeToProto(s.Mode),
-		Workspace:       valid(s.Workspace),
-		Limits:          limitsToProto(s.Limits),
-		Turns:           ClampInt32(s.Counters.Turns),
-		ToolCalls:       ClampInt32(s.Counters.ToolCalls),
-		CreatedAtUnix:   s.CreatedAt.Unix(),
-		ResolvedModel:   resolvedModelToProto(rm),
-		Title:           valid(s.Title),
-		TitleProvenance: string(s.TitleProvenance),
-		Capabilities:    caps,
+		SessionId:               string(s.ID),
+		State:                   string(s.State),
+		Mode:                    modeToProto(s.Mode),
+		Workspace:               valid(s.Workspace),
+		Limits:                  limitsToProto(s.Limits),
+		Turns:                   ClampInt32(s.Counters.Turns),
+		ToolCalls:               ClampInt32(s.Counters.ToolCalls),
+		CreatedAtUnix:           s.CreatedAt.Unix(),
+		ResolvedModel:           resolvedModelToProto(rm),
+		Title:                   valid(s.Title),
+		TitleProvenance:         string(s.TitleProvenance),
+		Capabilities:            caps,
+		AdoptionSourceSessionId: valid(string(adoptionSourceID(s))),
 	}
 }
 

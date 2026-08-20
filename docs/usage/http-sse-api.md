@@ -21,6 +21,14 @@ share one event shape.
 | `POST /v1/sessions/{id}/cancel` | — | `204` |
 | `POST /v1/sessions/{id}/cancel-child` | `{child_id}` | `204`; `404` for an unknown / already-finished child |
 | `POST /v1/sessions/{id}/fork` | `{"title": "...", "reasoning_effort": "..."}` (both optional; empty/absent inherits the source's) | `201` `{session_id}` — create a peer session from `{id}`'s conversation history snapshot (ADR 0065); same provider/model only, with the ONE optional selector delta a reasoning-effort override (ADR 0068); `412` if `{id}` is not an idle/terminal main chat or is live in this process, `409` when another replica holds its lease |
+| `POST /v1/sessions/{id}/adoption:preflight` | `{workspace, environment_kind, environment_id, provider_id, model_id, profile?}` | `200` `{eligible, reason_code, bindings}`. Requires authenticated caller ownership; absent and foreign IDs are both `404`. Every binding is explicit and unresolved bindings return `binding_unresolved` rather than selecting a default |
+| `POST /v1/sessions/{id}/adopt` | the same explicit bindings plus `idempotency_key` | `201` `{session_id, source_session_id, capabilities, resolved_model}`. Revalidates under the source mutation lease; a retry returns the same complete target. The legacy source is unchanged |
+
+Adoption is available only when authenticated caller ownership and a per-session engine
+factory are wired (`ServerCapabilities.legacy_adoption`). It accepts no message array or
+transcript upload: transcript authority comes only from the server's `SessionStore.Load`.
+There is no automatic or bulk endpoint. A cross-provider target strips provider-private
+reasoning/phase/item identifiers through the same carryover rule used by model switches.
 
 **Inventory & introspection** (the HTTP mirrors of the gRPC inventory RPCs in §9):
 
@@ -215,6 +223,19 @@ $ curl -s -X POST http://127.0.0.1:8081/v1/sessions/<id>/cancel
 
 The run terminates with a `result` whose `stop` is `cancelled`. No in-flight run
 → `404` `{"error":"no in-flight run for session"}`.
+
+### Mid-run steer is gRPC-only (v1)
+
+The **steer** capability (steer-while-running, issue #512 — inject an operator
+instruction into an *in-flight* run, drained at the next turn boundary) rides the
+bidi gRPC `Converse` stream as a `steer` / `steer_cancel` request arm. The HTTP/SSE
+run path has **no mid-run client→server channel** — `POST /v1/sessions/{id}/runs`
+streams server→client only — so an HTTP/SSE client **cannot steer** in v1. Read the
+`steer` bit off the `CreateSession` capabilities echo: when present/true a gRPC
+client may send `steer` frames; when absent/false the server reports `too_late`
+(and, over gRPC, auto-promotes the text to a fresh follow-up run). A unary
+`POST /v1/sessions/{id}/steer` endpoint is a possible cheap follow-up (mirroring
+`approve`/`cancel`), deferred.
 
 ### ACP over stdio (`mecated acp`)
 

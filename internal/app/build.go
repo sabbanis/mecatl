@@ -156,6 +156,14 @@ type Config struct {
 	// has configured the fail-closed OIDC verifier. Its zero value preserves
 	// existing ownerless deployments and hand-built test configurations.
 	OwnershipEnforced bool
+	// StorageManagementPrincipals are exact verified issuer/subject pairs granted
+	// process-wide storage health, migration, and cleanup authority. Empty grants
+	// nobody in an ownership-enforced deployment.
+	StorageManagementPrincipals []session.Principal
+	// LocalStorageManagement explicitly grants the private embedded single-user
+	// server management authority. It is invalid with OwnershipEnforced and is
+	// never set by remotely reachable composition roots.
+	LocalStorageManagement bool
 
 	// DefaultProvider/DefaultModel are the SERVER-CONFIGURED deployment-wide
 	// default (issue #21; --default-provider / --default-model — the wire's
@@ -361,6 +369,13 @@ type Config struct {
 	// off). Default applied at the cmd layer alongside ScheduleFireRetention. A
 	// non-prunable store is never swept.
 	ScheduleFireRetentionMaxTotal int
+	// RetentionCLISet records explicit legacy retention flags so CLI outranks settings.yaml.
+	RetentionCLISet RetentionCLISet
+	// AcknowledgeMainRetention is explicit consent for destructive main-session cleanup.
+	AcknowledgeMainRetention     bool
+	storageMaintenance           *storageMaintenanceState
+	sessionLiveness              port.SessionLiveness
+	maintenanceMutationAvailable func() bool
 
 	// Remote store drivers (Phase B): gRPC driver endpoints that replace the
 	// LOCAL session/memory stores with internal/adapter/grpcdriver clients.
@@ -453,7 +468,8 @@ type Config struct {
 	//     namespace (the in-cluster multi-replica path; needs RBAC — see usage.md).
 	//   - SessionLeaseDir: a single-host flock lease under that directory (one
 	//     machine, several processes; flock auto-releases on crash).
-	// All empty = no override → type-assert the store → else no lease.
+	// All empty = no explicit override → local StoreDir gets an automatic flock
+	// lease, otherwise type-assert the store → else no lease.
 	SessionLeaseURL          string
 	SessionLeaseDir          string
 	SessionLeaseK8sNamespace string
@@ -737,6 +753,26 @@ type Config struct {
 	// ErrTeamsDisabled.
 	EnableTeams bool
 
+	// DisableSteer turns OFF the mid-run steer inbox (steer-while-running, issue
+	// #512) — an OPT-OUT of a DEFAULT-ON knob, mirroring NoBash/WebSearchOff (the
+	// zero value false = steer ON, so every existing hand-built Config / test is
+	// byte-identical and steer is armed by default). Threaded through
+	// engineDepsForProvider into agent.Deps.EnableSteer (true = armed) and reflected
+	// — via the SAME wired engine's Engine.SteerEnabled() — in
+	// ServerCapabilities.steer, so the capability advertisement can never claim a
+	// path the engine did not arm. The CLI surface is --no-steer (mecated +
+	// mecatui); the operator-tier settings.yaml `steer: false` scalar (user-global
+	// + CLI tiers ONLY — a project-tier key is WARN-ignored by permconfig, the
+	// same operator-only discipline as posture:) folds in via foldOperatorSteer
+	// (CLI out-ranks YAML). It is POSTURE-INDEPENDENT: the ladder does not derive
+	// it at any tier (a mid-run operator instruction is not an automation grant).
+	DisableSteer bool
+	// DisableSteerFlagSet records whether the operator passed an explicit --no-steer
+	// flag. When true, foldOperatorSteer leaves the operator-YAML steer: value alone
+	// (CLI out-ranks YAML, mirroring PostureFlagSet/ReasoningEffortFlagSet). Set by
+	// the cmd mains alongside DisableSteer.
+	DisableSteerFlagSet bool
+
 	// MCP: static servers, the resource meta-tools toggle, the prompt-expander
 	// toggle, and the live ToolHive workload source.
 	MCPServers []mcp.ServerConfig
@@ -980,6 +1016,14 @@ type Config struct {
 	// engine lifecycle on a fully built provider path. Production leaves it nil,
 	// which preserves the inert hookexec.New(nil) default.
 	hookRunner port.HookRunner
+	// extraCoreTools is the composition-only test seam (mirroring
+	// providerConstructor/envDetector) for registering ADDITIONAL core tools into
+	// the shared catalog on top of the production set — a test parks a run
+	// mid-dispatch with a blocking tool so a mid-run seam (steer-while-running)
+	// is genuinely LIVE when the test drives it. Nil in production (the
+	// production core set is untouched). Unexported: an internal composition
+	// detail, not an operator knob.
+	extraCoreTools []tool.Tool
 
 	// toolhiveConfigPath is the composition-only test seam for the ToolHive
 	// config-file path (mirroring envDetector/liveModelHTTPClient): ""
@@ -1249,6 +1293,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	cfg = foldOperatorPosture(cfg)
 	cfg = foldOperatorReasoningEffort(cfg)
 	cfg = foldOperatorPlanModeAutoApprove(cfg)
+	cfg = foldOperatorSteer(cfg)
 	cfg.Posture = resolvePosture(cfg, postureNoCeiling)
 	cfg = applyPosture(cfg)
 	// AUTHORITATIVE root/no-sandbox refusal: applied HERE, after the full posture fold,
@@ -1277,12 +1322,32 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// SAME instance — one discovery pass, one cache, no per-consumer drift.
 	cfg.permResolver = buildPermResolver(cfg)
 	cfg.childPermResolver = buildChildPermResolver(cfg)
+	var retentionErr error
+	cfg, retentionErr = foldOperatorRetention(cfg)
+	if retentionErr != nil {
+		return nil, retentionErr
+	}
+	var storageManagementErr error
+	cfg, storageManagementErr = foldOperatorStorageManagement(cfg)
+	if storageManagementErr != nil {
+		return nil, storageManagementErr
+	}
+	if err := validateDestructiveMainRetention(ctx, cfg); err != nil {
+		return nil, err
+	}
 	var learningErr error
 	cfg, learningErr = foldLearningMode(cfg)
 	if learningErr != nil {
 		return nil, learningErr
 	}
 	if resolver, ok := cfg.permResolver.(*permconfig.Resolver); ok {
+		if cfg.MCPProfileLoader == nil {
+			if mcpCfg := resolver.OperatorMCP(); mcpCfg != nil && len(mcpCfg.Servers) > 0 {
+				cfg.diag().Log(ctx, port.LevelWarn,
+					"operator-tier mcp.servers configured but no MCP profile loader is wired; servers ignored",
+					"count", len(mcpCfg.Servers))
+			}
+		}
 		if cfg.MCPProfileLoader != nil {
 			profiles, lifecycle, err := cfg.MCPProfileLoader.Load(resolver.OperatorMCP())
 			if err != nil {
@@ -1561,6 +1626,12 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	if agentClose == nil {
 		agentClose = func() {}
 	}
+	// One process-wide liveness registry bridges engine-owned delegation children
+	// to Service/retention without introducing an engine→server dependency. When
+	// leasing is configured it owns distributed child holds as well.
+	childLiveness := newSessionLiveness(sessionLease, leaseOwner, cfg.SessionLeaseTTL,
+		cfg.SessionLeaseRenewInterval, cfg.diag())
+	cfg.sessionLiveness = childLiveness
 	engine, mainMgr, mcpProvider, mcpInventory, sessFactory, learned, policy, assets, scheduleMgr, mcpClose, err := buildEngine(ctx, cfg, reg, provider, store, agentReg)
 	if err != nil {
 		agentClose()
@@ -1585,13 +1656,26 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// expander build the engine consumes, so the palette offers exactly the
 	// commands a "/<cmd>" prompt would expand. nil when commands are disabled.
 	commandLister := buildCommandLister(cfg, mcpProvider)
+	cfg.storageMaintenance = &storageMaintenanceState{}
 	dreamReviewer, dreamCapabilities := buildDreamReview(cfg, assets, provider != nil)
 	svcCfg := server.Config{
-		Engine:            engine,
-		Store:             store,
-		OwnershipEnforced: cfg.OwnershipEnforced,
-		Workspaces:        osfsWorkspaceFactory(cfg.diag()),
-		DefaultWorkspace:  cfg.Workspace, // the launch root; a session on a DIFFERENT root routes through the per-session factory (issue #102, docs/adr/0032)
+		Engine:                              engine,
+		Store:                               store,
+		OwnershipEnforced:                   cfg.OwnershipEnforced,
+		StorageManagementAuthorized:         storageManagementAuthorizer(cfg),
+		LocalStorageMaintenanceSingleWriter: localStorageMaintenanceSingleWriter(store),
+		SessionLiveness:                     cfg.sessionLiveness,
+		RetentionPolicy: server.RetentionPolicy{
+			Version:    "retention/v1",
+			MainMaxAge: cfg.MainRetention, MainMaxCount: cfg.MainRetentionMaxTotal,
+			ChildMaxAge: cfg.ChildRetention, ChildMaxCount: cfg.ChildRetentionMaxPerFamily,
+			ScheduledMaxAge: cfg.ScheduleFireRetention, ScheduledMaxCount: cfg.ScheduleFireRetentionMaxTotal,
+			SweepCadence: cfg.ChildGCInterval,
+		},
+		StorageMaintenanceStatus: cfg.storageMaintenance.snapshot,
+		StorageMaintenanceUpdate: cfg.storageMaintenance.update,
+		Workspaces:               osfsWorkspaceFactory(cfg.diag()),
+		DefaultWorkspace:         cfg.Workspace, // the launch root; a session on a DIFFERENT root routes through the per-session factory (issue #102, docs/adr/0032)
 		// CommandRunner (issue #462): the MAIN session's bound runner — the
 		// Environment seam hands it to Tool.Execute so Bash observes the session
 		// namespace. nil when Bash is disabled (the catalog omits Bash and the
@@ -2022,6 +2106,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	if err != nil {
 		refreshClose()
 		svc.Close()
+		childLiveness.Close()
 		mcpClose()
 		agentClose()
 		storeClose()
@@ -2035,11 +2120,11 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	svc.SetScheduleMinInterval(cfg.SchedulerMinInterval)
 
 	// Child-session retention GC (issue #38): wired AFTER the Service exists
-	// because the sweep's liveness predicate is the Service's in-flight run
-	// registry. No-op (one INFO) when the policy is disabled or the store is
-	// not prunable; otherwise a startup sweep + ticker sharing ctx (the
-	// startMemoryConsolidation lifetime — the goroutine exits on shutdown).
-	startChildGC(ctx, cfg, store, svc.IsLive, svc.DeleteSessionForRetention)
+	// because the sweep's liveness and maintenance-exclusion predicates are the
+	// Service's process-wide truth. No worker is started when exclusion is
+	// permanently unavailable; runtime loss stickily settles health unavailable.
+	cfg.maintenanceMutationAvailable = svc.MaintenanceMutationAvailable
+	childGCClose := startChildGC(ctx, cfg, store, svc.IsLive, svc.DeleteSessionForRetentionCandidate)
 
 	// Crash-orphaned running-session sweep (issue #475 Step 4): repairs a
 	// StateRunning session a process crash left behind, INCLUDING the
@@ -2052,17 +2137,19 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// the live-model refresh goroutine and closes the session-store driver
 	// connection (LAST — everything before it may still persist; a no-op for the
 	// local stores, and once-guarded if the memory driver shares the conn).
-	closeAll := func() {
+	closeAll := sync.OnceFunc(func() {
 		staleSessionReconcileClose()
+		childGCClose()
 		schedClose()
 		refreshClose()
 		svc.Close()
+		childLiveness.Close()
 		mcpClose()
 		closeProfiles()
 		agentClose()
 		storeClose()
 		commandConnClose()
-	}
+	})
 	profilesTransferred = true
 	return &Built{Service: svc, Close: closeAll}, nil
 }
@@ -2582,8 +2669,9 @@ func buildStore(cfg Config) (port.SessionStore, port.EventLog, func(), error) {
 // top, the OPTIONAL cross-process session lease (cloud-native Phase 4). The lease
 // resolves AFTER the store so its type-assert fallback can discover a
 // store-provided lease; its close chains onto the store's, so the caller holds a
-// single teardown for the pair. sessionLease is nil (and leaseOwner empty) when no
-// lease backend is selected — the byte-identical default.
+// single teardown for the pair. A local StoreDir always resolves the existing
+// flock lease beneath that root; sessionLease is nil (and leaseOwner empty) only
+// when no explicit/store-provided backend and no local durable store is selected.
 func buildStoreAndLease(cfg Config) (port.SessionStore, port.EventLog, port.SessionLease, string, func(), error) {
 	store, eventLog, storeClose, err := buildStore(cfg)
 	if err != nil {
@@ -2597,6 +2685,16 @@ func buildStoreAndLease(cfg Config) (port.SessionStore, port.EventLog, port.Sess
 	return store, eventLog, sessionLease, leaseOwner, chainClose(leaseClose, storeClose), nil
 }
 
+// localStorageMaintenanceSingleWriter reports the only Build-owned storage
+// posture that is independently single-writer without a cross-process lease:
+// the process-private in-memory store. Management authorization is deliberately
+// absent from this proof; authority to request maintenance says nothing about
+// whether another process can be writing the same durable store.
+func localStorageMaintenanceSingleWriter(store port.SessionStore) bool {
+	_, ok := store.(*memstore.Store)
+	return ok
+}
+
 // buildSessionLease resolves the OPTIONAL cross-process session lease (cloud-native
 // Phase 4, ADR 0027). It returns (lease, owner, close, err): lease is nil (and
 // close a no-op) when no backend is selected — the byte-identical default that
@@ -2607,9 +2705,12 @@ func buildStoreAndLease(cfg Config) (port.SessionStore, port.EventLog, port.Sess
 // Resolution precedence mirrors --event-log-url's INDEPENDENT-of-store stance:
 //  1. an explicit override backend (URL → driver, k8s namespace → coordination
 //     Lease, dir → flock) wins;
-//  2. else the configured SessionStore is type-asserted for port.SessionLease
-//     (the issue's literal requirement: a store that also leases opts in);
-//  3. else no lease (the single-writer-by-affinity v1 default).
+//  2. else every local StoreDir composition receives the existing flock lease
+//     beneath that root (management authority does not prove exclusion; the
+//     actual shared lease makes local multi-process use safe by default);
+//  3. else the configured SessionStore is type-asserted for port.SessionLease
+//     (a store that also leases opts in);
+//  4. else no lease (the single-writer-by-affinity v1 default).
 //
 // The lease close is meaningful only for the driver backend (its dialled conn);
 // flock/k8s/type-assert hold no Build-scoped resource of their own, so their close
@@ -2645,6 +2746,19 @@ func buildSessionLease(cfg Config, store port.SessionStore) (port.SessionLease, 
 			return nil, "", nil, fmt.Errorf("open flock session lease %q: %w", cfg.SessionLeaseDir, err)
 		}
 		cfg.diag().Log(context.Background(), port.LevelInfo, "session lease: flock (single-host)", "dir", cfg.SessionLeaseDir, "owner", owner)
+		return l, owner, noop, nil
+
+	case cfg.StoreDir != "":
+		// A local JSONL StoreDir is shareable by multiple processes regardless of
+		// management authority. Auto-wire the existing flock SessionLease for every
+		// local composition so run entry and destructive maintenance share a real
+		// cross-process exclusion without requiring a safety-critical opt-in.
+		leaseDir := filepath.Join(cfg.StoreDir, ".session-leases")
+		l, err := flocklease.New(leaseDir, ttl, wallclock.Clock{})
+		if err != nil {
+			return nil, "", nil, fmt.Errorf("open local-store flock session lease %q: %w", leaseDir, err)
+		}
+		cfg.diag().Log(context.Background(), port.LevelInfo, "session lease: flock (local store)", "dir", leaseDir, "owner", owner)
 		return l, owner, noop, nil
 	}
 
@@ -3577,6 +3691,7 @@ func engineDepsForProvider(
 		// entering awaiting and at run end; both share this store, so the latest
 		// snapshot is always current for auto-resume after a restart.
 		Store:            store,
+		SessionLiveness:  cfg.sessionLiveness,
 		Sink:             cfg.Sink,
 		ToolCallRecorder: cfg.ToolCallRecorder,
 		// Clock: the production wall clock (issue #53). Before it was wired here the
@@ -3609,6 +3724,12 @@ func engineDepsForProvider(
 		// plan-approval ask (PresentPlan) even when headless so the Service can
 		// auto-resolve it. Operator-tier only, DEFAULT off.
 		PlanModeAutoApprove: cfg.PlanModeAutoApprove,
+		// Steer (steer-while-running, issue #512): arm the mid-run steer inbox.
+		// DEFAULT ON — the Config knob is the opt-OUT (DisableSteer), so true here
+		// unless the operator disabled it. ServerCapabilities.steer reads the SAME
+		// wired value back via Engine.SteerEnabled(), so the advertisement and the
+		// inbox can never disagree.
+		EnableSteer: !cfg.DisableSteer,
 	}
 }
 
@@ -4385,6 +4506,12 @@ func registerCoreTools(cfg Config, cat *tool.Catalog, log, noFS bool, searchProv
 		cat.MustRegister(t)
 	}
 	cat.MustRegister(tools.NewWebSearchTool(searchProvider))
+	// Test seam: register any ADDITIONAL core tools a test injected (nil in
+	// production — the production core set above is untouched). Appended AFTER the
+	// production set so an injected tool can shadow nothing and adds only itself.
+	for _, t := range cfg.extraCoreTools {
+		cat.MustRegister(t)
+	}
 	if runner := buildCommandRunner(cfg); runner != nil {
 		// The AGENT-loop Bash tool (not the fstools one): foreground byte-identical,
 		// plus the `background: true` detach over the run's child registry. Its
@@ -7288,6 +7415,32 @@ func foldOperatorPlanModeAutoApprove(cfg Config) Config {
 	if res.OperatorPlanModeAutoApprove() {
 		cfg.PlanModeAutoApprove = true
 	}
+	return cfg
+}
+
+// foldOperatorSteer merges the OPERATOR-TIER `steer:` YAML scalar (read by the
+// permconfig resolver from the user-global + CLI tiers ONLY — never the project
+// file, which is IGNORED with a WARN, the same operator-only discipline as
+// posture:) onto cfg.DisableSteer. The YAML `steer: false` maps to DisableSteer=true
+// (the knob is the opt-OUT of the default-ON steer inbox). A CLI --no-steer
+// (cfg.DisableSteerFlagSet) OUT-RANKS the YAML value (mirroring
+// foldOperatorPosture/foldOperatorReasoningEffort). It is a no-op when no
+// operator-tier steer: key was configured, and a YAML `steer: true` cannot
+// RE-ENABLE steer over an explicit --no-steer (CLI wins). cfg is taken and
+// returned by value (issue #512).
+func foldOperatorSteer(cfg Config) Config {
+	if cfg.DisableSteerFlagSet {
+		return cfg // CLI wins; YAML cannot override an explicit --no-steer.
+	}
+	res, ok := cfg.permResolver.(*permconfig.Resolver)
+	if !ok || res == nil {
+		return cfg
+	}
+	yamlSteer, present := res.OperatorSteer()
+	if !present {
+		return cfg
+	}
+	cfg.DisableSteer = !yamlSteer
 	return cfg
 }
 

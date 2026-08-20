@@ -129,20 +129,20 @@ func (m Model) renderBody() string {
 // modal arms (the phase stays phaseAwaitingApproval; argsViewOpen is Model state
 // alongside it).
 func (m Model) renderApprovalBody() string {
-	if m.argsViewOpen {
-		return m.renderAskArgsView(m.ask)
+	if m.approval.argsViewOpen {
+		return m.renderAskArgsView(m.approval.ask)
 	}
-	if isPlanAsk(m.ask.Tool) {
+	if isPlanAsk(m.approval.ask.Tool) {
 		// A plan ask fills the conversation region with a dedicated SCROLLABLE
 		// viewport (planVP) instead of the small centered card — the plan is
 		// read in full, no collapse, no ctrl+t gate. planVP is populated at the
 		// reducer seams (openPlanReviewView: the PermissionAskMsg reducer, the
-		// advanceAsk queued-successor path, relayout/onResize geometry changes)
-		// so the render path is a pure read of m.planVP.View(). See
+		// queued-successor advance path, relayout/onResize geometry changes)
+		// so the render path is a pure read of m.approval.planVP.View(). See
 		// renderPlanReviewView / openPlanReviewView.
-		return m.renderPlanReviewView(m.ask)
+		return m.renderPlanReviewView(m.approval.ask)
 	}
-	return m.rend.renderPermissionModal(m.ask, m.expandTools, len(m.askQueue), m.width, m.vp.Height(), m.askVPOffset)
+	return m.rend.renderPermissionModal(m.approval.ask, m.expandTools, len(m.approval.queue), m.width, m.vp.Height(), m.approval.askVPOffset)
 }
 
 // renderHeader is the top bar: session id · model · mode · server.
@@ -550,10 +550,10 @@ func (m Model) renderFooter() string {
 		// "(1 of N)" badge as the modal title; the single-ask frame stays
 		// byte-identical.
 		label := "⚠ awaiting approval"
-		if isPlanAsk(m.ask.Tool) {
+		if isPlanAsk(m.approval.ask.Tool) {
 			label = "⚙ plan review"
 		}
-		if n := len(m.askQueue); n > 0 {
+		if n := len(m.approval.queue); n > 0 {
 			label = fmt.Sprintf("%s (1 of %d)", label, 1+n)
 		}
 		left = m.deps.Theme.Style("askTitle").Render(label)
@@ -587,7 +587,7 @@ func (m Model) renderFooter() string {
 	if m.phase == phaseRunning {
 		help = hk.submit + " queue · " + hk.cancel + " cancel/clear · " + help
 	}
-	if m.phase == phaseAwaitingApproval && isPlanAsk(m.ask.Tool) {
+	if m.phase == phaseAwaitingApproval && isPlanAsk(m.approval.ask.Tool) {
 		// Gate the "W auto-accept" hint on offerAlways — the SAME condition the
 		// action bar (permission.go renderPlanReviewView) uses to show/hide the
 		// [W] button. Without this a surfaced child plan ask (offerAlways=false)
@@ -596,7 +596,7 @@ func (m Model) renderFooter() string {
 		// rune upper-cased (the footer idiom: "A", "W", "D" by default) so an
 		// override propagates (issue #457).
 		allow, always, deny := approvalMnemonic(hk.allow), approvalMnemonic(hk.allowAlways), approvalMnemonic(hk.deny)
-		if m.ask.offerAlways {
+		if m.approval.ask.offerAlways {
 			help = allow + " approve & run · " + always + " auto-accept · " + deny + " iterate · " + help
 		} else {
 			help = allow + " approve & run · " + deny + " iterate · " + help
@@ -883,6 +883,56 @@ func (m Model) renderQueue() string {
 	}
 	if m.queuePaused != "" {
 		b.WriteString("\n" + muted.Render("  "+hk.submit+" sends · "+hk.editBack+" edit · "+hk.cancel+" clears"))
+	}
+	return th.Style("askCard").Render(b.String())
+}
+
+// renderSteer draws the steer-mode (Capabilities.Steer) "in-flight steer" card
+// shown just above the input whenever a steer is live. It mirrors renderQueue's
+// visual language (muted / toolArgs / ctxWarn on the askCard style) but reflects
+// the AUTHORITATIVE server-reported state — the engine is the sole authority on
+// what happened to a steer (the client cannot observe the drain moment across
+// stream latency), so the card shows what the server acked/echoed, never a
+// client-side guess. Returns "" when no steer is in flight (layout omits it then).
+//
+// Four honest states:
+//   - PENDING (steerPending): sent, ack not yet back — a muted "⏳ steer: sending…".
+//   - SENT (steerSent): acked accepted/appended, parked for the next turn
+//     boundary — a muted "⏳ steer queued · ↑ edit · esc retract".
+//   - PROMOTED (steerPromoted): acked too_late — the run had ended, so the text
+//     auto-started a follow-up — a ctxWarn "↪ steer sent as a follow-up (run had
+//     already ended)".
+//   - RETRACTED (steerRetracted): the steer_cancel won — a muted "✕ steer
+//     retracted".
+func (m Model) renderSteer() string {
+	if m.steer == nil {
+		return ""
+	}
+	th := m.deps.Theme
+	hk := m.helpKeyMarkings()
+	muted := th.Style("muted")
+	var b strings.Builder
+	switch m.steer.Phase {
+	case steerPending:
+		b.WriteString(muted.Render("⏳ steer: sending…"))
+	case steerSent:
+		b.WriteString(muted.Render("⏳ steer queued · " + hk.editBack + " edit · " + hk.cancel + " retract"))
+	case steerPromoted:
+		b.WriteString(th.Style("ctxWarn").Render("↪ steer sent as a follow-up (run had already ended)"))
+	case steerFailed:
+		b.WriteString(th.Style("warning").Render("✕ steer not sent (promotion failed) · ↑ to edit · esc to drop"))
+	case steerRetracted:
+		b.WriteString(muted.Render("✕ steer retracted"))
+	}
+	// Preview each logical message on its own line. A re-composed (↑-edit)
+	// fragment carries the WHOLE merged bundle in its Text (with blank-line
+	// separators INSIDE), so split each send's text on the merge separator:
+	// the wire stays one frame while the card shows the parts as separate
+	// queued lines.
+	for _, s := range m.steer.Sends {
+		for _, part := range strings.Split(s.Text, queueMergeSep) {
+			b.WriteString("\n" + th.Style("toolArgs").Render("  "+truncate(oneLine(runePrefix(part, queuePreviewBound)), queuePreviewWidth)))
+		}
 	}
 	return th.Style("askCard").Render(b.String())
 }

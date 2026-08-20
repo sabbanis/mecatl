@@ -75,16 +75,17 @@ var flagApplicabilityByFlag = map[string]flagApplicability{
 	"prompt-file":   {group: groupSession, common: true, local: true, connect: true},
 
 	// ── UI (shared) ───────────────────────────────────────────────────────
-	"theme":          {group: groupUI, common: true, local: true, connect: true},
-	"theme-dir":      {group: groupUI, common: false, local: true, connect: true},
-	"list-themes":    {group: groupUI, common: false, local: true, connect: true},
-	"no-alt-screen":  {group: groupUI, common: true, local: true, connect: true},
-	"inline":         {group: groupUI, common: false, local: true, connect: true},
-	"no-mouse":       {group: groupUI, common: false, local: true, connect: true},
-	"no-banner":      {group: groupUI, common: false, local: true, connect: true},
-	"terminal-title": {group: groupUI, common: false, local: true, connect: true},
-	"keymap":         {group: groupUI, common: false, local: true, connect: true},
-	"quiet":          {group: groupUI, common: false, local: true, connect: false},
+	"theme":           {group: groupUI, common: true, local: true, connect: true},
+	"theme-dir":       {group: groupUI, common: false, local: true, connect: true},
+	"list-themes":     {group: groupUI, common: false, local: true, connect: true},
+	"no-alt-screen":   {group: groupUI, common: true, local: true, connect: true},
+	"inline":          {group: groupUI, common: false, local: true, connect: true},
+	"no-mouse":        {group: groupUI, common: false, local: true, connect: true},
+	"no-banner":       {group: groupUI, common: false, local: true, connect: true},
+	"terminal-title":  {group: groupUI, common: false, local: true, connect: true},
+	"keymap":          {group: groupUI, common: false, local: true, connect: true},
+	"quiet":           {group: groupUI, common: false, local: true, connect: false},
+	"diagnostics-log": {group: groupUI, common: false, local: true, connect: false},
 
 	// ── Provider (embedded-only) ──────────────────────────────────────────
 	"model":                 {group: groupProvider, common: true, local: true, connect: false},
@@ -97,6 +98,7 @@ var flagApplicabilityByFlag = map[string]flagApplicability{
 	"auth-file":             {group: groupProvider, common: true, local: true, connect: false},
 	"mock":                  {group: groupProvider, common: true, local: true, connect: false},
 	"no-bash":               {group: groupProvider, common: false, local: true, connect: false},
+	"no-steer":              {group: groupProvider, common: false, local: true, connect: false},
 	"toolhive-llm":          {group: groupProvider, common: false, local: true, connect: false},
 	"toolhive-llm-base-url": {group: groupProvider, common: false, local: true, connect: false},
 	"toolhive-llm-mode":     {group: groupProvider, common: false, local: true, connect: false},
@@ -115,10 +117,18 @@ var flagApplicabilityByFlag = map[string]flagApplicability{
 	"trust-project": {group: groupPermissions, common: true, local: true, connect: false},
 
 	// ── Storage (embedded-only) ───────────────────────────────────────────
-	"store-dir":  {group: groupStorage, common: true, local: true, connect: false},
-	"no-store":   {group: groupStorage, common: false, local: true, connect: false},
-	"memory-dir": {group: groupStorage, common: false, local: true, connect: false},
-	"no-memory":  {group: groupStorage, common: false, local: true, connect: false},
+	"store-dir":                         {group: groupStorage, common: true, local: true, connect: false},
+	"no-store":                          {group: groupStorage, common: false, local: true, connect: false},
+	"memory-dir":                        {group: groupStorage, common: false, local: true, connect: false},
+	"no-memory":                         {group: groupStorage, common: false, local: true, connect: false},
+	"child-retention":                   {group: groupStorage, common: false, local: true, connect: false},
+	"child-retention-max-per-family":    {group: groupStorage, common: false, local: true, connect: false},
+	"main-retention":                    {group: groupStorage, common: false, local: true, connect: false},
+	"main-retention-max-total":          {group: groupStorage, common: false, local: true, connect: false},
+	"schedule-fire-retention":           {group: groupStorage, common: false, local: true, connect: false},
+	"schedule-fire-retention-max-total": {group: groupStorage, common: false, local: true, connect: false},
+	"retention-sweep-cadence":           {group: groupStorage, common: false, local: true, connect: false},
+	"acknowledge-main-retention":        {group: groupStorage, common: false, local: true, connect: false},
 
 	// ── Memory & knowledge (embedded-only) ────────────────────────────────
 	"soul-file":                  {group: groupKnowledge, common: false, local: true, connect: false},

@@ -157,6 +157,34 @@ New-chat creation waits for saved model defaults to be reconciled. Seed-prompt f
 
 `/sessions` opens a searchable inventory in four tabs: **Chats**, **Scheduled runs**, **Child runs**, and **Other**. Unknown legacy or custom rows appear under Other instead of being mislabeled as children. Rows show state, time, turns, title, model, and a short digest handle; the chat you are currently using is marked **`[current]`**. The search applies to the selected tab and matches the row's title, model, workspace, digest, and available relationship details.
 
+Large inventories are progressive: the first page is usable immediately while
+mecatui loads more in the background. New pages preserve your tab, search, exact
+selection, and scroll position, and duplicate rows are suppressed. Press **`c`**
+while loading to stop; **`r`** restarts a cancelled load or retries a failed later
+page. A later failure leaves the rows already on screen. If storage changed between
+pages, mecatui explicitly restarts from page one instead of mixing two inventory
+generations. Closing `/sessions`, or quitting a `mecatui sessions` startup browser,
+cancels outstanding requests without creating or switching chats.
+
+When the connected server advertises storage management, a fifth **Maintenance** tab keeps two
+operations visibly separate:
+
+- **`o` Optimize storage** is semantics-preserving. Its dry run shows v1/v2 and
+  invalid/skipped family counts, estimated reclaim, and temporary-space needs before starting a
+  resumable job. Closing and reopening `/sessions` refetches durable progress. Cancel stops
+  future families; it does not undo families already optimized.
+- **`x` Clean up sessions** is destructive. Its dry run separates eligible and protected
+  main/child/scheduled/unknown/live/awaiting rows. Unknown sessions are protected by default,
+  and bulk apply requires typing `CLEAN UP`; the ordinary single-row delete confirmation does
+  not authorize it. Partial results show apply-time skips, stale rows, failures, and a fresh
+  dry-run retry. Cancel stops future deletions; completed deletions remain committed.
+
+Both actions come from server capability discovery, so embedded and connected clients show only
+what their actual backend and management authority support. Unsupported storage is labelled
+unavailable rather than as zero impact. Progress and item failures use stable sanitized server
+projections—no transcript, tool content, backend path, or raw backend error is displayed. See the
+[full TUI reference](https://github.com/stacklok/mecatl/blob/main/docs/tui.md#overlays).
+
 The selected row shows only actions the server advertises: **`y`** copies its exact
 opaque ID, **`v`** opens its authoritative transcript without attaching, **`f`** forks
 an eligible main chat and adopts the peer, **`r`** edits its persisted title, and
@@ -178,9 +206,13 @@ Quitting follows the unix double-press habit: `ctrl+c` on an empty prompt (or `c
 
 ## Working while the model streams
 
-You don't have to wait for a turn to finish before typing your next thing. Pressing `enter` while a run is streaming **queues** your input instead of sending it — queue as many follow-ups as you like, and they're merged into one prompt and sent the moment the current turn ends. If you change your mind, `↑` on an empty input pulls the queued text back into the box for editing, non-destructively.
+You don't have to wait for a turn to finish before typing your next thing. Pressing `enter` while a run is streaming **steers** the running agent: your message is folded into the *current* run at the next turn boundary (right after the in-flight tool calls settle), so the agent course-corrects mid-task instead of waiting for a separate follow-up turn. Send several lines while the run is going and they land together as one merged message at the next boundary. Until it lands, the steer shows as a **pending card at the bottom** of the transcript ("queued"); the moment the engine drains it, the card clears and the message appears **in context at its true position** — you never see it twice. If the run ended just as you sent, the steer is promoted to a follow-up run instead of being dropped. `↑` on an empty input edits a still-pending steer: it cancels the outstanding send and pulls the whole not-yet-landed set back into the box as **one editable blob**, so your resend is a full replacement (never a duplicate). `esc` retracts a still-pending steer.
 
-`esc` backs out of things in order: it clears whatever you've typed, then clears the queue, then — only if you press it again — cancels the run itself. Nothing is one accidental keystroke away from being lost.
+Steer is on by default. A server started with `--no-steer` (or `steer: false` in the operator settings) disables it; against such a server, `enter` while streaming falls back to **queueing** your input instead — queued follow-ups are merged into one prompt and sent the moment the current turn ends, and `↑` pulls the queued text back for editing.
+
+**Steer debugging.** Two operator-facing toggles help trace a stuck steer lifecycle when something feels off: `MECATUI_DEBUG_STEER=1` shows a one-line correlation trace in the status bar for every steer ack/echo (incoming id, the live bundle's watermark, and the match/burn/drop decision), and `--diagnostics-log <path>` opens a per-instance diagnostics log instead of the shared per-user `$XDG_STATE_HOME/mecatl/mecatui.log` (the embedded server logs the watermark correlation there: each frame's track/enqueue outcome, the watermark consume on drain, and an uncorrelated-echo WARN if an id ever fails to resolve). Both are off/unchanged by default.
+
+`esc` backs out of things in order: it clears whatever you've typed, then clears the queue (or retracts a pending steer), then — only if you press it again — cancels the run itself. Nothing is one accidental keystroke away from being lost.
 
 When an error is a **permanent** provider rejection (a 4xx status other than 408/429, a context-window overflow, a policy block), mecatui shows a one-line summary instead of a raw error block, telling you plainly that retrying won't help and you should start a new session or change the request. The raw error is still available on `ctrl+t` expand. Permanent errors are never auto-retried by the queue.
 

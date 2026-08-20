@@ -132,10 +132,21 @@ type Deps struct {
 	// caps-gated overlays it is NOT gated on a ServerCapabilities bit — the picker
 	// is available whenever a lister + authoritative transcript loader are wired
 	// (a no-FS/cloud server with a durable SessionStore still has stored sessions).
-	Sessions client.SessionLister
+	Sessions client.SessionPager
+	// StorageHealth is the authenticated aggregate health surface. The capability
+	// bit controls whether the Sessions panel advertises its maintenance tab.
+	StorageHealth client.StorageHealthFetcher
+	// Migration and Cleanup are deliberately distinct management seams. Their
+	// server capability bits independently gate the semantics-preserving and
+	// destructive workflows.
+	Migration client.SessionMigrator
+	Cleanup   client.SessionCleaner
 	// SessionManagement mutates stored main-chat metadata. nil leaves rename/delete
 	// undiscoverable even if a custom lister advertises those capabilities.
 	SessionManagement client.SessionManager
+	// Adoption is the authenticated legacy-copy surface. Eligibility is always
+	// taken from its source-correlated preflight, never inferred from row IDs.
+	Adoption client.SessionAdopter
 	// Transcript is the authoritative snapshot-derived conversation surface used
 	// by /sessions for both continuation and read-only inspection. Event replay is
 	// optional activity and never substitutes for this seam.
@@ -245,6 +256,13 @@ type Deps struct {
 	// bug). Default OFF (zero cost when unset); main.go reads the env var.
 	DebugMouse bool
 
+	// DebugSteer turns on a steer correlation trace in the status line (env
+	// MECATUI_DEBUG_STEER=1): each steer ack/echo logs the incoming message_id,
+	// the live bundle's id, and the match/burn/drop decision, so a stuck or
+	// mis-correlated steer lifecycle is visible in the TUI rather than opaque.
+	// Default OFF (zero cost when unset); main.go reads the env var.
+	DebugSteer bool
+
 	// DebugAsk registers the /debug-ask built-in (env MECATUI_DEBUG_ASK=1): it
 	// injects a fake permission ask with long Bash args through the REAL ask
 	// reducer, so the modal's wrap/scroll/full-screen-args behaviour (issue #488)
@@ -298,6 +316,71 @@ const maxQueued = 16
 // textarea on an edit-back), which reads naturally as a multi-part request.
 const queueMergeSep = "\n\n"
 
+// steerPhase is the AUTHORITATIVE lifecycle of a steer-mode (Capabilities.Steer)
+// mid-run operator steer. The server is the sole authority on what happened to a
+// steer (the client cannot observe the exact drain moment across stream latency),
+// so these phases are driven ONLY by the server's steer.outcome acks and the
+// steer drain echo — never assumed client-side.
+type steerPhase int
+
+const (
+	// steerPending: the merged text was sent on the Converse stream but the
+	// server's steer.outcome ack has not arrived yet (send in flight).
+	steerPending steerPhase = iota
+	// steerSent: the server acked accepted/appended — the steer is parked in the
+	// run's single-slot inbox awaiting the next turn-boundary drain.
+	steerSent
+	// steerPromoted: the server acked too_late+promoted — the run had already gone
+	// terminal, so the text was auto-promoted to a fresh follow-up run.
+	steerPromoted
+	// steerFailed: the server acked too_late WITHOUT promoted — the promotion
+	// failed (routing / run-entry / lease / funnel error) and the text was NOT
+	// delivered. Distinct from promoted so the ui does NOT report a successful
+	// follow-up. The text is preserved (it may be re-sent or dropped explicitly).
+	steerFailed
+	// steerRetracted: a steer_cancel won — the pending steer was retracted before
+	// it drained (the run drains nothing for it).
+	steerRetracted
+)
+
+// steerQueuedSend is ONE send in the ordered steer queue: the fresh client-minted
+// message_id of THIS send and the (fragment) text it carried. The ordered queue
+// (steerState.sends) lets the TUI split "drained up to the watermark id" from
+// "still pending after it" on each drain echo, instead of collapsing everything
+// into one re-minted bundle (the duplication bug the append model exposed).
+type steerQueuedSend struct {
+	ID   string
+	Text string
+}
+
+// steerState is the ONE-ELEMENT steer-mode mid-run state: the pending bundle —
+// an ORDERED queue of sends (steerQueuedSend), its merged display text, and its
+// authoritative lifecycle phase. The ordered queue is the SINGLE correlation
+// source (the watermark id is the tail's message_id — derived, never stored);
+// text-display is the blank-line join of sends (cached to avoid a per-render
+// re-join).
+type steerState struct {
+	// Text is the merged display text (the blank-line join of sends) shown on the
+	// card; the wire sends each send's OWN fragment (never the whole merged
+	// text — that would re-append drained text, the duplication bug).
+	Text string
+	// Phase is the authoritative lifecycle (see steerPhase).
+	Phase steerPhase
+	// Sends is the ordered queue of sends currently in this bundle (ID+fragment).
+	// On a drain echo the prefix up to and incl. the watermark id is dropped
+	// (drained); the suffix stays pending and Text re-joins from the remainder.
+	Sends []steerQueuedSend
+}
+
+// watermarkID derives the bundle's current watermark id — the tail send's
+// message_id — or "" for an empty queue (the steerCancel frame's scoping hint).
+func (s *steerState) watermarkID() string {
+	if s == nil || len(s.Sends) == 0 {
+		return ""
+	}
+	return s.Sends[len(s.Sends)-1].ID
+}
+
 // phase is the model's coarse state machine.
 type phase int
 
@@ -343,6 +426,11 @@ type Model struct {
 	// selection cannot race the startup ListModels result.
 	browsingStartupSessions bool
 	modelsReconciled        bool
+	sessionsPageSeq         uint64
+	// Maintenance job handles outlive the Sessions overlay. Reopening uses them
+	// only to refetch server-owned durable progress; the UI owns no job state.
+	maintenanceMigrationJobID string
+	maintenanceCleanupJobID   string
 	// sessionDetailsOpen is the read-only /session surface. The metadata fields
 	// below are refreshed from the current session snapshot; zero timestamps are
 	// rendered as unknown rather than guessed.
@@ -365,54 +453,15 @@ type Model struct {
 	width  int
 	height int
 
-	conv   conversation
-	vp     viewport.Model
-	planVP viewport.Model
-	// planVPReady is true once the plan-review viewport has been populated for the
-	// current plan ask (openPlanReviewView). It gates both the render path (so a
-	// half-initialized planVP never renders) and the scroll-key routing (so a scroll
-	// key before population does not no-op into an empty viewport). Reset to false
-	// whenever the plan ask resolves/retracts/endRun/resetSession clears planVP.
-	planVPReady bool
-	// planVPWidth/planVPHeight record the geometry planVP was LAST populated at, so
-	// relayout can skip a no-op re-population (and the expensive glamour re-wrap +
-	// SetContent it triggers) when the body region did not actually change. A
-	// width/height change re-populates so the plan re-wraps at the new size; the
-	// scroll offset is preserved (clamped) across the re-wrap. Zero before the
-	// first population.
-	planVPWidth, planVPHeight int
-	// planVPFingerprint is the ask fingerprint (Tool + Args + queued + model)
-	// planVP was LAST populated for, so a no-op re-population (same ask, same
-	// geometry) short-circuits in openPlanReviewView — a plan-review keypress
-	// does not re-render the plan. Cleared alongside planVPReady.
-	planVPFingerprint string
+	conv conversation
+	vp   viewport.Model
 
-	// askVPOffset is the YOffset of the permission modal's in-card args
-	// mini-viewport (issue #488): the args region of a non-diff ask is a
-	// height-capped plain string slice scrolled by this offset (NOT a third
-	// viewport.Model — the body is rebuilt per frame/call from the same source,
-	// and the hit-test reuses the same builder, so render and hit-test can never
-	// desync). Reset to 0 on ask advance/retract/endRun/resetSession (via
-	// clearAskArgsView) and when the full-screen args view closes.
-	askVPOffset int
-
-	// The full-screen ask-args view (issue #488) mirrors the planVP cluster
-	// one-for-one: a dedicated viewport the ctrl+t full-args view populates
-	// (openAskArgsView) for a non-diff, non-plan ask, sized to the body region
-	// minus the pinned action bar. argsViewOpen is Model state alongside the
-	// phase (NOT a new phase): the phase stays phaseAwaitingApproval and the
-	// render/hit-test/key arms discriminate on this flag BEFORE the generic
-	// modal arms. argsViewRaw selects the raw-JSON tier (RawArgs toggle).
-	// argsVPWidth/argsVPHeight/argsVPFingerprint drive the same no-op
-	// re-population short-circuit + resize re-wrap (YOffset preserved) as the
-	// planVP trio. All cleared by clearAskArgsView on ask advance/retract/endRun.
-	argsVP            viewport.Model
-	argsVPReady       bool
-	argsVPWidth       int
-	argsVPHeight      int
-	argsVPFingerprint string
-	argsViewRaw       bool
-	argsViewOpen      bool
+	// approval is the approval modal's whole state cluster (issue #555 Phase 1):
+	// the visible ask, the FIFO queue behind it, the answered-set dedupe, and the
+	// scrollable surfaces (plan-review viewport, full-screen ask-args view,
+	// in-card args mini-viewport). Its field docs live on approvalState in
+	// approval_state.go.
+	approval approvalState
 
 	// debugAskCycle rotates the /debug-ask built-in (Deps.DebugAsk) through its
 	// canned long-args payloads so repeated invocations exercise the different
@@ -445,28 +494,8 @@ type Model struct {
 	// thus its known ~1/3 -race flake — no worse than before.
 	tickArmed bool
 
-	activeTool   string     // tool name in flight, shown beside the spinner
-	toolProgress string     // transient progress line for the in-flight tool (cleared on result/turn boundary)
-	ask          pendingAsk // current permission modal (when phaseAwaitingApproval)
-	// askQueue is the FIFO of surfaced permission asks waiting BEHIND the visible
-	// modal — the head is always m.ask (invariant: phase==phaseAwaitingApproval ⟺
-	// m.ask.AskID != ""). Concurrent subagents (team members, parallel Subagent
-	// calls) can surface asks while one is already open; each parks its child
-	// server-side until answered, so a second ask must queue, never clobber the
-	// first. Bounded in practice by the server's child-concurrency gate — no
-	// client-side cap needed. Head-advancement funnels through advanceAsk.
-	askQueue []pendingAsk
-	// askResumePhase is the phase the currently-visible ask interrupted, recorded
-	// by the PermissionAskMsg reducer (the ONLY ask-opening path). advanceAsk
-	// returns to it when the queue drains — a wire ask resumes phaseRunning, a
-	// /debug-ask resumes phaseIdle (never a spinner-running phase no run owns).
-	askResumePhase phase
-	// resolvedAsks is the set of askIDs answered/retracted THIS run — a defensive
-	// same-stream dedupe for re-delivered PermissionAskMsgs (the streamGen guard
-	// already kills stale-reader duplicates; this kills same-stream ones). Lazily
-	// initialised (markAskResolved); a reference type mutable through the
-	// value-receiver Model, same pattern as filesSeen below.
-	resolvedAsks    map[string]struct{}
+	activeTool      string         // tool name in flight, shown beside the spinner
+	toolProgress    string         // transient progress line for the in-flight tool (cleared on result/turn boundary)
 	mcp             mcpState       // MCP overlay state (view==mcpNone when closed)
 	skills          skillsState    // skills-inventory overlay state (view==skillsNone when closed)
 	skillsEpoch     uint64         // model-lifetime monotonic request epoch; never reset on close
@@ -488,11 +517,22 @@ type Model struct {
 	dream           dreamState
 	dreamGen        uint64
 	dreamRequest    uint64
-	models          modelsState    // /models picker overlay state (view==modelsNone when closed)
-	effort          effortState    // /effort picker overlay state (view==effortNone when closed) — ADR 0055
-	worktrees       worktreesState // /worktrees overlay state (view==worktreesNone when closed) — issue #102
-	schedule        scheduleState  // /schedule overlay state (view==scheduleNone when closed) — issue #234
-	sessions        sessionsState  // /sessions overlay state (view==sessionsNone when closed) — issue #245
+	// steer is the steer-mode (Capabilities.Steer) mid-run state: ONE bundle (the
+	// merged operator steer text + its client-minted message_id) with its
+	// AUTHORITATIVE lifecycle — idle → pending (sent, un-acked) → sent (acked,
+	// awaiting drain) → promoted (too_late; the server auto-started a follow-up
+	// run) → failed (too_late without promoted) → retracted (steer_cancel won). nil
+	// when no steer is in flight (the common case) OR steer is disabled (the #228
+	// local merge-queue then owns mid-run input, byte-identical). A ONE-BUNDLE
+	// state — the client-side merge collapses staged lines into ONE text BEFORE
+	// send, so the engine's single-slot inbox only ever has one bundle outstanding.
+	steer     *steerState
+	steerSeq  int            // session-scoped message-id serial (1-based; "steer-%04d")
+	models    modelsState    // /models picker overlay state (view==modelsNone when closed)
+	effort    effortState    // /effort picker overlay state (view==effortNone when closed) — ADR 0055
+	worktrees worktreesState // /worktrees overlay state (view==worktreesNone when closed) — issue #102
+	schedule  scheduleState  // /schedule overlay state (view==scheduleNone when closed) — issue #234
+	sessions  sessionsState  // /sessions overlay state (view==sessionsNone when closed) — issue #245
 	// activeModel is the currently-selected (provider, model) the NEXT CreateSession
 	// will carry (apply-on-next-create). Seeded from Deps.InitialModel, updated by the
 	// picker, and reconciled-to-default at connect when its provider is unavailable. It
@@ -891,9 +931,11 @@ func New(deps Deps) Model {
 		m.modelsReconciled = deps.Models == nil
 		m.sessions = newSessionsPanelState()
 		m.sessions.startup = true
+		m = m.beginSessionPagination()
 		m.ta.Blur()
 		if deps.Sessions == nil {
 			m.sessions.loading = false
+			m.sessions.loadState = sessionsInitialPageError
 			m.sessions.err = errors.New("session inventory unavailable")
 		}
 	}
@@ -999,11 +1041,7 @@ func (m Model) resetSession() Model {
 	// "owns all session-derived state" invariant honest — and the restart-now
 	// handoff goes through here. The plan-review viewport is cleared alongside (a
 	// plan ask may have been open), as is the full-screen ask-args view.
-	(&m).clearPlanReview()
-	(&m).clearAskArgsView()
-	m.ask = pendingAsk{}
-	m.askQueue = nil
-	m.resolvedAsks = nil
+	m.approval.reset()
 	m.queued = nil
 	m.queuePaused = ""
 	// Drop staged-but-unsent media attachments: /clear wipes the session-derived
@@ -1067,7 +1105,7 @@ func (m Model) Init() tea.Cmd {
 			cmds = append(cmds, client.ListModelsCmd(m.deps.Ctx, m.deps.Models))
 		}
 		if m.deps.Sessions != nil {
-			cmds = append(cmds, client.ListSessionsCmd(m.deps.Ctx, m.deps.Sessions), textinput.Blink)
+			cmds = append(cmds, m.sessionPageCmd(), textinput.Blink)
 		}
 		return tea.Batch(cmds...)
 	}

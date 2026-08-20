@@ -171,6 +171,7 @@ var flagMetaByFlag = map[string]flagMeta{
 	"import-claude-permissions": {group: groupPermissions, common: false, acp: acpInclude},
 	"permission-config":         {group: groupPermissions, common: false, acp: acpInclude},
 	"plan-mode-auto-approve":    {group: groupPermissions, common: false, acp: acpInclude},
+	"no-steer":                  {group: groupPermissions, common: false, acp: acpInclude},
 
 	// ── Guardrails (both) ────────────────────────────────────────────────
 	"guardrails-model": {group: groupGuardrails, common: false, acp: acpInclude},
@@ -185,6 +186,7 @@ var flagMetaByFlag = map[string]flagMeta{
 	"child-gc-interval":              {group: groupStorage, common: false, acp: acpInclude},
 	"main-retention":                 {group: groupStorage, common: false, acp: acpInclude},
 	"main-retention-max-total":       {group: groupStorage, common: false, acp: acpInclude},
+	"acknowledge-main-retention":     {group: groupStorage, common: false, acp: acpInclude},
 
 	// ── Soul & user model (both) ─────────────────────────────────────────
 	"soul-file":                       {group: groupMemoryKnowledge, common: false, acp: acpInclude},

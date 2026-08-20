@@ -16,7 +16,7 @@ const UNCONFIGURED = new Set(["", "unknown", "none", "mock"]);
 
 /**
  * Read-only by design: provider credentials never cross the browser/controller
- * boundary (ADR 0228). There is no add/remove-provider write path anywhere in
+ * boundary (ADR 0233). There is no add/remove-provider write path anywhere in
  * mecated or the controller — a key never travels through browser JS or the
  * Node supervisor process. What this card CAN honestly do: name every
  * provider block already present in auth.yaml (never their key values), show

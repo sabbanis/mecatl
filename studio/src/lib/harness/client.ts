@@ -514,7 +514,7 @@ export interface HarnessControlStatus {
   /**
    * Provider NAMES found in the operator's auth.yaml — never credentials.
    * Adding or removing one means editing that file on the machine running
-   * mecated; Studio has no write path for it by design (ADR 0228).
+   * mecated; Studio has no write path for it by design (ADR 0233).
    */
   configuredProviders: string[];
   /** Which of those MECATL_STUDIO_PROVIDER currently selects, if set. */

@@ -163,6 +163,18 @@ type Resolver struct {
 	// are evaluated separately because they may only tighten this ceiling.
 	operatorLearning *LearningSection
 
+	// operatorSteer is the OPERATOR-TIER steer: scalar (steer-while-running, issue
+	// #512), read ONCE at construction from the user-global + CLI tiers ONLY. A
+	// project-tier file's steer: key is deliberately IGNORED (operator-tier only,
+	// for consistency with posture — loadProjectRules WARNs when it sees one).
+	// operatorSteerSet records whether ANY operator-tier file carried the key, so
+	// ABSENT is distinguishable from an explicit steer: false (the knob is an
+	// opt-OUT of a default-ON feature, so the composition layer needs the
+	// presence bit, not just the bool). CLI (explicit files) out-ranks user-global
+	// (first-present keeps CLI).
+	operatorSteer    bool
+	operatorSteerSet bool
+
 	// operatorModels is the OPERATOR-TIER models: subtree (ADR 0030), read ONCE at
 	// construction from the user-global + CLI tiers ONLY (the SOLE capture path is
 	// captureModels from loadUserRules; there is no second capture path). It carries
@@ -188,8 +200,26 @@ type Resolver struct {
 	// first-non-nil; project mcp blocks are warning-only and never captured.
 	operatorMCP *MCPSection
 
+	// operatorRetention is the first complete operator-tier retention block.
+	operatorRetention    *RetentionSection
+	operatorRetentionErr error
+
+	// operatorStorageManagement is the first complete operator-tier authority
+	// block. Parse failures are retained so composition fails closed at startup.
+	operatorStorageManagement    *StorageManagementSection
+	operatorStorageManagementErr error
+
 	mu    sync.RWMutex
 	cache map[string]*cacheEntry // keyed by ws.Root()
+}
+
+// OperatorStorageManagement returns the immutable operator-tier management
+// authority block and any strict parse failure that would otherwise disable it.
+func (r *Resolver) OperatorStorageManagement() (*StorageManagementSection, error) {
+	if r == nil {
+		return nil, nil
+	}
+	return r.operatorStorageManagement, r.operatorStorageManagementErr
 }
 
 // OperatorGuardrails returns the operator-tier guardrails config (user-global + CLI
@@ -294,6 +324,21 @@ func (r *Resolver) ProjectLearningSettings(ws tool.WorkspaceReader) []*LearningS
 	return result
 }
 
+// OperatorSteer returns the OPERATOR-TIER steer: bool (user-global + CLI only) and
+// whether ANY operator-tier file carried the key (steer-while-running, issue #512).
+// It is the SOLE accessor the composition layer uses to read the knob from config —
+// by construction it never returns a project-tier value (a project steer: is ignored
+// with a WARN in loadProjectRules). The presence bit matters because the knob is an
+// opt-OUT of a DEFAULT-ON feature: absent (present=false) means composition keeps the
+// default; an explicit steer: false (present=true, value=false) disables it. nil-safe.
+// Mirrors OperatorPosture().
+func (r *Resolver) OperatorSteer() (value, present bool) {
+	if r == nil {
+		return false, false
+	}
+	return r.operatorSteer, r.operatorSteerSet
+}
+
 // OperatorModelSlots returns the operator-tier models: subtree (user-global + CLI
 // only), or nil when none was configured. It is the SOLE accessor the composition
 // layer uses to read per-slot model config from disk — by construction it never
@@ -326,6 +371,14 @@ func (r *Resolver) OperatorMCP() *MCPSection {
 		return nil
 	}
 	return r.operatorMCP
+}
+
+// OperatorRetention returns the immutable operator-tier retention block.
+func (r *Resolver) OperatorRetention() (*RetentionSection, error) {
+	if r == nil {
+		return nil, nil
+	}
+	return r.operatorRetention, r.operatorRetentionErr
 }
 
 // OperatorModelPolicy returns the operator-tier models: subtree (user-global + CLI
@@ -569,6 +622,14 @@ func (r *Resolver) loadProjectRules(ws tool.WorkspaceReader) ([]governance.Rule,
 				"plan-mode-auto-approve: IGNORING a project-tier plan-mode-auto-approve: key (operator-tier only — a project repo cannot enable autonomous plan approval; set plan-mode-auto-approve in your user-global settings.yaml or via --plan-mode-auto-approve)",
 				"file", src.path, "root", ws.Root())
 		}
+		// Steer is OPERATOR-TIER ONLY (issue #512), for consistency with posture: a
+		// project file's steer: key is IGNORED with a loud WARN. The harness's
+		// operator surface is not a project repo's to flip in either direction.
+		if cfg.Steer != nil {
+			r.diag.Log(context.Background(), port.LevelWarn,
+				"steer: IGNORING a project-tier steer: key (operator-tier only — a project repo cannot change the mid-run steer surface; set steer in your user-global settings.yaml or via --no-steer)",
+				"file", src.path, "root", ws.Root())
+		}
 		// OpenRouter downstream-provider routing is OPERATOR-TIER ONLY (issue #480): a
 		// project file's openrouter: block is IGNORED with a loud WARN. Steering requests
 		// to a particular downstream inference provider is a spend/compliance/capability
@@ -582,6 +643,16 @@ func (r *Resolver) loadProjectRules(ws tool.WorkspaceReader) ([]governance.Rule,
 		if cfg.MCP != nil {
 			r.diag.Log(context.Background(), port.LevelWarn,
 				"mcp: IGNORING a project-tier mcp: block (operator-tier only — a project repo cannot configure global MCP servers)",
+				"file", src.path, "root", ws.Root())
+		}
+		if cfg.Retention != nil {
+			r.diag.Log(context.Background(), port.LevelWarn,
+				"retention: IGNORING a project-tier retention block (operator-tier only; projects cannot weaken cleanup protection)",
+				"file", src.path, "root", ws.Root())
+		}
+		if cfg.StorageManagement != nil {
+			r.diag.Log(context.Background(), port.LevelWarn,
+				"storage_management: IGNORING a project-tier authority block (operator-tier only)",
 				"file", src.path, "root", ws.Root())
 		}
 		// models: is project-overridable WITHIN AN OPERATOR ALLOWLIST (ADR 0030 Phase 4),
@@ -738,6 +809,15 @@ func (r *Resolver) applyTrustGate(rules []governance.Rule, report *Report) []gov
 // root-independent user-global config (XDG/home) at ScopeUser, all fully trusted.
 // Read from the host filesystem via the injectable env (NOT a workspace — these
 // live outside any session root). Fail-soft per file.
+func (r *Resolver) captureOperatorParseError(data []byte, err error) {
+	if hasTopLevelKey(data, "retention") && r.operatorRetentionErr == nil {
+		r.operatorRetentionErr = err
+	}
+	if hasTopLevelKey(data, "storage_management") && r.operatorStorageManagementErr == nil {
+		r.operatorStorageManagementErr = err
+	}
+}
+
 func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 	var rules []governance.Rule
 
@@ -755,6 +835,7 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 		}
 		cfg, perr := parseYAML(data)
 		if perr != nil {
+			r.captureOperatorParseError(data, perr)
 			deny, ask, allow, counted := lostRuleCounts(data)
 			r.diag.Log(context.Background(), port.LevelWarn, "permission config: explicit file invalid; skipping (its rules are LOST, deny/ask included)",
 				"file", path, "err", perr,
@@ -773,12 +854,16 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 		r.capturePlanModeAutoApprove(cfg.PlanModeAutoApprove)
 		// Operator-tier learning: same first-non-nil-keeps-CLI discipline.
 		r.captureLearning(cfg.Learning)
+		// Operator-tier steer (issue #512): same discipline as posture.
+		r.captureSteer(cfg.Steer)
 		// Operator-tier models: same first-non-nil-keeps-CLI discipline (ADR 0030).
 		r.captureModels(cfg.Models)
 		// Operator-tier openrouter: same first-non-nil-keeps-CLI discipline (issue #480).
 		r.captureOpenRouter(cfg.OpenRouter)
 		// Operator-tier MCP profiles: capture the complete first block; never field-merge.
 		r.captureMCP(cfg.MCP)
+		r.captureRetention(cfg.Retention)
+		r.captureStorageManagement(cfg.StorageManagement)
 	}
 
 	if !r.opts.Conventional {
@@ -790,6 +875,7 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 		path := filepath.Join(cfgDir, userSubdirMecatl)
 		if data, err := r.env.ReadFile(path); err == nil {
 			if cfg, perr := parseYAML(data); perr != nil {
+				r.captureOperatorParseError(data, perr)
 				deny, ask, allow, counted := lostRuleCounts(data)
 				r.diag.Log(context.Background(), port.LevelWarn, "permission config: user YAML invalid; skipping (its rules are LOST, deny/ask included)",
 					"file", path, "err", perr,
@@ -806,12 +892,16 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 				r.capturePlanModeAutoApprove(cfg.PlanModeAutoApprove)
 				// User-global learning: captured only if no higher CLI file already did.
 				r.captureLearning(cfg.Learning)
+				// User-global steer (issue #512): same discipline as posture.
+				r.captureSteer(cfg.Steer)
 				// User-global models: captured only if no higher CLI file already did.
 				r.captureModels(cfg.Models)
 				// User-global openrouter: captured only if no higher CLI file already did.
 				r.captureOpenRouter(cfg.OpenRouter)
 				// User-global MCP: captured only if no higher CLI file already did.
 				r.captureMCP(cfg.MCP)
+				r.captureRetention(cfg.Retention)
+				r.captureStorageManagement(cfg.StorageManagement)
 			}
 		}
 	}
@@ -897,6 +987,21 @@ func (r *Resolver) capturePlanModeAutoApprove(p bool) {
 	r.operatorPlanModeAutoApprove = p
 }
 
+// captureSteer records the FIRST operator-tier steer: scalar seen during
+// construction (CLI files are parsed before user-global, so CLI wins on
+// first-present). It is called only from loadUserRules — the operator (user-global
+// + CLI) tiers — never from loadProjectRules, so a project file can never supply it
+// (operator-tier only, for consistency with posture — issue #512). A nil *bool
+// (the key absent) is a no-op; a non-nil value records BOTH the value and the
+// presence bit (the knob is an opt-OUT, so presence is load-bearing).
+func (r *Resolver) captureSteer(s *bool) {
+	if s == nil || r.operatorSteerSet {
+		return
+	}
+	r.operatorSteer = *s
+	r.operatorSteerSet = true
+}
+
 // captureModels records the FIRST operator-tier models: block seen during
 // construction (CLI files are parsed before user-global, so CLI wins on
 // first-non-nil). It is called only from loadUserRules — the operator (user-global
@@ -929,6 +1034,20 @@ func (r *Resolver) captureMCP(s *MCPSection) {
 		return
 	}
 	r.operatorMCP = s
+}
+
+func (r *Resolver) captureRetention(s *RetentionSection) {
+	if s == nil || r.operatorRetention != nil {
+		return
+	}
+	r.operatorRetention = s
+}
+
+func (r *Resolver) captureStorageManagement(s *StorageManagementSection) {
+	if s == nil || r.operatorStorageManagement != nil {
+		return
+	}
+	r.operatorStorageManagement = s
 }
 
 // specOf reconstructs a human-readable "Tool(pattern)" spec from a rule, for the

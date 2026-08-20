@@ -182,6 +182,29 @@ type Config struct {
 	Engine *agent.Engine
 	// Store persists and looks up sessions. Required.
 	Store port.SessionStore
+	// StorageManagementAuthorized gates process-wide storage health. A nil
+	// authorizer disables the management capability. It must be derived from the
+	// trusted request context, never request-supplied owner data.
+	StorageManagementAuthorized func(context.Context) bool
+	// LocalStorageMaintenanceSingleWriter is true only when composition has proved
+	// the store itself is private to this process (the in-process IsLive registry
+	// plus backend family locks are then sufficient). Management authorization is
+	// not such a proof. Any durable or otherwise shareable store must leave this
+	// false and wire a working SessionLease before destructive migration, cleanup,
+	// or automatic retention is advertised or run.
+	LocalStorageMaintenanceSingleWriter bool
+	// SessionLiveness carries process-local engine-owned child activity. Service's
+	// own runs map covers top-level runs; delegation children never enter that map,
+	// so destructive maintenance must consult both. Cross-process activity remains
+	// protected by SessionLease.
+	SessionLiveness port.SessionLiveness
+	// RetentionPolicy is the effective operator policy projected into health.
+	RetentionPolicy RetentionPolicy
+	// StorageMaintenanceStatus reports the shared retention/migration/cleanup lifecycle.
+	StorageMaintenanceStatus func() StorageMaintenanceStatus
+	// StorageMaintenanceUpdate receives sanitized lifecycle transitions. nil keeps
+	// maintenance APIs functional without process-wide health observability.
+	StorageMaintenanceUpdate func(StorageMaintenanceEvent)
 	// OwnershipEnforced is true only when the request edge has a verifier wired.
 	// Its zero value preserves the ownerless compatibility path. When enabled,
 	// create retries compare the verified issuer/subject pair before exposing an
@@ -836,6 +859,21 @@ type Service struct {
 	// s.mu.
 	replayedApprovals map[session.SessionID]struct{}
 
+	// steerMsgIDs correlates a DRAINED steer's EvSteer echo with the client-minted
+	// message_id of the Steer frame that parked it (issue #512): the engine inbox
+	// parks TEXT ONLY, so the id lives at this wire-correlation layer. On each
+	// accepted/appended steer the Service appends the frame's id to the session's
+	// ordered list; when the EvSteer drain echo commits, the relay pops the WHOLE
+	// list and stamps the echo with the LATEST (tail) id — the WATERMARK the client
+	// splits its ordered queue on (positional, never text-match — pinned by
+	// internal/adapter/server/steer_watermark_pin_test.go). An unmatched echo (a
+	// steer enqueued by another surface with no id, or a drain after a retract)
+	// rides with "". The whole list is consumed on drain, dropped on retract
+	// (dropSteerMessageID), cleared on register() of a fresh run, and deleted on
+	// CloseSession — so the map holds at most one entry per accepted-unresolved
+	// steer. Guarded by s.mu.
+	steerMsgIDs map[session.SessionID][]steerMsgID
+
 	// heldLeases tracks the cross-process session leases this process currently
 	// holds (cloud-native Phase 4, ADR 0027). A lease is acquired ONCE per session
 	// on first run-entry (after the per-session runEntryMu) and held for the
@@ -885,6 +923,13 @@ type Service struct {
 	// manager holds the cadence floor, the late-set in-process scheduler, the
 	// durable EventLog, diagnostics, and the SHARED model-inventory pointer.
 	schedMgr *scheduleManager
+
+	// cleanupTokenKey signs opaque caller/scope/generation-bound confirmation
+	// handles; cleanupPlans and cleanupJobs retain bounded payloads/projections for
+	// apply and management inspection during this process lifetime. Guarded by s.mu.
+	cleanupTokenKey [32]byte
+	cleanupPlans    map[string]cleanupTokenPayload
+	cleanupJobs     map[string]cleanupJobRecord
 
 	// subscriptions is the per-session live event subscription registry (ADR 0075
 	// decision #5): a connected client (e.g. the embedded server's mecatui) holds
@@ -1058,6 +1103,10 @@ func NewService(cfg Config) (*Service, error) {
 			cfg.LeaseRenewInterval = cfg.LeaseTTL // tiny-TTL guard: never a zero ticker.
 		}
 	}
+	var cleanupTokenKey [32]byte
+	if _, err := rand.Read(cleanupTokenKey[:]); err != nil {
+		return nil, fmt.Errorf("server: initialize cleanup token signer: %w", err)
+	}
 	_, shutdownCancel := context.WithCancel(context.Background())
 	svc := &Service{
 		cfg:                 cfg,
@@ -1068,7 +1117,11 @@ func NewService(cfg Config) (*Service, error) {
 		sessionEnvironments: make(map[session.SessionID]tool.Environment),
 		reservedIDs:         make(map[session.SessionID]struct{}),
 		replayedApprovals:   make(map[session.SessionID]struct{}),
+		steerMsgIDs:         make(map[session.SessionID][]steerMsgID),
 		heldLeases:          make(map[session.SessionID]*heldLease),
+		cleanupTokenKey:     cleanupTokenKey,
+		cleanupPlans:        make(map[string]cleanupTokenPayload),
+		cleanupJobs:         make(map[string]cleanupJobRecord),
 		subscriptions:       make(map[session.SessionID]map[int64]chan session.Event),
 	}
 	// Seed the model inventory from the static snapshot. ListModels and the
@@ -1736,7 +1789,17 @@ func (s *Service) capabilities() *mecatlv1.ServerCapabilities {
 		LearningProposals: s.cfg.Proposals != nil,
 		LearnedSkills:     s.cfg.LearnedSkills != nil,
 		Scheduling:        s.scheduleStore() != nil,
+		StorageHealth:     s.cfg.StorageManagementAuthorized != nil && implementsStorageHealth(s.cfg.Store),
+		StorageMigration:  s.cfg.StorageManagementAuthorized != nil && s.maintenanceMutationAvailable() && func() bool { _, ok := migrationStore(s.cfg.Store); return ok }(),
+		StorageCleanup:    s.cfg.StorageManagementAuthorized != nil && s.maintenanceMutationAvailable() && supportsCleanupDelete(s.cfg.Store),
+		LegacyAdoption:    s.cfg.OwnershipEnforced && s.cfg.SessionEngine != nil,
 		ManualDream:       toProtoDreamCapabilities(s.ManualDreamCapabilities()),
+		// Steer reads the SAME wired engine knob the runs consult (Deps.EnableSteer
+		// via Engine.SteerEnabled) — the advertisement can never claim a steer
+		// path the engine did not arm, and it is computed HERE, once, never
+		// recomputed per sink (the CreateSession echo and the Session snapshot
+		// re-hydration path both carry this one value).
+		Steer: s.cfg.Engine != nil && s.cfg.Engine.SteerEnabled(),
 	}
 }
 
@@ -1824,6 +1887,11 @@ func (s *Service) CloseSession(id session.SessionID) {
 	// sync.Map; like the approval-replay marker above, clearing it keeps the map
 	// from growing unbounded on a long-lived server.
 	s.recoverNotices.Delete(id)
+	// Drop any un-drained steer correlation ids (ADR-0228 review finding): a
+	// session closed with a parked-but-undrained steer would otherwise leak an
+	// entry in steerMsgIDs until process exit (same unbounded-map class the
+	// neighboring two deletes close).
+	delete(s.steerMsgIDs, id)
 	s.mu.Unlock()
 	if ok && se.close != nil {
 		_ = se.close()
@@ -2112,6 +2180,67 @@ func (s *Service) DeleteSession(ctx context.Context, id session.SessionID) error
 	}
 	s.CloseSession(id)
 	return nil
+}
+
+var (
+	errRetentionCandidateActive  = fmt.Errorf("%w: retention candidate is active", ErrFailedPrecondition)
+	errRetentionCandidateChanged = fmt.Errorf("%w: retention candidate changed", ErrFailedPrecondition)
+)
+
+// DeleteSessionForRetentionCandidate removes one exact planner candidate while
+// keeping the mandatory maintenance/run-entry lease exclusions held through the
+// backend's atomic final metadata comparison and family deletion. Automatic and
+// manual retention intentionally use the same exclusion posture.
+func (s *Service) DeleteSessionForRetentionCandidate(ctx context.Context, candidate port.SessionDiscoveryMeta) error {
+	unlock := s.runEntryMu.lock(candidate.ID)
+	defer unlock()
+	deleter, ok := s.cfg.Store.(port.ConditionalPrunableStore)
+	if !ok {
+		return ErrSessionDeleteUnsupported
+	}
+	if s.IsLive(candidate.ID) {
+		return errRetentionCandidateActive
+	}
+	release, err := s.acquireMaintenanceMutationLease(ctx, candidate.ID)
+	if err != nil {
+		return err
+	}
+	defer release()
+	if s.IsLive(candidate.ID) {
+		return errRetentionCandidateActive
+	}
+	sess, err := s.cfg.Store.Load(ctx, candidate.ID)
+	if err != nil {
+		if errors.Is(err, port.ErrSessionNotFound) {
+			return errRetentionCandidateChanged
+		}
+		return fmt.Errorf("%w: load retention candidate: %v", ErrInternal, err)
+	}
+	if !retentionCandidateMatches(sess, candidate) {
+		return errRetentionCandidateChanged
+	}
+	deleted, err := deleter.DeleteSessionIfUnchanged(ctx, candidate)
+	if err != nil {
+		if errors.Is(err, port.ErrPruneUnsupported) {
+			return ErrSessionDeleteUnsupported
+		}
+		return fmt.Errorf("%w: delete retention candidate: %v", ErrInternal, err)
+	}
+	if !deleted {
+		return errRetentionCandidateChanged
+	}
+	s.CloseSession(candidate.ID)
+	return nil
+}
+
+func retentionCandidateMatches(sess *session.Session, candidate port.SessionDiscoveryMeta) bool {
+	if sess == nil {
+		return false
+	}
+	ownerMatches := candidate.Owner == nil && sess.Owner == nil || candidate.Owner != nil && candidate.Owner.SameIdentity(sess.Owner)
+	return sess.ID == candidate.ID && ownerMatches && sess.Kind == candidate.Kind && sess.State == candidate.State &&
+		sess.State != session.StateRunning && sess.State != session.StateAwaiting && sess.Kind != session.SessionKindUnknown &&
+		session.ValidateSessionMetadata(sess.Kind, sess.Relationship) == nil
 }
 
 // DeleteSessionForRetention removes one session selected by the composition-owned
@@ -2542,55 +2671,55 @@ func (s *Service) reopenLoadedSession(ctx context.Context, sess *session.Session
 	// re-derives idempotent rules). It reads the LOADED conversation to correlate the
 	// verdicts, so it must run after GetSession and before the engine runs.
 	s.maybeReplayApprovals(ctx, sess)
+	if sess.State == session.StateFailed && sess.FailurePermanence() {
+		// Capture permanence BEFORE Recover() clears it (resetToIdle sets
+		// permanent=false). Store the pre-flight advisory so the relay can emit
+		// an EvRecoverNotice before the next turn burns a provider call on the
+		// same unrecoverable error. Use LoadOrStore so two concurrent loads of
+		// the same session (under different surface adapters) still emit exactly
+		// ONE notice. Keyed by the session id.
+		s.recoverNotices.LoadOrStore(id, recoverNoticeText)
+	}
+	if err := s.repairTerminalState(ctx, sess); err != nil {
+		return nil, err
+	}
+	return sess, nil
+}
+
+// repairTerminalState is the recover-if-terminal arm shared by loadAndReopen
+// (the run-entry funnel) and StartRunContent's post-drain-grace re-repair:
+// completed → Reopen, cancelled → Interrupt, failed →
+// Recover (each history-repaired), persisted, so the matching Run never drives
+// an illegal RecordUserPrompt-from-terminal. Awaiting, idle, and running are
+// deliberate no-ops: awaiting is the preserved Phase-2 resume point (repairing
+// it would clear its still-resolvable PendingAsk); idle is the target state;
+// running is repaired ONLY by StartRunContent's crash-orphan Abandon arm, AFTER
+// it holds the real lock/lease (issue #475) — never here.
+func (s *Service) repairTerminalState(ctx context.Context, sess *session.Session) error {
 	switch sess.State {
 	case session.StateCompleted:
 		if rerr := sess.Reopen(); rerr != nil {
-			return nil, fmt.Errorf("server: reopen session: %w", rerr)
+			return fmt.Errorf("server: reopen session: %w", rerr)
 		}
 		if serr := s.cfg.Store.Save(ctx, sess); serr != nil {
-			return nil, fmt.Errorf("server: persist reopened session: %w", serr)
+			return fmt.Errorf("server: persist reopened session: %w", serr)
 		}
 	case session.StateCancelled:
 		if rerr := sess.Interrupt(); rerr != nil {
-			return nil, fmt.Errorf("server: interrupt session: %w", rerr)
+			return fmt.Errorf("server: interrupt session: %w", rerr)
 		}
 		if serr := s.cfg.Store.Save(ctx, sess); serr != nil {
-			return nil, fmt.Errorf("server: persist interrupted session: %w", serr)
+			return fmt.Errorf("server: persist interrupted session: %w", serr)
 		}
 	case session.StateFailed:
-		// Capture permanence BEFORE Recover() clears it (resetToIdle
-		// sets permanent=false). Store the pre-flight advisory so the
-		// relay can emit an EvRecoverNotice before the next turn burns a
-		// provider call on the same unrecoverable error.
-		if sess.FailurePermanence() {
-			// Use LoadOrStore so two concurrent loads of the same
-			// session (under different surface adapters) still emit
-			// exactly ONE notice. Keyed by the session id.
-			s.recoverNotices.LoadOrStore(id, recoverNoticeText)
-		}
 		if rerr := sess.Recover(); rerr != nil {
-			return nil, fmt.Errorf("server: recover session: %w", rerr)
+			return fmt.Errorf("server: recover session: %w", rerr)
 		}
 		if serr := s.cfg.Store.Save(ctx, sess); serr != nil {
-			return nil, fmt.Errorf("server: persist recovered session: %w", serr)
+			return fmt.Errorf("server: persist recovered session: %w", serr)
 		}
-		// case session.StateAwaiting: intentionally no-op. Awaiting is the
-		// deliberately-preserved Phase 2 cross-process resume point
-		// (resumeFromAwaiting) — repairing it here would clear its still-resolvable
-		// PendingAsk. It stays terminal-for-loadAndReopen's purposes by falling
-		// through this switch untouched.
-		// case session.StateIdle: intentionally no-op. Idle is already the target
-		// state every other case resets TO — nothing to repair.
-		//
-		// case session.StateRunning is intentionally NOT handled here (issue #475):
-		// a crash-orphaned "running" snapshot is repaired by StartRunContent itself,
-		// AFTER it holds the real lease/lock (see the repair beside runEntryMu/
-		// acquireLease below) — never inside this pre-lock funnel, where a trial
-		// lease could collide with a concurrent caller or a peer's genuine
-		// acquireLease. loadAndReopen has no lock/lease of its own to make that
-		// repair safe.
 	}
-	return sess, nil
+	return nil
 }
 
 // RecoverNotice returns the pre-flight advisory message for session id when
@@ -2828,6 +2957,214 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	run := engine.Run(ctx, sess, env, agent.RunRequest{Text: text, Parts: parts})
 	s.register(id, run, sess)
 	return run, nil
+}
+
+// Steer routes an operator steer (mid-run injected input, issue #512) for a
+// session to the right home. It is the Service-level routing decision the
+// wire-facing steer handler drives: the steer NEVER drops silently.
+//
+//   - LIVE run: if a run is registered AND its steer inbox still accepts it,
+//     the text enqueues to that run's steer inbox (the run drains it at the next
+//     turn boundary) and the function reports the engine's authoritative outcome
+//     (accepted / appended) with promoted=false.
+//   - LOST TERMINAL RACE: no live run, or the live run's inbox already closed
+//     (the engine reported too_late — the run went terminal behind the caller's
+//     "still running" belief): the steer is PROMOTED into a fresh follow-up run
+//     through the EXISTING hardened run-entry funnel — StartRunContent
+//     (loadAndReopen + the lease + recover-if-completed / interrupt-if-cancelled
+//     / recover-if-failed / abandon-if-crash-orphaned-running) — exactly like a
+//     normal follow-up prompt, and reported as (agent.SteerTooLate, true).
+//
+// The returned promotedRun (non-nil only when promoted) is the registered
+// follow-up run the caller must drain + FinishRun, exactly as StartRunContent's
+// caller does. An unknown session id yields ErrNotFound (via the funnel); a
+// terminal-state repair failure surfaces as the funnel's error.
+//
+// messageID is the client-minted correlation id of the Steer frame ("" when the
+// caller supplied none). On an accepted steer it parks in the session's FIFO so
+// the EvSteer drain echo can echo it (LookupSteerMessageID); the ACK-side echo
+// is the caller's own frame field (it never crosses the Service).
+func (s *Service) Steer(ctx context.Context, id session.SessionID, text, messageID string) (agent.SteerOutcome, bool, *agent.Run, error) {
+	// Authorize before touching the in-memory registry or the run-entry funnel:
+	// a steer injects caller input into a run / drives a follow-up, so a foreign
+	// request must be absence-equivalent (ErrNotFound), mirroring Cancel/Approve.
+	if _, err := s.GetSession(ctx, id); err != nil {
+		return agent.SteerTooLate, false, nil, err
+	}
+	// Live-run fast path: enqueue to the run's steer inbox. A live run whose
+	// engine disarmed steer (EnableSteer off) reports too_late; it is PROMOTED
+	// rather than dropped — same lost-race contract as a closed inbox.
+	if run, ok := s.LookupRun(id); ok {
+		outcome, err := run.EnqueueSteer(text)
+		if err == nil && outcome != agent.SteerTooLate {
+			// Track BOTH accepted (new bundle) and appended (merged into the pending
+			// bundle): the watermark echo needs the full ordered id-list of the
+			// bundle that drains.
+			if outcome == agent.SteerAccepted || outcome == agent.SteerAppended {
+				s.trackSteerMessageID(id, messageID)
+			}
+			return outcome, false, nil, nil
+		}
+		if err != nil {
+			return outcome, false, nil, fmt.Errorf("server: steer enqueue: %w", err)
+		}
+	}
+	// Terminal race → promote through the run-entry funnel. An unknown id or an
+	// unrepaired-terminal-state error surfaces here rather than ever dropping.
+	//
+	// Drain-grace: the too_late steer usually arrives in
+	// the TERMINATE WINDOW — the original run went terminal (its inbox closed)
+	// but its relay is still draining, so the run is still REGISTERED and a bare
+	// StartRunContent would hit the funnel's IsLive / StateRunning guards and
+	// drop the steer with a bare too_late ack. The promote path is the ONE place
+	// that must wait out that drain: only a terminal-but-still-registered run
+	// can deregister within steerPromoteGrace (a genuinely in-flight run's relay
+	// drains continuously, so the lapse correctly refuses it), and ONLY the
+	// promoted steer pays the wait — the shared funnel stays byte-identical, so
+	// a concurrent legitimate prompt on the same live session is never wrongly
+	// delayed.
+	promotedRun, err := s.promotedSteerRun(ctx, id, text)
+	if err != nil {
+		return agent.SteerTooLate, false, nil, err
+	}
+	return agent.SteerTooLate, true, promotedRun, nil
+}
+
+// promotedSteerRun is Service.Steer's promote path: try the funnel
+// once, and only on a liveness conflict await the original run's deregister
+// (bounded by steerPromoteGrace) then retry — so the just-terminal,
+// still-draining run clears and the follow-up drives through the hardened
+// funnel instead of dropping the steer. Holding the wait HERE — never inside
+// the shared StartRunContent — keeps the concurrent-live-prompt contract
+// byte-identical: only the promoted steer waits out a drain, so a prompt on a
+// genuinely-live session is not slowed by the grace. An unknown session id
+// surfaces ErrNotFound from the first funnel call.
+func (s *Service) promotedSteerRun(ctx context.Context, id session.SessionID, text string) (*agent.Run, error) {
+	run, err := s.StartRunContent(ctx, id, text, nil)
+	if err == nil {
+		return run, nil // no live run blocked the entry — promoted immediately
+	}
+	if !errors.Is(err, ErrFailedPrecondition) {
+		return nil, err // not a liveness conflict — surface it (e.g. ErrNotFound)
+	}
+	// Liveness conflict: the original run is still registered. If it is the
+	// terminal-but-draining run the grace exists for, it clears within
+	// steerPromoteGrace; a run still registered at the lapse is genuinely
+	// in-flight (its relay drains continuously), so the lapse refuses the
+	// promotion. Only a terminal-but-still-registered run can possibly
+	// deregister inside the grace, so the wait is near-zero after the relay
+	// finished and correctly bounds the refusal.
+	if !s.awaitRunDeregister(ctx, id, steerPromoteGrace) {
+		return nil, err // the run is genuinely in-flight — refuse the promotion
+	}
+	// Registry cleared: the original relay finished and the run's final terminal
+	// state is durable. Drive the follow-up through the hardened funnel, which
+	// now sees the terminal state and reopens it.
+	return s.StartRunContent(ctx, id, text, nil)
+}
+
+// CancelSteer retracts the session's live run's PENDING (un-drained) steer,
+// reporting the engine's authoritative outcome (retracted / none_pending). It is
+// the Service-level owner of the steer_cancel route —
+// the wire handler drives THIS (mirror of how Cancel routes through the
+// Service), so the live-run lookup stays single-owner and the deferred HTTP/SSE
+// steer endpoint reuses the same Service decision rather than re-deriving it. A
+// steer that already drained at a turn boundary is ordinary recorded history and
+// cannot be retracted (the engine reports none_pending then: the drain won). A
+// session with no live run reports none_pending (there is no inbox to retract
+// from — the steer that would be pending is already lost with its run, the
+// best-effort in-memory contract the docs/acceptance/steer-while-running.md
+// Scenario-2 contract records). The wire's steer_cancel message_id never
+// crosses the Service (the ack-side echo is the caller's own frame field), so
+// the signature stays id-less.
+func (s *Service) CancelSteer(ctx context.Context, id session.SessionID) (agent.SteerOutcome, error) {
+	// Authorize before the registry read, mirroring Cancel: a foreign request is
+	// absence-equivalent (ErrNotFound), never a peek at another caller's inbox.
+	if _, err := s.GetSession(ctx, id); err != nil {
+		return agent.SteerNonePending, err
+	}
+	run, ok := s.LookupRun(id)
+	if !ok {
+		return agent.SteerNonePending, nil
+	}
+	outcome, err := run.CancelSteer()
+	if err != nil {
+		return outcome, fmt.Errorf("server: steer cancel: %w", err)
+	}
+	if outcome == agent.SteerRetracted {
+		s.dropSteerMessageID(id)
+	}
+	return outcome, nil
+}
+
+// steerMsgIDs maps a session to the ORDERED list of client-minted message_ids of
+// the steers appended into the run's single pending bundle (the engine inbox
+// parks text only — the id lives at this wire-correlation layer). At most ONE
+// bundle is pending per run (the single-slot inbox), so at most one ordered list
+// is pending per session: a send APPENDS its id; on drain every entry is consumed
+// positionally (the whole list is deleted) and the echo carries the LATEST (tail)
+// id as the WATERMARK the client splits its ordered queue on — never text-match.
+// Ids are clamped to a bounded prefix at track (CWE-770; the legitimately minted
+// ids are tiny — a longer client id that clips correlates identically on both
+// sides when the ack/echo report the same stored prefix).
+type steerMsgID struct {
+	messageID string
+}
+
+// steerMsgIDClamp bounds a client-minted message id before it touches the
+// watermark FIFO (and every downstream log/diagnostic echo). Ids beyond it are
+// truncated without losing the ack-correlation property for realistic ids.
+const steerMsgIDClamp = 64
+
+// trackSteerMessageID appends the client-minted message_id of an accepted OR
+// appended steer to the session's ordered pending-bundle list. When the bundle
+// drains, LookupSteerMessageID returns the TAIL (watermark) id and consumes the
+// whole list.
+func (s *Service) trackSteerMessageID(id session.SessionID, messageID string) {
+	if r := []rune(messageID); len(r) > steerMsgIDClamp {
+		messageID = string(r[:steerMsgIDClamp])
+	}
+	s.mu.Lock()
+	s.steerMsgIDs[id] = append(s.steerMsgIDs[id], steerMsgID{messageID: messageID})
+	depth := len(s.steerMsgIDs[id])
+	s.mu.Unlock()
+	// Correlation state, never text (untrusted producer content): depth + id
+	// suffice to rebuild intent across runs of the log.
+	s.cfg.Diagnostics.Log(context.Background(), port.LevelInfo, "steer message-id tracked",
+		"session", string(id), "message_id", messageID, "queue_depth", depth)
+}
+
+// dropSteerMessageID discards the correlation of a RETRACTED steer: the retract
+// clears the run's one pending bundle, so the WHOLE ordered list for the session
+// is dropped (the bundle is gone — nothing remains to correlate). A retract with
+// an empty list (id-less steer) is the harmless no-op.
+func (s *Service) dropSteerMessageID(id session.SessionID) {
+	s.mu.Lock()
+	delete(s.steerMsgIDs, id)
+	s.mu.Unlock()
+	s.cfg.Diagnostics.Log(context.Background(), port.LevelInfo, "steer message-id dropped (retract)", "session", string(id))
+}
+
+// LookupSteerMessageID returns the WATERMARK message_id for a drained bundle —
+// the LATEST (tail) id of the session's ordered pending list — and CONSUMES the
+// whole list (the bundle drained; the next bundle starts a fresh list). The
+// client splits its ordered queue on the watermark (positional, never
+// text-match — the drift class the abandoned `_ string` parameter gestured at).
+// "" when the list is empty (an id-less steer, or a drain after a retract).
+func (s *Service) LookupSteerMessageID(id session.SessionID) string {
+	s.mu.Lock()
+	q := s.steerMsgIDs[id]
+	if len(q) == 0 {
+		s.mu.Unlock()
+		return ""
+	}
+	watermark := q[len(q)-1].messageID
+	depth := len(q)
+	delete(s.steerMsgIDs, id)
+	s.mu.Unlock()
+	s.cfg.Diagnostics.Log(context.Background(), port.LevelInfo, "steer message-id watermark consumed",
+		"session", string(id), "message_id", watermark, "queue_depth", depth)
+	return watermark
 }
 
 // isDelegationChildSessionID reports whether id carries one of the delegation
@@ -3488,28 +3825,56 @@ func (s *Service) LookupRun(id session.SessionID) (*agent.Run, bool) {
 	return st.run, true
 }
 
-// IsLive reports whether a run is currently in flight for the session id — a
-// pure read over the same in-flight registry LookupRun consults. It is the
-// liveness predicate the composition layer's child-session GC injects so a
-// sweep never deletes the snapshot of a session that is mid-run in THIS
-// process.
-//
-// HONESTY: this knows TOP-LEVEL run ids only. Children spawned BY a live run
-// (subagent-*/parallel-*/team-* ids) are driven inside their parent's run and
-// never registered here, so IsLive answers false for them even mid-run
-// (pinned by TestServiceIsLiveDoesNotKnowEngineChildren). Engine children are
-// protected from the sweep by age horizon + snapshot freshness instead: they
-// persist at their terminal AND a resumed child re-persists at resume start,
-// so an in-flight child's snapshot is always fresh (see the invariant note in
-// internal/app/childgc.go). A client-driven id carrying a delegation-child
-// prefix (subagent-*/parallel-*/team-*) can no longer register here at all —
-// StartRunContent's isDelegationChildSessionID guard rejects it with
-// ErrInvalidArgument before it ever reaches this registry.
+// IsLive reports whether a top-level Service run or an engine-owned delegation
+// child is currently in flight in this process. The two registries share one
+// predicate so stale reconciliation and every destructive maintenance path see
+// the same process-local exclusion. Cross-process liveness is protected by the
+// separately configured SessionLease.
 func (s *Service) IsLive(id session.SessionID) bool {
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	_, ok := s.runs[id]
-	return ok
+	_, topLevel := s.runs[id]
+	s.mu.Unlock()
+	return topLevel || s.cfg.SessionLiveness != nil && s.cfg.SessionLiveness.IsLive(id)
+}
+
+// steerPromoteGrace bounds the drain-grace promotedSteerRun waits for a
+// just-terminal run's relay to FinishRun-deregister it —
+// the promoted steer must not bounce off a liveness guard into the drop-and-ack
+// path while the run's terminal relay drain is still completing. The value is
+// conservatively long (2s) so a backlogged relay comfortably finishes; a run
+// still registered when it lapses is genuinely in-flight (a busy run's relay
+// drains continuously, so only a terminal-but-still-registered run can possibly
+// deregister inside the grace).
+const steerPromoteGrace = 2 * time.Second
+
+// steerPromotePoll is the poll quantum awaitRunDeregister re-checks the
+// registration between — short enough that the promoted entry sees the cleared
+// registry promptly, long enough that s.mu is not hot-spun under the wait.
+const steerPromotePoll = 20 * time.Millisecond
+
+// awaitRunDeregister blocks until no run is registered for id (the in-flight
+// registry observation StartRunContent's liveness guards read), the grace
+// lapses, or ctx is cancelled, returning true when the registry cleared. It is
+// a pure registry OBSERVATION (poll, never mutation): it never abandons or
+// re-homes a live run's session — the only safe read that lets the promoted
+// steer wait out a terminal-but-still-draining run without racing it.
+func (s *Service) awaitRunDeregister(ctx context.Context, id session.SessionID, grace time.Duration) bool {
+	deadline := time.NewTimer(grace)
+	defer deadline.Stop()
+	tick := time.NewTicker(steerPromotePoll)
+	defer tick.Stop()
+	for {
+		if !s.IsLive(id) {
+			return true
+		}
+		select {
+		case <-tick.C:
+		case <-deadline.C:
+			return false
+		case <-ctx.Done():
+			return false
+		}
+	}
 }
 
 // Approve resolves the paused permission ask on the session's in-flight run with
@@ -4597,10 +4962,15 @@ func (s *Service) SettleIfStale(ctx context.Context, id session.SessionID) (bool
 }
 
 // register records run (and the live session it drives) as the in-flight run
-// for id.
+// for id. A FRESH run also clears any parked steer message-id correlation the
+// session still holds: a parked steer lives on its run's in-memory inbox and
+// dies with it, so a leftover entry from the PREVIOUS run could never drain —
+// and clearing here keeps a promoted follow-up run's own steers (tracked AFTER
+// its register) from ever matching a dead run's text.
 func (s *Service) register(id session.SessionID, run *agent.Run, sess *session.Session) {
 	s.mu.Lock()
 	s.runs[id] = &runState{run: run, sess: sess}
+	delete(s.steerMsgIDs, id)
 	s.mu.Unlock()
 }
 
@@ -5209,13 +5579,19 @@ type ListSessionsPage struct {
 type inventoryCursor struct {
 	ModifiedAtUnixNano int64  `json:"m"`
 	SessionID          string `json:"i"`
+	Generation         string `json:"g"`
+	Scope              string `json:"s"`
+	Continuation       string `json:"c"`
 }
 
 func encodeInventoryCursor(cursor *port.SessionMetadataCursor) (string, error) {
 	if cursor == nil {
 		return "", nil
 	}
-	data, err := json.Marshal(inventoryCursor{ModifiedAtUnixNano: cursor.ModifiedAt.UnixNano(), SessionID: string(cursor.ID)})
+	data, err := json.Marshal(inventoryCursor{
+		ModifiedAtUnixNano: cursor.ModifiedAt.UnixNano(), SessionID: string(cursor.ID),
+		Generation: cursor.Generation, Scope: cursor.Scope, Continuation: cursor.Continuation,
+	})
 	if err != nil {
 		return "", err
 	}
@@ -5231,10 +5607,13 @@ func decodeInventoryCursor(token string) (*port.SessionMetadataCursor, error) {
 		return nil, fmt.Errorf("%w: invalid session inventory cursor", ErrInvalidArgument)
 	}
 	var cursor inventoryCursor
-	if err := json.Unmarshal(data, &cursor); err != nil || cursor.SessionID == "" {
+	if err := json.Unmarshal(data, &cursor); err != nil || cursor.SessionID == "" || cursor.Generation == "" || cursor.Scope == "" || cursor.Continuation == "" {
 		return nil, fmt.Errorf("%w: invalid session inventory cursor", ErrInvalidArgument)
 	}
-	return &port.SessionMetadataCursor{ModifiedAt: time.Unix(0, cursor.ModifiedAtUnixNano), ID: session.SessionID(cursor.SessionID)}, nil
+	return &port.SessionMetadataCursor{
+		ModifiedAt: time.Unix(0, cursor.ModifiedAtUnixNano), ID: session.SessionID(cursor.SessionID),
+		Generation: cursor.Generation, Scope: cursor.Scope, Continuation: cursor.Continuation,
+	}, nil
 }
 
 func inventoryCapabilities(kind session.SessionKind, id session.SessionID, state session.State, live bool) (SessionInventoryCapabilities, SessionInventoryActionReasons) {
@@ -5291,6 +5670,11 @@ func metadataKeyAfter(row port.SessionDiscoveryMeta, cursor *port.SessionMetadat
 		(row.ModifiedAt.Equal(cursor.ModifiedAt) && row.ID > cursor.ID)
 }
 
+func validMetadataCursor(cursor *port.SessionMetadataCursor) bool {
+	return cursor != nil && cursor.ID != "" && utf8.ValidString(string(cursor.ID)) &&
+		cursor.Generation != "" && cursor.Scope != "" && cursor.Continuation != ""
+}
+
 func validateSessionMetadataPage(page port.SessionMetadataPage, request port.SessionMetadataPageRequest) error {
 	if len(page.Sessions) > request.Limit {
 		return fmt.Errorf("pager returned %d rows for limit %d", len(page.Sessions), request.Limit)
@@ -5316,7 +5700,7 @@ func validateSessionMetadataPage(page port.SessionMetadataPage, request port.Ses
 		}
 	}
 	if page.NextCursor != nil {
-		if len(page.Sessions) == 0 || page.NextCursor.ID == "" || !utf8.ValidString(string(page.NextCursor.ID)) {
+		if len(page.Sessions) == 0 || !validMetadataCursor(page.NextCursor) {
 			return fmt.Errorf("pager returned an invalid next cursor")
 		}
 		last := page.Sessions[len(page.Sessions)-1]
@@ -5356,7 +5740,7 @@ func (s *Service) ListSessionPage(ctx context.Context, request ListSessionsPageR
 	}
 	page, err := pager.PageSessionMetadata(ctx, pageRequest)
 	if err != nil {
-		if errors.Is(err, port.ErrSessionMetadataPagingUnsupported) {
+		if errors.Is(err, port.ErrSessionMetadataPagingUnsupported) || errors.Is(err, port.ErrSessionMetadataCursorRestart) {
 			return ListSessionsPage{}, err
 		}
 		return ListSessionsPage{}, fmt.Errorf("%w: list session page: %v", ErrInternal, err)

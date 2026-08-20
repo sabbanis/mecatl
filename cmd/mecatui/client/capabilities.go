@@ -51,10 +51,22 @@ type Capabilities struct {
 	Reflection        bool
 	LearningProposals bool
 	LearnedSkills     bool
+	StorageHealth     bool
+	StorageMigration  bool
+	StorageCleanup    bool
+	LegacyAdoption    bool
 	// ManualDream is nil when an older server does not expose the capability object.
 	// A non-nil value keeps /dream discoverable even when both targets are unavailable,
 	// so the overlay can explain the target-specific reasons.
 	ManualDream *ManualDreamCapabilities
+	// Steer is true when the server's engine arms the mid-run steer inbox
+	// (steer-while-running, issue #512): a `steer` frame on the bidi Converse stream
+	// then drains at the next turn boundary and the authoritative steer / steer.outcome
+	// events echo back. When false (the operator disabled it, or an older server with
+	// no field → proto3 default false), the ui keeps the client-side terminal
+	// merge-queue (issue #228) byte-identical — it never sends a steer frame the
+	// server would only ack too_late.
+	Steer bool
 }
 
 // capabilitiesFrom maps a proto ServerCapabilities (nil-safe) to the plain
@@ -82,7 +94,12 @@ func capabilitiesFrom(c *mecatlv1.ServerCapabilities) Capabilities {
 		Reflection:        c.GetReflection(),
 		LearningProposals: c.GetLearningProposals(),
 		LearnedSkills:     c.GetLearnedSkills(),
+		StorageHealth:     c.GetStorageHealth(),
+		StorageMigration:  c.GetStorageMigration(),
+		StorageCleanup:    c.GetStorageCleanup(),
+		LegacyAdoption:    c.GetLegacyAdoption(),
 		ManualDream:       manualDreamCapabilitiesFrom(c.GetManualDream()),
+		Steer:             c.GetSteer(),
 	}
 }
 

@@ -30,6 +30,10 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0027 — Cloud-native arc](./0027-cloud-native.md)
 - [0104 — Session families get a bounded, injective, non-reversible physical name](./0104-session-family-physical-naming.md)
 - [0217 — Session discovery uses durable kind metadata and an authoritative transcript](./0217-session-discovery-continuation.md)
+- [0226 — Session storage separates current state, indexed metadata, and maintenance](./0226-session-storage-maintenance.md)
+- [0229 — Redis migration uses fenced renewable ownership and indexed coverage](./0229-redis-migration-fencing.md) *(superseded by 0230)*
+- [0230 — Redis migration ownership and coverage are proved before mutation](./0230-redis-migration-atomic-ownership-and-coverage.md) *(superseded by 0231)*
+- [0231 — Redis readiness requires exact owner-index coverage](./0231-redis-owner-index-exact-coverage.md)
 - [0207 — Operator-owned exact context-window overrides](./0207-context-window-overrides.md)
 - [0209 — Attribute schedule origins through the run context](./0209-schedule-origin-run-context.md) *(supersedes ADR 0075's origin-binding mechanism)*
 - [0218 — Internal encrypted credential-store substrate](./0218-credential-store.md)
@@ -39,6 +43,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0112 — Host-owned loopback MCP OAuth login](./0112-mcp-oauth-loopback-runtime.md)
 - [0113 — Operator MCP authentication profiles and explicit login](./0113-operator-mcp-auth-profiles.md)
 - [0223 — Pin MCP transport-error semantics that do not replay rejected calls](./0223-mcp-sdk-transport-error-semantics.md)
+- [0232 — Steer-while-running: inject a user message into an in-flight run](./0232-steer-while-running.md)
 - [0036 — `engine/` is its own Go module (monorepo via `go.work`)](./0036-engine-module.md)
 - [0037 — Engine public-API stability contract](./0037-engine-stability-contract.md)
 - [0038 — Event-sourced SessionStore rehydration (the reference fold)](./0038-event-sourced-rehydration.md)
@@ -70,10 +75,8 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0106 — Optional completion-learning seam](./0106-optional-learning-seam.md)
 - [0107 — Operator-profile memory lifecycle](./0107-operator-profile-memory-lifecycle.md)
 - [0109 — Evidence-backed reflection and durable staged learning](./0109-staged-learning-proposals.md)
-- [0226 — Dream consolidation safety boundary](./0226-dream-consolidation-safety-boundary.md)
-- [0227 — Manual dream review](./0227-manual-dream-review.md)
-- [0228 — Studio: the Atrium workspace as mecatl's daemon-only web client](./0228-studio-atrium-module.md)
-- [0229 — Studio's chat list is the daemon's session store](./0229-studio-server-backed-chats.md)
+- [0227 — Dream consolidation safety boundary](./0227-dream-consolidation-safety-boundary.md)
+- [0228 — Manual dream review](./0228-manual-dream-review.md)
 - [0110 — Evaluated, versioned agent-owned skills](./0110-evaluated-agent-owned-skills.md) *(superseded by 0111)*
 - [0111 — Hardened publication and recovery for agent-owned skills](./0111-hardened-agent-owned-skill-publication.md)
 
@@ -160,6 +163,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0206 — Ship reusable OIDC caller identity as an opt-in module](./0206-oidc-authn-module.md)
 - [0212 — Enforce caller ownership at every application access path](./0212-caller-ownership-enforcement.md) *(agent-identity Track A; application isolation)*
 - [0213 — Enforce caller ownership at remote driver boundaries](./0213-driver-caller-ownership.md) *(B-lite follow-up to application isolation)*
+- [0225 — Operator settings validation command](./0225-operator-settings-validation.md)
 - [0024 — System-prompt research](./0024-system-prompt-research.md) *(research)*
 - [0041 — Output-economy default prompt](./0041-output-economy-default-prompt.md)
 - [0054 — Reasoning rebalance of the default-tone prompt](./0054-reasoning-rebalance-default-prompt.md)
@@ -177,6 +181,8 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0087 — Staged mecatui transport migration](./0087-mecatui-staged-transport-migration.md) *(superseded by 0089)*
 - [0088 — Explicit daemon.yaml (listener topology config)](./0088-daemon-config-file.md)
 - [0222 — mecatui: ctrl+t routes by ask type; full-screen ask-args view](./0222-mecatui-ask-args-view.md)
+- [0233 — Studio: the Atrium workspace as mecatl's daemon-only web client](./0233-studio-atrium-module.md)
+- [0234 — Studio's chat list is the daemon's session store](./0234-studio-server-backed-chats.md)
 
 ### Retired
 - [0029 — Repo-map tree-sitter](./0029-repomap-tree-sitter.md) *(retired)*

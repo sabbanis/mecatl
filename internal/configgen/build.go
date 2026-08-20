@@ -26,6 +26,9 @@ func BuildModel(docs Docs) *Model {
 		reasoningEffortSubtree(docs),
 		planModeAutoApproveSubtree(docs),
 		learningSubtree(docs),
+		retentionSubtree(docs),
+		storageManagementSubtree(docs),
+		steerSubtree(docs),
 		modelsSubtree(docs),
 		openRouterSubtree(docs),
 		mcpSubtree(docs),
@@ -146,6 +149,43 @@ func guardrailsSubtree(docs Docs) *Subtree {
 	}
 }
 
+func retentionSubtree(docs Docs) *Subtree {
+	fields := fieldsOf("RetentionSection", permconfig.RetentionSection{}, docs)
+	limits := fieldsOf("RetentionLimitSection", permconfig.RetentionLimitSection{}, docs)
+	for _, f := range fields {
+		switch f.Key {
+		case "main", "child", "scheduled":
+			f.Nested = limits
+		case "version":
+			f.Default, f.ExampleValue = "1", "1"
+		case "sweep_cadence":
+			f.Type, f.Default, f.ExampleValue = "duration", "1h", "1h"
+		}
+	}
+	return &Subtree{Key: "retention", Tier: TierOperator, CommentedOut: true,
+		Doc: "Versioned automatic session cleanup policy. Operator-tier only; project values are ignored. Zero disables each limit. Explicit compatibility flags outrank these values.", Fields: fields}
+}
+
+func storageManagementSubtree(docs Docs) *Subtree {
+	fields := fieldsOf("StorageManagementSection", permconfig.StorageManagementSection{}, docs)
+	principals := fieldsOf("StorageManagementPrincipal", permconfig.StorageManagementPrincipal{}, docs)
+	for _, field := range fields {
+		switch field.Key {
+		case "version":
+			field.Default, field.ExampleValue = "1", "1"
+		case "principals":
+			field.Nested = principals
+			principals[0].ExampleValue = "https://idp.example/realms/operators"
+			principals[1].ExampleValue = "storage-admin"
+		}
+	}
+	return &Subtree{
+		Key: "storage_management", Tier: TierOperator, CommentedOut: true,
+		Doc:    "Exact verified OIDC issuer/subject pairs authorized for process-wide storage health, migration, and cleanup. Empty grants nobody; project values are ignored.",
+		Fields: fields,
+	}
+}
+
 func learningSubtree(docs Docs) *Subtree {
 	fields := fieldsOf("LearningSection", permconfig.LearningSection{}, docs)
 	fields[0].ExampleValue = "off"
@@ -229,6 +269,28 @@ func planModeAutoApproveSubtree(docs Docs) *Subtree {
 			Default:      "false",
 			Doc:          docFor(docs, "Config.PlanModeAutoApprove", "auto-approve a presented plan with NO HUMAN REVIEW (default off)"),
 			ExampleValue: "true",
+		}},
+	}
+}
+
+func steerSubtree(docs Docs) *Subtree {
+	return &Subtree{
+		Key:  "steer",
+		Tier: TierOperator,
+		Doc: "OPERATOR-TIER mid-run steer knob (steer-while-running, issue #512): when true " +
+			"(the DEFAULT), a client may inject an operator instruction into an in-flight run, " +
+			"drained at the next turn boundary. Set false to disable the steer inbox (the " +
+			"capability echo then reads false and a steer frame reports too_late). A " +
+			"project-tier steer: is IGNORED with a WARN (the harness's operator surface is not " +
+			"a project repo's to flip). Omit = keep the CLI/default (steer ON).",
+		CommentedOut: true,
+		Scalar:       true,
+		Fields: []*Field{{
+			Key:          "steer",
+			Type:         "bool",
+			Default:      "true",
+			Doc:          docFor(docs, "Config.Steer", "enable the mid-run steer inbox (default on)"),
+			ExampleValue: "false",
 		}},
 	}
 }

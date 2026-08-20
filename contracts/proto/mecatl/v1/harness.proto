@@ -66,6 +66,14 @@ service HarnessService {
   // running/awaiting source is rejected. No streaming.
   rpc ForkSession(ForkSessionRequest) returns (ForkSessionResponse);
 
+  // PreflightSessionAdoption evaluates one authenticated caller-owned legacy
+  // source against explicit workspace/environment/provider/model bindings.
+  rpc PreflightSessionAdoption(PreflightSessionAdoptionRequest) returns (PreflightSessionAdoptionResponse);
+
+  // AdoptSession atomically publishes a new explicit-main copy of one eligible
+  // legacy source. Retries are caller+source-bound by idempotency_key.
+  rpc AdoptSession(AdoptSessionRequest) returns (AdoptSessionResponse);
+
   // Converse drives one run. The first frame MUST be `prompt`; subsequent
   // frames are zero or more `resume_approval` / `cancel` control frames. The
   // server streams `Event` envelopes until the terminal `result` event, then
@@ -194,6 +202,25 @@ service HarnessService {
   // (modified_at descending). Read-only. There is intentionally NO
   // ServerCapabilities bit — see StreamSessionEvents for the rationale.
   rpc ListSessions(ListSessionsRequest) returns (ListSessionsResponse);
+
+  // GetStorageHealth returns authenticated, content-free aggregate storage
+  // status. It never returns session ids, owners, paths, or transcript content.
+  rpc GetStorageHealth(GetStorageHealthRequest) returns (GetStorageHealthResponse);
+
+  // Session migration is authenticated, semantics-preserving physical
+  // maintenance. Plan is read-only; apply/resume process bounded batches.
+  rpc PlanSessionMigration(PlanSessionMigrationRequest) returns (SessionMigrationPlan);
+  rpc ApplySessionMigration(ApplySessionMigrationRequest) returns (SessionMigrationJob);
+  rpc ResumeSessionMigration(ResumeSessionMigrationRequest) returns (SessionMigrationJob);
+  rpc CancelSessionMigration(CancelSessionMigrationRequest) returns (SessionMigrationJob);
+  rpc GetSessionMigrationJob(GetSessionMigrationJobRequest) returns (SessionMigrationJob);
+
+  // Session cleanup is an authenticated plan/apply maintenance workflow. Plan is
+  // read-only; apply requires its caller-bound opaque confirmation token.
+  rpc PlanSessionCleanup(PlanSessionCleanupRequest) returns (PlanSessionCleanupResponse);
+  rpc ApplySessionCleanup(ApplySessionCleanupRequest) returns (CleanupJob);
+  rpc CancelSessionCleanup(CancelSessionCleanupRequest) returns (CleanupJob);
+  rpc GetSessionCleanupJob(GetSessionCleanupJobRequest) returns (CleanupJob);
 
   // ListSkills returns the resolved skills inventory snapshot: each discovered
   // skill's name + one-line description. Derived from the snapshot taken at
@@ -522,10 +549,33 @@ message ServerCapabilities {
   bool learning_proposals = 17;
   // learned_skills is true when the caller-partitioned lifecycle API is available.
   bool learned_skills = 18;
+  // legacy_adoption is true only when authenticated, caller-owned adoption with
+  // explicit engine bindings is available.
+  bool legacy_adoption = 20;
+  // storage_migration is true only when the backend implements durable bounded
+  // v1-to-v2 maintenance, a management authorizer is configured, and destructive
+  // mutation has cross-process lease exclusion (or explicitly proven private
+  // embedded single-writer composition).
+  bool storage_migration = 21;
+  // storage_cleanup advertises the authenticated plan/apply/job maintenance API
+  // only under the same destructive-mutation exclusion as storage_migration.
+  bool storage_cleanup = 22;
   // manual_dream is the composition-time availability snapshot for the two
   // deployment-owned manual consolidation targets. An older server leaves it
   // absent; unavailable reasons are bounded, content-free operator categories.
   ManualDreamCapabilities manual_dream = 19;
+  // storage_health is true only when the backend implements bounded indexed
+  // health and this deployment has a management authorizer.
+  bool storage_health = 23;
+  // steer is true when the server's engines arm the mid-run steer inbox
+  // (steer-while-running, issue #512): a client may then send `steer` /
+  // `steer_cancel` frames on the live Converse stream and render the EvSteer
+  // drain echo. When false (an older server, or steer disabled in
+  // composition), the client keeps its local merge-queue behaviour — a steer
+  // frame sent to such a server is promoted to a fresh follow-up run (the
+  // engine reports too_late on its disarmed inbox), never silently dropped.
+  // Additive: an older server leaves it false.
+  bool steer = 24;
 }
 
 // CreateSessionResponse carries the newly-allocated session id.
@@ -789,6 +839,150 @@ message ListSessionsResponse {
   int32 total_count = 3;
 }
 
+message GetStorageHealthRequest {}
+
+message RetentionPolicy {
+  int64 main_max_age_seconds = 1;
+  int32 main_max_count = 2;
+  int64 child_max_age_seconds = 3;
+  int32 child_max_count = 4;
+  int64 scheduled_max_age_seconds = 5;
+  int32 scheduled_max_count = 6;
+  int64 sweep_cadence_seconds = 7;
+}
+
+message GetStorageHealthResponse {
+  bool available = 1;
+  string unavailable_reason = 2;
+  int64 current_bytes = 3;
+  bool current_bytes_available = 4;
+  int64 reclaimable_bytes = 5;
+  bool reclaimable_bytes_available = 6;
+  int64 session_count = 7;
+  int64 file_count = 8;
+  int64 v1_count = 9;
+  int64 v2_count = 10;
+  int64 main_count = 11;
+  int64 child_count = 12;
+  int64 scheduled_count = 13;
+  int64 unknown_count = 14;
+  int64 corrupt_count = 15;
+  RetentionPolicy policy = 16;
+  int64 last_sweep_unix = 17;
+  bool last_sweep_available = 18;
+  int64 next_sweep_unix = 19;
+  bool next_sweep_available = 20;
+  string active_job = 21;
+  string last_failure = 22;
+}
+
+message PlanSessionMigrationRequest {}
+
+message SessionMigrationPlan {
+  string plan_id = 1;
+  bool available = 2;
+  string unavailable_reason = 3;
+  int64 v1_families = 4;
+  int64 v2_families = 5;
+  int64 invalid_families = 6;
+  int64 skipped_families = 7;
+  int64 current_bytes = 8;
+  int64 reclaimable_bytes = 9;
+  int64 temporary_bytes = 10;
+}
+
+message ApplySessionMigrationRequest {
+  string plan_id = 1 [(buf.validate.field).string.min_len = 1];
+  int32 batch_size = 2;
+}
+
+message ResumeSessionMigrationRequest {
+  string job_id = 1 [(buf.validate.field).string.min_len = 1];
+  int32 batch_size = 2;
+}
+
+message CancelSessionMigrationRequest {
+  string job_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message GetSessionMigrationJobRequest {
+  string job_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+message SessionMigrationItemError {
+  string item_handle = 1;
+  string reason_code = 2;
+  string message = 3;
+}
+
+message CleanupCounts {
+  int32 total = 1;
+  map<string, int32> by_kind = 2;
+  map<string, int32> by_state = 3;
+  map<string, int32> by_reason = 4;
+}
+
+message CleanupCandidate {
+  string session_id = 1;
+  string kind = 2;
+  string state = 3;
+  string reason = 4;
+  int64 modified_at_unix = 5;
+  int64 estimated_bytes = 6;
+}
+
+message PlanSessionCleanupRequest { repeated string kinds = 1; }
+
+message PlanSessionCleanupResponse {
+  string confirmation_token = 1;
+  bool available = 2;
+  string unavailable_reason = 3;
+  string generation = 4;
+  string policy_version = 5;
+  repeated CleanupCandidate eligible = 6;
+  CleanupCounts protected = 7;
+  int64 estimated_bytes = 8;
+  string planned_job_id = 9;
+  CleanupCounts eligible_counts = 10;
+}
+
+message ApplySessionCleanupRequest { string confirmation_token = 1 [(buf.validate.field).string.min_len = 1]; }
+message CancelSessionCleanupRequest { string job_id = 1 [(buf.validate.field).string.min_len = 1]; }
+message GetSessionCleanupJobRequest { string job_id = 1 [(buf.validate.field).string.min_len = 1]; }
+
+message CleanupItemError {
+  string item_handle = 1;
+  string reason_code = 2;
+  string message = 3;
+}
+
+message SessionMigrationJob {
+  string job_id = 1;
+  string state = 2;
+  int64 v1_families = 3;
+  int64 v2_families = 4;
+  int64 invalid_families = 5;
+  int64 skipped_families = 6;
+  int64 current_bytes = 7;
+  int64 reclaimable_bytes = 8;
+  int64 temporary_bytes = 9;
+  int64 processed = 10;
+  int64 migrated = 11;
+  int64 failed = 12;
+  repeated SessionMigrationItemError errors = 13;
+}
+
+message CleanupJob {
+  string job_id = 1;
+  string state = 2;
+  int32 processed = 3;
+  int32 deleted = 4;
+  int32 skipped = 5;
+  int32 stale = 6;
+  int32 failed = 7;
+  repeated CleanupItemError errors = 8;
+}
+
 // SetModeRequest changes a session's permission posture.
 message SetModeRequest {
   // session_id is the session to update.
@@ -850,6 +1044,41 @@ message ForkSessionResponse {
   string session_id = 1;
 }
 
+// AdoptionBindings are explicit; omitted fields never select a server default.
+message AdoptionBindings {
+  string workspace = 1;
+  string environment_kind = 2;
+  string environment_id = 3;
+  string provider_id = 4;
+  string model_id = 5;
+  string profile = 6;
+}
+
+message PreflightSessionAdoptionRequest {
+  string source_session_id = 1 [(buf.validate.field).string.min_len = 1];
+  AdoptionBindings bindings = 2;
+}
+
+message PreflightSessionAdoptionResponse {
+  bool eligible = 1;
+  string reason_code = 2;
+  AdoptionBindings bindings = 3;
+}
+
+message AdoptSessionRequest {
+  string source_session_id = 1 [(buf.validate.field).string.min_len = 1];
+  string idempotency_key = 2 [(buf.validate.field).string.min_len = 1];
+  AdoptionBindings bindings = 3;
+}
+
+message AdoptSessionResponse {
+  string session_id = 1;
+  string source_session_id = 2;
+  ServerCapabilities capabilities = 3;
+  SessionCapabilities session_capabilities = 4;
+  ResolvedModel resolved_model = 5;
+}
+
 // Session is a snapshot of server-side session state.
 message Session {
   // session_id is the session's id.
@@ -890,6 +1119,9 @@ message Session {
   // second CreateSession. An older server omits the field → client sees a zero value
   // and keeps its current caps untouched (fail-conservative).
   ServerCapabilities capabilities = 11;
+  // adoption_source_session_id is the immutable audit relationship on a main
+  // session created by explicit legacy adoption.
+  string adoption_source_session_id = 13;
 }
 
 // ConverseRequest is a client-to-server frame on the Converse stream. The
@@ -906,6 +1138,17 @@ message ConverseRequest {
     // cancel_child cancels ONE child run (a subagent) of the in-flight run,
     // leaving the run itself (and any sibling children) untouched.
     CancelChild cancel_child = 12;
+    // steer injects an operator instruction mid-run (steer-while-running,
+    // issue #512): the run's steer inbox parks it and the loop drains it at
+    // the next turn boundary, recording it as an ordinary user continuation.
+    // The server echoes the authoritative outcome back on the stream as a
+    // steer.outcome event. gRPC-only in v1 (the HTTP/SSE surface has no
+    // client→server mid-run channel).
+    Steer steer = 13;
+    // steer_cancel retracts the run's PENDING (un-drained) steer, if any.
+    // The authoritative outcome rides back as a steer.outcome event
+    // (retracted / none_pending).
+    SteerCancel steer_cancel = 14;
   }
 }
 
@@ -1056,6 +1299,69 @@ message CancelChild {
   string child_id = 1 [(buf.validate.field).string.min_len = 1];
 }
 
+// Steer injects an operator instruction into the IN-FLIGHT run
+// (steer-while-running, issue #512). It never preempts or aborts the in-flight
+// model call: the run's steer inbox parks the text (a SINGLE slot — a second
+// steer while one is pending APPENDS into the pending bundle, merged with a
+// blank-line separator; the merged bundle still drains as ONE user message.
+// Replacing a pending bundle is explicit steer_cancel-then-resend) and the
+// loop drains it at the next turn boundary, recording it as an ordinary user
+// continuation. The server echoes the authoritative outcome on the stream
+// (steer.outcome); when the run's inbox is closed (the run went terminal
+// behind the client's "still running" belief) the text is PROMOTED to a fresh
+// follow-up run, never silently dropped.
+message Steer {
+  // text is the operator instruction to inject at the next turn boundary.
+  string text = 1 [(buf.validate.field).string.min_len = 1];
+  // message_id is the CLIENT-MINTED correlation key for THIS frame (unique per
+  // send; empty means uncorrelated). The server echoes the frame's own id
+  // verbatim on its steer.outcome ack. On the EvSteer drain echo it carries a
+  // WATERMARK: the LATEST (tail) contributing send's id of the bundle that
+  // just drained — sends up to and including the watermark drained, sends
+  // after it are still pending, so the client splits its ordered queue on it.
+  // text is NOT a safe correlation key (two sends can carry the same text).
+  string message_id = 2;
+}
+
+// SteerCancel retracts the run's PENDING (un-drained) steer, if any. It is
+// idempotent: a cancel with nothing pending reports none_pending. A steer that
+// already drained at a turn boundary is ordinary recorded history and cannot
+// be retracted (the cancel reports none_pending then — the drain won).
+message SteerCancel {
+  // message_id is the CLIENT-MINTED correlation key, echoed verbatim on the
+  // steer.outcome ack (same contract as Steer.message_id).
+  string message_id = 1;
+}
+
+// SteerOutcome is the AUTHORITATIVE result of a steer inbox transition,
+// mirroring the engine's closed-enum agent.SteerOutcome. The client cannot
+// observe the exact drain moment across stream latency, so the engine reports
+// what actually happened to the steer rather than letting the client guess.
+enum SteerOutcome {
+  // STEER_OUTCOME_UNSPECIFIED is the zero value; the server never sends it.
+  STEER_OUTCOME_UNSPECIFIED = 0;
+  // STEER_OUTCOME_ACCEPTED: the steer parked in the (empty) pending slot; it
+  // drains at the next turn boundary unless retracted first.
+  STEER_OUTCOME_ACCEPTED = 1;
+  // STEER_OUTCOME_APPENDED: the steer found the pending slot OCCUPIED and was
+  // MERGED into it (append is the default for a second steer): the pending
+  // bundle's text grew by a blank-line separator + text, and it still drains as
+  // ONE bundle. Distinguished from ACCEPTED (a NEW pending bundle) so the client
+  // can render "merged onto pending" honestly. Replacing the pending bundle is
+  // explicit: steer_cancel, then resend with a fresh message_id.
+  STEER_OUTCOME_APPENDED = 2;
+  // STEER_OUTCOME_RETRACTED: a steer_cancel found a pending steer and
+  // retracted it; the run drains nothing for it.
+  STEER_OUTCOME_RETRACTED = 3;
+  // STEER_OUTCOME_NONE_PENDING: a steer_cancel found the slot EMPTY — there
+  // was nothing to retract (no steer pending, or the run terminal).
+  STEER_OUTCOME_NONE_PENDING = 4;
+  // STEER_OUTCOME_TOO_LATE: the steer arrived after the run went terminal
+  // (the inbox was closed). The server promoted the text to a fresh follow-up
+  // run (promoted=true on the event) rather than dropping it.
+  STEER_OUTCOME_TOO_LATE = 5;
+}
+
 // Event mirrors the domain session.Event one-for-one. `type` is the string
 // event kind; the structured submessages are populated per kind.
 message Event {
@@ -1130,6 +1436,49 @@ message Event {
   // the pre-compaction conversation). LOG-ONLY on the live Converse wire;
   // StreamSessionEvents relays them so a transcript replay recovers dropped turns.
   CompactionArchive compaction_archive = 18;
+  // steer is set on steer events (EvSteer — the run's steer-inbox DRAIN echo):
+  // the COMMITTED operator steer just recorded into the conversation as an
+  // ordinary user continuation. CLIENT-VISIBLE and AUTHORITATIVE: the engine is
+  // the sole authority on which steer won the slot, so the client renders THIS
+  // text. Byte-identical to the recorded user message replayed to the model
+  // (recorded == streamed == model-view).
+  SteerEcho steer = 19;
+  // steer_outcome is set on steer.outcome events: the AUTHORITATIVE ack for a
+  // steer / steer_cancel frame the client sent on this stream (accepted /
+  // accepted / appended / retracted / none_pending / too_late). CLIENT-VISIBLE, one per
+  // steer frame, sequenced in send order.
+  SteerAck steer_outcome = 20;
+}
+
+// SteerEcho is the proto projection of session.SteerPayload (EvSteer): the
+// committed operator steer the turn-boundary drain just recorded. See Event.steer.
+message SteerEcho {
+  // text is the committed steer text, byte-identical to the user message
+  // recorded into history and replayed to the model.
+  string text = 1;
+  // message_id carries the WATERMARK of the drained bundle — the client-minted
+  // Steer.message_id of the LATEST (tail) send that contributed to this drain
+  // (empty when the sender supplied none). The client splits its ordered queue
+  // on it: sends up to and including the watermark drained (they land in
+  // context here), sends after it are still pending.
+  string message_id = 2;
+}
+
+// SteerAck is the proto projection of a steer-frame outcome: the server's
+// authoritative report of what happened to a steer / steer_cancel frame.
+message SteerAck {
+  // outcome is the closed-enum result (mirrors agent.SteerOutcome).
+  SteerOutcome outcome = 1;
+  // text echoes the steer text the outcome is about (empty for steer_cancel).
+  string text = 2;
+  // promoted is true when a too_late steer was promoted to a fresh follow-up
+  // run through the run-entry funnel (the text drives a new run instead of
+  // draining into the finished one) — never silently dropped.
+  bool promoted = 3;
+  // message_id echoes the client-minted id of the Steer / SteerCancel frame
+  // this ack answers (empty when the frame supplied none), so the client
+  // correlates the authoritative outcome with its send and ignores stale acks.
+  string message_id = 4;
 }
 
 // Approval is the proto projection of session.ApprovalPayload (EvApproval):
