@@ -16,6 +16,7 @@ import {
   useAgentRoster,
   useAgentSessions,
 } from "@/features/agent";
+import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
 import {
   isMockTourSession,
@@ -27,6 +28,7 @@ import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
 import { usePanelWidth } from "@/hooks/use-panel-width";
 import { usePrompt } from "@/hooks/use-prompt";
+import { useDisabledModels } from "@/lib/model-preferences";
 import {
   type SessionListSide,
   useAgentDisplayName,
@@ -38,7 +40,10 @@ import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { useThreadSessionIds } from "@/lib/thread-map";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
-import { ChatInput } from "../../_components/chat-input";
+import {
+  ChatInput,
+  type ComposerModelOption,
+} from "../../_components/chat-input";
 import { ResizeHandle } from "../../_components/resize-handle";
 import { ChatView } from "./chat-view";
 import {
@@ -184,6 +189,9 @@ function DraftView({
   onShowSidebar,
   mode,
   onModeChange,
+  models,
+  autoModelLabel,
+  onModelChange,
 }: {
   onSend: (content: string, files?: File[]) => void;
   seed: string | null;
@@ -196,6 +204,10 @@ function DraftView({
   /** Pending permission mode, applied when the first send mints the session. */
   mode: SessionPermissionMode;
   onModeChange: (mode: SessionPermissionMode) => void;
+  /** Live daemon models for the picker ("" = auto-routed). */
+  models: ComposerModelOption[];
+  autoModelLabel: string;
+  onModelChange: (id: string) => void;
 }) {
   return (
     <div className="flex h-full flex-col">
@@ -247,7 +259,7 @@ function DraftView({
             </div>
           </div>
         </div>
-        <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-6 pb-4 lg:pb-6 max-[499px]:px-0 max-[499px]:pb-0">
+        <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
           <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
             {error && <p className="px-1 text-sm text-destructive">{error}</p>}
             <ChatInput
@@ -259,6 +271,9 @@ function DraftView({
               mobileDocked
               mode={mode}
               onModeChange={onModeChange}
+              models={models}
+              autoModelLabel={autoModelLabel}
+              onModelChange={onModelChange}
             />
           </div>
         </div>
@@ -406,6 +421,27 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   );
   const getCreateMode = useCallback(() => modeRef.current, [modeRef]);
 
+  // The composer's model picker: live daemon models minus the Studio-side
+  // disabled set; "" = auto-routed. Like mode, the pick is pending local
+  // state read via ref when the first send mints the session.
+  const { models: liveModels, status: runtimeStatus } = useHarnessRuntime();
+  const { disabled: disabledModels } = useDisabledModels();
+  const modelOptions = useMemo(
+    () =>
+      liveModels
+        .filter((m) => !disabledModels.has(m.id))
+        .map((m) => ({ id: m.id, label: m.displayName || m.id })),
+    [liveModels, disabledModels],
+  );
+  // "Auto-routed" is only an honest name for the empty pick while the model
+  // router is actually on; otherwise the daemon just uses its default model.
+  const routingEnabled = Boolean(runtimeStatus?.modelRouter?.enabled);
+  const draftModelRef = useRef("");
+  const handleDraftModelChange = useCallback((id: string) => {
+    draftModelRef.current = id;
+  }, []);
+  const getCreateModel = useCallback(() => draftModelRef.current, []);
+
   const {
     messages,
     isStreaming,
@@ -431,6 +467,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   } = useAgentChat(hookSessionId, {
     onSessionCreated: handleSessionCreated,
     createMode: getCreateMode,
+    createModel: getCreateModel,
   });
 
   /** Esc with nothing else open interrupts the in-flight run (close.esc). */
@@ -684,6 +721,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           chatView(false, () => setSidebarOpen(true))
         ) : (
           <DraftView
+            models={modelOptions}
+            autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
+            onModelChange={handleDraftModelChange}
             onSend={sendMessage}
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}
@@ -708,6 +748,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           chatView(sidebarOpen, () => setSidebarOpen((o) => !o))
         ) : (
           <DraftView
+            models={modelOptions}
+            autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
+            onModelChange={handleDraftModelChange}
             onSend={sendMessage}
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}

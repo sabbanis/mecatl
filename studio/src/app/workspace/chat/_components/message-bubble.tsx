@@ -113,9 +113,12 @@ export function splitLeadingQuote(content: string): {
   let i = 0;
   while (i < lines.length && /^>\s?/.test(lines[i])) i++;
   if (i === 0) return { quote: null, rest: content };
+  // Strip EVERY leading marker: a thread root that was itself an
+  // add-to-chat quote arrives double-quoted ("> > ..."), and the reader
+  // wants the words, not the markup.
   const quote = lines
     .slice(0, i)
-    .map((line) => line.replace(/^>\s?/, ""))
+    .map((line) => line.replace(/^(>\s?)+/, ""))
     .join("\n");
   const rest = lines.slice(i).join("\n").replace(/^\n+/, "");
   return { quote, rest };

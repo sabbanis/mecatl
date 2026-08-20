@@ -80,13 +80,17 @@ export async function probeHarness(
  */
 export async function createHarnessSession(
   mode: "default" | "plan" | "accept_edits" = "default",
-  signal?: AbortSignal,
+  options?: { modelId?: string; signal?: AbortSignal },
 ): Promise<string> {
   const response = await fetch(`${HARNESS_API}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ mode }),
-    signal,
+    // model_id is protojson snake_case; omitted entirely on auto-routing so
+    // the daemon's own selection applies.
+    body: JSON.stringify(
+      options?.modelId ? { mode, model_id: options.modelId } : { mode },
+    ),
+    signal: options?.signal,
   });
   if (!response.ok) throw new Error(await readError(response));
   const body = (await response.json()) as { session_id?: string };

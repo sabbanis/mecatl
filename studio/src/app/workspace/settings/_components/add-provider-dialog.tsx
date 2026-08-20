@@ -138,21 +138,26 @@ export function AddProviderDialog({
             {selected && (
               <>
                 <div className="flex flex-col gap-1.5">
-                  <div className="flex items-center justify-between gap-2">
-                    <p className="text-sm font-medium">
-                      2. Add this to the config file
-                      {selected.note && (
-                        <span className="block text-xs font-normal text-muted-foreground">
-                          {selected.note} Replace{" "}
-                          <code className="font-mono">&lt;YOUR_KEY&gt;</code>{" "}
-                          with your key.
-                        </span>
-                      )}
-                    </p>
+                  <p className="text-sm font-medium">
+                    2. Add this to the config file
+                    <span className="block text-xs font-normal text-muted-foreground">
+                      {selected.note} Paste the snippet into{" "}
+                      <code className="font-mono">{path}</code> under its{" "}
+                      <code className="font-mono">providers:</code> key, and
+                      swap <code className="font-mono">&lt;YOUR_KEY&gt;</code>{" "}
+                      for your real key.
+                    </span>
+                  </p>
+                  <div className="relative">
+                    <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-3 pr-10 font-mono text-xs leading-relaxed">
+                      {selected.snippet}
+                    </pre>
                     <Button
-                      size="sm"
+                      size="icon"
                       variant="ghost"
-                      className="rounded-full text-muted-foreground hover:text-foreground"
+                      className="absolute top-1.5 right-1.5 size-7 text-muted-foreground hover:text-foreground"
+                      aria-label={copied ? "Copied" : "Copy snippet"}
+                      title={copied ? "Copied" : "Copy snippet"}
                       onClick={() => void copySnippet()}
                     >
                       {copied ? (
@@ -160,17 +165,8 @@ export function AddProviderDialog({
                       ) : (
                         <Copy className="size-3.5" />
                       )}
-                      {copied ? "Copied" : "Copy"}
                     </Button>
                   </div>
-                  <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs leading-relaxed">
-                    {selected.snippet}
-                  </pre>
-                  <p className="text-xs text-muted-foreground">
-                    File: <code className="font-mono">{path}</code> (merge under
-                    its existing <code className="font-mono">providers:</code>{" "}
-                    key)
-                  </p>
                 </div>
 
                 {checked === "appeared" ? (
@@ -194,12 +190,17 @@ export function AddProviderDialog({
             )}
           </div>
           <DialogFooter>
-            <Button variant="outline" onClick={() => handleOpenChange(false)}>
-              Close
+            <Button
+              variant="outline"
+              className="rounded-full"
+              onClick={() => handleOpenChange(false)}
+            >
+              Done
             </Button>
             {selected && checked !== "appeared" && (
               <Button
                 variant="action"
+                className="rounded-full"
                 disabled={checking}
                 onClick={() => void recheck()}
               >

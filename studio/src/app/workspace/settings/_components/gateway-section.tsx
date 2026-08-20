@@ -3,6 +3,7 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import {
   ExternalManagedNote,
@@ -70,36 +71,39 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
           <ExternalManagedNote />
         </div>
       ) : (
-        <div className="divide-y divide-border/60">
+        // A plain stacked form (labels above full-width fields, no dividers)
+        // — this card is one configure-then-connect action, not a row list.
+        <div className="flex flex-col gap-4">
           {connectedRow}
-          <SettingsRow label="Gateway name" htmlFor="gw-name">
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="gw-name">Gateway name</Label>
             <Input
               id="gw-name"
               value={name}
               onChange={(event) => setName(event.target.value)}
               placeholder="connector-gateway"
-              className="w-44 font-mono min-[500px]:w-60"
+              className="font-mono"
             />
-          </SettingsRow>
-          <SettingsRow label="Gateway URL" htmlFor="gw-url">
+          </div>
+          <div className="flex flex-col gap-1.5">
+            <Label htmlFor="gw-url">Gateway URL</Label>
             <Input
               id="gw-url"
               value={url}
               onChange={(event) => setUrl(event.target.value)}
               placeholder={SUGGESTED_GATEWAY_URL}
-              className="w-52 font-mono min-[500px]:w-72"
+              className="font-mono"
             />
-          </SettingsRow>
-          <SettingsRow label="Sign in">
-            <Button
-              type="button"
-              variant="action"
-              disabled={!ready || busy}
-              onClick={startOAuth}
-            >
-              {busy ? "Waiting for sign-in…" : "Sign in to gateway"}
-            </Button>
-          </SettingsRow>
+          </div>
+          <Button
+            type="button"
+            variant="action"
+            className="self-start rounded-full"
+            disabled={!ready || busy}
+            onClick={startOAuth}
+          >
+            {busy ? "Waiting for sign-in…" : "Sign in to gateway"}
+          </Button>
         </div>
       )}
     </SettingsCard>

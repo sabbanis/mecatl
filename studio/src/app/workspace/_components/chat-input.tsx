@@ -79,6 +79,10 @@ interface ChatInputProps {
       steering). Only meaningful while `isStreaming`. */
   onSteer?: (content: string) => void;
   onModelChange?: (alias: string) => void;
+  /** Live daemon models for the picker; absent = the sentinel only. */
+  models?: ComposerModelOption[];
+  /** Label for the empty (daemon-picks) entry. */
+  autoModelLabel?: string;
   disabled?: boolean;
   isStreaming?: boolean;
   appendText?: string | null;
@@ -142,17 +146,18 @@ function FilesDropdown({
   );
 }
 
-const MODELS = [
-  { id: "claude-sonnet-5", label: "Claude Sonnet 5" },
-  { id: "claude-opus-5", label: "Claude Opus 5" },
-  { id: "claude-haiku-4-5", label: "Claude Haiku 4.5" },
-  { id: "claude-fable-5", label: "Claude Fable 5" },
-  { id: "gemini-2-5-pro", label: "Gemini 2.5 Pro" },
-] as const;
+/** The daemon-picks sentinel (model_id omitted at create). Its label is
+ *  supplied by the caller: "Auto-routed" only while the router is really on. */
+const AUTO_MODEL_ID = "";
+const autoModel = (label?: string) => ({
+  id: AUTO_MODEL_ID,
+  label: label ?? "Default model",
+});
 
-type ModelId = (typeof MODELS)[number]["id"];
-
-const DEFAULT_MODEL_ID: ModelId = "claude-sonnet-5";
+export interface ComposerModelOption {
+  id: string;
+  label: string;
+}
 
 const EFFORT_LEVELS = [
   { id: "light", label: "Light" },
@@ -223,16 +228,21 @@ function SheetSectionLabel({ children }: { children: React.ReactNode }) {
 function ModelEffortSelector({
   onModelChange,
   lockedLabel,
+  models,
+  autoModelLabel,
 }: {
-  onModelChange?: (id: ModelId) => void;
+  onModelChange?: (id: string) => void;
   lockedLabel?: string;
+  models?: ComposerModelOption[];
+  autoModelLabel?: string;
 }) {
-  const [model, setModel] = useState<ModelId>(DEFAULT_MODEL_ID);
+  const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
+  const [model, setModel] = useState<string>(AUTO_MODEL_ID);
   const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
-  const selectedModel = MODELS.find((m) => m.id === model) ?? MODELS[0];
+  const selectedModel =
+    modelOptions.find((m) => m.id === model) ?? modelOptions[0];
   const selectedEffort =
     EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
-  const isDefault = model === DEFAULT_MODEL_ID && effort === DEFAULT_EFFORT_ID;
 
   // The toolbar is a CSS container (@container on the footer row): below
   // ~28rem — a narrow side-panel composer, not just mobile viewports — the
@@ -281,7 +291,7 @@ function ModelEffortSelector({
             <span className="text-muted-foreground">{selectedModel.label}</span>
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="w-80 p-2">
-            {MODELS.map((m) => {
+            {modelOptions.map((m) => {
               const isSelected = m.id === model;
               return (
                 <DropdownMenuItem
@@ -340,11 +350,11 @@ function ModelEffortSelector({
         </DropdownMenuSub>
         <DropdownMenuSeparator />
         <DropdownMenuItem
-          disabled={isDefault}
+          disabled={model === AUTO_MODEL_ID && effort === DEFAULT_EFFORT_ID}
           onClick={() => {
-            setModel(DEFAULT_MODEL_ID);
+            setModel(AUTO_MODEL_ID);
             setEffort(DEFAULT_EFFORT_ID);
-            onModelChange?.(DEFAULT_MODEL_ID);
+            onModelChange?.(AUTO_MODEL_ID);
           }}
         >
           <RotateCcw className="size-4 mr-2 text-muted-foreground" />
@@ -507,24 +517,29 @@ function MobileComposerMenu({
   mode,
   onModeChange,
   modeDisabled,
+  models,
+  autoModelLabel,
 }: {
   onFilesSelected: (files: File[]) => void;
-  onModelChange?: (id: ModelId) => void;
+  onModelChange?: (id: string) => void;
   modelLockedLabel?: string;
   mode?: SessionPermissionMode;
   onModeChange?: (mode: SessionPermissionMode) => void;
   modeDisabled?: boolean;
+  models?: ComposerModelOption[];
+  autoModelLabel?: string;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
   const [sub, setSub] = useState<"mode" | "model" | "memory" | null>(null);
-  const [model, setModel] = useState<ModelId>(DEFAULT_MODEL_ID);
+  const [model, setModel] = useState<string>(AUTO_MODEL_ID);
   const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
   const [memoryOn, setMemoryOn] = useState(true);
   const fileInputRef = useRef<HTMLInputElement>(null);
-  const selectedModel = MODELS.find((m) => m.id === model) ?? MODELS[0];
+  const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
+  const selectedModel =
+    modelOptions.find((m) => m.id === model) ?? modelOptions[0];
   const selectedEffort =
     EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
-  const isDefault = model === DEFAULT_MODEL_ID && effort === DEFAULT_EFFORT_ID;
 
   const menuRow =
     "flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50 disabled:opacity-50";
@@ -662,7 +677,7 @@ function MobileComposerMenu({
           <SheetTitle className="sr-only">Model and effort</SheetTitle>
           <div className="max-h-[70dvh] overflow-y-auto pb-2">
             <SheetSectionLabel>Model</SheetSectionLabel>
-            {MODELS.map((m) => (
+            {modelOptions.map((m) => (
               <SheetOptionRow
                 key={m.id}
                 label={m.label}
@@ -685,11 +700,11 @@ function MobileComposerMenu({
             <div className="mx-4 my-1 h-px bg-border" />
             <button
               type="button"
-              disabled={isDefault}
+              disabled={model === AUTO_MODEL_ID && effort === DEFAULT_EFFORT_ID}
               onClick={() => {
-                setModel(DEFAULT_MODEL_ID);
+                setModel(AUTO_MODEL_ID);
                 setEffort(DEFAULT_EFFORT_ID);
-                onModelChange?.(DEFAULT_MODEL_ID);
+                onModelChange?.(AUTO_MODEL_ID);
                 setSub(null);
               }}
               className={cn(menuRow, "text-muted-foreground")}
@@ -1061,6 +1076,8 @@ export function ChatInput({
   initialText,
   onInitialTextConsumed,
   modelLockedLabel,
+  models,
+  autoModelLabel,
   mode,
   onModeChange,
 }: ChatInputProps) {
@@ -1451,6 +1468,8 @@ export function ChatInput({
         <div className="flex flex-wrap items-start gap-1.5 px-4 pt-4 pb-2 max-[499px]:min-h-14 max-[499px]:flex-nowrap max-[499px]:items-center max-[499px]:gap-1 max-[499px]:px-2 max-[499px]:py-1.5">
           <div className="hidden max-[499px]:block">
             <MobileComposerMenu
+              models={models}
+              autoModelLabel={autoModelLabel}
               onFilesSelected={(newFiles) =>
                 setAttachedFiles((prev) => [...prev, ...newFiles])
               }
@@ -1563,6 +1582,8 @@ export function ChatInput({
               />
             )}
             <ModelEffortSelector
+              models={models}
+              autoModelLabel={autoModelLabel}
               lockedLabel={modelLockedLabel}
               onModelChange={(id) => {
                 onModelChange?.(id);

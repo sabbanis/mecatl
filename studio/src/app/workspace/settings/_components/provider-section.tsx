@@ -291,7 +291,7 @@ function ProviderRow({
   const testing = busy === `test:${row.name}`;
   const activating = busy === `activate:${row.name}`;
   const removingBusy = busy === `remove:${row.name}`;
-  const href = `/workspace/settings/provider/${encodeURIComponent(row.name)}`;
+  const href = `/workspace/provider/${encodeURIComponent(row.name)}`;
 
   return (
     <li className="flex items-center gap-3 px-4 py-3">

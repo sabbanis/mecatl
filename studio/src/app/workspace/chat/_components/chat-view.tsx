@@ -417,6 +417,7 @@ function ThreadPanel({
   // Re-seeds the composer after a refused first send (keep the text) or a
   // queued-message edit.
   const [seedText, setSeedText] = useState<string | null>(null);
+  const threadScrollRef = useRef<HTMLDivElement>(null);
   const endRef = useRef<HTMLDivElement>(null);
 
   const {
@@ -525,7 +526,10 @@ function ThreadPanel({
     >
       {/* Body: root message, live replies, composer */}
       <div className="relative flex-1 min-h-0">
-        <div className="h-full overflow-y-auto px-3 pt-3 pb-40 max-[499px]:pb-24 lg:px-4">
+        <div
+          ref={threadScrollRef}
+          className="h-full overflow-y-auto px-3 pt-3 pb-40 max-[499px]:pb-24 lg:px-4"
+        >
           <div className="rounded-lg border border-dashed border-border/70 px-1 py-1">
             <MessageBubble message={rootMessage} botName={botName} />
           </div>
@@ -556,6 +560,19 @@ function ThreadPanel({
           )}
           <div ref={endRef} />
         </div>
+        <TextSelectionToolbar
+          containerRef={threadScrollRef}
+          onAddToChat={(text) =>
+            setSeedText((prev) => {
+              const quoted = `${text
+                .split("\n")
+                .map((line) => `> ${line}`)
+                .join("\n")}\n\n`;
+              return prev ? prev + quoted : quoted;
+            })
+          }
+          addLabel="Add to thread"
+        />
         <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
           <div className="space-y-1.5">
             <QueuedMessageStrip
@@ -662,10 +679,15 @@ function TextSelectionToolbar({
   containerRef,
   onAddToChat,
   onAskInSideChat,
+  addLabel = "Add to chat",
+  askLabel = "Ask in a chat thread",
 }: {
   containerRef: React.RefObject<HTMLElement | null>;
   onAddToChat: (text: string) => void;
-  onAskInSideChat: (text: string) => void;
+  /** Omitted = the toolbar offers only the add action (the thread panel). */
+  onAskInSideChat?: (text: string) => void;
+  addLabel?: string;
+  askLabel?: string;
 }) {
   const [pos, setPos] = useState<{ x: number; y: number } | null>(null);
   const [selectedText, setSelectedText] = useState("");
@@ -738,21 +760,25 @@ function TextSelectionToolbar({
         className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-foreground hover:bg-muted transition-colors whitespace-nowrap"
       >
         <MessageCircle className="size-3.5" />
-        Add to chat
+        {addLabel}
       </button>
-      <div className="w-px h-4 bg-border" />
-      <button
-        type="button"
-        onClick={() => {
-          onAskInSideChat(selectedText);
-          setPos(null);
-          window.getSelection()?.removeAllRanges();
-        }}
-        className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-foreground hover:bg-muted transition-colors whitespace-nowrap"
-      >
-        <CirclePlus className="size-3.5" />
-        Ask in side chat
-      </button>
+      {onAskInSideChat && (
+        <>
+          <div className="w-px h-4 bg-border" />
+          <button
+            type="button"
+            onClick={() => {
+              onAskInSideChat(selectedText);
+              setPos(null);
+              window.getSelection()?.removeAllRanges();
+            }}
+            className="flex items-center gap-1.5 rounded-md px-2.5 py-1.5 text-sm text-foreground hover:bg-muted transition-colors whitespace-nowrap"
+          >
+            <CirclePlus className="size-3.5" />
+            {askLabel}
+          </button>
+        </>
+      )}
     </div>
   );
 }
@@ -1087,7 +1113,7 @@ export function ChatView({
               <div ref={messagesEndRef} />
             </div>
           </div>
-          <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-6 pb-4 lg:pb-6 max-[499px]:px-0 max-[499px]:pb-0">
+          <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
             {!atBottom && (
               <div className="pointer-events-none absolute -top-12 left-0 right-0 flex justify-center">
                 <Button
@@ -1145,7 +1171,9 @@ export function ChatView({
                   onSteer={onSteerMessage}
                   focusKey={session.id}
                   mobileDocked
-                  modelLockedLabel={live ? "Auto-routed" : undefined}
+                  modelLockedLabel={
+                    live ? session.model || "Auto-routed" : undefined
+                  }
                   onModelChange={() => {}}
                   mode={mode}
                   onModeChange={onModeChange}

@@ -214,6 +214,9 @@ export function useAgentChat(
      *  (the composer's pending Mode selection). Read at mint time — a ref-like
      *  getter, because the selection can change after this render's closure. */
     createMode?: () => SessionPermissionMode;
+    /** The composer's pending model pick ("" = auto-routed); read at mint
+     *  time like createMode. */
+    createModel?: () => string;
   },
 ) {
   const { connected } = useRuntimeStatus();
@@ -246,6 +249,8 @@ export function useAgentChat(
   onSessionCreatedRef.current = options?.onSessionCreated;
   const createModeRef = useRef(options?.createMode);
   createModeRef.current = options?.createMode;
+  const createModelRef = useRef(options?.createModel);
+  createModelRef.current = options?.createModel;
 
   // Opening a chat (or switching chats) rehydrates from the daemon.
   useEffect(() => {
@@ -336,6 +341,7 @@ export function useAgentChat(
         if (!daemonId) {
           daemonId = await createHarnessSession(
             encodeSessionPermissionMode(createModeRef.current?.() ?? "default"),
+            { modelId: createModelRef.current?.() || undefined },
           );
           daemonIdRef.current = daemonId;
           onSessionCreatedRef.current?.(daemonId);
