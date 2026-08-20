@@ -98,3 +98,38 @@ export function fileKindMeta(name: string, mime?: string): FileKindMeta {
   }
   return { icon: Paperclip, label: "File" };
 }
+
+/** A file a tool call produced, when the call's args carry one. */
+export interface ToolCallFile {
+  path: string;
+  name: string;
+  content?: string;
+}
+
+/**
+ * Derives the produced file from a tool call's RAW args JSON. Write carries
+ * the full body (previewable); Edit names the path but not the final
+ * content, so it is deliberately skipped — a card that can't preview is a
+ * dead end.
+ */
+export function fileFromToolCall(
+  tool: string,
+  rawArgs: string | undefined,
+): ToolCallFile | undefined {
+  if (tool !== "Write" || !rawArgs) return undefined;
+  try {
+    const args = JSON.parse(rawArgs) as {
+      file_path?: unknown;
+      content?: unknown;
+    };
+    if (typeof args.file_path !== "string" || !args.file_path) return undefined;
+    const name = args.file_path.split("/").filter(Boolean).pop() ?? "file";
+    return {
+      path: args.file_path,
+      name,
+      content: typeof args.content === "string" ? args.content : undefined,
+    };
+  } catch {
+    return undefined;
+  }
+}

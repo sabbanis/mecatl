@@ -23,7 +23,12 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { AgentMessage, Artifact, Attachment } from "@/features/agent";
+import type {
+  AgentMessage,
+  Artifact,
+  Attachment,
+  ToolCallInfo,
+} from "@/features/agent";
 import { fileKindMeta } from "@/lib/file-meta";
 import { formatMessageTime } from "@/lib/formatters";
 import {
@@ -271,9 +276,11 @@ const ARTIFACT_META: Record<
 function AttachmentChip({
   attachment,
   onOpen,
+  title,
 }: {
   attachment: Attachment;
   onOpen?: () => void;
+  title?: string;
 }) {
   const kind = fileKindMeta(attachment.name, attachment.type);
   const KindIcon = kind.icon;
@@ -289,6 +296,7 @@ function AttachmentChip({
     <button
       type="button"
       onClick={onOpen}
+      title={title}
       className={cn(
         "inline-flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/5 py-1 pr-3 text-xs text-blue-600 dark:text-blue-400 transition-colors hover:border-blue-500/60 hover:bg-blue-500/10 cursor-pointer",
         thumbSrc ? "pl-1" : "pl-3",
@@ -389,6 +397,15 @@ export function MessageBubble({
   };
 
   const hasToolCalls = message.toolCalls && message.toolCalls.length > 0;
+  // Files this turn produced (Write calls), rendered as attachment chips —
+  // deduped by path, the LAST write of a path wins (it is the final content).
+  const producedFiles = (() => {
+    const byPath = new Map<string, NonNullable<ToolCallInfo["file"]>>();
+    for (const call of message.toolCalls ?? []) {
+      if (call.file) byPath.set(call.file.path, call.file);
+    }
+    return [...byPath.values()];
+  })();
   const hasContent = message.content?.trim();
   // Notices and delegations can repeat verbatim within a turn, so rows get
   // positional ids up front to keep React keys unique.
@@ -438,6 +455,28 @@ export function MessageBubble({
                 key={att.name}
                 attachment={att}
                 onOpen={() => onOpenAttachment?.(att)}
+              />
+            ))}
+          </div>
+        )}
+        {producedFiles.length > 0 && (
+          <div className="my-1.5 flex flex-wrap gap-1.5">
+            {producedFiles.map((file) => (
+              <AttachmentChip
+                key={file.path}
+                attachment={{
+                  name: file.name,
+                  type: "",
+                  content: file.content,
+                }}
+                title={file.path}
+                onOpen={() =>
+                  onOpenAttachment?.({
+                    name: file.name,
+                    type: "",
+                    content: file.content,
+                  })
+                }
               />
             ))}
           </div>

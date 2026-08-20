@@ -87,6 +87,8 @@ export interface ToolCallInfo {
   callId: string;
   name: string;
   input: unknown;
+  /** The file this call produced (Write), previewable in the canvas. */
+  file?: import("@/lib/file-meta").ToolCallFile;
   output?: string;
   isError?: boolean;
   status: "running" | "completed" | "failed";
@@ -103,7 +105,13 @@ export interface Attachment {
 
 export type StreamEvent =
   | { type: "token"; text: string }
-  | { type: "tool_call"; name: string; callId: string; input: unknown }
+  | {
+      type: "tool_call";
+      name: string;
+      callId: string;
+      input: unknown;
+      file?: import("@/lib/file-meta").ToolCallFile;
+    }
   | {
       type: "tool_result";
       callId: string;

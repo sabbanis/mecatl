@@ -1,6 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import { fileFromToolCall } from "@/lib/file-meta";
 import {
   cancelHarnessRun,
   cancelHarnessSteer,
@@ -165,6 +166,7 @@ function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
               callId: call.id,
               name: call.name,
               input: call.args,
+              file: fileFromToolCall(call.name, call.args),
               status: "completed" as const,
             }))
           : undefined,
@@ -385,6 +387,7 @@ export function useAgentChat(
                   callId: event.callId,
                   name: event.name,
                   input: event.input,
+                  file: event.file,
                   status: "running",
                 };
                 patch((message) => ({

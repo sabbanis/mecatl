@@ -10,6 +10,7 @@
  */
 
 import type { StreamEvent } from "@/features/agent/types";
+import { fileFromToolCall } from "@/lib/file-meta";
 import {
   asRecord,
   optionalNumber,
@@ -256,6 +257,7 @@ export function translateEvent(
           callId: call.call_id ?? call.id ?? `call-${event.seq ?? ""}`,
           name: call.tool ?? call.name ?? "Tool",
           input: call.args ? prettyArgs(call.args) : "",
+          file: fileFromToolCall(call.tool ?? call.name ?? "", call.args),
         },
       ];
     }
