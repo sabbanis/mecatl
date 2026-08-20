@@ -247,9 +247,9 @@ Rejected. Project roots and Session children are independently paged and loaded 
 
 ## Rollout
 
-1. Add the minimal Project document, whole-document revision checks, caller ownership, Project store, immutable source registry, and `CreateSessionFromProject` API.
-2. Add local and operator-declared Kubernetes working sources. Treat every alternate working root as untrusted.
-3. Persist captured Project bindings and compact Session provenance; add paged Project listing and Project-filtered Session metadata.
+1. Add the minimal Project document, whole-document revision checks, caller ownership, Project store, immutable source registry, and bounded Project/source discovery APIs.
+2. Persist the captured Project binding and compact Session provenance, add Project-filtered Session metadata, and add `CreateSessionFromProject` in the same release; no Project Session may exist without its durable captured binding.
+3. Add local and operator-declared Kubernetes working sources. Treat every alternate working root as untrusted.
 4. Add `ProjectReferenceList` and `ProjectReferenceRead`, the shared source broker, exact catalog delta, delegation propagation, bounds, fencing, and audit projection in the same release as reference management.
 5. Add explicitly registered Streamable HTTP MCP resources such as operator-shared Google Documents. Personal source enrollment and Search remain separate future designs.
 6. Inventory every new long-lived store, broker, cache, client, or goroutine in [ADR 0027](./0027-cloud-native.md); update architecture, usage, and public user documentation when behavior ships.

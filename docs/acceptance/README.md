@@ -75,6 +75,10 @@ when the code that satisfies the plan has landed.
   application sessions, schedules, teams, memory, event streams, live runs, and
   model-facing object access; remote-driver enforcement is deferred to #452. Status:
   draft.
+- [Project working MVP](project-working-mvp.md) — Studio-facing, path-free Project
+  CRUD and Project-backed Session creation over one canonical working source, with a
+  complete mecatui `/projects` acceptance UI and bounded Project-filtered navigation.
+  Status: draft.
 - [Session continuity UX](session-continuity-ux.md) — authoritative session-family
   metadata, honest replay/inspection, an active-session copy surface, startup resume,
   and a final session-ID handoff for mecatui. Status: landed.
