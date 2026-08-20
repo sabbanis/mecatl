@@ -30,7 +30,7 @@ func TestADR_0232_AuthorityEvaluator_Scenario7_PolicyIsStaticAndDataIsPerRequest
 	}
 }
 
-func TestADR_0232_AuthorityEvaluator_Scenario7_CedarCanDenyWithoutWidening(t *testing.T) {
+func TestADR_0232_AuthorityEvaluator_Scenario7_OperatorRuleTightensButCannotGrant(t *testing.T) {
 	t.Parallel()
 
 	evaluator, err := New([]byte(`
