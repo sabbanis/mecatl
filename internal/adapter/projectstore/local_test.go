@@ -27,7 +27,7 @@ func TestLocalStoreReopenPreservesProject(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reopen NewLocal: %v", err)
 	}
-	got, err := reopened.Load(context.Background(), item.ID)
+	got, err := reopened.Load(context.Background(), item.ID, project.Ownership{})
 	if err != nil {
 		t.Fatalf("reopened Load: %v", err)
 	}

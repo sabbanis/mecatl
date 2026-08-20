@@ -126,15 +126,29 @@ func (p Project) Clone() Project {
 	return p
 }
 
-// Store persists complete Project documents. Create is create-only; Replace and
-// Delete compare expectedRevision with the stored document atomically. Adapters
-// apply owner filtering before a Page forms its result.
+// Store persists complete Project documents. Create is create-only; Load, Replace,
+// and Delete apply ownership and revision checks against the stored document
+// atomically. Foreign and absent records both return ErrNotFound. Adapters apply
+// owner filtering before a Page forms its result.
 type Store interface {
 	Create(context.Context, Project) error
-	Load(context.Context, string) (Project, error)
-	Replace(context.Context, Project, int64) (Project, error)
-	Delete(context.Context, string, int64) error
+	Load(context.Context, string, Ownership) (Project, error)
+	Replace(context.Context, Project, int64, Ownership) (Project, error)
+	Delete(context.Context, string, int64, Ownership) error
 	Page(context.Context, PageRequest) (Page, error)
+}
+
+// Ownership scopes a Project-store operation to one caller. When enforcement is
+// disabled, the deployment retains its ownerless single-trusted-domain posture.
+type Ownership struct {
+	Enforced bool
+	Owner    *session.Principal
+}
+
+// Allows reports whether owner is visible to this scope. An enforced scope with
+// no principal is intentionally allowed to see no records.
+func (scope Ownership) Allows(owner *session.Principal) bool {
+	return !scope.Enforced || (scope.Owner != nil && scope.Owner.SameIdentity(owner))
 }
 
 // Cursor is the structured keyset position. Transports encode it opaquely.

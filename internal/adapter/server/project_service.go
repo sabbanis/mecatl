@@ -82,15 +82,21 @@ func (s *Service) ReplaceProject(ctx context.Context, id, name string, sourceRef
 	if err := current.Validate(); err != nil {
 		return project.Project{}, fmt.Errorf("%w: invalid project document", ErrInvalidArgument)
 	}
-	return s.cfg.ProjectStore.Replace(ctx, current, expectedRevision)
+	return s.cfg.ProjectStore.Replace(ctx, current, expectedRevision, s.projectOwnership(ctx))
 }
 
 // DeleteProject removes only the owned Project document at expectedRevision.
 func (s *Service) DeleteProject(ctx context.Context, id string, expectedRevision int64) error {
-	if _, err := s.loadOwnedProject(ctx, id); err != nil {
+	if !s.projectEnabled() {
+		return fmt.Errorf("%w", project.ErrUnsupported)
+	}
+	if err := s.cfg.ProjectStore.Delete(ctx, id, expectedRevision, s.projectOwnership(ctx)); err != nil {
+		if errors.Is(err, project.ErrNotFound) {
+			return fmt.Errorf("%w", ErrNotFound)
+		}
 		return err
 	}
-	return s.cfg.ProjectStore.Delete(ctx, id, expectedRevision)
+	return nil
 }
 
 // CreateSessionFromProject captures one authorized Project revision and its
@@ -150,17 +156,18 @@ func (s *Service) loadOwnedProject(ctx context.Context, id string) (project.Proj
 	if !s.projectEnabled() {
 		return project.Project{}, fmt.Errorf("%w", project.ErrUnsupported)
 	}
-	item, err := s.cfg.ProjectStore.Load(ctx, id)
+	item, err := s.cfg.ProjectStore.Load(ctx, id, s.projectOwnership(ctx))
 	if err != nil {
 		if errors.Is(err, project.ErrNotFound) {
 			return project.Project{}, fmt.Errorf("%w", ErrNotFound)
 		}
 		return project.Project{}, err
 	}
-	if !s.ownsResource(ctx, item.Owner) {
-		return project.Project{}, fmt.Errorf("%w", ErrNotFound)
-	}
 	return item, nil
+}
+
+func (s *Service) projectOwnership(ctx context.Context) project.Ownership {
+	return project.Ownership{Enforced: s.cfg.OwnershipEnforced, Owner: session.PrincipalFromContext(ctx)}
 }
 
 func (s *Service) projectWorkingSource(ctx context.Context, ref project.SourceRef) (project.WorkingSource, error) {

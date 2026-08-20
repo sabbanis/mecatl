@@ -40,22 +40,22 @@ func (s *Memory) Create(ctx context.Context, item project.Project) error {
 	return nil
 }
 
-// Load returns an isolated Project copy.
-func (s *Memory) Load(ctx context.Context, id string) (project.Project, error) {
+// Load returns an isolated Project copy when it is visible to ownership.
+func (s *Memory) Load(ctx context.Context, id string, ownership project.Ownership) (project.Project, error) {
 	if err := ctx.Err(); err != nil {
 		return project.Project{}, err
 	}
 	s.mu.RLock()
+	defer s.mu.RUnlock()
 	item, exists := s.projects[id]
-	s.mu.RUnlock()
-	if !exists {
+	if !exists || !ownership.Allows(item.Owner) {
 		return project.Project{}, fmt.Errorf("projectstore: load %q: %w", id, project.ErrNotFound)
 	}
 	return item.Clone(), nil
 }
 
-// Replace atomically checks a revision and replaces the complete document.
-func (s *Memory) Replace(ctx context.Context, item project.Project, expectedRevision int64) (project.Project, error) {
+// Replace atomically checks ownership and a revision before replacing the complete document.
+func (s *Memory) Replace(ctx context.Context, item project.Project, expectedRevision int64, ownership project.Ownership) (project.Project, error) {
 	if err := ctx.Err(); err != nil {
 		return project.Project{}, err
 	}
@@ -65,7 +65,7 @@ func (s *Memory) Replace(ctx context.Context, item project.Project, expectedRevi
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, exists := s.projects[item.ID]
-	if !exists {
+	if !exists || !ownership.Allows(current.Owner) {
 		return project.Project{}, fmt.Errorf("projectstore: replace %q: %w", item.ID, project.ErrNotFound)
 	}
 	if current.Revision != expectedRevision || item.Revision != expectedRevision+1 {
@@ -75,15 +75,15 @@ func (s *Memory) Replace(ctx context.Context, item project.Project, expectedRevi
 	return item.Clone(), nil
 }
 
-// Delete atomically removes a Project only at its current revision.
-func (s *Memory) Delete(ctx context.Context, id string, expectedRevision int64) error {
+// Delete atomically checks ownership and removes a Project only at its current revision.
+func (s *Memory) Delete(ctx context.Context, id string, expectedRevision int64, ownership project.Ownership) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	current, exists := s.projects[id]
-	if !exists {
+	if !exists || !ownership.Allows(current.Owner) {
 		return fmt.Errorf("projectstore: delete %q: %w", id, project.ErrNotFound)
 	}
 	if current.Revision != expectedRevision {

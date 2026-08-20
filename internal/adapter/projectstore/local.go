@@ -60,22 +60,28 @@ func (s *Local) Create(ctx context.Context, item project.Project) error {
 	})
 }
 
-// Load returns the current complete Project document.
-func (s *Local) Load(ctx context.Context, id string) (project.Project, error) {
+// Load returns the current complete Project document when it is visible to ownership.
+func (s *Local) Load(ctx context.Context, id string, ownership project.Ownership) (project.Project, error) {
 	if err := ctx.Err(); err != nil {
 		return project.Project{}, err
 	}
 	var out project.Project
 	err := s.withLock(ctx, func() error {
-		var err error
-		out, err = s.read(id)
-		return err
+		item, err := s.read(id)
+		if err != nil {
+			return err
+		}
+		if !ownership.Allows(item.Owner) {
+			return fmt.Errorf("projectstore: load %q: %w", id, project.ErrNotFound)
+		}
+		out = item
+		return nil
 	})
 	return out, err
 }
 
-// Replace atomically checks expectedRevision and replaces the complete document.
-func (s *Local) Replace(ctx context.Context, item project.Project, expectedRevision int64) (project.Project, error) {
+// Replace atomically checks ownership and expectedRevision before replacing the complete document.
+func (s *Local) Replace(ctx context.Context, item project.Project, expectedRevision int64, ownership project.Ownership) (project.Project, error) {
 	if err := ctx.Err(); err != nil {
 		return project.Project{}, err
 	}
@@ -87,6 +93,9 @@ func (s *Local) Replace(ctx context.Context, item project.Project, expectedRevis
 		current, err := s.read(item.ID)
 		if err != nil {
 			return err
+		}
+		if !ownership.Allows(current.Owner) {
+			return fmt.Errorf("projectstore: replace %q: %w", item.ID, project.ErrNotFound)
 		}
 		if current.Revision != expectedRevision || item.Revision != expectedRevision+1 {
 			return fmt.Errorf("projectstore: replace %q: %w", item.ID, project.ErrConflict)
@@ -100,8 +109,8 @@ func (s *Local) Replace(ctx context.Context, item project.Project, expectedRevis
 	return out, err
 }
 
-// Delete atomically removes a Project document at its current revision.
-func (s *Local) Delete(ctx context.Context, id string, expectedRevision int64) error {
+// Delete atomically checks ownership and removes a Project document at its current revision.
+func (s *Local) Delete(ctx context.Context, id string, expectedRevision int64, ownership project.Ownership) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -109,6 +118,9 @@ func (s *Local) Delete(ctx context.Context, id string, expectedRevision int64) e
 		current, err := s.read(id)
 		if err != nil {
 			return err
+		}
+		if !ownership.Allows(current.Owner) {
+			return fmt.Errorf("projectstore: delete %q: %w", id, project.ErrNotFound)
 		}
 		if current.Revision != expectedRevision {
 			return fmt.Errorf("projectstore: delete %q: %w", id, project.ErrConflict)

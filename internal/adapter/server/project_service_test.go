@@ -82,7 +82,7 @@ func TestProjectServiceResolutionFailureIsOpaqueAndLeavesNoSession(t *testing.T)
 		t.Fatalf("failed Project creation persisted a Session: %v", err)
 	}
 }
-func TestProjectServiceOwnershipAndCapturedBinding(t *testing.T) {
+func TestInvariant_project_access_is_caller_separated(t *testing.T) {
 	owner := &session.Principal{Issuer: "issuer", Subject: "owner"}
 	ctx := session.WithPrincipal(context.Background(), owner)
 	svc, source, _, _ := newProjectService(t, true)
@@ -109,5 +109,21 @@ func TestProjectServiceOwnershipAndCapturedBinding(t *testing.T) {
 	foreign := session.WithPrincipal(context.Background(), &session.Principal{Issuer: "issuer", Subject: "other"})
 	if _, err := svc.GetProject(foreign, created.ID); !errors.Is(err, server.ErrNotFound) {
 		t.Fatalf("foreign GetProject error = %v, want absence-shaped ErrNotFound", err)
+	}
+	if _, err := svc.GetProject(foreign, "missing"); !errors.Is(err, server.ErrNotFound) {
+		t.Fatalf("missing GetProject error = %v, want absence-shaped ErrNotFound", err)
+	}
+	if _, err := svc.ReplaceProject(foreign, created.ID, "Foreign change", source.Ref, created.Revision); !errors.Is(err, server.ErrNotFound) {
+		t.Fatalf("foreign ReplaceProject error = %v, want absence-shaped ErrNotFound", err)
+	}
+	if err := svc.DeleteProject(foreign, created.ID, created.Revision); !errors.Is(err, server.ErrNotFound) {
+		t.Fatalf("foreign DeleteProject error = %v, want absence-shaped ErrNotFound", err)
+	}
+	stored, err := svc.GetProject(ctx, created.ID)
+	if err != nil {
+		t.Fatalf("owner GetProject after foreign mutations: %v", err)
+	}
+	if stored.Name != created.Name || stored.Revision != created.Revision {
+		t.Fatalf("foreign mutation changed Project: %#v", stored)
 	}
 }
