@@ -157,11 +157,11 @@ export default function AppearanceSettingsPage() {
         </SettingsRow>
 
         <SettingsRow
-          label="Enter while the agent is replying"
+          label="Message queuing"
           description="Shift+Enter does the opposite."
         >
           <OptionField
-            label="Enter while the agent is replying"
+            label="Message queuing"
             value={behavior}
             options={ENTER_BEHAVIOR_OPTIONS}
             onChange={(next) => setBehavior(next as EnterSendBehavior)}
