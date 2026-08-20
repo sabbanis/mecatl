@@ -222,7 +222,7 @@ export function useAgentChat(
     createMode?: () => SessionPermissionMode;
     /** The composer's pending model pick ("" = auto-routed); read at mint
      *  time like createMode. */
-    createModel?: () => string;
+    createModel?: () => { modelId: string; providerId: string } | null;
   },
 ) {
   const { connected } = useRuntimeStatus();
@@ -411,9 +411,15 @@ export function useAgentChat(
       try {
         let daemonId = daemonIdRef.current;
         if (!daemonId) {
+          const createModel = createModelRef.current?.() ?? null;
           daemonId = await createHarnessSession(
             encodeSessionPermissionMode(createModeRef.current?.() ?? "default"),
-            { modelId: createModelRef.current?.() || undefined },
+            createModel
+              ? {
+                  modelId: createModel.modelId,
+                  providerId: createModel.providerId,
+                }
+              : {},
           );
           daemonIdRef.current = daemonId;
           // The pre-mint record above keyed nothing; re-key it now.

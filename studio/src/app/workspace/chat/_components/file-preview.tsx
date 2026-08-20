@@ -1,3 +1,6 @@
+"use client";
+
+import { useEffect, useState } from "react";
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import {
@@ -79,13 +82,7 @@ export function FilePreview({
         </div>
       );
     case "pdf":
-      return (
-        <iframe
-          src={binarySrc(content, url)}
-          title={name}
-          className="h-full w-full rounded-lg border-0"
-        />
-      );
+      return <PdfFrame name={name} src={binarySrc(content, url) ?? ""} />;
     case "markdown":
       return (
         <div className="px-4 py-4 lg:px-6 lg:py-6 text-sm lg:text-[15px] leading-relaxed">
@@ -116,4 +113,40 @@ export function FilePreview({
         </div>
       );
   }
+}
+
+/**
+ * Chrome and Safari render data:application/pdf iframes unreliably (often a
+ * blank page, on desktop and mobile alike); the same bytes behind a blob: URL
+ * render everywhere. The first paint keeps the raw src so environments
+ * without createObjectURL still show the frame; the effect swaps in the blob
+ * and revokes it on cleanup.
+ */
+function PdfFrame({ name, src }: { name: string; src: string }) {
+  const [frameSrc, setFrameSrc] = useState(src);
+  useEffect(() => {
+    setFrameSrc(src);
+    const comma = src.indexOf(",");
+    if (!src.startsWith("data:") || comma < 0) return;
+    if (!src.slice(0, comma).includes("base64")) return;
+    try {
+      const bytes = Uint8Array.from(atob(src.slice(comma + 1)), (c) =>
+        c.charCodeAt(0),
+      );
+      const blobUrl = URL.createObjectURL(
+        new Blob([bytes], { type: "application/pdf" }),
+      );
+      setFrameSrc(blobUrl);
+      return () => URL.revokeObjectURL(blobUrl);
+    } catch {
+      return undefined; // keep the data: fallback
+    }
+  }, [src]);
+  return (
+    <iframe
+      src={frameSrc}
+      title={name}
+      className="h-full w-full rounded-lg border-0"
+    />
+  );
 }

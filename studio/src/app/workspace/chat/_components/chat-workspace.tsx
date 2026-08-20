@@ -9,6 +9,7 @@ import {
 } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -34,6 +35,10 @@ import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
 import { usePanelWidth } from "@/hooks/use-panel-width";
 import { usePrompt } from "@/hooks/use-prompt";
+import {
+  forkHarnessSessionToModel,
+  ThreadSourceBusyError,
+} from "@/lib/harness/client";
 import { useDisabledModels } from "@/lib/model-preferences";
 import {
   type SessionListSide,
@@ -485,7 +490,12 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     () =>
       liveModels
         .filter((m) => !disabledModels.has(m.id))
-        .map((m) => ({ id: m.id, label: m.displayName || m.id })),
+        .map((m) => ({
+          id: m.id,
+          label: m.displayName || m.id,
+          // The daemon requires provider_id whenever model_id rides a create.
+          providerId: m.providerId,
+        })),
     [liveModels, disabledModels],
   );
   // "Auto-routed" is only an honest name for the empty pick while the model
@@ -495,7 +505,18 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const handleDraftModelChange = useCallback((id: string) => {
     draftModelRef.current = id;
   }, []);
-  const getCreateModel = useCallback(() => draftModelRef.current, []);
+  const modelOptionsRef = useRef(modelOptions);
+  modelOptionsRef.current = modelOptions;
+  const getCreateModel = useCallback(() => {
+    const id = draftModelRef.current;
+    if (!id) return null;
+    const option = modelOptionsRef.current.find((m) => m.id === id);
+    // A pick that fell out of the inventory degrades to auto rather than
+    // sending a bare model_id the daemon would reject.
+    return option?.providerId
+      ? { modelId: id, providerId: option.providerId }
+      : null;
+  }, []);
 
   const {
     messages,
@@ -694,6 +715,40 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const turnError =
     status === "error" ? (chatError ?? "The last turn failed.") : null;
 
+  // Mid-chat model switch: the daemon fixes a session's model at create, so
+  // a pick FORKS the chat — a new session seeded from this one's history on
+  // the new model, carrying the title — and the UI moves there. The old chat
+  // stays in the list (nothing is destroyed); a mid-run source answers 412.
+  const handleSwitchModel = useCallback(
+    async (option: ComposerModelOption | null) => {
+      const source = selectedSession;
+      if (!source) return;
+      try {
+        const newId = await forkHarnessSessionToModel(
+          source.id,
+          option?.providerId
+            ? { modelId: option.id, providerId: option.providerId }
+            : null,
+          source.title || "",
+        );
+        await refreshSessions();
+        handleSelectSession(newId);
+        toast.success(
+          `Continuing on ${option?.label ?? "the auto-routed model"} in a copy of this chat`,
+        );
+      } catch (caught) {
+        toast.error(
+          caught instanceof ThreadSourceBusyError
+            ? "Wait for the current response to finish, then switch models."
+            : caught instanceof Error
+              ? caught.message
+              : String(caught),
+        );
+      }
+    },
+    [selectedSession, refreshSessions, handleSelectSession],
+  );
+
   const chatView = (open: boolean, onToggle: () => void) =>
     selectedSession ? (
       isMockSelected ? (
@@ -758,6 +813,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           }
           mode={mode}
           onModeChange={changeMode}
+          models={modelOptions}
+          autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
+          onSwitchModel={handleSwitchModel}
         />
       )
     ) : null;

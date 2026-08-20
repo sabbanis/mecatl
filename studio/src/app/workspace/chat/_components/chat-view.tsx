@@ -73,7 +73,10 @@ import {
   useThreadMap,
 } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
-import { ChatInput } from "../../_components/chat-input";
+import {
+  ChatInput,
+  type ComposerModelOption,
+} from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
 import { ClarificationPanel } from "./clarification-panel";
 import { FilePreview } from "./file-preview";
@@ -828,6 +831,9 @@ export function ChatView({
   readOnlyPlaceholder,
   mode,
   onModeChange,
+  models,
+  autoModelLabel,
+  onSwitchModel,
 }: {
   session: AgentSession;
   messages: AgentMessage[];
@@ -879,6 +885,11 @@ export function ChatView({
   /** Renders the composer's Mode selector when provided (the mock tour chat
       omits it — a read-only demo has no permission posture to set). */
   onModeChange?: (mode: SessionPermissionMode) => void;
+  /** Live daemon models for the mid-chat switch picker. */
+  models?: ComposerModelOption[];
+  autoModelLabel?: string;
+  /** Picking a model forks this chat onto it (daemon fixes model at create). */
+  onSwitchModel?: (option: ComposerModelOption | null) => void;
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Whether the transcript is scrolled to (near) the bottom; when it isn't,
@@ -1261,6 +1272,10 @@ export function ChatView({
                     live ? session.model || "Auto-routed" : undefined
                   }
                   onModelChange={() => {}}
+                  models={models}
+                  autoModelLabel={autoModelLabel}
+                  onSwitchModel={live ? onSwitchModel : undefined}
+                  currentModelId={session.model ?? ""}
                   mode={mode}
                   onModeChange={onModeChange}
                   isStreaming={isStreaming}

@@ -47,12 +47,14 @@ describe("FilePreview", () => {
     expect(img).toHaveAttribute("src", PNG_DATA_URI);
   });
 
-  it("renders a PDF in an iframe titled by the file name", () => {
+  it("renders a PDF in an iframe behind a blob: URL", () => {
+    // data:application/pdf iframes render blank in Chrome/Safari, so the
+    // frame must swap the same bytes onto a blob: URL.
     const src = "data:application/pdf;base64,JVBERi0=";
     render(<FilePreview name="report.pdf" url={src} />);
     const frame = screen.getByTitle("report.pdf");
     expect(frame.tagName).toBe("IFRAME");
-    expect(frame).toHaveAttribute("src", src);
+    expect(frame.getAttribute("src")).toMatch(/^blob:/);
   });
 
   it("renders markdown as prose, not raw source", () => {

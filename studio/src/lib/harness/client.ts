@@ -80,21 +80,70 @@ export async function probeHarness(
  */
 export async function createHarnessSession(
   mode: "default" | "plan" | "accept_edits" = "default",
-  options?: { modelId?: string; signal?: AbortSignal },
+  options?: { modelId?: string; providerId?: string; signal?: AbortSignal },
 ): Promise<string> {
   const response = await fetch(`${HARNESS_API}/sessions`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     // model_id is protojson snake_case; omitted entirely on auto-routing so
-    // the daemon's own selection applies.
+    // the daemon's own selection applies. The daemon requires provider_id
+    // whenever model_id is set (a bare model is ambiguous across providers).
     body: JSON.stringify(
-      options?.modelId ? { mode, model_id: options.modelId } : { mode },
+      options?.modelId
+        ? {
+            mode,
+            model_id: options.modelId,
+            ...(options.providerId ? { provider_id: options.providerId } : {}),
+          }
+        : { mode },
     ),
     signal: options?.signal,
   });
   if (!response.ok) throw new Error(await readError(response));
   const body = (await response.json()) as { session_id?: string };
   if (!body.session_id) throw new Error("harness returned no session id");
+  return body.session_id;
+}
+
+/**
+ * Continues an existing chat on a different model. The daemon fixes a
+ * session's provider/model at create, so a switch is a FORK: a new session
+ * seeded from the source's history (source_session_id carryover) on the
+ * picked model, renamed to the source's title. A running/awaiting source
+ * answers 412 (ThreadSourceBusyError). Model omitted = the daemon's own
+ * routing/default.
+ */
+export async function forkHarnessSessionToModel(
+  sourceSessionId: string,
+  model: { modelId: string; providerId: string } | null,
+  title: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await fetch(`${HARNESS_API}/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: "default",
+      source_session_id: sourceSessionId,
+      ...(model
+        ? { model_id: model.modelId, provider_id: model.providerId }
+        : {}),
+    }),
+    signal,
+  });
+  if (response.status === 412) {
+    throw new ThreadSourceBusyError(await readError(response));
+  }
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as { session_id?: string };
+  if (!body.session_id) throw new Error("harness returned no session id");
+  if (title) {
+    try {
+      await renameHarnessSession(body.session_id, title);
+    } catch {
+      // Cosmetic; the forked session itself must not be lost to a rename.
+    }
+  }
   return body.session_id;
 }
 

@@ -96,6 +96,11 @@ interface ChatInputProps {
   onInitialTextConsumed?: () => void;
   /** Display-only model label for live-harness sessions (see ModelSelector). */
   modelLockedLabel?: string;
+  /** Live-chat model switch: picking forks the chat onto the model (the
+   *  daemon fixes a session's model at create). null = auto-routed. */
+  onSwitchModel?: (option: ComposerModelOption | null) => void;
+  /** The live session's current model id ("" = auto). */
+  currentModelId?: string;
   /** The session's current permission mode, shown by the Mode selector. */
   mode?: SessionPermissionMode;
   /** Renders the Mode selector (first in the control bar) when provided.
@@ -159,6 +164,8 @@ const autoModel = (label?: string) => ({
 export interface ComposerModelOption {
   id: string;
   label: string;
+  /** The daemon requires provider_id whenever model_id rides a create. */
+  providerId?: string;
 }
 
 const EFFORT_LEVELS = [
@@ -230,19 +237,29 @@ function SheetSectionLabel({ children }: { children: React.ReactNode }) {
 function ModelEffortSelector({
   onModelChange,
   lockedLabel,
+  onSwitchModel,
+  currentModelId,
   models,
   autoModelLabel,
 }: {
   onModelChange?: (id: string) => void;
   lockedLabel?: string;
+  /** Live-chat switch: picking forks the chat onto the model. */
+  onSwitchModel?: (option: ComposerModelOption | null) => void;
+  currentModelId?: string;
   models?: ComposerModelOption[];
   autoModelLabel?: string;
 }) {
   const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
   const [model, setModel] = useState<string>(AUTO_MODEL_ID);
   const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
-  const selectedModel =
-    modelOptions.find((m) => m.id === model) ?? modelOptions[0];
+  const switchId = currentModelId ?? AUTO_MODEL_ID;
+  const selectedModel = onSwitchModel
+    ? (modelOptions.find((m) => m.id === switchId) ?? {
+        id: switchId,
+        label: switchId || autoModel(autoModelLabel).label,
+      })
+    : (modelOptions.find((m) => m.id === model) ?? modelOptions[0]);
   const selectedEffort =
     EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
 
@@ -250,7 +267,7 @@ function ModelEffortSelector({
   // ~28rem — a narrow side-panel composer, not just mobile viewports — the
   // value labels collapse to the static word "Model", with the full selection
   // kept on the title attribute; in between, truncation caps a long model id.
-  if (lockedLabel) {
+  if (lockedLabel && !onSwitchModel) {
     return (
       <Button
         size="sm"
@@ -270,14 +287,20 @@ function ModelEffortSelector({
         <Button
           size="sm"
           className={GHOST_TRIGGER_CLASS}
-          title={`${selectedModel.label} · ${selectedEffort.label}`}
+          title={
+            onSwitchModel
+              ? selectedModel.label
+              : `${selectedModel.label} · ${selectedEffort.label}`
+          }
         >
           <span className="max-w-40 truncate @max-md:hidden">
             {selectedModel.label}
           </span>
-          <span className="max-w-24 truncate text-muted-foreground @max-md:hidden">
-            {selectedEffort.label}
-          </span>
+          {!onSwitchModel && (
+            <span className="max-w-24 truncate text-muted-foreground @max-md:hidden">
+              {selectedEffort.label}
+            </span>
+          )}
           <span className="hidden @max-md:inline">Model</span>
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>
@@ -293,8 +316,13 @@ function ModelEffortSelector({
             <span className="text-muted-foreground">{selectedModel.label}</span>
           </DropdownMenuSubTrigger>
           <DropdownMenuSubContent className="w-80 p-2">
+            {onSwitchModel && (
+              <p className="px-3 pb-1.5 text-xs text-muted-foreground">
+                Picking a model continues this chat in a copy on it.
+              </p>
+            )}
             {modelOptions.map((m) => {
-              const isSelected = m.id === model;
+              const isSelected = m.id === (onSwitchModel ? switchId : model);
               return (
                 <DropdownMenuItem
                   key={m.id}
@@ -303,6 +331,11 @@ function ModelEffortSelector({
                     isSelected && "bg-zinc-100 dark:bg-zinc-800",
                   )}
                   onClick={() => {
+                    if (onSwitchModel) {
+                      if (m.id !== switchId)
+                        onSwitchModel(m.id === AUTO_MODEL_ID ? null : m);
+                      return;
+                    }
                     setModel(m.id);
                     onModelChange?.(m.id);
                   }}
@@ -319,49 +352,55 @@ function ModelEffortSelector({
             })}
           </DropdownMenuSubContent>
         </DropdownMenuSub>
-        <DropdownMenuSub>
-          <DropdownMenuSubTrigger>
-            <span className="flex-1">Effort</span>
-            <span className="text-muted-foreground">
-              {selectedEffort.label}
-            </span>
-          </DropdownMenuSubTrigger>
-          <DropdownMenuSubContent className="w-72 p-2">
-            {EFFORT_LEVELS.map((e) => {
-              const isSelected = e.id === effort;
-              return (
-                <DropdownMenuItem
-                  key={e.id}
-                  className={cn(
-                    "flex items-center gap-3 rounded-lg px-3 py-3 text-sm cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 justify-between",
-                    isSelected && "bg-zinc-100 dark:bg-zinc-800",
-                  )}
-                  onClick={() => setEffort(e.id)}
-                >
-                  <span className="font-medium">{e.label}</span>
-                  <Check
+        {!onSwitchModel && (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <span className="flex-1">Effort</span>
+              <span className="text-muted-foreground">
+                {selectedEffort.label}
+              </span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-72 p-2">
+              {EFFORT_LEVELS.map((e) => {
+                const isSelected = e.id === effort;
+                return (
+                  <DropdownMenuItem
+                    key={e.id}
                     className={cn(
-                      "size-4 shrink-0",
-                      isSelected ? "text-foreground" : "text-transparent",
+                      "flex items-center gap-3 rounded-lg px-3 py-3 text-sm cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 justify-between",
+                      isSelected && "bg-zinc-100 dark:bg-zinc-800",
                     )}
-                  />
-                </DropdownMenuItem>
-              );
-            })}
-          </DropdownMenuSubContent>
-        </DropdownMenuSub>
-        <DropdownMenuSeparator />
-        <DropdownMenuItem
-          disabled={model === AUTO_MODEL_ID && effort === DEFAULT_EFFORT_ID}
-          onClick={() => {
-            setModel(AUTO_MODEL_ID);
-            setEffort(DEFAULT_EFFORT_ID);
-            onModelChange?.(AUTO_MODEL_ID);
-          }}
-        >
-          <RotateCcw className="size-4 mr-2 text-muted-foreground" />
-          Reset to default
-        </DropdownMenuItem>
+                    onClick={() => setEffort(e.id)}
+                  >
+                    <span className="font-medium">{e.label}</span>
+                    <Check
+                      className={cn(
+                        "size-4 shrink-0",
+                        isSelected ? "text-foreground" : "text-transparent",
+                      )}
+                    />
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
+        {!onSwitchModel && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              disabled={model === AUTO_MODEL_ID && effort === DEFAULT_EFFORT_ID}
+              onClick={() => {
+                setModel(AUTO_MODEL_ID);
+                setEffort(DEFAULT_EFFORT_ID);
+                onModelChange?.(AUTO_MODEL_ID);
+              }}
+            >
+              <RotateCcw className="size-4 mr-2 text-muted-foreground" />
+              Reset to default
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
     </DropdownMenu>
   );
@@ -516,6 +555,8 @@ function MobileComposerMenu({
   onFilesSelected,
   onModelChange,
   modelLockedLabel,
+  onSwitchModel,
+  currentModelId,
   mode,
   onModeChange,
   modeDisabled,
@@ -525,6 +566,11 @@ function MobileComposerMenu({
   onFilesSelected: (files: File[]) => void;
   onModelChange?: (id: string) => void;
   modelLockedLabel?: string;
+  /** Present in a live chat: picking forks the chat onto the model (the
+   *  daemon fixes a session's model at create). null = auto-routed. */
+  onSwitchModel?: (option: ComposerModelOption | null) => void;
+  /** The live session's current model id ("" = auto), for the checkmark. */
+  currentModelId?: string;
   mode?: SessionPermissionMode;
   onModeChange?: (mode: SessionPermissionMode) => void;
   modeDisabled?: boolean;
@@ -540,6 +586,13 @@ function MobileComposerMenu({
   const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
   const selectedModel =
     modelOptions.find((m) => m.id === model) ?? modelOptions[0];
+  // Switch mode ignores the local pick state — the session's model is the
+  // truth, and a stale/disabled id still labels honestly as itself.
+  const switchId = currentModelId ?? AUTO_MODEL_ID;
+  const switchSelected = modelOptions.find((m) => m.id === switchId) ?? {
+    id: switchId,
+    label: switchId || autoModel(autoModelLabel).label,
+  };
   const selectedEffort =
     EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
 
@@ -609,7 +662,7 @@ function MobileComposerMenu({
             <button
               type="button"
               className={menuRow}
-              disabled={!!modelLockedLabel}
+              disabled={!!modelLockedLabel && !onSwitchModel}
               onClick={() => {
                 setMenuOpen(false);
                 setSub("model");
@@ -618,10 +671,12 @@ function MobileComposerMenu({
               <Bot className="size-4 text-muted-foreground" />
               <span className="flex-1 text-left">Model</span>
               <span className="text-muted-foreground">
-                {modelLockedLabel ??
-                  `${selectedModel.label} ${selectedEffort.label}`}
+                {onSwitchModel
+                  ? switchSelected.label
+                  : (modelLockedLabel ??
+                    `${selectedModel.label} ${selectedEffort.label}`)}
               </span>
-              {!modelLockedLabel && (
+              {(!modelLockedLabel || onSwitchModel) && (
                 <ChevronRight className="size-4 text-muted-foreground/60" />
               )}
             </button>
@@ -679,26 +734,38 @@ function MobileComposerMenu({
           <SheetTitle className="sr-only">Model and effort</SheetTitle>
           <div className="max-h-[70dvh] overflow-y-auto pb-2">
             <SheetSectionLabel>Model</SheetSectionLabel>
+            {onSwitchModel && (
+              <p className="px-4 pb-1 text-xs text-muted-foreground">
+                Picking a model continues this chat in a copy on it.
+              </p>
+            )}
             {modelOptions.map((m) => (
               <SheetOptionRow
                 key={m.id}
                 label={m.label}
-                selected={m.id === model}
+                selected={m.id === (onSwitchModel ? switchId : model)}
                 onSelect={() => {
+                  if (onSwitchModel) {
+                    setSub(null);
+                    if (m.id !== switchId)
+                      onSwitchModel(m.id === AUTO_MODEL_ID ? null : m);
+                    return;
+                  }
                   setModel(m.id);
                   onModelChange?.(m.id);
                 }}
               />
             ))}
-            <SheetSectionLabel>Effort</SheetSectionLabel>
-            {EFFORT_LEVELS.map((e) => (
-              <SheetOptionRow
-                key={e.id}
-                label={e.label}
-                selected={e.id === effort}
-                onSelect={() => setEffort(e.id)}
-              />
-            ))}
+            {!onSwitchModel && <SheetSectionLabel>Effort</SheetSectionLabel>}
+            {!onSwitchModel &&
+              EFFORT_LEVELS.map((e) => (
+                <SheetOptionRow
+                  key={e.id}
+                  label={e.label}
+                  selected={e.id === effort}
+                  onSelect={() => setEffort(e.id)}
+                />
+              ))}
             <div className="mx-4 my-1 h-px bg-border" />
             <button
               type="button"
@@ -1089,6 +1156,8 @@ export function ChatInput({
   initialText,
   onInitialTextConsumed,
   modelLockedLabel,
+  onSwitchModel,
+  currentModelId,
   models,
   autoModelLabel,
   onPreviewAttachment,
@@ -1492,6 +1561,8 @@ export function ChatInput({
               }
               onModelChange={onModelChange}
               modelLockedLabel={modelLockedLabel}
+              onSwitchModel={onSwitchModel}
+              currentModelId={currentModelId}
               mode={mode}
               onModeChange={onModeChange}
               modeDisabled={disabled || isStreaming}
@@ -1602,6 +1673,8 @@ export function ChatInput({
               models={models}
               autoModelLabel={autoModelLabel}
               lockedLabel={modelLockedLabel}
+              onSwitchModel={onSwitchModel}
+              currentModelId={currentModelId}
               onModelChange={(id) => {
                 onModelChange?.(id);
               }}
