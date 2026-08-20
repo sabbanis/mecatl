@@ -357,6 +357,7 @@ export function MessageBubble({
   message,
   onOpenArtifact,
   onOpenAttachment,
+  onOpenToolCall,
   onStartThread,
   threadSummary,
   botName = "Mecatl",
@@ -365,6 +366,8 @@ export function MessageBubble({
   message: AgentMessage;
   onOpenArtifact?: (artifact: Artifact) => void;
   onOpenAttachment?: (attachment: Attachment) => void;
+  /** Opens one tool call's full input/output in the side panel. */
+  onOpenToolCall?: (call: ToolCallInfo) => void;
   onStartThread?: (message: AgentMessage) => void;
   /** Daemon-backed side thread branched off this message (thread map). */
   threadSummary?: ThreadSummary;
@@ -482,7 +485,10 @@ export function MessageBubble({
           </div>
         )}
         {hasToolCalls && showActivity && message.toolCalls && (
-          <ToolCallList toolCalls={message.toolCalls} />
+          <ToolCallList
+            toolCalls={message.toolCalls}
+            onSelect={onOpenToolCall}
+          />
         )}
         {delegations.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1.5">

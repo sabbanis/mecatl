@@ -42,6 +42,7 @@ import {
   type Artifact,
   type Attachment,
   type ClarificationRequest,
+  type ToolCallInfo,
   useAgentChat,
 } from "@/features/agent";
 import type { QueuedMessage } from "@/features/agent/hooks/use-agent-chat";
@@ -55,6 +56,7 @@ import {
 import {
   type SessionListSide,
   useEnterSendBehavior,
+  useShowToolCalls,
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
@@ -79,12 +81,14 @@ import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
 import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
 import { SidePanel } from "./side-panel";
+import { ToolCallPanel } from "./tool-call-panel";
 
 /** The single right-hand panel: exactly one kind is open at a time, or none. */
 type ActivePanel =
   | { kind: "artifact"; artifact: Artifact }
   | { kind: "attachment"; attachment: Attachment }
-  | { kind: "thread"; message: AgentMessage };
+  | { kind: "thread"; message: AgentMessage }
+  | { kind: "toolcall"; call: ToolCallInfo };
 
 /**
  * Bottom-of-transcript activity line while a turn is running: three
@@ -369,7 +373,8 @@ function ThreadPanel({
   onToggleMaximize: () => void;
   windowControls?: boolean;
 }) {
-  const [showTools, setShowTools] = useState(false);
+  // The global Show Tools preference — shared with the chat's ··· menu.
+  const { showToolCalls: showTools, setShowToolCalls } = useShowToolCalls();
   const rootKey = threadKeyForMessage(rootMessage);
   // The persisted thread session, when this root message already has one —
   // the hook rehydrates its transcript. A session minted DURING this panel's
@@ -509,7 +514,7 @@ function ThreadPanel({
             </Button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="end">
-            <DropdownMenuItem onClick={() => setShowTools((v) => !v)}>
+            <DropdownMenuItem onClick={() => setShowToolCalls(!showTools)}>
               {showTools ? "Hide Tools" : "Show Tools"}
             </DropdownMenuItem>
             <DropdownMenuItem
@@ -883,7 +888,8 @@ export function ChatView({
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const [showActivity, setShowActivity] = useState(false);
+  // The global Show Tools preference (persisted; shared with thread panels).
+  const { showToolCalls: showActivity, setShowToolCalls } = useShowToolCalls();
   // The single right-hand panel — a discriminated union makes "one panel at a
   // time" structural rather than something to coordinate by hand.
   const [panel, setPanel] = useState<ActivePanel | null>(null);
@@ -946,6 +952,25 @@ export function ChatView({
     (message: AgentMessage) => setPanel({ kind: "thread", message }),
     [],
   );
+
+  // Drill-down from a row in the inline activity list to the call's full
+  // untruncated input/output in the side panel.
+  const handleOpenToolCall = useCallback(
+    (call: ToolCallInfo) => setPanel({ kind: "toolcall", call }),
+    [],
+  );
+
+  // The tool-call panel tracks the LIVE call: the stream replaces call
+  // objects as results land, so re-resolve by callId each render — the
+  // clicked snapshot would otherwise read "running" forever.
+  const activePanel = useMemo<ActivePanel | null>(() => {
+    if (panel?.kind !== "toolcall") return panel;
+    for (const msg of messages) {
+      const live = msg.toolCalls?.find((c) => c.callId === panel.call.callId);
+      if (live) return { kind: "toolcall", call: live };
+    }
+    return panel;
+  }, [panel, messages]);
 
   // Jump to the latest message whenever the active chat changes so users
   // always land at the bottom (most-recent) of the conversation.
@@ -1069,7 +1094,9 @@ export function ChatView({
                 {/* Token usage as the daemon reported it (was a header pill;
                     it lives in the menu now). Hidden until any lands. */}
                 <UsageMenuRow usage={usage} />
-                <DropdownMenuItem onClick={() => setShowActivity((v) => !v)}>
+                <DropdownMenuItem
+                  onClick={() => setShowToolCalls(!showActivity)}
+                >
                   <Wrench className="size-4 mr-2 text-muted-foreground" />
                   {showActivity ? "Hide Tools" : "Show Tools"}
                 </DropdownMenuItem>
@@ -1091,7 +1118,7 @@ export function ChatView({
           {isMobile && (
             <MobileChatMenu
               showActivity={showActivity}
-              onToggleActivity={() => setShowActivity((v) => !v)}
+              onToggleActivity={() => setShowToolCalls(!showActivity)}
               onRename={onRename}
               onDelete={onDelete}
               usage={usage}
@@ -1127,6 +1154,7 @@ export function ChatView({
                   onOpenAttachment={(attachment) =>
                     setPanel({ kind: "attachment", attachment })
                   }
+                  onOpenToolCall={handleOpenToolCall}
                   onStartThread={handleStartThread}
                   threadSummary={threadMap[threadKeyForMessage(msg)]}
                   botName={botName}
@@ -1237,9 +1265,9 @@ export function ChatView({
           </div>
         </div>
       </div>
-      {!isMobile && panel !== null && (
+      {!isMobile && activePanel !== null && (
         <SidePanelForKind
-          panel={panel}
+          panel={activePanel}
           parentSessionId={session.id}
           botName={botName}
           onClose={closeSidePanel}
@@ -1251,7 +1279,7 @@ export function ChatView({
       {/* On mobile the same panels render as a full-height bottom sheet: the
           grab handle owns dismissal (no window controls), and dvh keeps the
           thread composer above the on-screen keyboard. */}
-      {isMobile && panel !== null && (
+      {isMobile && activePanel !== null && (
         <Sheet
           open
           onOpenChange={(open) => {
@@ -1260,15 +1288,17 @@ export function ChatView({
         >
           <SheetContent side="bottom" className="flex h-[94dvh] flex-col p-0">
             <SheetTitle className="sr-only">
-              {panel.kind === "thread"
+              {activePanel.kind === "thread"
                 ? "Thread"
-                : panel.kind === "attachment"
-                  ? panel.attachment.name
-                  : panel.artifact.name}
+                : activePanel.kind === "attachment"
+                  ? activePanel.attachment.name
+                  : activePanel.kind === "toolcall"
+                    ? activePanel.call.name
+                    : activePanel.artifact.name}
             </SheetTitle>
             <div className="flex min-h-0 flex-1 flex-col">
               <SidePanelForKind
-                panel={panel}
+                panel={activePanel}
                 parentSessionId={session.id}
                 botName={botName}
                 onClose={closeSidePanel}
@@ -1311,6 +1341,8 @@ function SidePanelForKind({
       return <MarkdownCanvasPanel artifact={panel.artifact} {...shared} />;
     case "attachment":
       return <AttachmentPanel attachment={panel.attachment} {...shared} />;
+    case "toolcall":
+      return <ToolCallPanel call={panel.call} {...shared} />;
     case "thread":
       // Mock chat threads stay local: read-only replies, no daemon session.
       if (isMockTourSession(parentSessionId)) {
