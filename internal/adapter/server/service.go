@@ -32,6 +32,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/scheduler"
 	"github.com/stacklok/mecatl/internal/adapter/skills"
 	"github.com/stacklok/mecatl/internal/adapter/tools"
+	"github.com/stacklok/mecatl/internal/project"
 )
 
 // WorkspaceFactory builds the session-scoped tool.Workspace for a session root.
@@ -210,6 +211,11 @@ type Config struct {
 	// create retries compare the verified issuer/subject pair before exposing an
 	// existing caller-selected ID.
 	OwnershipEnforced bool
+	// ProjectStore and ProjectSources are the server-side control-plane seams for
+	// Projects. They are intentionally separate from the agent loop and may be
+	// nil while the Project transport remains unavailable.
+	ProjectStore   project.Store
+	ProjectSources project.SourceRegistry
 	// Workspaces builds a Workspace for a session root. Required.
 	Workspaces WorkspaceFactory
 	// CommandRunner is the MAIN session's bound command runner (issue #462). It is

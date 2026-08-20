@@ -69,6 +69,8 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/openaicodex"
 	"github.com/stacklok/mecatl/internal/adapter/osfs"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
+	"github.com/stacklok/mecatl/internal/adapter/projectsource"
+	"github.com/stacklok/mecatl/internal/adapter/projectstore"
 	"github.com/stacklok/mecatl/internal/adapter/providercatalog"
 	"github.com/stacklok/mecatl/internal/adapter/redisstore"
 	"github.com/stacklok/mecatl/internal/adapter/reflectionstore"
@@ -82,6 +84,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/toolhivellm"
 	"github.com/stacklok/mecatl/internal/adapter/tools"
 	"github.com/stacklok/mecatl/internal/adapter/xdgconfig"
+	"github.com/stacklok/mecatl/internal/project"
 	"github.com/stacklok/mecatl/internal/syscaller"
 	"github.com/stacklok/mecatl/provider/openai"
 )
@@ -142,6 +145,10 @@ type Config struct {
 	// short-circuit as UseMock); production cmd/ mains never set it.
 	MockProvider port.LLMProvider
 	StoreDir     string
+	// EnableLocalProjects enables the ownerless local Project control plane for
+	// a durable standalone store. Networked and ownership-enforced deployments
+	// leave it false until their source-audience adapters are wired.
+	EnableLocalProjects bool
 	// RedisURL (ADR 0048, mecak8s) points the session store + durable event log
 	// at a Redis managed service (internal/adapter/redisstore). It is mutually
 	// exclusive with StoreDir and SessionStoreURL (validateDriverConfig: one
@@ -1666,12 +1673,22 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// expander build the engine consumes, so the palette offers exactly the
 	// commands a "/<cmd>" prompt would expand. nil when commands are disabled.
 	commandLister := buildCommandLister(cfg, mcpProvider)
+	projectStore, projectSources, err := buildLocalProjectControl(cfg)
+	if err != nil {
+		mcpClose()
+		agentClose()
+		storeClose()
+		commandConnClose()
+		return nil, err
+	}
 	cfg.storageMaintenance = &storageMaintenanceState{}
 	dreamReviewer, dreamCapabilities := buildDreamReview(cfg, assets, provider != nil)
 	svcCfg := server.Config{
 		Engine:                              engine,
 		Store:                               store,
 		OwnershipEnforced:                   cfg.OwnershipEnforced,
+		ProjectStore:                        projectStore,
+		ProjectSources:                      projectSources,
 		StorageManagementAuthorized:         storageManagementAuthorizer(cfg),
 		LocalStorageMaintenanceSingleWriter: localStorageMaintenanceSingleWriter(store),
 		SessionLiveness:                     cfg.sessionLiveness,
@@ -3108,6 +3125,21 @@ func buildSessionStore(cfg Config) (port.SessionStore, port.EventLog, func(), er
 	cfg.diag().Log(context.Background(), port.LevelInfo, "session store: jsonl", "dir", cfg.StoreDir)
 	// The one Store also implements port.EventLog — wire it as both.
 	return st, st, func() {}, nil
+}
+
+func buildLocalProjectControl(cfg Config) (project.Store, project.SourceRegistry, error) {
+	if !cfg.EnableLocalProjects || cfg.StoreDir == "" || cfg.OwnershipEnforced {
+		return nil, nil, nil
+	}
+	store, err := projectstore.NewLocal(cfg.StoreDir)
+	if err != nil {
+		return nil, nil, fmt.Errorf("open local project store: %w", err)
+	}
+	sources, err := projectsource.NewCanonicalRoot(cfg.Workspace, "Working directory")
+	if err != nil {
+		return nil, nil, fmt.Errorf("register canonical project source: %w", err)
+	}
+	return store, sources, nil
 }
 
 // chainClose composes two close funcs into one that runs both (the second
