@@ -61,7 +61,9 @@ export default function AppearanceSettingsPage() {
           label="Interface scale"
           description="Sizes text and controls together."
         >
-          <div className="flex items-center gap-1">
+          {/* Same footprint as the OptionField triggers so the control
+              column lines up. */}
+          <div className="flex min-w-36 items-center justify-between gap-1">
             <Button
               variant="outline"
               size="icon"
@@ -72,7 +74,7 @@ export default function AppearanceSettingsPage() {
             >
               <Minus className="size-4" />
             </Button>
-            <span className="w-12 text-center text-sm tabular-nums">
+            <span className="text-center text-sm tabular-nums">
               {Math.round(scale * 100)}%
             </span>
             <Button

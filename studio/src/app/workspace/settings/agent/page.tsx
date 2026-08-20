@@ -21,14 +21,6 @@ export default function AgentSettingsPage() {
       description="Cosmetic identity, stored in this browser only."
     >
       <div className="divide-y divide-border/60">
-        <div className="pb-4">
-          <AvatarPicker
-            avatarUrl={avatarUrl}
-            onChange={setAvatarUrl}
-            alt={name}
-            fallback={<Bot className="size-6" />}
-          />
-        </div>
         <SettingsRow
           label="Name"
           htmlFor="agent-display-name"
@@ -43,6 +35,14 @@ export default function AgentSettingsPage() {
             className="w-44 min-[500px]:w-60"
           />
         </SettingsRow>
+        <div className="pt-4">
+          <AvatarPicker
+            avatarUrl={avatarUrl}
+            onChange={setAvatarUrl}
+            alt={name}
+            fallback={<Bot className="size-6" />}
+          />
+        </div>
       </div>
     </SettingsCard>
   );
