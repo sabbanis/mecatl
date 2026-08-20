@@ -1,13 +1,13 @@
 ---
 id: 05-project-lifecycle-acceptance
 title: Integrated Project lifecycle acceptance and rollback proof
-blocked_by: [04-project-contract-wiring]
-status: blocked
+blocked_by: [05a-project-store-ownership, 05b-project-session-transaction]
+status: pending
 branch: ""
 worktree: ""
 issue: "620"
 retries: 0
-last_error: "mis-decomposition: owner-aware Project-store operations and SessionEngine factory rollback seams are required before AC1/AC2 integration"
+last_error: ""
 accumulator: acc/project-working-mvp
 ---
 
