@@ -264,14 +264,15 @@ export function MarkdownCanvasPanel({
     },
   });
 
-  // Reset when a new artifact is opened
+  // Reset when a new artifact is opened. Plain setState is correct here:
+  // setEditorMarkdown takes the content directly (it never reads the state),
+  // and flushSync is illegal inside an effect that fires during mount — the
+  // exact path a PDF/image artifact takes when the panel first opens.
   useEffect(() => {
     const content = artifact.content ?? "";
     editedContentRef.current = content;
-    flushSync(() => {
-      setEditedContent(content);
-      setMode("styled");
-    });
+    setEditedContent(content);
+    setMode("styled");
     setEditorMarkdown(editor, content);
   }, [artifact, editor]);
 

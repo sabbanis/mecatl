@@ -169,10 +169,12 @@ const DEFAULT_EFFORT_ID: EffortId = "medium";
  *  row idiom plus a trailing checkmark). */
 function SheetOptionRow({
   label,
+  description,
   selected,
   onSelect,
 }: {
   label: string;
+  description?: string;
   selected: boolean;
   onSelect: () => void;
 }) {
@@ -182,8 +184,13 @@ function SheetOptionRow({
       onClick={onSelect}
       className="flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50"
     >
-      <span className="min-w-0 flex-1 truncate text-left font-medium">
-        {label}
+      <span className="flex min-w-0 flex-1 flex-col text-left">
+        <span className="truncate font-medium">{label}</span>
+        {description && (
+          <span className="truncate text-xs text-muted-foreground">
+            {description}
+          </span>
+        )}
       </span>
       <Check
         className={cn(
@@ -263,7 +270,11 @@ function ModelEffortSelector({
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-64">
+      <DropdownMenuContent
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        align="start"
+        className="w-64"
+      >
         <DropdownMenuSub>
           <DropdownMenuSubTrigger>
             <span className="flex-1">Model</span>
@@ -345,16 +356,32 @@ function ModelEffortSelector({
 }
 
 const PERMISSION_MODE_OPTIONS = [
-  { id: "default", label: "Default" },
-  { id: "plan", label: "Plan" },
-  { id: "acceptEdits", label: "Accept edits" },
-] as const satisfies readonly { id: SessionPermissionMode; label: string }[];
+  {
+    id: "default",
+    label: "Manual",
+    description: "Always ask before making changes",
+  },
+  {
+    id: "acceptEdits",
+    label: "Accept edits",
+    description: "Automatically accept all file edits",
+  },
+  {
+    id: "plan",
+    label: "Plan",
+    description: "Create a plan before making changes",
+  },
+] as const satisfies readonly {
+  id: SessionPermissionMode;
+  label: string;
+  description: string;
+}[];
 
 /** Display label for a session permission mode. */
 function permissionModeLabel(mode: SessionPermissionMode): string {
   return (
     PERMISSION_MODE_OPTIONS.find((option) => option.id === mode)?.label ??
-    "Default"
+    "Manual"
   );
 }
 
@@ -390,20 +417,29 @@ function ModeSelector({
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-44">
+      <DropdownMenuContent
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        align="start"
+        className="w-72"
+      >
         {PERMISSION_MODE_OPTIONS.map((option) => (
           <DropdownMenuItem
             key={option.id}
-            className="gap-2"
+            className="items-start gap-2"
             onClick={() => onModeChange(option.id)}
           >
             <Check
               className={cn(
-                "size-4",
+                "mt-0.5 size-4 shrink-0",
                 mode === option.id ? "text-foreground" : "text-transparent",
               )}
             />
-            {option.label}
+            <span className="flex min-w-0 flex-col">
+              <span>{option.label}</span>
+              <span className="text-xs text-muted-foreground">
+                {option.description}
+              </span>
+            </span>
           </DropdownMenuItem>
         ))}
       </DropdownMenuContent>
@@ -433,7 +469,11 @@ function MemoryToggle() {
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-40">
+      <DropdownMenuContent
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        align="start"
+        className="w-40"
+      >
         {[true, false].map((value) => (
           <DropdownMenuItem
             key={String(value)}
@@ -600,6 +640,7 @@ function MobileComposerMenu({
               <SheetOptionRow
                 key={option.id}
                 label={option.label}
+                description={option.description}
                 selected={(mode ?? "default") === option.id}
                 onSelect={() => {
                   onModeChange?.(option.id);
@@ -712,7 +753,11 @@ function ProjectsDropdown({
             <ChevronDown className="size-3.5 text-muted-foreground" />
           </Button>
         </DropdownMenuTrigger>
-        <DropdownMenuContent align="start" className="w-56">
+        <DropdownMenuContent
+          onCloseAutoFocus={(e) => e.preventDefault()}
+          align="start"
+          className="w-56"
+        >
           <DropdownMenuLabel>Projects</DropdownMenuLabel>
           <DropdownMenuSeparator />
           <DropdownMenuGroup>
