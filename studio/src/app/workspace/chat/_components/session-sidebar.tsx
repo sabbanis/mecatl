@@ -98,7 +98,7 @@ function SessionContextMenu({
         >
           <Trash2 className="size-4 mr-2 shrink-0" />
           <span className="min-w-0">
-            Delete chat
+            Delete
             {!canDelete && session.deleteReason && (
               <span className="block truncate text-xs text-muted-foreground">
                 {session.deleteReason}
@@ -229,7 +229,7 @@ function SessionActionsSheet({
           >
             <Trash2 className="size-4 shrink-0 text-muted-foreground" />
             <span className="min-w-0 text-left">
-              Delete chat
+              Delete
               {!canDelete && session.deleteReason && (
                 <span className="block truncate text-xs text-muted-foreground">
                   {session.deleteReason}
@@ -526,7 +526,7 @@ function MockProjectChatRow({ chat }: { chat: MockProjectChat }) {
             <DropdownMenuItem disabled>
               <Trash2 className="size-4 mr-2 shrink-0" />
               <span className="min-w-0">
-                Delete chat
+                Delete
                 <span className="block truncate text-xs text-muted-foreground">
                   Demo content — not a real chat
                 </span>

@@ -1015,6 +1015,11 @@ export function ChatView({
 
   // The sidebar toggle renders on the header edge nearest the panel it
   // controls: leading when the session list docks left, trailing when right.
+  // With the list docked right, an open side panel occupies its slot — the
+  // toggle then means "give me the list back": close the panel, and the
+  // workspace restores the sidebar to its pre-panel state.
+  const panelHoldsSidebarSlot =
+    sidebarSide === "right" && activePanel !== null && !isMobile;
   const sidebarToggle = !isMobile && (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -1022,8 +1027,20 @@ export function ChatView({
           variant="ghost"
           size="icon"
           className="size-8 shrink-0 text-muted-foreground"
-          onClick={onToggleSidebar}
-          aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+          onClick={() => {
+            if (panelHoldsSidebarSlot) {
+              closeSidePanel();
+              return;
+            }
+            onToggleSidebar();
+          }}
+          aria-label={
+            panelHoldsSidebarSlot
+              ? "Close preview"
+              : sidebarOpen
+                ? "Hide sidebar"
+                : "Show sidebar"
+          }
         >
           {sidebarOpen ? (
             sidebarSide === "left" ? (
@@ -1039,7 +1056,11 @@ export function ChatView({
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom">
-        {sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+        {panelHoldsSidebarSlot
+          ? "Close preview"
+          : sidebarOpen
+            ? "Hide sidebar"
+            : "Show sidebar"}
       </TooltipContent>
     </Tooltip>
   );
