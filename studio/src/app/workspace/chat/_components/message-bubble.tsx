@@ -298,7 +298,7 @@ function AttachmentChip({
       onClick={onOpen}
       title={title}
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border border-brand/30 bg-brand/5 py-1 pr-3 text-xs text-brand transition-colors hover:border-brand/60 hover:bg-brand/10 cursor-pointer",
+        "inline-flex h-7 items-center gap-1.5 rounded-full border border-brand/30 bg-brand/5 pr-3 text-xs text-brand transition-colors hover:border-brand/60 hover:bg-brand/10 cursor-pointer",
         thumbSrc ? "pl-1" : "pl-3",
       )}
     >

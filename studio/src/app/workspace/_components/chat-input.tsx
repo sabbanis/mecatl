@@ -962,7 +962,7 @@ export function AttachmentPill({
   return (
     <span
       className={cn(
-        "inline-flex items-center gap-1.5 rounded-full border border-brand/30 bg-brand/5 pr-1.5 py-1 text-xs text-brand dark:text-brand",
+        "inline-flex h-7 items-center gap-1.5 rounded-full border border-brand/30 bg-brand/5 pr-1.5 text-xs text-brand dark:text-brand",
         previewUrl ? "pl-1" : "pl-2.5",
       )}
     >
