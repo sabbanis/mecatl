@@ -119,13 +119,22 @@ export function fileFromToolCall(
   if (tool !== "Write" || !rawArgs) return undefined;
   try {
     const args = JSON.parse(rawArgs) as {
+      // The daemon's Write takes "path"; "file_path" is accepted for
+      // robustness across tool-schema variants.
+      path?: unknown;
       file_path?: unknown;
       content?: unknown;
     };
-    if (typeof args.file_path !== "string" || !args.file_path) return undefined;
-    const name = args.file_path.split("/").filter(Boolean).pop() ?? "file";
+    const path =
+      typeof args.path === "string" && args.path
+        ? args.path
+        : typeof args.file_path === "string" && args.file_path
+          ? args.file_path
+          : undefined;
+    if (!path) return undefined;
+    const name = path.split("/").filter(Boolean).pop() ?? "file";
     return {
-      path: args.file_path,
+      path,
       name,
       content: typeof args.content === "string" ? args.content : undefined,
     };
