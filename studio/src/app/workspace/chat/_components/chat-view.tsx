@@ -184,82 +184,84 @@ function QueuedMessageStrip({
 }) {
   if (queued.length === 0 && pending.length === 0) return null;
   return (
-    <div className="space-y-1.5 max-[499px]:px-3">
-      {pending.length > 0 && (
-        <div className="flex items-start gap-2 rounded-xl border border-brand/30 bg-brand/5 py-1 pr-1 pl-3">
-          <div className="min-w-0 flex-1 space-y-0.5 py-0.5">
-            {pending.map((steer) => (
-              <div key={steer.id} className="flex items-center gap-2">
-                <CornerDownRight className="size-4 shrink-0 text-brand" />
-                <span
-                  className="min-w-0 flex-1 truncate text-sm"
-                  title={steer.text}
-                >
-                  {steer.text}
-                </span>
-                <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
-                  <span className="size-1.5 animate-pulse rounded-full bg-current" />
-                  steering…
-                </span>
-              </div>
-            ))}
+    // ONE opaque group (the strip floats over the transcript): pending steers
+    // first, then the queue, as divided rows — never a stack of panels.
+    <div className="max-[499px]:mx-3">
+      <div className="divide-y overflow-hidden rounded-xl border bg-background">
+        {pending.length > 0 && (
+          <div className="flex items-start gap-2 bg-brand/5 py-1 pr-1 pl-3">
+            <div className="min-w-0 flex-1 space-y-0.5 py-0.5">
+              {pending.map((steer) => (
+                <div key={steer.id} className="flex items-center gap-2">
+                  <CornerDownRight className="size-4 shrink-0 text-brand" />
+                  <span
+                    className="min-w-0 flex-1 truncate text-sm"
+                    title={steer.text}
+                  >
+                    {steer.text}
+                  </span>
+                  <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                    <span className="size-1.5 animate-pulse rounded-full bg-current" />
+                    steering…
+                  </span>
+                </div>
+              ))}
+            </div>
+            {onCancelSteers && (
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-7 shrink-0 text-muted-foreground"
+                aria-label="Retract steered messages"
+                title="Retract steered messages that haven't been applied yet"
+                onClick={onCancelSteers}
+              >
+                <X className="size-3.5" />
+              </Button>
+            )}
           </div>
-          {onCancelSteers && (
-            <Button
-              variant="ghost"
-              size="icon"
-              className="size-7 shrink-0 text-muted-foreground"
-              aria-label="Retract steered messages"
-              title="Retract steered messages that haven't been applied yet"
-              onClick={onCancelSteers}
+        )}
+        {queued.map((message) => (
+          <div
+            key={message.id}
+            className="flex items-center gap-2 py-1 pr-1 pl-3"
+          >
+            <ListEnd className="size-4 shrink-0 text-muted-foreground" />
+            <span
+              className="min-w-0 flex-1 truncate text-sm"
+              title={message.text}
             >
-              <X className="size-3.5" />
-            </Button>
-          )}
-        </div>
-      )}
-      {queued.map((message) => (
-        <div
-          key={message.id}
-          className="flex items-center gap-2 rounded-xl border border-border bg-muted/50 py-1 pr-1 pl-3"
-        >
-          <ListEnd className="size-4 shrink-0 text-muted-foreground" />
-          <span
-            className="min-w-0 flex-1 truncate text-sm"
-            title={message.text}
-          >
-            {message.text}
-          </span>
-          <Button
-            variant="ghost"
-            size="sm"
-            className="h-7 shrink-0 gap-1 px-2 text-muted-foreground hover:text-foreground"
-            onClick={() => onSteer(message.id)}
-            title="Inject into the current response at the next step"
-          >
-            <CornerDownRight className="size-3.5" />
-            Steer
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 shrink-0 text-muted-foreground"
-            aria-label="Edit queued message"
-            onClick={() => onEdit(message.id)}
-          >
-            <Pencil className="size-3.5" />
-          </Button>
-          <Button
-            variant="ghost"
-            size="icon"
-            className="size-7 shrink-0 text-muted-foreground"
-            aria-label="Delete queued message"
-            onClick={() => onDelete(message.id)}
-          >
-            <Trash2 className="size-3.5" />
-          </Button>
-        </div>
-      ))}
+              {message.text}
+            </span>
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 shrink-0 text-muted-foreground"
+                  aria-label={`Actions for queued message`}
+                >
+                  <Ellipsis className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => onSteer(message.id)}>
+                  Steer
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onEdit(message.id)}>
+                  Edit
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() => onDelete(message.id)}
+                >
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
