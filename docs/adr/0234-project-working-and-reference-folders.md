@@ -2,169 +2,257 @@
 
 - Status: Proposed
 - Date: 2026-08-19
-- Scope: project lifecycle and persistence; session labels and creation; deployment-specific source resolution; Studio/mecatui project UI; bounded reference-folder access; mecak8s source configuration.
+- Scope: Project lifecycle and persistence; Project-backed session creation and provenance; deployment-specific source resolution; Studio/mecatui Project UI; bounded reference access; mecak8s source configuration.
 - Supersedes: none
 - Superseded by: none
 
 ## Context
 
-Issue #620 asks for a user-created Project containing one or more folders: users must be able to create, rename, and remove Projects, and add or remove folders. The existing runtime has a materially narrower contract. A valid `tool.Environment` contains exactly one rooted `Workspace` and one optional command runner bound to that namespace (`engine/tool/environment.go`); filesystem mutation, Bash, worktree forks, and environment reattachment all rely on that identity. Making the ordinary workspace into a writable union of roots would alter the versioned read/edit/write protocol and fork/merge semantics decided in [ADR 0208](./0208-execution-environment.md), the runtime seam in [ADR 0211](./0211-execution-environment-runtime-seam.md), and durable environment reattachment in [ADR 0214](./0214-environment-persistence.md).
+Issue #620 asks for a user-created Project containing one or more folders: users must be able to create, rename, and remove Projects, and add or remove folders. The runtime has a narrower execution contract. A valid `tool.Environment` contains exactly one rooted `Workspace` and one optional command runner bound to that namespace (`engine/tool/environment.go`). Filesystem mutation, Bash, worktree forks, and environment reattachment all rely on that identity. Making the ordinary workspace a writable union would alter the versioned mutation protocol and fork/merge semantics decided in [ADR 0208](./0208-execution-environment.md), [ADR 0211](./0211-execution-environment-runtime-seam.md), and [ADR 0214](./0214-environment-persistence.md).
 
-The word *project* also already has an established, different meaning: one workspace root whose trust admits project-tier instruction/configuration ingestion and the read-only child worktree shell. [ADR 0095](./0095-root-aware-project-trust.md) makes that a single root-aware positive decision. A new user-visible Project must not make every member folder trusted, nor make each member folder a source of `AGENTS.md`, rules, skills, souls, permissions, or agent definitions.
+The word *project* also already describes one workspace root whose trust may admit project-tier instructions, configuration, and the read-only child worktree shell. [ADR 0095](./0095-root-aware-project-trust.md) makes that one root-aware positive decision. A user-visible Project must not make every attached source trusted or turn reference material into `AGENTS.md`, rules, skills, souls, permissions, agent definitions, or shell roots.
 
-A local daemon and `mecak8s` expose different filesystem realities. A local daemon can validate a directory on its host. A Kubernetes deployment must instead resolve an operator-declared volume mount or other approved source inside its pod. Studio intentionally keeps host paths out of the browser. A public API that persists or accepts arbitrary paths cannot honestly serve all three deployments.
+Deployments expose different source types. A local daemon can use a directory on its host. Kubernetes can use an operator-declared mount or a remote read-only source. A Google Document is more naturally exposed by a Streamable HTTP MCP server than by pretending it is a filesystem. Projects therefore need deployment-neutral source identity while retaining one honest execution environment.
+
+Mecatl currently supports two access postures rather than a complete tenancy system. With caller ownership enforcement, Sessions and Projects belong to the exact verified `(issuer, subject)`. Without it, the deployment is one trusted security domain. V1 has no organizations, team ACLs, or user-managed mounts. Every operator-provisioned reference source is read-only and available to every admitted caller. A later source service may add principal-owned sources without changing the Project model.
 
 ## Decision
 
-### 1. A Project is an explicit persisted user grouping
+### 1. Persist one working source and an ordered reference list
 
-Add a server-owned, durable Project model. A Project owns ordered source-membership records. **Project Folder** remains the user-facing name for a source attached to a Project—initially it is a directory, but its persistent identity is not a path and a later reference-only source may be an object-store prefix. A Project does not own, copy, move, or recursively merge source contents.
+A Project is a server-owned durable document:
 
 ```text
 Project
   ID
+  Owner
   Name
-  WorkingFolderID
+  Working
+    SourceRef
+    Label
+  References[]
+    SourceRef
+    Label
+  Revision
   CreatedAt
   UpdatedAt
-
-ProjectFolder
-  ID
-  ProjectID
-  SourceRef
-  Label
-  Role: WORKING | REFERENCE
-  AddedAt
 ```
 
-Every usable Project has exactly one `WORKING` folder. A Project may have zero or more `REFERENCE` folders. Creation through the normal UI/API requires a working folder; an incomplete draft Project is not part of v1.
+`Working` is one required value. `References` is an ordered array with zero or more entries. There is no generic membership record, role enum, `WorkingFolderID`, or position field. Array order is authoritative.
 
-Use **working folder** in user-facing text rather than *primary folder*. It means the one source resolved to the session's ordinary execution environment. A reference folder is an additional named source of read-only context, not another workspace.
+The Project owner follows the existing service posture: exact verified principal when caller ownership is enforced, otherwise ownerless within the deployment's single trusted security domain. Ownership is captured from authenticated context, never request data.
 
-Removing the working folder is rejected unless the request simultaneously designates another existing member as the working folder. Removing a reference folder removes only that membership. Renaming changes only Project metadata.
+The server stores and replaces the complete Project document. Create is create-only. Replace and delete require the current integer `Revision`; stale updates return conflict and change nothing. Validation requires a bounded non-empty name and labels, one registered working source, no duplicate reference `SourceRef`, and no source appearing as both working and reference. Labels come from the source catalog rather than client assertions.
 
-Deleting a Project removes its live grouping configuration, not any underlying source or session. A session keeps its durable Project ID and a Project-name-at-creation label. A deleted Project therefore renders as a former/unavailable grouping in historical session views rather than losing provenance or deleting history. Renaming a Project does not rewrite historical session labels; active views resolve the current name from the live Project record.
+The same working source may appear in more than one caller-owned Project. V1 adds no cross-Project uniqueness constraint. A Project does not own, copy, move, or merge source contents.
 
-An optional archive/restore lifecycle is deliberately deferred. The data model must not preclude it, but v1 implements only the issue's requested delete operation.
+Deleting a Project removes its live grouping configuration, not its sources or Sessions. Renaming affects the live Project only. Archive/restore and collaborative Project membership are deferred.
 
-### 2. Persist deployment-neutral source references, never a universal path
+### 2. `SourceRef` identifies one registered source but grants no authority
 
-A Project Folder persists an opaque `SourceRef`, a safe display label, and its role. The wire API never requires a browser or remote client to provide an arbitrary filesystem path.
+A composition-owned source registry returns opaque, server-minted `SourceRef` values. A `SourceRef` contains no host path, mount path, bucket, prefix, MCP server, URI, endpoint, or credential. Projects and Sessions persist only that reference plus safe display metadata.
 
-A composition-owned resolver lists candidate sources and resolves an approved source by reference. Its two required outcomes are:
+V1 source registrations are operator-provisioned:
 
-- resolving a `WORKING` source yields one complete `tool.Environment`—a non-nil Workspace and, where supported, a command runner bound to the same namespace;
-- resolving a `REFERENCE` source yields a bounded read-only reference-source capability, not a Workspace added to the session environment.
+- a working source resolves to one complete `tool.Environment`;
+- a reference source resolves to a bounded read-only capability, never another Workspace;
+- an operator-shared reference is usable by every admitted caller;
+- a future principal source is discoverable and usable only by its exact owner.
 
-A reference source declares the operations it actually supports. Directory sources may support bounded list, read, and search. An object store may support only list and read; a source must never claim a generic text-search capability by unboundedly downloading its complete contents.
+A `SourceRef` is only a selector. Project operations resolve it through an authorized Project. Reference tools resolve it through the authorized Session's captured reference set before consulting the registry. Knowledge of another source ID conveys no access.
 
-The resolver is deployment-specific:
+The v1 registry is loaded once and immutable for the process lifetime. Changing an authority-defining binding—such as a canonical root, MCP server/resource namespace, object-store authority, or bucket/prefix—creates a new `SourceRef`. Content changes under the same binding remain live. Removing a registration or revoking its credentials makes later resolution fail; it never redirects to another source or falls back to the launch workspace.
 
-| Deployment | Candidate selected by user | Resolver-owned target |
-|---|---|---|
-| local `mecated` | a validated local-directory candidate | canonical directory on the daemon host |
-| Studio through local `mecated` | an opaque candidate returned by the daemon | canonical directory on the daemon host |
-| `mecak8s` | an operator-declared source/mount ID | approved in-pod mounted directory or source |
+A local reference adapter canonicalizes its configured root, rejects escape from any configured browse boundary, opens a confined root, and performs every operation relative to it. A Kubernetes reference volume is also mounted read-only. V1 does not attempt to detect a privileged host or cluster administrator replacing a mount across process restarts.
 
-A local CLI may accept a path as a convenience, but it validates and resolves it to a source reference before Project persistence. It is not a second remote path API.
+A future discovery or source-onboarding service may use short-lived selection handles internally. They are not part of the Project model; successful onboarding returns a registered `SourceRef`.
 
-Studio directory discovery, if enabled, is an operator-authorized server operation limited to configured browse roots. It must canonicalize and check containment at each step, reject symlink escapes, return opaque candidate IDs rather than raw paths, and never become an unrestricted host filesystem browser. These browse roots are a separate operator authority from `trustedWorkspaces`: choosing a source does not trust it to steer the agent.
+### 3. MCP resources are reference adapters, not the Project control plane
 
-`mecak8s` does not offer host-directory browsing. Its candidate list comes only from deployment/operator configuration, and source eligibility expresses whether a mounted source may be `WORKING`, `REFERENCE`, or both. A read-only mount cannot be chosen as a working source.
+Project CRUD, source registration, ownership, and Session association remain ordinary mecatl application operations. They do not move behind MCP.
 
-A future S3 source is a native `REFERENCE` adapter, not an S3 filesystem mount and never a working source. The Project persists only its opaque source ID; operator configuration resolves that ID to an allowlisted bucket and prefix. The adapter uses the Pod's workload identity and least-privilege `ListBucket`/`GetObject` access restricted to that prefix. It exposes no cloud credentials, arbitrary bucket/key selection, write operation, shell, or mount path to the model or browser. Object reads report version identity where the backend provides it, but do not claim the local Workspace compare-and-swap protocol. S3 search is deferred until an explicit bounded scan or operator-provided index design exists.
+A Streamable HTTP MCP server may back a registered reference. For example, an operator may register one Google Document or one bounded approved document collection. The registry privately binds its `SourceRef` to the MCP server and exact resource or resource namespace. The model and browser never receive the server name, endpoint, OAuth profile, or raw MCP URI through the Project API.
 
-The agent remains storage-free under [ADR 0048](./0048-mecak8s.md): Project records belong in a managed backing store selected by composition, not in pod-local disk.
+Global MCP credentials represent the operator's shared identity, so every caller sees the same registered read-only material in v1. A future personal source service may enroll caller-specific OAuth credentials and create principal-owned `SourceRef` values. Current session-supplied client MCP is not that durable enrollment service.
 
-### 3. A session has one working environment and an optional Project label
+Registering an MCP server does not automatically make every advertised resource a Project candidate. Project references require an explicit operator registration. Arbitrary MCP tool invocation is not adapted into `ProjectReferenceRead`; prefer `resources/list` and `resources/read`, or a purpose-built allowlisted read adapter.
 
-Add additive Project ID and Project-name-at-creation labels to a Session snapshot. They are durable session metadata; the engine does not interpret Projects or load Project records.
+### 4. Create Project Sessions through a dedicated operation
 
-`CreateSession` may accept `project_id`. The service resolves the Project's working source before creating the session, stamps the resulting environment identity using the existing environment rules, and stamps the Project labels. If a caller supplies both `project_id` and `workspace`, the workspace must be absent or exactly resolve to the Project's working source; a mismatch is `InvalidArgument`, never a silent override.
+The existing workspace/profile-based `CreateSession` contract remains unchanged. Project-backed Sessions use a separate operation:
 
-New-session Project membership is explicit and durable. Session lists and project trees use the stored Project ID as their authority. Legacy sessions without a Project label remain unassigned; an optional display-only path-based suggestion may assist a user in assigning them, but must never silently rewrite their membership. This avoids ambiguous nesting/overlap, supports Kubernetes sources that are not paths, and preserves historical grouping if a Project later changes.
+```text
+CreateSessionFromProject(project_id, provider/model options)
+POST /v1/projects/{project_id}/sessions
+```
 
-The session resolves exactly one ordinary environment: the working folder. Existing Read, Edit, Write, Grep, Glob, Bash, worktree, conditional-mutation, and environment-rehydration behavior remains single-root. A Project does not create a union filesystem and does not change the normal tool capability set.
+The request contains no workspace, profile, `SourceRef`, or environment selector. The service:
 
-### 4. Reference sources are explicit, bounded, and model-visible
+1. authorizes and reads one Project revision;
+2. revalidates its registered sources;
+3. resolves the working source to one complete Environment;
+4. captures the Project and ordered source bindings;
+5. builds any required per-session catalog;
+6. persists the fully labelled Session; and
+7. publishes the engine/environment registrations only after persistence succeeds.
 
-Reference folders are not inert metadata once exposed in the product. Implement their access as three separate Phase 2 read-only tools—`ProjectReferenceList`, `ProjectReferenceRead`, and `ProjectReferenceSearch`—rather than widening `Workspace` or adding a source selector to the ordinary filesystem tools. **Reference folder** remains the product term for an attached source; the capability boundary is deliberately source-oriented so it can represent a directory or a future S3 prefix without changing the session environment.
+Failure rolls back newly created per-session resources. There is no distributed transaction between Project and Session stores: a Project update after capture affects future Sessions, not the newly persisted one.
 
-These tools are a sanctioned Project-specific per-session catalog delta. They are absent when the session has no Project, when its Project has only a working folder, or when no effective reference source can be resolved. List and Read register only when at least one effective reference source exists; Search registers only when at least one of them supports search. The project prompt fragment is absent under the same gate.
+Conversation carryover into a Project Session is deferred unless a concrete v1 workflow requires it. `ForkSession` keeps its existing meaning and inherits the source Session's captured Project bindings and exact `EnvironmentRef`; it does not reread the live Project.
 
-The ordinary Read, Grep, Glob, Edit, Write, and Bash tools remain exactly working-folder tools. A reference tool requires an explicit reference-source ID and exposes only its one bounded operation: List takes an optional path/prefix; Read requires a path; Search requires a query and accepts an optional path/prefix. The tools do not provide Edit, Write, Bash, a workspace root, an unconditional path escape, or a general mount point. A directory may advertise list/read/search; a native S3 source advertises list/read only until a separately designed bounded search or index exists. Include the Search tool in a session catalog only when at least one reference source supports search; a call against an individual non-searchable source fails closed. All returned data is fenced untrusted content. A reference source's `AGENTS.md`, rules, skills, soul, permissions, agent definitions, and other project-tier files are never discovered or ingested merely because it is a Project member.
+### 5. Sessions capture bindings, not source contents
 
-At session start, add a trusted harness-authored system-prompt fragment that identifies:
+A Project-backed Session persists creation-time association metadata:
 
-- the Project name;
-- the working-folder label and that ordinary filesystem/command tools operate only there;
-- each available reference-folder ID, label, and supported operations; and
-- the requirement to use the corresponding ProjectReference tool only for read-only consultation.
+```text
+ProjectBinding
+  ProjectID
+  ProjectNameAtCreation
+  ProjectRevision
+  Working
+    SourceRef
+    LabelAtCreation
+  References[]
+    SourceRef
+    LabelAtCreation
+```
 
-The fragment contains neither a bulk folder listing nor reference-file content. Automatic scanning/injection is rejected: it would spend context on irrelevant data, expose more information than the task requires, and blur untrusted source data with agent authority. A model-visible prompt assertion through the real engine factory is required when the reference tools ship, following [ADR 0070](./0070-model-visible-affordance-gate.md).
+The Session also persists the working Environment's exact `EnvironmentRef` and any legacy workspace projection required by existing compatibility APIs. The binding contains no file contents, directory listing, object version snapshot, path, MCP locator, credential, or generated prompt.
 
-Before the reference tools exist, v1 does not present reference-folder management as usable agent context. The initial Project-management release may support only the working folder; the add/reference-folder UI and API ship with the bounded reader tools, or explicitly remain unavailable. This prevents a misleading "add context" affordance that has no runtime effect.
+This is a **binding snapshot**, not a content snapshot. Files, objects, and Google Documents are read live from their original sources. Later Project edits do not change existing Sessions:
 
-### 5. Keep project state server-owned and deployment-portable
+- a rename leaves the captured name unchanged;
+- adding or removing a reference affects future Sessions only;
+- changing the working source affects future Sessions only;
+- deleting the Project prevents new Project Sessions but does not delete or rewrite existing ones;
+- revoking or removing the underlying registered source takes effect on the next resolution or reference call.
 
-Project CRUD and candidate resolution live above the agent loop. The Project store is a server-owned seam configured by composition, not an `engine/port` dependency: the loop consumes only its already-resolved `tool.Environment` and session labels. A local adapter may use a profile-scoped database; a Kubernetes adapter must use the managed state service appropriate to its deployment. The public API includes Project CRUD, candidate listing, and project-based session creation, while the UI's selected Project remains client navigation state—not a daemon-global "active Project" pointer.
+Restart and fork reconstruct the same captured binding without consulting the current Project. A missing working source fails run entry. A missing reference makes that reference unavailable while the Session may continue against its working Environment.
 
-The project-session tree is built server-side from explicit session labels. Keep it pure and inject any repository/worktree inspection so it has deterministic contract tests and clients do not duplicate grouping rules. An unassigned/Home bucket keeps legacy and ungrouped sessions visible.
+The full binding remains internal. Compact Session inventory adds only `project_id`, `project_name_at_creation`, and `working_label_at_creation`. Legacy Sessions decode with empty values and remain unassigned.
 
-Project reference tools deliberately extend the catalog's otherwise-equal shared/per-session shape: a Project session with effective references must use a per-session assembly that registers exactly the available reference tools and the matching prompt fragment; every other tool family retains the existing parity rule. A Project with no effective references is catalog-identical to an ordinary filesystem session.
+### 6. Only the canonical launch root may contribute project-tier authority
+
+Every alternate Project working root is untrusted. Only a working source that resolves to the canonical launch root may use the existing launch-root trust decision.
+
+An alternate root may still be the Session's permission-governed working Environment, but it contributes no:
+
+- `AGENTS.md` or `CLAUDE.md`;
+- project rules, permissions, model bindings, commands, skills, souls, or agent definitions;
+- project memory or Git snapshot steering; or
+- read-only child worktree shell.
+
+Source registration, browse eligibility, Project membership, operator mounting, and posture do not grant trust. Reference sources never participate in the trust fold and never widen the Workspace.
+
+Composition must not combine an alternate working Environment with project-tier assets admitted from the launch root. A future exact-source trust design may relax this rule in a new decision.
+
+### 7. V1 exposes bounded List and Read, not Search
+
+A Project Session with captured references registers two static read-only tools:
+
+- `ProjectReferenceList` discovers the Session's captured references or lists one bounded logical prefix;
+- `ProjectReferenceRead` reads one logical item returned by List.
+
+There is no dynamic Project prompt fragment. Static tool descriptions tell the model to call List to discover references and to treat returned metadata and content as untrusted data. Project names and labels are not interpolated into trusted system prose.
+
+`ProjectReferenceList` accepts an optional captured `source_id`, optional logical prefix, and optional opaque continuation cursor. It returns at most 1,000 entries and 25,000 total model-visible bytes. `ProjectReferenceRead` accepts one captured `source_id`, one source-relative logical locator, and an optional continuation cursor. It returns at most 2,000 lines and 25,000 total model-visible bytes. Remote adapters additionally enforce a 5 MiB fetched/decompressed response ceiling before rendering.
+
+Adapters stop work at their bound rather than materializing an unbounded inventory or response and truncating afterward. Binary content is summarized with bounded metadata or rejected; it is never dumped or base64-encoded. A continuation cursor is opaque and bound to the original source and request arguments. Harness-authored completion or continuation instructions remain outside the untrusted fence; every source-derived name, locator, metadata value, and content byte remains inside it.
+
+Search is deferred. It may ship only with specified query semantics and bounds on backend work as well as returned matches. Mecatl does not emulate Search by reading every local file or MCP resource.
+
+Ordinary Read, Grep, Glob, Edit, Write, and Bash remain bound solely to the working Environment.
+
+### 8. Reference tools follow existing catalog, permission, and delegation rules
+
+The two tools are registered through the existing `assembleCatalog` path as one exact Project-session delta. A Project Session without references has no reference tools. Multiple references do not create per-source tools or change the static descriptions.
+
+Both tools are `ReadOnly`, built-in-floor `Allow`, available in plan mode, and still overridable by configured Ask or Deny rules. Permission answers whether the model may invoke the tool; the source broker separately authorizes the caller, Session binding, source, and operation. Guardrails are optional defense in depth, not the reference authorization boundary.
+
+In-session Subagent, Parallel, and Team workers inherit exactly the parent Session's captured reference set and the same two tools. They receive no Project CRUD, source registration, live Project lookup, credentials, or backend locators. Utility engines and standalone delegation calls receive no Project references. Children discover references through List; no dynamic child prompt manifest is added.
+
+The source broker is Build-owned and shared by all catalogs. Session closure does not close it; Build shutdown closes it once. Any future broker cache, goroutine, connection pool, or watcher must be added to [ADR 0027](./0027-cloud-native.md)'s resource inventory.
+
+### 9. Project navigation is composed from bounded pages
+
+The API exposes independently paged Project listing and Session listing with an optional exact Project-ID filter. Clients load Session children only when a Project is opened; the server does not return or eagerly assemble a complete Project tree.
+
+Caller ownership and Project filtering happen before page selection, cursor formation, and counts. Storage adapters that cannot perform Project-filtered metadata paging return unsupported rather than loading every Session snapshot. Deleted Projects disappear from Project listing, while their Sessions remain visible in ordinary Session inventory using captured provenance.
+
+### 10. Project identity is path-independent; the existing harness is not path-free
+
+New Project CRUD, source listing, and `CreateSessionFromProject` APIs use opaque references and safe labels. A browser is not required to submit a daemon-host path through those APIs, and Project records never use a path as source identity.
+
+Existing compatibility surfaces remain path-bearing, including legacy workspace-based Session creation, Session inventory, worktrees, schedules, teams, Parallel fork handles, filesystem tool events, and some diagnostics. Those values are execution or diagnostic details, not portable Project identifiers. A deployment requiring that no host path reach a browser needs a separately designed server-side redacted projection; ADR 0230 does not retrofit one.
+
+Model-facing reference errors use logical source IDs and locators. Backend paths, MCP coordinates, and credentials stay out of tool results and ordinary client errors; detailed physical failures may appear only in scrubbed operator diagnostics.
+
+### 11. State and audit stay above the loop
+
+Project CRUD and source registration live above the agent loop. The Project store and source broker are server/composition seams, not `engine/port` dependencies. The loop consumes only an already-resolved Environment and registered tools.
+
+Reference calls use the existing `ToolCallRecorder` audit seam. Audit records may identify the Project, Session, `SourceRef`, operation, logical locator, and truncation outcome. They never record credentials or private backend locators. ADR 0230 introduces no second Project-specific audit subsystem.
 
 ## Consequences
 
 **Benefits:**
 
-- Users can name and manage multi-folder bodies of work without changing the single-root execution model.
-- Local, Studio, and Kubernetes deployments share one Project API while retaining different source-resolution and exposure rules.
-- Reference material is available on demand, bounded, auditable, and cannot accidentally become writable workspace or authoritative project steering.
-- A session's working environment, trust fold, fork behavior, and persisted environment identity remain coherent and compatible with the existing contracts.
-- Explicit durable membership provides stable session grouping; it avoids unreliable longest-prefix inference and survives Project deletion.
+- Users can group one working source with explicit read-only context without changing the single-root execution model.
+- Local directories, Kubernetes mounts, object stores, and MCP resources share one Project model while keeping adapter-specific locators private.
+- Existing Sessions remain stable when Projects change, while source revocation still fails closed.
+- Operator-shared references work for every admitted caller today, and a future source service can add exact-principal sources without changing Project persistence.
+- Project navigation is bounded and does not require loading every Session or source.
 
 **Costs and limits:**
 
-- Project persistence needs at least two production adapters or a portable managed-store implementation; pod-local storage is not acceptable for `mecak8s`.
-- Source candidate issuance, canonicalization, mount configuration, and reference-read bounds form a new security-sensitive surface and require focused security review and conformance tests.
-- A remote reference adapter such as S3 adds workload-identity, bucket/prefix allowlist, egress, object-size/page/time limits, and object-version reporting requirements. It must never persist or project cloud credentials, and its consistency/version semantics are not Workspace CAS.
-- Reference folders are not editable and do not provide shell access. Users needing to work in another repository start a session with that repository as the working folder or change the Project's working folder before session creation.
-- Cross-Project source reuse requires an explicit policy. V1 should reject duplicate working-source ownership within one principal/scope to keep grouping unambiguous, while allowing a source to appear as a read-only reference in multiple Projects.
-- Project deletion does not erase session data or source contents. The UI must make that distinction explicit.
+- Project persistence, Project-filtered Session metadata, source registration, and reference bounds add new adapter and conformance-test work.
+- Alternate working roots intentionally lose all project-tier steering and the read-only child worktree shell.
+- References are read-only, Search is deferred, and no content is copied or frozen for a Session.
+- V1 has no tenant, organization, group-sharing, personal-mount enrollment, or collaborative Project model.
+- The existing harness continues to expose paths on compatibility surfaces.
 
 ## Rejected alternatives
 
 ### Writable multi-root Workspace
 
-Rejected for v1. A union root would need a new namespace and version identity model for Read/Edit/Write, path disambiguation for every filesystem tool, a shell working-directory policy, and defined worktree/fork/merge behavior over multiple repositories. It would be a new execution-environment architecture, not Project CRUD.
+Rejected. It requires a new namespace, mutation-version model, shell policy, and fork/merge semantics. Projects retain one execution Environment.
 
-### S3 filesystem mount or S3 working folder
+### Put Project CRUD behind MCP
 
-Rejected. Mounting object storage as a filesystem would inherit filesystem semantics that object storage cannot honestly provide and would invite the normal Workspace, Bash, and mutation tools into an unbounded remote namespace. S3 stays a native, explicitly configured, read-only reference-source adapter; it does not become a working folder.
+Rejected. Project ownership, source registration, and Session association are application control-plane operations. MCP may implement a bounded reference adapter only.
 
-### Automatically inject all Project-folder content
+### S3 or Google Docs as working filesystems
 
-Rejected. Folder size, relevance, token cost, sensitive data exposure, and instruction-injection risk make eager materialization inappropriate. The model receives a small trusted source manifest and retrieves bounded data deliberately.
+Rejected. Object/document services do not provide honest Workspace, shell, or mutation semantics. They remain native read-only references.
 
-### Treat every Project member as a trusted project root
+### Automatically inject Project content or metadata
 
-Rejected. Membership is a user organization action, not an operator trust grant. Only the resolved working root participates in the existing root-aware trust decision; reference folders are untrusted data sources.
+Rejected. Content is fetched on demand through bounded tools. Dynamic Project names, labels, and source metadata are not promoted into trusted system instructions.
 
-### Persist raw paths as the universal API contract
+### Treat every source as a trusted project root
 
-Rejected. It leaks host topology to browser clients, cannot represent a Kubernetes source safely, and confuses caller input with server authority. Paths may exist inside a local resolver implementation but are never the portable Project identity.
+Rejected. Membership and registration are not trust grants. References are always untrusted, and alternate working roots are untrusted in v1.
 
-### A process- or profile-global active Project
+### Live Project membership for existing Sessions
 
-Rejected. A multi-session daemon cannot safely let one caller's navigation selection redirect another session's environment. Project association belongs to the session; UI selection belongs to that UI client.
+Rejected. Existing Sessions keep their captured bindings. Project edits configure future Sessions; source revocation remains live.
+
+### A process-global active Project
+
+Rejected. Project association belongs to each Session; navigation selection belongs to the client.
+
+### A complete tree response or eager per-Project Session loading
+
+Rejected. Project roots and Session children are independently paged and loaded on demand.
 
 ## Rollout
 
-1. Add the Proposed Project record, server-owned store seam, source resolver seam, Project CRUD API, and session Project labels. Implement the initial working-folder-only experience.
-2. Add local source candidates and a mecak8s operator-declared mount-source adapter. Add Studio's root-confined opaque directory browser only after security review.
-3. Add server-owned project/session-tree grouping, then mecatui and Studio Project navigation.
-4. Add the bounded `ProjectReferenceList`, `ProjectReferenceRead`, and capability-gated `ProjectReferenceSearch` tools, their model-visible prompt contract, and reference-folder UI/API in the same release.
-5. Inventory every new long-lived Project store/cache/resolver resource in [ADR 0027](./0027-cloud-native.md) when implementation introduces it; update the living architecture and usage documentation when behavior ships.
+1. Add the minimal Project document, whole-document revision checks, caller ownership, Project store, immutable source registry, and `CreateSessionFromProject` API.
+2. Add local and operator-declared Kubernetes working sources. Treat every alternate working root as untrusted.
+3. Persist captured Project bindings and compact Session provenance; add paged Project listing and Project-filtered Session metadata.
+4. Add `ProjectReferenceList` and `ProjectReferenceRead`, the shared source broker, exact catalog delta, delegation propagation, bounds, fencing, and audit projection in the same release as reference management.
+5. Add explicitly registered Streamable HTTP MCP resources such as operator-shared Google Documents. Personal source enrollment and Search remain separate future designs.
+6. Inventory every new long-lived store, broker, cache, client, or goroutine in [ADR 0027](./0027-cloud-native.md); update architecture, usage, and public user documentation when behavior ships.
 
 ## See also
 
