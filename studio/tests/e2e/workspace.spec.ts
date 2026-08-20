@@ -22,7 +22,11 @@ test("schedules render the registry with humanized triggers", async ({
   page,
 }) => {
   await page.goto("/workspace/schedules");
-  await expect(page.getByText("nightly-fixture-digest")).toBeVisible();
+  // The responsive tables render each row twice (desktop columns + the
+  // CSS-collapsed mobile cell), so scope to the visible instance.
+  await expect(
+    page.getByText("nightly-fixture-digest").filter({ visible: true }),
+  ).toBeVisible();
   // The fixture's cron is "0 9 * * *" — the table renders it in plain English.
   await expect(
     page.getByText("Daily at", { exact: false }).first(),
@@ -32,14 +36,18 @@ test("schedules render the registry with humanized triggers", async ({
 test("skills render the resolved inventory", async ({ page }) => {
   await page.goto("/workspace/skills");
   await expect(
-    page.getByText("Review a diff for correctness.", { exact: false }),
+    page
+      .getByText("Review a diff for correctness.", { exact: false })
+      .filter({ visible: true }),
   ).toBeVisible();
 });
 
 test("memory renders the user model, read-only", async ({ page }) => {
   await page.goto("/workspace/settings/memory");
   await expect(
-    page.getByText("prefers tabs over spaces", { exact: false }),
+    page
+      .getByText("prefers tabs over spaces", { exact: false })
+      .filter({ visible: true }),
   ).toBeVisible();
 });
 
