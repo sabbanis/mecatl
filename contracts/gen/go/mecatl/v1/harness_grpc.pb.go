@@ -43,6 +43,14 @@ const _ = grpc.SupportPackageIsVersion9
 
 const (
 	HarnessService_CreateSession_FullMethodName            = "/mecatl.v1.HarnessService/CreateSession"
+	HarnessService_GetServerCapabilities_FullMethodName    = "/mecatl.v1.HarnessService/GetServerCapabilities"
+	HarnessService_ListProjectSources_FullMethodName       = "/mecatl.v1.HarnessService/ListProjectSources"
+	HarnessService_CreateProject_FullMethodName            = "/mecatl.v1.HarnessService/CreateProject"
+	HarnessService_GetProject_FullMethodName               = "/mecatl.v1.HarnessService/GetProject"
+	HarnessService_ListProjects_FullMethodName             = "/mecatl.v1.HarnessService/ListProjects"
+	HarnessService_ReplaceProject_FullMethodName           = "/mecatl.v1.HarnessService/ReplaceProject"
+	HarnessService_DeleteProject_FullMethodName            = "/mecatl.v1.HarnessService/DeleteProject"
+	HarnessService_CreateSessionFromProject_FullMethodName = "/mecatl.v1.HarnessService/CreateSessionFromProject"
 	HarnessService_GetSession_FullMethodName               = "/mecatl.v1.HarnessService/GetSession"
 	HarnessService_GetSessionTranscript_FullMethodName     = "/mecatl.v1.HarnessService/GetSessionTranscript"
 	HarnessService_SetMode_FullMethodName                  = "/mecatl.v1.HarnessService/SetMode"
@@ -113,6 +121,20 @@ const (
 type HarnessServiceClient interface {
 	// CreateSession allocates a new server-side session and returns its id.
 	CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error)
+	// GetServerCapabilities is the standalone, session-free feature bootstrap.
+	GetServerCapabilities(ctx context.Context, in *GetServerCapabilitiesRequest, opts ...grpc.CallOption) (*GetServerCapabilitiesResponse, error)
+	// ListProjectSources returns the bounded, locator-free inventory of working
+	// sources eligible for Project creation.
+	ListProjectSources(ctx context.Context, in *ListProjectSourcesRequest, opts ...grpc.CallOption) (*ListProjectSourcesResponse, error)
+	// CreateProject creates one server-owned Project from a registered working source.
+	CreateProject(ctx context.Context, in *CreateProjectRequest, opts ...grpc.CallOption) (*CreateProjectResponse, error)
+	GetProject(ctx context.Context, in *GetProjectRequest, opts ...grpc.CallOption) (*GetProjectResponse, error)
+	ListProjects(ctx context.Context, in *ListProjectsRequest, opts ...grpc.CallOption) (*ListProjectsResponse, error)
+	ReplaceProject(ctx context.Context, in *ReplaceProjectRequest, opts ...grpc.CallOption) (*ReplaceProjectResponse, error)
+	DeleteProject(ctx context.Context, in *DeleteProjectRequest, opts ...grpc.CallOption) (*DeleteProjectResponse, error)
+	// CreateSessionFromProject captures an authorized Project binding and creates a
+	// Session without accepting any client environment selector.
+	CreateSessionFromProject(ctx context.Context, in *CreateSessionFromProjectRequest, opts ...grpc.CallOption) (*CreateSessionFromProjectResponse, error)
 	// GetSession returns a snapshot of an existing session.
 	GetSession(ctx context.Context, in *GetSessionRequest, opts ...grpc.CallOption) (*GetSessionResponse, error)
 	// GetSessionTranscript returns the authoritative, snapshot-derived human
@@ -403,6 +425,86 @@ func (c *harnessServiceClient) CreateSession(ctx context.Context, in *CreateSess
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateSessionResponse)
 	err := c.cc.Invoke(ctx, HarnessService_CreateSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) GetServerCapabilities(ctx context.Context, in *GetServerCapabilitiesRequest, opts ...grpc.CallOption) (*GetServerCapabilitiesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetServerCapabilitiesResponse)
+	err := c.cc.Invoke(ctx, HarnessService_GetServerCapabilities_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) ListProjectSources(ctx context.Context, in *ListProjectSourcesRequest, opts ...grpc.CallOption) (*ListProjectSourcesResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListProjectSourcesResponse)
+	err := c.cc.Invoke(ctx, HarnessService_ListProjectSources_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) CreateProject(ctx context.Context, in *CreateProjectRequest, opts ...grpc.CallOption) (*CreateProjectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateProjectResponse)
+	err := c.cc.Invoke(ctx, HarnessService_CreateProject_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) GetProject(ctx context.Context, in *GetProjectRequest, opts ...grpc.CallOption) (*GetProjectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetProjectResponse)
+	err := c.cc.Invoke(ctx, HarnessService_GetProject_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) ListProjects(ctx context.Context, in *ListProjectsRequest, opts ...grpc.CallOption) (*ListProjectsResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ListProjectsResponse)
+	err := c.cc.Invoke(ctx, HarnessService_ListProjects_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) ReplaceProject(ctx context.Context, in *ReplaceProjectRequest, opts ...grpc.CallOption) (*ReplaceProjectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(ReplaceProjectResponse)
+	err := c.cc.Invoke(ctx, HarnessService_ReplaceProject_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) DeleteProject(ctx context.Context, in *DeleteProjectRequest, opts ...grpc.CallOption) (*DeleteProjectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(DeleteProjectResponse)
+	err := c.cc.Invoke(ctx, HarnessService_DeleteProject_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) CreateSessionFromProject(ctx context.Context, in *CreateSessionFromProjectRequest, opts ...grpc.CallOption) (*CreateSessionFromProjectResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CreateSessionFromProjectResponse)
+	err := c.cc.Invoke(ctx, HarnessService_CreateSessionFromProject_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1047,6 +1149,20 @@ type HarnessService_ApprovePlanClient = grpc.ServerStreamingClient[Event]
 type HarnessServiceServer interface {
 	// CreateSession allocates a new server-side session and returns its id.
 	CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error)
+	// GetServerCapabilities is the standalone, session-free feature bootstrap.
+	GetServerCapabilities(context.Context, *GetServerCapabilitiesRequest) (*GetServerCapabilitiesResponse, error)
+	// ListProjectSources returns the bounded, locator-free inventory of working
+	// sources eligible for Project creation.
+	ListProjectSources(context.Context, *ListProjectSourcesRequest) (*ListProjectSourcesResponse, error)
+	// CreateProject creates one server-owned Project from a registered working source.
+	CreateProject(context.Context, *CreateProjectRequest) (*CreateProjectResponse, error)
+	GetProject(context.Context, *GetProjectRequest) (*GetProjectResponse, error)
+	ListProjects(context.Context, *ListProjectsRequest) (*ListProjectsResponse, error)
+	ReplaceProject(context.Context, *ReplaceProjectRequest) (*ReplaceProjectResponse, error)
+	DeleteProject(context.Context, *DeleteProjectRequest) (*DeleteProjectResponse, error)
+	// CreateSessionFromProject captures an authorized Project binding and creates a
+	// Session without accepting any client environment selector.
+	CreateSessionFromProject(context.Context, *CreateSessionFromProjectRequest) (*CreateSessionFromProjectResponse, error)
 	// GetSession returns a snapshot of an existing session.
 	GetSession(context.Context, *GetSessionRequest) (*GetSessionResponse, error)
 	// GetSessionTranscript returns the authoritative, snapshot-derived human
@@ -1336,6 +1452,30 @@ type UnimplementedHarnessServiceServer struct{}
 func (UnimplementedHarnessServiceServer) CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateSession not implemented")
 }
+func (UnimplementedHarnessServiceServer) GetServerCapabilities(context.Context, *GetServerCapabilitiesRequest) (*GetServerCapabilitiesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetServerCapabilities not implemented")
+}
+func (UnimplementedHarnessServiceServer) ListProjectSources(context.Context, *ListProjectSourcesRequest) (*ListProjectSourcesResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListProjectSources not implemented")
+}
+func (UnimplementedHarnessServiceServer) CreateProject(context.Context, *CreateProjectRequest) (*CreateProjectResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateProject not implemented")
+}
+func (UnimplementedHarnessServiceServer) GetProject(context.Context, *GetProjectRequest) (*GetProjectResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetProject not implemented")
+}
+func (UnimplementedHarnessServiceServer) ListProjects(context.Context, *ListProjectsRequest) (*ListProjectsResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ListProjects not implemented")
+}
+func (UnimplementedHarnessServiceServer) ReplaceProject(context.Context, *ReplaceProjectRequest) (*ReplaceProjectResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method ReplaceProject not implemented")
+}
+func (UnimplementedHarnessServiceServer) DeleteProject(context.Context, *DeleteProjectRequest) (*DeleteProjectResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method DeleteProject not implemented")
+}
+func (UnimplementedHarnessServiceServer) CreateSessionFromProject(context.Context, *CreateSessionFromProjectRequest) (*CreateSessionFromProjectResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CreateSessionFromProject not implemented")
+}
 func (UnimplementedHarnessServiceServer) GetSession(context.Context, *GetSessionRequest) (*GetSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetSession not implemented")
 }
@@ -1548,6 +1688,150 @@ func _HarnessService_CreateSession_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HarnessServiceServer).CreateSession(ctx, req.(*CreateSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_GetServerCapabilities_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetServerCapabilitiesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).GetServerCapabilities(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_GetServerCapabilities_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).GetServerCapabilities(ctx, req.(*GetServerCapabilitiesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_ListProjectSources_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProjectSourcesRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).ListProjectSources(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_ListProjectSources_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).ListProjectSources(ctx, req.(*ListProjectSourcesRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_CreateProject_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateProjectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).CreateProject(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_CreateProject_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).CreateProject(ctx, req.(*CreateProjectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_GetProject_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetProjectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).GetProject(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_GetProject_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).GetProject(ctx, req.(*GetProjectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_ListProjects_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ListProjectsRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).ListProjects(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_ListProjects_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).ListProjects(ctx, req.(*ListProjectsRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_ReplaceProject_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(ReplaceProjectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).ReplaceProject(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_ReplaceProject_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).ReplaceProject(ctx, req.(*ReplaceProjectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_DeleteProject_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(DeleteProjectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).DeleteProject(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_DeleteProject_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).DeleteProject(ctx, req.(*DeleteProjectRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_CreateSessionFromProject_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CreateSessionFromProjectRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).CreateSessionFromProject(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_CreateSessionFromProject_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).CreateSessionFromProject(ctx, req.(*CreateSessionFromProjectRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -2585,6 +2869,38 @@ var HarnessService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "CreateSession",
 			Handler:    _HarnessService_CreateSession_Handler,
+		},
+		{
+			MethodName: "GetServerCapabilities",
+			Handler:    _HarnessService_GetServerCapabilities_Handler,
+		},
+		{
+			MethodName: "ListProjectSources",
+			Handler:    _HarnessService_ListProjectSources_Handler,
+		},
+		{
+			MethodName: "CreateProject",
+			Handler:    _HarnessService_CreateProject_Handler,
+		},
+		{
+			MethodName: "GetProject",
+			Handler:    _HarnessService_GetProject_Handler,
+		},
+		{
+			MethodName: "ListProjects",
+			Handler:    _HarnessService_ListProjects_Handler,
+		},
+		{
+			MethodName: "ReplaceProject",
+			Handler:    _HarnessService_ReplaceProject_Handler,
+		},
+		{
+			MethodName: "DeleteProject",
+			Handler:    _HarnessService_DeleteProject_Handler,
+		},
+		{
+			MethodName: "CreateSessionFromProject",
+			Handler:    _HarnessService_CreateSessionFromProject_Handler,
 		},
 		{
 			MethodName: "GetSession",

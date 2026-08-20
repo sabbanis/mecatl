@@ -1805,7 +1805,8 @@ func (s *Service) capabilities() *mecatlv1.ServerCapabilities {
 		// path the engine did not arm, and it is computed HERE, once, never
 		// recomputed per sink (the CreateSession echo and the Session snapshot
 		// re-hydration path both carry this one value).
-		Steer: s.cfg.Engine != nil && s.cfg.Engine.SteerEnabled(),
+		Steer:    s.cfg.Engine != nil && s.cfg.Engine.SteerEnabled(),
+		Projects: s.projectEnabled(),
 	}
 }
 

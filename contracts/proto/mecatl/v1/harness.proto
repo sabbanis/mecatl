@@ -34,6 +34,24 @@ service HarnessService {
   // CreateSession allocates a new server-side session and returns its id.
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
 
+  // GetServerCapabilities is the standalone, session-free feature bootstrap.
+  rpc GetServerCapabilities(GetServerCapabilitiesRequest) returns (GetServerCapabilitiesResponse);
+
+  // ListProjectSources returns the bounded, locator-free inventory of working
+  // sources eligible for Project creation.
+  rpc ListProjectSources(ListProjectSourcesRequest) returns (ListProjectSourcesResponse);
+
+  // CreateProject creates one server-owned Project from a registered working source.
+  rpc CreateProject(CreateProjectRequest) returns (CreateProjectResponse);
+  rpc GetProject(GetProjectRequest) returns (GetProjectResponse);
+  rpc ListProjects(ListProjectsRequest) returns (ListProjectsResponse);
+  rpc ReplaceProject(ReplaceProjectRequest) returns (ReplaceProjectResponse);
+  rpc DeleteProject(DeleteProjectRequest) returns (DeleteProjectResponse);
+
+  // CreateSessionFromProject captures an authorized Project binding and creates a
+  // Session without accepting any client environment selector.
+  rpc CreateSessionFromProject(CreateSessionFromProjectRequest) returns (CreateSessionFromProjectResponse);
+
   // GetSession returns a snapshot of an existing session.
   rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
 
@@ -576,6 +594,87 @@ message ServerCapabilities {
   // engine reports too_late on its disarmed inbox), never silently dropped.
   // Additive: an older server leaves it false.
   bool steer = 24;
+  // projects is true only when the Project store, at least one eligible working
+  // source, and the Project-session resolver are all wired at Build time.
+  bool projects = 25;
+}
+
+// GetServerCapabilitiesRequest is deliberately session-free.
+message GetServerCapabilitiesRequest {}
+
+// GetServerCapabilitiesResponse wraps the server feature snapshot.
+message GetServerCapabilitiesResponse {
+  ServerCapabilities capabilities = 1;
+}
+
+// ProjectSource is locator-free registry-owned working-source metadata.
+message ProjectSource {
+  string source_ref = 1;
+  string label = 2;
+  bool working = 3;
+}
+
+message ListProjectSourcesRequest {}
+message ListProjectSourcesResponse {
+  repeated ProjectSource sources = 1;
+}
+
+// Project is the public durable Project projection. Owner and source locators
+// remain server-side; the working source contains only a safe label and opaque ID.
+message Project {
+  string project_id = 1;
+  string name = 2;
+  ProjectSource working = 3;
+  int64 revision = 4;
+  int64 created_at_unix = 5;
+  int64 updated_at_unix = 6;
+}
+
+message CreateProjectRequest {
+  string project_id = 1;
+  string name = 2;
+  string source_ref = 3;
+}
+message CreateProjectResponse { Project project = 1; }
+message GetProjectRequest { string project_id = 1; }
+message GetProjectResponse { Project project = 1; }
+message ListProjectsRequest {
+  int32 page_size = 1;
+  string cursor = 2;
+}
+message ListProjectsResponse {
+  repeated Project projects = 1;
+  string next_cursor = 2;
+  int32 total_count = 3;
+}
+message ReplaceProjectRequest {
+  string project_id = 1;
+  string name = 2;
+  string source_ref = 3;
+  int64 expected_revision = 4;
+}
+message ReplaceProjectResponse { Project project = 1; }
+message DeleteProjectRequest {
+  string project_id = 1;
+  int64 expected_revision = 2;
+}
+message DeleteProjectResponse {}
+
+// CreateSessionFromProjectRequest deliberately excludes workspace, profile,
+// SourceRef, EnvironmentRef, and carryover selectors.
+message CreateSessionFromProjectRequest {
+  string project_id = 1;
+  PermissionMode mode = 2;
+  Limits limits = 3;
+  string provider_id = 4;
+  string model_id = 5;
+  string reasoning_effort = 6;
+}
+message CreateSessionFromProjectResponse {
+  string session_id = 1;
+  ServerCapabilities capabilities = 2;
+  SessionCapabilities session_capabilities = 3;
+  ResolvedModel resolved_model = 4;
 }
 
 // CreateSessionResponse carries the newly-allocated session id.

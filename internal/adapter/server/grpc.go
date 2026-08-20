@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/internal/project"
 )
 
 // HarnessServer implements the generated mecatlv1.HarnessServiceServer over the
@@ -1442,6 +1443,14 @@ func toStatus(err error) error {
 		return status.Error(codes.Internal, err.Error())
 	case errors.Is(err, ErrInvalidArgument):
 		return status.Error(codes.InvalidArgument, err.Error())
+	case errors.Is(err, project.ErrSourceNotFound):
+		return status.Error(codes.InvalidArgument, ErrInvalidArgument.Error())
+	case errors.Is(err, project.ErrNotFound):
+		return status.Error(codes.NotFound, ErrNotFound.Error())
+	case errors.Is(err, project.ErrAlreadyExists), errors.Is(err, project.ErrConflict):
+		return status.Error(codes.Aborted, project.ErrConflict.Error())
+	case errors.Is(err, project.ErrUnsupported):
+		return status.Error(codes.Unimplemented, project.ErrUnsupported.Error())
 	case errors.Is(err, ErrNotFound):
 		return status.Error(codes.NotFound, err.Error())
 	case errors.Is(err, ErrTeamNotFound):

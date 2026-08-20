@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/mecatl/engine/learning"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/internal/project"
 )
 
 // HTTPHandler is the HTTP/SSE adapter over the shared Service. It serves the
@@ -46,6 +47,14 @@ type HTTPHandler struct {
 func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h := &HTTPHandler{svc: svc, mux: http.NewServeMux()}
 	h.mux.HandleFunc("POST /v1/sessions", h.createSession)
+	h.mux.HandleFunc("GET /v1/capabilities", h.getServerCapabilities)
+	h.mux.HandleFunc("GET /v1/project-sources", h.listProjectSources)
+	h.mux.HandleFunc("POST /v1/projects", h.createProject)
+	h.mux.HandleFunc("GET /v1/projects", h.listProjects)
+	h.mux.HandleFunc("GET /v1/projects/{id}", h.getProject)
+	h.mux.HandleFunc("PUT /v1/projects/{id}", h.replaceProject)
+	h.mux.HandleFunc("DELETE /v1/projects/{id}", h.deleteProject)
+	h.mux.HandleFunc("POST /v1/projects/{id}/sessions", h.createSessionFromProject)
 	h.mux.HandleFunc("GET /v1/sessions/{id}", h.getSession)
 	h.mux.HandleFunc("GET /v1/sessions/{id}/transcript", h.getSessionTranscript)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/mode", h.setMode)
@@ -2071,6 +2080,14 @@ func writeServiceError(w http.ResponseWriter, err error) {
 		writeError(w, http.StatusInternalServerError, err.Error())
 	case errors.Is(err, ErrInvalidArgument):
 		writeError(w, http.StatusBadRequest, err.Error())
+	case errors.Is(err, project.ErrSourceNotFound):
+		writeError(w, http.StatusBadRequest, ErrInvalidArgument.Error())
+	case errors.Is(err, project.ErrNotFound):
+		writeError(w, http.StatusNotFound, ErrNotFound.Error())
+	case errors.Is(err, project.ErrAlreadyExists), errors.Is(err, project.ErrConflict):
+		writeError(w, http.StatusConflict, project.ErrConflict.Error())
+	case errors.Is(err, project.ErrUnsupported):
+		writeError(w, http.StatusNotImplemented, project.ErrUnsupported.Error())
 	case errors.Is(err, ErrNotFound):
 		writeError(w, http.StatusNotFound, err.Error())
 	case errors.Is(err, ErrTeamNotFound):

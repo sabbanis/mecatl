@@ -12,7 +12,7 @@ import (
 
 // ListProjectWorkingSources returns the immutable registry's safe source inventory.
 func (s *Service) ListProjectWorkingSources(ctx context.Context) ([]project.WorkingSource, error) {
-	if s.cfg.ProjectStore == nil || s.cfg.ProjectSources == nil {
+	if !s.projectEnabled() {
 		return nil, fmt.Errorf("%w", project.ErrUnsupported)
 	}
 	return s.cfg.ProjectSources.ListWorking(ctx)
@@ -22,7 +22,7 @@ func (s *Service) ListProjectWorkingSources(ctx context.Context) ([]project.Work
 // working source. The caller supplies no owner or label: both are trusted
 // server-side facts.
 func (s *Service) CreateProject(ctx context.Context, id, name string, sourceRef project.SourceRef) (project.Project, error) {
-	if s.cfg.ProjectStore == nil || s.cfg.ProjectSources == nil {
+	if !s.projectEnabled() {
 		return project.Project{}, fmt.Errorf("%w", project.ErrUnsupported)
 	}
 	source, err := s.projectWorkingSource(ctx, sourceRef)
@@ -35,7 +35,7 @@ func (s *Service) CreateProject(ctx context.Context, id, name string, sourceRef 
 		Revision: 1, CreatedAt: now, UpdatedAt: now,
 	}
 	if err := item.Validate(); err != nil {
-		return project.Project{}, err
+		return project.Project{}, fmt.Errorf("%w: invalid project document", ErrInvalidArgument)
 	}
 	if err := s.cfg.ProjectStore.Create(ctx, item); err != nil {
 		return project.Project{}, err
@@ -55,7 +55,7 @@ func (s *Service) GetProject(ctx context.Context, id string) (project.Project, e
 
 // ListProjects returns the store's bounded owner-filtered page.
 func (s *Service) ListProjects(ctx context.Context, request project.PageRequest) (project.Page, error) {
-	if s.cfg.ProjectStore == nil {
+	if !s.projectEnabled() {
 		return project.Page{}, fmt.Errorf("%w", project.ErrUnsupported)
 	}
 	request.OwnershipEnforced = s.cfg.OwnershipEnforced
@@ -80,7 +80,7 @@ func (s *Service) ReplaceProject(ctx context.Context, id, name string, sourceRef
 	current.Revision = expectedRevision + 1
 	current.UpdatedAt = s.cfg.Now()
 	if err := current.Validate(); err != nil {
-		return project.Project{}, err
+		return project.Project{}, fmt.Errorf("%w: invalid project document", ErrInvalidArgument)
 	}
 	return s.cfg.ProjectStore.Replace(ctx, current, expectedRevision)
 }
@@ -142,8 +142,12 @@ func (s *Service) CreateSessionFromProject(ctx context.Context, id string, mode 
 	return sess, nil
 }
 
+func (s *Service) projectEnabled() bool {
+	return s.cfg.ProjectStore != nil && s.cfg.ProjectSources != nil
+}
+
 func (s *Service) loadOwnedProject(ctx context.Context, id string) (project.Project, error) {
-	if s.cfg.ProjectStore == nil {
+	if !s.projectEnabled() {
 		return project.Project{}, fmt.Errorf("%w", project.ErrUnsupported)
 	}
 	item, err := s.cfg.ProjectStore.Load(ctx, id)
@@ -160,7 +164,7 @@ func (s *Service) loadOwnedProject(ctx context.Context, id string) (project.Proj
 }
 
 func (s *Service) projectWorkingSource(ctx context.Context, ref project.SourceRef) (project.WorkingSource, error) {
-	if s.cfg.ProjectSources == nil {
+	if !s.projectEnabled() {
 		return project.WorkingSource{}, fmt.Errorf("%w", project.ErrUnsupported)
 	}
 	sources, err := s.cfg.ProjectSources.ListWorking(ctx)
