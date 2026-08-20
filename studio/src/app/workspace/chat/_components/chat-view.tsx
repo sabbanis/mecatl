@@ -20,8 +20,9 @@ import {
   RotateCcw,
   Trash2,
   Wrench,
+  X,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -35,19 +36,43 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type {
-  AgentMessage,
-  AgentSession,
-  ApprovalChoice,
-  ApprovalRequest,
-  Artifact,
-  Attachment,
-  ClarificationRequest,
+import {
+  type AgentMessage,
+  type AgentSession,
+  type ApprovalChoice,
+  type ApprovalRequest,
+  type Artifact,
+  type Attachment,
+  type ClarificationRequest,
+  useAgentChat,
 } from "@/features/agent";
-import type { QueuedMessage } from "@/features/agent/hooks/use-agent-chat";
+import type {
+  PendingSteer,
+  QueuedMessage,
+} from "@/features/agent/hooks/use-agent-chat";
+import { isMockTourSession } from "@/features/agent/mock-tour";
 import { useIsMobile } from "@/hooks/use-mobile";
 import { formatTokens } from "@/lib/formatters";
-import type { SessionListSide } from "@/lib/profile-preferences";
+import {
+  createThreadHarnessSession,
+  ThreadSourceBusyError,
+} from "@/lib/harness/client";
+import {
+  type SessionListSide,
+  useEnterSendBehavior,
+} from "@/lib/profile-preferences";
+import type { SessionPermissionMode } from "@/lib/protocol";
+import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
+import {
+  composeThreadPrompt,
+  getThreadSession,
+  registerThreadSession,
+  sliceThreadReplies,
+  syncThreadActivity,
+  threadKeyForMessage,
+  threadTitleFromRoot,
+  useThreadMap,
+} from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
@@ -134,24 +159,64 @@ function UsageMenuRow({
 }
 
 /**
- * Messages held while a run is active, shown above the composer. Each row
- * offers Steer (interrupt the run and send now), Edit (back into the
- * composer), and Delete. They drain in order as runs complete.
+ * Messages held while a run is active, shown above the composer. Steered
+ * messages the daemon accepted but has not yet applied render first, with a
+ * pulsing "steering…" marker and a single retract control for the whole
+ * bundle (the daemon retracts bundles, not single messages). Queued rows
+ * offer Steer (inject into the in-flight run), Edit (back into the composer),
+ * and Delete; they drain in order as runs complete.
  */
 function QueuedMessageStrip({
   queued,
+  pending,
   onSteer,
   onEdit,
   onDelete,
+  onCancelSteers,
 }: {
   queued: QueuedMessage[];
+  pending: PendingSteer[];
   onSteer: (id: string) => void;
   onEdit: (id: string) => void;
   onDelete: (id: string) => void;
+  onCancelSteers?: () => void;
 }) {
-  if (queued.length === 0) return null;
+  if (queued.length === 0 && pending.length === 0) return null;
   return (
     <div className="space-y-1.5 max-[499px]:px-3">
+      {pending.length > 0 && (
+        <div className="flex items-start gap-2 rounded-xl border border-brand/30 bg-brand/5 py-1 pr-1 pl-3">
+          <div className="min-w-0 flex-1 space-y-0.5 py-0.5">
+            {pending.map((steer) => (
+              <div key={steer.id} className="flex items-center gap-2">
+                <CornerDownRight className="size-4 shrink-0 text-brand" />
+                <span
+                  className="min-w-0 flex-1 truncate text-sm"
+                  title={steer.text}
+                >
+                  {steer.text}
+                </span>
+                <span className="flex shrink-0 items-center gap-1.5 text-xs text-muted-foreground">
+                  <span className="size-1.5 animate-pulse rounded-full bg-current" />
+                  steering…
+                </span>
+              </div>
+            ))}
+          </div>
+          {onCancelSteers && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 text-muted-foreground"
+              aria-label="Retract steered messages"
+              title="Retract steered messages that haven't been applied yet"
+              onClick={onCancelSteers}
+            >
+              <X className="size-3.5" />
+            </Button>
+          )}
+        </div>
+      )}
       {queued.map((message) => (
         <div
           key={message.id}
@@ -169,7 +234,7 @@ function QueuedMessageStrip({
             size="sm"
             className="h-7 shrink-0 gap-1 px-2 text-muted-foreground hover:text-foreground"
             onClick={() => onSteer(message.id)}
-            title="Interrupt the current response and send now"
+            title="Inject into the current response at the next step"
           >
             <CornerDownRight className="size-3.5" />
             Steer
@@ -296,18 +361,251 @@ function AttachmentPanel({
       windowControls={windowControls}
     >
       <div className="flex-1 overflow-auto">
-        <FilePreview name={attachment.name} content={attachment.content} />
+        <FilePreview
+          name={attachment.name}
+          content={attachment.content}
+          url={attachment.url}
+        />
       </div>
     </SidePanel>
   );
 }
 
 /**
- * A side-panel thread branched off a single message. The root message is shown
- * read-only at the top; replies typed here form a focused side conversation
- * without cluttering the main transcript.
+ * A side-panel thread branched off a single message, backed by a REAL daemon
+ * session seeded with the parent conversation (source_session_id carryover).
+ * The root message is shown read-only at the top; replies genuinely converse
+ * with the agent, streaming through the same chat hook as the main view. The
+ * thread session is minted lazily on the first send, renamed "Thread: …",
+ * and remembered in the browser-local thread map so reopening the thread
+ * rehydrates its transcript. It also shows up in the sidebar under that
+ * name, which is the escape hatch for anything the panel keeps minimal.
  */
 function ThreadPanel({
+  parentSessionId,
+  rootMessage,
+  botName,
+  onClose,
+  maximized,
+  onToggleMaximize,
+  windowControls,
+}: {
+  parentSessionId: string;
+  rootMessage: AgentMessage;
+  botName: string;
+  onClose: () => void;
+  maximized: boolean;
+  onToggleMaximize: () => void;
+  windowControls?: boolean;
+}) {
+  const rootKey = threadKeyForMessage(rootMessage);
+  // The persisted thread session, when this root message already has one —
+  // the hook rehydrates its transcript. A session minted DURING this panel's
+  // lifetime deliberately does NOT re-key the hook: it is adopted via
+  // adoptSession instead (the draft-minting pattern), because re-keying
+  // would refetch the transcript mid-stream and wipe the optimistic messages.
+  const [initialThreadId] = useState<string | null>(() =>
+    getThreadSession(parentSessionId, rootKey),
+  );
+  const threadIdRef = useRef<string | null>(initialThreadId);
+  // The parent was mid-run (daemon 412): the seeded fork has to wait.
+  const [sourceBusy, setSourceBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  // Re-seeds the composer after a refused first send (keep the text) or a
+  // queued-message edit.
+  const [seedText, setSeedText] = useState<string | null>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  const {
+    messages,
+    isStreaming,
+    status,
+    error,
+    sendMessage,
+    adoptSession,
+    queuedMessages,
+    queueMessage,
+    deleteQueued,
+    takeQueued,
+    steerQueued,
+    pendingApproval,
+    respondToApproval,
+  } = useAgentChat(initialThreadId);
+
+  // The thread session's history starts with the seeded parent conversation;
+  // only the thread's own exchange (from the quoted first message) renders.
+  const replies = useMemo(
+    () => sliceThreadReplies(messages, rootMessage.content),
+    [messages, rootMessage.content],
+  );
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the scroll follows every new reply by design
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [replies.length]);
+
+  // Mirror the thread's activity into the persisted map so the parent
+  // transcript's reply indicator stays live (count + last-reply time).
+  useEffect(() => {
+    if (!threadIdRef.current || replies.length === 0) return;
+    const countable = replies.filter(
+      (reply) =>
+        reply.role === "user" ||
+        Boolean(reply.content.trim()) ||
+        Boolean(reply.failed),
+    );
+    if (countable.length === 0) return;
+    let lastAt = 0;
+    for (const reply of countable) {
+      if (reply.timestamp > lastAt) lastAt = reply.timestamp;
+    }
+    syncThreadActivity(parentSessionId, rootKey, countable.length, lastAt);
+  }, [replies, parentSessionId, rootKey]);
+
+  const handleSend = useCallback(
+    async (content: string, files?: File[]) => {
+      // Defense in depth: a mock session id must never mint a daemon thread
+      // session (the panel router already sends mock threads elsewhere).
+      if (isMockTourSession(parentSessionId)) return;
+      setSourceBusy(false);
+      setCreateError(null);
+      if (threadIdRef.current) {
+        void sendMessage(content, files);
+        return;
+      }
+      // First send: mint the seeded thread session up front — the hook's own
+      // lazy mint would create an UNSEEDED session with no parent context.
+      try {
+        const threadId = await createThreadHarnessSession(
+          parentSessionId,
+          threadTitleFromRoot(rootMessage.content),
+        );
+        threadIdRef.current = threadId;
+        adoptSession(threadId);
+        registerThreadSession(parentSessionId, rootKey, threadId);
+      } catch (caught) {
+        // A refused first send keeps the text: re-seed the composer with it.
+        setSeedText(content);
+        if (caught instanceof ThreadSourceBusyError) {
+          setSourceBusy(true);
+        } else {
+          setCreateError(
+            caught instanceof Error ? caught.message : String(caught),
+          );
+        }
+        return;
+      }
+      void sendMessage(
+        composeThreadPrompt(rootMessage.content, content),
+        files,
+      );
+    },
+    [parentSessionId, rootKey, rootMessage.content, sendMessage, adoptSession],
+  );
+
+  // Editing a queued reply pulls it out of the queue into the composer.
+  const handleEditQueued = (id: string) => {
+    const text = takeQueued(id);
+    if (text) setSeedText(text);
+  };
+
+  return (
+    <SidePanel
+      icon={MessageSquareText}
+      title="Thread"
+      closeLabel="Close thread"
+      maximized={maximized}
+      onToggleMaximize={onToggleMaximize}
+      onClose={onClose}
+      minWidth={340}
+      windowControls={windowControls}
+    >
+      {/* Body: root message, live replies, composer */}
+      <div className="relative flex-1 min-h-0">
+        <div className="h-full overflow-y-auto px-3 pt-3 pb-40 max-[499px]:pb-24 lg:px-4">
+          <div className="rounded-lg border border-dashed border-border/70 px-1 py-1">
+            <MessageBubble message={rootMessage} botName={botName} />
+          </div>
+          {replies.length > 0 && (
+            <div className="my-2 flex items-center gap-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
+              <span className="h-px flex-1 bg-border" />
+              {replies.length} {replies.length === 1 ? "reply" : "replies"}
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          )}
+          {replies.map((reply) => (
+            <MessageBubble key={reply.id} message={reply} botName={botName} />
+          ))}
+          {pendingApproval && (
+            <ApprovalPanel
+              approval={pendingApproval}
+              onRespond={respondToApproval}
+            />
+          )}
+          {isStreaming && (
+            <StreamingIndicator
+              message={
+                replies[replies.length - 1]?.role === "assistant"
+                  ? replies[replies.length - 1]
+                  : undefined
+              }
+            />
+          )}
+          <div ref={endRef} />
+        </div>
+        <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
+          <div className="space-y-1.5">
+            <QueuedMessageStrip
+              queued={queuedMessages}
+              pending={[]}
+              onSteer={steerQueued}
+              onEdit={handleEditQueued}
+              onDelete={deleteQueued}
+            />
+            {sourceBusy && (
+              <p className="px-2 text-xs text-muted-foreground">
+                Wait for the current response to finish before starting a
+                thread.
+              </p>
+            )}
+            {createError && (
+              <p className="px-2 text-xs text-destructive break-words">
+                {createError}
+              </p>
+            )}
+            {status === "error" && error && (
+              <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
+                <AlertCircle className="size-4 shrink-0 text-destructive" />
+                <p className="min-w-0 flex-1 text-sm text-destructive break-words">
+                  {error}
+                </p>
+              </div>
+            )}
+            <ChatInput
+              rows={1}
+              onSend={handleSend}
+              onQueue={queueMessage}
+              isStreaming={isStreaming}
+              disabled={!!pendingApproval}
+              initialText={seedText}
+              onInitialTextConsumed={() => setSeedText(null)}
+              onModelChange={() => {}}
+              placeholder={isStreaming ? "Queue a reply…" : "Reply in thread…"}
+              mobileDocked
+            />
+          </div>
+        </div>
+      </div>
+    </SidePanel>
+  );
+}
+
+/**
+ * The thread panel for the Labs mock chat: a read-only view of the root
+ * message's canned replies. Entirely local — a mock session id must never
+ * mint a daemon thread session, so this replaces ThreadPanel outright.
+ */
+function MockThreadPanel({
   rootMessage,
   botName,
   onClose,
@@ -322,33 +620,7 @@ function ThreadPanel({
   onToggleMaximize: () => void;
   windowControls?: boolean;
 }) {
-  const [replies, setReplies] = useState<AgentMessage[]>(
-    rootMessage.replies ?? [],
-  );
-  const endRef = useRef<HTMLDivElement>(null);
-
-  useEffect(() => {
-    endRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, []);
-
-  const handleSend = (content: string) => {
-    const now = Date.now();
-    setReplies((prev) => [
-      ...prev,
-      { id: `thread-u-${now}`, role: "user", content, timestamp: now },
-      {
-        id: `thread-a-${now}`,
-        role: "assistant",
-        content:
-          "Picking this up in the thread — I'll keep it scoped to the message above.",
-        timestamp: now + 1,
-      },
-    ]);
-    requestAnimationFrame(() =>
-      endRef.current?.scrollIntoView({ behavior: "smooth" }),
-    );
-  };
-
+  const replies = rootMessage.replies ?? [];
   return (
     <SidePanel
       icon={MessageSquareText}
@@ -360,33 +632,23 @@ function ThreadPanel({
       minWidth={340}
       windowControls={windowControls}
     >
-      {/* Body: root message, replies, composer */}
-      <div className="relative flex-1 min-h-0">
-        <div className="h-full overflow-y-auto px-3 pt-3 pb-40 max-[499px]:pb-24 lg:px-4">
-          <div className="rounded-lg border border-dashed border-border/70 px-1 py-1">
-            <MessageBubble message={rootMessage} botName={botName} />
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 pt-3 pb-4 lg:px-4">
+        <div className="rounded-lg border border-dashed border-border/70 px-1 py-1">
+          <MessageBubble message={rootMessage} botName={botName} />
+        </div>
+        {replies.length > 0 && (
+          <div className="my-2 flex items-center gap-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
+            <span className="h-px flex-1 bg-border" />
+            {replies.length} {replies.length === 1 ? "reply" : "replies"}
+            <span className="h-px flex-1 bg-border" />
           </div>
-          {replies.length > 0 && (
-            <div className="my-2 flex items-center gap-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
-              <span className="h-px flex-1 bg-border" />
-              {replies.length} {replies.length === 1 ? "reply" : "replies"}
-              <span className="h-px flex-1 bg-border" />
-            </div>
-          )}
-          {replies.map((r) => (
-            <MessageBubble key={r.id} message={r} botName={botName} />
-          ))}
-          <div ref={endRef} />
-        </div>
-        <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
-          <ChatInput
-            rows={1}
-            onSend={handleSend}
-            onModelChange={() => {}}
-            placeholder="Reply in thread…"
-            mobileDocked
-          />
-        </div>
+        )}
+        {replies.map((reply) => (
+          <MessageBubble key={reply.id} message={reply} botName={botName} />
+        ))}
+        <p className="px-2 pt-2 text-xs text-muted-foreground">
+          Mock thread &mdash; read-only demo content.
+        </p>
       </div>
     </SidePanel>
   );
@@ -518,6 +780,13 @@ export function ChatView({
   onSteerQueued,
   onDeleteQueued,
   onTakeQueued,
+  pendingSteers = [],
+  onSteerMessage,
+  onCancelPendingSteers,
+  onCancelRun,
+  readOnlyPlaceholder,
+  mode,
+  onModeChange,
 }: {
   session: AgentSession;
   messages: AgentMessage[];
@@ -553,6 +822,22 @@ export function ChatView({
   onDeleteQueued?: (id: string) => void;
   /** Removes a queued message and returns its text (the Edit action). */
   onTakeQueued?: (id: string) => string | null;
+  /** Steers the daemon accepted but has not yet applied to the run. */
+  pendingSteers?: PendingSteer[];
+  /** Injects composer text into the in-flight run at the next step. */
+  onSteerMessage?: (text: string) => void;
+  /** Retracts the whole pending steer bundle. */
+  onCancelPendingSteers?: () => void;
+  /** Cancels the in-flight run (Esc with no panel open). */
+  onCancelRun?: () => void;
+  /** Disables the composer and shows this placeholder instead (the Labs
+      mock chat is read-only demo content). */
+  readOnlyPlaceholder?: string;
+  /** The session's current permission mode, for the composer's Mode selector. */
+  mode?: SessionPermissionMode;
+  /** Renders the composer's Mode selector when provided (the mock tour chat
+      omits it — a read-only demo has no permission posture to set). */
+  onModeChange?: (mode: SessionPermissionMode) => void;
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Whether the transcript is scrolled to (near) the bottom; when it isn't,
@@ -567,6 +852,8 @@ export function ChatView({
   // time" structural rather than something to coordinate by hand.
   const [panel, setPanel] = useState<ActivePanel | null>(null);
   const [appendText, setAppendText] = useState<string | null>(null);
+  // The Enter preference (Settings → Chat) decides the streaming placeholder.
+  const { behavior: enterBehavior } = useEnterSendBehavior();
   // Editing a queued message pulls it out of the queue into the composer.
   const [editSeed, setEditSeed] = useState<string | null>(null);
   const handleEditQueued = (id: string) => {
@@ -578,6 +865,9 @@ export function ChatView({
   const [panelMaximized, setPanelMaximized] = useState(false);
   const isMobile = useIsMobile();
   const handleAppendConsumed = useCallback(() => setAppendText(null), []);
+  // Threads branched off this chat's messages (browser-local), for the
+  // Slack-style reply indicators under their root messages.
+  const threadMap = useThreadMap(session.id);
 
   const closeSidePanel = useCallback(() => {
     setPanel(null);
@@ -607,6 +897,21 @@ export function ChatView({
     const el = messagesContainerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
+
+  // Esc, layered (close.esc): an open Radix dialog/menu — and the composer's
+  // autocomplete — consume their own Escape before the dispatcher sees it
+  // (`defaultPrevented`), so by the time this fires nothing transient is
+  // open. Close the side panel if one is up; otherwise interrupt a streaming
+  // run (the Claude Code convention: Esc cancels). On mobile the panel lives
+  // in a Radix Sheet that owns its own Escape, so only the cancel arm fires
+  // there.
+  useShortcut("close.esc", () => {
+    if (panel !== null) {
+      closeSidePanel();
+      return;
+    }
+    if (isStreaming) onCancelRun?.();
+  });
 
   // The right-hand panel only renders on non-mobile layouts; let the parent
   // collapse the chat list while it's open so both panels fit side by side.
@@ -654,7 +959,7 @@ export function ChatView({
           panelMaximized && "hidden",
         )}
       >
-        <div className="flex h-16 items-center gap-2 border-b border-border px-3 max-[499px]:h-14 lg:gap-3 lg:px-6">
+        <div className="flex h-[60px] items-center gap-2 border-b border-border px-3 max-[499px]:h-14 lg:gap-3 lg:px-6">
           {isMobile && (
             <Button
               variant="ghost"
@@ -755,6 +1060,7 @@ export function ChatView({
                     setPanel({ kind: "attachment", attachment })
                   }
                   onStartThread={handleStartThread}
+                  threadSummary={threadMap[threadKeyForMessage(msg)]}
                   botName={botName}
                   showActivity={showActivity}
                 />
@@ -797,9 +1103,11 @@ export function ChatView({
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
               <QueuedMessageStrip
                 queued={queuedMessages}
+                pending={pendingSteers}
                 onSteer={(id) => onSteerQueued?.(id)}
                 onEdit={handleEditQueued}
                 onDelete={(id) => onDeleteQueued?.(id)}
+                onCancelSteers={onCancelPendingSteers}
               />
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
@@ -829,12 +1137,15 @@ export function ChatView({
                 <ChatInput
                   onSend={onSend}
                   onQueue={onQueueMessage}
+                  onSteer={onSteerMessage}
                   focusKey={session.id}
                   mobileDocked
                   modelLockedLabel={live ? "Auto-routed" : undefined}
                   onModelChange={() => {}}
+                  mode={mode}
+                  onModeChange={onModeChange}
                   isStreaming={isStreaming}
-                  disabled={!!pendingApproval}
+                  disabled={!!pendingApproval || readOnlyPlaceholder != null}
                   appendText={appendText}
                   onAppendConsumed={handleAppendConsumed}
                   initialText={editSeed ?? initialDraft}
@@ -843,7 +1154,12 @@ export function ChatView({
                     else onInitialDraftConsumed?.();
                   }}
                   placeholder={
-                    isStreaming ? "Queue a message..." : "Send a message..."
+                    readOnlyPlaceholder ??
+                    (isStreaming
+                      ? enterBehavior === "steer"
+                        ? "Steer the agent..."
+                        : "Queue a message..."
+                      : "Send a message...")
                   }
                 />
               )}
@@ -854,6 +1170,7 @@ export function ChatView({
       {!isMobile && panel !== null && (
         <SidePanelForKind
           panel={panel}
+          parentSessionId={session.id}
           botName={botName}
           onClose={closeSidePanel}
           maximized={panelMaximized}
@@ -881,6 +1198,7 @@ export function ChatView({
             <div className="flex min-h-0 flex-1 flex-col">
               <SidePanelForKind
                 panel={panel}
+                parentSessionId={session.id}
                 botName={botName}
                 onClose={closeSidePanel}
                 maximized
@@ -898,6 +1216,7 @@ export function ChatView({
 /** Renders the right-hand panel for the active kind. */
 function SidePanelForKind({
   panel,
+  parentSessionId,
   botName,
   onClose,
   maximized,
@@ -905,6 +1224,7 @@ function SidePanelForKind({
   windowControls,
 }: {
   panel: ActivePanel;
+  parentSessionId: string;
   botName: string;
   onClose: () => void;
   maximized: boolean;
@@ -918,8 +1238,22 @@ function SidePanelForKind({
     case "attachment":
       return <AttachmentPanel attachment={panel.attachment} {...shared} />;
     case "thread":
+      // Mock chat threads stay local: read-only replies, no daemon session.
+      if (isMockTourSession(parentSessionId)) {
+        return (
+          <MockThreadPanel
+            rootMessage={panel.message}
+            botName={botName}
+            {...shared}
+          />
+        );
+      }
       return (
         <ThreadPanel
+          // Re-key per root message: switching threads must remount the
+          // panel so its chat hook re-binds to the right thread session.
+          key={`${parentSessionId}:${panel.message.id}`}
+          parentSessionId={parentSessionId}
           rootMessage={panel.message}
           botName={botName}
           {...shared}

@@ -35,7 +35,7 @@ export function SettingsNav() {
                     href={item.href}
                     aria-current={isActive ? "page" : undefined}
                     className={cn(
-                      "block rounded-md px-2 py-1.5 text-sm whitespace-nowrap transition-colors",
+                      "block rounded-lg px-2 py-1.5 text-sm whitespace-nowrap transition-colors",
                       isActive
                         ? "bg-muted font-medium text-foreground"
                         : "text-muted-foreground hover:bg-muted/60 hover:text-foreground",

@@ -142,6 +142,12 @@ export type StreamEvent =
   | { type: "error"; message: string; details?: string }
   /** A previously surfaced permission ask was withdrawn by the daemon. */
   | { type: "retract"; approvalId: string }
+  /**
+   * Mid-run steer drain echo: the daemon merged the pending steer bundle into
+   * the in-flight run. `text` is the drained bundle; `messageId` is the
+   * watermark — the client-minted id of the LAST message the bundle absorbed.
+   */
+  | { type: "steer"; text: string; messageId: string }
   /** A one-line advisory (tool progress, compaction, unrendered event kinds). */
   | { type: "notice"; text: string }
   /** Delegation activity: the run handed work to a child agent. */
@@ -310,7 +316,10 @@ export interface GitInfo {
 
 export interface Artifact {
   name: string;
-  type: "spreadsheet" | "document" | "code";
+  type: "spreadsheet" | "document" | "code" | "image" | "pdf" | "markdown";
   content?: string;
+  /** Binary payloads (images, PDFs) that don't fit `content` as text ride a
+   *  URL — a data: URI or a fetchable location. */
+  url?: string;
   createdAt?: string;
 }

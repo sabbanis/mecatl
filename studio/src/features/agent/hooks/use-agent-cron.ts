@@ -141,6 +141,48 @@ export function useAgentCron() {
     [perform],
   );
 
+  /**
+   * Save an edit under a NEW name. The daemon has no rename — PUT force-stamps
+   * the path name onto the body and fire history is keyed by name — so a
+   * rename is re-create + delete, in fail-safe order: create the new name
+   * first (carrying the stored spec fields), mirror a paused state onto it,
+   * then delete the old entry. A failed create leaves the old schedule
+   * untouched; a failure after the create is reported honestly as "both
+   * entries now exist" rather than pretending success. Run history stays with
+   * the old name and is deleted with it.
+   */
+  const renameAndUpdateFromDraft = useCallback(
+    async (draft: ScheduleSpecDraft, previous: ScheduleRow) => {
+      const errorDetail = (caught: unknown) =>
+        caught instanceof Error ? caught.message : String(caught);
+      await perform(async () => {
+        await saveHarnessSchedule(draft, {
+          update: false,
+          carried: previous.carried,
+        });
+        if (!previous.enabled) {
+          try {
+            await harnessScheduleAction(draft.name, "pause");
+          } catch (caught) {
+            throw new Error(
+              `Created "${draft.name}" but pausing it failed — both entries exist now; ` +
+                `pause "${draft.name}" and delete "${previous.name}" manually. (${errorDetail(caught)})`,
+            );
+          }
+        }
+        try {
+          await harnessScheduleAction(previous.name, "delete");
+        } catch (caught) {
+          throw new Error(
+            `Created "${draft.name}" but deleting the old "${previous.name}" failed — ` +
+              `both entries exist now; delete "${previous.name}" manually. (${errorDetail(caught)})`,
+          );
+        }
+      });
+    },
+    [perform],
+  );
+
   const runJob = useCallback(
     async (jobId: string) => {
       // FireNow is synchronous on the daemon: this await lasts the whole run.
@@ -183,6 +225,7 @@ export function useAgentCron() {
     createJob,
     createFromDraft,
     updateFromDraft,
+    renameAndUpdateFromDraft,
     runJob,
     deleteJob,
     pauseJob,

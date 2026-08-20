@@ -94,6 +94,7 @@ export function AvatarPicker({
         <Button
           variant="outline"
           size="sm"
+          className="rounded-full"
           onClick={() => fileInputRef.current?.click()}
         >
           {avatarUrl ? "Change picture" : "Upload picture"}
@@ -102,7 +103,7 @@ export function AvatarPicker({
           <Button
             variant="ghost"
             size="sm"
-            className="text-muted-foreground"
+            className="rounded-full text-muted-foreground"
             onClick={() => onChange(null)}
           >
             Remove

@@ -2,10 +2,9 @@
 
 import { Bot } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { useAgentAvatar, useAgentDisplayName } from "@/lib/profile-preferences";
 import { AvatarPicker } from "../_components/avatar-picker";
-import { SettingsCard } from "../_components/settings-card";
+import { SettingsCard, SettingsRow } from "../_components/settings-card";
 
 /**
  * The agent's cosmetic identity — display name and picture, browser-local
@@ -17,9 +16,12 @@ export default function AgentSettingsPage() {
   const { avatarUrl, setAvatarUrl } = useAgentAvatar();
 
   return (
-    <SettingsCard title="Agent">
-      <div className="divide-y">
-        <div className="pb-5">
+    <SettingsCard
+      title="Agent"
+      description="Cosmetic identity, stored in this browser only."
+    >
+      <div className="divide-y divide-border/60">
+        <div className="pb-4">
           <AvatarPicker
             avatarUrl={avatarUrl}
             onChange={setAvatarUrl}
@@ -27,19 +29,20 @@ export default function AgentSettingsPage() {
             fallback={<Bot className="size-6" />}
           />
         </div>
-        <div className="max-w-xs space-y-1.5 pt-5">
-          <p className="text-sm font-medium">Name</p>
-          <Label htmlFor="agent-display-name" className="sr-only">
-            Agent name
-          </Label>
+        <SettingsRow
+          label="Name"
+          htmlFor="agent-display-name"
+          description="Replaces the default agent name in chat."
+        >
           <Input
             id="agent-display-name"
             value={name}
             placeholder={defaultName}
             onChange={(event) => setName(event.target.value)}
             maxLength={40}
+            className="w-44 min-[500px]:w-60"
           />
-        </div>
+        </SettingsRow>
       </div>
     </SettingsCard>
   );

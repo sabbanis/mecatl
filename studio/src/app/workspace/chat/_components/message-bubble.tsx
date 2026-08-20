@@ -9,8 +9,8 @@ import {
   FileSpreadsheet,
   FileText,
   GitBranch,
+  Image as ImageIcon,
   MessageSquareText,
-  Paperclip,
   User,
 } from "lucide-react";
 import { useRef, useState } from "react";
@@ -24,68 +24,98 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import type { AgentMessage, Artifact, Attachment } from "@/features/agent";
+import { fileKindMeta } from "@/lib/file-meta";
 import { formatMessageTime } from "@/lib/formatters";
 import { useAgentAvatar, useUserAvatar } from "@/lib/profile-preferences";
+import type { ThreadSummary } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
 import { mdComponents } from "./markdown-components";
 import { ToolCallList } from "./tool-call-list";
 
-function UserAvatar() {
+function UserAvatar({ small = false }: { small?: boolean }) {
   const { avatarUrl } = useUserAvatar();
+  // The reply indicator overlaps small avatars, so that size gets a
+  // background ring to separate the stack.
+  const frame = small
+    ? "size-5 shrink-0 ring-2 ring-background"
+    : "size-7 lg:size-9 shrink-0";
   if (avatarUrl) {
     return (
       // biome-ignore lint/performance/noImgElement: a locally stored data URL, not a remote image
       <img
         src={avatarUrl}
         alt="You"
-        className="size-7 lg:size-9 shrink-0 rounded-full object-cover"
+        className={cn(frame, "rounded-full object-cover")}
       />
     );
   }
   return (
-    <div className="flex size-7 lg:size-9 shrink-0 items-center justify-center rounded-full bg-muted text-muted-foreground">
-      <User className="size-4 lg:size-5" />
+    <div
+      className={cn(
+        frame,
+        "flex items-center justify-center rounded-full bg-muted text-muted-foreground",
+      )}
+    >
+      <User className={small ? "size-3" : "size-4 lg:size-5"} />
     </div>
   );
 }
 
-function BotAvatar() {
+function BotAvatar({ small = false }: { small?: boolean }) {
   const { avatarUrl } = useAgentAvatar();
+  const frame = small
+    ? "size-5 shrink-0 ring-2 ring-background"
+    : "size-7 lg:size-9 shrink-0";
   if (avatarUrl) {
     return (
       // biome-ignore lint/performance/noImgElement: a locally stored data URL, not a remote image
       <img
         src={avatarUrl}
         alt=""
-        className="size-7 lg:size-9 shrink-0 rounded-full object-cover"
+        className={cn(frame, "rounded-full object-cover")}
       />
     );
   }
   return (
-    <div className="flex size-7 lg:size-9 shrink-0 items-center justify-center rounded-full bg-brand text-white">
-      <Bot className="size-4 lg:size-5" />
+    <div
+      className={cn(
+        frame,
+        "flex items-center justify-center rounded-full bg-brand text-white",
+      )}
+    >
+      <Bot className={small ? "size-3" : "size-4 lg:size-5"} />
     </div>
   );
 }
 
 /**
  * Slack-style reply indicator shown under a message that has a thread: the
- * unique repliers, the reply count, and when the last reply landed. Clicking it
- * opens the thread side panel.
+ * repliers' overlapping avatars, the reply count, and when the last reply
+ * landed. Clicking it opens the thread side panel. Fed by inline `replies`
+ * when a message genuinely carries them, or by the browser-local thread-map
+ * `summary` for a daemon-backed side thread.
  */
 function ReplyIndicator({
   replies,
+  summary,
   onClick,
 }: {
-  replies: AgentMessage[];
+  replies?: AgentMessage[];
+  summary?: ThreadSummary;
   onClick: () => void;
 }) {
-  const last = replies[replies.length - 1];
-  const authors: string[] = [];
-  for (const r of replies) {
-    const name = r.role === "user" ? "You" : (r.agentName ?? "Mecatl");
-    if (!authors.includes(name)) authors.push(name);
-  }
+  const inline = replies && replies.length > 0 ? replies : null;
+  const count = inline ? inline.length : (summary?.replyCount ?? 0);
+  if (count === 0) return null;
+  const lastAt = inline
+    ? inline[inline.length - 1].timestamp
+    : (summary?.lastReplyAt ?? 0);
+  // A side thread always opens with the user's reply; the agent has joined
+  // once anything came back (count > 1). Inline replies name their authors.
+  const hasUser = inline ? inline.some((r) => r.role === "user") : true;
+  const hasBot = inline
+    ? inline.some((r) => r.role === "assistant")
+    : count > 1;
 
   return (
     <button
@@ -94,29 +124,20 @@ function ReplyIndicator({
       className="group/reply mt-1.5 -ml-1 inline-flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-brand/5"
     >
       <div className="flex -space-x-1.5">
-        {authors.slice(0, 3).map((name) => (
-          <span
-            key={name}
-            className={cn(
-              "flex size-5 items-center justify-center rounded-full text-[10px] font-semibold ring-2 ring-background",
-              name === "You"
-                ? "bg-zinc-300 text-zinc-700 dark:bg-zinc-600 dark:text-zinc-100"
-                : "bg-brand text-white",
-            )}
-          >
-            {name === "You" ? "Y" : <Bot className="size-3" />}
-          </span>
-        ))}
+        {hasUser && <UserAvatar small />}
+        {hasBot && <BotAvatar small />}
       </div>
       <span className="text-xs font-semibold text-brand group-hover/reply:underline">
-        {replies.length} {replies.length === 1 ? "reply" : "replies"}
+        {count} {count === 1 ? "reply" : "replies"}
       </span>
-      <span
-        suppressHydrationWarning
-        className="hidden text-xs text-muted-foreground sm:inline"
-      >
-        Last reply {formatMessageTime(last.timestamp)}
-      </span>
+      {lastAt > 0 && (
+        <span
+          suppressHydrationWarning
+          className="hidden text-xs tabular-nums text-muted-foreground sm:inline"
+        >
+          Last reply {formatMessageTime(lastAt)}
+        </span>
+      )}
     </button>
   );
 }
@@ -192,7 +213,72 @@ const ARTIFACT_META: Record<
     color: "text-violet-600",
     bg: "bg-violet-50 dark:bg-violet-950/40",
   },
+  image: {
+    icon: ImageIcon,
+    label: "Image",
+    color: "text-amber-600",
+    bg: "bg-amber-50 dark:bg-amber-950/40",
+  },
+  pdf: {
+    icon: FileText,
+    label: "PDF",
+    color: "text-red-600",
+    bg: "bg-red-50 dark:bg-red-950/40",
+  },
+  markdown: {
+    icon: FileText,
+    label: "Markdown",
+    color: "text-sky-600",
+    bg: "bg-sky-50 dark:bg-sky-950/40",
+  },
 };
+
+/**
+ * One attachment chip on a message: the file-kind glyph (image/PDF/markdown/
+ * code, paperclip fallback) and, for an image with a displayable source, a
+ * small thumbnail of the image itself — mirroring the composer's
+ * AttachmentPill so a sent file keeps the look it had while attached.
+ */
+function AttachmentChip({
+  attachment,
+  onOpen,
+}: {
+  attachment: Attachment;
+  onOpen?: () => void;
+}) {
+  const kind = fileKindMeta(attachment.name, attachment.type);
+  const KindIcon = kind.icon;
+  const thumbSrc =
+    kind.label === "Image"
+      ? (attachment.url ??
+        (attachment.content?.startsWith("data:")
+          ? attachment.content
+          : undefined))
+      : undefined;
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/5 py-1 pr-3 text-xs text-blue-600 dark:text-blue-400 transition-colors hover:border-blue-500/60 hover:bg-blue-500/10 cursor-pointer",
+        thumbSrc ? "pl-1" : "pl-3",
+      )}
+    >
+      {thumbSrc ? (
+        // biome-ignore lint/performance/noImgElement: a data/object URL thumbnail, not a remote image
+        <img
+          src={thumbSrc}
+          alt=""
+          className="size-5 shrink-0 rounded-full object-cover"
+        />
+      ) : (
+        <KindIcon aria-label={kind.label} className="size-3" />
+      )}
+      {attachment.name}
+    </button>
+  );
+}
 
 function ArtifactCard({
   artifact,
@@ -235,6 +321,7 @@ export function MessageBubble({
   onOpenArtifact,
   onOpenAttachment,
   onStartThread,
+  threadSummary,
   botName = "Mecatl",
   showActivity = true,
 }: {
@@ -242,6 +329,8 @@ export function MessageBubble({
   onOpenArtifact?: (artifact: Artifact) => void;
   onOpenAttachment?: (attachment: Attachment) => void;
   onStartThread?: (message: AgentMessage) => void;
+  /** Daemon-backed side thread branched off this message (thread map). */
+  threadSummary?: ThreadSummary;
   botName?: string;
   showActivity?: boolean;
 }) {
@@ -315,15 +404,11 @@ export function MessageBubble({
         {message.attachments && message.attachments.length > 0 && (
           <div className="flex flex-wrap gap-1.5 my-1.5">
             {message.attachments.map((att) => (
-              <button
+              <AttachmentChip
                 key={att.name}
-                type="button"
-                onClick={() => onOpenAttachment?.(att)}
-                className="inline-flex items-center gap-1.5 rounded-full border border-blue-500/30 bg-blue-500/5 px-3 py-1 text-xs text-blue-600 dark:text-blue-400 transition-colors hover:border-blue-500/60 hover:bg-blue-500/10 cursor-pointer"
-              >
-                <Paperclip className="size-3" />
-                {att.name}
-              </button>
+                attachment={att}
+                onOpen={() => onOpenAttachment?.(att)}
+              />
             ))}
           </div>
         )}
@@ -396,12 +481,14 @@ export function MessageBubble({
             }
           />
         )}
-        {message.replies && message.replies.length > 0 && onStartThread && (
-          <ReplyIndicator
-            replies={message.replies}
-            onClick={() => onStartThread(message)}
-          />
-        )}
+        {((message.replies && message.replies.length > 0) || threadSummary) &&
+          onStartThread && (
+            <ReplyIndicator
+              replies={message.replies}
+              summary={threadSummary}
+              onClick={() => onStartThread(message)}
+            />
+          )}
       </div>
       <div className="shrink-0 pt-0.5">
         <MessageActions

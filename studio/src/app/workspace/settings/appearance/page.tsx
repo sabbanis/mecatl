@@ -19,7 +19,7 @@ import {
   useUiScale,
 } from "@/lib/profile-preferences";
 import { OptionField } from "../_components/option-field";
-import { SettingsCard } from "../_components/settings-card";
+import { SettingsCard, SettingsRow } from "../_components/settings-card";
 
 const THEME_OPTIONS = [
   { value: "light", label: "Light", icon: Sun },
@@ -44,24 +44,28 @@ export default function AppearanceSettingsPage() {
 
   return (
     <SettingsCard title="Appearance">
-      <div className="space-y-5">
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-medium">Theme</p>
+      <div className="divide-y divide-border/60">
+        <SettingsRow
+          label="Theme"
+          description="Light, dark, or follow the system."
+        >
           <OptionField
             label="Theme"
             value={mounted ? (activeTheme ?? "system") : "system"}
             options={THEME_OPTIONS}
             onChange={setTheme}
           />
-        </div>
+        </SettingsRow>
 
-        <div className="flex items-center justify-between gap-3">
-          <p className="text-sm font-medium">Interface scale</p>
+        <SettingsRow
+          label="Interface scale"
+          description="Sizes text and controls together."
+        >
           <div className="flex items-center gap-1">
             <Button
               variant="outline"
               size="icon"
-              className="size-8 rounded-lg"
+              className="size-8 rounded-full"
               aria-label="Decrease interface scale"
               disabled={scale <= UI_SCALE_MIN}
               onClick={() => setScale(scale - 0.05)}
@@ -74,7 +78,7 @@ export default function AppearanceSettingsPage() {
             <Button
               variant="outline"
               size="icon"
-              className="size-8 rounded-lg"
+              className="size-8 rounded-full"
               aria-label="Increase interface scale"
               disabled={scale >= UI_SCALE_MAX}
               onClick={() => setScale(scale + 0.05)}
@@ -82,18 +86,21 @@ export default function AppearanceSettingsPage() {
               <Plus className="size-4" />
             </Button>
           </div>
-        </div>
+        </SettingsRow>
 
         {/* Meaningless on mobile — the session list is full-screen there. */}
-        <div className="flex items-center justify-between gap-3 max-[499px]:hidden">
-          <p className="text-sm font-medium">Session list position</p>
+        <SettingsRow
+          label="Session list position"
+          description="Which side of the window the session list docks on."
+          className="max-[499px]:hidden"
+        >
           <OptionField
             label="Session list position"
             value={side}
             options={SIDE_OPTIONS}
             onChange={(next) => setSide(next as "left" | "right")}
           />
-        </div>
+        </SettingsRow>
       </div>
     </SettingsCard>
   );

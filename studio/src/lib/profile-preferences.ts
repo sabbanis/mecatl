@@ -148,3 +148,56 @@ export function useSessionListSide() {
 
   return { side, setSide };
 }
+
+const MOCK_FEATURES_KEY = "mecatl-studio.mock-features";
+
+/**
+ * Labs preference: show the clearly-labeled mock feature-tour content (a
+ * synthetic chat demonstrating file cards, previews, and threads). Browser-
+ * local demo content only — nothing mock ever reaches the daemon. Default
+ * OFF; the key stores "1" only while enabled.
+ */
+export function useMockFeatures() {
+  const [enabled, setEnabledState] = useState(false);
+  useEffect(() => {
+    if (readLocalStorage(MOCK_FEATURES_KEY) === "1") {
+      setEnabledState(true);
+    }
+  }, []);
+
+  const setEnabled = useCallback((next: boolean) => {
+    setEnabledState(next);
+    writeLocalStorage(MOCK_FEATURES_KEY, next ? "1" : null);
+  }, []);
+
+  return { enabled, setEnabled };
+}
+
+export type EnterSendBehavior = "queue" | "steer";
+
+const ENTER_SEND_BEHAVIOR_KEY = "mecatl-studio.enter-send-behavior";
+
+/**
+ * What Enter does while the agent is replying: queue the message for the next
+ * run (the factory default) or steer it into the in-flight run at the next
+ * step. Shift+Enter does the opposite. Hydrates on mount, so the first frame
+ * always reads "queue" — the composer tolerates that.
+ */
+export function useEnterSendBehavior() {
+  const [behavior, setBehaviorState] = useState<EnterSendBehavior>("queue");
+  useEffect(() => {
+    if (readLocalStorage(ENTER_SEND_BEHAVIOR_KEY) === "steer") {
+      setBehaviorState("steer");
+    }
+  }, []);
+
+  const setBehavior = useCallback((next: EnterSendBehavior) => {
+    setBehaviorState(next);
+    writeLocalStorage(
+      ENTER_SEND_BEHAVIOR_KEY,
+      next === "steer" ? "steer" : null,
+    );
+  }, []);
+
+  return { behavior, setBehavior };
+}

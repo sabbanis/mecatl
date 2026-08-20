@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2 } from "lucide-react";
+import { Loader2, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 
@@ -22,9 +22,11 @@ export function RuntimeStatusLine({
         <Button
           size="sm"
           variant="ghost"
+          className="rounded-full text-muted-foreground hover:text-foreground"
           onClick={() => void runtime.refresh()}
           disabled={!runtime.live || runtime.isLoading}
         >
+          <RefreshCw className="size-3.5" />
           Refresh
         </Button>
       </div>

@@ -16,6 +16,12 @@ import {
   useAgentRoster,
   useAgentSessions,
 } from "@/features/agent";
+import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
+import {
+  isMockTourSession,
+  MOCK_TOUR_MESSAGES,
+  MOCK_TOUR_SESSION,
+} from "@/features/agent/mock-tour";
 import { useConfirm } from "@/hooks/use-confirm";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
@@ -24,9 +30,12 @@ import { usePrompt } from "@/hooks/use-prompt";
 import {
   type SessionListSide,
   useAgentDisplayName,
+  useMockFeatures,
   useSessionListSide,
 } from "@/lib/profile-preferences";
+import type { SessionPermissionMode } from "@/lib/protocol";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
+import { useThreadSessionIds } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ResizeHandle } from "../../_components/resize-handle";
@@ -100,7 +109,7 @@ function SidebarContent({
 }) {
   return (
     <>
-      <div className="flex h-16 shrink-0 items-center gap-0.5 border-b border-border px-3 max-[499px]:h-14 lg:px-4">
+      <div className="flex h-[60px] shrink-0 items-center gap-0.5 border-b border-border px-3 max-[499px]:h-14 lg:px-4">
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium">
           Session List
         </h2>
@@ -172,6 +181,8 @@ function DraftView({
   showSidebarButton,
   sidebarSide,
   onShowSidebar,
+  mode,
+  onModeChange,
 }: {
   onSend: (content: string, files?: File[]) => void;
   seed: string | null;
@@ -181,12 +192,15 @@ function DraftView({
   showSidebarButton: boolean;
   sidebarSide: SessionListSide;
   onShowSidebar: () => void;
+  /** Pending permission mode, applied when the first send mints the session. */
+  mode: SessionPermissionMode;
+  onModeChange: (mode: SessionPermissionMode) => void;
 }) {
   return (
     <div className="flex h-full flex-col">
       {/* Same header bar as an open chat, so a draft doesn't lose the title
           row and its controls. */}
-      <div className="flex h-16 shrink-0 items-center gap-2 border-b border-border px-3 max-[499px]:h-14 lg:gap-3 lg:px-6">
+      <div className="flex h-[60px] shrink-0 items-center gap-2 border-b border-border px-3 max-[499px]:h-14 lg:gap-3 lg:px-6">
         <h2 className="min-w-0 flex-1 truncate text-sm font-semibold select-none">
           New chat
         </h2>
@@ -238,6 +252,8 @@ function DraftView({
               onInitialTextConsumed={onSeedConsumed}
               placeholder="Start a new chat..."
               mobileDocked
+              mode={mode}
+              onModeChange={onModeChange}
             />
           </div>
         </div>
@@ -266,6 +282,10 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const router = useRouter();
   const { name: agentName } = useAgentDisplayName();
   const { side: sidebarSide } = useSessionListSide();
+  // Labs preference: list the mock feature tour. The mock id is treated as
+  // mock UNCONDITIONALLY below (never handed to the daemon) — the toggle
+  // only controls whether the row is offered.
+  const { enabled: mockFeatures } = useMockFeatures();
   const isMobile = useIsMobile();
   const isCompact = useIsCompact();
   const { confirm, ConfirmDialog } = useConfirm();
@@ -362,10 +382,24 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     [refreshSessions],
   );
 
+  // The Labs mock chat never talks to the daemon: its transcript is a local
+  // constant and its id must never reach the chat hook.
+  const isMockSelected = isMockTourSession(selectedId);
+
   // The draft keeps a null hook id even after its session is minted and the
   // URL updates — the hook already streams against the minted id internally.
   const hookSessionId =
-    selectedId && selectedId !== draftMintedIdRef.current ? selectedId : null;
+    selectedId && !isMockSelected && selectedId !== draftMintedIdRef.current
+      ? selectedId
+      : null;
+
+  // The composer's permission mode. For an open chat this reads/writes the
+  // live session (POST /mode); for a draft it is pending local state, read
+  // via modeRef when the first send mints the daemon session below.
+  const { mode, modeRef, changeMode } = useSessionMode(
+    isMockSelected ? null : selectedId || null,
+  );
+  const getCreateMode = useCallback(() => modeRef.current, [modeRef]);
 
   const {
     messages,
@@ -385,7 +419,19 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     deleteQueued,
     takeQueued,
     steerQueued,
-  } = useAgentChat(hookSessionId, { onSessionCreated: handleSessionCreated });
+    pendingSteers,
+    steerMessage,
+    cancelPendingSteers,
+    cancelChat,
+  } = useAgentChat(hookSessionId, {
+    onSessionCreated: handleSessionCreated,
+    createMode: getCreateMode,
+  });
+
+  /** Esc with nothing else open interrupts the in-flight run (close.esc). */
+  const handleCancelRun = useCallback(() => {
+    void cancelChat();
+  }, [cancelChat]);
 
   useNavReopenSidebar(setSidebarOpen);
 
@@ -393,17 +439,36 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const [draftSeed, setDraftSeed] = useState<string | null>(null);
   const clearDraftSeed = useCallback(() => setDraftSeed(null), []);
 
+  // Sessions minted to back message threads. Filtered HERE, at the
+  // presentation seam, deliberately not inside use-agent-sessions: rule 9's
+  // test pins that hook to the daemon store verbatim (rows obey the store),
+  // and a thread session IS a real store row — it is only this list, the
+  // keyboard order derived from it, and search that hide it. Its sole entry
+  // point is the reply indicator on its parent message; deep-linking to
+  // /workspace/chat/<threadId> still works (selectedSession reads the
+  // unfiltered `sessions`), which stays the escape hatch for parked
+  // approvals. The registry — never the "Thread: " title — decides, so a
+  // user's own chat named "Thread: …" is never hidden.
+  const threadSessionIds = useThreadSessionIds();
   const orderedSessions = useMemo(
-    () => [...sessions].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
-    [sessions],
+    () =>
+      sessions
+        .filter((s) => !threadSessionIds.has(s.id))
+        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
+    [sessions, threadSessionIds],
   );
-  const groups = useMemo(
-    () => groupSessionsByRecency(orderedSessions),
-    [orderedSessions],
-  );
+  const groups = useMemo(() => {
+    const recency = groupSessionsByRecency(orderedSessions);
+    // The Labs mock tour pins atop the list under its own clearly-labeled
+    // group — local demo content, never a daemon row.
+    return mockFeatures
+      ? [{ label: "Mock", sessions: [MOCK_TOUR_SESSION] }, ...recency]
+      : recency;
+  }, [orderedSessions, mockFeatures]);
 
   const selectedSession = useMemo<AgentSession | undefined>(() => {
     if (!selectedId) return undefined;
+    if (isMockTourSession(selectedId)) return MOCK_TOUR_SESSION;
     const found = sessions.find((s) => s.id === selectedId);
     if (found) return found;
     // A just-minted draft's row may not have landed in the polled list yet;
@@ -535,40 +600,71 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
 
   const chatView = (open: boolean, onToggle: () => void) =>
     selectedSession ? (
-      <ChatView
-        session={selectedSession}
-        messages={messages}
-        isStreaming={isStreaming}
-        live={harnessLive}
-        usage={usage}
-        error={turnError}
-        onRetry={retryLast}
-        onSend={sendMessage}
-        queuedMessages={queuedMessages}
-        onQueueMessage={queueMessage}
-        onSteerQueued={steerQueued}
-        onDeleteQueued={deleteQueued}
-        onTakeQueued={takeQueued}
-        botName={agentName}
-        sidebarOpen={open}
-        sidebarSide={sidebarSide}
-        onToggleSidebar={onToggle}
-        pendingApproval={pendingApproval}
-        onRespondApproval={respondToApproval}
-        pendingClarification={pendingClarification}
-        onRespondClarification={respondToClarification}
-        onRename={
-          selectedSession.canRename === true
-            ? () => sessionActions.onRename(selectedSession.id)
-            : undefined
-        }
-        onDelete={
-          selectedSession.canDelete === true
-            ? () => sessionActions.onDelete(selectedSession.id)
-            : undefined
-        }
-        onSidePanelOpenChange={isMobile ? undefined : handleSidePanelOpenChange}
-      />
+      isMockSelected ? (
+        // The mock feature tour: a canned local transcript, a disabled
+        // composer, and zero daemon traffic (the hook id above is null).
+        <ChatView
+          session={selectedSession}
+          messages={MOCK_TOUR_MESSAGES}
+          isStreaming={false}
+          onSend={() => {}}
+          readOnlyPlaceholder="Mock chat — read-only"
+          botName={agentName}
+          sidebarOpen={open}
+          sidebarSide={sidebarSide}
+          onToggleSidebar={onToggle}
+          pendingApproval={null}
+          onRespondApproval={() => {}}
+          pendingClarification={null}
+          onRespondClarification={() => {}}
+          onSidePanelOpenChange={
+            isMobile ? undefined : handleSidePanelOpenChange
+          }
+        />
+      ) : (
+        <ChatView
+          session={selectedSession}
+          messages={messages}
+          isStreaming={isStreaming}
+          live={harnessLive}
+          usage={usage}
+          error={turnError}
+          onRetry={retryLast}
+          onSend={sendMessage}
+          queuedMessages={queuedMessages}
+          onQueueMessage={queueMessage}
+          onSteerQueued={steerQueued}
+          onDeleteQueued={deleteQueued}
+          onTakeQueued={takeQueued}
+          pendingSteers={pendingSteers}
+          onSteerMessage={steerMessage}
+          onCancelPendingSteers={cancelPendingSteers}
+          onCancelRun={handleCancelRun}
+          botName={agentName}
+          sidebarOpen={open}
+          sidebarSide={sidebarSide}
+          onToggleSidebar={onToggle}
+          pendingApproval={pendingApproval}
+          onRespondApproval={respondToApproval}
+          pendingClarification={pendingClarification}
+          onRespondClarification={respondToClarification}
+          onRename={
+            selectedSession.canRename === true
+              ? () => sessionActions.onRename(selectedSession.id)
+              : undefined
+          }
+          onDelete={
+            selectedSession.canDelete === true
+              ? () => sessionActions.onDelete(selectedSession.id)
+              : undefined
+          }
+          onSidePanelOpenChange={
+            isMobile ? undefined : handleSidePanelOpenChange
+          }
+          mode={mode}
+          onModeChange={changeMode}
+        />
+      )
     ) : null;
 
   if (isMobile) {
@@ -591,6 +687,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             showSidebarButton
             sidebarSide={sidebarSide}
             onShowSidebar={() => setSidebarOpen(true)}
+            mode={mode}
+            onModeChange={changeMode}
           />
         )}
       </div>
@@ -613,6 +711,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             showSidebarButton={!sidebarOpen}
             sidebarSide={sidebarSide}
             onShowSidebar={() => setSidebarOpen(true)}
+            mode={mode}
+            onModeChange={changeMode}
           />
         )}
       </div>

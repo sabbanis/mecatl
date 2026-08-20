@@ -148,7 +148,10 @@ export function SidePanel({
         />
       )}
 
-      <div className="flex h-[60px] lg:h-[65px] items-center gap-3 border-b border-border px-4">
+      {/* h-[60px] matches the chat and session-list headers on the same top
+          seam (h-14 under the 500px mobile breakpoint), so the header borders
+          align pixel-perfect across chat/list/panel. */}
+      <div className="flex h-[60px] shrink-0 items-center gap-3 border-b border-border px-4 max-[499px]:h-14">
         <Icon className="size-4 text-muted-foreground shrink-0" />
         <h3 className="text-sm font-semibold truncate flex-1">{title}</h3>
         {headerExtra}

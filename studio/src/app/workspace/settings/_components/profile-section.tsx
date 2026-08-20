@@ -14,7 +14,10 @@ export function ProfileSection() {
   const { avatarUrl, setAvatarUrl } = useUserAvatar();
 
   return (
-    <SettingsCard title="Profile">
+    <SettingsCard
+      title="Profile"
+      description="How you appear in chat, stored in this browser only."
+    >
       <AvatarPicker
         avatarUrl={avatarUrl}
         onChange={setAvatarUrl}

@@ -2,7 +2,7 @@
 
 import { Badge } from "@/components/ui/badge";
 import type { ScheduleRow } from "@/lib/protocol";
-import { permissionModeLabel } from "./schedule-form";
+import { cn } from "@/lib/utils";
 
 export interface ScheduleStatusMeta {
   label: string;
@@ -26,6 +26,39 @@ export function scheduleStatusOf(row: ScheduleRow): ScheduleStatusMeta {
     : { label: "Paused", variant: "secondary", live: false };
 }
 
+function dotClass(variant: ScheduleStatusMeta["variant"]): string {
+  switch (variant) {
+    case "success":
+      return "bg-success";
+    case "warning":
+      return "bg-warning";
+    default:
+      return "bg-muted-foreground/50";
+  }
+}
+
+/**
+ * Quiet status dot for the card grid: color carries the state, with the
+ * label kept for screen readers and hover.
+ */
+export function ScheduleStatusDot({ row }: { row: ScheduleRow }) {
+  const status = scheduleStatusOf(row);
+  return (
+    <span title={status.label} className="inline-flex shrink-0 items-center">
+      <span
+        aria-hidden="true"
+        className={cn(
+          "size-1.5 rounded-full",
+          dotClass(status.variant),
+          status.live && "animate-pulse",
+        )}
+      />
+      <span className="sr-only">{status.label}</span>
+    </span>
+  );
+}
+
+/** Status as a badge, for the detail header's pill row. */
 export function ScheduleStatusBadge({ row }: { row: ScheduleRow }) {
   const status = scheduleStatusOf(row);
   return (
@@ -38,25 +71,5 @@ export function ScheduleStatusBadge({ row }: { row: ScheduleRow }) {
       )}
       {status.label}
     </Badge>
-  );
-}
-
-/**
- * The spec facts that change what a fire is allowed to do: permission mode,
- * the write opt-in, the workspace it runs in, and the owner it is attributed
- * to. Empty facts render nothing — absence is information here.
- */
-export function ScheduleMetaBadges({ row }: { row: ScheduleRow }) {
-  return (
-    <>
-      <Badge variant="outline">{permissionModeLabel(row.mode)}</Badge>
-      {row.mutating && <Badge variant="warning">mutating</Badge>}
-      {row.workspace && (
-        <Badge variant="muted" className="max-w-[16rem]">
-          <span className="truncate">{row.workspace}</span>
-        </Badge>
-      )}
-      {row.owner && <Badge variant="muted">{row.owner}</Badge>}
-    </>
   );
 }

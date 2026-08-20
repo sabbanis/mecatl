@@ -1,8 +1,13 @@
 "use client";
 
-import { Loader2, Play } from "lucide-react";
+import { Ellipsis, Loader2 } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import {
+  directed,
+  SortableHead,
+  useTableSort,
+} from "@/components/sortable-head";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -16,6 +21,12 @@ import {
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
+import {
   Table,
   TableBody,
   TableCell,
@@ -25,16 +36,17 @@ import {
 } from "@/components/ui/table";
 import { useAgentCron } from "@/features/agent";
 import { TranscriptDialog } from "@/features/agent/components/transcript-dialog";
-import { describeCron, formatRelativeTime } from "@/lib/formatters";
+import {
+  describeCron,
+  formatRelativeTime,
+  formatUntilTime,
+} from "@/lib/formatters";
 import { listScheduleFires } from "@/lib/harness/client";
 import type { ScheduleFireRow, ScheduleRow } from "@/lib/protocol";
 import { pageTitleClass } from "@/lib/typography";
-import { cn } from "@/lib/utils";
 import { EditScheduleDialog } from "../_components/edit-schedule-dialog";
-import {
-  ScheduleMetaBadges,
-  ScheduleStatusBadge,
-} from "../_components/schedule-badges";
+import { ScheduleStatusBadge } from "../_components/schedule-badges";
+import { permissionModeLabel } from "../_components/schedule-form";
 
 /**
  * The route segment is the schedule name. `useParams` hands back the encoded
@@ -66,14 +78,25 @@ function formatDurationMs(ms: number): string {
 /**
  * A terminal fire record carries no end timestamp, so the best available end
  * is the last progress heartbeat, then the deadline; an in-flight fire is
- * still accruing and reads against now.
+ * still accruing and reads against now. Null = never started.
  */
-function fireDuration(fire: ScheduleFireRow): string {
-  if (fire.startedAt === null) return "—";
+function fireDurationMs(fire: ScheduleFireRow): number | null {
+  if (fire.startedAt === null) return null;
   const end = fire.inFlight
     ? Date.now()
     : (fire.progressAt ?? fire.deadline ?? fire.startedAt);
-  return formatDurationMs(end - fire.startedAt);
+  return end - fire.startedAt;
+}
+
+function fireDuration(fire: ScheduleFireRow): string {
+  const ms = fireDurationMs(fire);
+  return ms === null ? "—" : formatDurationMs(ms);
+}
+
+/** The text the Outcome column effectively shows, for sorting. */
+function fireOutcomeKey(fire: ScheduleFireRow): string {
+  if (fire.inFlight) return fire.startedAt === null ? "claimed" : "in flight";
+  return fire.err ? `error: ${fire.err}` : (fire.stop ?? "");
 }
 
 export default function ScheduleDetailPage() {
@@ -89,6 +112,30 @@ export default function ScheduleDetailPage() {
     sessionId: string;
     label: string;
   } | null>(null);
+
+  const fireSort = useTableSort<"fired" | "duration" | "outcome">(
+    "fired",
+    "desc",
+  );
+  const sortedFires = useMemo(() => {
+    if (!fires) return [];
+    const primary = (a: ScheduleFireRow, b: ScheduleFireRow) => {
+      switch (fireSort.key) {
+        case "duration":
+          return (fireDurationMs(a) ?? -1) - (fireDurationMs(b) ?? -1);
+        case "outcome":
+          return fireOutcomeKey(a).localeCompare(fireOutcomeKey(b));
+        default:
+          return (a.firedAt ?? 0) - (b.firedAt ?? 0);
+      }
+    };
+    // Newest-first is the direction-independent tiebreak.
+    return [...fires].sort(
+      (a, b) =>
+        directed(fireSort.dir, primary(a, b)) ||
+        (b.firedAt ?? 0) - (a.firedAt ?? 0),
+    );
+  }, [fires, fireSort.key, fireSort.dir]);
 
   const row = cron.rows.find(segmentMatches(params.scheduleId));
   const name = row?.name;
@@ -196,34 +243,67 @@ export default function ScheduleDetailPage() {
           Back
         </Button>
 
-        {/* Header: title + metadata pills, matching the agent detail page. */}
+        {/* Header: title + one compact badge row, matching the skill detail page.
+            All actions live in the ⋯ menu on the right. */}
         <div className="space-y-3">
-          <h1
-            className={pageTitleClass(
-              "text-[44px] leading-[1.05] max-[499px]:text-3xl",
-            )}
-          >
-            {row.name}
-          </h1>
+          <div className="flex items-start justify-between gap-3">
+            <h1
+              className={pageTitleClass(
+                "text-[44px] leading-[1.05] max-[499px]:text-3xl",
+              )}
+            >
+              {row.name}
+            </h1>
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="outline"
+                  size="icon"
+                  className="mt-2 size-9 shrink-0 rounded-full"
+                  aria-label={`Actions for ${row.name}`}
+                >
+                  <Ellipsis className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem
+                  disabled={firing}
+                  onClick={() => void fireNow()}
+                >
+                  Run now
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  onClick={() =>
+                    void act(() =>
+                      row.enabled
+                        ? cron.pauseJob(row.name)
+                        : cron.resumeJob(row.name),
+                    )
+                  }
+                >
+                  {row.enabled ? "Pause" : "Resume"}
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => setEditing(true)}>
+                  Edit
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() => setConfirmDelete(true)}
+                >
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
           <div className="flex flex-wrap items-center gap-2">
             <ScheduleStatusBadge row={row} />
-            <ScheduleMetaBadges row={row} />
-            <MetaPill suppressHydrationWarning>
-              {row.cron
-                ? describeCron(row.cron)
-                : row.oneShotAt !== null
-                  ? `once at ${formatInstant(row.oneShotAt)}`
-                  : "no trigger"}
-            </MetaPill>
-            <MetaPill suppressHydrationWarning>
-              {row.lastFireAt
-                ? `last fired ${formatRelativeTime(row.lastFireAt)} ago`
-                : "never fired"}
-            </MetaPill>
-            {row.nextFireAt !== null && row.enabled && (
-              <MetaPill suppressHydrationWarning>
-                next {formatInstant(row.nextFireAt)}
-              </MetaPill>
+            <Badge variant="outline">{permissionModeLabel(row.mode)}</Badge>
+            {row.mutating && <Badge variant="warning">mutating</Badge>}
+            {firing && (
+              <span className="inline-flex items-center gap-1.5 text-xs text-muted-foreground">
+                <Loader2 className="size-3.5 animate-spin" />
+                Running…
+              </span>
             )}
           </div>
         </div>
@@ -234,104 +314,63 @@ export default function ScheduleDetailPage() {
           </p>
         )}
 
-        {/* Single-column stack — content spans the full width in reading order. */}
-        <div className="max-w-4xl space-y-6">
-          <section className="space-y-2">
-            <h2 className="text-sm font-semibold">Prompt</h2>
-            <p className="whitespace-pre-wrap text-sm leading-relaxed text-muted-foreground">
-              {row.prompt}
-            </p>
-          </section>
+        <div className="max-w-4xl space-y-8">
+          {/* The prompt is the schedule's instruction — it leads, unlabelled. */}
+          <p className="whitespace-pre-wrap rounded-xl border bg-card p-5 text-sm leading-relaxed">
+            {row.prompt}
+          </p>
 
-          <section className="space-y-1.5">
-            <h2 className="text-sm font-semibold">Trigger</h2>
-            {row.cron ? (
-              <div className="space-y-1 text-sm">
-                <p>
-                  {describeCron(row.cron)}{" "}
-                  <span className="font-mono text-xs text-muted-foreground">
-                    ({row.cron})
+          <div className="grid gap-6 sm:grid-cols-2">
+            <FactGroup label="Details">
+              <FactRow label="Mode">{permissionModeLabel(row.mode)}</FactRow>
+              <FactRow label="Write access">
+                {row.mutating ? "Writes allowed" : "Read-only"}
+              </FactRow>
+              {row.workspace && (
+                <FactRow label="Workspace">
+                  <span className="break-all font-mono text-xs">
+                    {row.workspace}
                   </span>
-                </p>
-                <p className="text-xs text-muted-foreground">
-                  {row.timezone
-                    ? `Timezone ${row.timezone}`
-                    : "Daemon-local time"}
-                  {row.maxFires > 0 && ` · at most ${row.maxFires} fires`}
-                  {` · fired ${row.fireCount} time${row.fireCount === 1 ? "" : "s"}`}
-                </p>
-              </div>
-            ) : (
-              <div className="space-y-1 text-sm">
-                <p suppressHydrationWarning>
-                  Once at {formatInstant(row.oneShotAt)}
-                </p>
-                <p className="text-xs text-muted-foreground">
+                </FactRow>
+              )}
+              {row.owner && <FactRow label="Owner">{row.owner}</FactRow>}
+            </FactGroup>
+
+            <FactGroup label="Frequency">
+              <FactRow label="Repeat" suppressHydrationWarning>
+                {row.cron
+                  ? describeCron(row.cron)
+                  : `Once at ${formatInstant(row.oneShotAt)}`}
+              </FactRow>
+              {row.cron && (
+                <FactRow label="Timezone">
+                  {row.timezone || "Daemon-local time"}
+                </FactRow>
+              )}
+              <FactRow label="Next run" suppressHydrationWarning>
+                <span title={formatInstant(row.nextFireAt)}>
+                  {row.enabled && row.nextFireAt !== null
+                    ? `in ${formatUntilTime(row.nextFireAt)}`
+                    : "—"}
+                </span>
+              </FactRow>
+              <FactRow label="Last run" suppressHydrationWarning>
+                {row.lastFireAt
+                  ? `${formatRelativeTime(row.lastFireAt)} ago`
+                  : "Never"}
+              </FactRow>
+              {!row.cron && (
+                <FactRow label="Retry">
                   {row.oneShotRetry
-                    ? `Retries on failure, up to ${row.oneShotMaxRetries || "unlimited"} times`
-                    : "No retry on failure"}
-                </p>
-              </div>
-            )}
-          </section>
+                    ? `Up to ${row.oneShotMaxRetries || "unlimited"} on failure`
+                    : "None"}
+                </FactRow>
+              )}
+            </FactGroup>
+          </div>
 
           <section className="space-y-2">
-            <h2 className="text-sm font-semibold">Actions</h2>
-            <div className="flex flex-wrap gap-2">
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-full"
-                disabled={firing}
-                onClick={() => void fireNow()}
-              >
-                {firing ? (
-                  <>
-                    <Loader2 className="size-3.5 animate-spin" />
-                    Running…
-                  </>
-                ) : (
-                  <>
-                    <Play className="size-3.5" />
-                    Fire now
-                  </>
-                )}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-full"
-                onClick={() =>
-                  void act(() =>
-                    row.enabled
-                      ? cron.pauseJob(row.name)
-                      : cron.resumeJob(row.name),
-                  )
-                }
-              >
-                {row.enabled ? "Pause" : "Resume"}
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-full"
-                onClick={() => setEditing(true)}
-              >
-                Edit
-              </Button>
-              <Button
-                variant="outline"
-                size="sm"
-                className="rounded-full border-destructive/30 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                onClick={() => setConfirmDelete(true)}
-              >
-                Delete
-              </Button>
-            </div>
-          </section>
-
-          <section className="space-y-2">
-            <h2 className="text-sm font-semibold">Fire log</h2>
+            <h2 className="text-sm font-semibold">Run log</h2>
             {firesError ? (
               <p className="whitespace-pre-wrap rounded-lg border border-destructive/30 bg-destructive/5 px-4 py-3 text-sm text-destructive">
                 {firesError}
@@ -339,25 +378,37 @@ export default function ScheduleDetailPage() {
             ) : fires === null ? (
               <div className="flex items-center gap-2 rounded-lg border border-dashed px-4 py-8 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" />
-                Reading the fire log…
+                Reading the run log…
               </div>
             ) : fires.length === 0 ? (
               <p className="rounded-lg border border-dashed py-8 text-center text-sm text-muted-foreground">
-                This schedule has not fired yet.
+                This schedule has not run yet.
               </p>
             ) : (
               <div className="overflow-hidden rounded-lg border">
                 <Table>
                   <TableHeader>
                     <TableRow className="hover:bg-transparent">
-                      <TableHead>Fired</TableHead>
-                      <TableHead>Duration</TableHead>
-                      <TableHead>Outcome</TableHead>
+                      <SortableHead
+                        label="Ran"
+                        sortKey="fired"
+                        sort={fireSort}
+                      />
+                      <SortableHead
+                        label="Duration"
+                        sortKey="duration"
+                        sort={fireSort}
+                      />
+                      <SortableHead
+                        label="Outcome"
+                        sortKey="outcome"
+                        sort={fireSort}
+                      />
                       <TableHead className="text-right">Session</TableHead>
                     </TableRow>
                   </TableHeader>
                   <TableBody>
-                    {fires.map((fire) => (
+                    {sortedFires.map((fire) => (
                       <TableRow key={fire.id}>
                         <TableCell
                           suppressHydrationWarning
@@ -431,6 +482,10 @@ export default function ScheduleDetailPage() {
           <EditScheduleDialog
             row={row}
             updateFromDraft={cron.updateFromDraft}
+            renameAndUpdateFromDraft={cron.renameAndUpdateFromDraft}
+            onRenamed={(name) =>
+              router.push(`/workspace/schedules/${encodeURIComponent(name)}`)
+            }
             onClose={() => setEditing(false)}
           />
         )}
@@ -473,25 +528,43 @@ export default function ScheduleDetailPage() {
   );
 }
 
-/** Rounded metadata pill for the header, matching the agent detail page. */
-function MetaPill({
+/** Eyebrow-labelled group of read-only facts; editing stays in the Edit dialog. */
+function FactGroup({
+  label,
   children,
-  className,
+}: {
+  label: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <section className="space-y-2">
+      <h2 className="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
+        {label}
+      </h2>
+      <div className="divide-y rounded-lg border bg-background">{children}</div>
+    </section>
+  );
+}
+
+/** One label-left/value-right row of a fact group. */
+function FactRow({
+  label,
+  children,
   suppressHydrationWarning,
 }: {
+  label: string;
   children: React.ReactNode;
-  className?: string;
   suppressHydrationWarning?: boolean;
 }) {
   return (
-    <span
-      suppressHydrationWarning={suppressHydrationWarning}
-      className={cn(
-        "inline-flex items-center rounded-full border border-border bg-background px-3 py-1 text-xs text-muted-foreground",
-        className,
-      )}
-    >
-      {children}
-    </span>
+    <div className="flex items-center justify-between gap-3 px-4 py-3">
+      <span className="shrink-0 text-sm">{label}</span>
+      <span
+        suppressHydrationWarning={suppressHydrationWarning}
+        className="min-w-0 text-right text-sm text-muted-foreground tabular-nums"
+      >
+        {children}
+      </span>
+    </div>
   );
 }

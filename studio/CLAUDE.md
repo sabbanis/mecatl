@@ -46,7 +46,11 @@ the usual reason it fails mysteriously.
 Each rule is backed by a test; break the rule and its test names you.
 
 1. **Daemon-only: an unreachable daemon renders offline, never demo data.**
-   There are no fixtures to fall back to — do not add any.
+   There are no fixtures to fall back to — do not add any. The one sanctioned
+   exception is the explicit, default-off, clearly-labeled Labs mock content
+   (Settings → Labs → "Show mock features", `src/features/agent/mock-tour.ts`)
+   — an opt-in demo the user turns on, never a fallback for an unreachable
+   daemon.
    (`tests/rendered-html.test.mjs`: unreachable daemon → friendly 503.)
 2. **The workspace is resolved, never hardcoded and never browser-supplied.**
    Managed: controller `/status`; external: `MECATL_WORKSPACE`; injected

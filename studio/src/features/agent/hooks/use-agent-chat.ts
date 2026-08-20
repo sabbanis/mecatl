@@ -3,13 +3,19 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
   cancelHarnessRun,
+  cancelHarnessSteer,
   createHarnessSession,
   fetchSessionTranscriptMessages,
   type PromptPart,
   respondToHarnessApproval,
+  steerHarnessRun,
   streamHarnessPrompt,
 } from "@/lib/harness/client";
-import type { SessionTranscript } from "@/lib/protocol";
+import {
+  encodeSessionPermissionMode,
+  type SessionPermissionMode,
+  type SessionTranscript,
+} from "@/lib/protocol";
 import { useRuntimeStatus } from "../runtime-status";
 import type {
   AgentMessage,
@@ -31,6 +37,29 @@ type ChatStatus =
 export interface QueuedMessage {
   id: string;
   text: string;
+}
+
+/** A steer the daemon accepted but has not yet drained into the run. */
+export interface PendingSteer {
+  id: string;
+  text: string;
+}
+
+/**
+ * Splits the ordered pending-steer list on the drain echo's watermark: every
+ * steer up to AND including the matching id was merged into the drained
+ * bundle and drops. An empty or unmatched id clears the whole list — the
+ * daemon's correlation FIFO is authoritative, so an echo we cannot correlate
+ * means the local list is stale. Never text-match.
+ */
+export function splitPendingSteersOnWatermark(
+  pending: readonly PendingSteer[],
+  messageId: string,
+): PendingSteer[] {
+  if (!messageId) return [];
+  const index = pending.findIndex((steer) => steer.id === messageId);
+  if (index === -1) return [];
+  return pending.slice(index + 1);
 }
 
 /** Formats every vision provider accepts; anything else gets re-encoded. */
@@ -179,7 +208,13 @@ function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
  */
 export function useAgentChat(
   sessionId: string | null,
-  options?: { onSessionCreated?: (sessionId: string) => void },
+  options?: {
+    onSessionCreated?: (sessionId: string) => void;
+    /** The permission mode a draft's lazily-minted session is created with
+     *  (the composer's pending Mode selection). Read at mint time — a ref-like
+     *  getter, because the selection can change after this render's closure. */
+    createMode?: () => SessionPermissionMode;
+  },
 ) {
   const { connected } = useRuntimeStatus();
   const [messages, setMessages] = useState<AgentMessage[]>([]);
@@ -188,6 +223,10 @@ export function useAgentChat(
   const [pendingApproval, setPendingApproval] =
     useState<ApprovalRequest | null>(null);
   const [pendingClarification] = useState<ClarificationRequest | null>(null);
+  /** Steers the daemon accepted but has not yet drained into the run, in send
+   *  order. The stream's `steer` echo splits this list on its watermark id. */
+  const [pendingSteers, setPendingSteers] = useState<PendingSteer[]>([]);
+  const steerSerialRef = useRef(0);
   const [usage, setUsage] = useState({
     inputTokens: 0,
     outputTokens: 0,
@@ -205,6 +244,8 @@ export function useAgentChat(
   const lastPromptRef = useRef<string | null>(null);
   const onSessionCreatedRef = useRef(options?.onSessionCreated);
   onSessionCreatedRef.current = options?.onSessionCreated;
+  const createModeRef = useRef(options?.createMode);
+  createModeRef.current = options?.createMode;
 
   // Opening a chat (or switching chats) rehydrates from the daemon.
   useEffect(() => {
@@ -293,7 +334,9 @@ export function useAgentChat(
       try {
         let daemonId = daemonIdRef.current;
         if (!daemonId) {
-          daemonId = await createHarnessSession("default");
+          daemonId = await createHarnessSession(
+            encodeSessionPermissionMode(createModeRef.current?.() ?? "default"),
+          );
           daemonIdRef.current = daemonId;
           onSessionCreatedRef.current?.(daemonId);
         }
@@ -360,6 +403,23 @@ export function useAgentChat(
                 );
                 setStatus((current) =>
                   current === "waiting_approval" ? "streaming" : current,
+                );
+                break;
+              case "steer":
+                // The daemon drained the pending steer bundle into the run:
+                // show the merged text as a user turn and drop every pending
+                // steer up to and including the watermark id.
+                if (event.text) {
+                  const echo: AgentMessage = {
+                    id: `steer-echo-${Date.now()}`,
+                    role: "user",
+                    content: event.text,
+                    timestamp: Date.now(),
+                  };
+                  setMessages((prev) => [...prev, echo]);
+                }
+                setPendingSteers((prev) =>
+                  splitPendingSteersOnWatermark(prev, event.messageId),
                 );
                 break;
               case "notice":
@@ -465,6 +525,19 @@ export function useAgentChat(
     [status, connected],
   );
 
+  /**
+   * Binds this hook to an ALREADY-CREATED daemon session without re-keying it.
+   * The thread panel mints its own seeded session (source_session_id must be
+   * carried, and the 412-busy case has to keep the composer text), then
+   * adopts the id here so the first send streams against it. Re-keying the
+   * hook instead would refetch the transcript mid-stream and wipe the
+   * optimistic messages — the same reason a draft keeps its null hook id
+   * after minting.
+   */
+  const adoptSession = useCallback((id: string) => {
+    daemonIdRef.current = id;
+  }, []);
+
   /** Resends the last prompt after a failure (the error banner's Retry). */
   const retryLast = useCallback(async () => {
     const prompt = lastPromptRef.current;
@@ -525,35 +598,103 @@ export function useAgentChat(
     setStatus("idle");
   }, []);
 
-  /** "Send now": interrupt the in-flight run and let this message continue
-   *  the conversation from the partial progress. The daemon has no mid-run
-   *  injection — steer is cancel → recover-at-run-entry → prompt. */
-  const steerQueued = useCallback(
-    (id: string) => {
-      if (status === "streaming" || status === "waiting_approval") {
-        setQueuedMessages((prev) => {
-          const hit = prev.find((m) => m.id === id);
-          if (!hit) return prev;
-          return [hit, ...prev.filter((m) => m.id !== id)];
-        });
-        void cancelChat();
+  /**
+   * Injects a message into the in-flight run at the next turn boundary.
+   * accepted/appended park it on the pending list until the drain echo;
+   * too_late (or a failed request) falls back to the queue so the text is
+   * never lost — the queue drains it as a normal prompt.
+   */
+  const steerMessage = useCallback(
+    async (text: string) => {
+      const trimmed = text.trim();
+      if (!trimmed) return;
+      const daemonId = daemonIdRef.current;
+      if (!daemonId) {
+        queueMessage(trimmed);
         return;
       }
-      const text = takeQueued(id);
-      if (text) void sendMessage(text);
+      steerSerialRef.current += 1;
+      const id = `steer-${Date.now()}-${steerSerialRef.current}`;
+      try {
+        const { outcome } = await steerHarnessRun(daemonId, trimmed, id);
+        if (outcome === "accepted" || outcome === "appended") {
+          setPendingSteers((prev) => [...prev, { id, text: trimmed }]);
+          return;
+        }
+        queueMessage(trimmed);
+      } catch (caught) {
+        queueMessage(trimmed);
+        setError(caught instanceof Error ? caught.message : String(caught));
+      }
     },
-    [status, cancelChat, takeQueued, sendMessage],
+    [queueMessage],
   );
+
+  /** "Steer": pull a queued message and inject it into the in-flight run at
+   *  the next turn boundary; on an idle chat it just sends. */
+  const steerQueued = useCallback(
+    (id: string) => {
+      const text = takeQueued(id);
+      if (!text) return;
+      if (status === "streaming" || status === "waiting_approval") {
+        void steerMessage(text);
+        return;
+      }
+      void sendMessage(text);
+    },
+    [status, takeQueued, steerMessage, sendMessage],
+  );
+
+  /**
+   * Retracts the pending steer bundle. The daemon models one bundle per run —
+   * only the whole thing can be retracted, not a single message. On
+   * `none_pending` the bundle already drained (the echo reconciles the list),
+   * so the pending list clears on either outcome.
+   */
+  const cancelPendingSteers = useCallback(async () => {
+    const daemonId = daemonIdRef.current;
+    if (!daemonId) {
+      setPendingSteers([]);
+      return;
+    }
+    try {
+      await cancelHarnessSteer(daemonId);
+      setPendingSteers([]);
+    } catch (caught) {
+      // Unknown daemon state: keep the list rather than pretend it retracted.
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, []);
+
+  // On run end, steers that never drained were dropped with the run (the
+  // daemon's steer buffer is run-scoped, best-effort): move them to the FRONT
+  // of the queue, in order, so the drain below sends them as normal prompts —
+  // never lose text. Runs on error too: the texts wait visibly in the strip.
+  useEffect(() => {
+    if (status !== "idle" && status !== "error") return;
+    if (pendingSteers.length === 0) return;
+    const orphaned = pendingSteers;
+    setPendingSteers([]);
+    setQueuedMessages((prev) => [
+      ...orphaned.map((steer) => ({
+        id: `queued-${steer.id}`,
+        text: steer.text,
+      })),
+      ...prev,
+    ]);
+  }, [status, pendingSteers]);
 
   // Drain the queue one message per completed run. Only a clean idle flushes:
   // an error waits for the user (retry/edit), a parked approval waits for the
-  // verdict. flushingRef bridges the async gap before sendMessage flips the
+  // verdict, and orphaned pending steers get requeued (above) before anything
+  // sends. flushingRef bridges the async gap before sendMessage flips the
   // status, so a re-render can't double-send.
   useEffect(() => {
     if (
       status !== "idle" ||
       !connected ||
       queuedMessages.length === 0 ||
+      pendingSteers.length > 0 ||
       flushingRef.current
     ) {
       return;
@@ -564,14 +705,23 @@ export function useAgentChat(
     void sendMessage(next.text).finally(() => {
       flushingRef.current = false;
     });
-  }, [status, connected, queuedMessages, sendMessage]);
+  }, [status, connected, queuedMessages, pendingSteers, sendMessage]);
 
   const respondToApproval = useCallback(
     async (choice: ApprovalChoice) => {
       const daemonId = daemonIdRef.current;
       const approvalId = pendingApproval?.approvalId;
       setPendingApproval(null);
-      setStatus("idle");
+      // The verdict resumes the SAME run — the prompt stream stays open and
+      // keeps delivering (the daemon acks the approve; only the run's end
+      // closes the stream). Mirror the retract handler: back to streaming,
+      // never idle — a premature idle here let the steer-requeue and queue
+      // drain effects fire against the still-live run (a pending steer got
+      // re-sent as a prompt that 412s). The stream's own end handler owns
+      // the eventual idle.
+      setStatus((current) =>
+        current === "waiting_approval" ? "streaming" : current,
+      );
       if (!daemonId || !approvalId) return;
       try {
         // The daemon's verdict is three-way. "session" and "always" both map
@@ -606,10 +756,14 @@ export function useAgentChat(
     deleteQueued,
     takeQueued,
     steerQueued,
+    pendingSteers,
+    steerMessage,
+    cancelPendingSteers,
     status,
     error,
     harnessLive: connected,
     sendMessage,
+    adoptSession,
     retryLast,
     cancelChat,
     pendingApproval,

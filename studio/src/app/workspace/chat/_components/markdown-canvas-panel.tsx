@@ -13,6 +13,7 @@ import {
   Heading1,
   Heading2,
   Heading3,
+  Image as ImageIcon,
   Italic,
   List,
   ListOrdered,
@@ -32,6 +33,9 @@ const CANVAS_ICON_MAP: Record<string, typeof FileText> = {
   spreadsheet: FileSpreadsheet,
   document: FileText,
   code: FileCode2,
+  image: ImageIcon,
+  pdf: FileText,
+  markdown: FileText,
 };
 
 // ── Raw-mode toolbar ─────────────────────────────────────────────────────────
@@ -432,7 +436,11 @@ export function MarkdownCanvasPanel({
           </>
         ) : (
           <div className="h-full overflow-y-auto">
-            <FilePreview name={artifact.name} content={editedContent} />
+            <FilePreview
+              name={artifact.name}
+              content={editedContent}
+              url={artifact.url}
+            />
           </div>
         )}
       </div>

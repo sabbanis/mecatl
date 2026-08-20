@@ -4,7 +4,7 @@ import { Bell } from "lucide-react";
 import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
-import { SettingsCard } from "../_components/settings-card";
+import { SettingsCard, SettingsRow } from "../_components/settings-card";
 
 export default function NotificationSettingsPage() {
   // Browser notifications: track the permission so the UI reflects granted /
@@ -53,14 +53,15 @@ export default function NotificationSettingsPage() {
           This browser doesn't support notifications.
         </p>
       ) : (
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          {notifyPermission === "denied" && (
-            <p className="max-w-md text-sm text-muted-foreground">
-              Notifications are blocked. Re-enable them for this site in your
-              browser settings.
-            </p>
-          )}
-          <div className="flex items-center gap-2">
+        <div className="divide-y divide-border/60">
+          <SettingsRow
+            label="Browser notifications"
+            description={
+              notifyPermission === "denied"
+                ? "Notifications are blocked. Re-enable them for this site in your browser settings."
+                : "Get a browser alert when a run or scheduled task finishes."
+            }
+          >
             <Button
               variant="outline"
               className="rounded-full"
@@ -70,6 +71,11 @@ export default function NotificationSettingsPage() {
               <Bell className="size-4" />
               {notifyPermission === "granted" ? "Enabled" : "Enable"}
             </Button>
+          </SettingsRow>
+          <SettingsRow
+            label="Test notification"
+            description="Send a sample so you can check how it looks."
+          >
             <Button
               variant="action"
               onClick={sendTestNotification}
@@ -77,7 +83,7 @@ export default function NotificationSettingsPage() {
             >
               Send a test notification
             </Button>
-          </div>
+          </SettingsRow>
         </div>
       )}
     </SettingsCard>

@@ -2,6 +2,7 @@
 
 import { Bot, Ellipsis, Pencil, Trash2 } from "lucide-react";
 import { useRef, useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -10,6 +11,7 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import type { AgentSession, RosterAgent } from "@/features/agent";
+import { isMockTourSession } from "@/features/agent/mock-tour";
 import { formatRelativeTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 
@@ -275,15 +277,25 @@ function SessionRow({
         }`}
         className="flex-1 min-w-0 select-none text-left [-webkit-touch-callout:none]"
       >
-        <span
-          className={cn(
-            "truncate text-[0.85rem] block select-none font-medium",
-            isSelected
-              ? "text-brand-ink"
-              : "text-muted-foreground group-hover:text-foreground",
+        <span className="flex min-w-0 items-center gap-1.5">
+          <span
+            className={cn(
+              "truncate text-[0.85rem] block select-none font-medium",
+              isSelected
+                ? "text-brand-ink"
+                : "text-muted-foreground group-hover:text-foreground",
+            )}
+          >
+            {session.title || "Untitled"}
+          </span>
+          {isMockTourSession(session.id) && (
+            <Badge
+              variant="outline"
+              className="h-4 shrink-0 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+            >
+              Mock
+            </Badge>
           )}
-        >
-          {session.title || "Untitled"}
         </span>
       </button>
       <div className="shrink-0 ml-2 grid w-8 items-center justify-items-center [grid-template-areas:'slot']">

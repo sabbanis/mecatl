@@ -36,6 +36,22 @@ export function requestIsAllowed(
   );
 }
 
+/**
+ * The daemon's skill activation-name grammar, mirrored byte-for-byte from
+ * `engine/adapter/skillfs/name.go` (`ValidSkillName`): lowercase
+ * letters/digits/underscore/hyphen, 1-64 chars, starting with a lowercase
+ * letter or digit. Names under this grammar cannot contain a path separator,
+ * a dot, or whitespace, so a valid name is safe to join onto the pinned
+ * skills directory — the controller AND the browser client validate through
+ * this ONE regex so the two tiers cannot drift.
+ *
+ * @param {string} name
+ * @returns {boolean}
+ */
+export function validSkillName(name) {
+  return /^[a-z0-9][a-z0-9_-]{0,63}$/.test(name);
+}
+
 export function validateGatewayURL(value, { allowLoopbackHTTP = false } = {}) {
   const parsed = new URL(value);
   if (parsed.username || parsed.password)

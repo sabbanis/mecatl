@@ -1,5 +1,6 @@
 "use client";
 
+import { useState } from "react";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import {
@@ -12,7 +13,12 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
-import { describeCron } from "@/lib/formatters";
+import {
+  builderToCron,
+  type CronRepeat,
+  cronToBuilder,
+} from "@/lib/cron-builder";
+import { describeCron, ordinal } from "@/lib/formatters";
 import { PERMISSION_MODES, type ScheduleSpecDraft } from "@/lib/protocol";
 
 /**
@@ -178,32 +184,65 @@ export function permissionModeLabel(mode: number): string {
   }
 }
 
+/** "YYYY-MM-DDTHH:MM" → its date and time halves ("" when absent). */
+function oneShotParts(at: string): { date: string; time: string } {
+  return { date: at.slice(0, 10), time: at.slice(11, 16) };
+}
+
+/** Local (not UTC) YYYY-MM-DD / HH:MM for a Date — presets and defaults. */
+function localDate(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
+}
+function localTime(d: Date): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
+}
+
+/** Compose the datetime-local string, defaulting the missing half sensibly. */
+function joinOneShot(date: string, time: string): string {
+  if (!date && !time) return "";
+  return `${date || localDate(new Date())}T${time || "09:00"}`;
+}
+
+/** One-click fills for the common "run once" cases. */
+function oneShotPresets(): { label: string; at: string }[] {
+  const inOneHour = new Date(Date.now() + 60 * 60 * 1000);
+  const tonight = new Date();
+  tonight.setHours(18, 0, 0, 0);
+  if (tonight.getTime() < Date.now()) tonight.setDate(tonight.getDate() + 1);
+  const tomorrow = new Date(Date.now() + 24 * 60 * 60 * 1000);
+  return [
+    {
+      label: "In 1 hour",
+      at: `${localDate(inOneHour)}T${localTime(inOneHour)}`,
+    },
+    { label: "Tonight 18:00", at: `${localDate(tonight)}T18:00` },
+    { label: "Tomorrow 09:00", at: `${localDate(tomorrow)}T09:00` },
+  ];
+}
+
 export function ScheduleFormFields({
   value,
   onChange,
-  nameLocked = false,
 }: {
   value: ScheduleFormValue;
   onChange: (patch: Partial<ScheduleFormValue>) => void;
-  /** Edits PUT to the stored name; renaming would target a different spec. */
-  nameLocked?: boolean;
 }) {
-  const cronPreview = describeCron(value.cron.trim());
   return (
     <div className="space-y-4">
-      <div className="space-y-2">
+      <div className="space-y-3">
         <Label htmlFor="schedule-name">Name</Label>
         <Input
           id="schedule-name"
           value={value.name}
           onChange={(e) => onChange({ name: e.target.value })}
           placeholder="daily-standup-summary"
-          disabled={nameLocked}
           required
         />
       </div>
 
-      <div className="space-y-2">
+      <div className="space-y-3">
         <Label htmlFor="schedule-prompt">Prompt</Label>
         <Textarea
           id="schedule-prompt"
@@ -223,72 +262,107 @@ export function ScheduleFormFields({
             onChange({ triggerKind: v as ScheduleFormValue["triggerKind"] })
           }
         >
-          <TabsList className="grid w-full grid-cols-2">
-            <TabsTrigger value="cron">Recurring</TabsTrigger>
-            <TabsTrigger value="one-shot">Run once</TabsTrigger>
+          <TabsList className="grid w-full grid-cols-2 rounded-full bg-muted p-1">
+            <TabsTrigger
+              value="cron"
+              className="rounded-full data-[state=active]:bg-background data-[state=active]:shadow-sm"
+            >
+              Recurring
+            </TabsTrigger>
+            <TabsTrigger
+              value="one-shot"
+              className="rounded-full data-[state=active]:bg-background data-[state=active]:shadow-sm"
+            >
+              Run once
+            </TabsTrigger>
           </TabsList>
         </Tabs>
 
         {value.triggerKind === "cron" ? (
           <div className="space-y-3">
-            <div className="space-y-2">
-              <Label htmlFor="schedule-cron">Cron expression</Label>
+            <CronBuilderFields
+              cron={value.cron}
+              onCronChange={(cron) => onChange({ cron })}
+            />
+            <div className="space-y-3">
+              <Label htmlFor="schedule-timezone">Timezone (IANA)</Label>
               <Input
-                id="schedule-cron"
-                value={value.cron}
-                onChange={(e) => onChange({ cron: e.target.value })}
-                placeholder="0 9 * * *"
-                className="font-mono"
-                required
+                id="schedule-timezone"
+                value={value.timezone}
+                onChange={(e) => onChange({ timezone: e.target.value })}
+                placeholder="Europe/London"
               />
-              {cronPreview !== value.cron.trim() && (
-                <p className="text-xs text-muted-foreground">{cronPreview}</p>
-              )}
             </div>
-            <div className="flex flex-wrap gap-3">
-              <div className="min-w-[200px] flex-1 space-y-2">
-                <Label htmlFor="schedule-timezone">Timezone (IANA)</Label>
-                <Input
-                  id="schedule-timezone"
-                  value={value.timezone}
-                  onChange={(e) => onChange({ timezone: e.target.value })}
-                  placeholder="Europe/London"
-                />
-              </div>
-              <div className="w-[130px] space-y-2">
-                <Label htmlFor="schedule-max-fires">Max fires</Label>
-                <Input
-                  id="schedule-max-fires"
-                  type="number"
-                  min={0}
-                  value={value.maxFires}
-                  onChange={(e) => onChange({ maxFires: e.target.value })}
-                  placeholder="unlimited"
-                />
-              </div>
+            <div className="space-y-3">
+              <Label htmlFor="schedule-max-fires">Max runs</Label>
+              <Input
+                id="schedule-max-fires"
+                type="number"
+                min={0}
+                value={value.maxFires}
+                onChange={(e) => onChange({ maxFires: e.target.value })}
+                placeholder="unlimited"
+                className="w-[130px]"
+              />
             </div>
           </div>
         ) : (
           <div className="space-y-3">
-            <div className="space-y-2">
-              <Label htmlFor="schedule-one-shot-at">Run at</Label>
-              <Input
-                id="schedule-one-shot-at"
-                type="datetime-local"
-                value={value.oneShotAt}
-                onChange={(e) => onChange({ oneShotAt: e.target.value })}
-                className="w-fit"
-                required
-              />
+            <div className="space-y-3">
+              <Label htmlFor="schedule-one-shot-date">Run at</Label>
+              {/* Split date + time beats the native datetime-local widget, and
+                  the presets cover the common cases in one click. */}
+              <div className="flex flex-wrap items-center gap-2">
+                <Input
+                  id="schedule-one-shot-date"
+                  aria-label="Date"
+                  type="date"
+                  value={oneShotParts(value.oneShotAt).date}
+                  onChange={(e) =>
+                    onChange({
+                      oneShotAt: joinOneShot(
+                        e.target.value,
+                        oneShotParts(value.oneShotAt).time,
+                      ),
+                    })
+                  }
+                  className="w-fit"
+                  required
+                />
+                <Input
+                  aria-label="Time"
+                  type="time"
+                  value={oneShotParts(value.oneShotAt).time}
+                  onChange={(e) =>
+                    onChange({
+                      oneShotAt: joinOneShot(
+                        oneShotParts(value.oneShotAt).date,
+                        e.target.value,
+                      ),
+                    })
+                  }
+                  className="w-fit"
+                  required
+                />
+              </div>
+              <div className="flex flex-wrap gap-1.5">
+                {oneShotPresets().map((preset) => (
+                  <button
+                    key={preset.label}
+                    type="button"
+                    onClick={() => onChange({ oneShotAt: preset.at })}
+                    className="h-7 rounded-full border px-3 text-xs text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                  >
+                    {preset.label}
+                  </button>
+                ))}
+              </div>
             </div>
             <div className="flex items-center justify-between rounded-lg border px-3 py-2.5">
               <div className="space-y-0.5">
                 <Label htmlFor="schedule-one-shot-retry">
                   Retry on failure
                 </Label>
-                <p className="text-xs text-muted-foreground">
-                  Re-fire if the run ends in an error.
-                </p>
               </div>
               <div className="flex items-center gap-3">
                 {value.oneShotRetry && (
@@ -322,11 +396,6 @@ export function ScheduleFormFields({
             <Label htmlFor="schedule-allow-writes">
               Allow file and shell writes
             </Label>
-            <p className="text-xs text-muted-foreground">
-              {value.allowWrites
-                ? "Runs may modify files and run mutating commands."
-                : "Runs read-only in plan mode."}
-            </p>
           </div>
           <Switch
             id="schedule-allow-writes"
@@ -358,6 +427,171 @@ export function ScheduleFormFields({
           </div>
         )}
       </div>
+    </div>
+  );
+}
+
+const REPEAT_OPTIONS: { value: CronRepeat; label: string }[] = [
+  { value: "daily", label: "Daily" },
+  { value: "weekdays", label: "Weekdays" },
+  { value: "weekly", label: "Weekly" },
+  { value: "monthly", label: "Monthly" },
+  { value: "custom", label: "Custom" },
+];
+
+/** Cron day-of-week values, Monday-first for display (cron's 0 is Sunday). */
+const WEEKDAY_OPTIONS = [
+  { value: 1, label: "Monday" },
+  { value: 2, label: "Tuesday" },
+  { value: 3, label: "Wednesday" },
+  { value: 4, label: "Thursday" },
+  { value: 5, label: "Friday" },
+  { value: 6, label: "Saturday" },
+  { value: 0, label: "Sunday" },
+];
+
+const MONTHDAY_OPTIONS = Array.from({ length: 28 }, (_, i) => i + 1);
+
+/**
+ * The structured cron editor. The form value keeps carrying the cron STRING —
+ * this is purely a nicer editor for it: the builder state is derived from the
+ * string via `cronToBuilder` on every render (so an edited schedule
+ * pre-populates, and a schedule built here round-trips losslessly), and every
+ * control change writes the derived string back via `builderToCron`. A cron
+ * the builder cannot express lands on Custom with the raw string intact; the
+ * Custom pick is the one piece of local state, so choosing it sticks even
+ * while the string still parses as a builder shape.
+ */
+function CronBuilderFields({
+  cron,
+  onCronChange,
+}: {
+  cron: string;
+  onCronChange: (cron: string) => void;
+}) {
+  const parsed = cronToBuilder(cron);
+  const [customPicked, setCustomPicked] = useState(
+    () => parsed.repeat === "custom",
+  );
+  const repeat: CronRepeat = customPicked ? "custom" : parsed.repeat;
+
+  /** Re-derive the cron string from the builder with one control changed. */
+  const rebuild = (patch: {
+    repeat?: Exclude<CronRepeat, "custom">;
+    time?: string;
+    weekday?: number;
+    monthday?: number;
+  }) => {
+    const next = { ...parsed, ...patch };
+    if (next.repeat === "custom") return;
+    onCronChange(builderToCron({ ...next, repeat: next.repeat }));
+  };
+
+  const cronPreview = describeCron(cron.trim());
+  return (
+    <div className="space-y-3">
+      <div className="flex flex-wrap gap-3">
+        <div className="min-w-[130px] flex-1 space-y-2">
+          <Label htmlFor="schedule-repeat">Repeat</Label>
+          <Select
+            value={repeat}
+            onValueChange={(v) => {
+              const next = v as CronRepeat;
+              if (next === "custom") {
+                setCustomPicked(true);
+                return;
+              }
+              setCustomPicked(false);
+              rebuild({ repeat: next });
+            }}
+          >
+            <SelectTrigger id="schedule-repeat" className="w-full">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              {REPEAT_OPTIONS.map((option) => (
+                <SelectItem key={option.value} value={option.value}>
+                  {option.label}
+                </SelectItem>
+              ))}
+            </SelectContent>
+          </Select>
+        </div>
+
+        {repeat === "weekly" && (
+          <div className="min-w-[130px] flex-1 space-y-2">
+            <Label htmlFor="schedule-weekday">On</Label>
+            <Select
+              value={String(parsed.weekday)}
+              onValueChange={(v) => rebuild({ weekday: Number(v) })}
+            >
+              <SelectTrigger id="schedule-weekday" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {WEEKDAY_OPTIONS.map((day) => (
+                  <SelectItem key={day.value} value={String(day.value)}>
+                    {day.label}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
+        {repeat === "monthly" && (
+          <div className="min-w-[130px] flex-1 space-y-2">
+            <Label htmlFor="schedule-monthday">On the</Label>
+            <Select
+              value={String(parsed.monthday)}
+              onValueChange={(v) => rebuild({ monthday: Number(v) })}
+            >
+              <SelectTrigger id="schedule-monthday" className="w-full">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                {MONTHDAY_OPTIONS.map((day) => (
+                  <SelectItem key={day} value={String(day)}>
+                    {ordinal(day)}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </div>
+        )}
+
+        {repeat !== "custom" && (
+          <div className="w-[120px] space-y-2">
+            <Label htmlFor="schedule-time">At</Label>
+            <Input
+              id="schedule-time"
+              type="time"
+              value={parsed.time}
+              onChange={(e) => rebuild({ time: e.target.value })}
+            />
+          </div>
+        )}
+      </div>
+
+      {repeat === "custom" && (
+        <div className="space-y-2">
+          <Label htmlFor="schedule-cron">Cron expression</Label>
+          <Input
+            id="schedule-cron"
+            value={cron}
+            onChange={(e) => onCronChange(e.target.value)}
+            placeholder="0 9 * * *"
+            className="font-mono"
+            required
+          />
+        </div>
+      )}
+
+      {/* The builder's own controls already read as plain English; the preview
+          only earns its place under a raw Custom expression. */}
+      {repeat === "custom" && cronPreview !== cron.trim() && (
+        <p className="text-xs text-muted-foreground">{cronPreview}</p>
+      )}
     </div>
   );
 }

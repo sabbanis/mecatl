@@ -44,6 +44,10 @@ export type MecatlEvent = {
     tool?: string;
   };
   ask?: { ask_id?: string; tool?: string; args?: string; reason?: string };
+  /** Drain echo for mid-run steering: `text` is the drained bundle and
+   *  `message_id` the client-minted id of the LAST message merged into it
+   *  (the watermark the client splits its pending list on). */
+  steer?: { text?: string; message_id?: string };
   result?: {
     text?: string;
     stop?: string;
@@ -110,6 +114,7 @@ export function parseMecatlEvent(data: string): MecatlEvent {
           : undefined,
     };
   event.ask = stringFields(raw.ask, ["ask_id", "tool", "args", "reason"]);
+  event.steer = stringFields(raw.steer, ["text", "message_id"]);
   const result = asRecord(raw.result);
   if (result)
     event.result = {
@@ -285,6 +290,17 @@ export function translateEvent(
       return event.ask?.ask_id
         ? [{ type: "retract", approvalId: event.ask.ask_id }]
         : [];
+    case "steer":
+      // The daemon drained the pending steer bundle into the run. The echo
+      // carries the merged text and the watermark id of the last message it
+      // absorbed — the hook splits its pending list on that id.
+      return [
+        {
+          type: "steer",
+          text: event.steer?.text ?? "",
+          messageId: event.steer?.message_id ?? "",
+        },
+      ];
     case "subagent.start": {
       const subagent = event.subagent;
       if (!subagent) return [];

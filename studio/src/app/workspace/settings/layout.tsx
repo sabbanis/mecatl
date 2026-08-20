@@ -19,7 +19,9 @@ export default function SettingsLayout({
           <SettingsTitle />
           <div className="flex flex-col gap-6 min-[500px]:flex-row min-[500px]:gap-10">
             <SettingsNav />
-            <div className="min-w-0 flex-1 space-y-5">{children}</div>
+            {/* Capped at the reading width the shortcuts page established, so
+                forms don't stretch across very wide viewports. */}
+            <div className="min-w-0 max-w-3xl flex-1 space-y-5">{children}</div>
           </div>
         </div>
       </div>

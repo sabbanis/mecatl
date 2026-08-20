@@ -12,8 +12,11 @@ export {
 } from "./schedules";
 export {
   decodeSessionInventory,
+  decodeSessionPermissionMode,
   decodeSessionTranscript,
+  encodeSessionPermissionMode,
   type SessionInventoryPage,
+  type SessionPermissionMode,
   type SessionSummary,
   type SessionTranscript,
 } from "./sessions";

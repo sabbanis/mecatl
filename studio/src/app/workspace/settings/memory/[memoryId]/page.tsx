@@ -53,27 +53,29 @@ export default function MemoryDetailPage() {
 
       <h1
         className={pageTitleClass(
-          "break-all text-[44px] leading-[1.05] max-[499px]:text-3xl",
+          "break-all text-3xl leading-tight max-[499px]:text-2xl",
         )}
       >
         {entry.title}
       </h1>
 
-      <div className="flex flex-col gap-10 lg:flex-row lg:items-start">
+      <div className="flex flex-col gap-8 lg:flex-row lg:items-start">
         <aside className="flex w-full max-w-[465px] flex-col gap-6">
-          <div className="space-y-3">
-            <h2 className="text-base font-semibold">
+          <div className="space-y-2">
+            <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
               What the agent remembers
             </h2>
-            <p className="text-base leading-relaxed text-muted-foreground">
+            <p className="text-sm leading-relaxed text-foreground">
               {entry.content || "No description recorded."}
             </p>
           </div>
         </aside>
 
-        <section className="flex min-w-0 flex-1 flex-col gap-3">
-          <h2 className="text-base font-semibold">Details</h2>
-          <div className="divide-y rounded-lg border bg-background">
+        <section className="flex min-w-0 flex-1 flex-col gap-2">
+          <h2 className="text-sm font-semibold tracking-wide text-muted-foreground uppercase">
+            Details
+          </h2>
+          <div className="divide-y divide-border/60 rounded-xl border bg-card">
             <div className="flex items-center justify-between gap-3 px-4 py-3">
               <span className="text-sm text-muted-foreground">Key</span>
               <span className="break-all text-right text-sm font-medium font-mono">

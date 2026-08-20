@@ -16,9 +16,9 @@ export default function MemorySettingsPage() {
 
   if (!memory.isSupported) {
     return (
-      <div className="rounded-lg border bg-card p-6">
+      <div className="rounded-xl border bg-card p-5">
         <div className="flex items-start gap-3">
-          <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-background">
+          <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
             <Brain className="size-5 text-muted-foreground" />
           </div>
           <div className="min-w-0 space-y-1">
@@ -42,7 +42,7 @@ export default function MemorySettingsPage() {
 
   if (memory.isLoading) {
     return (
-      <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
+      <div className="rounded-xl border border-dashed py-12 text-center text-sm text-muted-foreground">
         Loading memory…
       </div>
     );
@@ -50,14 +50,14 @@ export default function MemorySettingsPage() {
 
   if (entries.length === 0) {
     return (
-      <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
+      <div className="rounded-xl border border-dashed py-12 text-center text-sm text-muted-foreground">
         The agent hasn&apos;t stored any facts yet.
       </div>
     );
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2 2xl:grid-cols-3">
+    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
       {entries.map((entry) => (
         <MemoryCard key={entry.id} entry={entry} />
       ))}
@@ -70,10 +70,10 @@ function MemoryCard({ entry }: { entry: MemoryEntry }) {
   return (
     <Link
       href={`/workspace/settings/memory/${encodeURIComponent(entry.id)}`}
-      className="flex h-full flex-col gap-3 rounded-lg border bg-card p-4 transition-colors hover:border-foreground/20"
+      className="flex h-full flex-col gap-3 rounded-xl border bg-card p-5 transition-colors hover:border-foreground/20 hover:bg-muted/30"
     >
       <div className="flex min-w-0 items-center gap-3">
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-md border bg-background">
+        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
           <Brain className="size-5 text-foreground" />
         </div>
         <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">

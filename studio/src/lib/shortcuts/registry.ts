@@ -8,7 +8,7 @@
  * behaviour lives inside a component, e.g. Enter to send in the composer).
  *
  * Combos are `+`-joined tokens: `mod` (⌘ on macOS / Ctrl elsewhere), `shift`,
- * `alt`, then a key (`k`, `up`, `enter`, `?`, `/`, `@`, `esc`). `keycaps()`
+ * `alt`, then a key (`k`, `up`, `enter`, `?`, `/`, `,`, `@`, `esc`). `keycaps()`
  * derives the display and `matchCombo()` matches an event — one grammar, no
  * duplicated key lists.
  */
@@ -29,9 +29,21 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     group: "General",
   },
   {
+    id: "settings.open",
+    combo: "mod+,",
+    description: "Open settings",
+    group: "General",
+  },
+  {
     id: "shortcuts.open",
     combo: "?",
     description: "Show keyboard shortcuts",
+    group: "General",
+  },
+  {
+    id: "shortcuts.open.mod",
+    combo: "mod+/",
+    description: "Show keyboard shortcuts (also while typing)",
     group: "General",
   },
   {
@@ -40,10 +52,13 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     description: "Toggle the chat list",
     group: "General",
   },
+  // Esc is layered: an open dialog/menu handles its own Escape first (Radix
+  // and the composer's autocomplete both consume the event, so the dispatcher
+  // never sees it); this binding is the fallback beneath them.
   {
     id: "close.esc",
     combo: "esc",
-    description: "Close a panel or dialog",
+    description: "Close the side panel — or stop the running turn",
     group: "General",
   },
 
@@ -81,13 +96,15 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
   {
     id: "composer.send",
     combo: "enter",
-    description: "Send message",
+    description:
+      "Send — while the agent is replying: queue or steer, per Settings → Chat",
     group: "Composer",
   },
   {
     id: "composer.newline",
     combo: "shift+enter",
-    description: "Insert a new line",
+    description:
+      "Insert a new line — while the agent is replying: the opposite of your Enter preference",
     group: "Composer",
   },
   {
@@ -150,7 +167,12 @@ export function matchCombo(combo: string, e: KeyboardEvent): boolean {
   return e.key.toLowerCase() === (KEY_ALIAS[key] ?? key);
 }
 
-/** True when the combo uses a modifier, so it may fire even while typing. */
-export function comboUsesMod(combo: string): boolean {
-  return combo.split("+").includes("mod");
+/**
+ * True when the combo may fire while the user is typing in an editable field:
+ * combos carrying `mod` (the standard desktop-app rule — ⌘/Ctrl chords are
+ * commands, not text), plus bare `esc` (it never inserts text, and Esc must
+ * interrupt a streaming run even while the caret sits in the composer).
+ */
+export function comboFiresWhileTyping(combo: string): boolean {
+  return combo.split("+").includes("mod") || combo === "esc";
 }

@@ -17,6 +17,7 @@ import {
   Paperclip,
   Plus,
   RotateCcw,
+  Shield,
   SlidersHorizontal,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
@@ -39,6 +40,12 @@ import {
   getSlashCommands,
 } from "@/features/agent/composer-capabilities";
 import { usePrompt } from "@/hooks/use-prompt";
+import { fileKindMeta } from "@/lib/file-meta";
+import {
+  type EnterSendBehavior,
+  useEnterSendBehavior,
+} from "@/lib/profile-preferences";
+import type { SessionPermissionMode } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
 import {
   type ComposerMenuItem,
@@ -68,6 +75,9 @@ interface ChatInputProps {
   focusKey?: string;
   onSend?: (content: string, files?: File[]) => void;
   onQueue?: (content: string) => void;
+  /** Injects the text into the in-flight run at the next step (mid-run
+      steering). Only meaningful while `isStreaming`. */
+  onSteer?: (content: string) => void;
   onModelChange?: (alias: string) => void;
   disabled?: boolean;
   isStreaming?: boolean;
@@ -80,6 +90,12 @@ interface ChatInputProps {
   onInitialTextConsumed?: () => void;
   /** Display-only model label for live-harness sessions (see ModelSelector). */
   modelLockedLabel?: string;
+  /** The session's current permission mode, shown by the Mode selector. */
+  mode?: SessionPermissionMode;
+  /** Renders the Mode selector (first in the control bar) when provided.
+      Surfaces without a mode concept (the thread panel, the mock tour chat)
+      simply omit it. */
+  onModeChange?: (mode: SessionPermissionMode) => void;
 }
 
 /**
@@ -211,10 +227,20 @@ function ModelEffortSelector({
     EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
   const isDefault = model === DEFAULT_MODEL_ID && effort === DEFAULT_EFFORT_ID;
 
+  // The toolbar is a CSS container (@container on the footer row): below
+  // ~28rem — a narrow side-panel composer, not just mobile viewports — the
+  // value labels collapse to the static word "Model", with the full selection
+  // kept on the title attribute; in between, truncation caps a long model id.
   if (lockedLabel) {
     return (
-      <Button size="sm" className={GHOST_TRIGGER_CLASS} disabled>
-        {lockedLabel}
+      <Button
+        size="sm"
+        className={GHOST_TRIGGER_CLASS}
+        disabled
+        title={lockedLabel}
+      >
+        <span className="max-w-40 truncate @max-md:hidden">{lockedLabel}</span>
+        <span className="hidden @max-md:inline">Model</span>
       </Button>
     );
   }
@@ -222,9 +248,18 @@ function ModelEffortSelector({
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="sm" className={GHOST_TRIGGER_CLASS}>
-          {selectedModel.label}
-          <span className="text-muted-foreground">{selectedEffort.label}</span>
+        <Button
+          size="sm"
+          className={GHOST_TRIGGER_CLASS}
+          title={`${selectedModel.label} · ${selectedEffort.label}`}
+        >
+          <span className="max-w-40 truncate @max-md:hidden">
+            {selectedModel.label}
+          </span>
+          <span className="max-w-24 truncate text-muted-foreground @max-md:hidden">
+            {selectedEffort.label}
+          </span>
+          <span className="hidden @max-md:inline">Model</span>
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
@@ -309,6 +344,73 @@ function ModelEffortSelector({
   );
 }
 
+const PERMISSION_MODE_OPTIONS = [
+  { id: "default", label: "Default" },
+  { id: "plan", label: "Plan" },
+  { id: "acceptEdits", label: "Accept edits" },
+] as const satisfies readonly { id: SessionPermissionMode; label: string }[];
+
+/** Display label for a session permission mode. */
+function permissionModeLabel(mode: SessionPermissionMode): string {
+  return (
+    PERMISSION_MODE_OPTIONS.find((option) => option.id === mode)?.label ??
+    "Default"
+  );
+}
+
+/**
+ * The session permission-mode selector (Default / Plan / Accept edits), the
+ * first control in the composer bar. Same pill + container-collapse idiom as
+ * the model selector: the current mode wide, the bare word "Mode" narrow,
+ * always the full selection on the title. Disabled while a run streams — the
+ * daemon's session aggregate refuses a mid-turn mode change, so the control
+ * matches that reality instead of round-tripping a guaranteed refusal.
+ */
+function ModeSelector({
+  mode,
+  onModeChange,
+  disabled,
+}: {
+  mode: SessionPermissionMode;
+  onModeChange: (mode: SessionPermissionMode) => void;
+  disabled?: boolean;
+}) {
+  const label = permissionModeLabel(mode);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="sm"
+          className={GHOST_TRIGGER_CLASS}
+          disabled={disabled}
+          title={`Mode: ${label}`}
+        >
+          <span className="max-w-32 truncate @max-md:hidden">{label}</span>
+          <span className="hidden @max-md:inline">Mode</span>
+          <ChevronDown className="size-3.5 text-muted-foreground" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-44">
+        {PERMISSION_MODE_OPTIONS.map((option) => (
+          <DropdownMenuItem
+            key={option.id}
+            className="gap-2"
+            onClick={() => onModeChange(option.id)}
+          >
+            <Check
+              className={cn(
+                "size-4",
+                mode === option.id ? "text-foreground" : "text-transparent",
+              )}
+            />
+            {option.label}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 /**
  * Controls whether the agent draws on (and writes to) its long-term memory for
  * this conversation. A pill matching the model selector, opening a small On/Off
@@ -319,9 +421,15 @@ function MemoryToggle() {
   return (
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
-        <Button size="sm" className={GHOST_TRIGGER_CLASS}>
+        <Button
+          size="sm"
+          className={GHOST_TRIGGER_CLASS}
+          title={`Memory ${on ? "On" : "Off"}`}
+        >
           Memory
-          <span className="text-muted-foreground">{on ? "On" : "Off"}</span>
+          <span className="text-muted-foreground @max-md:hidden">
+            {on ? "On" : "Off"}
+          </span>
           <ChevronDown className="size-3.5 text-muted-foreground" />
         </Button>
       </DropdownMenuTrigger>
@@ -356,13 +464,19 @@ function MobileComposerMenu({
   onFilesSelected,
   onModelChange,
   modelLockedLabel,
+  mode,
+  onModeChange,
+  modeDisabled,
 }: {
   onFilesSelected: (files: File[]) => void;
   onModelChange?: (id: ModelId) => void;
   modelLockedLabel?: string;
+  mode?: SessionPermissionMode;
+  onModeChange?: (mode: SessionPermissionMode) => void;
+  modeDisabled?: boolean;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
-  const [sub, setSub] = useState<"model" | "memory" | null>(null);
+  const [sub, setSub] = useState<"mode" | "model" | "memory" | null>(null);
   const [model, setModel] = useState<ModelId>(DEFAULT_MODEL_ID);
   const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
   const [memoryOn, setMemoryOn] = useState(true);
@@ -415,6 +529,26 @@ function MobileComposerMenu({
               <Paperclip className="size-4 text-muted-foreground" />
               Add a file
             </button>
+            {onModeChange && (
+              <button
+                type="button"
+                className={menuRow}
+                disabled={modeDisabled}
+                onClick={() => {
+                  setMenuOpen(false);
+                  setSub("mode");
+                }}
+              >
+                <Shield className="size-4 text-muted-foreground" />
+                <span className="flex-1 text-left">Mode</span>
+                <span className="text-muted-foreground">
+                  {permissionModeLabel(mode ?? "default")}
+                </span>
+                {!modeDisabled && (
+                  <ChevronRight className="size-4 text-muted-foreground/60" />
+                )}
+              </button>
+            )}
             <button
               type="button"
               className={menuRow}
@@ -449,6 +583,30 @@ function MobileComposerMenu({
               </span>
               <ChevronRight className="size-4 text-muted-foreground/60" />
             </button>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet
+        open={sub === "mode"}
+        onOpenChange={(open) => {
+          if (!open) setSub(null);
+        }}
+      >
+        <SheetContent side="bottom" className="p-0">
+          <SheetTitle className="sr-only">Permission mode</SheetTitle>
+          <div className="py-2">
+            {PERMISSION_MODE_OPTIONS.map((option) => (
+              <SheetOptionRow
+                key={option.id}
+                label={option.label}
+                selected={(mode ?? "default") === option.id}
+                onSelect={() => {
+                  onModeChange?.(option.id);
+                  setSub(null);
+                }}
+              />
+            ))}
           </div>
         </SheetContent>
       </Sheet>
@@ -708,6 +866,91 @@ function commandMenuItems(query: string): ComposerMenuItem[] {
     }));
 }
 
+/**
+ * One attached-file chip. Image files show a small thumbnail of the file
+ * itself (an object URL — cheaper than a data-URL read) before the name; the
+ * URL is revoked when the pill unmounts (remove/send), so attach/remove
+ * cycles never leak blob URLs. Non-image files (and an image whose thumbnail
+ * has not resolved yet) show their file-kind glyph — image/PDF/code — with
+ * the paperclip as the fallback. Exported for its unit test.
+ */
+export function AttachmentPill({
+  file,
+  onRemove,
+}: {
+  file: File;
+  onRemove: () => void;
+}) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file.type.startsWith("image/")) {
+      setPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  const kind = fileKindMeta(file.name, file.type);
+  const KindIcon = kind.icon;
+
+  return (
+    <span
+      className={cn(
+        "inline-flex items-center gap-1.5 rounded-full border border-brand/30 bg-brand/5 pr-1.5 py-1 text-xs text-brand dark:text-brand",
+        previewUrl ? "pl-1" : "pl-2.5",
+      )}
+    >
+      {previewUrl ? (
+        // biome-ignore lint/performance/noImgElement: object URLs need a plain img
+        <img
+          src={previewUrl}
+          alt=""
+          className="size-5 shrink-0 rounded-full object-cover"
+        />
+      ) : (
+        <KindIcon aria-label={kind.label} className="size-3" />
+      )}
+      <span className="max-w-40 truncate">{file.name}</span>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="flex items-center justify-center size-4 rounded-full hover:bg-brand/10"
+      >
+        ×
+      </button>
+    </span>
+  );
+}
+
+/** What Enter resolves to in the composer. `newline` means "do not intercept
+ *  the key" — the editor's own hardBreak handles it. */
+export type ComposerEnterAction = "send" | "queue" | "steer" | "newline";
+
+/**
+ * The composer's Enter decision table, extracted pure so the whole matrix is
+ * testable without driving the TipTap editor:
+ *
+ * - Idle: Enter sends; Shift+Enter inserts a newline (fall through to the
+ *   editor's hardBreak).
+ * - Streaming with files attached: ALWAYS queue, on both keys. A steer
+ *   carries text only, so files force the queue path; the files stay attached
+ *   in the composer (never silently dropped) and ride the next real send.
+ * - Streaming: Enter performs the preferred action (Settings → Chat) and
+ *   Shift+Enter the opposite.
+ */
+export function resolveComposerAction(input: {
+  shift: boolean;
+  isStreaming: boolean;
+  behavior: EnterSendBehavior;
+  hasAttachments: boolean;
+}): ComposerEnterAction {
+  if (!input.isStreaming) return input.shift ? "newline" : "send";
+  if (input.hasAttachments) return "queue";
+  if (!input.shift) return input.behavior;
+  return input.behavior === "queue" ? "steer" : "queue";
+}
+
 /** Open autocomplete menu state, mirrored from TipTap's suggestion lifecycle. */
 interface ComposerMenu {
   kind: "agent" | "command";
@@ -764,6 +1007,7 @@ export function ChatInput({
   focusKey,
   onSend,
   onQueue,
+  onSteer,
   onModelChange,
   disabled = false,
   isStreaming = false,
@@ -772,6 +1016,8 @@ export function ChatInput({
   initialText,
   onInitialTextConsumed,
   modelLockedLabel,
+  mode,
+  onModeChange,
 }: ChatInputProps) {
   const placeholder = placeholderProp ?? DEFAULT_PLACEHOLDER;
   // Plain-text mirror of the editor, kept in sync via onUpdate. Used only for
@@ -928,24 +1174,60 @@ export function ChatInput({
     ),
   );
 
-  const handleSend = useCallback(() => {
-    const trimmed = editor ? composerText(editor) : "";
-    if (!trimmed || disabled) return;
-    if (isStreaming && onQueue) {
-      onQueue(trimmed);
+  // The preferred Enter action while a reply is streaming (Settings → Chat).
+  // Hydrates on mount, so the first frame is always the "queue" default.
+  const { behavior: enterBehavior } = useEnterSendBehavior();
+
+  /** Executes one resolved Enter action against the current editor content.
+   *  Missing handlers degrade toward the pre-steer behavior: steer without
+   *  onSteer queues, queue without onQueue sends. */
+  const performAction = useCallback(
+    (action: ComposerEnterAction) => {
+      if (action === "newline") return;
+      const trimmed = editor ? composerText(editor) : "";
+      if (!trimmed || disabled) return;
+      const resolved = action === "steer" && !onSteer ? "queue" : action;
+      if (
+        (resolved === "steer" && onSteer) ||
+        (resolved === "queue" && onQueue)
+      ) {
+        if (resolved === "steer") onSteer?.(trimmed);
+        else onQueue?.(trimmed);
+        editor?.commands.clearContent();
+        setText("");
+        // Attached files deliberately stay attached: neither a queued text
+        // nor a steer can carry them, so they ride the next real send.
+        return;
+      }
+      onSend?.(trimmed, attachedFiles.length > 0 ? attachedFiles : undefined);
       editor?.commands.clearContent();
       setText("");
-      return;
-    }
-    onSend?.(trimmed, attachedFiles.length > 0 ? attachedFiles : undefined);
-    editor?.commands.clearContent();
-    setText("");
-    setAttachedFiles([]);
-  }, [editor, disabled, isStreaming, onQueue, onSend, attachedFiles]);
+      setAttachedFiles([]);
+    },
+    [editor, disabled, onQueue, onSteer, onSend, attachedFiles],
+  );
+
+  /** Resolve + perform for one Enter press (or a send-button click, which is
+   *  the plain-Enter path). */
+  const actOnEnter = useCallback(
+    (shift: boolean) => {
+      performAction(
+        resolveComposerAction({
+          shift,
+          isStreaming,
+          behavior: enterBehavior,
+          hasAttachments: attachedFiles.length > 0,
+        }),
+      );
+    },
+    [performAction, isStreaming, enterBehavior, attachedFiles],
+  );
+
+  const handleSend = useCallback(() => actOnEnter(false), [actOnEnter]);
 
   // Menu nav + Enter-to-send are wired with a native capture-phase keydown
   // listener on the editor DOM, re-subscribed each render with fresh closures
-  // over `menu`/`handleSend`. Capture phase runs before ProseMirror's own
+  // over `menu`/`actOnEnter`. Capture phase runs before ProseMirror's own
   // (bubble-phase) handler, and stopPropagation keeps the base keymap and the
   // suggestion plugins from also acting. This sidesteps both TipTap re-syncing
   // its editorProps and the React Compiler not preserving render-phase refs.
@@ -960,15 +1242,26 @@ export function ChatInput({
         }
         return;
       }
-      if (event.key === "Enter" && !event.shiftKey) {
+      if (event.key !== "Enter") return;
+      if (event.shiftKey) {
+        // Shift+Enter acts (as the opposite of the Enter preference) only
+        // while a reply is streaming AND there is text to act on; otherwise
+        // it keeps its newline behavior — fall through to the editor's
+        // hardBreak without preventDefault.
+        const trimmed = editor ? composerText(editor) : "";
+        if (!isStreaming || !trimmed) return;
         event.preventDefault();
         event.stopPropagation();
-        handleSend();
+        actOnEnter(true);
+        return;
       }
+      event.preventDefault();
+      event.stopPropagation();
+      actOnEnter(false);
     };
     dom.addEventListener("keydown", onKeyDown, true);
     return () => dom.removeEventListener("keydown", onKeyDown, true);
-  }, [editor, menu, handleSend]);
+  }, [editor, menu, isStreaming, actOnEnter]);
 
   const hasText = text.trim().length > 0;
 
@@ -1093,23 +1386,14 @@ export function ChatInput({
         {attachedFiles.length > 0 && (
           <div className="flex flex-wrap gap-1.5 px-4 pt-3">
             {attachedFiles.map((f, i) => (
-              <span
+              <AttachmentPill
                 // biome-ignore lint/suspicious/noArrayIndexKey: files may share names
                 key={`${f.name}-${i}`}
-                className="inline-flex items-center gap-1.5 rounded-full border border-brand/30 bg-brand/5 pl-2.5 pr-1.5 py-1 text-xs text-brand dark:text-brand"
-              >
-                <Paperclip className="size-3" />
-                {f.name}
-                <button
-                  type="button"
-                  onClick={() =>
-                    setAttachedFiles((prev) => prev.filter((_, j) => j !== i))
-                  }
-                  className="flex items-center justify-center size-4 rounded-full hover:bg-brand/10"
-                >
-                  ×
-                </button>
-              </span>
+                file={f}
+                onRemove={() =>
+                  setAttachedFiles((prev) => prev.filter((_, j) => j !== i))
+                }
+              />
             ))}
           </div>
         )}
@@ -1127,6 +1411,9 @@ export function ChatInput({
               }
               onModelChange={onModelChange}
               modelLockedLabel={modelLockedLabel}
+              mode={mode}
+              onModeChange={onModeChange}
+              modeDisabled={disabled || isStreaming}
             />
           </div>
           {/* TipTap composer: resolved @agent / /skill mentions are atomic
@@ -1209,7 +1496,10 @@ export function ChatInput({
           so its top edge overlaps the input box's bottom rounded corners,
           making the two boxes appear to share a single outline. */}
       {/* Hidden on mobile: Model and Memory live in the + options sheet. */}
-      <div className="-mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1 rounded-b-2xl border border-t-0 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 overflow-x-auto hide-scrollbar max-[499px]:hidden">
+      {/* @container: the Model/Memory pills collapse their value labels via
+          container queries when THIS row runs narrow (a ~400px side-panel
+          composer), independent of the viewport width. */}
+      <div className="@container -mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1 rounded-b-2xl border border-t-0 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 overflow-x-auto hide-scrollbar max-[499px]:hidden">
         {projects && (
           <ProjectsDropdown
             projects={projects}
@@ -1220,6 +1510,13 @@ export function ChatInput({
         )}
         {!compact && (
           <>
+            {onModeChange && (
+              <ModeSelector
+                mode={mode ?? "default"}
+                onModeChange={onModeChange}
+                disabled={disabled || isStreaming}
+              />
+            )}
             <ModelEffortSelector
               lockedLabel={modelLockedLabel}
               onModelChange={(id) => {

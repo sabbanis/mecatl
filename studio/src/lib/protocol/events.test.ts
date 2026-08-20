@@ -152,6 +152,25 @@ describe("translateEvent", () => {
     ).toEqual([]);
   });
 
+  it("translates a steer drain echo to the steer arm with its watermark id", () => {
+    expect(
+      translate({
+        type: "steer",
+        steer: { text: "focus on the failing test", message_id: "steer-7-2" },
+      }),
+    ).toEqual([
+      {
+        type: "steer",
+        text: "focus on the failing test",
+        messageId: "steer-7-2",
+      },
+    ]);
+    // A malformed echo still surfaces (empty fields), never a silent drop.
+    expect(translate({ type: "steer" })).toEqual([
+      { type: "steer", text: "", messageId: "" },
+    ]);
+  });
+
   it("surfaces an unknown event kind as a notice, never a silent drop", () => {
     expect(translate({ type: "something.new" })).toEqual([
       {

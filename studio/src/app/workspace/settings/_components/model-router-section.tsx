@@ -19,6 +19,7 @@ import {
   Note,
   OfflineNote,
   SettingsCard,
+  SettingsRow,
 } from "./settings-card";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
@@ -191,7 +192,7 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
           </Note>
           <div className="flex flex-col gap-2">
             {(router?.categories ?? []).map((category) => (
-              <div key={category.name} className="rounded-md border p-3">
+              <div key={category.name} className="rounded-lg border p-4">
                 <p className="font-mono text-sm font-medium">{category.name}</p>
                 <p className="font-mono text-xs text-muted-foreground">
                   {category.model || "no model pinned"}
@@ -212,19 +213,21 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
   return (
     <SettingsCard title="Model router">
       <div className="flex flex-col gap-4">
-        <div className="flex items-center justify-between gap-3">
-          <Label htmlFor="routing-enabled" className="text-sm font-normal">
-            Semantic routing {view.enabled ? "on" : "off"}
-          </Label>
+        <SettingsRow
+          label={`Semantic routing ${view.enabled ? "on" : "off"}`}
+          htmlFor="routing-enabled"
+          description="A small classifier reads each prompt and picks a category, so cheap work lands on a cheap model."
+          className="py-0"
+        >
           <Switch
             id="routing-enabled"
             checked={view.enabled}
             onCheckedChange={(checked) => patch({ enabled: checked })}
             aria-label="Enable semantic model routing"
           />
-        </div>
+        </SettingsRow>
 
-        <div className="grid gap-3 sm:grid-cols-2">
+        <div className="grid gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <Label htmlFor="routing-classifier">Classifier model</Label>
             <ModelSelect
@@ -257,14 +260,15 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
           </div>
         </div>
 
-        <div className="flex items-center justify-between gap-2">
-          <h3 className="text-sm font-semibold">
+        <div className="flex items-center justify-between gap-2 pt-1">
+          <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
             Categories ({view.categories.length})
           </h3>
           {view.categories.length < 8 && (
             <Button
               size="sm"
               variant="outline"
+              className="rounded-full"
               onClick={() =>
                 patch({
                   categories: [
@@ -287,9 +291,9 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
           view.categories.map((category) => (
             <div
               key={category.key}
-              className="flex flex-col gap-3 rounded-md border p-3"
+              className="flex flex-col gap-3 rounded-lg border p-4"
             >
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor={`category-name-${category.key}`}>Name</Label>
                   <Input
@@ -340,6 +344,7 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
                   <Button
                     size="sm"
                     variant="outline"
+                    className="rounded-full"
                     onClick={() =>
                       patch({
                         categories: view.categories.filter(
@@ -363,11 +368,16 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
           </p>
           <div className="flex gap-2">
             {editing && (
-              <Button variant="outline" onClick={() => setDraft(null)}>
+              <Button
+                variant="outline"
+                className="rounded-full"
+                onClick={() => setDraft(null)}
+              >
                 Discard changes
               </Button>
             )}
             <Button
+              variant="action"
               disabled={
                 !editing || problem !== null || runtime.busy === "router"
               }

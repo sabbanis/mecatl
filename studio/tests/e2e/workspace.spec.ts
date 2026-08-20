@@ -18,12 +18,15 @@ test("the chat list and transcript come from the daemon", async ({ page }) => {
   ).toBeVisible();
 });
 
-test("schedules render the registry with its posture badges", async ({
+test("schedules render the registry with humanized triggers", async ({
   page,
 }) => {
   await page.goto("/workspace/schedules");
   await expect(page.getByText("nightly-fixture-digest")).toBeVisible();
-  await expect(page.getByText("Plan", { exact: false }).first()).toBeVisible();
+  // The fixture's cron is "0 9 * * *" — the table renders it in plain English.
+  await expect(
+    page.getByText("Daily at", { exact: false }).first(),
+  ).toBeVisible();
 });
 
 test("skills render the resolved inventory", async ({ page }) => {

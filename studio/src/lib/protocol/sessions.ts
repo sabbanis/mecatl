@@ -48,6 +48,48 @@ export type SessionInventoryPage = {
   nextCursor: string;
 };
 
+/**
+ * The closed session permission-mode vocabulary, spelled the way the daemon's
+ * session aggregate spells it (session.PermissionMode: "default" / "plan" /
+ * "acceptEdits"). This is what the session snapshot's `mode` field echoes.
+ */
+export type SessionPermissionMode = "default" | "plan" | "acceptEdits";
+
+/**
+ * Decodes a session snapshot's `mode` echo into the closed vocabulary.
+ * Tolerant the same way the daemon's own modeFromString is (case-insensitive,
+ * "accept"/"accept-edits"/"accept_edits"/"acceptEdits" all mean accept-edits);
+ * unknown or empty values fall through to "default" — the daemon applies the
+ * default mode to a session created without one.
+ */
+export function decodeSessionPermissionMode(
+  value: unknown,
+): SessionPermissionMode {
+  if (typeof value !== "string") return "default";
+  switch (value.toLowerCase()) {
+    case "plan":
+      return "plan";
+    case "accept":
+    case "acceptedits":
+    case "accept-edits":
+    case "accept_edits":
+      return "acceptEdits";
+    default:
+      return "default";
+  }
+}
+
+/**
+ * The wire spelling for requests that carry a mode (session creation and
+ * POST /v1/sessions/{id}/mode) — protojson snake_case, per the
+ * requests-are-protojson rule. Never echo the decoded camelCase back.
+ */
+export function encodeSessionPermissionMode(
+  mode: SessionPermissionMode,
+): "default" | "plan" | "accept_edits" {
+  return mode === "acceptEdits" ? "accept_edits" : mode;
+}
+
 // int64 fields cross encoding/json as numbers. A value that arrives as a string
 // (a protojson-shaped proxy, a hand-written stub) must still not become NaN.
 const unixSecondsToMillis = (value: unknown) => {

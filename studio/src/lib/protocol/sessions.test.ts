@@ -1,5 +1,10 @@
 import { describe, expect, it } from "vitest";
-import { decodeSessionInventory, decodeSessionTranscript } from "./sessions";
+import {
+  decodeSessionInventory,
+  decodeSessionPermissionMode,
+  decodeSessionTranscript,
+  encodeSessionPermissionMode,
+} from "./sessions";
 
 describe("decodeSessionInventory", () => {
   it("takes action eligibility from the row's capabilities, never re-deriving it", () => {
@@ -130,5 +135,40 @@ describe("decodeSessionTranscript", () => {
       messages: [],
     });
     expect(transcript.complete).toBe(false);
+  });
+});
+
+describe("session permission mode mapping", () => {
+  it("decodes the daemon's echo spellings, mirroring the Go modeFromString", () => {
+    // The snapshot echoes session.PermissionMode verbatim: "acceptEdits".
+    expect(decodeSessionPermissionMode("acceptEdits")).toBe("acceptEdits");
+    expect(decodeSessionPermissionMode("plan")).toBe("plan");
+    expect(decodeSessionPermissionMode("default")).toBe("default");
+    // The daemon's own parser tolerates these; the decoder matches it.
+    expect(decodeSessionPermissionMode("accept_edits")).toBe("acceptEdits");
+    expect(decodeSessionPermissionMode("accept-edits")).toBe("acceptEdits");
+    expect(decodeSessionPermissionMode("accept")).toBe("acceptEdits");
+    expect(decodeSessionPermissionMode("PLAN")).toBe("plan");
+  });
+
+  it("falls through to default for unknown, empty, or non-string values", () => {
+    expect(decodeSessionPermissionMode("")).toBe("default");
+    expect(decodeSessionPermissionMode("yolo")).toBe("default");
+    expect(decodeSessionPermissionMode(undefined)).toBe("default");
+    expect(decodeSessionPermissionMode(3)).toBe("default");
+  });
+
+  it("encodes requests as protojson snake_case, never the camelCase echo", () => {
+    expect(encodeSessionPermissionMode("default")).toBe("default");
+    expect(encodeSessionPermissionMode("plan")).toBe("plan");
+    expect(encodeSessionPermissionMode("acceptEdits")).toBe("accept_edits");
+  });
+
+  it("round-trips every mode through encode → decode", () => {
+    for (const mode of ["default", "plan", "acceptEdits"] as const) {
+      expect(
+        decodeSessionPermissionMode(encodeSessionPermissionMode(mode)),
+      ).toBe(mode);
+    }
   });
 });

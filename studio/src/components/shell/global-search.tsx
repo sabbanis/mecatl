@@ -24,6 +24,7 @@ import {
 } from "@/features/agent";
 import { useAgentSkills } from "@/features/agent/hooks/use-agent-skills";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
+import { useThreadSessionIds } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
 
 /** Atrium workspace results. */
@@ -46,19 +47,31 @@ export function GlobalSearch() {
   const { jobs } = useAgentCron();
   const { skills } = useAgentSkills();
   const { entries: memories } = useAgentMemory();
+  // Thread-backing sessions stay out of search, mirroring the chat sidebar:
+  // a thread's only entry point is the reply indicator on its parent message.
+  const threadSessionIds = useThreadSessionIds();
 
   const provider = useMemo(
     () =>
       createStaticSearchProvider(
-        buildAtriumSearchEntries({ sessions, jobs, skills, memories }),
+        buildAtriumSearchEntries({
+          sessions: sessions.filter((s) => !threadSessionIds.has(s.id)),
+          jobs,
+          skills,
+          memories,
+        }),
       ),
-    [sessions, jobs, skills, memories],
+    [sessions, jobs, skills, memories, threadSessionIds],
   );
 
-  // App-wide shortcuts, wired through the central dispatcher: ⌘K toggles the
-  // palette; `?` opens the keyboard-shortcuts reference.
+  // App-wide shortcuts, wired through the central dispatcher (this component
+  // is mounted in the shell topbar, so they live on every workspace page):
+  // ⌘K toggles the palette; `?` and ⌘/ open the keyboard-shortcuts reference
+  // (⌘/ also works while typing); ⌘, opens settings.
   useShortcut("search.open", () => setOpen((prev) => !prev));
   useShortcut("shortcuts.open", () => router.push("/workspace/shortcuts"));
+  useShortcut("shortcuts.open.mod", () => router.push("/workspace/shortcuts"));
+  useShortcut("settings.open", () => router.push("/workspace/settings"));
 
   const results = useMemo(() => provider.query(query), [provider, query]);
   const byCategory = useMemo(() => {

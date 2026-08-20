@@ -1,5 +1,11 @@
 import { describe, expect, it } from "vitest";
-import { keycaps, matchCombo, SHORTCUT_GROUPS, SHORTCUTS } from "./registry";
+import {
+  comboFiresWhileTyping,
+  keycaps,
+  matchCombo,
+  SHORTCUT_GROUPS,
+  SHORTCUTS,
+} from "./registry";
 
 /** Build a minimal KeyboardEvent-like object for matchCombo. */
 function ev(
@@ -32,6 +38,19 @@ describe("shortcut registry", () => {
         s.group as (typeof SHORTCUT_GROUPS)[number],
       );
     }
+  });
+
+  it("pins the app-wide bindings to their combos", () => {
+    const byId = new Map(SHORTCUTS.map((s) => [s.id, s.combo]));
+    expect(byId.get("search.open")).toBe("mod+k");
+    expect(byId.get("settings.open")).toBe("mod+,");
+    expect(byId.get("shortcuts.open")).toBe("?");
+    expect(byId.get("shortcuts.open.mod")).toBe("mod+/");
+    expect(byId.get("chat.toggleList")).toBe("mod+b");
+    expect(byId.get("close.esc")).toBe("esc");
+    // Deliberately NOT mod+n: browsers reserve ⌘N/Ctrl+N (new window) and the
+    // page can't intercept it, so "New chat" stays on the preventable ⌘⇧O.
+    expect(byId.get("chat.new")).toBe("mod+shift+o");
   });
 });
 
@@ -74,5 +93,29 @@ describe("matchCombo", () => {
       matchCombo("mod+shift+n", ev("n", { meta: true, shift: true })),
     ).toBe(true);
     expect(matchCombo("mod+shift+n", ev("n", { meta: true }))).toBe(false);
+  });
+
+  it("matches mod + punctuation combos", () => {
+    expect(matchCombo("mod+,", ev(",", { meta: true }))).toBe(true);
+    expect(matchCombo("mod+,", ev(",", { ctrl: true }))).toBe(true);
+    expect(matchCombo("mod+,", ev(","))).toBe(false);
+    expect(matchCombo("mod+/", ev("/", { meta: true }))).toBe(true);
+    expect(matchCombo("mod+/", ev("/"))).toBe(false);
+  });
+
+  it("matches esc via its alias", () => {
+    expect(matchCombo("esc", ev("Escape"))).toBe(true);
+    expect(matchCombo("esc", ev("Escape", { meta: true }))).toBe(false);
+  });
+});
+
+describe("comboFiresWhileTyping", () => {
+  it("allows mod combos and bare esc, suppresses plain keys", () => {
+    expect(comboFiresWhileTyping("mod+k")).toBe(true);
+    expect(comboFiresWhileTyping("mod+shift+o")).toBe(true);
+    expect(comboFiresWhileTyping("esc")).toBe(true);
+    expect(comboFiresWhileTyping("j")).toBe(false);
+    expect(comboFiresWhileTyping("?")).toBe(false);
+    expect(comboFiresWhileTyping("shift+enter")).toBe(false);
   });
 });

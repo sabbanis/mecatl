@@ -54,9 +54,9 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
       {!runtime.live ? (
         <OfflineNote />
       ) : (
-        <div className="flex flex-col gap-3">
+        <div className="flex flex-col gap-4">
           {gateway ? (
-            <div className="rounded-md border bg-muted/40 p-3">
+            <div className="rounded-lg border bg-muted/40 p-4">
               <p className="text-xs text-muted-foreground">
                 Connected as{" "}
                 <span className="font-medium text-foreground">
@@ -75,7 +75,7 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
             <ExternalManagedNote />
           ) : (
             <>
-              <div className="grid gap-3 sm:grid-cols-2">
+              <div className="grid gap-4 sm:grid-cols-2">
                 <div className="flex flex-col gap-1.5">
                   <Label htmlFor="gw-name">Gateway name</Label>
                   <Input
@@ -98,22 +98,22 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
                 </div>
               </div>
 
-              <div className="flex flex-col gap-2">
-                <Button
-                  type="button"
-                  disabled={!ready || busy}
-                  onClick={startOAuth}
-                >
-                  {busy ? "Waiting for sign-in…" : "Sign in to gateway"}
-                </Button>
-              </div>
+              <Button
+                type="button"
+                variant="action"
+                className="self-start"
+                disabled={!ready || busy}
+                onClick={startOAuth}
+              >
+                {busy ? "Waiting for sign-in…" : "Sign in to gateway"}
+              </Button>
 
-              <details className="rounded-md border p-3">
-                <summary className="cursor-pointer text-xs text-muted-foreground">
+              <details className="rounded-lg border p-4">
+                <summary className="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground">
                   Or paste a bearer token
                 </summary>
                 <form
-                  className="mt-3 flex flex-col gap-2 sm:flex-row sm:items-end"
+                  className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end"
                   onSubmit={(event) => {
                     event.preventDefault();
                     if (!ready) return;
@@ -139,6 +139,7 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
                   <Button
                     type="submit"
                     variant="outline"
+                    className="rounded-full"
                     disabled={!ready || busy}
                   >
                     Connect

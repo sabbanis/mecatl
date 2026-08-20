@@ -38,7 +38,7 @@ export function ProviderSection({ runtime }: { runtime: Runtime }) {
         <Note>Reading the controller&rsquo;s status…</Note>
       ) : (
         <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-3">
+          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/40 p-4">
             <div className="min-w-0">
               <p className="font-mono text-sm font-medium">
                 {status.provider || "unknown"}
@@ -54,7 +54,7 @@ export function ProviderSection({ runtime }: { runtime: Runtime }) {
           </div>
 
           {runtime.mode !== "external" && (
-            <div className="space-y-1.5">
+            <div className="space-y-2">
               <p className="text-xs font-medium text-muted-foreground">
                 Configured in{" "}
                 <code className="font-mono">~/.config/mecatl/auth.yaml</code>

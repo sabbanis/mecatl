@@ -8,18 +8,22 @@
  */
 
 import type { StreamEvent } from "@/features/agent/types";
+import { validSkillName } from "@/lib/controller-security.mjs";
 import {
   decodeScheduleFires,
   decodeScheduleRows,
   decodeSessionInventory,
+  decodeSessionPermissionMode,
   decodeSessionTranscript,
   encodeScheduleSpec,
+  encodeSessionPermissionMode,
   parseMecatlEvent,
   type ScheduleCarriedSpec,
   type ScheduleFireRow,
   type ScheduleRow,
   type ScheduleSpecDraft,
   type SessionInventoryPage,
+  type SessionPermissionMode,
   type SessionSummary,
   type SessionTranscript,
   translateEvent,
@@ -69,9 +73,13 @@ export async function probeHarness(
  * Creates a harness session. The workspace every file and shell tool is rooted
  * at is injected by the proxy from MECATL_WORKSPACE, so it is deliberately not a
  * parameter here — the browser never needs to know the server's paths.
+ *
+ * The create body's `mode` runs through the daemon's same modeFromString as
+ * POST /mode, so "accept_edits" is accepted at creation directly — no
+ * create-then-setMode dance is needed for an accept-edits draft.
  */
 export async function createHarnessSession(
-  mode: "default" | "plan" = "default",
+  mode: "default" | "plan" | "accept_edits" = "default",
   signal?: AbortSignal,
 ): Promise<string> {
   const response = await fetch(`${HARNESS_API}/sessions`, {
@@ -83,6 +91,54 @@ export async function createHarnessSession(
   if (!response.ok) throw new Error(await readError(response));
   const body = (await response.json()) as { session_id?: string };
   if (!body.session_id) throw new Error("harness returned no session id");
+  return body.session_id;
+}
+
+/**
+ * The parent session was mid-run: the daemon refuses to fork history from a
+ * running/awaiting source (HTTP 412). Thrown as its own type so the thread UI
+ * can say "wait for the current response" instead of a generic failure.
+ */
+export class ThreadSourceBusyError extends Error {
+  constructor(detail: string) {
+    super(detail || "The source session is still running.");
+    this.name = "ThreadSourceBusyError";
+  }
+}
+
+/**
+ * Creates the daemon session backing a message thread: a normal session whose
+ * conversation is seeded from the parent's history (source_session_id
+ * carryover), then renamed so the sidebar reads "Thread: …". The workspace is
+ * proxy-injected, exactly like createHarnessSession. A running/awaiting
+ * parent answers 412, surfaced as ThreadSourceBusyError.
+ */
+export async function createThreadHarnessSession(
+  parentSessionId: string,
+  title: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await fetch(`${HARNESS_API}/sessions`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({
+      mode: "default",
+      source_session_id: parentSessionId,
+    }),
+    signal,
+  });
+  if (response.status === 412) {
+    throw new ThreadSourceBusyError(await readError(response));
+  }
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as { session_id?: string };
+  if (!body.session_id) throw new Error("harness returned no session id");
+  try {
+    await renameHarnessSession(body.session_id, title);
+  } catch {
+    // The rename is cosmetic (the sidebar label). The thread session itself
+    // is live and must not be lost to a failed rename.
+  }
   return body.session_id;
 }
 
@@ -267,6 +323,48 @@ export async function renameHarnessSession(
   if (!response.ok) throw new Error(await readError(response));
   const body = (await response.json()) as { title?: string };
   return body.title ?? title;
+}
+
+/**
+ * Reads a session's current permission mode from its snapshot
+ * (`GET /v1/sessions/{id}` echoes the aggregate's mode string).
+ */
+export async function fetchHarnessSessionMode(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<SessionPermissionMode> {
+  const response = await fetch(
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as { mode?: string };
+  return decodeSessionPermissionMode(body.mode);
+}
+
+/**
+ * Changes a session's permission mode (POST /v1/sessions/{id}/mode, protojson
+ * snake_case body — modeled on renameHarnessSession). The response echoes the
+ * updated session; the echoed mode is returned so the UI adopts the daemon's
+ * word rather than assuming its input took. The daemon refuses a mid-turn
+ * change (the aggregate rejects it while running/awaiting), which surfaces
+ * here as a thrown error.
+ */
+export async function setHarnessSessionMode(
+  sessionId: string,
+  mode: SessionPermissionMode,
+): Promise<SessionPermissionMode> {
+  const response = await fetch(
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/mode`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ mode: encodeSessionPermissionMode(mode) }),
+    },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as { mode?: string };
+  return decodeSessionPermissionMode(body.mode);
 }
 
 /** Physically deletes a session's snapshot and sidecars. */
@@ -651,6 +749,116 @@ export async function connectHarnessGateway(
   if (!response.ok) throw new Error(await readError(response));
 }
 
+// ── Controller: workspace skills management ─────────────────────────────────
+// The daemon has no skill write API (its skills snapshot is resolved once at
+// startup), so skill CRUD goes to the managed-mode controller, which owns the
+// pinned --skills-dir and restarts mecated when a change touches what the
+// daemon can see. External mode has no controller: every one of these answers
+// 409 there, and the UI renders the controls disabled instead of calling them.
+
+/** A skill parked in the controller's `.disabled/` holding area. */
+export interface DisabledSkillInfo {
+  name: string;
+  description: string;
+}
+
+/** Client-side mirror of the controller's name gate, so a bad name fails with
+ *  this message rather than as a mystery 400. */
+function requireSkillName(name: string): string {
+  if (!validSkillName(name)) {
+    throw new Error(
+      "Skill names use lowercase letters, digits, hyphens, and underscores (max 64 characters)",
+    );
+  }
+  return encodeURIComponent(name);
+}
+
+/** Skills the controller has disabled (moved out of the daemon's sight). */
+export async function listDisabledHarnessSkills(
+  signal?: AbortSignal,
+): Promise<DisabledSkillInfo[]> {
+  const response = await fetch(`${CONTROL_API}/skills/disabled`, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as {
+    disabled?: { name?: string; description?: string }[];
+  };
+  return (body.disabled ?? [])
+    .filter((skill) => typeof skill.name === "string" && skill.name !== "")
+    .map((skill) => ({
+      name: skill.name ?? "",
+      description: skill.description ?? "",
+    }));
+}
+
+/** Creates a new skill folder with its SKILL.md, enabled. RESTARTS the daemon
+ *  — a new skill is invisible until the startup snapshot is rebuilt. */
+export async function createHarnessSkill(
+  name: string,
+  body: string,
+): Promise<void> {
+  requireSkillName(name);
+  const response = await fetch(`${CONTROL_API}/skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name, body }),
+  });
+  if (!response.ok) throw new Error(await readError(response));
+}
+
+/** Reads a skill's SKILL.md from the controller (either side of disabled). */
+export async function fetchHarnessSkillBody(
+  name: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await fetch(
+    `${CONTROL_API}/skills/${requireSkillName(name)}/body`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as { body?: string };
+  return body.body ?? "";
+}
+
+/** Writes a skill's SKILL.md. RESTARTS the daemon when the skill is enabled. */
+export async function saveHarnessSkillBody(
+  name: string,
+  body: string,
+): Promise<void> {
+  const response = await fetch(
+    `${CONTROL_API}/skills/${requireSkillName(name)}/body`,
+    {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ body }),
+    },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+}
+
+/** Moves a skill in or out of the disabled holding area. RESTARTS the daemon. */
+export async function setHarnessSkillEnabled(
+  name: string,
+  enabled: boolean,
+): Promise<void> {
+  const response = await fetch(
+    `${CONTROL_API}/skills/${requireSkillName(name)}/${enabled ? "enable" : "disable"}`,
+    { method: "POST" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+}
+
+/** Deletes a skill's directory from the workspace. RESTARTS the daemon. */
+export async function deleteHarnessSkill(name: string): Promise<void> {
+  const response = await fetch(
+    `${CONTROL_API}/skills/${requireSkillName(name)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+}
+
 /** Reads the daemon's RESOLVED agent inventory (what it can delegate to now). */
 export async function listHarnessAgents(
   signal?: AbortSignal,
@@ -717,4 +925,60 @@ export async function cancelHarnessRun(sessionId: string): Promise<void> {
     `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/cancel`,
     { method: "POST" },
   ).catch(() => undefined);
+}
+
+/** The daemon's verdict on a steer request. `accepted`/`appended` mean the
+ *  text will be injected into the in-flight run at the next turn boundary;
+ *  `too_late` means the run is past injection and the caller keeps the text
+ *  (send it as a normal prompt instead). */
+export type HarnessSteerOutcome = "accepted" | "appended" | "too_late";
+
+/**
+ * Injects a message into a session's in-flight run. `messageId` is the
+ * client-minted correlation id: the stream's later `steer` echo names the id
+ * of the LAST message merged into the drained bundle, and the client splits
+ * its ordered pending list on that watermark.
+ */
+export async function steerHarnessRun(
+  sessionId: string,
+  text: string,
+  messageId: string,
+): Promise<{ outcome: HarnessSteerOutcome; messageId: string }> {
+  const response = await fetch(
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/steer`,
+    {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text, message_id: messageId }),
+    },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as {
+    outcome?: string;
+    message_id?: string;
+  };
+  // Anything other than an explicit accept resolves as too_late: the caller
+  // keeps the text and sends it as a normal prompt — never loses it.
+  const outcome: HarnessSteerOutcome =
+    body.outcome === "accepted" || body.outcome === "appended"
+      ? body.outcome
+      : "too_late";
+  return { outcome, messageId: body.message_id ?? messageId };
+}
+
+/**
+ * Retracts the whole pending steer bundle (the daemon models one bundle per
+ * run, not per-message retraction). `none_pending` means nothing was waiting
+ * — the bundle already drained into the run or none was ever sent.
+ */
+export async function cancelHarnessSteer(
+  sessionId: string,
+): Promise<"retracted" | "none_pending"> {
+  const response = await fetch(
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/steer-cancel`,
+    { method: "POST" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as { outcome?: string };
+  return body.outcome === "retracted" ? "retracted" : "none_pending";
 }

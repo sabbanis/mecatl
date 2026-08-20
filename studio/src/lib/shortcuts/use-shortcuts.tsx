@@ -1,7 +1,7 @@
 "use client";
 
 import { createContext, useContext, useEffect, useRef } from "react";
-import { comboUsesMod, matchCombo, SHORTCUTS } from "./registry";
+import { comboFiresWhileTyping, matchCombo, SHORTCUTS } from "./registry";
 
 type Registry = {
   register: (id: string, handler: () => void) => void;
@@ -23,18 +23,22 @@ function isTyping(el: Element | null): boolean {
 /**
  * Owns the single global keydown listener. Resolves each event against the
  * shortcut registry and calls the handler a component registered for that id.
- * Non-modifier shortcuts are suppressed while the user is typing.
+ * Non-modifier shortcuts (except Esc) are suppressed while the user is typing,
+ * and an event something closer to the key already consumed — a Radix
+ * dialog/menu dismissing on Escape, the composer's autocomplete menu — is
+ * skipped via `defaultPrevented`, so those layers always win over globals.
  */
 export function ShortcutsProvider({ children }: { children: React.ReactNode }) {
   const handlers = useRef(new Map<string, () => void>());
 
   useEffect(() => {
     const onKeyDown = (e: KeyboardEvent) => {
+      if (e.defaultPrevented || e.isComposing) return;
       const typing = isTyping(document.activeElement);
       for (const def of SHORTCUTS) {
         const handler = handlers.current.get(def.id);
         if (!handler) continue;
-        if (typing && !comboUsesMod(def.combo)) continue;
+        if (typing && !comboFiresWhileTyping(def.combo)) continue;
         if (matchCombo(def.combo, e)) {
           e.preventDefault();
           handler();

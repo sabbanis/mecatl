@@ -155,6 +155,22 @@ test("external mode injects daemon auth server-side and disables local controls"
   assert.equal(mutation.status, 409);
   assert.match((await mutation.json()).error, /external mecated deployment/);
 
+  // Skill management is controller-owned: external mode owns nothing locally,
+  // so every skill write (and even the disabled-list read) answers 409.
+  for (const [path, method] of [
+    ["skills", "POST"],
+    ["skills/pr-feedback/disable", "POST"],
+    ["skills/pr-feedback/enable", "POST"],
+    ["skills/pr-feedback/body", "PUT"],
+    ["skills/pr-feedback", "DELETE"],
+    ["skills/disabled", "GET"],
+  ]) {
+    const refused = await fetch(`${studioBaseURL}/api/mecatl-control/${path}`, {
+      method,
+    });
+    assert.equal(refused.status, 409, `${method} ${path}`);
+  }
+
   const csrf = await fetch(`${studioBaseURL}/api/mecatl/v1/sessions`, {
     method: "POST",
     headers: { origin: "https://evil.example", "content-type": "text/plain" },
@@ -243,6 +259,28 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     ),
     true,
   );
+  // Skill routes are NOT in the header-free read-only allowlist: even the
+  // disabled-list GET needs the server-set studio header, and a skill
+  // mutation without it is refused like any other controller write.
+  for (const [method, pathname] of [
+    ["GET", "/skills/disabled"],
+    ["POST", "/skills"],
+    ["POST", "/skills/pr-feedback/disable"],
+    ["DELETE", "/skills/pr-feedback"],
+  ]) {
+    assert.equal(
+      requestIsAllowed(
+        {
+          method,
+          headers: { host: "127.0.0.1:8788", origin: "http://localhost:3000" },
+        },
+        new URL(`http://127.0.0.1:8788${pathname}`),
+        policy,
+      ),
+      false,
+      `${method} ${pathname}`,
+    );
+  }
 });
 
 test("gateway egress requires HTTPS or an operator-enabled loopback exception", () => {
