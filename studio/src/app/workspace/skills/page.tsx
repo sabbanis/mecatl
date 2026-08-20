@@ -184,7 +184,7 @@ export default function WorkspaceSkillsPage() {
   };
 
   return (
-    <div className="h-full overflow-y-auto px-4 pt-6 pb-14 min-[500px]:px-6">
+    <div className="h-full overflow-y-auto px-4 pt-6 pb-8 min-[500px]:px-6">
       <div className="space-y-5">
         <div className="flex items-center justify-between gap-4">
           <h1

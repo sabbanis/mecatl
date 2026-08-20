@@ -25,6 +25,7 @@ import { useAgentSkills } from "@/features/agent/hooks/use-agent-skills";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
 import { EditSkillDialog } from "../_components/edit-skill-dialog";
+import { SkillFiles } from "../_components/skill-files";
 
 /** "pr-feedback" → "Pr Feedback"; the raw slug stays the id/route param. */
 function humanizeSkillName(name: string): string {
@@ -50,6 +51,8 @@ export default function SkillDetailPage() {
     error,
     actionError,
     fetchBody,
+    fetchFiles,
+    fetchFile,
     saveBody,
     setEnabled,
     remove,
@@ -213,14 +216,24 @@ export default function SkillDetailPage() {
         </aside>
 
         <section className="flex min-w-0 flex-1 flex-col gap-3">
-          <h2 className="text-base font-semibold">SKILL.md</h2>
-          <div className="rounded-lg border bg-background p-6">
-            <p className="text-sm leading-relaxed text-muted-foreground">
-              The daemon&apos;s inventory is metadata-only; the agent reads a
-              skill&apos;s body only when it loads it.
-              {manageable && " Use Edit to view or change the SKILL.md source."}
-            </p>
-          </div>
+          <h2 className="text-base font-semibold">Files</h2>
+          {/* A skill can be a whole folder of assets, not just a SKILL.md —
+              the listing (and its read-only previews) comes from the
+              controller, so external mode keeps the metadata-only note. */}
+          {manageable ? (
+            <SkillFiles
+              name={skill.name}
+              fetchFiles={fetchFiles}
+              fetchFile={fetchFile}
+            />
+          ) : (
+            <div className="rounded-lg border bg-background p-6">
+              <p className="text-sm leading-relaxed text-muted-foreground">
+                The daemon&apos;s inventory is metadata-only; the agent reads a
+                skill&apos;s body only when it loads it.
+              </p>
+            </div>
+          )}
         </section>
       </div>
 

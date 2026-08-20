@@ -231,7 +231,7 @@ export default function ScheduleDetailPage() {
   };
 
   return (
-    <div className="h-full overflow-y-auto px-4 pt-6 pb-14 min-[500px]:px-6">
+    <div className="h-full overflow-y-auto px-4 pt-6 pb-8 min-[500px]:px-6">
       <div className="space-y-6">
         <Button
           variant="outline"

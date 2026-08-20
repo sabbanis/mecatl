@@ -1,6 +1,7 @@
 import { spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
+  lstat,
   mkdir,
   readdir,
   readFile,
@@ -261,6 +262,48 @@ function skillDescription(markdown) {
     return value.replace(/^["']|["']$/g, "");
   }
   return "";
+}
+
+/** Cap on the bundled-file listing — a skill is a small folder, not a repo. */
+const maxSkillFiles = 500;
+
+/**
+ * Bounded recursive listing of one skill's folder: relative POSIX paths +
+ * sizes. Symlinks are never followed (a link could point outside the skills
+ * dir), dot-entries are skipped (.DS_Store noise), and the walk stops at
+ * maxSkillFiles entries / depth 8.
+ */
+async function listSkillFiles(root) {
+  const files = [];
+  async function walk(dir, prefix, depth) {
+    if (depth > 8 || files.length >= maxSkillFiles) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (files.length >= maxSkillFiles) return;
+      if (entry.name.startsWith(".") || entry.isSymbolicLink()) continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(resolve(dir, entry.name), rel, depth + 1);
+      } else if (entry.isFile()) {
+        try {
+          files.push({
+            path: rel,
+            size: (await stat(resolve(dir, entry.name))).size,
+          });
+        } catch {
+          // Raced away between readdir and stat — skip it.
+        }
+      }
+    }
+  }
+  await walk(root, "", 0);
+  return files;
 }
 
 /** Names (+ best-effort descriptions) in the `.disabled/` holding area. */
@@ -1519,7 +1562,7 @@ const server = http.createServer(async (request, response) => {
   // (checks included, so a queued restart cannot race the side probes) and
   // restart mecated whenever the change touches what its startup snapshot saw.
   const skillRoute = requestURL.pathname.match(
-    /^\/skills\/([^/]+?)(?:\/(body|enable|disable))?$/,
+    /^\/skills\/([^/]+?)(?:\/(body|enable|disable|files|file))?$/,
   );
   if (skillRoute) {
     const [, rawName, action] = skillRoute;
@@ -1544,6 +1587,59 @@ const server = http.createServer(async (request, response) => {
           return;
         }
         throw skillClientError(`No skill named "${name}" has a SKILL.md`, 404);
+      }
+      // Read-only folder views: a skill can be a whole folder of assets
+      // (scripts/, references/, …), not just a SKILL.md. Listing and preview
+      // work on whichever side (enabled/disabled) holds the skill.
+      if (request.method === "GET" && action === "files") {
+        for (const side of [paths.enabled, paths.disabled]) {
+          if (!(await isDirectory(side))) continue;
+          response.end(JSON.stringify({ files: await listSkillFiles(side) }));
+          return;
+        }
+        throw skillClientError(`No skill named "${name}"`, 404);
+      }
+      if (request.method === "GET" && action === "file") {
+        const relPath = requestURL.searchParams.get("path") || "";
+        const segments = relPath.split("/");
+        if (
+          !relPath ||
+          relPath.includes("\\") ||
+          segments.some(
+            (segment) => segment === "" || segment === "." || segment === "..",
+          )
+        )
+          throw skillClientError(
+            "Provide a relative file path inside the skill as ?path=",
+          );
+        for (const side of [paths.enabled, paths.disabled]) {
+          if (!(await isDirectory(side))) continue;
+          const target = resolve(side, relPath);
+          if (!target.startsWith(side + sep))
+            throw skillClientError("Path escapes the skill folder");
+          let meta;
+          try {
+            meta = await lstat(target);
+          } catch {
+            throw skillClientError(`No file "${relPath}" in "${name}"`, 404);
+          }
+          if (!meta.isFile())
+            throw skillClientError(`"${relPath}" is not a regular file`);
+          if (meta.size > maxSkillBodyBytes)
+            throw skillClientError(
+              `"${relPath}" is too large to preview (limit ${maxSkillBodyBytes} bytes)`,
+              413,
+            );
+          const bytes = await readFile(target);
+          if (bytes.includes(0))
+            throw skillClientError(
+              `"${relPath}" is a binary file — no text preview`,
+              415,
+            );
+          response.end(JSON.stringify({ content: bytes.toString("utf8") }));
+          return;
+        }
+        throw skillClientError(`No skill named "${name}"`, 404);
       }
       if (request.method === "PUT" && action === "body") {
         if (

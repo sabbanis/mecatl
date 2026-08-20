@@ -20,7 +20,7 @@ function Key({ children }: { children: React.ReactNode }) {
  */
 export default function KeyboardShortcutsPage() {
   return (
-    <div className="h-full overflow-y-auto px-4 pt-6 pb-14 min-[500px]:px-6">
+    <div className="h-full overflow-y-auto px-4 pt-6 pb-8 min-[500px]:px-6">
       <div className="max-w-3xl space-y-6">
         <div className="space-y-1">
           <h1 className={pageTitleClass("pb-0 text-3xl leading-tight")}>

@@ -6,8 +6,10 @@ import {
   type DisabledSkillInfo,
   deleteHarnessSkill,
   fetchHarnessSkillBody,
+  fetchHarnessSkillFile,
   type HarnessSkillInfo,
   listDisabledHarnessSkills,
+  listHarnessSkillFiles,
   listHarnessSkills,
   saveHarnessSkillBody,
   setHarnessSkillEnabled,
@@ -103,6 +105,19 @@ export function useAgentSkills() {
     [],
   );
 
+  /** Lists the files bundled in a skill's folder (managed mode only). */
+  const fetchFiles = useCallback(
+    (name: string, signal?: AbortSignal) => listHarnessSkillFiles(name, signal),
+    [],
+  );
+
+  /** Reads one bundled text file from a skill's folder (managed mode only). */
+  const fetchFile = useCallback(
+    (name: string, path: string, signal?: AbortSignal) =>
+      fetchHarnessSkillFile(name, path, signal),
+    [],
+  );
+
   /** Creates a new skill (enabled). Like every mutation, restarts the daemon. */
   const create = useCallback(
     async (name: string, body: string) => {
@@ -144,6 +159,8 @@ export function useAgentSkills() {
     actionError,
     create,
     fetchBody,
+    fetchFiles,
+    fetchFile,
     saveBody,
     setEnabled,
     remove,

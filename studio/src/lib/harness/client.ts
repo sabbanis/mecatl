@@ -1025,6 +1025,45 @@ export async function fetchHarnessSkillBody(
   return body.body ?? "";
 }
 
+/** One bundled file in a skill's folder. */
+export interface HarnessSkillFile {
+  /** Relative POSIX path inside the skill folder, e.g. "scripts/run.sh". */
+  path: string;
+  size: number;
+}
+
+/** Lists the files bundled in a skill's folder (works for disabled skills). */
+export async function listHarnessSkillFiles(
+  name: string,
+  signal?: AbortSignal,
+): Promise<HarnessSkillFile[]> {
+  const response = await fetch(
+    `${CONTROL_API}/skills/${requireSkillName(name)}/files`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as { files?: HarnessSkillFile[] };
+  return (body.files ?? []).filter(
+    (file) => typeof file?.path === "string" && typeof file?.size === "number",
+  );
+}
+
+/** Reads one bundled text file from a skill's folder (bounded server-side;
+ *  binary or oversized files answer with a refusal that renders verbatim). */
+export async function fetchHarnessSkillFile(
+  name: string,
+  path: string,
+  signal?: AbortSignal,
+): Promise<string> {
+  const response = await fetch(
+    `${CONTROL_API}/skills/${requireSkillName(name)}/file?path=${encodeURIComponent(path)}`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as { content?: string };
+  return body.content ?? "";
+}
+
 /** Writes a skill's SKILL.md. RESTARTS the daemon when the skill is enabled. */
 export async function saveHarnessSkillBody(
   name: string,
