@@ -1,5 +1,4 @@
 import {
-  Bell,
   Bot,
   Brain,
   FlaskConical,
@@ -40,11 +39,6 @@ export const SETTINGS_GROUPS: Array<{
       },
       // After Appearance: identity, then how the app looks, then how the chat
       // behaves, then when it interrupts you.
-      {
-        href: "/workspace/settings/notifications",
-        label: "Notifications",
-        icon: Bell,
-      },
     ],
   },
   {

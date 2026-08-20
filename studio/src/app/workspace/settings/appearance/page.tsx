@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  Bell,
+  BellRing,
   CornerDownRight,
   ListEnd,
   Minus,
@@ -13,6 +15,7 @@ import {
 } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   type EnterSendBehavior,
@@ -46,6 +49,45 @@ export default function AppearanceSettingsPage() {
   const { side, setSide } = useSessionListSide();
   const { scale, setScale } = useUiScale();
   const { behavior, setBehavior } = useEnterSendBehavior();
+
+  // Browser notifications: permission mirrored into state so the row reflects
+  // granted / denied / not-yet-asked; "unsupported" hides the row's actions.
+  const [notifyPermission, setNotifyPermission] = useState<
+    NotificationPermission | "unsupported"
+  >("default");
+  useEffect(() => {
+    if (typeof window !== "undefined" && "Notification" in window) {
+      setNotifyPermission(Notification.permission);
+    } else {
+      setNotifyPermission("unsupported");
+    }
+  }, []);
+
+  async function enableNotifications() {
+    if (typeof Notification === "undefined") return;
+    const result = await Notification.requestPermission();
+    setNotifyPermission(result);
+    if (result === "granted") {
+      toast.success("Browser notifications enabled");
+    } else if (result === "denied") {
+      toast.error("Notifications are blocked — enable them in your browser.");
+    }
+  }
+
+  function sendTestNotification() {
+    if (
+      typeof Notification === "undefined" ||
+      Notification.permission !== "granted"
+    ) {
+      return;
+    }
+    new Notification("Scheduled task finished", {
+      body: "Daily dependency audit completed — 0 critical vulnerabilities found.",
+      tag: "atrium-example",
+      icon: "/favicon.ico",
+    });
+    toast.success("Test notification sent");
+  }
 
   // next-themes resolves only on the client; gate the current value on mount
   // so the trigger shows the real choice instead of a flash of "system".
@@ -125,6 +167,38 @@ export default function AppearanceSettingsPage() {
             onChange={(next) => setBehavior(next as EnterSendBehavior)}
           />
         </SettingsRow>
+
+        {notifyPermission !== "unsupported" && (
+          <SettingsRow
+            label="Browser notifications"
+            description={
+              notifyPermission === "denied"
+                ? "Blocked — re-enable them for this site in your browser settings."
+                : "Get a browser alert when a run or scheduled task finishes."
+            }
+          >
+            <Button
+              variant="outline"
+              className="rounded-full"
+              onClick={enableNotifications}
+              disabled={notifyPermission === "granted"}
+            >
+              <Bell className="size-4" />
+              {notifyPermission === "granted" ? "Enabled" : "Enable"}
+            </Button>
+            <Button
+              variant="outline"
+              size="icon"
+              className="size-9 rounded-full"
+              aria-label="Send a test notification"
+              title="Send a test notification"
+              onClick={sendTestNotification}
+              disabled={notifyPermission !== "granted"}
+            >
+              <BellRing className="size-4" />
+            </Button>
+          </SettingsRow>
+        )}
       </div>
     </SettingsCard>
   );
