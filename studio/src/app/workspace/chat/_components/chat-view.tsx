@@ -80,6 +80,7 @@ import { ClarificationPanel } from "./clarification-panel";
 import { FilePreview } from "./file-preview";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
 import { MessageBubble } from "./message-bubble";
+import { MockProviderNotice } from "./mock-provider-notice";
 import { SidePanel } from "./side-panel";
 
 /** The single right-hand panel: exactly one kind is open at a time, or none. */
@@ -574,13 +575,14 @@ function ThreadPanel({
               </p>
             )}
             {status === "error" && error && (
-              <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
+              <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-background bg-gradient-to-b from-destructive/5 to-destructive/5 px-3 py-2">
                 <AlertCircle className="size-4 shrink-0 text-destructive" />
                 <p className="min-w-0 flex-1 text-sm text-destructive break-words">
                   {error}
                 </p>
               </div>
             )}
+            <MockProviderNotice />
             <ChatInput
               rows={1}
               onSend={handleSend}
@@ -1110,7 +1112,7 @@ export function ChatView({
                 onCancelSteers={onCancelPendingSteers}
               />
               {error && (
-                <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-destructive/5 px-3 py-2">
+                <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-background bg-gradient-to-b from-destructive/5 to-destructive/5 px-3 py-2">
                   <AlertCircle className="size-4 shrink-0 text-destructive" />
                   <p className="min-w-0 flex-1 text-sm text-destructive break-words">
                     {error}
@@ -1128,6 +1130,7 @@ export function ChatView({
                   )}
                 </div>
               )}
+              <MockProviderNotice />
               {pendingClarification ? (
                 <ClarificationPanel
                   clarification={pendingClarification}

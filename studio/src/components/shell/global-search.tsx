@@ -125,7 +125,9 @@ export function GlobalSearch() {
         className="max-[499px]:inset-0 max-[499px]:top-0 max-[499px]:left-0 max-[499px]:h-dvh max-[499px]:max-h-none max-[499px]:w-full max-[499px]:max-w-none max-[499px]:translate-x-0 max-[499px]:translate-y-0 max-[499px]:rounded-none max-[499px]:border-0 max-[499px]:[&>[data-slot=command]]:h-full"
       >
         <CommandInput
-          placeholder="Search chats, memory, skills, connectors…"
+          placeholder="Search…"
+          // pr-8 keeps typed text clear of the dialog's floating close button.
+          className="pr-8"
           value={query}
           onValueChange={setQuery}
         />
