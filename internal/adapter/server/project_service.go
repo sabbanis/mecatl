@@ -129,27 +129,71 @@ func (s *Service) CreateSessionFromProject(ctx context.Context, id string, mode 
 		mode = s.cfg.DefaultMode
 	}
 	limits = limits.WithDefaults(s.cfg.DefaultLimits)
+
+	// A Project Session always gets an engine built for the captured Environment.
+	// The factory may own a per-session manager, so every failure after this point
+	// closes its result before returning.
+	res, err := s.cfg.SessionEngine(ctx, selector, nil, ProfileDefault, env.Workspace().Root(), mode)
+	if err != nil {
+		return nil, err
+	}
+	closeFn := res.Close
+	closeResult := func() {
+		if closeFn != nil {
+			_ = closeFn()
+		}
+	}
+	if res.Engine == nil {
+		closeResult()
+		return nil, fmt.Errorf("%w: project session factory returned no engine", ErrFailedPrecondition)
+	}
+
 	sess, err := newCreatedSession(s.cfg.NewID(), mode, env.Workspace().Root(), limits, s.cfg.Now(), nil)
 	if err != nil {
+		closeResult()
 		return nil, fmt.Errorf("server: create project session metadata: %w", err)
 	}
 	if err := setSessionLabels(sess, selector, ProfileDefault, item.Owner); err != nil {
+		closeResult()
 		return nil, err
 	}
 	sess.EnvironmentRef = env.Ref()
 	sess.Project = &session.ProjectBinding{
 		ProjectID: item.ID, ProjectNameAtCreation: item.Name, ProjectRevision: int(item.Revision),
-		Working: session.ProjectSourceBinding{SourceRef: string(source.Ref), LabelAtCreation: source.Label},
+		Working:    session.ProjectSourceBinding{SourceRef: string(source.Ref), LabelAtCreation: source.Label},
+		References: []session.ProjectSourceBinding{},
+	}
+
+	// Save while holding the registration lock. Registration is an infallible map
+	// publication immediately after Save, so no durable Session can escape without
+	// its matching engine and complete Environment.
+	s.mu.Lock()
+	if len(s.sessionEngines) >= s.cfg.MaxSessionEngines {
+		s.mu.Unlock()
+		closeResult()
+		return nil, fmt.Errorf("%w: %d", ErrTooManySessionEngines, s.cfg.MaxSessionEngines)
 	}
 	if err := s.cfg.Store.Save(ctx, sess); err != nil {
+		s.mu.Unlock()
+		closeResult()
 		return nil, fmt.Errorf("server: persist project session: %w", err)
 	}
-	s.SetSessionEnvironment(sess.ID, env)
+	s.sessionEngines[sess.ID] = &sessionEngine{
+		engine:          res.Engine,
+		caps:            res.Capabilities,
+		providerID:      res.ProviderID,
+		modelID:         res.ModelID,
+		reasoningEffort: res.ReasoningEffort,
+		builtForMode:    res.BuiltForMode,
+		close:           closeFn,
+	}
+	s.sessionEnvironments[sess.ID] = env
+	s.mu.Unlock()
 	return sess, nil
 }
 
 func (s *Service) projectEnabled() bool {
-	return s.cfg.ProjectStore != nil && s.cfg.ProjectSources != nil
+	return s.cfg.ProjectStore != nil && s.cfg.ProjectSources != nil && s.cfg.SessionEngine != nil
 }
 
 func (s *Service) loadOwnedProject(ctx context.Context, id string) (project.Project, error) {

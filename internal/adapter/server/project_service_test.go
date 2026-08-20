@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
@@ -15,6 +16,7 @@ import (
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
+	"github.com/stacklok/mecatl/internal/adapter/mcp"
 	"github.com/stacklok/mecatl/internal/adapter/projectstore"
 	"github.com/stacklok/mecatl/internal/adapter/server"
 	"github.com/stacklok/mecatl/internal/project"
@@ -41,12 +43,22 @@ func (r *projectRegistry) ResolveWorking(_ context.Context, ref project.SourceRe
 }
 
 func newProjectService(t *testing.T, ownership bool) (*server.Service, project.WorkingSource, *memstore.Store, *projectRegistry) {
+	return newProjectServiceWithFactory(t, ownership, true)
+}
+
+func newProjectServiceWithFactory(t *testing.T, ownership, withFactory bool) (*server.Service, project.WorkingSource, *memstore.Store, *projectRegistry) {
 	t.Helper()
 	root := "/project"
 	source := project.WorkingSource{Ref: "opaque-source", Label: "Working copy"}
 	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: root}, memfs.NewWorkspace(root), nil)
 	registry := &projectRegistry{source: source, env: env}
 	sessions := memstore.New()
+	var factory server.SessionEngineFactory
+	if withFactory {
+		factory = func(_ context.Context, _ server.ProviderSelector, _ []mcp.ServerConfig, _ server.SessionProfile, _ string, _ session.PermissionMode) (server.SessionEngineResult, error) {
+			return server.SessionEngineResult{Engine: agent.NewEngine(agent.Deps{LLM: mockllm.New(mockllm.TextTurn("ok")), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)})}, nil
+		}
+	}
 	svc, err := server.NewService(server.Config{
 		Engine:            agent.NewEngine(agent.Deps{LLM: mockllm.New(mockllm.TextTurn("ok")), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}),
 		Store:             sessions,
@@ -56,11 +68,26 @@ func newProjectService(t *testing.T, ownership bool) (*server.Service, project.W
 		OwnershipEnforced: ownership,
 		ProjectStore:      projectstore.NewMemory(),
 		ProjectSources:    registry,
+		SessionEngine:     factory,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
 	}
 	return svc, source, sessions, registry
+}
+
+func TestProjectServiceRequiresSessionFactoryForCapability(t *testing.T) {
+	svc, _, _, _ := newProjectServiceWithFactory(t, false, false)
+	client, cleanup := dialGRPC(t, svc)
+	defer cleanup()
+
+	caps, err := client.GetServerCapabilities(context.Background(), &mecatlv1.GetServerCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("GetServerCapabilities: %v", err)
+	}
+	if caps.GetCapabilities().GetProjects() {
+		t.Fatal("projects capability = true without a Project Session factory")
+	}
 }
 
 func TestProjectServiceResolutionFailureIsOpaqueAndLeavesNoSession(t *testing.T) {
