@@ -857,6 +857,30 @@ export function ChatView({
     setPanelMaximized(false);
   }, []);
   const toggleMaximize = useCallback(() => setPanelMaximized((v) => !v), []);
+  // Previewing a composer attachment opens the canvas on an object URL; the
+  // previous URL is revoked when replaced or on unmount so attach/preview
+  // cycles never leak blobs.
+  const previewUrlRef = useRef<string | null>(null);
+  const releasePreviewUrl = useCallback(() => {
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+  }, []);
+  useEffect(() => releasePreviewUrl, [releasePreviewUrl]);
+  const handlePreviewFile = useCallback(
+    (file: File) => {
+      releasePreviewUrl();
+      const url = URL.createObjectURL(file);
+      previewUrlRef.current = url;
+      setPanel({
+        kind: "attachment",
+        attachment: { name: file.name, type: file.type, url },
+      });
+    },
+    [releasePreviewUrl],
+  );
+
   const handleStartThread = useCallback(
     (message: AgentMessage) => setPanel({ kind: "thread", message }),
     [],
@@ -1120,6 +1144,7 @@ export function ChatView({
                   onSend={onSend}
                   onQueue={onQueueMessage}
                   onSteer={onSteerMessage}
+                  onPreviewAttachment={handlePreviewFile}
                   focusKey={session.id}
                   mobileDocked
                   modelLockedLabel={

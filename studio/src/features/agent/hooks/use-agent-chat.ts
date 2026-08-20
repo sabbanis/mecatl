@@ -247,6 +247,13 @@ export function useAgentChat(
   const daemonIdRef = useRef<string | null>(sessionId);
   const abortRef = useRef<AbortController | null>(null);
   const lastPromptRef = useRef<string | null>(null);
+  // Attachments sent this visit, keyed by session: the daemon's transcript
+  // carries no attachment bytes, so every rehydrate would strip the chips —
+  // this ref re-attaches them by matching user turns in send order.
+  const sentAttachmentsRef = useRef(
+    new Map<string, { content: string; attachments: Attachment[] }[]>(),
+  );
+
   const onSessionCreatedRef = useRef(options?.onSessionCreated);
   onSessionCreatedRef.current = options?.onSessionCreated;
   const createModeRef = useRef(options?.createMode);
@@ -270,7 +277,22 @@ export function useAgentChat(
           controller.signal,
         );
         if (controller.signal.aborted) return;
-        setMessages(messagesFromTranscript(transcript));
+        const rebuilt = messagesFromTranscript(transcript);
+        const sent = sentAttachmentsRef.current.get(sessionId);
+        if (sent?.length) {
+          const pool = [...sent];
+          for (const message of rebuilt) {
+            if (message.role !== "user") continue;
+            const index = pool.findIndex(
+              (record) => record.content === message.content,
+            );
+            if (index !== -1) {
+              message.attachments = pool[index].attachments;
+              pool.splice(index, 1);
+            }
+          }
+        }
+        setMessages(rebuilt);
       } catch (caught) {
         if (controller.signal.aborted) return;
         setError(caught instanceof Error ? caught.message : String(caught));
@@ -312,9 +334,22 @@ export function useAgentChat(
         setError(caught instanceof Error ? caught.message : String(caught));
         return;
       }
+      // Each image attachment carries the SAME bytes the wire part holds (a
+      // data: URL), so the chip's thumbnail and the canvas preview work on
+      // the live message. Rehydrated transcripts have no bytes — the daemon
+      // never echoes attachment content — so old messages stay preview-less.
       const attachments: Attachment[] | undefined =
         images.length > 0
-          ? images.map((file) => ({ name: file.name, type: file.type }))
+          ? images.map((file, index) => {
+              const part = parts[index];
+              return {
+                name: file.name,
+                type: file.type,
+                url: part
+                  ? `data:${part.mime_type};base64,${part.data}`
+                  : undefined,
+              };
+            })
           : undefined;
 
       const userMessage: AgentMessage = {
@@ -327,6 +362,11 @@ export function useAgentChat(
 
       setMessages((prev) => [...prev, userMessage]);
       setStatus("streaming");
+      if (attachments && daemonIdRef.current) {
+        const log = sentAttachmentsRef.current.get(daemonIdRef.current) ?? [];
+        log.push({ content, attachments });
+        sentAttachmentsRef.current.set(daemonIdRef.current, log);
+      }
       setError(null);
       lastPromptRef.current = content;
 
@@ -362,6 +402,18 @@ export function useAgentChat(
             { modelId: createModelRef.current?.() || undefined },
           );
           daemonIdRef.current = daemonId;
+          // The pre-mint record above keyed nothing; re-key it now.
+          if (attachments) {
+            const log = sentAttachmentsRef.current.get(daemonId) ?? [];
+            if (
+              !log.some(
+                (r) => r.content === content && r.attachments === attachments,
+              )
+            ) {
+              log.push({ content, attachments });
+            }
+            sentAttachmentsRef.current.set(daemonId, log);
+          }
           onSessionCreatedRef.current?.(daemonId);
         }
         await streamHarnessPrompt(

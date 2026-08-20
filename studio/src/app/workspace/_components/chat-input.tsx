@@ -83,6 +83,8 @@ interface ChatInputProps {
   models?: ComposerModelOption[];
   /** Label for the empty (daemon-picks) entry. */
   autoModelLabel?: string;
+  /** Preview an attached file in the canvas panel. */
+  onPreviewAttachment?: (file: File) => void;
   disabled?: boolean;
   isStreaming?: boolean;
   appendText?: string | null;
@@ -937,9 +939,12 @@ function commandMenuItems(query: string): ComposerMenuItem[] {
 export function AttachmentPill({
   file,
   onRemove,
+  onPreview,
 }: {
   file: File;
   onRemove: () => void;
+  /** Opens the file in the canvas panel (main composer only). */
+  onPreview?: () => void;
 }) {
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   useEffect(() => {
@@ -961,17 +966,25 @@ export function AttachmentPill({
         previewUrl ? "pl-1" : "pl-2.5",
       )}
     >
-      {previewUrl ? (
-        // biome-ignore lint/performance/noImgElement: object URLs need a plain img
-        <img
-          src={previewUrl}
-          alt=""
-          className="size-5 shrink-0 rounded-full object-cover"
-        />
-      ) : (
-        <KindIcon aria-label={kind.label} className="size-3" />
-      )}
-      <span className="max-w-40 truncate">{file.name}</span>
+      <button
+        type="button"
+        onClick={onPreview}
+        disabled={!onPreview}
+        className="inline-flex min-w-0 items-center gap-1.5 disabled:cursor-default"
+        title={onPreview ? `Preview ${file.name}` : undefined}
+      >
+        {previewUrl ? (
+          // biome-ignore lint/performance/noImgElement: object URLs need a plain img
+          <img
+            src={previewUrl}
+            alt=""
+            className="size-5 shrink-0 rounded-full object-cover"
+          />
+        ) : (
+          <KindIcon aria-label={kind.label} className="size-3" />
+        )}
+        <span className="max-w-40 truncate">{file.name}</span>
+      </button>
       <button
         type="button"
         onClick={onRemove}
@@ -1078,6 +1091,7 @@ export function ChatInput({
   modelLockedLabel,
   models,
   autoModelLabel,
+  onPreviewAttachment,
   mode,
   onModeChange,
 }: ChatInputProps) {
@@ -1449,6 +1463,9 @@ export function ChatInput({
           <div className="flex flex-wrap gap-1.5 px-4 pt-3">
             {attachedFiles.map((f, i) => (
               <AttachmentPill
+                onPreview={
+                  onPreviewAttachment ? () => onPreviewAttachment(f) : undefined
+                }
                 // biome-ignore lint/suspicious/noArrayIndexKey: files may share names
                 key={`${f.name}-${i}`}
                 file={f}
