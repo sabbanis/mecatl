@@ -1,5 +1,6 @@
 "use client";
 
+import { X } from "lucide-react";
 import { useRef } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
@@ -75,12 +76,26 @@ export function AvatarPicker({
 
   return (
     <div className="flex items-center gap-4">
-      <div className="flex size-14 shrink-0 items-center justify-center overflow-hidden rounded-full bg-muted text-muted-foreground">
-        {avatarUrl ? (
-          // biome-ignore lint/performance/noImgElement: a locally stored data URL, not a remote image
-          <img src={avatarUrl} alt={alt} className="size-full object-cover" />
-        ) : (
-          fallback
+      <div className="group relative size-14 shrink-0">
+        <div className="flex size-full items-center justify-center overflow-hidden rounded-full bg-muted text-muted-foreground">
+          {avatarUrl ? (
+            // biome-ignore lint/performance/noImgElement: a locally stored data URL, not a remote image
+            <img src={avatarUrl} alt={alt} className="size-full object-cover" />
+          ) : (
+            fallback
+          )}
+        </div>
+        {/* Remove lives on the picture itself: hover (or keyboard focus)
+            reveals a small ×; without a picture there is nothing to remove. */}
+        {avatarUrl && (
+          <button
+            type="button"
+            aria-label="Remove picture"
+            onClick={() => onChange(null)}
+            className="absolute -top-1 -right-1 flex size-5 items-center justify-center rounded-full border bg-background text-muted-foreground opacity-0 shadow-sm transition-opacity group-hover:opacity-100 hover:text-foreground focus-visible:opacity-100"
+          >
+            <X className="size-3" />
+          </button>
         )}
       </div>
       <div className="flex items-center gap-2">
@@ -99,16 +114,6 @@ export function AvatarPicker({
         >
           {avatarUrl ? "Change picture" : "Upload picture"}
         </Button>
-        {avatarUrl && (
-          <Button
-            variant="ghost"
-            size="sm"
-            className="rounded-full text-muted-foreground"
-            onClick={() => onChange(null)}
-          >
-            Remove
-          </Button>
-        )}
       </div>
     </div>
   );
