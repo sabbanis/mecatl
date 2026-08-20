@@ -2,8 +2,8 @@
 id: 02-project-session-creation
 title: Captured Project binding and Session persistence foundation
 blocked_by: [01-project-domain-store-sources]
-status: pending
-branch: ""
+status: done
+branch: "plan-project-working-mvp/02-project-binding-foundation"
 worktree: ""
 issue: "620"
 retries: 0
