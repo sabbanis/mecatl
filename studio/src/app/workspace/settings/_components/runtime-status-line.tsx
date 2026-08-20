@@ -1,6 +1,6 @@
 "use client";
 
-import { Loader2 } from "lucide-react";
+import { Info, Loader2 } from "lucide-react";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 
 /**
@@ -25,10 +25,18 @@ export function RuntimeStatusLine({
         </div>
       )}
       {runtime.error && (
-        <p className="text-sm text-destructive">{runtime.error}</p>
+        <p className="rounded-lg border border-destructive/30 bg-destructive/5 px-3 py-2 text-sm text-destructive">
+          {runtime.error}
+        </p>
       )}
       {runtime.notice && (
-        <p className="text-sm text-muted-foreground">{runtime.notice}</p>
+        <div className="flex items-start gap-2 rounded-lg border border-sky-500/30 bg-sky-500/5 px-3 py-2 text-sm">
+          <Info
+            aria-hidden="true"
+            className="mt-0.5 size-4 shrink-0 text-sky-600 dark:text-sky-400"
+          />
+          <span>{runtime.notice}</span>
+        </div>
       )}
     </div>
   );

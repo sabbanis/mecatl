@@ -4,10 +4,11 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { CreateSkillDialog } from "./create-skill-dialog";
 
 /**
- * Pins the create dialog: the submit gate (grammar-valid name + non-empty
- * body), the create call with exactly what the form holds, the client-side
- * upload path (file → textarea + derived name), and a controller refusal
- * rendering verbatim while the dialog stays open.
+ * Pins the create dialog: the two-step flow (chooser cards, then the editor),
+ * the submit gate (grammar-valid name + non-empty body), the create call with
+ * exactly what the form holds, the client-side upload path (file → textarea +
+ * derived name), manual mode hiding the upload button, and a controller
+ * refusal rendering verbatim while the dialog stays open.
  */
 
 const create = vi.fn<(name: string, body: string) => Promise<void>>(() =>
@@ -27,16 +28,44 @@ async function openDialog(user: ReturnType<typeof userEvent.setup>) {
   return screen.findByRole("dialog");
 }
 
+/** Chooser → the named card → Next, landing on the editor step. */
+async function openEditor(
+  user: ReturnType<typeof userEvent.setup>,
+  mode: "upload" | "manual",
+) {
+  await openDialog(user);
+  await user.click(
+    screen.getByRole("button", {
+      name: mode === "upload" ? /^Upload/ : /Create manually/,
+    }),
+  );
+  await user.click(screen.getByRole("button", { name: "Next" }));
+}
+
 describe("create skill dialog", () => {
-  it("seeds the SKILL.md template and warns about the restart", async () => {
+  it("opens on the chooser: two cards, no editor, no restart warning", async () => {
     const user = userEvent.setup();
     await openDialog(user);
 
+    expect(screen.getByRole("button", { name: /^Upload/ })).toBeTruthy();
     expect(
-      screen.getByText(/Creating a skill restarts the daemon/),
+      screen.getByRole("button", { name: /Create manually/ }),
     ).toBeTruthy();
+    expect(screen.queryByText(/restarts the daemon/)).toBeNull();
+    expect(
+      screen.queryByRole("textbox", { name: "SKILL.md content" }),
+    ).toBeNull();
+  });
+
+  it("manual mode seeds the template and hides the upload button", async () => {
+    const user = userEvent.setup();
+    await openEditor(user, "manual");
+
     const body = screen.getByRole("textbox", { name: "SKILL.md content" });
     expect((body as HTMLTextAreaElement).value).toContain("description:");
+    expect(
+      screen.queryByRole("button", { name: /Upload SKILL\.md/ }),
+    ).toBeNull();
 
     // Name empty → invalid → the gate holds and the rule shows as helper text.
     expect(
@@ -49,9 +78,18 @@ describe("create skill dialog", () => {
     expect(screen.getByText(/Lowercase letters, digits/)).toBeTruthy();
   });
 
+  it("upload mode keeps the upload button available", async () => {
+    const user = userEvent.setup();
+    await openEditor(user, "upload");
+
+    expect(
+      screen.getByRole("button", { name: /Upload SKILL\.md/ }),
+    ).toBeTruthy();
+  });
+
   it("keeps Create disabled while the name breaks the grammar", async () => {
     const user = userEvent.setup();
-    await openDialog(user);
+    await openEditor(user, "manual");
 
     await user.type(screen.getByRole("textbox", { name: "Name" }), "Bad Name");
     expect(
@@ -67,7 +105,7 @@ describe("create skill dialog", () => {
 
   it("creates with the typed name and body, then closes and reports the name", async () => {
     const user = userEvent.setup();
-    await openDialog(user);
+    await openEditor(user, "manual");
 
     await user.type(screen.getByRole("textbox", { name: "Name" }), "my-skill");
     // A valid name hides the rule and opens the gate.
@@ -87,7 +125,7 @@ describe("create skill dialog", () => {
       Promise.reject(new Error('A skill named "my-skill" already exists')),
     );
     const user = userEvent.setup();
-    await openDialog(user);
+    await openEditor(user, "manual");
 
     await user.type(screen.getByRole("textbox", { name: "Name" }), "my-skill");
     await user.click(screen.getByRole("button", { name: "Create skill" }));
@@ -101,7 +139,7 @@ describe("create skill dialog", () => {
 
   it("reads an uploaded file into the body and derives the empty name", async () => {
     const user = userEvent.setup();
-    await openDialog(user);
+    await openEditor(user, "upload");
 
     const content = "---\nname: Uploaded Helper\n---\n# Do the thing\n";
     await user.upload(
@@ -129,7 +167,7 @@ describe("create skill dialog", () => {
 
   it("never overwrites a name the user already typed", async () => {
     const user = userEvent.setup();
-    await openDialog(user);
+    await openEditor(user, "upload");
 
     await user.type(screen.getByRole("textbox", { name: "Name" }), "kept-name");
     await user.upload(

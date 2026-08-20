@@ -176,10 +176,8 @@ function CategoryDialog({
   const [name, setName] = useState(initial?.name ?? "");
   const [description, setDescription] = useState(initial?.description ?? "");
   const [model, setModel] = useState(initial?.model ?? "");
-  // The Save gate always holds, but the message waits until the user has
-  // typed something — a fresh empty dialog shouldn't open on a complaint.
-  const [dirty, setDirty] = useState(false);
 
+  // Validation is quiet: an incomplete category just keeps Save disabled.
   const problem = categoryProblem({ name, description, model }, takenNames);
 
   return (
@@ -197,12 +195,7 @@ function CategoryDialog({
             <Input
               id={`${fieldId}-name`}
               value={name}
-              onChange={(event) => {
-                setName(event.target.value);
-                setDirty(true);
-              }}
-              placeholder="routine"
-              className="font-mono"
+              onChange={(event) => setName(event.target.value)}
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -210,12 +203,9 @@ function CategoryDialog({
             <ModelSelect
               id={`${fieldId}-model`}
               value={model}
-              onChange={(next) => {
-                setModel(next);
-                setDirty(true);
-              }}
+              onChange={setModel}
               models={models}
-              placeholder="Choose a model…"
+              placeholder="Select"
             />
           </div>
           <div className="flex flex-col gap-1.5">
@@ -225,19 +215,11 @@ function CategoryDialog({
             <Textarea
               id={`${fieldId}-desc`}
               value={description}
-              onChange={(event) => {
-                setDescription(event.target.value);
-                setDirty(true);
-              }}
-              placeholder="Mechanical edits, quick lookups, formatting…"
+              onChange={(event) => setDescription(event.target.value)}
               className="min-h-24 text-sm"
             />
           </div>
         </div>
-
-        {dirty && problem && (
-          <p className="text-sm text-destructive">{problem}</p>
-        )}
 
         <DialogFooter className="flex-row justify-end gap-2">
           <Button
@@ -351,6 +333,11 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
     } else {
       patch({
         categories: [...view.categories, { key: nextKey(), ...next }],
+        // The first category (or the first after the default was deleted)
+        // becomes the default — setup shouldn't demand a separate menu trip.
+        defaultCategory: view.defaultCategory.trim()
+          ? view.defaultCategory
+          : normalizeName(next.name),
       });
     }
     setEditor(null);
@@ -439,7 +426,7 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
           className="rounded-full"
           onClick={() => setDraft(null)}
         >
-          Discard changes
+          Discard
         </Button>
       )}
       <Button
@@ -459,7 +446,7 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
           setDraft(null);
         }}
       >
-        {runtime.busy === "router" ? "Saving…" : "Save routing"}
+        {runtime.busy === "router" ? "Saving…" : "Save"}
       </Button>
     </div>
   );
@@ -486,7 +473,7 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
               <SettingsRow
                 label="Classifier model"
                 htmlFor="routing-classifier"
-                description="The small, fast model that categorizes each prompt."
+                description="Select a fast, small model for categorization."
               >
                 <div className="w-52 min-[500px]:w-72">
                   <ModelSelect
@@ -494,21 +481,13 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
                     value={view.classifierModel}
                     onChange={(next) => patch({ classifierModel: next })}
                     models={models}
-                    placeholder="a small, fast model"
+                    placeholder="Select"
                   />
                 </div>
               </SettingsRow>
             )}
           </div>
 
-          {/* The controller validates the config unconditionally, so an
-              incomplete draft cannot persist even disabled — the gate holds
-              and this line says why the hidden fields still matter. */}
-          {!view.enabled && editing && problem && (
-            <p className="text-sm text-destructive">
-              Routing setup is incomplete, so it cannot be saved yet. {problem}
-            </p>
-          )}
           {!view.enabled && editing && saveFooter}
         </div>
       </SettingsCard>
@@ -631,10 +610,8 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
               </div>
             )}
 
-            {/* The Save gate always holds (the controller hard-rejects an
-                invalid config); this card only exists while routing is on,
-                so the message never nags a disabled router. */}
-            {problem && <p className="text-sm text-destructive">{problem}</p>}
+            {/* Validation is quiet — an incomplete draft just keeps Save
+                disabled (the controller hard-rejects an invalid config). */}
             {saveFooter}
           </div>
         </SettingsCard>
