@@ -16,9 +16,6 @@ export interface MockProjectChat {
   unread: boolean;
   /** Epoch ms; rendered via formatRelativeTime ("9h", "3d"). */
   updatedAt: number;
-  /** The demo's "currently open" chat: its row gets the selected styling
-   *  and ONLY its project shows the green open treatment. At most one. */
-  selected?: boolean;
 }
 
 export interface MockProject {
@@ -42,7 +39,6 @@ export const MOCK_PROJECTS: MockProject[] = [
         title: "Refactor auth middleware",
         unread: false,
         updatedAt: hoursAgo(2),
-        selected: true,
       },
       {
         id: "mock-project-chat-ci-pipeline",

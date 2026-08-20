@@ -457,40 +457,84 @@ const mockProjectOpenStore = new Map<string, boolean>([
  * there is nothing to open and the row is inert except for its hover state.
  */
 function MockProjectChatRow({ chat }: { chat: MockProjectChat }) {
+  const [menuOpen, setMenuOpen] = useState(false);
   return (
-    <div
-      className={cn(
-        // py-2 matches the real SessionRow height so the two lists read as
-        // one rhythm.
-        "group flex items-center border-l-[3px] py-2 pr-3 pl-8 transition-colors",
-        chat.selected
-          ? "border-brand bg-brand/10"
-          : "border-transparent hover:bg-accent",
-      )}
-    >
-      <span
-        className={cn(
-          "min-w-0 flex-1 truncate text-[0.85rem] font-medium select-none",
-          chat.selected
-            ? "text-brand-ink"
-            : "text-muted-foreground group-hover:text-foreground",
-        )}
-      >
+    // py-2 matches the real SessionRow height so the two lists read as one
+    // rhythm. Never styled selected: selection lives on real sessions only —
+    // these rows are inert, so a highlight here would always be a lie.
+    <div className="group flex items-center border-l-[3px] border-transparent py-2 pr-3 pl-8 transition-colors hover:bg-accent">
+      <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground select-none group-hover:text-foreground">
         {chat.title}
       </span>
-      <span className="ml-2 flex w-8 shrink-0 items-center justify-center">
+      {/* The real SessionRow's right-slot grammar: dot/age yields to the
+          hover "…" menu. The items decline with a reason, the same disabled
+          treatment a daemon row without the capability gets. */}
+      <div className="shrink-0 ml-2 grid w-8 items-center justify-items-center [grid-template-areas:'slot']">
         {chat.unread ? (
           <span
             role="img"
             aria-label="Unread"
-            className="size-2 rounded-full bg-brand"
+            className={cn(
+              "[grid-area:slot] size-2 rounded-full bg-brand",
+              menuOpen
+                ? "min-[500px]:invisible"
+                : "min-[500px]:group-hover:invisible",
+            )}
           />
         ) : (
-          <span className="text-xs text-muted-foreground/50 tabular-nums">
+          <span
+            className={cn(
+              "[grid-area:slot] text-xs text-muted-foreground/50 tabular-nums",
+              menuOpen
+                ? "min-[500px]:invisible"
+                : "min-[500px]:group-hover:invisible",
+            )}
+          >
             {formatRelativeTime(chat.updatedAt)}
           </span>
         )}
-      </span>
+        <DropdownMenu modal={false} onOpenChange={setMenuOpen}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="Chat options"
+              className={cn(
+                "[grid-area:slot] flex items-center justify-center w-7 rounded text-muted-foreground hover:text-foreground",
+                menuOpen
+                  ? "opacity-100"
+                  : "opacity-0 pointer-events-none min-[500px]:group-hover:opacity-100 min-[500px]:group-hover:pointer-events-auto",
+              )}
+            >
+              <Ellipsis className="size-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            side="bottom"
+            sideOffset={4}
+            className="w-56"
+          >
+            <DropdownMenuItem disabled>
+              <Pencil className="size-4 mr-2 shrink-0 text-muted-foreground" />
+              <span className="min-w-0">
+                Rename
+                <span className="block truncate text-xs text-muted-foreground">
+                  Demo content — not a real chat
+                </span>
+              </span>
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled>
+              <Trash2 className="size-4 mr-2 shrink-0" />
+              <span className="min-w-0">
+                Delete chat
+                <span className="block truncate text-xs text-muted-foreground">
+                  Demo content — not a real chat
+                </span>
+              </span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </div>
   );
 }

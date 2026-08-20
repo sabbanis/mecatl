@@ -37,17 +37,6 @@ describe("mock projects", () => {
     expect(chats.some((c) => !c.unread)).toBe(true);
   });
 
-  it("exactly one chat is selected, inside the default-open project", () => {
-    // The green project treatment marks the selected chat's project, so the
-    // demo needs one — and only one — and it must be visible on first render.
-    const selected = chats.filter((c) => c.selected);
-    expect(selected.length).toBe(1);
-    const home = MOCK_PROJECTS.find((p) => p.chats.some((c) => c.selected));
-    expect(home?.id).toBe(MOCK_PROJECTS_DEFAULT_OPEN_ID);
-    // Selected and unread are mutually exclusive right-hand slots.
-    expect(selected[0].unread).toBe(false);
-  });
-
   it("every read chat's timestamp yields a compact age label", () => {
     for (const chat of chats.filter((c) => !c.unread)) {
       expect(formatRelativeTime(chat.updatedAt), chat.title).toMatch(
