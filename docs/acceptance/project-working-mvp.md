@@ -1,7 +1,7 @@
 # Project working MVP — acceptance plan
 
 **Phase:** working-source-only Projects for Studio and mecatui  
-**Status:** draft  
+**Status:** in-progress  
 **Issue:** [stacklok/mecatl#620](https://github.com/stacklok/mecatl/issues/620)  
 **ADR:** [ADR-0230](../adr/0230-project-working-and-reference-folders.md) — one working source, captured Session bindings, opaque source identity, and independently paged navigation.  
 **External Studio evidence:** pending — replace with the Studio commit and green workflow URL before `landed`.

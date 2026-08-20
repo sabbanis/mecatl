@@ -2,7 +2,7 @@
 id: 01-project-domain-store-sources
 title: Project domain, source registry, durable store, and discovery APIs
 blocked_by: []
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "620"
