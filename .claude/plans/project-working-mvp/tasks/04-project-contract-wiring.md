@@ -2,7 +2,7 @@
 id: 04-project-contract-wiring
 title: Project protobuf, gRPC, HTTP, and client-contract wiring
 blocked_by: [03-project-service-composition]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "620"
