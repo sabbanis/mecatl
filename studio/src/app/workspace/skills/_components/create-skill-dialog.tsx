@@ -417,7 +417,7 @@ export function CreateSkillDialog({
             </>
           ) : (
             <>
-              <div className="space-y-1.5">
+              <div className="space-y-3">
                 <Label htmlFor={nameFieldId}>Name</Label>
                 <Input
                   id={nameFieldId}

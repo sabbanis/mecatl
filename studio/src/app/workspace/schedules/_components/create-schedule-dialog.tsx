@@ -30,7 +30,6 @@ export function CreateScheduleDialog({
         </Button>
       }
       title="New scheduled task"
-      description="Run a prompt on a schedule, or once at a set time."
       submitLabel="Create task"
       submittingLabel="Creating…"
       initialValue={emptyScheduleForm}

@@ -21,8 +21,10 @@ function formatSize(size: number): string {
 /**
  * The bundled files of one skill — a skill can be a whole folder (SKILL.md
  * plus scripts/, references/, assets/…), not just a single markdown file.
- * Read-only: each row opens a bounded text preview served by the controller;
- * binary or oversized files render the controller's refusal verbatim.
+ * A lone SKILL.md skips the list and renders its contents inline; a folder
+ * skill lists its files, each row opening a bounded text preview. Read-only
+ * either way; binary or oversized files render the controller's refusal
+ * verbatim.
  */
 export function SkillFiles({
   name,
@@ -38,6 +40,8 @@ export function SkillFiles({
 }) {
   const [files, setFiles] = useState<HarnessSkillFile[] | null>(null);
   const [error, setError] = useState<string | null>(null);
+  // The lone-SKILL.md inline rendering: null until that shape is confirmed.
+  const [inline, setInline] = useState<string | null>(null);
   const [preview, setPreview] = useState<{
     path: string;
     content: string | null;
@@ -46,9 +50,18 @@ export function SkillFiles({
 
   useEffect(() => {
     const controller = new AbortController();
+    setInline(null);
     fetchFiles(name, controller.signal)
-      .then((list) => {
-        if (!controller.signal.aborted) setFiles(list);
+      .then(async (list) => {
+        if (controller.signal.aborted) return;
+        setFiles(list);
+        // A single-file skill IS its SKILL.md — show the contents, not a
+        // one-row list. Fetch failures fall back to the list rendering.
+        if (list.length === 1 && list[0].path === "SKILL.md") {
+          const content = await fetchFile(name, "SKILL.md").catch(() => null);
+          if (!controller.signal.aborted && content !== null)
+            setInline(content);
+        }
       })
       .catch((caught) => {
         if (controller.signal.aborted) return;
@@ -56,7 +69,7 @@ export function SkillFiles({
         setError(caught instanceof Error ? caught.message : String(caught));
       });
     return () => controller.abort();
-  }, [name, fetchFiles]);
+  }, [name, fetchFiles, fetchFile]);
 
   function openPreview(path: string) {
     setPreview({ path, content: null, error: null });
@@ -97,6 +110,14 @@ export function SkillFiles({
       <div className="rounded-lg border border-dashed px-4 py-6 text-center text-sm text-muted-foreground">
         The skill folder is empty.
       </div>
+    );
+  }
+
+  if (inline !== null) {
+    return (
+      <pre className="overflow-x-auto rounded-lg border bg-background p-4 font-mono text-xs leading-relaxed whitespace-pre-wrap">
+        {inline}
+      </pre>
     );
   }
 

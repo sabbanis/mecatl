@@ -190,7 +190,7 @@ function CategoryDialog({
         </DialogHeader>
 
         <div className="flex flex-col gap-4">
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-3">
             <Label htmlFor={`${fieldId}-name`}>Name</Label>
             <Input
               id={`${fieldId}-name`}
@@ -198,7 +198,7 @@ function CategoryDialog({
               onChange={(event) => setName(event.target.value)}
             />
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-3">
             <Label htmlFor={`${fieldId}-model`}>Model</Label>
             <ModelSelect
               id={`${fieldId}-model`}
@@ -208,7 +208,7 @@ function CategoryDialog({
               placeholder="Select"
             />
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-3">
             <Label htmlFor={`${fieldId}-desc`}>
               What belongs in this category
             </Label>

@@ -113,7 +113,7 @@ export function AddProviderDialog({
             </DialogDescription>
           </DialogHeader>
           <div className="flex flex-col gap-5">
-            <div className="flex flex-col gap-1.5">
+            <div className="flex flex-col gap-3">
               <Label htmlFor="add-provider-kind">1. Choose the provider</Label>
               <Select value={kind || undefined} onValueChange={setKind}>
                 <SelectTrigger id="add-provider-kind" className="w-full">
@@ -137,7 +137,7 @@ export function AddProviderDialog({
 
             {selected && (
               <>
-                <div className="flex flex-col gap-1.5">
+                <div className="flex flex-col gap-3">
                   <p className="text-sm font-medium">
                     2. Add this to the config file
                     <span className="block text-xs font-normal text-muted-foreground">

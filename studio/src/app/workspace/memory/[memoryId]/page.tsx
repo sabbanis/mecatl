@@ -44,7 +44,7 @@ export default function MemoryDetailPage() {
   }
 
   return (
-    <div className="h-full overflow-y-auto px-4 pt-6 pb-8 min-[500px]:px-6">
+    <div className="h-full overflow-y-auto px-3 pt-6 pb-8 min-[500px]:px-4">
       <div className="space-y-5">
         <Button
           variant="outline"

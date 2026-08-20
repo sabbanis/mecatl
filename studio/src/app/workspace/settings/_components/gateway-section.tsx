@@ -75,7 +75,7 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
         // — this card is one configure-then-connect action, not a row list.
         <div className="flex flex-col gap-4">
           {connectedRow}
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-3">
             <Label htmlFor="gw-name">Gateway name</Label>
             <Input
               id="gw-name"
@@ -85,7 +85,7 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
               className="font-mono"
             />
           </div>
-          <div className="flex flex-col gap-1.5">
+          <div className="flex flex-col gap-3">
             <Label htmlFor="gw-url">Gateway URL</Label>
             <Input
               id="gw-url"
