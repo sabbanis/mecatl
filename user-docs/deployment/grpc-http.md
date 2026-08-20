@@ -259,6 +259,8 @@ The HTTP adapter wraps the same service. Every event is one SSE `data:` line car
 | `POST /v1/sessions/{id}/approve` | `{ask_id, verdict}` (`allow_once`\|`allow_always`\|`deny`; legacy `{ask_id, allow}` bool still accepted) | `204` |
 | `POST /v1/sessions/{id}/cancel` | — | `204` |
 | `POST /v1/sessions/{id}/cancel-child` | `{child_id}` | `204`; `404` for unknown/finished child |
+| `POST /v1/sessions/{id}/steer` | `{text, message_id?}` | `200` `{outcome, message_id}` — enqueue a mid-run steer into the live run (`accepted` \| `appended` \| `too_late`); on `too_late` nothing was enqueued or promoted — the caller keeps the text and re-sends it as an ordinary prompt. Gate on the `steer` capability bit from `POST /v1/sessions`; the `steer` event on the run's SSE stream echoes the drained text plus the `message_id` watermark |
+| `POST /v1/sessions/{id}/steer-cancel` | — | `200` `{outcome}` — retract the pending (un-drained) steer (`retracted` \| `none_pending`) |
 | `POST /v1/sessions/{id}/fork` | `{title?}` | `200` `{session_id}` — fork a peer session from a conversation snapshot |
 
 ### Storage management endpoints

@@ -2984,30 +2984,19 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 // caller supplied none). On an accepted steer it parks in the session's FIFO so
 // the EvSteer drain echo can echo it (LookupSteerMessageID); the ACK-side echo
 // is the caller's own frame field (it never crosses the Service).
+//
+// Steer is a COMPOSITION: the live-run fast path is SteerEnqueue (the unary
+// HTTP tier's own entry, which never promotes), and only a (SteerTooLate, nil)
+// from it falls through to the promotedSteerRun path — the promote is what the
+// bidi gRPC surface adds, because a Steer FRAME's text has no other home once
+// the ack is sent (the HTTP caller, by contrast, keeps its own text).
 func (s *Service) Steer(ctx context.Context, id session.SessionID, text, messageID string) (agent.SteerOutcome, bool, *agent.Run, error) {
-	// Authorize before touching the in-memory registry or the run-entry funnel:
-	// a steer injects caller input into a run / drives a follow-up, so a foreign
-	// request must be absence-equivalent (ErrNotFound), mirroring Cancel/Approve.
-	if _, err := s.GetSession(ctx, id); err != nil {
-		return agent.SteerTooLate, false, nil, err
+	outcome, err := s.SteerEnqueue(ctx, id, text, messageID)
+	if err != nil {
+		return outcome, false, nil, err
 	}
-	// Live-run fast path: enqueue to the run's steer inbox. A live run whose
-	// engine disarmed steer (EnableSteer off) reports too_late; it is PROMOTED
-	// rather than dropped — same lost-race contract as a closed inbox.
-	if run, ok := s.LookupRun(id); ok {
-		outcome, err := run.EnqueueSteer(text)
-		if err == nil && outcome != agent.SteerTooLate {
-			// Track BOTH accepted (new bundle) and appended (merged into the pending
-			// bundle): the watermark echo needs the full ordered id-list of the
-			// bundle that drains.
-			if outcome == agent.SteerAccepted || outcome == agent.SteerAppended {
-				s.trackSteerMessageID(id, messageID)
-			}
-			return outcome, false, nil, nil
-		}
-		if err != nil {
-			return outcome, false, nil, fmt.Errorf("server: steer enqueue: %w", err)
-		}
+	if outcome != agent.SteerTooLate {
+		return outcome, false, nil, nil
 	}
 	// Terminal race → promote through the run-entry funnel. An unknown id or an
 	// unrepaired-terminal-state error surfaces here rather than ever dropping.
@@ -3028,6 +3017,51 @@ func (s *Service) Steer(ctx context.Context, id session.SessionID, text, message
 		return agent.SteerTooLate, false, nil, err
 	}
 	return agent.SteerTooLate, true, promotedRun, nil
+}
+
+// SteerEnqueue is the LIVE-RUN fast path of Steer, exported on its own as the
+// unary HTTP tier's entry (POST /v1/sessions/{id}/steer): authorize, then
+// enqueue the text to the session's live run's steer inbox and report the
+// engine's authoritative outcome (accepted / appended — the run drains it at
+// the next turn boundary). Unlike Steer it NEVER promotes: a terminal race (no
+// live run, a closed inbox, or a disarmed engine reporting too_late) returns
+// (agent.SteerTooLate, nil) and stops. The never-drop contract still holds
+// because the CALLER keeps the text on too_late and drives its own follow-up
+// prompt (an ordinary POST /prompt) — unlike a bidi gRPC Steer frame, whose
+// text has no other home once the ack is sent, so Steer promotes in-server.
+//
+// Authorization mirrors Steer/Cancel/Approve exactly: a foreign/unknown id is
+// absence-equivalent (ErrNotFound) before the in-memory registry is touched.
+// messageID is the client-minted correlation id ("" when the caller supplied
+// none); on accepted/appended it parks in the session's FIFO so the EvSteer
+// drain echo can echo it (LookupSteerMessageID) — the ACK-side echo is the
+// caller's own request field (it never crosses the Service).
+func (s *Service) SteerEnqueue(ctx context.Context, id session.SessionID, text, messageID string) (agent.SteerOutcome, error) {
+	// Authorize before touching the in-memory registry or the run-entry funnel:
+	// a steer injects caller input into a run / drives a follow-up, so a foreign
+	// request must be absence-equivalent (ErrNotFound), mirroring Cancel/Approve.
+	if _, err := s.GetSession(ctx, id); err != nil {
+		return agent.SteerTooLate, err
+	}
+	// Live-run fast path: enqueue to the run's steer inbox. A live run whose
+	// engine disarmed steer (EnableSteer off) reports too_late — the caller
+	// (Steer's promote path, or the HTTP client itself) owns the follow-up.
+	if run, ok := s.LookupRun(id); ok {
+		outcome, err := run.EnqueueSteer(text)
+		if err == nil && outcome != agent.SteerTooLate {
+			// Track BOTH accepted (new bundle) and appended (merged into the pending
+			// bundle): the watermark echo needs the full ordered id-list of the
+			// bundle that drains.
+			if outcome == agent.SteerAccepted || outcome == agent.SteerAppended {
+				s.trackSteerMessageID(id, messageID)
+			}
+			return outcome, nil
+		}
+		if err != nil {
+			return outcome, fmt.Errorf("server: steer enqueue: %w", err)
+		}
+	}
+	return agent.SteerTooLate, nil
 }
 
 // promotedSteerRun is Service.Steer's promote path: try the funnel
@@ -3165,6 +3199,37 @@ func (s *Service) LookupSteerMessageID(id session.SessionID) string {
 	s.cfg.Diagnostics.Log(context.Background(), port.LevelInfo, "steer message-id watermark consumed",
 		"session", string(id), "message_id", watermark, "queue_depth", depth)
 	return watermark
+}
+
+// stampSteerEcho stamps the client-minted message_id onto an EvSteer drain
+// echo's proto projection, consuming the session's watermark FIFO
+// (LookupSteerMessageID). It is the SINGLE owner of the echo correlation — the
+// gRPC Converse relay (HarnessServer.sendEvent) and the HTTP SSE relay
+// (HTTPHandler.relayRunSSE) both call it, so the stamped id and the
+// correlated-INFO / uncorrelated-WARN diagnostics cannot drift between the two
+// wires. A non-EvSteer event (or a projection without the Steer payload) is a
+// no-op, so callers stamp unconditionally on the hot path.
+func (s *Service) stampSteerEcho(logCtx context.Context, id session.SessionID, ev session.Event, proto *mecatlv1.Event) {
+	if ev.Type != session.EvSteer || proto.GetSteer() == nil {
+		return
+	}
+	// The EvSteer drain echo echoes the client-minted message_id of the
+	// Steer frame that parked this text: the engine inbox carries text only,
+	// so the id lives at the Service's wire-correlation FIFO — popped here
+	// positionally (the TAIL). An unmatched echo (an id-less steer) rides
+	// with "".
+	msgID := s.LookupSteerMessageID(id)
+	if msgID == "" {
+		// The correlation FAILED: the echo carries "" and the client cannot
+		// match it to the frame it sent (the queue can stall — the exact
+		// symptom this WARN exists to make visible). No session.Event owns a
+		// correlation miss, so it goes to diagnostics, text clamped to a prefix.
+		s.Diagnostics().Log(logCtx, port.LevelWarn, "steer echo uncorrelated (no message_id for drained text)", "session", string(id), "text_prefix", valid(firstRunes(ev.Steer.Text, 40)))
+	} else {
+		s.Diagnostics().Log(logCtx, port.LevelInfo, "steer drain echo correlated",
+			"session", string(id), "message_id", msgID, "text_len", len(ev.Steer.Text))
+	}
+	proto.GetSteer().MessageId = valid(msgID)
 }
 
 // isDelegationChildSessionID reports whether id carries one of the delegation

@@ -32,6 +32,8 @@ import (
 //	POST   /v1/sessions/{id}/approve  -> resolve the paused ask on the run
 //	POST   /v1/sessions/{id}/cancel   -> cancel the in-flight run
 //	POST   /v1/sessions/{id}/cancel-child -> cancel ONE child (subagent) of the run
+//	POST   /v1/sessions/{id}/steer    -> enqueue a mid-run steer (unary; outcome JSON)
+//	POST   /v1/sessions/{id}/steer-cancel -> retract the pending (un-drained) steer
 //	POST   /v1/sessions/{id}/fork     -> ForkSession (peer session from a history snapshot; 201)
 //
 // Every Event is emitted as one SSE `data:` line carrying the proto Event
@@ -57,6 +59,8 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h.mux.HandleFunc("POST /v1/sessions/{id}/plan:approve", h.approvePlan)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/cancel", h.cancel)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/cancel-child", h.cancelChild)
+	h.mux.HandleFunc("POST /v1/sessions/{id}/steer", h.steer)
+	h.mux.HandleFunc("POST /v1/sessions/{id}/steer-cancel", h.steerCancel)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/fork", h.forkSession)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/adoption:preflight", h.preflightSessionAdoption)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/adopt", h.adoptSession)
@@ -229,6 +233,11 @@ type serverCapabilitiesJSON struct {
 	LegacyAdoption    bool                              `json:"legacy_adoption"`
 	ManualDream       *mecatlv1.ManualDreamCapabilities `json:"manual_dream,omitempty"`
 	Posture           string                            `json:"posture,omitempty"`
+	// Steer mirrors ServerCapabilities.steer: true when the engine's steer
+	// inbox is armed (Deps.EnableSteer), so an HTTP client gates the
+	// POST /v1/sessions/{id}/steer affordance on the same bit gRPC clients
+	// read; absent/false means a steer reports too_late.
+	Steer bool `json:"steer,omitempty"`
 }
 
 // capabilitiesJSON projects the shared proto capabilities onto the JSON shape.
@@ -255,6 +264,7 @@ func capabilitiesJSON(c *mecatlv1.ServerCapabilities) *serverCapabilitiesJSON {
 		LegacyAdoption:    c.GetLegacyAdoption(),
 		ManualDream:       c.GetManualDream(),
 		Posture:           c.GetPosture(),
+		Steer:             c.GetSteer(),
 	}
 }
 
@@ -687,11 +697,16 @@ func (h *HTTPHandler) relayRunSSE(w http.ResponseWriter, r *http.Request, id ses
 		if !h.svc.relayEvent(r.Context(), logCtx, id, ev, true) {
 			continue // log-only event: consumed by the durable log, not relayed to the client wire
 		}
+		p := toProto(ev)
+		// The EvSteer drain-echo message_id stamp + its correlation diagnostics
+		// live in the ONE shared Service.stampSteerEcho (the gRPC Converse relay
+		// calls the same helper) — a non-steer event is a no-op inside it.
+		h.svc.stampSteerEcho(logCtx, id, ev, p)
 		if _, err := w.Write([]byte("data: ")); err != nil {
 			fail()
 			continue
 		}
-		if err := enc.Encode(toProto(ev)); err != nil { // Encode appends a newline
+		if err := enc.Encode(p); err != nil { // Encode appends a newline
 			fail()
 			continue
 		}
@@ -970,6 +985,84 @@ func (h *HTTPHandler) cancelChild(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+// steerBody is the JSON body of POST /v1/sessions/{id}/steer.
+type steerBody struct {
+	// Text is the operator instruction to inject into the in-flight run, drained
+	// at the next turn boundary. Required.
+	Text string `json:"text"`
+	// MessageID is the CLIENT-MINTED correlation id for THIS send ("" =
+	// uncorrelated). It is echoed verbatim on the response and, when the steer
+	// lands, on the EvSteer drain echo's message_id (a WATERMARK — the latest
+	// contributing send's id of the bundle that drained), so the client splits
+	// its ordered pending queue positionally, never by text-match.
+	MessageID string `json:"message_id,omitempty"`
+}
+
+// steerResp is the JSON response of POST /v1/sessions/{id}/steer and
+// /steer-cancel: the agent.SteerOutcome string verbatim (steer: accepted |
+// appended | too_late; steer-cancel: retracted | none_pending), plus the
+// request's own message_id echoed back (steer only — the ACK-side echo; the
+// drain-side echo rides the EvSteer event on the prompt SSE stream).
+type steerResp struct {
+	Outcome   string `json:"outcome"`
+	MessageID string `json:"message_id,omitempty"`
+}
+
+// steer handles POST /v1/sessions/{id}/steer — the unary HTTP tier of
+// steer-while-running (ADR 0232's deferred follow-up): enqueue an operator
+// instruction into the session's IN-FLIGHT run via Service.SteerEnqueue, to be
+// drained at the next turn boundary. 200 {"outcome": "accepted"|"appended",
+// "message_id": <echoed>} parks the text on the live run (the EvSteer echo on
+// the run's SSE stream carries the message_id when it drains); 200
+// {"outcome": "too_late"} means the run is already terminal, no run is live, or
+// the server's steer knob is off (capabilities "steer" false) — unlike the bidi
+// gRPC Steer frame it is NEVER auto-promoted to a follow-up run: the caller
+// keeps the text (never-drop holds caller-side) and re-sends it as an ordinary
+// POST /prompt. Unknown/foreign session → 404; oversized body → 413.
+func (h *HTTPHandler) steer(w http.ResponseWriter, r *http.Request) {
+	id := session.SessionID(r.PathValue("id"))
+	// Bound the body read exactly like /prompt (CWE-770): an oversized payload
+	// is a 413, never buffered into memory.
+	r.Body = http.MaxBytesReader(w, r.Body, maxPromptBodyBytes)
+	var body steerBody
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		var maxErr *http.MaxBytesError
+		if errors.As(err, &maxErr) {
+			writeError(w, http.StatusRequestEntityTooLarge, "request body too large")
+			return
+		}
+		writeError(w, http.StatusBadRequest, "invalid JSON body")
+		return
+	}
+	if body.Text == "" {
+		writeError(w, http.StatusBadRequest, "text is required")
+		return
+	}
+	outcome, err := h.svc.SteerEnqueue(r.Context(), id, body.Text, body.MessageID)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, steerResp{Outcome: string(outcome), MessageID: body.MessageID})
+}
+
+// steerCancel handles POST /v1/sessions/{id}/steer-cancel (mirroring the
+// cancel-child naming), retracting the session's live run's PENDING
+// (un-drained) steer via Service.CancelSteer: 200 {"outcome": "retracted"}
+// (the pending bundle is gone, its message-id correlation dropped) or
+// {"outcome": "none_pending"} (nothing parked — already drained at a boundary,
+// or no live run). No body is required; any body is ignored. Unknown/foreign
+// session → 404.
+func (h *HTTPHandler) steerCancel(w http.ResponseWriter, r *http.Request) {
+	id := session.SessionID(r.PathValue("id"))
+	outcome, err := h.svc.CancelSteer(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, steerResp{Outcome: string(outcome)})
 }
 
 // --- team request bodies -----------------------------------------------------
