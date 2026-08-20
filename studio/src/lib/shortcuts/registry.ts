@@ -97,7 +97,7 @@ export const SHORTCUTS: readonly ShortcutDef[] = [
     id: "composer.send",
     combo: "enter",
     description:
-      "Send — while the agent is replying: queue or steer, per Settings → Chat",
+      "Send — while the agent is replying: queue or steer, per Settings → Personalize",
     group: "Composer",
   },
   {

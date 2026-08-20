@@ -3,7 +3,6 @@ import {
   Bot,
   Brain,
   FlaskConical,
-  MessageSquare,
   Network,
   Palette,
   Route,
@@ -36,16 +35,11 @@ export const SETTINGS_GROUPS: Array<{
       },
       {
         href: "/workspace/settings/appearance",
-        label: "Appearance",
+        label: "Personalize",
         icon: Palette,
       },
       // After Appearance: identity, then how the app looks, then how the chat
       // behaves, then when it interrupts you.
-      {
-        href: "/workspace/settings/chat",
-        label: "Messages",
-        icon: MessageSquare,
-      },
       {
         href: "/workspace/settings/notifications",
         label: "Notifications",

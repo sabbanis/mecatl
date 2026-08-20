@@ -1,6 +1,8 @@
 "use client";
 
 import {
+  CornerDownRight,
+  ListEnd,
   Minus,
   Monitor,
   Moon,
@@ -13,8 +15,10 @@ import { useTheme } from "next-themes";
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
+  type EnterSendBehavior,
   UI_SCALE_MAX,
   UI_SCALE_MIN,
+  useEnterSendBehavior,
   useSessionListSide,
   useUiScale,
 } from "@/lib/profile-preferences";
@@ -32,10 +36,16 @@ const SIDE_OPTIONS = [
   { value: "right", label: "Right", icon: PanelRight },
 ] as const;
 
+const ENTER_BEHAVIOR_OPTIONS = [
+  { value: "queue", label: "Queue message", icon: ListEnd },
+  { value: "steer", label: "Steer the agent", icon: CornerDownRight },
+] as const;
+
 export default function AppearanceSettingsPage() {
   const { theme: activeTheme, setTheme } = useTheme();
   const { side, setSide } = useSessionListSide();
   const { scale, setScale } = useUiScale();
+  const { behavior, setBehavior } = useEnterSendBehavior();
 
   // next-themes resolves only on the client; gate the current value on mount
   // so the trigger shows the real choice instead of a flash of "system".
@@ -43,7 +53,7 @@ export default function AppearanceSettingsPage() {
   useEffect(() => setMounted(true), []);
 
   return (
-    <SettingsCard title="Appearance">
+    <SettingsCard title="Personalize">
       <div className="divide-y divide-border/60">
         <SettingsRow
           label="Theme"
@@ -101,6 +111,18 @@ export default function AppearanceSettingsPage() {
             value={side}
             options={SIDE_OPTIONS}
             onChange={(next) => setSide(next as "left" | "right")}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Enter while the agent is replying"
+          description="Shift+Enter does the opposite."
+        >
+          <OptionField
+            label="Enter while the agent is replying"
+            value={behavior}
+            options={ENTER_BEHAVIOR_OPTIONS}
+            onChange={(next) => setBehavior(next as EnterSendBehavior)}
           />
         </SettingsRow>
       </div>

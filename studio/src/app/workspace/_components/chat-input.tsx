@@ -996,7 +996,7 @@ export type ComposerEnterAction = "send" | "queue" | "steer" | "newline";
  * - Streaming with files attached: ALWAYS queue, on both keys. A steer
  *   carries text only, so files force the queue path; the files stay attached
  *   in the composer (never silently dropped) and ride the next real send.
- * - Streaming: Enter performs the preferred action (Settings → Chat) and
+ * - Streaming: Enter performs the preferred action (Settings → Personalize) and
  *   Shift+Enter the opposite.
  */
 export function resolveComposerAction(input: {
@@ -1236,7 +1236,7 @@ export function ChatInput({
     ),
   );
 
-  // The preferred Enter action while a reply is streaming (Settings → Chat).
+  // The preferred Enter action while a reply is streaming (Settings → Personalize).
   // Hydrates on mount, so the first frame is always the "queue" default.
   const { behavior: enterBehavior } = useEnterSendBehavior();
 
