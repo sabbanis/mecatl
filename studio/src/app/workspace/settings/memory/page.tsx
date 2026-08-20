@@ -2,17 +2,38 @@
 
 import { Brain } from "lucide-react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { useMemo } from "react";
+import {
+  directed,
+  SortableHead,
+  useTableSort,
+} from "@/components/sortable-head";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import { type MemoryEntry, useAgentMemory } from "@/features/agent";
 
 /** The agent's remembered facts, read-only — a settings subpage. */
 export default function MemorySettingsPage() {
   const memory = useAgentMemory();
+  const sort = useTableSort<"name" | "remembers">("name");
 
-  const entries = useMemo(
-    () => [...memory.entries].sort((a, b) => a.title.localeCompare(b.title)),
-    [memory.entries],
-  );
+  const entries = useMemo(() => {
+    const byName = (a: MemoryEntry, b: MemoryEntry) =>
+      a.title.localeCompare(b.title);
+    const primary = (a: MemoryEntry, b: MemoryEntry) =>
+      sort.key === "remembers"
+        ? (a.content || "").localeCompare(b.content || "")
+        : byName(a, b);
+    return [...memory.entries].sort(
+      (a, b) => directed(sort.dir, primary(a, b)) || byName(a, b),
+    );
+  }, [memory.entries, sort.key, sort.dir]);
 
   if (!memory.isSupported) {
     return (
@@ -57,32 +78,54 @@ export default function MemorySettingsPage() {
   }
 
   return (
-    <div className="grid grid-cols-1 gap-4 sm:grid-cols-2">
-      {entries.map((entry) => (
-        <MemoryCard key={entry.id} entry={entry} />
-      ))}
+    <div className="overflow-hidden rounded-lg border">
+      <Table>
+        <TableHeader className="max-[499px]:hidden">
+          <TableRow className="hover:bg-transparent">
+            <SortableHead
+              label="Name"
+              sortKey="name"
+              sort={sort}
+              className="w-[280px] lg:w-[320px]"
+            />
+            <SortableHead label="Remembers" sortKey="remembers" sort={sort} />
+          </TableRow>
+        </TableHeader>
+        <TableBody>
+          {entries.map((entry) => (
+            <MemoryRow key={entry.id} entry={entry} />
+          ))}
+        </TableBody>
+      </Table>
     </div>
   );
 }
 
-/** Memory card: the entry key and its one-line description from the index. */
-function MemoryCard({ entry }: { entry: MemoryEntry }) {
+/** One fact per row; the whole row opens the dedicated detail page. */
+function MemoryRow({ entry }: { entry: MemoryEntry }) {
+  const router = useRouter();
+  const href = `/workspace/memory/${encodeURIComponent(entry.id)}`;
+
   return (
-    <Link
-      href={`/workspace/settings/memory/${encodeURIComponent(entry.id)}`}
-      className="flex h-full flex-col gap-3 rounded-xl border bg-card p-5 transition-colors hover:border-foreground/20 hover:bg-muted/30"
-    >
-      <div className="flex min-w-0 items-center gap-3">
-        <div className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-muted">
-          <Brain className="size-5 text-foreground" />
-        </div>
-        <h3 className="min-w-0 flex-1 truncate text-sm font-semibold">
+    <TableRow className="cursor-pointer" onClick={() => router.push(href)}>
+      <TableCell className="max-w-0 max-[499px]:w-full">
+        <Link
+          href={href}
+          onClick={(e) => e.stopPropagation()}
+          className="block truncate text-sm font-medium hover:underline"
+        >
           {entry.title}
-        </h3>
-      </div>
-      <p className="line-clamp-3 text-sm text-muted-foreground">
-        {entry.content || "No description recorded."}
-      </p>
-    </Link>
+        </Link>
+        {/* Mobile collapses to a single stacked cell, like the other tables. */}
+        <p className="line-clamp-2 text-xs text-muted-foreground min-[500px]:hidden">
+          {entry.content || "No description recorded."}
+        </p>
+      </TableCell>
+      <TableCell className="max-w-0 max-[499px]:hidden">
+        <p className="line-clamp-1 text-xs whitespace-normal text-muted-foreground">
+          {entry.content || "No description recorded."}
+        </p>
+      </TableCell>
+    </TableRow>
   );
 }
