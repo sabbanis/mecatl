@@ -48,6 +48,7 @@ import { ResizeHandle } from "../../_components/resize-handle";
 import { ChatView } from "./chat-view";
 import {
   AgentList,
+  MockProjectList,
   type SessionActions,
   SessionList,
   SidebarGroup,
@@ -103,6 +104,7 @@ function SidebarContent({
   selectedId,
   onSelect,
   actions,
+  showMockProjects,
 }: {
   onNewChat: () => void;
   isLoading: boolean;
@@ -112,6 +114,8 @@ function SidebarContent({
   selectedId: string;
   onSelect: (id: string) => void;
   actions: SessionActions;
+  /** Labs mock features: list the demo project-grouped chats. */
+  showMockProjects: boolean;
 }) {
   return (
     <>
@@ -165,8 +169,21 @@ function SidebarContent({
             </p>
           )
         )}
-        {!isLoading && agents.length > 0 && (
+        {/* The Labs mock Projects section: local demo content, never daemon
+            rows — same gate and labeling discipline as the mock tour group. */}
+        {!isLoading && showMockProjects && (
           <div className={groups.length > 0 ? "pt-3" : undefined}>
+            <SidebarGroup label="Projects">
+              <MockProjectList />
+            </SidebarGroup>
+          </div>
+        )}
+        {!isLoading && agents.length > 0 && (
+          <div
+            className={
+              groups.length > 0 || showMockProjects ? "pt-3" : undefined
+            }
+          >
             <SidebarGroup label="Agents">
               <AgentList agents={agents} onStartChat={onNewChat} />
             </SidebarGroup>
@@ -626,6 +643,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     selectedId,
     onSelect: handleSelectSession,
     actions: sessionActions,
+    showMockProjects: mockFeatures,
   };
 
   const dialogs = (

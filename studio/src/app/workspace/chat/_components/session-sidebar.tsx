@@ -1,6 +1,13 @@
 "use client";
 
-import { Bot, Ellipsis, Pencil, Trash2 } from "lucide-react";
+import {
+  Bot,
+  Ellipsis,
+  FolderClosed,
+  FolderOpen,
+  Pencil,
+  Trash2,
+} from "lucide-react";
 import { useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
@@ -11,6 +18,12 @@ import {
 } from "@/components/ui/dropdown-menu";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import type { AgentSession, RosterAgent } from "@/features/agent";
+import {
+  MOCK_PROJECTS,
+  MOCK_PROJECTS_DEFAULT_OPEN_ID,
+  type MockProject,
+  type MockProjectChat,
+} from "@/features/agent/mock-projects";
 import { isMockTourSession } from "@/features/agent/mock-tour";
 import { formatRelativeTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
@@ -421,6 +434,114 @@ export function AgentList({
             {agent.name}
           </span>
         </button>
+      ))}
+    </div>
+  );
+}
+
+/**
+ * Remembers each mock project's expanded/collapsed state by id, module-wide.
+ * Selecting a chat can remount the workspace (the route re-keys), which would
+ * otherwise reset every item's local `open` state; seeding from — and writing
+ * back to — this store keeps folders as the user left them. Seeded with one
+ * project open so the section demonstrates the expanded look immediately.
+ */
+const mockProjectOpenStore = new Map<string, boolean>([
+  [MOCK_PROJECTS_DEFAULT_OPEN_ID, true],
+]);
+
+/**
+ * One chat row inside an expanded mock project. Presentational only: the
+ * Labs mock machinery has exactly one canned transcript (the feature tour),
+ * and these rows deliberately do not mint a second mock-session system — so
+ * there is nothing to open and the row is inert except for its hover state.
+ */
+function MockProjectChatRow({ chat }: { chat: MockProjectChat }) {
+  return (
+    <div className="group flex items-center border-l-[3px] border-transparent py-1.5 pr-3 pl-8 transition-colors hover:bg-accent">
+      <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground group-hover:text-foreground select-none">
+        {chat.title}
+      </span>
+      <span className="ml-2 flex w-8 shrink-0 items-center justify-center">
+        {chat.unread ? (
+          <span
+            role="img"
+            aria-label="Unread"
+            className="size-2 rounded-full bg-brand"
+          />
+        ) : (
+          <span className="text-xs text-muted-foreground/50 tabular-nums">
+            {formatRelativeTime(chat.updatedAt)}
+          </span>
+        )}
+      </span>
+    </div>
+  );
+}
+
+/** A collapsible mock project folder; clicking the row toggles it open. */
+function MockProjectItem({ project }: { project: MockProject }) {
+  const [open, setOpenState] = useState(
+    () => mockProjectOpenStore.get(project.id) ?? false,
+  );
+  const toggle = () =>
+    setOpenState((prev) => {
+      const next = !prev;
+      mockProjectOpenStore.set(project.id, next);
+      return next;
+    });
+
+  return (
+    <div className="flex flex-col">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        aria-label={`${open ? "Collapse" : "Expand"} project: ${project.name}`}
+        className={cn(
+          "group flex items-center gap-2 border-l-[3px] py-2 pr-3 pl-3 text-left transition-colors",
+          open
+            ? "border-brand bg-brand/10"
+            : "border-transparent hover:bg-accent",
+        )}
+      >
+        {open ? (
+          <FolderOpen className="size-4 shrink-0 text-brand-ink" />
+        ) : (
+          <FolderClosed className="size-4 shrink-0 text-muted-foreground" />
+        )}
+        <span
+          className={cn(
+            "min-w-0 flex-1 truncate text-[0.85rem] font-medium select-none",
+            open
+              ? "text-brand-ink"
+              : "text-muted-foreground group-hover:text-foreground",
+          )}
+        >
+          {project.name}
+        </span>
+      </button>
+      {open && (
+        <div className="flex flex-col">
+          {project.chats.map((chat) => (
+            <MockProjectChatRow key={chat.id} chat={chat} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The Labs mock "Projects" section: project-grouped chats, presentation
+ * only. The caller gates it on the mock-features preference, exactly like
+ * the feature tour row — never rendered outside Settings → Labs.
+ */
+export function MockProjectList() {
+  return (
+    <div className="flex flex-col">
+      {MOCK_PROJECTS.map((project) => (
+        <MockProjectItem key={project.id} project={project} />
       ))}
     </div>
   );
