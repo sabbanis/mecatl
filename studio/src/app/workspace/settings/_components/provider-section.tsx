@@ -1,7 +1,34 @@
 "use client";
 
+import { Ellipsis } from "lucide-react";
+import Link from "next/link";
+import { useState } from "react";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
+import type {
+  ProviderKeyHealth,
+  useProviderManagement,
+} from "@/features/agent/hooks/use-provider-management";
+import type { HarnessProviderInfo } from "@/lib/harness/client";
+import { cn } from "@/lib/utils";
+import { AddProviderDialog } from "./add-provider-dialog";
 import {
   ExternalManagedNote,
   Note,
@@ -10,25 +37,69 @@ import {
 } from "./settings-card";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
+type Management = ReturnType<typeof useProviderManagement>;
 
 /** Provider names the controller reports when no real provider is wired up. */
 const UNCONFIGURED = new Set(["", "unknown", "none", "mock"]);
 
+/** Dot color + label for a row's key health. Green = a test passed, red =
+ *  the provider rejected the key, amber = the test could not complete, gray
+ *  = untested (or no key in the block yet). */
+function healthPresentation(
+  row: HarnessProviderInfo,
+  health: ProviderKeyHealth | undefined,
+): { dot: string; label: string; detail?: string } {
+  if (!row.keyPresent) {
+    return { dot: "bg-muted-foreground/50", label: "no key in block" };
+  }
+  switch (health?.state) {
+    case "ok":
+      return { dot: "bg-emerald-500", label: "key OK" };
+    case "rejected":
+      return {
+        dot: "bg-red-500",
+        label: "key rejected",
+        detail: health.detail,
+      };
+    case "error":
+      return {
+        dot: "bg-amber-500",
+        label: "test failed",
+        detail: health.detail,
+      };
+    default:
+      return { dot: "bg-muted-foreground/50", label: "untested" };
+  }
+}
+
 /**
- * Read-only by design: provider credentials never cross the browser/controller
- * boundary (ADR 0233). There is no add/remove-provider write path anywhere in
- * mecated or the controller — a key never travels through browser JS or the
- * Node supervisor process. What this card CAN honestly do: name every
- * provider block already present in auth.yaml (never their key values), show
- * which one is active, and say exactly which file and env var to change to
- * add one or switch.
+ * Provider management, SERVER-MEDIATED end to end (Studio rule 3):
+ * credentials never cross the browser/controller boundary, so there is no
+ * key input anywhere on this surface — not on add, not on test, not on
+ * remove. The controller owns auth.yaml server-side: it reports names and
+ * key-present booleans, key-tests a STORED key with one bounded outbound
+ * call (only the verdict reaches the browser), and removes a block with a
+ * conservative line-range cut. Adding a provider is a guided copy of a
+ * snippet (a `<YOUR_KEY>` placeholder) into auth.yaml on the daemon's
+ * machine, then a re-check + restart. Every mutation restarts the daemon and
+ * confirms first; external mode disables all of it (the controller answers
+ * 409 there anyway).
  */
-export function ProviderSection({ runtime }: { runtime: Runtime }) {
+export function ProviderSection({
+  runtime,
+  management,
+}: {
+  runtime: Runtime;
+  management: Management;
+}) {
   const status = runtime.status;
+  const [removing, setRemoving] = useState<HarnessProviderInfo | null>(null);
   const unconfigured = UNCONFIGURED.has(
     (status?.provider ?? "").trim().toLowerCase(),
   );
-  const configured = status?.configuredProviders ?? [];
+
+  const modelsFor = (name: string) =>
+    runtime.models.filter((model) => model.providerId === name).length;
 
   return (
     <SettingsCard title="Model provider">
@@ -53,50 +124,201 @@ export function ProviderSection({ runtime }: { runtime: Runtime }) {
             </Badge>
           </div>
 
-          {runtime.mode !== "external" && (
-            <div className="space-y-2">
-              <p className="text-xs font-medium text-muted-foreground">
-                Configured in{" "}
-                <code className="font-mono">~/.config/mecatl/auth.yaml</code>
-              </p>
-              {configured.length === 0 ? (
-                <p className="text-sm text-muted-foreground">
-                  No provider blocks found.
+          {runtime.mode === "external" ? (
+            <ExternalManagedNote />
+          ) : (
+            <>
+              {management.error && (
+                <p className="whitespace-pre-wrap text-sm text-destructive">
+                  {management.error}
                 </p>
+              )}
+              {management.notice && (
+                <p className="text-sm text-muted-foreground">
+                  {management.notice}
+                </p>
+              )}
+
+              <div className="flex items-center justify-between gap-2">
+                <p className="text-xs font-medium text-muted-foreground">
+                  Configured in{" "}
+                  <code className="font-mono">
+                    {status.authFile || "~/.config/mecatl/auth.yaml"}
+                  </code>
+                </p>
+                <AddProviderDialog
+                  known={management.known}
+                  configured={management.providers.map((p) => p.name)}
+                  authFile={status.authFile}
+                  reload={management.reload}
+                  restartDaemon={management.restartDaemon}
+                  restarting={management.busy === "restart"}
+                />
+              </div>
+
+              {management.providers.length === 0 ? (
+                <Note>
+                  No provider blocks found
+                  {management.isLoading ? " yet…" : "."}{" "}
+                  {!management.isLoading &&
+                    "Add one to move off the offline mock."}
+                </Note>
               ) : (
-                <ul className="flex flex-wrap gap-1.5">
-                  {configured.map((name) => (
-                    <li key={name}>
-                      <Badge
-                        variant={
-                          name === status.selectedProvider ? "info" : "outline"
-                        }
-                        className="font-mono"
-                      >
-                        {name}
-                        {name === status.selectedProvider && " · active"}
-                      </Badge>
-                    </li>
+                <ul className="divide-y overflow-hidden rounded-lg border">
+                  {management.providers.map((row) => (
+                    <ProviderRow
+                      key={row.name}
+                      row={row}
+                      active={row.name === status.selectedProvider}
+                      modelCount={modelsFor(row.name)}
+                      health={management.health[row.name]}
+                      busy={management.busy}
+                      onTest={() => void management.testKey(row.name)}
+                      onRemove={() => setRemoving(row)}
+                    />
                   ))}
                 </ul>
               )}
-            </div>
-          )}
 
-          {runtime.mode === "external" ? (
-            <ExternalManagedNote />
-          ) : unconfigured ? (
-            <Note>
-              No provider is active. Add a block under{" "}
-              <code className="font-mono">providers:</code> in{" "}
-              <code className="font-mono">~/.config/mecatl/auth.yaml</code> on
-              the machine running mecated, set{" "}
-              <code className="font-mono">MECATL_STUDIO_PROVIDER</code> to its
-              name, then restart Studio.
-            </Note>
-          ) : null}
+              {unconfigured && (
+                <Note>
+                  No provider is active. Add a provider above, set{" "}
+                  <code className="font-mono">MECATL_STUDIO_PROVIDER</code> to
+                  its name, then restart Studio.
+                </Note>
+              )}
+            </>
+          )}
         </div>
       )}
+
+      <AlertDialog
+        open={removing !== null}
+        onOpenChange={(open) => !open && setRemoving(null)}
+      >
+        {removing && (
+          <AlertDialogContent>
+            <AlertDialogHeader>
+              <AlertDialogTitle>Remove {removing.name}?</AlertDialogTitle>
+              <AlertDialogDescription>
+                Its block — key included — is removed from auth.yaml on the
+                daemon&rsquo;s machine, and the daemon restarts: in-flight runs
+                and session ids die with it.
+                {removing.name === status?.selectedProvider &&
+                  " This is the SELECTED provider (MECATL_STUDIO_PROVIDER names it) — the daemon will fail to restart until the variable changes or the key returns."}
+                {management.providers.length === 1 &&
+                  " It is also the only configured provider: mecated will come back on the offline mock."}
+              </AlertDialogDescription>
+            </AlertDialogHeader>
+            <AlertDialogFooter>
+              <AlertDialogCancel>Cancel</AlertDialogCancel>
+              <AlertDialogAction
+                onClick={() => {
+                  void management.removeProvider(removing.name);
+                  setRemoving(null);
+                }}
+              >
+                Remove
+              </AlertDialogAction>
+            </AlertDialogFooter>
+          </AlertDialogContent>
+        )}
+      </AlertDialog>
     </SettingsCard>
+  );
+}
+
+/**
+ * One provider row: health dot, mono name (a real anchor to its models
+ * subpage), key-health label, model count, and the actions kebab. The
+ * whole row is a Link so click-through works everywhere; kebab clicks stop
+ * propagation.
+ */
+function ProviderRow({
+  row,
+  active,
+  modelCount,
+  health,
+  busy,
+  onTest,
+  onRemove,
+}: {
+  row: HarnessProviderInfo;
+  active: boolean;
+  modelCount: number;
+  health: ProviderKeyHealth | undefined;
+  busy: string;
+  onTest: () => void;
+  onRemove: () => void;
+}) {
+  const presentation = healthPresentation(row, health);
+  const testing = busy === `test:${row.name}`;
+  const removingBusy = busy === `remove:${row.name}`;
+  const href = `/workspace/settings/provider/${encodeURIComponent(row.name)}`;
+
+  return (
+    <li className="flex items-center gap-3 px-4 py-3">
+      <span
+        aria-hidden="true"
+        className={cn("size-2 shrink-0 rounded-full", presentation.dot)}
+        title={presentation.detail}
+      />
+      <Link href={href} className="min-w-0 flex-1">
+        <span className="flex flex-wrap items-center gap-x-2">
+          <span className="truncate font-mono text-sm font-medium hover:underline">
+            {row.name}
+          </span>
+          {active && <Badge variant="info">active</Badge>}
+        </span>
+        <span
+          className="block truncate text-xs text-muted-foreground"
+          title={presentation.detail}
+        >
+          {presentation.label}
+          {presentation.detail ? ` — ${presentation.detail}` : ""}
+          {" · "}
+          {modelCount} model{modelCount === 1 ? "" : "s"}
+          {" · "}
+          {row.source}
+        </span>
+      </Link>
+      <DropdownMenu modal={false}>
+        <DropdownMenuTrigger asChild>
+          <Button
+            variant="ghost"
+            size="icon"
+            className="size-8 shrink-0"
+            aria-label={`Actions for ${row.name}`}
+          >
+            <Ellipsis className="size-4" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="end">
+          <DropdownMenuItem
+            disabled={!row.testable || !row.keyPresent || testing}
+            title={
+              row.testable
+                ? row.keyPresent
+                  ? undefined
+                  : "No key in the block to test"
+                : "Key testing is not supported for this provider"
+            }
+            onClick={onTest}
+          >
+            {testing ? "Testing key…" : "Test key"}
+          </DropdownMenuItem>
+          <DropdownMenuItem asChild>
+            <Link href={href}>View models</Link>
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            variant="destructive"
+            disabled={removingBusy}
+            onClick={onRemove}
+          >
+            {removingBusy ? "Removing…" : "Remove"}
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </li>
   );
 }

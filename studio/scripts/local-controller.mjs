@@ -18,6 +18,12 @@ import {
   validateGatewayURL,
   validSkillName,
 } from "../src/lib/controller-security.mjs";
+import {
+  KNOWN_AUTH_PROVIDERS,
+  listAuthFileProviders,
+  removeAuthFileProvider,
+  validProviderName,
+} from "../src/lib/provider-auth.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 // Studio is a module INSIDE the mecatl monorepo, so the harness it drives is
@@ -53,32 +59,144 @@ const authFile = process.env.XDG_CONFIG_HOME
   ? resolve(process.env.XDG_CONFIG_HOME, "mecatl/auth.yaml")
   : resolve(homedir(), ".config/mecatl/auth.yaml");
 
+/** auth.yaml's text, or "" when it does not exist / cannot be read. */
+async function readAuthFileText() {
+  try {
+    return await readFile(authFile, "utf8");
+  } catch {
+    return "";
+  }
+}
+
 /**
  * Names only of the providers configured in auth.yaml — never their values.
- * A line scan rather than a YAML parse: this deliberately cannot read a
- * credential, only detect that a `providers:` block names a key at one
- * level of indent (the shape every provider entry uses).
+ * The line scan lives in src/lib/provider-auth.mjs (shared with its vitest
+ * suite): it deliberately cannot read a credential, only detect that a
+ * `providers:` block names a key at one level of indent.
  */
 async function listConfiguredProviderNames() {
-  try {
-    const text = await readFile(authFile, "utf8");
-    const lines = text.split("\n");
-    const providersAt = lines.findIndex((line) => /^providers:\s*$/.test(line));
-    if (providersAt === -1) return [];
-    const names = [];
-    for (const line of lines.slice(providersAt + 1)) {
-      if (/^\s*#/.test(line) || line.trim() === "") continue;
-      const nested = line.match(/^ {2}([A-Za-z0-9_-]+):/);
-      if (nested) {
-        names.push(nested[1]);
-        continue;
-      }
-      if (/^\S/.test(line)) break; // dedented past the providers block
+  return listAuthFileProviders(await readAuthFileText()).map(
+    (provider) => provider.name,
+  );
+}
+
+// ── Provider management ─────────────────────────────────────────────────────
+// The provider inventory, guided add, key test, and removal are controller-
+// owned for the same reason the skills routes are: mecated reads auth.yaml
+// once at startup and has no HTTP write API for it. Every route keeps Studio
+// rule 3 intact — a credential is read SERVER-SIDE here for exactly one
+// outbound probe or removed from the file; no response body ever carries a
+// key, not even a redacted preview, and there is no route that ACCEPTS one.
+
+/**
+ * One cheap authenticated read per testable provider, mirroring the base
+ * URLs the daemon itself defaults to (internal/cliconfig: the controller
+ * spawns mecated without --*-base-url overrides, so these defaults are what
+ * the key will actually be used against). OpenRouter's /models is public
+ * (the daemon's own lister is deliberately keyless), so its keyed metadata
+ * endpoint /key is the probe there.
+ */
+const providerKeyProbes = {
+  openrouter: (key) => ({
+    url: "https://openrouter.ai/api/v1/key",
+    headers: { Authorization: `Bearer ${key}` },
+  }),
+  openai: (key) => ({
+    url: "https://api.openai.com/v1/models",
+    headers: { Authorization: `Bearer ${key}` },
+  }),
+  anthropic: (key) => ({
+    url: "https://api.anthropic.com/v1/models?limit=1",
+    headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
+  }),
+  opencode: (key) => ({
+    url: "https://opencode.ai/zen/go/v1/models",
+    headers: { Authorization: `Bearer ${key}` },
+  }),
+};
+
+/**
+ * The named provider's api_key value, read server-side for the one outbound
+ * key probe. Deliberately controller-local (NOT in provider-auth.mjs, which
+ * the browser bundle imports) and deliberately api_key-only: openai-codex's
+ * oauth block is not key-testable. The value is never logged or echoed.
+ */
+function readProviderCredential(text, name) {
+  const lines = String(text ?? "").split("\n");
+  const providersAt = lines.findIndex((line) => /^providers:\s*$/.test(line));
+  if (providersAt === -1) return "";
+  let inBlock = false;
+  for (const line of lines.slice(providersAt + 1)) {
+    if (/^\S/.test(line)) break; // dedented past the providers block
+    const key = line.match(/^ {2}([A-Za-z0-9_-]+):/);
+    if (key) {
+      inBlock = key[1] === name;
+      continue;
     }
-    return names;
-  } catch {
-    return [];
+    if (!inBlock) continue;
+    const credential = line.match(/^\s+api_key:\s*(.+)$/);
+    if (!credential) continue;
+    let value = credential[1].trim();
+    const quote = value[0];
+    if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
+      value = value.slice(1, -1);
+    }
+    return value.startsWith("#") ? "" : value;
   }
+  return "";
+}
+
+/** Provider error text, bounded and de-control-charred before it reaches a
+ *  response body (it is provider-authored, not ours). */
+function clampProviderError(text) {
+  return (
+    String(text ?? "")
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 300)
+  );
+}
+
+/**
+ * Runs the one bounded probe for a provider's stored key. Returns the JSON
+ * the route answers with: {ok:true} | {ok:false, status, rejected?, error}.
+ * A 401/403 is the provider saying the KEY is bad; anything else (5xx,
+ * timeout, DNS) is an infrastructure answer, reported distinctly so a red
+ * "key rejected" dot is never shown for a provider outage.
+ */
+async function probeProviderKey(name, key) {
+  const probe = providerKeyProbes[name](key);
+  let response;
+  try {
+    response = await fetch(probe.url, {
+      headers: { Accept: "application/json", ...probe.headers },
+      redirect: "manual", // never replay the credential to a redirect target
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      error: clampProviderError(error?.message || "provider unreachable"),
+    };
+  }
+  const body = await response.text().catch(() => "");
+  if (response.ok) return { ok: true };
+  if (response.status === 401 || response.status === 403) {
+    return {
+      ok: false,
+      status: response.status,
+      rejected: true,
+      error: `key rejected (HTTP ${response.status})`,
+    };
+  }
+  return {
+    ok: false,
+    status: response.status,
+    error: clampProviderError(body) || `HTTP ${response.status}`,
+  };
 }
 // ── Workspace skills management ────────────────────────────────────────────
 // The daemon has no HTTP write API for skills (Studio shipped them read-only;
@@ -173,16 +291,27 @@ async function listDisabledSkills() {
   return skills.sort((a, b) => a.name.localeCompare(b.name));
 }
 
+// The kinds startMecatl/preferredKind understand: the two synthetic ones plus
+// every provider auth.yaml can name a block for (KNOWN_AUTH_PROVIDERS is the
+// same registry the guided-add UI offers).
+const KNOWN_PROVIDER_KINDS = new Set([
+  "mock",
+  "toolhive",
+  ...KNOWN_AUTH_PROVIDERS.map((entry) => entry.name),
+]);
 const configuredProvider =
   process.env.MECATL_STUDIO_PROVIDER?.trim().toLowerCase() || "";
-if (
-  configuredProvider &&
-  !["mock", "openrouter", "toolhive"].includes(configuredProvider)
-) {
+if (configuredProvider && !KNOWN_PROVIDER_KINDS.has(configuredProvider)) {
   throw new Error(
-    "MECATL_STUDIO_PROVIDER must be mock, openrouter, or toolhive",
+    `MECATL_STUDIO_PROVIDER must be one of: ${[...KNOWN_PROVIDER_KINDS].join(", ")}`,
   );
 }
+// The LIVE active-provider selection. Seeded from MECATL_STUDIO_PROVIDER at
+// startup, but — unlike that env var, which is frozen for the process's
+// lifetime — reassignable at runtime through POST /providers/active (the
+// Studio settings UI's provider switch), so an operator can move between the
+// offline mock and a real provider without restarting `npm run dev`.
+let activeProviderOverride = configuredProvider || null;
 const managedAuthToken = (
   process.env.MECATL_AUTH_TOKEN || randomBytes(32).toString("base64url")
 ).replace(/^Bearer\s+/i, "");
@@ -268,10 +397,18 @@ function fetchMecatl(path, options = {}) {
   return fetch(new URL(path, mecatlBaseURL), { ...options, headers });
 }
 
+function providerLabel(kind) {
+  if (kind === "mock") return "offline mock";
+  if (kind === "toolhive") return "ToolHive LLM gateway";
+  return (
+    KNOWN_AUTH_PROVIDERS.find((entry) => entry.name === kind)?.label ?? kind
+  );
+}
+
 function startupFailure(kind, message) {
   startupError =
-    kind === "openrouter"
-      ? `OpenRouter could not start. Add providers.openrouter.api_key to ${authFile}, then restart Studio. mecated: ${message}`
+    kind !== "mock" && kind !== "toolhive"
+      ? `${providerLabel(kind)} could not start. Add providers.${kind}.api_key to ${authFile}, then switch to it again. mecated: ${message}`
       : message;
   return new Error(startupError);
 }
@@ -292,9 +429,21 @@ async function detectToolhiveGateway() {
 
 // Provider credentials are owned by mecated's conventional auth file, never
 // copied through a browser form or patched into the child's environment here.
-// MECATL_STUDIO_PROVIDER selects a provider without carrying its credential.
+// MECATL_STUDIO_PROVIDER / the /providers/active switch select a provider
+// without carrying its credential.
 const preferredKind = () =>
-  configuredProvider || (toolhiveReady ? "toolhive" : "mock");
+  activeProviderOverride || (toolhiveReady ? "toolhive" : "mock");
+
+/** Whether `kind` is safe to hand to startMecatl right now: the two
+ *  synthetic kinds (mock always, toolhive only while the gateway answers) or
+ *  a provider that actually has a block in auth.yaml — never an arbitrary
+ *  string, so a typo can't reach mecated's fail-fast --default-provider
+ *  check and crash the child. */
+function isSelectableProviderKind(kind, configuredNames) {
+  if (kind === "mock") return true;
+  if (kind === "toolhive") return toolhiveReady;
+  return configuredNames.includes(kind);
+}
 
 function normalizeModelRouter(input) {
   const classifierModel =
@@ -673,12 +822,18 @@ async function startMecatl(kind) {
   args.push("--skills-dir", skillsDir);
   await mkdir(memoryDir, { recursive: true });
   args.push("--memory-dir", memoryDir);
-  if (kind === "openrouter") args.push("--default-provider", "openrouter");
-  // No credential and no base-URL flag for the gateway: mecated finds the
-  // loopback proxy through ToolHive's own config and registers it as the
-  // "toolhive" provider on its own. Naming it as the default is all it takes.
-  else if (kind === "toolhive") args.push("--default-provider", "toolhive");
-  else args.push("--mock");
+  if (kind === "mock") {
+    args.push("--mock");
+  } else if (kind === "toolhive") {
+    // No credential and no base-URL flag for the gateway: mecated finds the
+    // loopback proxy through ToolHive's own config and registers it as the
+    // "toolhive" provider on its own. Naming it as the default is all it takes.
+    args.push("--default-provider", "toolhive");
+  } else {
+    // Any auth.yaml-configured provider (openrouter, anthropic, openai,
+    // opencode, …) — mecated validates the id fail-fast at startup.
+    args.push("--default-provider", kind);
+  }
   const env = { ...process.env, MECATL_AUTH_TOKEN: managedAuthToken };
   if (gateway) {
     // Mecatl's SDK opens the optional standalone SSE notification stream after
@@ -705,12 +860,7 @@ async function startMecatl(kind) {
     if (child === proc) child = null;
     if (!expectedExits.has(proc)) scheduleMecatlRestart();
   });
-  provider =
-    kind === "openrouter"
-      ? "OpenRouter"
-      : kind === "toolhive"
-        ? "ToolHive LLM gateway"
-        : "offline mock";
+  provider = providerLabel(kind);
   await delay(250);
   // Remote MCP gateways may cold-start and mecatl intentionally gives their
   // initialize handshake up to 30 seconds. Keep the controller's readiness
@@ -1104,10 +1254,11 @@ const server = http.createServer(async (request, response) => {
         running: Boolean(child),
         startupError,
         authFile,
-        // Names only — never values. What MECATL_STUDIO_PROVIDER may select
-        // among, and which one that env var currently names, if any.
+        // Names only — never values. What MECATL_STUDIO_PROVIDER / the
+        // /providers/active switch may select among, and which one is
+        // active right now, if any.
         configuredProviders,
-        selectedProvider: configuredProvider || null,
+        selectedProvider: activeProviderOverride,
         // The client has no other way to learn this: it is resolved from THIS
         // file's location, so a clone anywhere works with no source edit.
         workspace,
@@ -1128,6 +1279,172 @@ const server = http.createServer(async (request, response) => {
         memory: { dir: memoryDir, scope: "project" },
       }),
     );
+    return;
+  }
+  // Provider inventory: names + key-present booleans from auth.yaml, never
+  // values. Like the skill routes (and unlike /status) this is NOT in the
+  // header-free read-only allowlist — it needs the server-set studio header.
+  if (request.method === "GET" && requestURL.pathname === "/providers") {
+    const rows = listAuthFileProviders(await readAuthFileText());
+    response.end(
+      JSON.stringify({
+        providers: rows.map((row) => ({
+          name: row.name,
+          configured: true,
+          keyPresent: row.keyPresent,
+          source: "auth.yaml",
+          testable: Object.hasOwn(providerKeyProbes, row.name),
+        })),
+      }),
+    );
+    return;
+  }
+  // The provider kinds the daemon understands, with the guided-add snippet
+  // (a <YOUR_KEY> placeholder — this route never sees a real credential).
+  if (request.method === "GET" && requestURL.pathname === "/providers/known") {
+    response.end(JSON.stringify({ known: KNOWN_AUTH_PROVIDERS }));
+    return;
+  }
+  // Key test + removal: POST /providers/{name}/test, DELETE /providers/{name}.
+  const providerRoute = requestURL.pathname.match(
+    /^\/providers\/([^/]+?)(?:\/(test))?$/,
+  );
+  if (providerRoute) {
+    const [, rawName, action] = providerRoute;
+    let name = rawName;
+    try {
+      name = decodeURIComponent(rawName);
+    } catch {
+      // Malformed escape: the grammar below rejects percent-shaped names.
+    }
+    if (!validProviderName(name)) {
+      jsonError(response, 400, "not a valid provider name");
+      return;
+    }
+    if (request.method === "POST" && action === "test") {
+      // ONE cheap authenticated call with the STORED key, made entirely
+      // server-side. The key never appears in the response, the logs, or an
+      // error message; the probe is bounded (10s) and never follows a
+      // redirect with the credential attached.
+      if (!Object.hasOwn(providerKeyProbes, name)) {
+        jsonError(
+          response,
+          400,
+          `Key testing is not supported for "${name}" — mecated will report an auth problem on first use instead.`,
+        );
+        return;
+      }
+      const key = readProviderCredential(await readAuthFileText(), name);
+      if (!key) {
+        jsonError(
+          response,
+          400,
+          `No api_key found for providers.${name} in ${authFile}`,
+        );
+        return;
+      }
+      response.end(JSON.stringify(await probeProviderKey(name, key)));
+      return;
+    }
+    if (request.method === "DELETE" && !action) {
+      // Removing a provider block is a conservative line-range cut of the
+      // named top-level key (provider-auth.mjs), written temp-file+rename
+      // with owner-only permissions, then a daemon restart so the change is
+      // real. Removing the LAST provider is allowed: mecated runs on the
+      // offline mock without providers (the state the user already sees on
+      // first run) — the UI's confirm warns, the controller doesn't refuse.
+      // If the restart then fails (e.g. MECATL_STUDIO_PROVIDER still names
+      // the removed provider), the removal STANDS — the operator asked for
+      // the credential to be gone — and the startup error surfaces both in
+      // this response and on /status.startupError.
+      try {
+        await queueRestart(async () => {
+          const current = await readAuthFileText();
+          const { text, removed } = removeAuthFileProvider(current, name);
+          if (!removed) {
+            throw Object.assign(
+              new Error(`No provider named "${name}" in ${authFile}`),
+              { statusCode: 404 },
+            );
+          }
+          const temp = `${authFile}.tmp`;
+          await writeFile(temp, text, { mode: 0o600 });
+          await rename(temp, authFile);
+          await startMecatl(preferredKind());
+        });
+        response.end(JSON.stringify({ ok: true, restarted: true }));
+      } catch (error) {
+        jsonError(
+          response,
+          error.statusCode || 400,
+          error.message || "Provider removal failed",
+        );
+      }
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+    return;
+  }
+  // Live provider switch: POST /providers/active { kind }. Unlike
+  // MECATL_STUDIO_PROVIDER (fixed for the process's lifetime), this
+  // reassigns activeProviderOverride and restarts mecated on the spot — the
+  // Studio settings UI's "switch to mock" / "switch to <provider>" control.
+  if (
+    request.method === "POST" &&
+    requestURL.pathname === "/providers/active"
+  ) {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const input = JSON.parse(
+        (await readBody(request, 4096)).toString("utf8"),
+      );
+      const kind =
+        typeof input?.kind === "string" ? input.kind.trim().toLowerCase() : "";
+      const configuredNames = await listConfiguredProviderNames();
+      if (!kind || !isSelectableProviderKind(kind, configuredNames)) {
+        throw Object.assign(
+          new Error(
+            kind === "toolhive"
+              ? "The ToolHive LLM gateway is not reachable right now"
+              : `"${kind || "(empty)"}" is not mock, toolhive, or a provider configured in ${authFile}`,
+          ),
+          { statusCode: 400 },
+        );
+      }
+      await queueRestart(async () => {
+        const previous = activeProviderOverride;
+        activeProviderOverride = kind;
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          activeProviderOverride = previous;
+          await startMecatl(preferredKind());
+          throw error;
+        }
+      });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          provider,
+          selectedProvider: activeProviderOverride,
+        }),
+      );
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not switch provider",
+      );
+    }
     return;
   }
   // The disabled-skill inventory. Like every controller route this sits

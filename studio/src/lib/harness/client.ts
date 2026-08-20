@@ -577,21 +577,38 @@ export async function listHarnessSkills(
 }
 
 /** Reads the selectable provider/model inventory. Carries no secret material. */
-export async function listHarnessModels(
-  signal?: AbortSignal,
-): Promise<{ id: string; providerId: string; displayName: string }[]> {
+export async function listHarnessModels(signal?: AbortSignal): Promise<
+  {
+    id: string;
+    providerId: string;
+    displayName: string;
+    contextLimit: number;
+    image: boolean;
+    reasoning: boolean;
+  }[]
+> {
   const response = await fetch(`${HARNESS_API}/models`, {
     signal,
     cache: "no-store",
   });
   if (!response.ok) throw new Error(await readError(response));
   const body = (await response.json()) as {
-    models?: { id?: string; provider_id?: string; display_name?: string }[];
+    models?: {
+      id?: string;
+      provider_id?: string;
+      display_name?: string;
+      context_limit?: number;
+      image?: boolean;
+      reasoning?: boolean;
+    }[];
   };
   return (body.models ?? []).map((model) => ({
     id: model.id ?? "",
     providerId: model.provider_id ?? "",
     displayName: model.display_name ?? model.id ?? "",
+    contextLimit: Number(model.context_limit ?? 0),
+    image: model.image === true,
+    reasoning: model.reasoning === true,
   }));
 }
 
@@ -611,12 +628,14 @@ export interface HarnessControlStatus {
   memoryDir: string;
   /**
    * Provider NAMES found in the operator's auth.yaml — never credentials.
-   * Adding or removing one means editing that file on the machine running
-   * mecated; Studio has no write path for it by design (ADR 0233).
+   * Managed mode can now add/remove blocks THROUGH the controller (which
+   * owns the file server-side); no key value ever crosses this boundary.
    */
   configuredProviders: string[];
   /** Which of those MECATL_STUDIO_PROVIDER currently selects, if set. */
   selectedProvider: string | null;
+  /** The auth.yaml path on the controller's machine (guided-add copy). */
+  authFile: string;
 }
 
 export async function fetchHarnessControlStatus(
@@ -639,6 +658,7 @@ export async function fetchHarnessControlStatus(
       memory?: { dir?: string };
       configuredProviders?: unknown;
       selectedProvider?: string | null;
+      authFile?: string;
     };
     return {
       mode: body.mode === "external" ? "external" : "managed",
@@ -660,6 +680,7 @@ export async function fetchHarnessControlStatus(
           )
         : [],
       selectedProvider: body.selectedProvider ?? null,
+      authFile: body.authFile ?? "",
       skillsDir: body.skills?.dir ?? "",
       memoryDir: body.memory?.dir ?? "",
     };
@@ -746,6 +767,144 @@ export async function connectHarnessGateway(
       token: token?.trim() || undefined,
     }),
   });
+  if (!response.ok) throw new Error(await readError(response));
+}
+
+// ── Controller: provider management ─────────────────────────────────────────
+// auth.yaml stays server-side property of the controller: these calls move
+// NAMES and booleans, never key material. There is deliberately no
+// "add provider with key" call — adding one is a guided copy-into-auth.yaml
+// (see the Add-provider dialog), so a credential never transits the browser.
+
+/** One provider block found in the controller's auth.yaml — names and
+ *  booleans only, never values (Studio rule 3). */
+export interface HarnessProviderInfo {
+  name: string;
+  configured: boolean;
+  /** A non-empty api_key / oauth access_token exists in the block. */
+  keyPresent: boolean;
+  source: string;
+  /** The controller can key-test this kind with one cheap keyed call. */
+  testable: boolean;
+}
+
+export async function listHarnessProviders(
+  signal?: AbortSignal,
+): Promise<HarnessProviderInfo[]> {
+  const response = await fetch(`${CONTROL_API}/providers`, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as {
+    providers?: {
+      name?: string;
+      configured?: boolean;
+      keyPresent?: boolean;
+      source?: string;
+      testable?: boolean;
+    }[];
+  };
+  return (body.providers ?? [])
+    .filter((row) => typeof row.name === "string" && row.name !== "")
+    .map((row) => ({
+      name: row.name ?? "",
+      configured: row.configured !== false,
+      keyPresent: row.keyPresent === true,
+      source: row.source ?? "auth.yaml",
+      testable: row.testable === true,
+    }));
+}
+
+/** One provider kind the daemon understands, with the guided-add snippet
+ *  (a `<YOUR_KEY>` placeholder — never a real value). */
+export interface KnownHarnessProvider {
+  name: string;
+  label: string;
+  testable: boolean;
+  snippet: string;
+  note: string;
+}
+
+export async function listKnownHarnessProviders(
+  signal?: AbortSignal,
+): Promise<KnownHarnessProvider[]> {
+  const response = await fetch(`${CONTROL_API}/providers/known`, {
+    signal,
+    cache: "no-store",
+  });
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as {
+    known?: {
+      name?: string;
+      label?: string;
+      testable?: boolean;
+      snippet?: string;
+      note?: string;
+    }[];
+  };
+  return (body.known ?? [])
+    .filter((row) => typeof row.name === "string" && row.name !== "")
+    .map((row) => ({
+      name: row.name ?? "",
+      label: row.label ?? row.name ?? "",
+      testable: row.testable === true,
+      snippet: row.snippet ?? "",
+      note: row.note ?? "",
+    }));
+}
+
+/** The controller's verdict on a stored key after ONE bounded probe. */
+export interface HarnessProviderKeyTest {
+  ok: boolean;
+  /** HTTP status from the provider (0 = unreachable/timeout). */
+  status: number;
+  /** True when the provider answered 401/403 — the KEY is bad, not the wire. */
+  rejected: boolean;
+  error: string;
+}
+
+/**
+ * Asks the controller to test a provider's STORED key with one cheap
+ * authenticated call. The key itself never reaches the browser — only the
+ * verdict does. Throws when the test could not run at all (unknown provider,
+ * no key in auth.yaml, external mode's 409).
+ */
+export async function testHarnessProviderKey(
+  name: string,
+): Promise<HarnessProviderKeyTest> {
+  const response = await fetch(
+    `${CONTROL_API}/providers/${encodeURIComponent(name)}/test`,
+    { method: "POST" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+  const body = (await response.json()) as {
+    ok?: boolean;
+    status?: number;
+    rejected?: boolean;
+    error?: string;
+  };
+  return {
+    ok: body.ok === true,
+    status: Number(body.status ?? 0),
+    rejected: body.rejected === true,
+    error: body.error ?? "",
+  };
+}
+
+/** Removes a provider's block from auth.yaml. RESTARTS the daemon. */
+export async function removeHarnessProvider(name: string): Promise<void> {
+  const response = await fetch(
+    `${CONTROL_API}/providers/${encodeURIComponent(name)}`,
+    { method: "DELETE" },
+  );
+  if (!response.ok) throw new Error(await readError(response));
+}
+
+/** Restarts the daemon with its current config — how a provider block just
+ *  added to auth.yaml (guided add) becomes visible to mecated. */
+export async function restartHarnessDaemon(): Promise<void> {
+  const response = await fetch(`${CONTROL_API}/restart`, { method: "POST" });
   if (!response.ok) throw new Error(await readError(response));
 }
 

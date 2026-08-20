@@ -14,6 +14,7 @@ import {
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
+import { useDisabledModels } from "@/lib/model-preferences";
 import {
   ExternalManagedNote,
   Note,
@@ -108,10 +109,17 @@ function ModelSelect({
  */
 export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
   const router = runtime.router;
+  const { disabled: disabledModels } = useDisabledModels();
   // Router categories must resolve through the gateway's inventory; other
-  // providers' entries would name models the daemon cannot route to.
+  // providers' entries would name models the daemon cannot route to. Models
+  // switched off on the provider page are hidden from this picker too (a
+  // Studio-side preference — ModelSelect still keeps an already-SAVED
+  // disabled model selectable, so opening the form never blanks it).
   const models = runtime.models.filter(
-    (model) => model.providerId === "toolhive" && model.id,
+    (model) =>
+      model.providerId === "toolhive" &&
+      model.id &&
+      !disabledModels.has(model.id),
   );
 
   const keyCounter = useRef(0);

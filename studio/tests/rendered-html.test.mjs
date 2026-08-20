@@ -155,8 +155,10 @@ test("external mode injects daemon auth server-side and disables local controls"
   assert.equal(mutation.status, 409);
   assert.match((await mutation.json()).error, /external mecated deployment/);
 
-  // Skill management is controller-owned: external mode owns nothing locally,
-  // so every skill write (and even the disabled-list read) answers 409.
+  // Skill AND provider management are controller-owned: external mode owns
+  // nothing locally, so every write — and even the inventory reads — answers
+  // 409. The provider rows pin that no external deployment's auth.yaml can
+  // be probed, removed, or even enumerated through Studio.
   for (const [path, method] of [
     ["skills", "POST"],
     ["skills/pr-feedback/disable", "POST"],
@@ -164,6 +166,11 @@ test("external mode injects daemon auth server-side and disables local controls"
     ["skills/pr-feedback/body", "PUT"],
     ["skills/pr-feedback", "DELETE"],
     ["skills/disabled", "GET"],
+    ["providers", "GET"],
+    ["providers/known", "GET"],
+    ["providers/openrouter/test", "POST"],
+    ["providers/openrouter", "DELETE"],
+    ["restart", "POST"],
   ]) {
     const refused = await fetch(`${studioBaseURL}/api/mecatl-control/${path}`, {
       method,
@@ -259,14 +266,22 @@ test("controller policy rejects CSRF and DNS-rebinding requests", () => {
     ),
     true,
   );
-  // Skill routes are NOT in the header-free read-only allowlist: even the
-  // disabled-list GET needs the server-set studio header, and a skill
-  // mutation without it is refused like any other controller write.
+  // Skill and provider routes are NOT in the header-free read-only
+  // allowlist: even the inventory GETs need the server-set studio header,
+  // and a mutation without it is refused like any other controller write.
+  // For /providers that gate is part of rule 3's perimeter — a page in
+  // another loopback-origin app must not be able to enumerate auth.yaml's
+  // provider names, key-test a stored credential, or delete a block.
   for (const [method, pathname] of [
     ["GET", "/skills/disabled"],
     ["POST", "/skills"],
     ["POST", "/skills/pr-feedback/disable"],
     ["DELETE", "/skills/pr-feedback"],
+    ["GET", "/providers"],
+    ["GET", "/providers/known"],
+    ["POST", "/providers/openrouter/test"],
+    ["DELETE", "/providers/openrouter"],
+    ["POST", "/restart"],
   ]) {
     assert.equal(
       requestIsAllowed(
