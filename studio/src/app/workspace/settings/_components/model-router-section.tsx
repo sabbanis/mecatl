@@ -110,16 +110,15 @@ function ModelSelect({
 export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
   const router = runtime.router;
   const { disabled: disabledModels } = useDisabledModels();
-  // Router categories must resolve through the gateway's inventory; other
-  // providers' entries would name models the daemon cannot route to. Models
-  // switched off on the provider page are hidden from this picker too (a
-  // Studio-side preference — ModelSelect still keeps an already-SAVED
-  // disabled model selectable, so opening the form never blanks it).
+  // The daemon's live model inventory IS the routable set — whatever
+  // GET /v1/models reports, a router category may name (the old
+  // gateway-only filter blanked these pickers on any non-ToolHive
+  // deployment). Models switched off on the provider page are hidden here
+  // too (a Studio-side preference — ModelSelect still keeps an
+  // already-SAVED disabled model selectable, so opening the form never
+  // blanks it).
   const models = runtime.models.filter(
-    (model) =>
-      model.providerId === "toolhive" &&
-      model.id &&
-      !disabledModels.has(model.id),
+    (model) => model.id && !disabledModels.has(model.id),
   );
 
   const keyCounter = useRef(0);
