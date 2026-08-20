@@ -2441,6 +2441,12 @@ func (s *Service) ForkSession(ctx context.Context, srcID session.SessionID, titl
 	if err := forked.SeedHistory(snap); err != nil {
 		return "", fmt.Errorf("server: seed fork history: %w", err)
 	}
+	// A Project-backed peer carries the exact captured binding and environment;
+	// it never consults the mutable Project document or source registry.
+	if src.Project != nil {
+		forked.Project = src.Project.Clone()
+		forked.EnvironmentRef = src.EnvironmentRef
+	}
 	sel := ProviderSelector{ProviderID: src.ProviderID, ModelID: src.ModelID, ReasoningEffort: src.ReasoningEffort}
 	// ADR 0068: the ONE permitted selector delta — a non-empty override replaces
 	// ONLY the effort label (provider/model inherit regardless), so a mid-

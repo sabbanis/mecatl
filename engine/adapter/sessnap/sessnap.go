@@ -112,6 +112,9 @@ type Snapshot struct {
 	// server.Config.EnvironmentResolver; local/mem/nofs resolve through the
 	// existing factories.
 	EnvironmentRef session.EnvironmentRef `json:"environment_ref,omitzero"`
+	// Project is the captured Project binding for a Project-backed session. A nil
+	// pointer keeps ordinary and legacy snapshots byte-compatible.
+	Project *session.ProjectBinding `json:"project,omitempty"`
 	// AdoptionMetadata is embedded so its rare pointer does not inflate every
 	// Snapshot, while its existing v2 fields remain flat on the JSON wire.
 	*session.AdoptionMetadata
@@ -183,6 +186,7 @@ func Of(s *session.Session) (Snapshot, error) {
 		Authority:        s.Authority,
 		Kind:             s.Kind,
 		Relationship:     relationship,
+		Project:          s.Project.Clone(),
 		AdoptionMetadata: s.Adoption.Clone(),
 		CreatedAt:        s.CreatedAt,
 		// Owner is a pointer for true omitempty; Clone so the snapshot cannot
@@ -236,6 +240,7 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 	s.ModelID = snap.ModelID
 	s.ReasoningEffort = snap.ReasoningEffort
 	s.EnvironmentRef = snap.EnvironmentRef
+	s.Project = snap.Project.Clone()
 	s.Adoption = snap.Clone()
 	s.Title = snap.Title
 	s.TitleProvenance = snap.TitleProvenance

@@ -446,6 +446,10 @@ type Session struct {
 	// Adoption is non-nil only for the rare explicitly adopted main session, so
 	// ordinary sessions retain the aggregate's hot-path size class.
 	Adoption *AdoptionMetadata
+	// Project is the immutable Project binding captured at session creation. It is
+	// nil for ordinary and legacy sessions; source resolution and authorization stay
+	// above the aggregate.
+	Project *ProjectBinding
 	// CreatedAt is the creation timestamp.
 	CreatedAt time.Time
 

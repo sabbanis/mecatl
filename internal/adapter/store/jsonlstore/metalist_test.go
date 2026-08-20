@@ -15,7 +15,38 @@ import (
 	"github.com/stacklok/mecatl/engine/session"
 )
 
-// TestMetaListProjectsSnapshotFields seeds a completed session with a known
+func TestMetaListProjectsCapturedProjectProvenance(t *testing.T) {
+	ctx := context.Background()
+	st, _ := newStore(t)
+	s := session.New("project-meta", session.ModeDefault, "/ws", session.Limits{}, time.Unix(0, 0))
+	s.Project = &session.ProjectBinding{
+		ProjectID:             "project-1",
+		ProjectNameAtCreation: "Roadmap",
+		Working:               session.ProjectSourceBinding{SourceRef: "source-ref", LabelAtCreation: "Working copy"},
+		References:            []session.ProjectSourceBinding{{SourceRef: "reference-ref", LabelAtCreation: "Reference"}},
+	}
+	if err := st.Save(ctx, s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	page, err := st.PageSessionMetadata(ctx, port.SessionMetadataPageRequest{Limit: 1})
+	if err != nil {
+		t.Fatalf("PageSessionMetadata: %v", err)
+	}
+	want := s.ProjectProvenance()
+	if len(page.Sessions) != 1 || page.Sessions[0].Project != want {
+		t.Fatalf("metadata Project = %#v, want %#v", page.Sessions, want)
+	}
+	encoded, err := json.Marshal(page.Sessions[0].Project)
+	if err != nil {
+		t.Fatalf("marshal Project: %v", err)
+	}
+	for _, forbidden := range []string{"source-ref", "reference-ref", "/ws"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("metadata Project leaks %q: %s", forbidden, encoded)
+		}
+	}
+}
+
 // state/turns/model/title/created_at and asserts MetaList returns those fields
 // (the latest-line read + small-struct decode, skipping messages).
 func TestMetaListProjectsSnapshotFields(t *testing.T) {

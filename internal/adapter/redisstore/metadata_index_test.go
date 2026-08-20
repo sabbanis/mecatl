@@ -2,6 +2,7 @@ package redisstore
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strconv"
@@ -50,6 +51,37 @@ func (s *redisCommandSpy) snapshot() []redisCommand {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return slices.Clone(s.commands)
+}
+
+func TestPageSessionMetadataProjectsCapturedProjectProvenance(t *testing.T) {
+	st, _ := newMetadataTestStore(t)
+	s := session.New("project-meta", session.ModeDefault, "/ws", session.Limits{}, time.Unix(0, 0))
+	s.Project = &session.ProjectBinding{
+		ProjectID:             "project-1",
+		ProjectNameAtCreation: "Roadmap",
+		Working:               session.ProjectSourceBinding{SourceRef: "source-ref", LabelAtCreation: "Working copy"},
+		References:            []session.ProjectSourceBinding{{SourceRef: "reference-ref", LabelAtCreation: "Reference"}},
+	}
+	if err := st.Save(context.Background(), s); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	page, err := st.PageSessionMetadata(context.Background(), port.SessionMetadataPageRequest{Limit: 1})
+	if err != nil {
+		t.Fatalf("PageSessionMetadata: %v", err)
+	}
+	want := s.ProjectProvenance()
+	if len(page.Sessions) != 1 || page.Sessions[0].Project != want {
+		t.Fatalf("metadata Project = %#v, want %#v", page.Sessions, want)
+	}
+	encoded, err := json.Marshal(page.Sessions[0].Project)
+	if err != nil {
+		t.Fatalf("marshal Project: %v", err)
+	}
+	for _, forbidden := range []string{"source-ref", "reference-ref", "/ws"} {
+		if strings.Contains(string(encoded), forbidden) {
+			t.Fatalf("metadata Project leaks %q: %s", forbidden, encoded)
+		}
+	}
 }
 
 func TestPageSessionMetadataSeparatesOwnerScopesAndRejectsCursorReuse(t *testing.T) {

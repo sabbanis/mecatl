@@ -163,7 +163,51 @@ func TestForkSessionInheritsHistoryAndLabels(t *testing.T) {
 	}
 }
 
-// TestForkSessionEffortOverride verifies the ADR 0068 effort override: a source
+func TestForkSessionInheritsCapturedProjectBinding(t *testing.T) {
+	ctx := context.Background()
+	svc, store := newMCPServiceStore(t, "shared", nil)
+
+	source, err := svc.CreateSessionWithProvider(ctx, "/work/project", session.ModeDefault, session.Limits{}, server.ProviderSelector{})
+	if err != nil {
+		t.Fatalf("CreateSessionWithProvider: %v", err)
+	}
+	source.EnvironmentRef = session.EnvironmentRef{Kind: "remote", ID: "environment-1"}
+	source.Project = &session.ProjectBinding{
+		ProjectID:             "project-1",
+		ProjectNameAtCreation: "Roadmap",
+		ProjectRevision:       3,
+		Working:               session.ProjectSourceBinding{SourceRef: "source-1", LabelAtCreation: "Working copy"},
+		References:            []session.ProjectSourceBinding{{SourceRef: "reference-1", LabelAtCreation: "Architecture"}},
+	}
+	if err := store.Save(ctx, source); err != nil {
+		t.Fatalf("save project session: %v", err)
+	}
+
+	forkID, err := svc.ForkSession(ctx, source.ID, "", "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	forked, err := store.Load(ctx, forkID)
+	if err != nil {
+		t.Fatalf("load fork: %v", err)
+	}
+	if forked.Project == nil || forked.Project.ProjectID != source.Project.ProjectID ||
+		forked.Project.ProjectNameAtCreation != source.Project.ProjectNameAtCreation ||
+		forked.Project.ProjectRevision != source.Project.ProjectRevision ||
+		forked.Project.Working != source.Project.Working ||
+		len(forked.Project.References) != 1 || forked.Project.References[0] != source.Project.References[0] {
+		t.Fatalf("fork project binding = %#v, want source binding %#v", forked.Project, source.Project)
+	}
+	if forked.EnvironmentRef != source.EnvironmentRef {
+		t.Fatalf("fork EnvironmentRef = %#v, want %#v", forked.EnvironmentRef, source.EnvironmentRef)
+	}
+
+	forked.Project.References[0].LabelAtCreation = "changed"
+	if source.Project.References[0].LabelAtCreation == "changed" {
+		t.Fatal("fork references alias the source binding")
+	}
+}
+
 // with provider+model+effort "low", forked with override "high", yields a peer
 // whose ReasoningEffort label is "high" while ProviderID/ModelID inherit verbatim,
 // with a per-session engine rehydrated on the override selector, and

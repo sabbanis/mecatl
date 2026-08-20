@@ -3,6 +3,8 @@
     method func (*Conversation).Len() int
     method func (*Principal).Clone() *Principal
     method func (*Principal).SameIdentity(other *Principal) bool
+    method func (*ProjectBinding).Clone() *ProjectBinding
+    method func (*ProjectBinding).Provenance() ProjectProvenance
     method func (*Session).Abandon() error
     method func (*Session).BeginTurn() error
     method func (*Session).Cancel() error
@@ -14,6 +16,7 @@
     method func (*Session).LimitTripped() (StopReason, bool)
     method func (*Session).PauseForApproval(ask PendingAsk) error
     method func (*Session).PendingAsk() (PendingAsk, bool)
+    method func (*Session).ProjectProvenance() ProjectProvenance
     method func (*Session).RecordAssistant(m Message) error
     method func (*Session).RecordFailurePermanence(permanent bool) error
     method func (*Session).RecordLastError(cause string) error
@@ -228,10 +231,13 @@ type ParallelPayload struct{ParentCallID string; Kind ParallelEventKind; Join st
 type PendingAsk struct{AskID string; Tool string; Args json.RawMessage; Reason string; Call ToolCallID "json:\"call,omitempty\""; ConfiguredAsk bool; FlooredConfiguredAllow bool; HookOriginated bool "json:\"hook_originated,omitempty\""; PlanOriginated bool "json:\"plan_originated,omitempty\""}
 type PermissionMode string
 type Principal struct{Issuer string; Subject string; GrantType GrantType; Name string}
+type ProjectBinding struct{ProjectID string "json:\"project_id\""; ProjectNameAtCreation string "json:\"project_name_at_creation\""; ProjectRevision int "json:\"project_revision\""; Working ProjectSourceBinding "json:\"working\""; References []ProjectSourceBinding "json:\"references\""}
+type ProjectProvenance struct{ProjectID string; ProjectNameAtCreation string; WorkingLabelAtCreation string}
+type ProjectSourceBinding struct{SourceRef string "json:\"source_ref\""; LabelAtCreation string "json:\"label_at_creation\""}
 type ResultPayload struct{Stop StopReason; Text string; Usage Usage; Error string; Permanent bool}
 type Role string
 type SchedulePayload struct{ScheduleName string; FireID string; SessionID SessionID; Kind string; Stop StopReason; Err string}
-type Session struct{ID SessionID; State State; Mode PermissionMode; Conversation *Conversation; Limits Limits; Counters Counters; Usage Usage; Workspace string; EnvironmentRef EnvironmentRef; Profile string; ProviderID string; ModelID string; ReasoningEffort string; Title string; TitleProvenance TitleProvenance; Owner *Principal; Authority Authority; Kind SessionKind; Relationship SessionRelationship; Adoption *AdoptionMetadata; CreatedAt time.Time}
+type Session struct{ID SessionID; State State; Mode PermissionMode; Conversation *Conversation; Limits Limits; Counters Counters; Usage Usage; Workspace string; EnvironmentRef EnvironmentRef; Profile string; ProviderID string; ModelID string; ReasoningEffort string; Title string; TitleProvenance TitleProvenance; Owner *Principal; Authority Authority; Kind SessionKind; Relationship SessionRelationship; Adoption *AdoptionMetadata; Project *ProjectBinding; CreatedAt time.Time}
 type SessionID string
 type SessionKind string
 type SessionRelationship struct{ScheduleName string "json:\"schedule_name,omitempty\""; OriginSessionID SessionID "json:\"origin_session_id,omitempty\""; ParentSessionID SessionID "json:\"parent_session_id,omitempty\""; CallID ToolCallID "json:\"call_id,omitempty\""; BranchIndex *int "json:\"branch_index,omitempty\""; TeamID string "json:\"team_id,omitempty\""; MemberName string "json:\"member_name,omitempty\""}

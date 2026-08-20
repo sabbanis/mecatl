@@ -157,6 +157,7 @@ func (st *Store) PageSessionMetadata(_ context.Context, request port.SessionMeta
 			Turns: snap.Counters.Turns, ModelID: snap.ModelID, CreatedAt: snap.CreatedAt,
 			Title: snap.Title, TitleProvenance: snap.TitleProvenance, Workspace: snap.Workspace,
 			Kind: kind, Relationship: snap.Relationship, Owner: snap.Owner,
+			Project:        snap.Project.Provenance(),
 			EstimatedBytes: st.estimatedBytes[id],
 		})
 	}
@@ -194,6 +195,13 @@ func estimateSnapshotBytes(snap sessnap.Snapshot) int64 {
 	}
 	if snap.AdoptionMetadata != nil {
 		size += int64(64 + len(snap.AdoptionSourceID) + len(snap.AdoptionRequestDigest))
+	}
+	if snap.Project != nil {
+		size += int64(96 + len(snap.Project.ProjectID) + len(snap.Project.ProjectNameAtCreation) +
+			len(snap.Project.Working.SourceRef) + len(snap.Project.Working.LabelAtCreation))
+		for _, ref := range snap.Project.References {
+			size += int64(32 + len(ref.SourceRef) + len(ref.LabelAtCreation))
+		}
 	}
 
 	for _, message := range snap.Messages {

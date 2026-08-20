@@ -137,6 +137,9 @@ type SessionDiscoveryMeta struct {
 	Workspace       string
 	Kind            session.SessionKind
 	Relationship    session.SessionRelationship
+	// Project is the locator-free captured Project projection for inventory. It
+	// excludes source references, environment identities, and references.
+	Project session.ProjectProvenance
 	// EstimatedBytes is a content-free backend estimate of bytes reclaimed by
 	// deleting this session family. Zero means unavailable, never a measured
 	// assertion that the family occupies no storage.

@@ -105,6 +105,9 @@ type SessionMeta struct {
 	// the event stream. An empty kind is legacy and folds to unknown.
 	Kind         session.SessionKind
 	Relationship session.SessionRelationship
+	// Project is the captured binding supplied alongside the event stream; it is
+	// not event-carried because Project creation stays above the loop.
+	Project *session.ProjectBinding
 	// AdoptionSourceID and AdoptionRequestDigest are inert adoption audit labels.
 	// They are not event-carried and must be supplied by an event-log store.
 	AdoptionSourceID      session.SessionID
@@ -161,6 +164,7 @@ func Fold(meta SessionMeta, events iter.Seq2[session.Event, error]) (*session.Se
 	s.ProviderID = meta.ProviderID
 	s.ModelID = meta.ModelID
 	s.ReasoningEffort = meta.ReasoningEffort
+	s.Project = meta.Project.Clone()
 	if meta.AdoptionSourceID != "" || meta.AdoptionRequestDigest != "" {
 		s.Adoption = &session.AdoptionMetadata{
 			AdoptionSourceID:      meta.AdoptionSourceID,

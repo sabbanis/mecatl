@@ -41,6 +41,9 @@ type metaSnapshot struct {
 	// what keeps the cheap fast path's row IDENTICAL to the Load-per-row
 	// fallback's; a pre-owner snapshot simply has no key and stays nil.
 	Owner *session.Principal `json:"owner,omitempty"`
+	// Project is the compact, locator-free Project projection. It deliberately
+	// mirrors none of the captured source or environment identities.
+	Project session.ProjectProvenance `json:"project,omitzero"`
 }
 
 // knownStates is the set of valid session.State values. MetaList validates the
@@ -123,7 +126,8 @@ func metaSnapshotFromSession(s *session.Session) metaSnapshot {
 		ID: s.ID, State: s.State, Counters: s.Counters, ModelID: s.ModelID,
 		Title: s.Title, TitleProvenance: s.TitleProvenance, Kind: s.Kind,
 		Relationship: s.Relationship, Workspace: s.Workspace, CreatedAt: s.CreatedAt,
-		Owner: s.Owner,
+		Owner:   s.Owner,
+		Project: s.ProjectProvenance(),
 	}
 }
 
@@ -218,6 +222,7 @@ func (st *Store) rebuildInventoryRows() ([]port.SessionDiscoveryMeta, error) {
 				meta.Kind = kind
 				meta.Relationship = m.Relationship
 				meta.Owner = m.Owner
+				meta.Project = m.Project
 				meta.CreatedAt = m.CreatedAt
 			}
 		}
