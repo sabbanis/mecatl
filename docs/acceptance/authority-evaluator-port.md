@@ -1,7 +1,7 @@
 # Authority evaluator port — acceptance plan
 
 **Phase:** capability — in-process delegated authority, decision behind a port
-**Status:** in-progress, 2026-08-19 (defect-repair pass applied; see *Resolved defects*). Successor to the unmerged `review/authority-attenuation-reconciliation` branch.
+**Status:** landed, 2026-08-19 (defect-repair pass applied; see *Resolved defects*). Successor to the unmerged `review/authority-attenuation-reconciliation` branch.
 **Issue:** [stacklok/mecatl#371](https://github.com/stacklok/mecatl/issues/371) — *An agent cannot widen its own authority.*
 **ADR:** ADR-0232 — derived capability sets, decision behind a swappable evaluator port.
 **Salvage source:** branch `review/authority-attenuation-reconciliation` (commits `d8966606..5dbef5f6`), worktree `.worktrees/sensitivity`. **Not merged, and not to be merged.**
