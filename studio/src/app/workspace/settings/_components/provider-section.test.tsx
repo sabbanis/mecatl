@@ -26,6 +26,8 @@ const status = {
   operatorSettings: false,
   skillsDir: "",
   memoryDir: "",
+  isMock: false,
+  toolhiveGateway: null,
   configuredProviders: ["openrouter", "anthropic"],
   selectedProvider: "openrouter",
   authFile: "/home/op/.config/mecatl/auth.yaml",
@@ -64,6 +66,7 @@ const testKey = vi.fn(async () => {});
 
 function fakeManagement(overrides: Partial<Management> = {}): Management {
   return {
+    setActiveProvider: vi.fn(async () => {}),
     live: true,
     manageable: true,
     providers: [
@@ -127,7 +130,7 @@ describe("provider management surface", () => {
     );
     await user.click(screen.getByRole("button", { name: /Add provider/ }));
     expect(await screen.findByRole("dialog")).toBeInTheDocument();
-    expect(screen.getByText(/Studio never sees or stores it/)).toBeTruthy();
+    expect(screen.getByText(/Studio never handles API keys/)).toBeTruthy();
     // Rule 3's UI half: the entire surface — rows, kebab, open dialog —
     // contains no element a credential could be typed or pasted into.
     expect(document.querySelectorAll("input, textarea")).toHaveLength(0);

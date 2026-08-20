@@ -2,10 +2,9 @@
 
 import { User } from "lucide-react";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import { useUserAvatar, useUserDisplayName } from "@/lib/profile-preferences";
 import { AvatarPicker } from "./avatar-picker";
-import { SettingsCard } from "./settings-card";
+import { SettingsCard, SettingsRow } from "./settings-card";
 
 /**
  * The user's own identity preferences — browser-local only: there is no
@@ -17,15 +16,13 @@ export function ProfileSection() {
   const { name, setName } = useUserDisplayName();
 
   return (
-    <SettingsCard
-      title="You"
-      description="How you appear in chat, stored in this browser only."
-    >
+    <SettingsCard title="You">
       <div className="divide-y divide-border/60">
-        <div className="flex items-center justify-between gap-3 pb-4">
-          <Label htmlFor="user-display-name" className="text-sm font-medium">
-            Your name
-          </Label>
+        <SettingsRow
+          label="Your name"
+          htmlFor="user-display-name"
+          description="Labels your messages in chat."
+        >
           <Input
             id="user-display-name"
             value={name}
@@ -34,15 +31,15 @@ export function ProfileSection() {
             maxLength={40}
             className="w-44 min-[500px]:w-60"
           />
-        </div>
-        <div className="pt-4">
+        </SettingsRow>
+        <SettingsRow label="Picture" description="Shown next to your messages.">
           <AvatarPicker
             avatarUrl={avatarUrl}
             onChange={setAvatarUrl}
             alt={name || "You"}
             fallback={<User className="size-6" />}
           />
-        </div>
+        </SettingsRow>
       </div>
     </SettingsCard>
   );

@@ -16,12 +16,13 @@ export default function AgentSettingsPage() {
   const { avatarUrl, setAvatarUrl } = useAgentAvatar();
 
   return (
-    <SettingsCard
-      title="Agent"
-      description="Cosmetic identity, stored in this browser only."
-    >
+    <SettingsCard title="Agent">
       <div className="divide-y divide-border/60">
-        <SettingsRow label="Agent name" htmlFor="agent-display-name">
+        <SettingsRow
+          label="Agent name"
+          htmlFor="agent-display-name"
+          description="Labels the agent's replies in chat."
+        >
           <Input
             id="agent-display-name"
             value={name}
@@ -31,14 +32,17 @@ export default function AgentSettingsPage() {
             className="w-44 min-[500px]:w-60"
           />
         </SettingsRow>
-        <div className="pt-4">
+        <SettingsRow
+          label="Picture"
+          description="Shown next to the agent's replies."
+        >
           <AvatarPicker
             avatarUrl={avatarUrl}
             onChange={setAvatarUrl}
             alt={name}
             fallback={<Bot className="size-6" />}
           />
-        </div>
+        </SettingsRow>
       </div>
     </SettingsCard>
   );

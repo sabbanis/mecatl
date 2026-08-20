@@ -39,9 +39,6 @@ import {
 type Runtime = ReturnType<typeof useHarnessRuntime>;
 type Management = ReturnType<typeof useProviderManagement>;
 
-/** Provider names the controller reports when no real provider is wired up. */
-const UNCONFIGURED = new Set(["", "unknown", "none", "mock"]);
-
 /** Dot color + label for a row's key health. Green = a test passed, red =
  *  the provider rejected the key, amber = the test could not complete, gray
  *  = untested (or no key in the block yet). */
@@ -94,9 +91,9 @@ export function ProviderSection({
 }) {
   const status = runtime.status;
   const [removing, setRemoving] = useState<HarnessProviderInfo | null>(null);
-  const unconfigured = UNCONFIGURED.has(
-    (status?.provider ?? "").trim().toLowerCase(),
-  );
+  // Mock is the fallback the daemon runs on whenever no real provider is
+  // active, so status.isMock IS "no provider is active" here.
+  const unconfigured = status?.isMock ?? false;
 
   const modelsFor = (name: string) =>
     runtime.models.filter((model) => model.providerId === name).length;
@@ -119,9 +116,24 @@ export function ProviderSection({
                 {runtime.models.length === 1 ? "" : "s"} available to the agent
               </p>
             </div>
-            <Badge variant={status.running ? "default" : "secondary"}>
-              {status.running ? "running" : "stopped"}
-            </Badge>
+            <div className="flex shrink-0 items-center gap-2">
+              <Badge variant={status.running ? "default" : "secondary"}>
+                {status.running ? "running" : "stopped"}
+              </Badge>
+              {runtime.mode !== "external" && !unconfigured && (
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-7"
+                  disabled={management.busy === "activate:mock"}
+                  onClick={() => void management.setActiveProvider("mock")}
+                >
+                  {management.busy === "activate:mock"
+                    ? "Switching…"
+                    : "Switch to mock"}
+                </Button>
+              )}
+            </div>
           </div>
 
           {runtime.mode === "external" ? (
@@ -174,17 +186,25 @@ export function ProviderSection({
                       health={management.health[row.name]}
                       busy={management.busy}
                       onTest={() => void management.testKey(row.name)}
+                      onActivate={() =>
+                        void management.setActiveProvider(row.name)
+                      }
                       onRemove={() => setRemoving(row)}
                     />
                   ))}
                 </ul>
               )}
 
-              {unconfigured && (
+              {unconfigured && management.providers.length > 0 && (
                 <Note>
-                  No provider is active. Add a provider above, set{" "}
-                  <code className="font-mono">MECATL_STUDIO_PROVIDER</code> to
-                  its name, then restart Studio.
+                  No provider is active. Pick &ldquo;Set as active&rdquo; from a
+                  provider&rsquo;s menu above to switch to it.
+                </Note>
+              )}
+              {unconfigured && management.providers.length === 0 && (
+                <Note>
+                  No provider is active. Add a provider above to move off the
+                  offline mock.
                 </Note>
               )}
             </>
@@ -241,6 +261,7 @@ function ProviderRow({
   health,
   busy,
   onTest,
+  onActivate,
   onRemove,
 }: {
   row: HarnessProviderInfo;
@@ -249,10 +270,12 @@ function ProviderRow({
   health: ProviderKeyHealth | undefined;
   busy: string;
   onTest: () => void;
+  onActivate: () => void;
   onRemove: () => void;
 }) {
   const presentation = healthPresentation(row, health);
   const testing = busy === `test:${row.name}`;
+  const activating = busy === `activate:${row.name}`;
   const removingBusy = busy === `remove:${row.name}`;
   const href = `/workspace/settings/provider/${encodeURIComponent(row.name)}`;
 
@@ -306,6 +329,19 @@ function ProviderRow({
             onClick={onTest}
           >
             {testing ? "Testing key…" : "Test key"}
+          </DropdownMenuItem>
+          <DropdownMenuItem
+            disabled={active || !row.keyPresent || activating}
+            title={
+              active
+                ? undefined
+                : !row.keyPresent
+                  ? "No key in the block to activate"
+                  : undefined
+            }
+            onClick={onActivate}
+          >
+            {activating ? "Switching…" : "Set as active"}
           </DropdownMenuItem>
           <DropdownMenuItem asChild>
             <Link href={href}>View models</Link>

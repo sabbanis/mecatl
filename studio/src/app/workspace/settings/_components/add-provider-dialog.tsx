@@ -105,17 +105,16 @@ export function AddProviderDialog({
       </Button>
       <Dialog open={open} onOpenChange={handleOpenChange}>
         <DialogContent className="sm:max-w-lg">
-          <DialogHeader>
+          <DialogHeader className="text-left">
             <DialogTitle>Add a provider</DialogTitle>
             <DialogDescription>
-              The key goes straight into{" "}
-              <code className="font-mono text-xs">{path}</code> on the machine
-              running mecated — Studio never sees or stores it.
+              Studio never handles API keys — you add the key to the
+              daemon&rsquo;s own config file in three quick steps.
             </DialogDescription>
           </DialogHeader>
-          <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-5">
             <div className="flex flex-col gap-1.5">
-              <Label htmlFor="add-provider-kind">Provider</Label>
+              <Label htmlFor="add-provider-kind">1. Choose the provider</Label>
               <Select value={kind || undefined} onValueChange={setKind}>
                 <SelectTrigger id="add-provider-kind" className="w-full">
                   <SelectValue placeholder="Choose a provider kind…" />
@@ -140,10 +139,15 @@ export function AddProviderDialog({
               <>
                 <div className="flex flex-col gap-1.5">
                   <div className="flex items-center justify-between gap-2">
-                    <p className="text-xs font-medium text-muted-foreground">
-                      Merge under the{" "}
-                      <code className="font-mono">providers:</code> key in{" "}
-                      <code className="font-mono">{path}</code>
+                    <p className="text-sm font-medium">
+                      2. Add this to the config file
+                      {selected.note && (
+                        <span className="block text-xs font-normal text-muted-foreground">
+                          {selected.note} Replace{" "}
+                          <code className="font-mono">&lt;YOUR_KEY&gt;</code>{" "}
+                          with your key.
+                        </span>
+                      )}
                     </p>
                     <Button
                       size="sm"
@@ -162,25 +166,30 @@ export function AddProviderDialog({
                   <pre className="overflow-x-auto rounded-lg border bg-muted/40 p-3 font-mono text-xs leading-relaxed">
                     {selected.snippet}
                   </pre>
-                  {selected.note && (
-                    <p className="text-xs text-muted-foreground">
-                      {selected.note}
-                    </p>
-                  )}
+                  <p className="text-xs text-muted-foreground">
+                    File: <code className="font-mono">{path}</code> (merge under
+                    its existing <code className="font-mono">providers:</code>{" "}
+                    key)
+                  </p>
                 </div>
 
                 {checked === "appeared" ? (
                   <p className="text-sm">
-                    <span className="font-medium">{selected.label}</span> is now
-                    in auth.yaml. Restart the daemon to apply — in-flight runs
-                    and session ids die with it.
+                    <span className="font-medium">{selected.label}</span> found
+                    ✓ — restart the daemon to start using it. In-flight runs end
+                    with the restart.
                   </p>
-                ) : checked === "missing" ? (
-                  <p className="text-sm text-muted-foreground">
-                    Not there yet — save the file on the daemon&rsquo;s machine,
-                    then re-check.
+                ) : (
+                  <p className="text-sm font-medium">
+                    3. Save the file, then Re-check
+                    {checked === "missing" && (
+                      <span className="block text-xs font-normal text-muted-foreground">
+                        Not found yet — make sure the file is saved on the
+                        daemon&rsquo;s machine, then try again.
+                      </span>
+                    )}
                   </p>
-                ) : null}
+                )}
               </>
             )}
           </div>
