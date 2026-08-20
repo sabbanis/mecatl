@@ -391,7 +391,7 @@ export function CreateSkillDialog({
                       disabled={creating}
                       onClick={() => folderInput.current?.click()}
                     >
-                      Choose folder
+                      Upload folder
                     </Button>
                     <Button
                       type="button"
@@ -400,7 +400,7 @@ export function CreateSkillDialog({
                       disabled={creating}
                       onClick={() => fileInput.current?.click()}
                     >
-                      Choose file
+                      Upload file
                     </Button>
                   </>
                 ) : (

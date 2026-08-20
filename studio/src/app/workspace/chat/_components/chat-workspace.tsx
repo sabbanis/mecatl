@@ -1,7 +1,6 @@
 "use client";
 
 import {
-  ChevronDown,
   FolderPlus,
   Loader2,
   PanelLeft,
@@ -102,51 +101,6 @@ function groupSessionsByRecency(
     .map((l) => ({ label: l, sessions: buckets[l] }));
 }
 
-/** How many chats the mock-mode "Chat" group shows before "Show more". */
-const mockModeChatCap = 7;
-
-/**
- * Mock mode's flattened chat list: every real session under one "Chat"
- * header (the date groups return when mock features are off), capped at
- * mockModeChatCap rows with a Show-more expander so the demo's Projects
- * section stays above the fold.
- */
-function MockModeChatGroup({
-  sessions,
-  selectedId,
-  onSelect,
-  actions,
-}: {
-  sessions: AgentSession[];
-  selectedId: string;
-  onSelect: (id: string) => void;
-  actions: SessionActions;
-}) {
-  const [showAll, setShowAll] = useState(false);
-  const visible = showAll ? sessions : sessions.slice(0, mockModeChatCap);
-  const hidden = sessions.length - visible.length;
-  return (
-    <SidebarGroup label="Chat">
-      <SessionList
-        sessions={visible}
-        selectedId={selectedId}
-        onSelect={onSelect}
-        actions={actions}
-      />
-      {hidden > 0 && (
-        <button
-          type="button"
-          onClick={() => setShowAll(true)}
-          className="flex w-full items-center gap-2 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left text-[0.85rem] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        >
-          <ChevronDown className="size-4 shrink-0" />
-          Show {hidden} more
-        </button>
-      )}
-    </SidebarGroup>
-  );
-}
-
 function SidebarContent({
   onNewChat,
   isLoading,
@@ -231,12 +185,15 @@ function SidebarContent({
             // Mock mode flattens the date groups under one "Chat" header so
             // the demo's Projects/Chat split reads like the reference UI.
             <div className="pt-3">
-              <MockModeChatGroup
-                sessions={groups.flatMap((group) => group.sessions)}
-                selectedId={selectedId}
-                onSelect={onSelect}
-                actions={actions}
-              />
+              <SidebarGroup label="Chat">
+                <SessionList
+                  sessions={groups.flatMap((group) => group.sessions)}
+                  selectedId={selectedId}
+                  onSelect={onSelect}
+                  actions={actions}
+                  cap={7}
+                />
+              </SidebarGroup>
             </div>
           ) : (
             <div className="flex flex-col gap-3">

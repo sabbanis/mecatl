@@ -2,6 +2,8 @@
 
 import {
   Bot,
+  ChevronDown,
+  ChevronUp,
   Ellipsis,
   FolderClosed,
   FolderOpen,
@@ -372,14 +374,17 @@ export function SessionList({
   selectedId,
   onSelect,
   actions,
+  cap = 8,
 }: {
   sessions: AgentSession[];
   selectedId: string;
   onSelect: (id: string) => void;
   actions: SessionActions;
+  /** Rows shown before the Show-more expander (which reveals ALL rows). */
+  cap?: number;
 }) {
   const [showAll, setShowAll] = useState(false);
-  const visible = showAll ? sessions : sessions.slice(0, 8);
+  const visible = showAll ? sessions : sessions.slice(0, cap);
 
   return (
     <div className="flex flex-col">
@@ -392,13 +397,18 @@ export function SessionList({
           actions={actions}
         />
       ))}
-      {sessions.length > 8 && (
+      {sessions.length > cap && (
         <button
           type="button"
           onClick={() => setShowAll((v) => !v)}
-          className="pl-[15px] pr-3 py-1.5 text-xs text-muted-foreground hover:text-foreground transition-colors text-left"
+          className="flex w-full items-center gap-2 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left text-[0.85rem] font-medium text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
         >
-          {showAll ? "Show less" : `Show ${sessions.length - 8} more`}
+          {showAll ? (
+            <ChevronUp className="size-4 shrink-0" />
+          ) : (
+            <ChevronDown className="size-4 shrink-0" />
+          )}
+          {showAll ? "Show less" : `Show ${sessions.length - cap} more`}
         </button>
       )}
     </div>

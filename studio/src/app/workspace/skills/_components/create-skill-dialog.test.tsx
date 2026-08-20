@@ -54,12 +54,14 @@ describe("create skill dialog", () => {
     const user = userEvent.setup();
     await openDialog(user);
 
-    expect(screen.getByRole("button", { name: /^Upload/ })).toBeTruthy();
+    expect(
+      screen.getByRole("button", { name: /Import a SKILL\.md/ }),
+    ).toBeTruthy();
     expect(
       screen.getByRole("button", { name: /Create manually/ }),
     ).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Choose file" })).toBeTruthy();
-    expect(screen.getByRole("button", { name: "Choose folder" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Upload file" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Upload folder" })).toBeTruthy();
     expect(screen.queryByText(/restarts the daemon/)).toBeNull();
     expect(
       screen.queryByRole("textbox", { name: "SKILL.md content" }),
@@ -178,7 +180,7 @@ describe("create skill dialog", () => {
 
     const body = screen.getByRole("textbox", { name: "SKILL.md content" });
     expect((body as HTMLTextAreaElement).value).toContain("description:");
-    expect(screen.queryByRole("button", { name: /Choose file/ })).toBeNull();
+    expect(screen.queryByRole("button", { name: /Upload file/ })).toBeNull();
 
     // Name empty → invalid → the gate holds and the rule shows as helper text.
     expect(
