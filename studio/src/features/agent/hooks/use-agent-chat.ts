@@ -1,6 +1,10 @@
 "use client";
 
 import { useCallback, useEffect, useRef, useState } from "react";
+import {
+  loadSentAttachments,
+  saveSentAttachments,
+} from "@/lib/attachment-store";
 import { fileFromToolCall } from "@/lib/file-meta";
 import {
   cancelHarnessRun,
@@ -278,7 +282,16 @@ export function useAgentChat(
         );
         if (controller.signal.aborted) return;
         const rebuilt = messagesFromTranscript(transcript);
-        const sent = sentAttachmentsRef.current.get(sessionId);
+        let sent = sentAttachmentsRef.current.get(sessionId);
+        if (!sent?.length) {
+          // A fresh visit: the bytes live only in IndexedDB.
+          const stored = await loadSentAttachments(sessionId);
+          if (controller.signal.aborted) return;
+          if (stored.length) {
+            sentAttachmentsRef.current.set(sessionId, stored);
+            sent = stored;
+          }
+        }
         if (sent?.length) {
           const pool = [...sent];
           for (const message of rebuilt) {
@@ -366,6 +379,7 @@ export function useAgentChat(
         const log = sentAttachmentsRef.current.get(daemonIdRef.current) ?? [];
         log.push({ content, attachments });
         sentAttachmentsRef.current.set(daemonIdRef.current, log);
+        void saveSentAttachments(daemonIdRef.current, log);
       }
       setError(null);
       lastPromptRef.current = content;
@@ -413,6 +427,10 @@ export function useAgentChat(
               log.push({ content, attachments });
             }
             sentAttachmentsRef.current.set(daemonId, log);
+            void saveSentAttachments(
+              daemonId,
+              sentAttachmentsRef.current.get(daemonId) ?? [],
+            );
           }
           onSessionCreatedRef.current?.(daemonId);
         }

@@ -527,14 +527,30 @@ export function MessageBubble({
         )}
         {notices.length > 0 && (
           <div className="mt-1.5 flex flex-col gap-0.5">
-            {notices.map((notice) => (
-              <p
-                key={notice.id}
-                className="truncate text-xs text-muted-foreground/70"
-              >
-                {notice.text}
-              </p>
-            ))}
+            {notices.map((notice) =>
+              notice.text.startsWith("[conversation compacted]") ? (
+                // Compaction is a milestone, not chatter: a labeled divider,
+                // with the daemon's full explanation on the tooltip.
+                <div
+                  key={notice.id}
+                  className="my-2 flex items-center gap-3"
+                  title={notice.text}
+                >
+                  <span className="h-px flex-1 bg-border" />
+                  <span className="text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
+                    Earlier messages summarized
+                  </span>
+                  <span className="h-px flex-1 bg-border" />
+                </div>
+              ) : (
+                <p
+                  key={notice.id}
+                  className="truncate text-xs text-muted-foreground/70"
+                >
+                  {notice.text}
+                </p>
+              ),
+            )}
           </div>
         )}
         {message.failed && (
