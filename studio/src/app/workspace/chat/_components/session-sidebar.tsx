@@ -408,7 +408,7 @@ export function SessionList({
           ) : (
             <ChevronDown className="size-4 shrink-0" />
           )}
-          {showAll ? "Show less" : `Show ${sessions.length - cap} more`}
+          {showAll ? "Show less" : "Show more"}
         </button>
       )}
     </div>
