@@ -2,7 +2,7 @@
 id: 02-project-session-creation
 title: Combined Project lifecycle, capability, transport, and captured Session creation
 blocked_by: [01-project-domain-store-sources]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "620"
