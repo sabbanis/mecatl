@@ -119,8 +119,8 @@ export function CreateSkillDialog({
       </Button>
 
       <Dialog open={open} onOpenChange={handleOpenChange}>
-        <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-3xl">
-          <DialogHeader>
+        <DialogContent className="flex max-h-[90vh] flex-col max-[499px]:top-0 max-[499px]:left-0 max-[499px]:h-dvh max-[499px]:max-h-none max-[499px]:w-screen max-[499px]:max-w-none max-[499px]:translate-x-0 max-[499px]:translate-y-0 max-[499px]:rounded-none max-[499px]:border-0 sm:max-w-3xl">
+          <DialogHeader className="text-left">
             <DialogTitle>New skill</DialogTitle>
             <DialogDescription>
               Creating a skill restarts the daemon — in-flight runs and session
@@ -185,7 +185,7 @@ export function CreateSkillDialog({
             </p>
           )}
 
-          <DialogFooter>
+          <DialogFooter className="flex-row justify-end gap-2">
             <Button
               type="button"
               variant="outline"

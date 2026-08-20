@@ -69,16 +69,14 @@ export function EditSkillDialog({
 
   return (
     <Dialog open onOpenChange={(open) => !open && onClose()}>
-      <DialogContent className="flex max-h-[90vh] flex-col sm:max-w-3xl">
-        <DialogHeader>
-          <DialogTitle>
-            Edit <span className="font-mono">{name}</span>
-          </DialogTitle>
-          <DialogDescription>
-            {enabled
-              ? "Saving restarts the daemon and invalidates in-flight sessions."
-              : "This skill is disabled — changes take effect when it is enabled."}
-          </DialogDescription>
+      <DialogContent className="flex max-h-[90vh] flex-col max-[499px]:top-0 max-[499px]:left-0 max-[499px]:h-dvh max-[499px]:max-h-none max-[499px]:w-screen max-[499px]:max-w-none max-[499px]:translate-x-0 max-[499px]:translate-y-0 max-[499px]:rounded-none max-[499px]:border-0 sm:max-w-3xl">
+        <DialogHeader className="text-left">
+          <DialogTitle>Edit skill</DialogTitle>
+          {!enabled && (
+            <DialogDescription>
+              This skill is disabled — changes take effect when it is enabled.
+            </DialogDescription>
+          )}
         </DialogHeader>
 
         {loadError ? (
@@ -106,7 +104,7 @@ export function EditSkillDialog({
           </p>
         )}
 
-        <DialogFooter>
+        <DialogFooter className="flex-row justify-end gap-2">
           <Button
             type="button"
             variant="outline"

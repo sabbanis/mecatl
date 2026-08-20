@@ -1,5 +1,6 @@
 "use client";
 
+import { Ellipsis } from "lucide-react";
 import { useParams, useRouter } from "next/navigation";
 import { useState } from "react";
 import {
@@ -13,6 +14,12 @@ import {
   AlertDialogTitle,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Skeleton } from "@/components/ui/skeleton";
 import { useAgentSkills } from "@/features/agent/hooks/use-agent-skills";
 import { pageTitleClass } from "@/lib/typography";
@@ -160,16 +167,7 @@ export default function SkillDetailPage() {
               the controls render disabled rather than manufacturing 409s. */}
           <div className="space-y-3">
             <h2 className="text-base font-semibold">Manage</h2>
-            <div className="flex flex-col items-start gap-2">
-              <Button
-                variant="outline"
-                className="rounded-full"
-                disabled={!manageable}
-                title={manageable ? undefined : externalManagedTitle}
-                onClick={() => setConfirmToggle(true)}
-              >
-                {enabled ? "Disable" : "Enable"}
-              </Button>
+            <div className="flex items-center gap-2">
               <Button
                 variant="outline"
                 className="rounded-full"
@@ -179,15 +177,31 @@ export default function SkillDetailPage() {
               >
                 Edit
               </Button>
-              <Button
-                variant="outline"
-                className="rounded-full border-destructive/40 text-destructive hover:bg-destructive/10 hover:text-destructive"
-                disabled={!manageable}
-                title={manageable ? undefined : externalManagedTitle}
-                onClick={() => setConfirmDelete(true)}
-              >
-                Delete
-              </Button>
+              <DropdownMenu modal={false}>
+                <DropdownMenuTrigger asChild>
+                  <Button
+                    variant="outline"
+                    size="icon"
+                    className="size-9 rounded-full"
+                    disabled={!manageable}
+                    title={manageable ? undefined : externalManagedTitle}
+                    aria-label={`More actions for ${skill.name}`}
+                  >
+                    <Ellipsis className="size-4" />
+                  </Button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start">
+                  <DropdownMenuItem onClick={() => setConfirmToggle(true)}>
+                    {enabled ? "Disable" : "Enable"}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem
+                    variant="destructive"
+                    onClick={() => setConfirmDelete(true)}
+                  >
+                    Delete
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
             </div>
             {!manageable && (
               <p className="text-xs text-muted-foreground">
