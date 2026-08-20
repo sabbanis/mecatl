@@ -1,7 +1,7 @@
 ---
-id: 03-project-binding-restart-fork
+id: 06-project-binding-restart-fork
 title: Captured Project binding restart, revocation, and fork semantics
-blocked_by: [02-project-session-creation]
+blocked_by: [05-project-lifecycle-acceptance]
 status: pending
 branch: ""
 worktree: ""

@@ -1,7 +1,7 @@
 ---
-id: 04-project-session-navigation
+id: 07-project-session-navigation
 title: Project-filtered Session metadata paging and compact provenance
-blocked_by: [03-project-binding-restart-fork]
+blocked_by: [06-project-binding-restart-fork]
 status: pending
 branch: ""
 worktree: ""

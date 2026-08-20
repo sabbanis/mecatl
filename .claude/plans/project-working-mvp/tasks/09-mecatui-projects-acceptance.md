@@ -1,7 +1,7 @@
 ---
-id: 06-mecatui-projects-acceptance
+id: 09-mecatui-projects-acceptance
 title: Mecatui path-free Projects UI and real-client acceptance journey
-blocked_by: [05-project-contract-transport-docs]
+blocked_by: [08-project-contract-transport-docs]
 status: pending
 branch: ""
 worktree: ""

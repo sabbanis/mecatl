@@ -1,7 +1,7 @@
 ---
-id: 05-project-contract-transport-docs
+id: 08-project-contract-transport-docs
 title: Generated Project contract, transport parity, and deployment documentation
-blocked_by: [04-project-session-navigation]
+blocked_by: [07-project-session-navigation]
 status: pending
 branch: ""
 worktree: ""
