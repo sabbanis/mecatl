@@ -331,7 +331,7 @@ one typed seam (`studio/src/lib/protocol/`) that surfaces unknown event kinds
 instead of dropping them. Live re-attach to a running session is a stated non-goal
 today: the live tail is gRPC-only (`StreamSessionLive`), so Studio shows running
 state from the session inventory and reads the transcript when the run ends. A
-breaking wire change owes a Studio update in the same PR. See ADR 0233/0234.
+breaking wire change owes a Studio update in the same PR. See ADR 0235/0236.
 
 **mecatequi — the single-shot headless runner (`cmd/mecatequi`).** A fourth composition
 root and a *peer of `mecademo`* over the same `app.Build`: it runs **one** prompt against

@@ -52,6 +52,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0047 — Absolute path resolution inside the workspace root](./0047-absolute-path-resolution.md) *(skill read-root carve-out superseded by 0108)*
 - [0108 — Read skill assets on demand by logical name](./0108-on-demand-logical-skill-assets.md) *(supersedes only ADR 0005/0047's skill-asset materialization/read-root decisions)*
 - [0048 — mecak8s: Kubernetes-native agent harness (storage-free, managed-service state)](./0048-mecak8s.md)
+- [0233 — Secure external Redis on the shared connection layer](./0233-secure-external-redis.md)
 - [0059 — Scheduled tasks](./0059-scheduled-tasks.md)
 - [0065 — Conversation fork: peer session from a history snapshot](./0065-conversation-fork.md)
 - [0073 — Schedule tool](./0073-schedule-tool.md)
@@ -181,8 +182,8 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0087 — Staged mecatui transport migration](./0087-mecatui-staged-transport-migration.md) *(superseded by 0089)*
 - [0088 — Explicit daemon.yaml (listener topology config)](./0088-daemon-config-file.md)
 - [0222 — mecatui: ctrl+t routes by ask type; full-screen ask-args view](./0222-mecatui-ask-args-view.md)
-- [0233 — Studio: the Atrium workspace as mecatl's daemon-only web client](./0233-studio-atrium-module.md)
-- [0234 — Studio's chat list is the daemon's session store](./0234-studio-server-backed-chats.md)
+- [0235 — Studio: the Atrium workspace as mecatl's daemon-only web client](./0235-studio-atrium-module.md)
+- [0236 — Studio's chat list is the daemon's session store](./0236-studio-server-backed-chats.md)
 
 ### Retired
 - [0029 — Repo-map tree-sitter](./0029-repomap-tree-sitter.md) *(retired)*

@@ -50,7 +50,7 @@ The loop stays storage-agnostic throughout. It only emits — it never imports `
 
 **mecated:** the `--store-dir` flag selects JSONL persistence (`internal/adapter/store/jsonlstore`), which implements `port.SessionStore`, `port.EventLog`, and `port.ToolCallRecorder` in one `Store` type. It automatically composes the single-host flock lease under `<store-dir>/.session-leases`. Remote or multi-host deployments must wire an appropriate session lease (`--session-lease-k8s-namespace` for Kubernetes or `--session-lease-url` for a gRPC driver); without one, session-affinity routing is the deployer's responsibility and destructive maintenance fails closed.
 
-**mecak8s:** wires Redis for session store and event log (`internal/adapter/redisstore`) and the Kubernetes `coordination.k8s.io/v1` lease adapter (`internal/adapter/k8slease`) at startup, with no flags required. The three properties hold out of the box.
+**mecak8s:** wires Redis for session store and event log (`internal/adapter/redisstore`) and the Kubernetes `coordination.k8s.io/v1` lease adapter (`internal/adapter/k8slease`) at startup. The three properties hold out of the box; the Redis connection itself must be pointed somewhere and secured — `--redis-url` plus either verified TLS (`--redis-tls` or `--redis-tls-ca`) or, for a disposable local fixture only, the explicit `--redis-allow-plaintext` opt-in.
 
 ---
 
@@ -116,7 +116,7 @@ mecak8s (`cmd/mecak8s`) is the **reference cloud-native deployment**. It is a th
 - `--headless` on, `--posture auto` by default.
 - SIGTERM triggers `Service.Drain()` (an `atomic.Bool draining` flag checked at `acquireLease`, returning `ErrUnavailable` / HTTP 503), then a bounded `GracefulStop` (30s, then `grpcSrv.Stop()` fallback). In-flight runs are cancelled, not drained, and `Recover`-able on the successor.
 
-The `deploy/mecak8s/` kustomize base includes the full topology: namespace, RBAC, Redis StatefulSet, agent Deployment (two replicas, no PVC), Service, PodDisruptionBudget, and a default-deny NetworkPolicy.
+The `deploy/helm/mecak8s/` Helm chart provides the production deployment contract: namespace-scoped RBAC for `leases`, a storage-free agent Deployment (two replicas, no PVC), Service, and PodDisruptionBudget. It creates no Redis and ships no NetworkPolicy — network isolation is left to the cluster's own policy layer.
 
 For the full deployment guide, see [mecak8s deployment](/deployment/mecak8s.md).
 

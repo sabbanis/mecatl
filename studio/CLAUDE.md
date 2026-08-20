@@ -2,7 +2,7 @@
 
 The web client for the mecatl harness: a Next.js app (App Router) serving the
 Atrium workspace — Chats · Scheduled · Skills · Memory · Settings — against a
-`mecated` daemon. See ADR 0233 (module + posture) and ADR 0234 (server-backed
+`mecated` daemon. See ADR 0235 (module + posture) and ADR 0236 (server-backed
 chats).
 
 ## Commands

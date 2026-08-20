@@ -1,4 +1,4 @@
-# ADR 0233 — Studio: the Atrium workspace as mecatl's daemon-only web client
+# ADR 0235 — Studio: the Atrium workspace as mecatl's daemon-only web client
 
 - Status: Accepted
 - Date: 2026-08-18
@@ -99,7 +99,7 @@ The costs, stated plainly:
 
 ## See also
 
-- [ADR 0234](./0234-studio-server-backed-chats.md) — the chat list is the
+- [ADR 0236](./0236-studio-server-backed-chats.md) — the chat list is the
   daemon's session store
 - `docs/architecture.md` — the Studio client section
 - `user-docs/what-you-get/studio.md` — what operating it looks like
