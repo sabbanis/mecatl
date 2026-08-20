@@ -213,6 +213,30 @@ async function probeProviderKey(name, key) {
 /** Max SKILL.md body accepted on the edit path. */
 const maxSkillBodyBytes = 262_144;
 
+// Multi-file create caps (a zip/folder upload): a skill is a small folder of
+// instructions plus a few assets, never a repository.
+const maxSkillUploadFiles = 200;
+const maxSkillUploadFileBytes = 2 * 1024 * 1024;
+const maxSkillUploadTotalBytes = 8 * 1024 * 1024;
+// The create body cap: the total decoded cap, base64-inflated, plus headroom.
+const maxSkillCreateBodyBytes = 12 * 1024 * 1024;
+
+/** The controller's own guard on an uploaded relative path — the browser
+ *  plans uploads too, but the server side is the one that counts. */
+function validSkillUploadPath(path) {
+  if (typeof path !== "string" || path === "" || path.includes("\\"))
+    return false;
+  return path
+    .split("/")
+    .every(
+      (segment) =>
+        segment !== "" &&
+        segment !== "." &&
+        segment !== ".." &&
+        !segment.startsWith("."),
+    );
+}
+
 function skillClientError(message, statusCode = 400) {
   return Object.assign(new Error(message), { statusCode });
 }
@@ -1514,19 +1538,76 @@ const server = http.createServer(async (request, response) => {
       )
         throw skillClientError("Content-Type must be application/json", 415);
       const input = JSON.parse(
-        (await readBody(request, maxSkillBodyBytes + 16_384)).toString("utf8"),
+        (await readBody(request, maxSkillCreateBodyBytes)).toString("utf8"),
       );
       if (typeof input?.name !== "string")
         throw skillClientError("Provide the skill name as { name }");
       const name = input.name;
       const paths = skillPaths(name);
-      if (typeof input?.body !== "string" || input.body.length === 0)
-        throw skillClientError("Provide the SKILL.md content as { body }");
-      if (Buffer.byteLength(input.body, "utf8") > maxSkillBodyBytes)
-        throw skillClientError(
-          `SKILL.md is limited to ${maxSkillBodyBytes} bytes`,
-          413,
-        );
+      // Two accepted shapes: { name, body } writes a lone SKILL.md; { name,
+      // files: [{ path, contentBase64 }] } writes a whole folder skill (a
+      // zip/folder upload). Either way a SKILL.md must land at the root.
+      let files;
+      if (Array.isArray(input?.files)) {
+        if (
+          input.files.length === 0 ||
+          input.files.length > maxSkillUploadFiles
+        )
+          throw skillClientError(
+            `Provide between 1 and ${maxSkillUploadFiles} files`,
+          );
+        let total = 0;
+        const seen = new Set();
+        files = input.files.map((entry) => {
+          if (
+            !validSkillUploadPath(entry?.path) ||
+            typeof entry?.contentBase64 !== "string"
+          )
+            throw skillClientError(
+              "Each file needs a safe relative { path } and { contentBase64 }",
+            );
+          // The write below is on the default (case-insensitive) macOS
+          // filesystem — case-colliding paths would silently overwrite.
+          const key = entry.path.toLowerCase();
+          if (seen.has(key))
+            throw skillClientError(
+              `The upload holds duplicate paths: ${entry.path}`,
+            );
+          seen.add(key);
+          const content = Buffer.from(entry.contentBase64, "base64");
+          if (content.length > maxSkillUploadFileBytes)
+            throw skillClientError(
+              `"${entry.path}" exceeds the ${maxSkillUploadFileBytes}-byte per-file limit`,
+              413,
+            );
+          total += content.length;
+          return { path: entry.path, content };
+        });
+        if (total > maxSkillUploadTotalBytes)
+          throw skillClientError(
+            `The upload exceeds the ${maxSkillUploadTotalBytes}-byte total limit`,
+            413,
+          );
+        const skillMd = files.find((file) => file.path === "SKILL.md");
+        if (!skillMd)
+          throw skillClientError(
+            "The upload needs a SKILL.md at the folder root",
+          );
+        if (skillMd.content.length > maxSkillBodyBytes)
+          throw skillClientError(
+            `SKILL.md is limited to ${maxSkillBodyBytes} bytes`,
+            413,
+          );
+      } else {
+        if (typeof input?.body !== "string" || input.body.length === 0)
+          throw skillClientError("Provide the SKILL.md content as { body }");
+        if (Buffer.byteLength(input.body, "utf8") > maxSkillBodyBytes)
+          throw skillClientError(
+            `SKILL.md is limited to ${maxSkillBodyBytes} bytes`,
+            413,
+          );
+        files = [{ path: "SKILL.md", content: Buffer.from(input.body) }];
+      }
       let restarted = false;
       await queueRestart(async () => {
         // A name taken on EITHER side is a collision: a same-named disabled
@@ -1539,11 +1620,23 @@ const server = http.createServer(async (request, response) => {
             `A skill named "${name}" already exists under ${skillsDir}`,
             409,
           );
-        await mkdir(paths.enabled, { recursive: true });
-        const target = resolve(paths.enabled, "SKILL.md");
-        const temp = `${target}.tmp`;
-        await writeFile(temp, input.body);
-        await rename(temp, target);
+        try {
+          for (const file of files) {
+            const target = resolve(paths.enabled, file.path);
+            // Defense-in-depth behind validSkillUploadPath.
+            if (!target.startsWith(paths.enabled + sep))
+              throw skillClientError(
+                `Path escapes the skill folder: ${file.path}`,
+              );
+            await mkdir(dirname(target), { recursive: true });
+            await writeFile(target, file.content);
+          }
+        } catch (error) {
+          // The collision check above proved the dir was ours to create, so
+          // a half-written skill is safe to sweep away whole.
+          await rm(paths.enabled, { recursive: true, force: true });
+          throw error;
+        }
         restarted = true;
         await startMecatl(preferredKind());
       });

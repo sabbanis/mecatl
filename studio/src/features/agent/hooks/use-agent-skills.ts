@@ -3,11 +3,13 @@
 import { useCallback, useEffect, useState } from "react";
 import {
   createHarnessSkill,
+  createHarnessSkillFiles,
   type DisabledSkillInfo,
   deleteHarnessSkill,
   fetchHarnessSkillBody,
   fetchHarnessSkillFile,
   type HarnessSkillInfo,
+  type HarnessSkillUploadFile,
   listDisabledHarnessSkills,
   listHarnessSkillFiles,
   listHarnessSkills,
@@ -126,6 +128,14 @@ export function useAgentSkills() {
     [perform],
   );
 
+  /** Creates a whole folder skill from a zip/folder upload's files. */
+  const createFiles = useCallback(
+    async (name: string, files: HarnessSkillUploadFile[]) => {
+      await perform(() => createHarnessSkillFiles(name, files));
+    },
+    [perform],
+  );
+
   const saveBody = useCallback(
     async (name: string, body: string) => {
       await perform(() => saveHarnessSkillBody(name, body));
@@ -158,6 +168,7 @@ export function useAgentSkills() {
     /** The controller's own words for a refused management action. */
     actionError,
     create,
+    createFiles,
     fetchBody,
     fetchFiles,
     fetchFile,

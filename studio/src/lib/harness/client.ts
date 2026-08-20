@@ -1025,6 +1025,27 @@ export async function fetchHarnessSkillBody(
   return body.body ?? "";
 }
 
+/** One file of a multi-file skill create (a zip/folder upload). */
+export interface HarnessSkillUploadFile {
+  /** Relative POSIX path inside the skill folder, e.g. "scripts/run.sh". */
+  path: string;
+  contentBase64: string;
+}
+
+/** Creates a whole folder skill from an upload's files (must include a
+ *  root SKILL.md). RESTARTS the daemon, like every skill mutation. */
+export async function createHarnessSkillFiles(
+  name: string,
+  files: HarnessSkillUploadFile[],
+): Promise<void> {
+  const response = await fetch(`${CONTROL_API}/skills`, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ name: requireSkillName(name), files }),
+  });
+  if (!response.ok) throw new Error(await readError(response));
+}
+
 /** One bundled file in a skill's folder. */
 export interface HarnessSkillFile {
   /** Relative POSIX path inside the skill folder, e.g. "scripts/run.sh". */

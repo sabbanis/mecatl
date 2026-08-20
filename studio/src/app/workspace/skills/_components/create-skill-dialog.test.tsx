@@ -1,49 +1,56 @@
-import { render, screen, waitFor } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
+import { zipSync } from "fflate";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+import type { HarnessSkillUploadFile } from "@/lib/harness/client";
 import { CreateSkillDialog } from "./create-skill-dialog";
 
 /**
- * Pins the create dialog: the two-step flow (chooser cards, then the editor),
- * the submit gate (grammar-valid name + non-empty body), the create call with
- * exactly what the form holds, the client-side upload path (file → textarea +
- * derived name), manual mode hiding the upload button, and a controller
- * refusal rendering verbatim while the dialog stays open.
+ * Pins the create dialog: the chooser (upload / manual), the upload path
+ * creating IMMEDIATELY (never the editor — a .md goes through the legacy
+ * body create, a .zip through the multi-file create with the wrapper folder
+ * stripped), picker-cancel closing the dialog, the manual editor's submit
+ * gate (grammar-valid name + non-empty body), and a controller refusal
+ * rendering verbatim while the dialog stays open.
  */
 
 const create = vi.fn<(name: string, body: string) => Promise<void>>(() =>
   Promise.resolve(),
 );
+const createFiles = vi.fn<
+  (name: string, files: HarnessSkillUploadFile[]) => Promise<void>
+>(() => Promise.resolve());
 const onCreated = vi.fn<(name: string) => void>();
 
 beforeEach(() => {
   create.mockClear();
   create.mockImplementation(() => Promise.resolve());
+  createFiles.mockClear();
+  createFiles.mockImplementation(() => Promise.resolve());
   onCreated.mockClear();
 });
 
 async function openDialog(user: ReturnType<typeof userEvent.setup>) {
-  render(<CreateSkillDialog create={create} onCreated={onCreated} />);
+  render(
+    <CreateSkillDialog
+      create={create}
+      createFiles={createFiles}
+      onCreated={onCreated}
+    />,
+  );
   await user.click(screen.getByRole("button", { name: /New skill/ }));
   return screen.findByRole("dialog");
 }
 
-/** Chooser → the named card → Next, landing on the editor step. */
-async function openEditor(
-  user: ReturnType<typeof userEvent.setup>,
-  mode: "upload" | "manual",
-) {
+/** Chooser → Create manually → Next, landing on the editor step. */
+async function openManualEditor(user: ReturnType<typeof userEvent.setup>) {
   await openDialog(user);
-  await user.click(
-    screen.getByRole("button", {
-      name: mode === "upload" ? /^Upload/ : /Create manually/,
-    }),
-  );
+  await user.click(screen.getByRole("button", { name: /Create manually/ }));
   await user.click(screen.getByRole("button", { name: "Next" }));
 }
 
 describe("create skill dialog", () => {
-  it("opens on the chooser: two cards, no editor, no restart warning", async () => {
+  it("opens on the chooser: two cards, pickers, no editor", async () => {
     const user = userEvent.setup();
     await openDialog(user);
 
@@ -51,21 +58,127 @@ describe("create skill dialog", () => {
     expect(
       screen.getByRole("button", { name: /Create manually/ }),
     ).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Choose file" })).toBeTruthy();
+    expect(screen.getByRole("button", { name: "Choose folder" })).toBeTruthy();
     expect(screen.queryByText(/restarts the daemon/)).toBeNull();
     expect(
       screen.queryByRole("textbox", { name: "SKILL.md content" }),
     ).toBeNull();
   });
 
-  it("manual mode seeds the template and hides the upload button", async () => {
+  it("creates immediately from an uploaded SKILL.md — no editor step", async () => {
     const user = userEvent.setup();
-    await openEditor(user, "manual");
+    await openDialog(user);
+
+    const content = "---\nname: Uploaded Helper\n---\n# Do the thing\n";
+    await user.upload(
+      screen.getByLabelText("Upload a SKILL.md or zip file"),
+      new File([content], "Some Notes.md", { type: "text/markdown" }),
+    );
+
+    await waitFor(() => expect(create).toHaveBeenCalledTimes(1));
+    const [name, body] = create.mock.calls[0];
+    expect(name).toBe("uploaded-helper");
+    expect(body).toBe(content);
+    expect(
+      screen.queryByRole("textbox", { name: "SKILL.md content" }),
+    ).toBeNull();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(onCreated).toHaveBeenCalledWith("uploaded-helper");
+  });
+
+  it("creates a folder skill from a zip, stripping the wrapper folder", async () => {
+    const user = userEvent.setup();
+    await openDialog(user);
+
+    const encoder = new TextEncoder();
+    const zipped = zipSync({
+      "my-skill/SKILL.md": encoder.encode("---\nname: zipped\n---\nbody"),
+      "my-skill/scripts/run.sh": encoder.encode("echo hi\n"),
+      "__MACOSX/my-skill/._SKILL.md": encoder.encode("junk"),
+    });
+    await user.upload(
+      screen.getByLabelText("Upload a SKILL.md or zip file"),
+      new File([Buffer.from(zipped)], "my-skill.zip", {
+        type: "application/zip",
+      }),
+    );
+
+    await waitFor(() => expect(createFiles).toHaveBeenCalledTimes(1));
+    const [name, files] = createFiles.mock.calls[0];
+    expect(name).toBe("zipped");
+    expect(files.map((f) => f.path).sort()).toEqual([
+      "SKILL.md",
+      "scripts/run.sh",
+    ]);
+    const skillMd = files.find((f) => f.path === "SKILL.md");
+    expect(atob(skillMd?.contentBase64 ?? "")).toBe(
+      "---\nname: zipped\n---\nbody",
+    );
+    expect(create).not.toHaveBeenCalled();
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(onCreated).toHaveBeenCalledWith("zipped");
+  });
+
+  it("refuses a zip with no root SKILL.md, staying on the chooser", async () => {
+    const user = userEvent.setup();
+    await openDialog(user);
+
+    const zipped = zipSync({
+      "notes/readme.md": new TextEncoder().encode("nope"),
+    });
+    await user.upload(
+      screen.getByLabelText("Upload a SKILL.md or zip file"),
+      new File([Buffer.from(zipped)], "notes.zip", {
+        type: "application/zip",
+      }),
+    );
+
+    expect(await screen.findByText(/needs a SKILL\.md/)).toBeTruthy();
+    expect(createFiles).not.toHaveBeenCalled();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+  });
+
+  it("closes the dialog when the picker is cancelled", async () => {
+    const user = userEvent.setup();
+    await openDialog(user);
+
+    fireEvent(
+      screen.getByLabelText("Upload a SKILL.md or zip file"),
+      new Event("cancel"),
+    );
+    await waitFor(() => expect(screen.queryByRole("dialog")).toBeNull());
+    expect(create).not.toHaveBeenCalled();
+  });
+
+  it("renders an upload refusal from the controller and stays open", async () => {
+    create.mockImplementation(() =>
+      Promise.reject(new Error('A skill named "my-skill" already exists')),
+    );
+    const user = userEvent.setup();
+    await openDialog(user);
+
+    await user.upload(
+      screen.getByLabelText("Upload a SKILL.md or zip file"),
+      new File(["---\nname: my-skill\n---\nbody"], "my-skill.md", {
+        type: "text/markdown",
+      }),
+    );
+
+    expect(
+      await screen.findByText('A skill named "my-skill" already exists'),
+    ).toBeTruthy();
+    expect(screen.getByRole("dialog")).toBeTruthy();
+    expect(onCreated).not.toHaveBeenCalled();
+  });
+
+  it("manual mode seeds the template with no upload controls", async () => {
+    const user = userEvent.setup();
+    await openManualEditor(user);
 
     const body = screen.getByRole("textbox", { name: "SKILL.md content" });
     expect((body as HTMLTextAreaElement).value).toContain("description:");
-    expect(
-      screen.queryByRole("button", { name: /Upload SKILL\.md/ }),
-    ).toBeNull();
+    expect(screen.queryByRole("button", { name: /Choose file/ })).toBeNull();
 
     // Name empty → invalid → the gate holds and the rule shows as helper text.
     expect(
@@ -78,18 +191,9 @@ describe("create skill dialog", () => {
     expect(screen.getByText(/Lowercase letters, digits/)).toBeTruthy();
   });
 
-  it("upload mode keeps the upload button available", async () => {
-    const user = userEvent.setup();
-    await openEditor(user, "upload");
-
-    expect(
-      screen.getByRole("button", { name: /Upload SKILL\.md/ }),
-    ).toBeTruthy();
-  });
-
   it("keeps Create disabled while the name breaks the grammar", async () => {
     const user = userEvent.setup();
-    await openEditor(user, "manual");
+    await openManualEditor(user);
 
     await user.type(screen.getByRole("textbox", { name: "Name" }), "Bad Name");
     expect(
@@ -99,16 +203,14 @@ describe("create skill dialog", () => {
         }) as HTMLButtonElement
       ).disabled,
     ).toBe(true);
-    expect(screen.getByText(/Lowercase letters, digits/)).toBeTruthy();
     expect(create).not.toHaveBeenCalled();
   });
 
-  it("creates with the typed name and body, then closes and reports the name", async () => {
+  it("creates manually with the typed name and body, then reports the name", async () => {
     const user = userEvent.setup();
-    await openEditor(user, "manual");
+    await openManualEditor(user);
 
     await user.type(screen.getByRole("textbox", { name: "Name" }), "my-skill");
-    // A valid name hides the rule and opens the gate.
     expect(screen.queryByText(/Lowercase letters, digits/)).toBeNull();
     await user.click(screen.getByRole("button", { name: "Create skill" }));
 
@@ -120,12 +222,12 @@ describe("create skill dialog", () => {
     expect(onCreated).toHaveBeenCalledWith("my-skill");
   });
 
-  it("renders a controller refusal verbatim and stays open", async () => {
+  it("renders a manual-create refusal verbatim and stays open", async () => {
     create.mockImplementation(() =>
       Promise.reject(new Error('A skill named "my-skill" already exists')),
     );
     const user = userEvent.setup();
-    await openEditor(user, "manual");
+    await openManualEditor(user);
 
     await user.type(screen.getByRole("textbox", { name: "Name" }), "my-skill");
     await user.click(screen.getByRole("button", { name: "Create skill" }));
@@ -135,59 +237,5 @@ describe("create skill dialog", () => {
     ).toBeTruthy();
     expect(screen.getByRole("dialog")).toBeTruthy();
     expect(onCreated).not.toHaveBeenCalled();
-  });
-
-  it("reads an uploaded file into the body and derives the empty name", async () => {
-    const user = userEvent.setup();
-    await openEditor(user, "upload");
-
-    const content = "---\nname: Uploaded Helper\n---\n# Do the thing\n";
-    await user.upload(
-      screen.getByLabelText("Upload a SKILL.md file"),
-      new File([content], "Some Notes.md", { type: "text/markdown" }),
-    );
-
-    // FileReader resolves asynchronously: wait for the body to adopt the file.
-    await waitFor(() => {
-      const body = screen.getByRole("textbox", { name: "SKILL.md content" });
-      expect((body as HTMLTextAreaElement).value).toBe(content);
-    });
-    expect(
-      (screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).value,
-    ).toBe("uploaded-helper");
-    expect(screen.getByText("Some Notes.md")).toBeTruthy();
-    expect(
-      (
-        screen.getByRole("button", {
-          name: "Create skill",
-        }) as HTMLButtonElement
-      ).disabled,
-    ).toBe(false);
-  });
-
-  it("never overwrites a name the user already typed", async () => {
-    const user = userEvent.setup();
-    await openEditor(user, "upload");
-
-    await user.type(screen.getByRole("textbox", { name: "Name" }), "kept-name");
-    await user.upload(
-      screen.getByLabelText("Upload a SKILL.md file"),
-      new File(["---\nname: other\n---\nbody"], "other.md", {
-        type: "text/markdown",
-      }),
-    );
-
-    await waitFor(() =>
-      expect(
-        (
-          screen.getByRole("textbox", { name: "SKILL.md content" }) as
-            | HTMLTextAreaElement
-            | HTMLInputElement
-        ).value,
-      ).toContain("other"),
-    );
-    expect(
-      (screen.getByRole("textbox", { name: "Name" }) as HTMLInputElement).value,
-    ).toBe("kept-name");
   });
 });

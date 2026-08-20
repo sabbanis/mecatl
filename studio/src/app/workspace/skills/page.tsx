@@ -127,6 +127,7 @@ export default function WorkspaceSkillsPage() {
     error,
     actionError,
     create,
+    createFiles,
     fetchBody,
     saveBody,
     setEnabled,
@@ -197,6 +198,7 @@ export default function WorkspaceSkillsPage() {
           {manageable && (
             <CreateSkillDialog
               create={create}
+              createFiles={createFiles}
               onCreated={(name) =>
                 router.push(`/workspace/skills/${encodeURIComponent(name)}`)
               }
