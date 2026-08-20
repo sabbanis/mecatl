@@ -43,7 +43,7 @@ export const SETTINGS_GROUPS: Array<{
       // behaves, then when it interrupts you.
       {
         href: "/workspace/settings/chat",
-        label: "Chat",
+        label: "Messages",
         icon: MessageSquare,
       },
       {

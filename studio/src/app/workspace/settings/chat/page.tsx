@@ -17,10 +17,10 @@ export default function ChatSettingsPage() {
   const { behavior, setBehavior } = useEnterSendBehavior();
 
   return (
-    <SettingsCard title="Chat">
+    <SettingsCard title="Messages">
       <SettingsRow
         label="Enter while the agent is replying"
-        description="Shift+Enter does the opposite. Queued messages send when the current response finishes; steering injects into the response at the next step."
+        description="Shift+Enter does the opposite."
       >
         <OptionField
           label="Enter while the agent is replying"
