@@ -2,8 +2,8 @@
 id: 01-project-domain-store-sources
 title: Project domain, source registry, and durable-store foundation
 blocked_by: []
-status: pending
-branch: ""
+status: done
+branch: "plan-project-working-mvp/01-project-domain-store-sources"
 worktree: ""
 issue: "620"
 retries: 0
