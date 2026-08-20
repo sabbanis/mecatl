@@ -2,7 +2,7 @@
 id: 05b-project-session-transaction
 title: Project Session factory transaction and rollback
 blocked_by: [05a-project-store-ownership]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "620"
