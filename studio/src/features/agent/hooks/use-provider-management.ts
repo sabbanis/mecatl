@@ -8,6 +8,7 @@ import {
   listKnownHarnessProviders,
   removeHarnessProvider,
   restartHarnessDaemon,
+  setActiveHarnessProvider,
   testHarnessProviderKey,
 } from "@/lib/harness/client";
 import { useRuntimeStatus } from "../runtime-status";
@@ -153,6 +154,31 @@ export function useProviderManagement() {
     }
   }, [load]);
 
+  /** Switches the daemon's active provider ("mock" or a configured name)
+   *  and restarts it. The live equivalent of setting MECATL_STUDIO_PROVIDER
+   *  and restarting `npm run dev`. */
+  const setActiveProvider = useCallback(
+    async (kind: string) => {
+      setBusy(`activate:${kind}`);
+      setError(null);
+      setNotice(null);
+      try {
+        await setActiveHarnessProvider(kind);
+        await load();
+        setNotice(
+          kind === "mock"
+            ? "Switched to the offline mock. The daemon restarted."
+            : `Switched to ${kind}. The daemon restarted.`,
+        );
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+      } finally {
+        setBusy("");
+      }
+    },
+    [load],
+  );
+
   return {
     live: connected,
     /** False in external mode: the deployment owns its providers. */
@@ -168,5 +194,6 @@ export function useProviderManagement() {
     testKey,
     removeProvider,
     restartDaemon,
+    setActiveProvider,
   };
 }

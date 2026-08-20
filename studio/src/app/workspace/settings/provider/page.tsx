@@ -10,10 +10,7 @@ export default function ProviderSettingsPage() {
   const management = useProviderManagement();
   return (
     <>
-      {/* No manual Refresh here: the management surface re-reads after every
-          action, and the Add dialog's Re-check covers the by-hand case. The
-          line keeps the busy spinner and the error/notice channel. */}
-      <RuntimeStatusLine runtime={runtime} hideRefresh />
+      <RuntimeStatusLine runtime={runtime} />
       <ProviderSection runtime={runtime} management={management} />
     </>
   );

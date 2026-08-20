@@ -13,6 +13,7 @@ import {
   fetchHarnessControlStatus,
   type HarnessControlStatus,
   probeHarness,
+  setActiveHarnessProvider,
 } from "@/lib/harness/client";
 import { refreshComposerCapabilities } from "./composer-capabilities";
 
@@ -27,11 +28,23 @@ export interface RuntimeStatus {
   /** "external" when Studio proxies to MECATL_BASE_URL; "managed" otherwise. */
   mode: "managed" | "external";
   provider: string;
+  /** True when `provider` is the offline mock — see MockProviderNotice. */
+  isMock: boolean;
+  /** Provider names configured in auth.yaml (never credentials). */
+  configuredProviders: string[];
+  /** Whether the ToolHive LLM gateway is reachable right now. */
+  toolhiveAvailable: boolean;
   gateway: { name: string; url: string } | null;
   /** Why the daemon is unreachable, when it is. */
   detail: string;
   /** Forces an immediate re-probe (the offline screen's Retry). */
   refresh: () => Promise<void>;
+  /**
+   * Switches the daemon's active provider ("mock", "toolhive", or a name in
+   * `configuredProviders`) and restarts it, then re-probes. Managed mode
+   * only — external mode's controller has no daemon to restart.
+   */
+  switchProvider: (kind: string) => Promise<void>;
 }
 
 const RuntimeStatusContext = createContext<RuntimeStatus | null>(null);
@@ -93,6 +106,14 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
     await probe();
   }, [probe]);
 
+  const switchProvider = useCallback(
+    async (kind: string) => {
+      await setActiveHarnessProvider(kind);
+      await probe();
+    },
+    [probe],
+  );
+
   return (
     <RuntimeStatusContext.Provider
       value={{
@@ -100,9 +121,13 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
         connected: state === "connected",
         mode,
         provider: control?.provider ?? "",
+        isMock: control?.isMock ?? false,
+        configuredProviders: control?.configuredProviders ?? [],
+        toolhiveAvailable: control?.toolhiveGateway?.available ?? false,
         gateway: control?.gateway ?? null,
         detail,
         refresh,
+        switchProvider,
       }}
     >
       {state === "offline" && (

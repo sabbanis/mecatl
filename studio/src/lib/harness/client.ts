@@ -620,8 +620,12 @@ export interface HarnessControlStatus {
   /** "external" when Studio proxies to MECATL_BASE_URL; "managed" otherwise. */
   mode: "managed" | "external";
   provider: string;
+  /** True when `provider` is the offline mock — the daemon serves canned
+   *  turns rather than calling a real model. */
+  isMock: boolean;
   running: boolean;
   gateway: { name: string; url: string } | null;
+  toolhiveGateway: { available: boolean; active: boolean } | null;
   modelRouter: { enabled: boolean; categories: number } | null;
   operatorSettings: boolean;
   skillsDir: string;
@@ -652,8 +656,10 @@ export async function fetchHarnessControlStatus(
     const body = (await response.json()) as {
       mode?: string;
       provider?: string;
+      isMock?: boolean;
       running?: boolean;
       gateway?: { name?: string; url?: string } | null;
+      toolhiveGateway?: { available?: boolean; active?: boolean } | null;
       modelRouter?: { enabled?: boolean; categories?: number } | null;
       operatorSettings?: boolean;
       skills?: { dir?: string };
@@ -665,9 +671,16 @@ export async function fetchHarnessControlStatus(
     return {
       mode: body.mode === "external" ? "external" : "managed",
       provider: body.provider ?? "unknown",
+      isMock: Boolean(body.isMock),
       running: Boolean(body.running),
       gateway: body.gateway?.url
         ? { name: body.gateway.name ?? "gateway", url: body.gateway.url }
+        : null,
+      toolhiveGateway: body.toolhiveGateway
+        ? {
+            available: Boolean(body.toolhiveGateway.available),
+            active: Boolean(body.toolhiveGateway.active),
+          }
         : null,
       modelRouter: body.modelRouter
         ? {

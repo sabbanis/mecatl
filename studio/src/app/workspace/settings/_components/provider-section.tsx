@@ -34,6 +34,7 @@ import {
   Note,
   OfflineNote,
   SettingsCard,
+  SettingsRow,
 } from "./settings-card";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
@@ -98,6 +99,15 @@ export function ProviderSection({
   const modelsFor = (name: string) =>
     runtime.models.filter((model) => model.providerId === name).length;
 
+  // management.load() only re-reads the auth.yaml inventory; runtime.status
+  // (the top card's provider/running/selectedProvider) is a SEPARATE poll
+  // owned by useHarnessRuntime, so a mutation that restarts the daemon must
+  // explicitly refresh it too or the card shows the pre-mutation provider.
+  const activateProvider = (kind: string) =>
+    management.setActiveProvider(kind).then(() => runtime.refresh());
+  const removeProvider = (name: string) =>
+    management.removeProvider(name).then(() => runtime.refresh());
+
   return (
     <SettingsCard title="Model provider">
       {!runtime.live ? (
@@ -106,17 +116,17 @@ export function ProviderSection({
         <Note>Reading the controller&rsquo;s status…</Note>
       ) : (
         <div className="flex flex-col gap-4">
-          <div className="flex flex-wrap items-center justify-between gap-3 rounded-lg border bg-muted/40 p-4">
-            <div className="min-w-0">
-              <p className="font-mono text-sm font-medium">
-                {status.provider || "unknown"}
-              </p>
-              <p className="mt-0.5 text-xs text-muted-foreground">
-                {runtime.models.length} model
-                {runtime.models.length === 1 ? "" : "s"} available to the agent
-              </p>
-            </div>
-            <div className="flex shrink-0 items-center gap-2">
+          <div className="divide-y divide-border/60">
+            <SettingsRow
+              label={
+                <span className="font-mono">
+                  {status.provider || "unknown"}
+                </span>
+              }
+              description={`${runtime.models.length} model${
+                runtime.models.length === 1 ? "" : "s"
+              } available to the agent`}
+            >
               <Badge variant={status.running ? "default" : "secondary"}>
                 {status.running ? "running" : "stopped"}
               </Badge>
@@ -126,14 +136,37 @@ export function ProviderSection({
                   variant="outline"
                   className="h-7"
                   disabled={management.busy === "activate:mock"}
-                  onClick={() => void management.setActiveProvider("mock")}
+                  onClick={() => void activateProvider("mock")}
                 >
                   {management.busy === "activate:mock"
                     ? "Switching…"
                     : "Switch to mock"}
                 </Button>
               )}
-            </div>
+            </SettingsRow>
+
+            {runtime.mode !== "external" && (
+              <SettingsRow
+                label="Configured providers"
+                description={
+                  <>
+                    In{" "}
+                    <code className="font-mono">
+                      {status.authFile || "~/.config/mecatl/auth.yaml"}
+                    </code>
+                  </>
+                }
+              >
+                <AddProviderDialog
+                  known={management.known}
+                  configured={management.providers.map((p) => p.name)}
+                  authFile={status.authFile}
+                  reload={management.reload}
+                  restartDaemon={management.restartDaemon}
+                  restarting={management.busy === "restart"}
+                />
+              </SettingsRow>
+            )}
           </div>
 
           {runtime.mode === "external" ? (
@@ -150,23 +183,6 @@ export function ProviderSection({
                   {management.notice}
                 </p>
               )}
-
-              <div className="flex items-center justify-between gap-2">
-                <p className="text-xs font-medium text-muted-foreground">
-                  Configured in{" "}
-                  <code className="font-mono">
-                    {status.authFile || "~/.config/mecatl/auth.yaml"}
-                  </code>
-                </p>
-                <AddProviderDialog
-                  known={management.known}
-                  configured={management.providers.map((p) => p.name)}
-                  authFile={status.authFile}
-                  reload={management.reload}
-                  restartDaemon={management.restartDaemon}
-                  restarting={management.busy === "restart"}
-                />
-              </div>
 
               {management.providers.length === 0 ? (
                 <Note>
@@ -186,9 +202,7 @@ export function ProviderSection({
                       health={management.health[row.name]}
                       busy={management.busy}
                       onTest={() => void management.testKey(row.name)}
-                      onActivate={() =>
-                        void management.setActiveProvider(row.name)
-                      }
+                      onActivate={() => void activateProvider(row.name)}
                       onRemove={() => setRemoving(row)}
                     />
                   ))}
@@ -234,7 +248,7 @@ export function ProviderSection({
               <AlertDialogCancel>Cancel</AlertDialogCancel>
               <AlertDialogAction
                 onClick={() => {
-                  void management.removeProvider(removing.name);
+                  void removeProvider(removing.name);
                   setRemoving(null);
                 }}
               >

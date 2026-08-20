@@ -3,13 +3,12 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
 import type { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import {
   ExternalManagedNote,
-  Note,
   OfflineNote,
   SettingsCard,
+  SettingsRow,
 } from "./settings-card";
 
 type Runtime = ReturnType<typeof useHarnessRuntime>;
@@ -26,7 +25,6 @@ const SUGGESTED_GATEWAY_URL = "https://connector-gateway.stacklok.dev/gw/mcp";
 export function GatewaySection({ runtime }: { runtime: Runtime }) {
   const [name, setName] = useState("");
   const [url, setUrl] = useState(SUGGESTED_GATEWAY_URL);
-  const [token, setToken] = useState("");
 
   const gateway = runtime.status?.gateway ?? null;
   const busy = runtime.busy === "gateway";
@@ -49,112 +47,59 @@ export function GatewaySection({ runtime }: { runtime: Runtime }) {
     });
   };
 
+  const connectedRow = gateway ? (
+    <SettingsRow label="Connected as">
+      <div className="min-w-0 text-right">
+        <p className="text-sm font-medium">{gateway.name}</p>
+        <code className="block max-w-72 break-all font-mono text-xs text-muted-foreground">
+          {gateway.url}
+        </code>
+      </div>
+    </SettingsRow>
+  ) : null;
+
   return (
     <SettingsCard title="MCP gateway">
       {!runtime.live ? (
         <OfflineNote />
-      ) : (
+      ) : runtime.mode === "external" ? (
         <div className="flex flex-col gap-4">
-          {gateway ? (
-            <div className="rounded-lg border bg-muted/40 p-4">
-              <p className="text-xs text-muted-foreground">
-                Connected as{" "}
-                <span className="font-medium text-foreground">
-                  {gateway.name}
-                </span>
-              </p>
-              <code className="mt-0.5 block break-all font-mono text-xs">
-                {gateway.url}
-              </code>
-            </div>
-          ) : (
-            <Note>Not connected — the agent has only its built-in tools.</Note>
+          {connectedRow && (
+            <div className="divide-y divide-border/60">{connectedRow}</div>
           )}
-
-          {runtime.mode === "external" ? (
-            <ExternalManagedNote />
-          ) : (
-            <>
-              <div className="grid gap-4 sm:grid-cols-2">
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="gw-name">Gateway name</Label>
-                  <Input
-                    id="gw-name"
-                    value={name}
-                    onChange={(event) => setName(event.target.value)}
-                    placeholder="connector-gateway"
-                    className="font-mono"
-                  />
-                </div>
-                <div className="flex flex-col gap-1.5">
-                  <Label htmlFor="gw-url">Gateway URL</Label>
-                  <Input
-                    id="gw-url"
-                    value={url}
-                    onChange={(event) => setUrl(event.target.value)}
-                    placeholder={SUGGESTED_GATEWAY_URL}
-                    className="font-mono"
-                  />
-                </div>
-              </div>
-
-              <Button
-                type="button"
-                variant="action"
-                className="self-start"
-                disabled={!ready || busy}
-                onClick={startOAuth}
-              >
-                {busy ? "Waiting for sign-in…" : "Sign in to gateway"}
-              </Button>
-
-              <details className="rounded-lg border p-4">
-                <summary className="cursor-pointer text-xs text-muted-foreground transition-colors hover:text-foreground">
-                  Or paste a bearer token
-                </summary>
-                <form
-                  className="mt-3 flex flex-col gap-3 sm:flex-row sm:items-end"
-                  onSubmit={(event) => {
-                    event.preventDefault();
-                    if (!ready) return;
-                    void runtime.connectGateway(
-                      name.trim(),
-                      url.trim(),
-                      token.trim() || undefined,
-                    );
-                    setToken("");
-                  }}
-                >
-                  <div className="flex flex-1 flex-col gap-1.5">
-                    <Label htmlFor="gw-token">Bearer token</Label>
-                    <Input
-                      id="gw-token"
-                      type="password"
-                      autoComplete="off"
-                      value={token}
-                      onChange={(event) => setToken(event.target.value)}
-                      placeholder="for a token you already hold"
-                    />
-                  </div>
-                  <Button
-                    type="submit"
-                    variant="outline"
-                    className="rounded-full"
-                    disabled={!ready || busy}
-                  >
-                    Connect
-                  </Button>
-                </form>
-              </details>
-
-              {/* The one explainer kept: writes restart the daemon (a rule —
-                  surfaces warn before writes that restart). */}
-              <p className="text-xs text-muted-foreground">
-                Connecting restarts the daemon and invalidates in-flight
-                sessions.
-              </p>
-            </>
-          )}
+          <ExternalManagedNote />
+        </div>
+      ) : (
+        <div className="divide-y divide-border/60">
+          {connectedRow}
+          <SettingsRow label="Gateway name" htmlFor="gw-name">
+            <Input
+              id="gw-name"
+              value={name}
+              onChange={(event) => setName(event.target.value)}
+              placeholder="connector-gateway"
+              className="w-44 font-mono min-[500px]:w-60"
+            />
+          </SettingsRow>
+          <SettingsRow label="Gateway URL" htmlFor="gw-url">
+            <Input
+              id="gw-url"
+              value={url}
+              onChange={(event) => setUrl(event.target.value)}
+              placeholder={SUGGESTED_GATEWAY_URL}
+              className="w-52 font-mono min-[500px]:w-72"
+            />
+          </SettingsRow>
+          <SettingsRow label="Sign in">
+            <Button
+              type="button"
+              variant="action"
+              disabled={!ready || busy}
+              onClick={startOAuth}
+            >
+              {busy ? "Waiting for sign-in…" : "Sign in to gateway"}
+            </Button>
+          </SettingsRow>
         </div>
       )}
     </SettingsCard>

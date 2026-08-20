@@ -221,38 +221,41 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
   return (
     <SettingsCard title="Model router">
       <div className="flex flex-col gap-4">
-        <SettingsRow
-          label={`Semantic routing ${view.enabled ? "on" : "off"}`}
-          htmlFor="routing-enabled"
-          description="A small classifier reads each prompt and picks a category, so cheap work lands on a cheap model."
-          className="py-0"
-        >
-          <Switch
-            id="routing-enabled"
-            checked={view.enabled}
-            onCheckedChange={(checked) => patch({ enabled: checked })}
-            aria-label="Enable semantic model routing"
-          />
-        </SettingsRow>
-
-        <div className="grid gap-4 sm:grid-cols-2">
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="routing-classifier">Classifier model</Label>
-            <ModelSelect
-              id="routing-classifier"
-              value={view.classifierModel}
-              onChange={(next) => patch({ classifierModel: next })}
-              models={models}
-              placeholder="a small, fast model"
+        <div className="divide-y divide-border/60">
+          <SettingsRow
+            label="Semantic routing"
+            htmlFor="routing-enabled"
+            description="A small classifier reads each prompt and picks a category, so cheap work lands on a cheap model."
+          >
+            <Switch
+              id="routing-enabled"
+              checked={view.enabled}
+              onCheckedChange={(checked) => patch({ enabled: checked })}
+              aria-label="Enable semantic model routing"
             />
-          </div>
-          <div className="flex flex-col gap-1.5">
-            <Label htmlFor="routing-default">Default category</Label>
+          </SettingsRow>
+
+          <SettingsRow label="Classifier model" htmlFor="routing-classifier">
+            <div className="w-52 min-[500px]:w-72">
+              <ModelSelect
+                id="routing-classifier"
+                value={view.classifierModel}
+                onChange={(next) => patch({ classifierModel: next })}
+                models={models}
+                placeholder="a small, fast model"
+              />
+            </div>
+          </SettingsRow>
+
+          <SettingsRow label="Default category" htmlFor="routing-default">
             <Select
               value={view.defaultCategory || undefined}
               onValueChange={(next) => patch({ defaultCategory: next })}
             >
-              <SelectTrigger id="routing-default" className="w-full">
+              <SelectTrigger
+                id="routing-default"
+                className="w-52 min-[500px]:w-72"
+              >
                 <SelectValue placeholder="Choose a category…" />
               </SelectTrigger>
               <SelectContent>
@@ -265,30 +268,30 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
                   ))}
               </SelectContent>
             </Select>
-          </div>
-        </div>
+          </SettingsRow>
 
-        <div className="flex items-center justify-between gap-2 pt-1">
-          <h3 className="text-xs font-semibold tracking-wide text-muted-foreground uppercase">
-            Categories ({view.categories.length})
-          </h3>
-          {view.categories.length < 8 && (
-            <Button
-              size="sm"
-              variant="outline"
-              className="rounded-full"
-              onClick={() =>
-                patch({
-                  categories: [
-                    ...view.categories,
-                    { key: nextKey(), name: "", description: "", model: "" },
-                  ],
-                })
-              }
-            >
-              Add category
-            </Button>
-          )}
+          <SettingsRow
+            label={`Categories (${view.categories.length})`}
+            description="What the classifier can route to — between 2 and 8."
+          >
+            {view.categories.length < 8 && (
+              <Button
+                size="sm"
+                variant="outline"
+                className="rounded-full"
+                onClick={() =>
+                  patch({
+                    categories: [
+                      ...view.categories,
+                      { key: nextKey(), name: "", description: "", model: "" },
+                    ],
+                  })
+                }
+              >
+                Add category
+              </Button>
+            )}
+          </SettingsRow>
         </div>
 
         {view.categories.length === 0 ? (
@@ -370,42 +373,35 @@ export function ModelRouterSection({ runtime }: { runtime: Runtime }) {
         )}
 
         {problem && <p className="text-sm text-destructive">{problem}</p>}
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <p className="text-xs text-muted-foreground">
-            Saving restarts the daemon and invalidates in-flight sessions.
-          </p>
-          <div className="flex gap-2">
-            {editing && (
-              <Button
-                variant="outline"
-                className="rounded-full"
-                onClick={() => setDraft(null)}
-              >
-                Discard changes
-              </Button>
-            )}
+        <div className="flex flex-wrap items-center justify-end gap-2">
+          {editing && (
             <Button
-              variant="action"
-              disabled={
-                !editing || problem !== null || runtime.busy === "router"
-              }
-              onClick={async () => {
-                await runtime.saveRouter({
-                  enabled: view.enabled,
-                  classifierModel: view.classifierModel.trim(),
-                  defaultCategory: view.defaultCategory.trim().toLowerCase(),
-                  categories: view.categories.map((category) => ({
-                    name: category.name.trim().toLowerCase(),
-                    description: category.description.trim(),
-                    model: category.model.trim(),
-                  })),
-                });
-                setDraft(null);
-              }}
+              variant="outline"
+              className="rounded-full"
+              onClick={() => setDraft(null)}
             >
-              {runtime.busy === "router" ? "Saving…" : "Save routing"}
+              Discard changes
             </Button>
-          </div>
+          )}
+          <Button
+            variant="action"
+            disabled={!editing || problem !== null || runtime.busy === "router"}
+            onClick={async () => {
+              await runtime.saveRouter({
+                enabled: view.enabled,
+                classifierModel: view.classifierModel.trim(),
+                defaultCategory: view.defaultCategory.trim().toLowerCase(),
+                categories: view.categories.map((category) => ({
+                  name: category.name.trim().toLowerCase(),
+                  description: category.description.trim(),
+                  model: category.model.trim(),
+                })),
+              });
+              setDraft(null);
+            }}
+          >
+            {runtime.busy === "router" ? "Saving…" : "Save routing"}
+          </Button>
         </div>
       </div>
     </SettingsCard>
