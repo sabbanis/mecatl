@@ -2,12 +2,12 @@
 id: 08-project-contract-transport-docs
 title: Generated Project contract, transport parity, and deployment documentation
 blocked_by: [07-project-session-navigation]
-status: in-progress
-branch: ""
-worktree: ""
+status: done
+branch: plan-project-working-mvp/08-project-contract-transport-docs
+worktree: /Users/jakub/devel/mecatl/.worktrees/projects
 issue: "620"
 retries: 0
-last_error: ""
+last_error: "task generate blocked: matlatl v0.0.8 was unavailable because github.com SSH timed out; llms.txt was refreshed by the existing tracked output before the generator fetch failed. AC5.4 remains externally blocked pending Studio commit and green journey workflow evidence."
 accumulator: acc/project-working-mvp
 ---
 
