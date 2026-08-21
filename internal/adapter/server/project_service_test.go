@@ -23,9 +23,10 @@ import (
 )
 
 type projectRegistry struct {
-	source     project.WorkingSource
-	env        tool.Environment
-	resolveErr error
+	source       project.WorkingSource
+	env          tool.Environment
+	resolveErr   error
+	afterResolve func()
 }
 
 func (r *projectRegistry) ListWorking(context.Context) ([]project.WorkingSource, error) {
@@ -38,6 +39,9 @@ func (r *projectRegistry) ResolveWorking(_ context.Context, ref project.SourceRe
 	}
 	if r.resolveErr != nil {
 		return tool.Environment{}, r.resolveErr
+	}
+	if r.afterResolve != nil {
+		r.afterResolve()
 	}
 	return r.env, nil
 }
@@ -110,47 +114,37 @@ func TestProjectServiceResolutionFailureIsOpaqueAndLeavesNoSession(t *testing.T)
 	}
 }
 func TestInvariant_project_access_is_caller_separated(t *testing.T) {
+	t.Parallel()
+
 	owner := &session.Principal{Issuer: "issuer", Subject: "owner"}
-	ctx := session.WithPrincipal(context.Background(), owner)
-	svc, source, _, _ := newProjectService(t, true)
+	foreign := &session.Principal{Issuer: "issuer", Subject: "other"}
+	store := projectstore.NewMemory()
+	item := project.Project{
+		ID: "project-1", Owner: owner, Name: "Project one",
+		Working:  project.WorkingSource{Ref: "opaque-source", Label: "Working copy"},
+		Revision: 1, CreatedAt: time.Unix(1, 0), UpdatedAt: time.Unix(1, 0),
+	}
+	if err := store.Create(context.Background(), item); err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	foreignScope := project.Ownership{Enforced: true, Owner: foreign}
+	if _, err := store.Load(context.Background(), item.ID, foreignScope); !errors.Is(err, project.ErrNotFound) {
+		t.Fatalf("foreign Load = %v, want absence-shaped ErrNotFound", err)
+	}
+	if _, err := store.Replace(context.Background(), item, item.Revision, foreignScope); !errors.Is(err, project.ErrNotFound) {
+		t.Fatalf("foreign Replace = %v, want absence-shaped ErrNotFound", err)
+	}
+	if err := store.Delete(context.Background(), item.ID, item.Revision, foreignScope); !errors.Is(err, project.ErrNotFound) {
+		t.Fatalf("foreign Delete = %v, want absence-shaped ErrNotFound", err)
+	}
+	page, err := store.Page(context.Background(), project.PageRequest{Limit: 1, OwnershipEnforced: true, Owner: foreign})
+	if err != nil || page.TotalCount != 0 || len(page.Projects) != 0 {
+		t.Fatalf("foreign Page = %#v, %v", page, err)
+	}
 
-	created, err := svc.CreateProject(ctx, "project-1", "Project one", source.Ref)
-	if err != nil {
-		t.Fatalf("CreateProject: %v", err)
-	}
-	if created.Owner == nil || !created.Owner.SameIdentity(owner) || created.Working.Label != source.Label || created.Revision != 1 {
-		t.Fatalf("server-owned Project = %#v", created)
-	}
-
-	sess, err := svc.CreateSessionFromProject(ctx, created.ID, session.ModeDefault, session.Limits{}, server.ProviderSelector{})
-	if err != nil {
-		t.Fatalf("CreateSessionFromProject: %v", err)
-	}
-	if sess.Project == nil || sess.Project.ProjectID != created.ID || sess.Project.Working.SourceRef != string(source.Ref) || sess.EnvironmentRef.ID != "/project" {
-		t.Fatalf("captured project binding = %#v, environment = %#v", sess.Project, sess.EnvironmentRef)
-	}
-	if sess.Owner == nil || !sess.Owner.SameIdentity(owner) {
-		t.Fatalf("session owner = %#v, want %#v", sess.Owner, owner)
-	}
-
-	foreign := session.WithPrincipal(context.Background(), &session.Principal{Issuer: "issuer", Subject: "other"})
-	if _, err := svc.GetProject(foreign, created.ID); !errors.Is(err, server.ErrNotFound) {
-		t.Fatalf("foreign GetProject error = %v, want absence-shaped ErrNotFound", err)
-	}
-	if _, err := svc.GetProject(foreign, "missing"); !errors.Is(err, server.ErrNotFound) {
-		t.Fatalf("missing GetProject error = %v, want absence-shaped ErrNotFound", err)
-	}
-	if _, err := svc.ReplaceProject(foreign, created.ID, "Foreign change", source.Ref, created.Revision); !errors.Is(err, server.ErrNotFound) {
-		t.Fatalf("foreign ReplaceProject error = %v, want absence-shaped ErrNotFound", err)
-	}
-	if err := svc.DeleteProject(foreign, created.ID, created.Revision); !errors.Is(err, server.ErrNotFound) {
-		t.Fatalf("foreign DeleteProject error = %v, want absence-shaped ErrNotFound", err)
-	}
-	stored, err := svc.GetProject(ctx, created.ID)
-	if err != nil {
-		t.Fatalf("owner GetProject after foreign mutations: %v", err)
-	}
-	if stored.Name != created.Name || stored.Revision != created.Revision {
-		t.Fatalf("foreign mutation changed Project: %#v", stored)
+	// This MVP never shares its writable source across ownership domains.
+	svc, _, _, _ := newProjectService(t, true)
+	if _, err := svc.CreateProject(session.WithPrincipal(context.Background(), owner), "blocked", "Blocked", "opaque-source"); !errors.Is(err, project.ErrUnsupported) {
+		t.Fatalf("ownership-enforced CreateProject = %v, want unsupported", err)
 	}
 }

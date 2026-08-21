@@ -26,7 +26,8 @@ func (b *ProjectBinding) Clone() *ProjectBinding {
 	}
 	clone := *b
 	if b.References != nil {
-		clone.References = append([]ProjectSourceBinding(nil), b.References...)
+		clone.References = make([]ProjectSourceBinding, len(b.References))
+		copy(clone.References, b.References)
 	}
 	return &clone
 }

@@ -193,7 +193,9 @@ func (s *Service) CreateSessionFromProject(ctx context.Context, id string, mode 
 }
 
 func (s *Service) projectEnabled() bool {
-	return s.cfg.ProjectStore != nil && s.cfg.ProjectSources != nil && s.cfg.SessionEngine != nil
+	// The initial working-source control plane shares the daemon's one writable
+	// source and is therefore available only in the ownerless trusted domain.
+	return !s.cfg.OwnershipEnforced && s.cfg.ProjectStore != nil && s.cfg.ProjectSources != nil && s.cfg.SessionEngine != nil
 }
 
 func (s *Service) loadOwnedProject(ctx context.Context, id string) (project.Project, error) {
