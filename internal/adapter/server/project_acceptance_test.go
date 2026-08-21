@@ -2,15 +2,20 @@ package server_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"sync"
 	"testing"
+	"time"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
+	"github.com/stacklok/mecatl/engine/adapter/eventsource"
+	"github.com/stacklok/mecatl/engine/adapter/sessnap"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/projectstore"
 	"github.com/stacklok/mecatl/internal/adapter/server"
+	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/project"
 	"github.com/stacklok/mecatl/internal/project/projectconformance"
 )
@@ -243,5 +248,228 @@ func TestProjectWorkingMVP_Scenario2_LegacyCreateUnchanged(t *testing.T) {
 	}
 	if durable.Project != nil {
 		t.Fatalf("legacy Project = %#v", durable.Project)
+	}
+}
+
+func TestProjectWorkingMVP_Scenario3_ProjectEditsAreProspective(t *testing.T) {
+	svc, source, _, _ := newProjectService(t, false)
+	created, err := svc.CreateProject(context.Background(), "project-1", "Before", source.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := svc.CreateSessionFromProject(context.Background(), created.ID, session.ModeDefault, session.Limits{}, server.ProviderSelector{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.ReplaceProject(context.Background(), created.ID, "After", source.Ref, created.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if sess.Project == nil || sess.Project.ProjectNameAtCreation != "Before" || sess.Project.ProjectRevision != 1 {
+		t.Fatalf("captured binding changed after Project replace: %#v", sess.Project)
+	}
+	if got := sess.ProjectProvenance(); got.ProjectID != created.ID || got.ProjectNameAtCreation != "Before" || got.WorkingLabelAtCreation != source.Label {
+		t.Fatalf("compact provenance = %#v", got)
+	}
+}
+
+func TestProjectWorkingMVP_Scenario3_ProjectDeletePreservesSessions(t *testing.T) {
+	svc, source, store, _ := newProjectService(t, false)
+	created, err := svc.CreateProject(context.Background(), "project-1", "Project", source.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := svc.CreateSessionFromProject(context.Background(), created.ID, session.ModeDefault, session.Limits{}, server.ProviderSelector{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteProject(context.Background(), created.ID, created.Revision); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := svc.CreateSessionFromProject(context.Background(), created.ID, session.ModeDefault, session.Limits{}, server.ProviderSelector{}); !errors.Is(err, server.ErrNotFound) {
+		t.Fatalf("new Session after deletion = %v, want not found", err)
+	}
+	persisted, err := store.Load(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("existing Session deleted: %v", err)
+	}
+	if persisted.Project == nil || persisted.Project.ProjectID != created.ID || persisted.Project.ProjectNameAtCreation != "Project" {
+		t.Fatalf("existing Session rebound after deletion: %#v", persisted.Project)
+	}
+}
+
+func TestInvariant_project_session_restart_uses_captured_binding(t *testing.T) {
+	svc, source, _, registry := newProjectService(t, false)
+	created, err := svc.CreateProject(context.Background(), "project-1", "Project", source.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := svc.CreateSessionFromProject(context.Background(), created.ID, session.ModeDefault, session.Limits{}, server.ProviderSelector{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	validated := false
+	registry.afterResolve = func() { validated = true }
+	svc.DropSessionEngineForTest(sess.ID)
+
+	run, err := svc.StartRun(context.Background(), sess.ID, "continue")
+	if err != nil {
+		t.Fatalf("restart run entry: %v", err)
+	}
+	if got := drainServerRun(run); got != "ok" {
+		t.Fatalf("restart reply = %q, want ok", got)
+	}
+	if !validated {
+		t.Fatal("run entry did not validate the captured SourceRef through the rebuilt registry")
+	}
+
+	t.Run("real Build reattaches the original canonical binding", func(t *testing.T) {
+		root, storeDir := t.TempDir(), t.TempDir()
+		first, err := app.Build(context.Background(), app.Config{
+			Workspace: root, StoreDir: storeDir, UseMock: true, NoSoul: true, EnableLocalProjects: true,
+		})
+		if err != nil {
+			t.Fatalf("first Build: %v", err)
+		}
+		working, err := first.Service.ListProjectWorkingSources(context.Background())
+		if err != nil || len(working) != 1 {
+			first.Close()
+			t.Fatalf("first source registry = %#v, %v", working, err)
+		}
+		projectDoc, err := first.Service.CreateProject(context.Background(), "restart-project", "Restart", working[0].Ref)
+		if err != nil {
+			first.Close()
+			t.Fatal(err)
+		}
+		original, err := first.Service.CreateSessionFromProject(context.Background(), projectDoc.ID, session.ModeDefault, session.Limits{}, server.ProviderSelector{})
+		if err != nil {
+			first.Close()
+			t.Fatal(err)
+		}
+		originalRef := original.EnvironmentRef
+		first.Close()
+
+		second, err := app.Build(context.Background(), app.Config{
+			Workspace: root, StoreDir: storeDir, UseMock: true, NoSoul: true, EnableLocalProjects: true,
+		})
+		if err != nil {
+			t.Fatalf("second Build: %v", err)
+		}
+		defer second.Close()
+		restarted, err := second.Service.GetSession(context.Background(), original.ID)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if restarted.Project == nil || restarted.Project.Working.SourceRef != string(working[0].Ref) || restarted.EnvironmentRef != originalRef {
+			t.Fatalf("restarted capture = %#v, ref = %#v; want source %q, ref %#v", restarted.Project, restarted.EnvironmentRef, working[0].Ref, originalRef)
+		}
+		run, err := second.Service.StartRun(context.Background(), original.ID, "continue")
+		if err != nil {
+			t.Fatalf("restarted Project Session run: %v", err)
+		}
+		drainServerRun(run)
+		second.Service.FinishRun(original.ID, run)
+	})
+}
+
+func TestProjectWorkingMVP_Scenario3_SourceRevocationFailsClosed(t *testing.T) {
+	svc, source, _, registry := newProjectService(t, false)
+	created, err := svc.CreateProject(context.Background(), "project-1", "Project", source.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := svc.CreateSessionFromProject(context.Background(), created.ID, session.ModeDefault, session.Limits{}, server.ProviderSelector{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	svc.DropSessionEngineForTest(sess.ID)
+	registry.source.Ref = "different-registration"
+
+	if _, err := svc.StartRun(context.Background(), sess.ID, "must not execute"); !errors.Is(err, server.ErrFailedPrecondition) {
+		t.Fatalf("changed registration run = %v, want failed precondition", err)
+	}
+	persisted, err := svc.GetSession(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if persisted.Project == nil || persisted.Project.Working.SourceRef != string(source.Ref) || persisted.EnvironmentRef != sess.EnvironmentRef {
+		t.Fatalf("failed revocation rewrote capture: %#v, ref %#v", persisted.Project, persisted.EnvironmentRef)
+	}
+	registry.source.Ref = source.Ref
+	run, err := svc.StartRun(context.Background(), sess.ID, "restored")
+	if err != nil {
+		t.Fatalf("exact original registration did not restore Session: %v", err)
+	}
+	drainServerRun(run)
+	svc.FinishRun(sess.ID, run)
+}
+
+func TestProjectWorkingMVP_Scenario3_ForkInheritsCapturedBinding(t *testing.T) {
+	svc, source, store, _ := newProjectService(t, false)
+	created, err := svc.CreateProject(context.Background(), "project-1", "Project", source.Ref)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sess, err := svc.CreateSessionFromProject(context.Background(), created.ID, session.ModeDefault, session.Limits{}, server.ProviderSelector{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := svc.DeleteProject(context.Background(), created.ID, created.Revision); err != nil {
+		t.Fatalf("delete live Project before fork: %v", err)
+	}
+	forkID, err := svc.ForkSession(context.Background(), sess.ID, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	forked, err := store.Load(context.Background(), forkID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if forked.Project == nil || forked.Project.ProjectID != sess.Project.ProjectID ||
+		forked.Project.ProjectNameAtCreation != sess.Project.ProjectNameAtCreation ||
+		forked.Project.ProjectRevision != sess.Project.ProjectRevision ||
+		forked.Project.Working != sess.Project.Working ||
+		forked.EnvironmentRef != sess.EnvironmentRef {
+		t.Fatalf("fork binding = %#v, ref = %#v; want %#v, %#v", forked.Project, forked.EnvironmentRef, sess.Project, sess.EnvironmentRef)
+	}
+}
+
+func TestProjectWorkingMVP_Scenario3_LegacySnapshotCompatibility(t *testing.T) {
+	svc, _, store, _ := newProjectService(t, false)
+	legacy := session.New("legacy", session.ModeDefault, "/project", session.Limits{}, time.Unix(1, 0))
+	if err := store.Save(context.Background(), legacy); err != nil {
+		t.Fatal(err)
+	}
+	got, err := svc.GetSession(context.Background(), legacy.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Project != nil {
+		t.Fatalf("legacy snapshot Project = %#v", got.Project)
+	}
+	if _, err := svc.StartRun(context.Background(), legacy.ID, "continue"); err != nil {
+		t.Fatalf("legacy run = %v", err)
+	}
+
+	snap, err := sessnap.Of(legacy)
+	if err != nil {
+		t.Fatal(err)
+	}
+	data, err := json.Marshal(snap)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var decoded sessnap.Snapshot
+	if err := json.Unmarshal(data, &decoded); err != nil {
+		t.Fatal(err)
+	}
+	restored, err := decoded.Restore()
+	if err != nil || restored.Project != nil {
+		t.Fatalf("legacy sessnap restore = %#v, %v", restored, err)
+	}
+	folded, err := eventsource.Fold(eventsource.SessionMeta{
+		ID: "legacy-event", Mode: session.ModeDefault, Workspace: "/project", Limits: session.Limits{}, CreatedAt: time.Unix(1, 0),
+	}, func(func(session.Event, error) bool) {})
+	if err != nil || folded.Project != nil {
+		t.Fatalf("legacy event metadata fold = %#v, %v", folded, err)
 	}
 }

@@ -3253,7 +3253,30 @@ func admitRunPurpose(sess *session.Session, purpose runPurpose) error {
 //     plan slot is active): PROMOTE the default-FS session to a per-session factory
 //     engine. ModeNeedsEngine is nil (no plan slot) ⇒ this never fires and the session
 //     keeps the shared engine — BYTE-IDENTICAL to pre-Phase-3.
+//
+// validateCapturedProjectBinding verifies that a Project Session's immutable source
+// binding still resolves to the exact persisted environment identity. It deliberately
+// never reads the mutable Project document: Project edits and deletion affect only
+// future captures. The returned environment is discarded; ordinary environment
+// resolution below reattaches the persisted EnvironmentRef with the right runner.
+func (s *Service) validateCapturedProjectBinding(ctx context.Context, sess *session.Session) error {
+	if sess.Project == nil {
+		return nil
+	}
+	if s.cfg.ProjectSources == nil {
+		return fmt.Errorf("%w: captured project working source is unavailable", ErrFailedPrecondition)
+	}
+	env, err := s.cfg.ProjectSources.ResolveWorking(ctx, project.SourceRef(sess.Project.Working.SourceRef))
+	if err != nil || env.Workspace() == nil || env.Ref() != sess.EnvironmentRef {
+		return fmt.Errorf("%w: captured project working source is unavailable", ErrFailedPrecondition)
+	}
+	return nil
+}
+
 func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Session) (*agent.Engine, tool.Environment, error) { //nolint:gocyclo // the per-session engine/environment resolution is inherently branched
+	if err := s.validateCapturedProjectBinding(ctx, sess); err != nil {
+		return nil, tool.Environment{}, err
+	}
 	id := sess.ID
 	engine := s.cfg.Engine
 	s.mu.Lock()
