@@ -53,6 +53,11 @@ reach the right run.
   (`ModelInfo{id, provider_id, display_name, image, reasoning, context_limit}`), no
   secrets, (provider_id, id)-sorted. Gated by `ServerCapabilities.model_selection`
   (true iff ≥1 provider is available). See [multi-provider](providers.md).
+- `ListSessions(ListSessionsRequest) → ListSessionsResponse` returns one bounded
+  metadata page. Its optional exact `project_id` first authorizes the live Project,
+  then binds owner and Project selection into storage paging, counts, and cursors;
+  deleted Projects therefore cannot be navigated as groups, while their captured
+  Sessions remain in ordinary history with compact creation-time provenance only.
 - `Converse(stream ConverseRequest) → stream ConverseResponse)` — bidirectional.
   The first frame **must** be `prompt`; then zero or more `resume_approval` /
   `cancel` / `cancel_child` control frames. `ConverseRequest` is a `oneof kind
@@ -83,6 +88,7 @@ v1 enforces required checks in the Go server (protovalidate runtime is deferred)
 |---|---|---|
 | `POST /v1/sessions` | `CreateSession` | JSON body → `session_id`; optional `provider_id`/`model_id` selector + `profile` (`"no-fs"`) |
 | `GET /v1/sessions/{id}` | `GetSession` | JSON snapshot |
+| `GET /v1/sessions?project_id=…` | `ListSessions` | bounded Session metadata page for one authorized live Project; ordinary `/v1/sessions` retains deleted Project Session history |
 | `POST /v1/sessions/{id}/mode` | `SetMode` | change permission mode; mid-turn rejection is surfaced to the client |
 | `GET /v1/models` | `ListModels` | JSON selectable-model inventory (available providers only, secret-free) |
 | `POST /v1/sessions/{id}/prompt` | start a run | `text/event-stream`; each event is `data: <proto Event as JSON>` |

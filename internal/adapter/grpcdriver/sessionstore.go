@@ -270,7 +270,7 @@ func pageMetadataRequest(request port.SessionMetadataPageRequest) (*driverv1.Pag
 	if request.Limit <= 0 || request.Limit > 1<<31-1 {
 		return nil, fmt.Errorf("grpcdriver: page metadata: limit must be between 1 and %d", 1<<31-1)
 	}
-	req := &driverv1.PageSessionMetadataRequest{Limit: int32(request.Limit), OwnershipEnforced: request.OwnershipEnforced}
+	req := &driverv1.PageSessionMetadataRequest{Limit: int32(request.Limit), OwnershipEnforced: request.OwnershipEnforced, ProjectId: request.ProjectID}
 	if request.Cursor != nil {
 		if !validPortMetadataCursor(request.Cursor) {
 			return nil, fmt.Errorf("grpcdriver: page metadata: cursor is invalid")
@@ -328,6 +328,7 @@ func metadataFromProto(entry *driverv1.SessionMetadataEntry) port.SessionDiscove
 		Workspace:       entry.GetWorkspace(),
 		Kind:            session.SessionKind(entry.GetKind()),
 		EstimatedBytes:  entry.GetEstimatedBytes(),
+		Project:         session.ProjectProvenance{ProjectID: entry.GetProjectId(), ProjectNameAtCreation: entry.GetProjectNameAtCreation(), WorkingLabelAtCreation: entry.GetWorkingLabelAtCreation()},
 		Relationship: session.SessionRelationship{
 			ParentSessionID: session.SessionID(entry.GetParentSessionId()),
 			CallID:          session.ToolCallID(entry.GetCallId()),

@@ -1838,7 +1838,7 @@ func (h *HTTPHandler) listSessions(w http.ResponseWriter, r *http.Request) {
 		pageSize = parsed
 	}
 	page, err := h.svc.ListSessionPage(r.Context(), ListSessionsPageRequest{
-		PageSize: pageSize, Cursor: r.URL.Query().Get("cursor"),
+		PageSize: pageSize, Cursor: r.URL.Query().Get("cursor"), ProjectID: r.URL.Query().Get("project_id"),
 	})
 	if err != nil {
 		writeServiceError(w, err)

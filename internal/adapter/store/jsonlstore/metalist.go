@@ -258,6 +258,19 @@ func (st *Store) pageSessionMetadataLocked(ctx context.Context, request port.Ses
 	if err != nil {
 		return port.SessionMetadataPage{}, err
 	}
+	// Project membership is captured only in compact Session metadata, not in
+	// the owner derivative catalog. Scan that bounded metadata projection before
+	// forming a Project page; never load Session snapshots or filter a global page.
+	if request.ProjectID != "" {
+		if request.Cursor != nil && request.Cursor.Continuation != "mecatl-scan-keyset-v1" {
+			return port.SessionMetadataPage{}, port.ErrSessionMetadataCursorRestart
+		}
+		rows, err := st.discoveryMetaListLocked(ctx)
+		if err != nil {
+			return port.SessionMetadataPage{}, err
+		}
+		return port.PaginateSessionMetadataBound(rows, request, catalog.Generation)
+	}
 	if !inventoryCursorMatches(request.Cursor, catalog.Generation, scopeKey) {
 		return port.SessionMetadataPage{}, port.ErrSessionMetadataCursorRestart
 	}

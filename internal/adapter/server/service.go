@@ -5541,6 +5541,10 @@ type SessionSummary struct {
 	// Kind and Relationship are the durable trusted-producer taxonomy.
 	Kind         session.SessionKind
 	Relationship session.SessionRelationship
+	// Project is the safe captured provenance projection; no source or environment locator is exposed.
+	ProjectID              string
+	ProjectNameAtCreation  string
+	WorkingLabelAtCreation string
 	// Capabilities and Reasons describe each public action valid for this row.
 	// ReasonCode is the legacy aggregate public-chat reason.
 	Capabilities SessionInventoryCapabilities
@@ -5601,8 +5605,10 @@ const (
 
 // ListSessionsPageRequest asks for one bounded inventory page.
 type ListSessionsPageRequest struct {
-	PageSize int
-	Cursor   string
+	// ProjectID optionally selects Sessions captured from one authorized live Project.
+	ProjectID string
+	PageSize  int
+	Cursor    string
 }
 
 // ListSessionsPage is one bounded owner-filtered inventory response.
@@ -5725,6 +5731,9 @@ func validateSessionMetadataPage(page port.SessionMetadataPage, request port.Ses
 		if request.OwnershipEnforced && (request.Owner == nil || !request.Owner.SameIdentity(row.Owner)) {
 			return fmt.Errorf("pager returned a session outside the requested owner scope")
 		}
+		if request.ProjectID != "" && row.Project.ProjectID != request.ProjectID {
+			return fmt.Errorf("pager returned a session outside the requested Project scope")
+		}
 		if request.Cursor != nil && !metadataKeyAfter(row, request.Cursor) {
 			return fmt.Errorf("pager returned a row before its cursor")
 		}
@@ -5752,6 +5761,13 @@ func validateSessionMetadataPage(page port.SessionMetadataPage, request port.Ses
 // back to an unbounded response. Ownership criteria are sent to the store so
 // filtering occurs before page formation and TotalCount.
 func (s *Service) ListSessionPage(ctx context.Context, request ListSessionsPageRequest) (ListSessionsPage, error) {
+	if request.ProjectID != "" {
+		// Authorize the live grouping before touching Session storage. A missing,
+		// foreign, or deleted Project is indistinguishable from absence.
+		if _, err := s.loadOwnedProject(ctx, request.ProjectID); err != nil {
+			return ListSessionsPage{}, err
+		}
+	}
 	pager, ok := s.cfg.Store.(port.SessionMetadataPager)
 	if !ok {
 		return ListSessionsPage{}, port.ErrSessionMetadataPagingUnsupported
@@ -5772,7 +5788,7 @@ func (s *Service) ListSessionPage(ctx context.Context, request ListSessionsPageR
 	}
 	pageRequest := port.SessionMetadataPageRequest{
 		Limit: limit, Cursor: cursor, OwnershipEnforced: s.cfg.OwnershipEnforced,
-		Owner: session.PrincipalFromContext(ctx),
+		Owner: session.PrincipalFromContext(ctx), ProjectID: request.ProjectID,
 	}
 	page, err := pager.PageSessionMetadata(ctx, pageRequest)
 	if err != nil {
@@ -5833,7 +5849,9 @@ func (s *Service) summaryFromDiscoveryMeta(meta port.SessionDiscoveryMeta) Sessi
 		Turns: meta.Turns, ModelID: meta.ModelID, CreatedAtUnix: created, Title: meta.Title,
 		TitleProvenance: meta.TitleProvenance,
 		Workspace:       meta.Workspace, Owner: meta.Owner.Clone(), Kind: kind, Relationship: meta.Relationship,
-		Capabilities: caps, Reasons: reasons, ReasonCode: reasons.PublicChat,
+		ProjectID: meta.Project.ProjectID, ProjectNameAtCreation: meta.Project.ProjectNameAtCreation,
+		WorkingLabelAtCreation: meta.Project.WorkingLabelAtCreation,
+		Capabilities:           caps, Reasons: reasons, ReasonCode: reasons.PublicChat,
 	}
 }
 

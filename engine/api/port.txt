@@ -139,7 +139,7 @@ type SessionLiveness interface{IsLive(session.SessionID) bool; Register(ctx cont
 type SessionMeta struct{ID session.SessionID; ModifiedAt time.Time; State session.State; Turns int; ModelID string; CreatedAt time.Time; Title string; Owner *session.Principal}
 type SessionMetadataCursor struct{ModifiedAt time.Time; ID session.SessionID; Generation string; Scope string; Continuation string}
 type SessionMetadataPage struct{Sessions []SessionDiscoveryMeta; NextCursor *SessionMetadataCursor; TotalCount int}
-type SessionMetadataPageRequest struct{Limit int; Cursor *SessionMetadataCursor; OwnershipEnforced bool; Owner *session.Principal}
+type SessionMetadataPageRequest struct{Limit int; Cursor *SessionMetadataCursor; OwnershipEnforced bool; Owner *session.Principal; ProjectID string}
 type SessionMetadataPager interface{PageSessionMetadata(ctx context.Context, request SessionMetadataPageRequest) (SessionMetadataPage, error)}
 type SessionMigrationError struct{ItemHandle string "json:\"item_handle\""; ReasonCode string "json:\"reason_code\""; Message string "json:\"message\""}
 type SessionMigrationFamily struct{ID session.SessionID "json:\"-\""; Handle string "json:\"handle\""; Fingerprint string "json:\"fingerprint\""; OwnerKey string "json:\"owner_key\""; Kind session.SessionKind "json:\"kind\""; State session.State "json:\"state\""; Bytes int64 "json:\"bytes\""}

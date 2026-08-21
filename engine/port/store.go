@@ -200,6 +200,9 @@ type SessionMetadataPageRequest struct {
 	Cursor            *SessionMetadataCursor
 	OwnershipEnforced bool
 	Owner             *session.Principal
+	// ProjectID is an optional exact captured Project filter. Empty selects the
+	// ordinary inventory, including legacy Sessions without Project provenance.
+	ProjectID string
 }
 
 // SessionMetadataPage is one best-effort keyset page. Concurrent saves may move
@@ -329,6 +332,9 @@ func prepareSessionMetadataRows(rows []SessionDiscoveryMeta, request SessionMeta
 		if request.OwnershipEnforced && (request.Owner == nil || !request.Owner.SameIdentity(row.Owner)) {
 			continue
 		}
+		if request.ProjectID != "" && row.Project.ProjectID != request.ProjectID {
+			continue
+		}
 		row.Owner = row.Owner.Clone()
 		if row.Relationship.BranchIndex != nil {
 			index := *row.Relationship.BranchIndex
@@ -353,13 +359,20 @@ func CompareSessionMetadataOrder(a, b SessionDiscoveryMeta) int {
 
 func metadataPageScope(request SessionMetadataPageRequest) string {
 	if !request.OwnershipEnforced {
-		return "all"
+		if request.ProjectID == "" {
+			return "all"
+		}
+		return "all:project:" + request.ProjectID
 	}
 	if request.Owner == nil {
 		return "owner:none"
 	}
 	sum := session.PrincipalScopeHash(request.Owner)
-	return "owner:" + hex.EncodeToString(sum[:])
+	scope := "owner:" + hex.EncodeToString(sum[:])
+	if request.ProjectID != "" {
+		scope += ":project:" + request.ProjectID
+	}
+	return scope
 }
 
 // ErrPruneUnsupported is the port-level sentinel a PrunableStore's List or

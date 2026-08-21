@@ -51,6 +51,13 @@ func TestSessionContinuityUX_Scenario3_PagerConformance(t *testing.T) {
 	storeconformance.RunMetadataPager(t, newTestStore)
 }
 
+func TestProjectWorkingMVP_Scenario4_RedisFilteredPagerFastFollow(t *testing.T) {
+	pager := newTestStore(t).(port.SessionMetadataPager)
+	if _, err := pager.PageSessionMetadata(context.Background(), port.SessionMetadataPageRequest{Limit: 1, ProjectID: "project"}); !errors.Is(err, port.ErrSessionMetadataPagingUnsupported) {
+		t.Fatalf("Project-filtered Redis page = %v, want unsupported fast-follow", err)
+	}
+}
+
 func TestRedisStoreConditionalPrunableConformance(t *testing.T) {
 	storeconformance.RunConditionalPrunable(t, newTestStore)
 }

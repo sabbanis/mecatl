@@ -172,6 +172,8 @@ message PageSessionMetadataRequest {
   bool ownership_enforced = 3;
   string owner_issuer = 4;
   string owner_subject = 5;
+  // project_id selects one exact captured Project before paging/counting.
+  string project_id = 6;
 }
 
 message SessionMetadataEntry {
@@ -199,6 +201,9 @@ message SessionMetadataEntry {
   // title_provenance is "first-prompt", "operator", or empty for legacy/unknown.
   string title_provenance = 22;
   int64 estimated_bytes = 23;
+  string project_id = 24;
+  string project_name_at_creation = 25;
+  string working_label_at_creation = 26;
 }
 
 message PageSessionMetadataResponse {

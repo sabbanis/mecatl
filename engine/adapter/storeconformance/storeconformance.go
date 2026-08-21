@@ -620,6 +620,58 @@ func RunMetadataPager(t *testing.T, newStore func(t *testing.T) port.SessionStor
 	}
 }
 
+// RunProjectMetadataPager executes the Project-filtered metadata-pager contract
+// against stores that can page compact metadata by an exact captured Project ID.
+func RunProjectMetadataPager(t *testing.T, newStore func(t *testing.T) port.SessionStore) {
+	t.Helper()
+	ctx := context.Background()
+	st := newStore(t)
+	pager, ok := st.(port.SessionMetadataPager)
+	if !ok {
+		t.Fatalf("store %T does not implement port.SessionMetadataPager", st)
+	}
+	owner := &session.Principal{Issuer: "https://issuer.example", Subject: "project-owner"}
+	for _, fixture := range []struct{ id, project string }{
+		{id: "legacy"}, {id: "other", project: "other-project"},
+		{id: "project-a", project: "project"}, {id: "project-b", project: "project"},
+	} {
+		s := newSession(session.SessionID(fixture.id))
+		if err := s.RestoreLabels(owner, ""); err != nil {
+			t.Fatalf("RestoreLabels(%q): %v", fixture.id, err)
+		}
+		if fixture.project != "" {
+			s.Project = &session.ProjectBinding{ProjectID: fixture.project, ProjectNameAtCreation: "captured", Working: session.ProjectSourceBinding{LabelAtCreation: "working"}}
+		}
+		if err := st.Save(ctx, s); err != nil {
+			t.Fatalf("Save(%q): %v", fixture.id, err)
+		}
+	}
+	request := port.SessionMetadataPageRequest{Limit: 1, OwnershipEnforced: true, Owner: owner, ProjectID: "project"}
+	first, err := pager.PageSessionMetadata(ctx, request)
+	if err != nil {
+		t.Fatalf("PageSessionMetadata(project first): %v", err)
+	}
+	if len(first.Sessions) != 1 || first.TotalCount != 2 || first.NextCursor == nil || first.Sessions[0].Project.ProjectID != "project" {
+		t.Fatalf("first Project page = %+v, want one of two matching rows and cursor", first)
+	}
+	request.Cursor = first.NextCursor
+	second, err := pager.PageSessionMetadata(ctx, request)
+	if err != nil {
+		t.Fatalf("PageSessionMetadata(project second): %v", err)
+	}
+	if len(second.Sessions) != 1 || second.TotalCount != 2 || second.NextCursor != nil || second.Sessions[0].Project.ProjectID != "project" || second.Sessions[0].ID == first.Sessions[0].ID {
+		t.Fatalf("second Project page = %+v, want distinct final matching row", second)
+	}
+	request.ProjectID = "other-project"
+	if _, err := pager.PageSessionMetadata(ctx, request); !errors.Is(err, port.ErrSessionMetadataCursorRestart) {
+		t.Fatalf("Project-mismatched cursor = %v, want restart", err)
+	}
+	ordinary, err := pager.PageSessionMetadata(ctx, port.SessionMetadataPageRequest{Limit: 10, OwnershipEnforced: true, Owner: owner})
+	if err != nil || ordinary.TotalCount != 4 {
+		t.Fatalf("ordinary page = %+v, %v; legacy rows must remain ordinary-only", ordinary, err)
+	}
+}
+
 // RunConditionalPrunable executes the atomic metadata-revalidation cleanup
 // contract against stores that advertise port.ConditionalPrunableStore.
 func RunConditionalPrunable(t *testing.T, newStore func(t *testing.T) port.SessionStore) {

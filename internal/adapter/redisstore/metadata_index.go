@@ -232,6 +232,11 @@ return result
 `)
 
 func (st *Store) pageSessionMetadata(ctx context.Context, request port.SessionMetadataPageRequest) (port.SessionMetadataPage, error) {
+	if request.ProjectID != "" {
+		// Redis Project filtering remains a Kubernetes fast-follow. Do not form a
+		// global page and filter it here: that would miscount and skip rows.
+		return port.SessionMetadataPage{}, fmt.Errorf("redisstore: Project-filtered metadata paging: %w", port.ErrSessionMetadataPagingUnsupported)
+	}
 	if request.Limit < 0 {
 		return port.SessionMetadataPage{}, fmt.Errorf("redisstore: metadata page limit must be non-negative")
 	}

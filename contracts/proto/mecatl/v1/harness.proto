@@ -819,6 +819,8 @@ message ListSessionsRequest {
   int32 page_size = 1;
   // cursor is the opaque continuation token returned by the previous page.
   string cursor = 2;
+  // project_id is an optional exact live Project filter.
+  string project_id = 3;
 }
 
 // Principal is the verified caller an object is attributed to (ADR 0204 — caller
@@ -888,6 +890,10 @@ message SessionSummary {
   string workspace = 13;
   // title_provenance is "first-prompt", "operator", or empty for legacy/unknown.
   string title_provenance = 14;
+  // Captured Project provenance is compact and locator-free.
+  string project_id = 15;
+  string project_name_at_creation = 16;
+  string working_label_at_creation = 17;
 }
 
 // SessionRelationship carries the validated links appropriate to a session kind.

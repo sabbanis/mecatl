@@ -44,6 +44,16 @@ func TestSessionContinuityUX_Scenario3_PagerConformance(t *testing.T) {
 	})
 }
 
+func TestProjectWorkingMVP_Scenario4_FilteredSessionPagerConformance(t *testing.T) {
+	storeconformance.RunProjectMetadataPager(t, func(t *testing.T) port.SessionStore {
+		st, err := jsonlstore.New(t.TempDir())
+		if err != nil {
+			t.Fatalf("jsonlstore.New: %v", err)
+		}
+		return st
+	})
+}
+
 func TestJSONLStoreConditionalPrunableConformance(t *testing.T) {
 	storeconformance.RunConditionalPrunable(t, func(t *testing.T) port.SessionStore {
 		st, err := jsonlstore.New(t.TempDir())

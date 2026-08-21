@@ -13,6 +13,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Changed
 
+- **Project-filtered Session metadata paging** (issue #620, [ADR 0234](../docs/adr/0234-project-working-and-reference-folders.md)) — `port.SessionMetadataPageRequest` adds `ProjectID`, binding an optional exact captured Project filter into adapter paging, counts, and cursors. This exported-struct field addition is Changed because it breaks unkeyed external literals (pre-v1 minor).
+
 - **`agent.SteerOutcome` enum: superseded/slot_full dropped, appended added**
   (issue #512, the landed steer-while-running contract). The round-2/task-13
   rework replaced `SteerSuperseded` with `SteerSlotFull`, and the round-3

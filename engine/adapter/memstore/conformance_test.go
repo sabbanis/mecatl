@@ -35,6 +35,12 @@ func TestSessionContinuityUX_Scenario3_PagerConformance(t *testing.T) {
 	})
 }
 
+func TestProjectWorkingMVP_Scenario4_FilteredSessionPagerConformance(t *testing.T) {
+	storeconformance.RunProjectMetadataPager(t, func(*testing.T) port.SessionStore {
+		return memstore.New()
+	})
+}
+
 func TestMemstoreConditionalPrunableConformance(t *testing.T) {
 	storeconformance.RunConditionalPrunable(t, func(*testing.T) port.SessionStore {
 		return memstore.New()

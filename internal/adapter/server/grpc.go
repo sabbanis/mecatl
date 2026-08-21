@@ -1243,7 +1243,7 @@ func isDeliveryNoteText(text string) bool {
 // Phase 1).
 func (h *HarnessServer) ListSessions(ctx context.Context, req *mecatlv1.ListSessionsRequest) (*mecatlv1.ListSessionsResponse, error) {
 	page, err := h.svc.ListSessionPage(ctx, ListSessionsPageRequest{
-		PageSize: int(req.GetPageSize()), Cursor: req.GetCursor(),
+		PageSize: int(req.GetPageSize()), Cursor: req.GetCursor(), ProjectID: req.GetProjectId(),
 	})
 	if err != nil {
 		return nil, toStatus(err)

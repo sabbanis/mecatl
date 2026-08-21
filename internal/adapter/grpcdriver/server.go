@@ -182,7 +182,7 @@ func (s *sessionStoreServer) PageMetadata(ctx context.Context, req *driverv1.Pag
 		return nil, status.Error(codes.InvalidArgument, "limit must be positive")
 	}
 	request := port.SessionMetadataPageRequest{
-		Limit: int(req.GetLimit()), OwnershipEnforced: req.GetOwnershipEnforced(),
+		Limit: int(req.GetLimit()), OwnershipEnforced: req.GetOwnershipEnforced(), ProjectID: req.GetProjectId(),
 	}
 	if cursor := req.GetCursor(); cursor != nil {
 		if cursor.GetModifiedAt() == nil || cursor.GetSessionId() == "" || cursor.GetModifiedAt().CheckValid() != nil ||
@@ -239,6 +239,8 @@ func metadataToProto(meta port.SessionDiscoveryMeta) (*driverv1.SessionMetadataE
 		ParentSessionId: string(meta.Relationship.ParentSessionID), CallId: string(meta.Relationship.CallID),
 		ScheduleName: meta.Relationship.ScheduleName, OriginSessionId: string(meta.Relationship.OriginSessionID),
 		TeamId: meta.Relationship.TeamID, MemberName: meta.Relationship.MemberName,
+		ProjectId: meta.Project.ProjectID, ProjectNameAtCreation: meta.Project.ProjectNameAtCreation,
+		WorkingLabelAtCreation: meta.Project.WorkingLabelAtCreation,
 	}
 	if !meta.ModifiedAt.IsZero() {
 		entry.ModifiedAt = timestamppb.New(meta.ModifiedAt)
