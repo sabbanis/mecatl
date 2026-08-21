@@ -212,6 +212,7 @@ func run(argv []string) error {
 		Dream:               cl,
 		Models:              cl,
 		Worktrees:           cl,
+		Projects:            cl,
 		Sched:               cl,
 		Sessions:            cl,
 		StorageHealth:       cl,

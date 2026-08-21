@@ -41,6 +41,7 @@ type wiredCollaborators struct {
 	Dream       bool
 	Models      bool // mirrors client.Capabilities.ModelSelection
 	Worktrees   bool
+	Projects    bool
 	Scheduling  bool
 	Sessions    bool // /sessions picker — gated on inventory + authoritative transcript
 	Learning    bool // /learning operator-settings enum
@@ -59,10 +60,11 @@ func (m Model) wiredCollaborators() wiredCollaborators {
 		Soul: m.deps.Soul != nil, UserModel: m.deps.UserModel != nil, Models: m.deps.Models != nil,
 		Reflections: m.deps.Reflections != nil,
 		Dream:       m.deps.Dream != nil,
-		Worktrees:   m.deps.Worktrees != nil, Scheduling: m.deps.Sched != nil,
-		Sessions: m.deps.Sessions != nil && m.deps.Transcript != nil,
-		Learning: m.deps.Learning != nil,
-		DebugAsk: m.deps.DebugAsk,
+		Worktrees:   m.deps.Worktrees != nil, Projects: m.deps.Projects != nil,
+		Scheduling: m.deps.Sched != nil,
+		Sessions:   m.deps.Sessions != nil && m.deps.Transcript != nil,
+		Learning:   m.deps.Learning != nil,
+		DebugAsk:   m.deps.DebugAsk,
 	}
 }
 
@@ -178,6 +180,9 @@ func builtinCommands(caps client.Capabilities, w wiredCollaborators) []builtin {
 			desc: "switch to a sibling git worktree",
 			run:  Model.runWorktrees,
 		})
+	}
+	if caps.Projects && w.Projects {
+		out = append(out, builtin{name: "projects", desc: "browse and manage projects", run: Model.runProjects})
 	}
 	if caps.Scheduling && w.Scheduling {
 		out = append(out, builtin{

@@ -100,6 +100,9 @@ type SessionListItem struct {
 	Capabilities    SessionInventoryCapabilities
 	Reasons         SessionInventoryActionReasons
 	ReasonCode      CapabilityReason
+	ProjectID       string
+	ProjectName     string
+	WorkingLabel    string
 }
 
 // SessionsListedMsg carries one session inventory listing result.
@@ -198,6 +201,8 @@ func listSessionsFromProto(in []*mecatlv1.SessionSummary) []SessionListItem {
 				Fork: CapabilityReason(reasons.GetFork()), Rename: CapabilityReason(reasons.GetRename()), Delete: CapabilityReason(reasons.GetDelete()),
 			},
 			ReasonCode: CapabilityReason(s.GetReasonCode()),
+			ProjectID:  s.GetProjectId(), ProjectName: validText(s.GetProjectNameAtCreation()),
+			WorkingLabel: validText(s.GetWorkingLabelAtCreation()),
 		})
 	}
 	return out

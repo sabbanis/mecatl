@@ -137,6 +137,23 @@ reference](https://github.com/stacklok/mecatl/blob/main/docs/usage/mecated.md#op
 
 If your current model doesn't support reasoning effort, the picker warns you that the tier you pick will be ignored rather than pretending it applied.
 
+## Manage path-free Projects (`/projects`)
+
+Against a local standalone daemon with durable storage, `/projects` lists durable
+Projects and their captured chats without exposing a filesystem path. Start the
+daemon and connect:
+
+```sh
+mecated serve --store-dir ./state --workspace "$PWD"
+mecatui connect 127.0.0.1:8080
+```
+
+The command appears only when the server advertises support. Create from a
+server-advertised working-source label, open a Project to create or continue its
+Sessions, and rename with revision protection. Conflicts preserve your draft and
+require an explicit reload. Project deletion asks for confirmation and does not
+delete its Sessions; they remain in `/sessions`. See the [full TUI reference](https://github.com/stacklok/mecatl/blob/main/docs/tui.md#projects-path-free-project-sessions).
+
 ## Your sessions survive a restart
 
 Every session persists to disk as append-only JSONL — the conversation, the tool-call history, and the event timeline — under a per-workspace directory, mode `0700` (owner-only; it stores the raw conversation in plaintext). Quit mecatui and come back later and your work is still there.

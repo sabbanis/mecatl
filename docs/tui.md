@@ -1247,6 +1247,25 @@ and modification timestamps, provider, and model. The header intentionally shows
 the compact digest. Press **`c`** to copy the exact full ID byte-for-byte; mecatui reports
 clipboard failure or a session change instead of claiming a stale copy. `esc` closes it.
 
+**`/projects` (path-free Project sessions).** Projects are available when a local
+standalone server has a durable `--store-dir`, a working source, and Project-session
+resolution wired. A copy-paste manual setup is:
+
+```sh
+mecated serve --store-dir ./state --workspace "$PWD"
+mecatui connect 127.0.0.1:8080
+```
+
+Run `/projects`, press `c`, enter a name, choose only one of the server-advertised
+working-source labels, and press `enter`. Mecatui sends the source's opaque
+`source_ref`; it never asks for or derives a path. Opening a Project lazily loads
+its separately paged Sessions. Press `s` to create and activate a new Project
+Session, or `enter` on an eligible row to continue it through the same lifecycle
+as `/sessions`. `e` edits using the displayed revision. A stale revision retains
+the draft and offers explicit Reload or Back rather than retrying. `d`, then `y`,
+deletes only the Project: its Sessions remain available from `/sessions`. Older or
+Project-disabled servers omit `/projects` entirely.
+
 **`/sessions` (session continuity).** The session inventory has four session tabs:
 **Chats**, **Scheduled runs**, **Child runs**, and **Other**. When the server
 advertises authenticated bounded storage health or either maintenance operation, a fifth

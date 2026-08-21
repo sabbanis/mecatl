@@ -81,6 +81,8 @@ func (m Model) View() tea.View {
 // renderBody picks the viewport body: an overlay (help/picker/panel), the
 // permission-modal card (generic) or the full-screen scrollable plan-review
 // view (a plan ask), or the conversation.
+//
+//nolint:gocyclo // overlay priority remains explicit and stable
 func (m Model) renderBody() string {
 	if m.phase == phaseAwaitingApproval {
 		return m.renderApprovalBody()
@@ -112,6 +114,8 @@ func (m Model) renderBody() string {
 		return renderEffortOverlay(m.deps.Theme, m.effort, m.effectiveModel.ReasoningEffort, m.currentModelNoReasoning(), m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.worktrees.view != worktreesNone:
 		return renderWorktreesOverlay(m.deps.Theme, m.worktrees, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
+	case m.projects.view != projectsNone:
+		return renderProjectsOverlay(m.deps.Theme, m.projects, m.caps, m.width)
 	case m.schedule.view != scheduleNone:
 		return renderScheduleOverlay(m.deps.Theme, m.schedule, m.caps, m.deps.Transcript != nil, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.sessions.view != sessionsNone:

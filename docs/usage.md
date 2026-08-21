@@ -94,6 +94,21 @@ capability and canonical working source before creating a Project.
 
 ```sh
 mecated serve --store-dir ./state --workspace "$PWD"
+mecatui connect 127.0.0.1:8080
+# In mecatui: /projects → c → enter a name, choose the advertised source → enter.
+```
+
+The `/projects` command appears only when the server advertises `projects=true`.
+It lists and pages Projects independently from the Session pages loaded when one
+is opened. In detail, `s` creates and activates a Project Session; `enter`
+continues an eligible existing Session through the ordinary chat lifecycle.
+Rename and delete send the displayed revision. A conflict retains the draft and
+requires explicit Reload or Back; delete requires `y`, is non-cascading, and
+leaves captured Sessions in `/sessions`.
+
+For API-level inspection, the same daemon exposes:
+
+```sh
 curl -s http://127.0.0.1:8081/v1/capabilities
 curl -s http://127.0.0.1:8081/v1/project-sources
 ```

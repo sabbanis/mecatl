@@ -120,6 +120,7 @@ type Deps struct {
 	Dream       client.DreamClient      // manual memory consolidation review; nil disables /dream
 	Models      client.ModelLister      // selectable-model discovery for the /models picker; nil disables it
 	Worktrees   client.WorktreeLister   // worktree discovery for the /worktrees overlay (issue #102); nil disables it
+	Projects    client.ProjectClient    // path-free Project lifecycle; capability-gated
 	// Sched is the schedule discovery + management surface for the /schedule overlay
 	// (issue #234); nil disables it (the overlay is honestly absent). The overlay can
 	// create/inspect/pause/resume/fire-now on any store-backed server; auto-firing on
@@ -531,6 +532,7 @@ type Model struct {
 	models    modelsState    // /models picker overlay state (view==modelsNone when closed)
 	effort    effortState    // /effort picker overlay state (view==effortNone when closed) — ADR 0055
 	worktrees worktreesState // /worktrees overlay state (view==worktreesNone when closed) — issue #102
+	projects  projectsState  // /projects path-free lifecycle overlay
 	schedule  scheduleState  // /schedule overlay state (view==scheduleNone when closed) — issue #234
 	sessions  sessionsState  // /sessions overlay state (view==sessionsNone when closed) — issue #245
 	// activeModel is the currently-selected (provider, model) the NEXT CreateSession

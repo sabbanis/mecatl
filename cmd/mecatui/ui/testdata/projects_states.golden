@@ -1,0 +1,81 @@
+=== list ===
+projects
+> Alpha  Repository
+
+↑/↓ select · enter open
+· c create · n more · es
+c close
+=== empty ===
+projects
+No projects yet. Press c
+to create one.
+
+↑/↓ select · enter open
+· c create · n more · es
+c close
+=== loading ===
+projects
+loading…
+
+↑/↓ select · enter open
+· c create · n more · es
+c close
+=== detail ===
+projects
+bad[31m
+ · revision 1
+
+No sessions yet. Press s
+to create one.
+
+enter continue · s new s
+ession · e edit · d dele
+te · p more · esc back
+=== create ===
+projects
+create project
+name: >
+
+working source:
+> Repository
+
+↑/↓ source · enter save
+· esc back
+=== edit ===
+projects
+edit project
+name: > draft
+
+working source:
+> Repository
+
+↑/↓ source · enter save
+· esc back
+=== conflict ===
+projects
+Revision conflict: the p
+roject changed on the se
+rver.
+Your draft is retained.
+r: reload latest revisio
+n · esc: back to draft
+=== delete ===
+projects
+Delete P?
+Sessions are not deleted
+and remain in /sessions.
+y: confirm · n/esc: back
+=== unsupported ===
+projects
+Projects are not supported by this server.
+=== error-action-loading ===
+projects
+boom
+saving… (actions disable
+d)
+No projects yet. Press c
+to create one.
+
+↑/↓ select · enter open
+· c create · n more · es
+c close
