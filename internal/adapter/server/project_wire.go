@@ -138,8 +138,8 @@ func toProtoProjects(items []project.Project) []*mecatlv1.Project {
 }
 
 type projectCursorWire struct {
-	UpdatedAtUnix int64  `json:"updated_at_unix"`
-	ID            string `json:"id"`
+	UpdatedAtUnixNano int64  `json:"updated_at_unix_nano"`
+	ID                string `json:"id"`
 }
 
 func projectPageRequest(size int32, encoded string) (project.PageRequest, error) {
@@ -159,7 +159,7 @@ func projectPageRequest(size int32, encoded string) (project.PageRequest, error)
 	if err != nil || json.Unmarshal(bytes, &cursor) != nil || cursor.ID == "" {
 		return project.PageRequest{}, fmt.Errorf("%w: invalid project cursor", ErrInvalidArgument)
 	}
-	request.Cursor = &project.Cursor{UpdatedAt: time.Unix(cursor.UpdatedAtUnix, 0), ID: cursor.ID}
+	request.Cursor = &project.Cursor{UpdatedAt: time.Unix(0, cursor.UpdatedAtUnixNano), ID: cursor.ID}
 	return request, nil
 }
 
@@ -167,7 +167,7 @@ func encodeProjectCursor(cursor *project.Cursor) string {
 	if cursor == nil {
 		return ""
 	}
-	bytes, err := json.Marshal(projectCursorWire{UpdatedAtUnix: cursor.UpdatedAt.Unix(), ID: cursor.ID})
+	bytes, err := json.Marshal(projectCursorWire{UpdatedAtUnixNano: cursor.UpdatedAt.UnixNano(), ID: cursor.ID})
 	if err != nil {
 		return ""
 	}

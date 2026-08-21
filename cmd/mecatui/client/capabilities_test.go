@@ -1,10 +1,49 @@
 package client
 
 import (
+	"context"
 	"testing"
+
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 )
+
+func TestGetServerCapabilitiesSessionFreeCompatibility(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		stub *capabilitiesClientStub
+		want bool
+	}{
+		{name: "enabled", stub: &capabilitiesClientStub{response: &mecatlv1.GetServerCapabilitiesResponse{Capabilities: &mecatlv1.ServerCapabilities{Projects: true}}}, want: true},
+		{name: "disabled", stub: &capabilitiesClientStub{response: &mecatlv1.GetServerCapabilitiesResponse{Capabilities: &mecatlv1.ServerCapabilities{}}}},
+		{name: "older unimplemented", stub: &capabilitiesClientStub{err: status.Error(codes.Unimplemented, "older server")}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			got, err := (&Client{svc: tc.stub}).GetServerCapabilities(context.Background())
+			if err != nil {
+				t.Fatalf("GetServerCapabilities: %v", err)
+			}
+			if got.Projects != tc.want || tc.stub.calls != 1 {
+				t.Fatalf("capabilities = %+v, calls = %d", got, tc.stub.calls)
+			}
+		})
+	}
+}
+
+type capabilitiesClientStub struct {
+	mecatlv1.HarnessServiceClient
+	response *mecatlv1.GetServerCapabilitiesResponse
+	err      error
+	calls    int
+}
+
+func (s *capabilitiesClientStub) GetServerCapabilities(context.Context, *mecatlv1.GetServerCapabilitiesRequest, ...grpc.CallOption) (*mecatlv1.GetServerCapabilitiesResponse, error) {
+	s.calls++
+	return s.response, s.err
+}
 
 // TestCapabilitiesFrom covers the proto→plain translation, including the nil
 // (older-server) case that MUST degrade to the all-false zero value rather than

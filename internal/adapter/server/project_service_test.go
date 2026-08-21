@@ -26,10 +26,18 @@ type projectRegistry struct {
 	source       project.WorkingSource
 	env          tool.Environment
 	resolveErr   error
+	listErr      error
+	empty        bool
 	afterResolve func()
 }
 
 func (r *projectRegistry) ListWorking(context.Context) ([]project.WorkingSource, error) {
+	if r.listErr != nil {
+		return nil, r.listErr
+	}
+	if r.empty {
+		return nil, nil
+	}
 	return []project.WorkingSource{r.source}, nil
 }
 
@@ -95,6 +103,30 @@ func TestProjectServiceRequiresSessionFactoryForCapability(t *testing.T) {
 	}
 	if caps.GetCapabilities().GetProjects() {
 		t.Fatal("projects capability = true without a Project Session factory")
+	}
+}
+
+func TestProjectServiceRequiresNonemptyReachableSourceRegistryForCapability(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		mutate func(*projectRegistry)
+	}{
+		{name: "empty", mutate: func(r *projectRegistry) { r.empty = true }},
+		{name: "list failure", mutate: func(r *projectRegistry) { r.listErr = errors.New("unavailable") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			svc, _, _, registry := newProjectService(t, false)
+			tc.mutate(registry)
+			client, cleanup := dialGRPC(t, svc)
+			defer cleanup()
+			caps, err := client.GetServerCapabilities(context.Background(), &mecatlv1.GetServerCapabilitiesRequest{})
+			if err != nil {
+				t.Fatalf("GetServerCapabilities: %v", err)
+			}
+			if caps.GetCapabilities().GetProjects() {
+				t.Fatal("projects capability = true without a reachable nonempty working-source registry")
+			}
+		})
 	}
 }
 

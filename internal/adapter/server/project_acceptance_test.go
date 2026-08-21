@@ -371,6 +371,50 @@ func TestInvariant_project_session_restart_uses_captured_binding(t *testing.T) {
 	})
 }
 
+func TestProjectSessionShellPostureMatchesFreshRestartAndFork(t *testing.T) {
+	root := t.TempDir()
+	built, err := app.Build(context.Background(), app.Config{
+		Workspace: root, StoreDir: t.TempDir(), UseMock: true, NoSoul: true, EnableLocalProjects: true, Shell: "/bin/sh",
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	defer built.Close()
+
+	sources, err := built.Service.ListProjectWorkingSources(context.Background())
+	if err != nil || len(sources) != 1 {
+		t.Fatalf("ListProjectWorkingSources = %#v, %v", sources, err)
+	}
+	item, err := built.Service.CreateProject(context.Background(), "shell-project", "Shell project", sources[0].Ref)
+	if err != nil {
+		t.Fatalf("CreateProject: %v", err)
+	}
+	sess, err := built.Service.CreateSessionFromProject(context.Background(), item.ID, session.ModeDefault, session.Limits{}, server.ProviderSelector{})
+	if err != nil {
+		t.Fatalf("CreateSessionFromProject: %v", err)
+	}
+	assertShell := func(label string, id session.SessionID) {
+		t.Helper()
+		hasRunner, err := built.Service.SessionHasCommandRunnerForTest(context.Background(), id)
+		if err != nil {
+			t.Fatalf("%s environment: %v", label, err)
+		}
+		if !hasRunner {
+			t.Fatalf("%s Project environment is shell-less while the catalog exposes Bash", label)
+		}
+	}
+	assertShell("fresh", sess.ID)
+
+	built.Service.DropSessionEngineForTest(sess.ID)
+	assertShell("restart", sess.ID)
+
+	forkID, err := built.Service.ForkSession(context.Background(), sess.ID, "", "")
+	if err != nil {
+		t.Fatalf("ForkSession: %v", err)
+	}
+	assertShell("fork", forkID)
+}
+
 func TestProjectWorkingMVP_Scenario3_SourceRevocationFailsClosed(t *testing.T) {
 	svc, source, _, registry := newProjectService(t, false)
 	created, err := svc.CreateProject(context.Background(), "project-1", "Project", source.Ref)

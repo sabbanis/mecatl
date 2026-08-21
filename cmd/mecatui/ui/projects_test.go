@@ -3,14 +3,21 @@ package ui
 import (
 	"context"
 	"errors"
+	"net"
 	"os"
 	"strings"
 	"testing"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
+	"github.com/charmbracelet/x/exp/teatest/v2"
+	"google.golang.org/grpc"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
+	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
+	"github.com/stacklok/mecatl/internal/adapter/server"
+	"github.com/stacklok/mecatl/internal/app"
 )
 
 type fakeProjects struct {
@@ -146,19 +153,218 @@ func TestProjectWorkingMVP_Scenario6_MecatuiDeleteNonCascading(t *testing.T) {
 		t.Fatal("delete did not preserve non-cascade message")
 	}
 }
-func TestProjectWorkingMVP_Scenario6_MecatuiEndToEnd(t *testing.T) {
-	p := client.Project{ID: "p", Name: "Original", Working: client.ProjectSource{Ref: "opaque", Label: "Repo", Working: true}, Revision: 1}
-	f := &fakeProjects{projects: []client.Project{p}, sources: []client.ProjectSource{p.Working}, sessions: []client.SessionListItem{{ID: "chat", Title: "Existing", Capabilities: client.SessionInventoryCapabilities{PublicChat: true}}}}
-	m := projectTestModel(f, client.Capabilities{Projects: true})
-	mm, cmd := m.openProjects()
-	m = mm.(Model)
-	if cmd == nil {
-		t.Fatal("open projects did not start the client journey")
+
+type realProjectSessionCreator struct {
+	client    *client.Client
+	workspace string
+}
+
+func (s realProjectSessionCreator) CreateSession(ctx context.Context, selection client.ModelSelection, mode string) (string, client.Capabilities, client.ResolvedModel, error) {
+	return s.CreateSessionInWorkspace(ctx, s.workspace, selection, mode)
+}
+func (s realProjectSessionCreator) CreateSessionInWorkspace(ctx context.Context, workspace string, selection client.ModelSelection, mode string) (string, client.Capabilities, client.ResolvedModel, error) {
+	return s.client.CreateSession(ctx, workspace, client.ModeFromString(mode), selection)
+}
+func (s realProjectSessionCreator) CreateSessionWithCarryover(ctx context.Context, sourceID string, selection client.ModelSelection, mode string) (string, client.Capabilities, client.ResolvedModel, error) {
+	return s.client.CreateSessionWithCarryover(ctx, s.workspace, client.ModeFromString(mode), selection, sourceID)
+}
+func (s realProjectSessionCreator) CloseSession(ctx context.Context, id string) error {
+	return s.client.CloseSession(ctx, id)
+}
+func (s realProjectSessionCreator) GetSession(ctx context.Context, id string) (client.SessionSnapshot, error) {
+	return s.client.GetSession(ctx, id)
+}
+func (s realProjectSessionCreator) SetMode(ctx context.Context, id, mode string) (string, error) {
+	return s.client.SetMode(ctx, id, mode)
+}
+func (s realProjectSessionCreator) ForkSession(ctx context.Context, id, effort string) (string, error) {
+	return s.client.ForkSession(ctx, id, "", effort)
+}
+
+func waitProjectUI(t *testing.T, tm *teatest.TestModel, text string) {
+	t.Helper()
+	teatest.WaitFor(t, tm.Output(), func(out []byte) bool { return strings.Contains(string(out), text) }, teatest.WithDuration(scaleWait(5*time.Second)))
+}
+
+func waitProjectPhase(t *testing.T, phases <-chan phase, want phase) {
+	t.Helper()
+	timer := time.NewTimer(scaleWait(5 * time.Second))
+	defer timer.Stop()
+	for {
+		select {
+		case got := <-phases:
+			if got == want {
+				return
+			}
+		case <-timer.C:
+			t.Fatalf("timed out waiting for phase %s", phaseName(want))
+		}
 	}
-	// The reducer journey is covered at each asynchronous seam above; this assertion
-	// pins the real command registration and opening state together.
-	if m.projects.view != projectsList || !m.projects.loading {
-		t.Fatalf("open projects = %#v", m.projects)
+}
+
+func TestProjectWorkingMVP_Scenario6_MecatuiEndToEnd(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	root := t.TempDir()
+	built, err := app.Build(ctx, app.Config{Workspace: root, StoreDir: t.TempDir(), UseMock: true, NoSoul: true, EnableLocalProjects: true})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	t.Cleanup(built.Close)
+
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	grpcServer := grpc.NewServer()
+	mecatlv1.RegisterHarnessServiceServer(grpcServer, server.NewHarnessServer(built.Service))
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+
+	cl, err := client.Dial(client.DialConfig{Server: listener.Addr().String()})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = cl.Close() })
+
+	// Capability discovery is deliberately session-free: no ordinary or Project
+	// Session exists until after this call has advertised the path-free surface.
+	caps, err := cl.GetServerCapabilities(ctx)
+	if err != nil || !caps.Projects {
+		t.Fatalf("session-free capabilities = %+v, %v", caps, err)
+	}
+	if sessions, listErr := cl.ListSessions(ctx); listErr != nil || len(sessions) != 0 {
+		t.Fatalf("capability discovery created sessions: %+v, %v", sessions, listErr)
+	}
+
+	phases := make(chan phase, 64)
+	lastPhase := phase(-1)
+	m := New(Deps{
+		Session: realProjectSessionCreator{client: cl, workspace: root}, Capabilities: cl, Conv: cl, Projects: cl, Sessions: cl, Transcript: cl,
+		Theme: theme.New("aztec", theme.AztecPalette()), Workspace: root, Mode: "default", Ctx: ctx, NoAltScreen: true,
+		onPhase: func(p phase) {
+			if p != lastPhase {
+				lastPhase = p
+				phases <- p
+			}
+		},
+	})
+	tm := teatest.NewTestModel(t, m, teatest.WithInitialTermSize(100, 30))
+	waitProjectPhase(t, phases, phaseIdle)
+	startupSessions, err := cl.ListSessions(ctx)
+	if err != nil || len(startupSessions) != 1 {
+		t.Fatalf("startup sessions = %+v, %v", startupSessions, err)
+	}
+	startupID := startupSessions[0].ID
+
+	// Empty inventory → create → list/detail, all through Bubble Tea commands and
+	// the real cmd/mecatui/client over the in-process gRPC server.
+	tm.Type("/projects")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitProjectUI(t, tm, "No projects yet")
+	tm.Send(projectKey("c"))
+	waitProjectUI(t, tm, "create project")
+	tm.Type("Original")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitProjectUI(t, tm, "No sessions yet")
+
+	page, err := cl.ListProjectPage(ctx, "")
+	if err != nil || len(page.Projects) != 1 || page.Projects[0].Name != "Original" {
+		t.Fatalf("created Project page = %+v, %v", page, err)
+	}
+	projectDoc := page.Projects[0]
+
+	// Rename through the form, then force a stale-revision conflict from a second
+	// real client operation while the draft is open. Reload preserves and saves it.
+	tm.Send(projectKey("e"))
+	waitProjectUI(t, tm, "edit project")
+	tm.Send(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	tm.Type("Renamed")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitProjectUI(t, tm, "revision 2")
+
+	tm.Send(projectKey("e"))
+	waitProjectUI(t, tm, "edit project")
+	tm.Send(tea.KeyPressMsg{Code: 'u', Mod: tea.ModCtrl})
+	tm.Type("Draft after conflict")
+	latest, err := cl.GetProject(ctx, projectDoc.ID)
+	if err != nil {
+		t.Fatalf("GetProject before conflict: %v", err)
+	}
+	if _, err = cl.ReplaceProject(ctx, latest, "External rename", latest.Working.Ref); err != nil {
+		t.Fatalf("external ReplaceProject: %v", err)
+	}
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitProjectUI(t, tm, "Revision conflict")
+	tm.Send(projectKey("r"))
+	waitProjectUI(t, tm, "name: > Draft after conflict")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitProjectUI(t, tm, "revision 4")
+
+	// Create a Project Session from detail. The UI rebinds to that new session.
+	tm.Send(projectKey("s"))
+	waitProjectPhase(t, phases, phaseConnecting)
+	waitProjectPhase(t, phases, phaseIdle)
+	filtered, err := cl.ListProjectSessionPage(ctx, projectDoc.ID, "")
+	if err != nil || len(filtered.Sessions) != 1 || filtered.Sessions[0].ProjectID != projectDoc.ID {
+		t.Fatalf("filtered Project sessions = %+v, %v", filtered, err)
+	}
+	projectSessionID := filtered.Sessions[0].ID
+	if _, err := cl.RenameSession(ctx, projectSessionID, "Project chat only"); err != nil {
+		t.Fatalf("RenameSession: %v", err)
+	}
+
+	// Re-open and continue from the filtered row. The unrelated startup session is
+	// absent from the panel, and transcript continuation does not create another.
+	tm.Type("/projects")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitProjectUI(t, tm, "> Draft after conflict")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitProjectUI(t, tm, "Project chat only")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitProjectPhase(t, phases, phaseReplay)
+	waitProjectPhase(t, phases, phaseIdle)
+	filtered, err = cl.ListProjectSessionPage(ctx, projectDoc.ID, "")
+	if err != nil || len(filtered.Sessions) != 1 || filtered.Sessions[0].ID != projectSessionID {
+		t.Fatalf("continued Project sessions = %+v, %v", filtered, err)
+	}
+
+	// Delete only the Project document. Its captured Session remains globally
+	// navigable and authoritative after the UI confirms the non-cascading action.
+	tm.Type("/projects")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitProjectUI(t, tm, "> Draft after conflict")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	waitProjectUI(t, tm, "Project chat only")
+	tm.Send(projectKey("d"))
+	waitProjectUI(t, tm, "Sessions are not deleted")
+	tm.Send(projectKey("y"))
+	waitProjectUI(t, tm, "sessions remain in /sessions")
+	if _, err := cl.GetSessionTranscript(ctx, projectSessionID); err != nil {
+		t.Fatalf("Project Session cascaded with Project delete: %v", err)
+	}
+	all, err := cl.ListSessions(ctx)
+	if err != nil || len(all) != 2 {
+		t.Fatalf("global sessions after delete = %+v, %v", all, err)
+	}
+	var sawStartup, sawProject bool
+	for _, item := range all {
+		sawStartup = sawStartup || item.ID == startupID
+		sawProject = sawProject || item.ID == projectSessionID && item.ProjectID == projectDoc.ID
+	}
+	if !sawStartup || !sawProject {
+		t.Fatalf("global navigation lost sessions: %+v", all)
+	}
+
+	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	tm.Send(tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtrl})
+	tm.WaitFinished(t, teatest.WithFinalTimeout(scaleWait(5*time.Second)))
+	final := tm.FinalModel(t).(Model)
+	if !final.caps.Projects || final.sessionID != projectSessionID {
+		t.Fatalf("final UI binding/capabilities = session %q caps %+v", final.sessionID, final.caps)
 	}
 }
 

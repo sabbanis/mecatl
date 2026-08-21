@@ -7,6 +7,7 @@ import (
 	"math"
 
 	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/project"
 )
 
@@ -122,6 +123,10 @@ func (s *Service) CreateSessionFromProject(ctx context.Context, id string, mode 
 	if env.Workspace() == nil {
 		return nil, fmt.Errorf("%w: resolved working source has no workspace", ErrFailedPrecondition)
 	}
+	env, err = s.withBoundRunner(env)
+	if err != nil {
+		return nil, fmt.Errorf("%w: resolved working source has no workspace", ErrFailedPrecondition)
+	}
 	if item.Revision > math.MaxInt {
 		return nil, fmt.Errorf("%w: project revision exceeds session binding range", ErrFailedPrecondition)
 	}
@@ -192,10 +197,31 @@ func (s *Service) CreateSessionFromProject(ctx context.Context, id string, mode 
 	return sess, nil
 }
 
+// withBoundRunner gives a captured Project environment the same shell posture
+// ordinary run-entry reconstruction applies to its workspace root. The source
+// registry owns workspace identity; composition owns command-runner hardening.
+func (s *Service) withBoundRunner(env tool.Environment) (tool.Environment, error) {
+	if env.CommandRunner() != nil {
+		return env, nil
+	}
+	root := env.Workspace().Root()
+	var runner tool.CommandRunner
+	if root == s.cfg.DefaultWorkspace {
+		runner = s.cfg.CommandRunner
+	} else if s.cfg.CommandRunnerFactory != nil {
+		runner = s.cfg.CommandRunnerFactory(root)
+	}
+	return tool.NewEnvironment(env.Ref(), env.Workspace(), runner)
+}
+
 func (s *Service) projectEnabled() bool {
 	// The initial working-source control plane shares the daemon's one writable
 	// source and is therefore available only in the ownerless trusted domain.
-	return !s.cfg.OwnershipEnforced && s.cfg.ProjectStore != nil && s.cfg.ProjectSources != nil && s.cfg.SessionEngine != nil
+	if s.cfg.OwnershipEnforced || s.cfg.ProjectStore == nil || s.cfg.ProjectSources == nil || s.cfg.SessionEngine == nil {
+		return false
+	}
+	sources, err := s.cfg.ProjectSources.ListWorking(context.Background())
+	return err == nil && len(sources) > 0
 }
 
 func (s *Service) loadOwnedProject(ctx context.Context, id string) (project.Project, error) {

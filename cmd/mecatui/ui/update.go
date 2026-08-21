@@ -369,6 +369,9 @@ func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd
 	m.browsingStartupSessions = false
 	m.sessions = sessionsState{}
 	m.caps = msg.Capabilities // stored for Phase B; unrendered this phase
+	if m.serverProjectsKnown {
+		m.caps.Projects = m.serverProjects
+	}
 	// The EFFECTIVE provider+model the server resolved this session to (echoed
 	// verbatim). The header shows it from turn zero. The model is FIXED per session,
 	// so this is set once here. An older server yields the zero value → no segment.
@@ -443,6 +446,15 @@ func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd
 //nolint:gocyclo // one flat lifecycle message classifier; splitting it would duplicate the handled contract.
 func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	switch msg := msg.(type) {
+	case serverCapabilitiesMsg:
+		// Bootstrap is best-effort: an unavailable server must not block chat. The
+		// session-free Project bit remains authoritative across a racing create reply.
+		if msg.err == nil {
+			m.serverProjectsKnown = true
+			m.serverProjects = msg.caps.Projects
+			m.caps.Projects = msg.caps.Projects
+		}
+		return m, nil, true
 	case startupResumeReadyMsg:
 		mm, cmd := m.finishStartupResume()
 		return mm, cmd, true
