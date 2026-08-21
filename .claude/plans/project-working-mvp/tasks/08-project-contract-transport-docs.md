@@ -2,7 +2,7 @@
 id: 08-project-contract-transport-docs
 title: Generated Project contract, transport parity, and deployment documentation
 blocked_by: [07-project-session-navigation]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "620"
