@@ -2,9 +2,9 @@
 id: 09-mecatui-projects-acceptance
 title: Mecatui path-free Projects UI and real-client acceptance journey
 blocked_by: [08-project-contract-transport-docs]
-status: in-progress
-branch: ""
-worktree: ""
+status: done
+branch: plan-project-working-mvp/09-mecatui-projects-acceptance
+worktree: /Users/jakub/devel/mecatl/.worktrees/projects
 issue: "620"
 retries: 0
 last_error: ""
