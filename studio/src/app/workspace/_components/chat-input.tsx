@@ -153,6 +153,17 @@ function FilesDropdown({
   );
 }
 
+/**
+ * On mobile the composer must NOT grab focus when a chat opens — the keyboard
+ * would pop over the transcript the user came to read. Read the breakpoint
+ * synchronously (module-stable, so focus effects need not depend on it): the
+ * useIsMobile hook reports undefined for a render, which would race the
+ * mount-time autofocus.
+ */
+const mobileViewport = () =>
+  typeof window !== "undefined" &&
+  window.matchMedia("(max-width: 499px)").matches;
+
 /** The daemon-picks sentinel (model_id omitted at create). Its label is
  *  supplied by the caller: "Auto-routed" only while the router is really on. */
 const AUTO_MODEL_ID = "";
@@ -1225,7 +1236,7 @@ export function ChatInput({
 
   const editor = useEditor({
     immediatelyRender: false,
-    autofocus: "end",
+    autofocus: mobileViewport() ? false : "end",
     extensions: [
       // A deliberately plain field: keep the editing primitives (undo, hard
       // break, drop/gap cursors) but drop every rich-text mark and block so
@@ -1253,8 +1264,10 @@ export function ChatInput({
 
   // Entering a chat or thread puts the caret in the field; autofocus only
   // covers the first mount, so a change of target refocuses explicitly.
+  // Desktop only — see mobileViewport above.
   useEffect(() => {
-    if (focusKey !== undefined) editor?.commands.focus("end");
+    if (focusKey !== undefined && !mobileViewport())
+      editor?.commands.focus("end");
   }, [focusKey, editor]);
 
   useEffect(() => {
