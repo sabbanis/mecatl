@@ -30,7 +30,19 @@ transcript upload: transcript authority comes only from the server's `SessionSto
 There is no automatic or bulk endpoint. A cross-provider target strips provider-private
 reasoning/phase/item identifiers through the same carryover rule used by model switches.
 
-**Inventory & introspection** (the HTTP mirrors of the gRPC inventory RPCs in §9):
+**Projects (local working-source MVP):**
+
+| Method & path | Body | Response |
+| --- | --- | --- |
+| `GET /v1/capabilities` | — | `200` capability snapshot; `projects` gates Project UI |
+| `GET /v1/project-sources` | — | `200` bounded, locator-free working-source inventory |
+| `POST /v1/projects` | `{project_id, name, source_ref}` | `201` Project |
+| `GET /v1/projects`, `GET /v1/projects/{id}` | — | bounded Project page or one Project |
+| `PUT /v1/projects/{id}` / `DELETE /v1/projects/{id}` | revisioned Project body / `{expected_revision}` | replace or `204`; stale revisions are `409` |
+| `POST /v1/projects/{id}/sessions` | optional mode, limits, provider/model selectors | `201` Project-bound Session; no workspace/source/environment selector is accepted |
+
+Projects are available only to the ownerless local `mecated --store-dir` MVP deployment. A Project-disabled deployment returns `501`; an older server returns `404` for the bootstrap route. In both cases ordinary Session endpoints remain usable. The API returns opaque source IDs and safe labels only—never filesystem paths, mounts, endpoint locators, owners, or full captured bindings. A deleted Project does not delete its captured Sessions; retrieve and continue those from ordinary Session history.
+
 
 | Method & path | Response |
 | --- | --- |

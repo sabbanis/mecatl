@@ -134,6 +134,29 @@ automatic, or client-transcript-upload path.
 
 ---
 
+## Projects — local working-source MVP
+
+Projects are a server-side control-plane document above `engine/agent`, not an engine
+store or a second Workspace design. The initial deployment is only the ownerless
+`mecated --store-dir` posture: its durable local Project store and immutable canonical
+working-source registry, plus the Project Session factory, make the build-time
+`ServerCapabilities.projects` bit true. In-memory, caller-owned, Redis/remote-driver,
+and mecak8s deployments report Projects unavailable until their own backend-neutral
+store, source-identity, complete Environment-resolution, and cross-replica proofs land.
+
+The generated `HarnessService` and HTTP mirror expose session-free capability/source
+discovery, revisioned Project CRUD, and `CreateSessionFromProject`. Source IDs are
+opaque registry authority selectors; all public projections repair producer text to
+valid UTF-8 and exclude filesystem paths, mount names, endpoints, owners,
+`EnvironmentRef`, and the full binding. Unknown adapter failures map to stable public
+errors rather than leaking a locator. A Project Session captures its binding and
+complete Environment once; later Project edits/deletion affect only future Sessions.
+Project-filtered Session pages authorize the live Project before storage paging, while
+deleted Project Sessions remain in ordinary history and continue through their captured
+binding. See [ADR 0234](../adr/0234-project-working-and-reference-folders.md).
+
+---
+
 ## Domain — `engine/session/` (lifecycle recovery)
 
 A turn always drives the `Session` aggregate to a terminal state within one

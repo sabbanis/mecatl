@@ -36,6 +36,8 @@ reach the right run.
   system-prompt posture note and an honest Subagent spec. A REMOTE filesystem
   for such sessions is a future driver concern (`docs/adr/0005-driver-seams.md`), an
   explicit non-goal of the profile itself.
+- `GetServerCapabilities(GetServerCapabilitiesRequest) → GetServerCapabilitiesResponse` is a session-free bootstrap. `projects=true` means the Build wired a Project store, an authorized working-source registry, and a Project Session factory; it is configuration-derived, not a transient-health signal.
+- `ListProjectSources`, `CreateProject`, `GetProject`, `ListProjects`, `ReplaceProject`, and `DeleteProject` expose the bounded Project lifecycle. `CreateSessionFromProject` is the sole Project Session creation operation: it captures an authorized Project binding and accepts no workspace, source, profile, environment, or carryover selector. Public Project/source projections contain opaque IDs and safe labels only; full bindings, owners, and physical locators remain internal. The first MVP is available only to the ownerless local `mecated --store-dir` deployment. A disabled or older server reports Projects unavailable while ordinary Session APIs continue to work; Redis, remote, ownership-enforced, and Kubernetes deployments remain fast-follow adapter work rather than a second Project design.
 - `GetSession(GetSessionRequest) → GetSessionResponse`
 - `SetMode(SetModeRequest) → SetModeResponse` — changes an existing session's
   permission posture through `Service.SetMode`; mid-turn changes are rejected by
@@ -86,6 +88,10 @@ v1 enforces required checks in the Go server (protovalidate runtime is deferred)
 
 | HTTP | Maps to | Notes |
 |---|---|---|
+| `GET /v1/capabilities` | `GetServerCapabilities` | session-free feature bootstrap; `projects` gates Project UI |
+| `GET /v1/project-sources` | `ListProjectSources` | bounded locator-free working-source inventory |
+| `POST` / `GET /v1/projects`, `GET` / `PUT` / `DELETE /v1/projects/{id}` | Project CRUD | opaque source IDs and safe labels only; Replace/Delete require `expected_revision` |
+| `POST /v1/projects/{id}/sessions` | `CreateSessionFromProject` | captures the Project binding; accepts no client workspace/source/environment selector |
 | `POST /v1/sessions` | `CreateSession` | JSON body → `session_id`; optional `provider_id`/`model_id` selector + `profile` (`"no-fs"`) |
 | `GET /v1/sessions/{id}` | `GetSession` | JSON snapshot |
 | `GET /v1/sessions?project_id=…` | `ListSessions` | bounded Session metadata page for one authorized live Project; ordinary `/v1/sessions` retains deleted Project Session history |
