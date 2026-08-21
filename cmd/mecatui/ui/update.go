@@ -1558,6 +1558,7 @@ func (m Model) onOverlayKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, bool) {
 		m.onModelsKey,
 		m.onEffortKey,
 		m.onWorktreesKey,
+		m.onProjectsKey,
 		m.onScheduleKey,
 		m.onSessionsKey,
 	}
