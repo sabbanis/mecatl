@@ -2,8 +2,8 @@
 id: 05-project-lifecycle-acceptance
 title: Integrated Project lifecycle acceptance and rollback proof
 blocked_by: [05a-project-store-ownership, 05b-project-session-transaction]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-project-working-mvp/05-project-lifecycle-acceptance-retry"
 worktree: ""
 issue: "620"
 retries: 0
