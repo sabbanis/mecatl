@@ -217,7 +217,11 @@ func (s *Service) withBoundRunner(env tool.Environment) (tool.Environment, error
 func (s *Service) projectEnabled() bool {
 	// The initial working-source control plane shares the daemon's one writable
 	// source and is therefore available only in the ownerless trusted domain.
-	return !s.cfg.OwnershipEnforced && s.cfg.ProjectStore != nil && s.cfg.ProjectSources != nil && s.cfg.SessionEngine != nil
+	if s.cfg.OwnershipEnforced || s.cfg.ProjectStore == nil || s.cfg.ProjectSources == nil || s.cfg.SessionEngine == nil {
+		return false
+	}
+	sources, err := s.cfg.ProjectSources.ListWorking(context.Background())
+	return err == nil && len(sources) > 0
 }
 
 func (s *Service) loadOwnedProject(ctx context.Context, id string) (project.Project, error) {

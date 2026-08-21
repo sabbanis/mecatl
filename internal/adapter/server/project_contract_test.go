@@ -108,6 +108,31 @@ func TestProjectHTTPContractWiringSmoke(t *testing.T) {
 	}
 }
 
+func TestProjectHTTPMutationRoutesRejectMalformedUTF8(t *testing.T) {
+	svc, _, _, _ := newProjectService(t, false)
+	handler := server.NewHTTPHandler(svc)
+	bad := string([]byte{0xff})
+	tests := []struct {
+		name, method, path string
+		body               []byte
+	}{
+		{name: "create project", method: http.MethodPost, path: "/v1/projects", body: []byte(`{"project_id":"p","name":"bad` + bad + `","source_ref":"opaque-source"}`)},
+		{name: "replace project", method: http.MethodPut, path: "/v1/projects/p", body: []byte(`{"name":"bad` + bad + `","source_ref":"opaque-source","expected_revision":1}`)},
+		{name: "delete project", method: http.MethodDelete, path: "/v1/projects/p", body: []byte(`{"expected_revision":1,"ignored":"bad` + bad + `"}`)},
+		{name: "create project session", method: http.MethodPost, path: "/v1/projects/p/sessions", body: []byte(`{"model_id":"bad` + bad + `"}`)},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(tc.method, tc.path, strings.NewReader(string(tc.body)))
+			rec := httptest.NewRecorder()
+			handler.ServeHTTP(rec, req)
+			if rec.Code != http.StatusBadRequest {
+				t.Fatalf("status = %d, want 400; body=%q", rec.Code, rec.Body.String())
+			}
+		})
+	}
+}
+
 func TestProjectContractWiringRepairsSourceStrings(t *testing.T) {
 	svc, _, _, registry := newProjectService(t, false)
 	registry.source.Label = "bad\xfflabel"

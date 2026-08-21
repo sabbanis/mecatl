@@ -1,13 +1,19 @@
 package server
 
 import (
+	"bytes"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
 	"strconv"
+	"unicode/utf8"
 
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/project"
 )
+
+const maxProjectBodyBytes = 64 << 10
 
 type projectBody struct {
 	ProjectID        string    `json:"project_id,omitempty"`
@@ -36,9 +42,31 @@ func (h *HTTPHandler) listProjectSources(w http.ResponseWriter, r *http.Request)
 	}{Sources: toProtoProjectSources(sources)})
 }
 
+func decodeProjectBody(r *http.Request, body *projectBody) error {
+	raw, err := io.ReadAll(io.LimitReader(r.Body, maxProjectBodyBytes+1))
+	if err != nil {
+		return err
+	}
+	if len(raw) > maxProjectBodyBytes || !utf8.Valid(raw) {
+		return errors.New("invalid project request body")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(raw))
+	if err := decoder.Decode(body); err != nil {
+		return err
+	}
+	var trailing any
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
+		if err == nil {
+			return errors.New("multiple JSON values")
+		}
+		return err
+	}
+	return nil
+}
+
 func (h *HTTPHandler) createProject(w http.ResponseWriter, r *http.Request) {
 	var body projectBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeProjectBody(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -97,7 +125,7 @@ func (h *HTTPHandler) listProjects(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPHandler) replaceProject(w http.ResponseWriter, r *http.Request) {
 	var body projectBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeProjectBody(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -117,7 +145,7 @@ func (h *HTTPHandler) replaceProject(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPHandler) deleteProject(w http.ResponseWriter, r *http.Request) {
 	var body projectBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeProjectBody(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
@@ -134,7 +162,7 @@ func (h *HTTPHandler) deleteProject(w http.ResponseWriter, r *http.Request) {
 
 func (h *HTTPHandler) createSessionFromProject(w http.ResponseWriter, r *http.Request) {
 	var body projectBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+	if err := decodeProjectBody(r, &body); err != nil {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
