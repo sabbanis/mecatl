@@ -86,6 +86,28 @@ recovers the byte-exact final active ID after any rebind. Keep it to launch
 exists, the TUI fails, or a signal interrupts/forces exit; stdout is unchanged. See the
 [full TUI reference](tui.md#continue-a-chat-at-startup).
 
+## Local Projects workflow
+
+The first Project MVP is intentionally local and durable: start an ownerless daemon
+with a JSONL state directory, then let a generated gRPC or HTTP client discover the
+capability and canonical working source before creating a Project.
+
+```sh
+mecated serve --store-dir ./state --workspace "$PWD"
+curl -s http://127.0.0.1:8081/v1/capabilities
+curl -s http://127.0.0.1:8081/v1/project-sources
+```
+
+When `projects` is true, create with the returned opaque `source_ref`, not a path;
+then use `POST /v1/projects/{project_id}/sessions` to create the Project Session.
+Project CRUD uses revision CAS (`409` on a stale Replace/Delete). A Project delete is
+non-cascading: its captured Sessions remain in ordinary Session history and can still
+continue. The public contract never accepts a client workspace or returns a physical
+source locator. The in-memory default, caller-owned deployments, remote/Redis stores,
+and `mecak8s` deliberately advertise Projects as unavailable in this MVP; their
+replica-safe adapters are a fast follow, not another Project model. See the
+[gRPC API](usage/grpc-api.md) and [HTTP API](usage/http-sse-api.md).
+
 ## Scheduled tasks
 
 `mecated` and `mecak8s` run scheduled agent fires autonomously (issue #189,

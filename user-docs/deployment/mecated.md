@@ -442,6 +442,27 @@ the layout and a ready-made loop. A store directory written by an older version
 keeps its files directly under `--store-dir`; they stay readable and move into
 `sid-v1/` on that session's next write, so no migration step is needed.
 
+### Local Projects
+
+The first Projects workflow is available only from the local durable daemon:
+
+```sh
+mecated serve --store-dir ~/.local/share/mecatl/state --workspace "$PWD"
+curl -s http://127.0.0.1:8081/v1/capabilities
+curl -s http://127.0.0.1:8081/v1/project-sources
+```
+
+When the capability response says `projects: true`, create a Project with the returned
+opaque source ID and create its Session through the Project API. Do not send a filesystem
+path: the server owns the canonical working source, and Project responses expose only
+opaque IDs and safe labels. Project edits/deletes use revisions; deleting a Project does
+not delete its captured Sessions, which remain usable from ordinary Session history.
+
+Projects are deliberately unavailable with the in-memory default, caller-owned,
+remote/Redis, and `mecak8s` deployments in this MVP. Those deployments need their own
+replica-safe Project-store, source-identity, and Environment-resolution adapters rather
+than a different Project workflow. See [Drive via gRPC / HTTP](grpc-http.md).
+
 :::note[Kubernetes and persistent volumes]
 
 If you run `mecated` in Kubernetes with `--store-dir`, you need a PersistentVolume

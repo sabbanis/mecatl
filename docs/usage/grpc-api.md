@@ -19,7 +19,17 @@ Service: `mecatl.v1.HarnessService` (`contracts/proto/mecatl/v1/harness.proto`).
 | `StreamSessionEvents(StreamSessionEventsRequest) → stream Event` | server-stream | replay a session's durable event log (cloud-native Phase 3a read-back); an unknown id yields an empty stream; `UNIMPLEMENTED` when no durable `EventLog` is wired. **Replays the FULL timeline, including the log-only `approval`/`compaction_archive`/`user_prompt` events a live `Converse` skips** — a client opening a past session gets the verdicts and user prompts, which ARE the transcript |
 | `ListSessions(ListSessionsRequest) → ListSessionsResponse` | unary | the stored-session inventory — picker metadata (id, timestamps, state, turns, model id; no conversation content), sorted most-recently-active first; an empty list when the store does not implement `PrunableStore` |
 
-**Inventory & introspection** (read-only; most are snapshots taken at startup):
+**Projects (local working-source MVP):**
+
+| RPC | Kind | Purpose |
+| --- | --- | --- |
+| `GetServerCapabilities` | unary | session-free bootstrap; `capabilities.projects` is true only for a fully wired local Project deployment |
+| `ListProjectSources` | unary | bounded locator-free working-source inventory |
+| `CreateProject` / `GetProject` / `ListProjects` / `ReplaceProject` / `DeleteProject` | unary | revisioned Project lifecycle over opaque source IDs; stale mutations are `ABORTED` |
+| `CreateSessionFromProject` | unary | captures an authorized Project binding without accepting a workspace, profile, source, environment, or carryover selector |
+
+The first Project deployment is `mecated --store-dir` in the ownerless local trusted domain. A disabled deployment returns `UNIMPLEMENTED`; an older server does not implement the bootstrap RPC. Clients must leave ordinary Session behavior available in either case. Project and source responses contain only safe display values and opaque IDs—never owners, bindings, paths, mount names, endpoints, or credentials. `ListSessions.project_id` pages an authorized live Project; after deletion, captured Sessions remain in ordinary Session history and can still run.
+
 
 | RPC | Kind | Purpose |
 | --- | --- | --- |
