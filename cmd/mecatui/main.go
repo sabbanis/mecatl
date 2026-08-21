@@ -201,6 +201,7 @@ func run(argv []string) error {
 
 	deps := applyLaunchIntent(cfg, ui.Deps{
 		Session:             &sessionAdapter{cl: cl, workspace: cfg.workspace, mode: cfg.mode},
+		Capabilities:        cl,
 		Conv:                cl,
 		MCP:                 cl,
 		Cmds:                cl,

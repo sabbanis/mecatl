@@ -2,14 +2,93 @@ package ui
 
 import (
 	"context"
+	"net"
 	"strings"
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"google.golang.org/grpc"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
+	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 )
+
+type uiCapabilitiesServer struct {
+	mecatlv1.UnimplementedHarnessServiceServer
+	projects      bool
+	unimplemented bool
+}
+
+func (s uiCapabilitiesServer) GetServerCapabilities(context.Context, *mecatlv1.GetServerCapabilitiesRequest) (*mecatlv1.GetServerCapabilitiesResponse, error) {
+	if s.unimplemented {
+		return nil, status.Error(codes.Unimplemented, "older server")
+	}
+	return &mecatlv1.GetServerCapabilitiesResponse{Capabilities: &mecatlv1.ServerCapabilities{Projects: s.projects}}, nil
+}
+
+func dialUICapabilitiesServer(t *testing.T, server uiCapabilitiesServer) *client.Client {
+	t.Helper()
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	grpcServer := grpc.NewServer()
+	mecatlv1.RegisterHarnessServiceServer(grpcServer, server)
+	go func() { _ = grpcServer.Serve(listener) }()
+	t.Cleanup(func() {
+		grpcServer.Stop()
+		_ = listener.Close()
+	})
+	cl, err := client.Dial(client.DialConfig{Server: listener.Addr().String()})
+	if err != nil {
+		t.Fatalf("Dial: %v", err)
+	}
+	t.Cleanup(func() { _ = cl.Close() })
+	return cl
+}
+
+func TestStartupFetchesSessionFreeCapabilitiesAndGatesProjects(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		server uiCapabilitiesServer
+		want   bool
+	}{
+		{name: "enabled", server: uiCapabilitiesServer{projects: true}, want: true},
+		{name: "disabled", server: uiCapabilitiesServer{}},
+		{name: "older unimplemented", server: uiCapabilitiesServer{unimplemented: true}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cl := dialUICapabilitiesServer(t, tc.server)
+			conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
+			m := New(Deps{Session: conv, Capabilities: cl, Conv: conv, Projects: &fakeProjects{}, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
+			batch, ok := m.Init()().(tea.BatchMsg)
+			if !ok {
+				t.Fatal("Init did not batch startup work")
+			}
+			for _, cmd := range batch {
+				if cmd == nil {
+					continue
+				}
+				msg := cmd()
+				switch msg.(type) {
+				case serverCapabilitiesMsg, client.SessionReadyMsg:
+					updated, _ := m.Update(msg)
+					m = updated.(Model)
+				}
+			}
+			_, exposed := builtinByName(m.caps, m.wiredCollaborators(), "projects")
+			if exposed != tc.want {
+				t.Fatalf("/projects exposed = %v, want %v; caps=%+v", exposed, tc.want, m.caps)
+			}
+			if m.phase == phaseFatal || m.sessionID == "" {
+				t.Fatalf("ordinary chat did not initialize: phase=%v session=%q", m.phase, m.sessionID)
+			}
+		})
+	}
+}
 
 // TestTurnEndZeroUsageKeepsStickyContextMeter pins issue-#82 Fix A2: a TurnEndMsg
 // reporting zero input tokens (a stalled / usage-less turn) must NOT erase a

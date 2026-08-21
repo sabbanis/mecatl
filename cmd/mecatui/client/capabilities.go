@@ -1,6 +1,12 @@
 package client
 
 import (
+	"context"
+	"fmt"
+
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
+
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 )
 
@@ -70,6 +76,25 @@ type Capabilities struct {
 	// Projects gates the path-free /projects surface. False is the safe value for
 	// older or incompletely wired servers.
 	Projects bool
+}
+
+// GetServerCapabilities fetches the session-free server feature snapshot. An
+// older server that does not implement the RPC degrades to the all-false value
+// so startup can continue through the ordinary chat path.
+func (c *Client) GetServerCapabilities(ctx context.Context) (Capabilities, error) {
+	response, err := c.svc.GetServerCapabilities(ctx, &mecatlv1.GetServerCapabilitiesRequest{})
+	if status.Code(err) == codes.Unimplemented {
+		return Capabilities{}, nil
+	}
+	if err != nil {
+		return Capabilities{}, fmt.Errorf("get server capabilities: %w", err)
+	}
+	return capabilitiesFrom(response.GetCapabilities()), nil
+}
+
+// ServerCapabilitiesFetcher is the proto-free session-free capability seam.
+type ServerCapabilitiesFetcher interface {
+	GetServerCapabilities(context.Context) (Capabilities, error)
 }
 
 // capabilitiesFrom maps a proto ServerCapabilities (nil-safe) to the plain

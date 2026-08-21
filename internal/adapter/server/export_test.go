@@ -1,6 +1,7 @@
 package server
 
 import (
+	"context"
 	"time"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
@@ -84,6 +85,20 @@ func (s *Service) DropSessionEngineForTest(id session.SessionID) {
 	delete(s.sessionEngines, id)
 	delete(s.sessionEnvironments, id)
 	s.mu.Unlock()
+}
+
+// SessionHasCommandRunnerForTest resolves the live run-entry environment and
+// reports its shell posture without executing a command.
+func (s *Service) SessionHasCommandRunnerForTest(ctx context.Context, id session.SessionID) (bool, error) {
+	sess, err := s.cfg.Store.Load(ctx, id)
+	if err != nil {
+		return false, err
+	}
+	_, env, err := s.engineAndEnvironmentFor(ctx, sess)
+	if err != nil {
+		return false, err
+	}
+	return env.CommandRunner() != nil, nil
 }
 
 // NeedsRehydrationForTest exposes the (Service) needsRehydration method (the

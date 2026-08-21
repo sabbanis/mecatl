@@ -108,19 +108,20 @@ type LearningSettings interface {
 // imports client + theme only — never contracts/gen or any internal/... package;
 // all proto contact happens behind Converser/SessionCreator.
 type Deps struct {
-	Session     SessionCreator
-	Conv        Converser
-	MCP         client.MCP              // MCP/ToolHive inventory + resources/prompts; nil disables the overlay
-	Cmds        client.Commander        // slash-command discovery for the input palette; nil disables it
-	Skills      client.SkillLister      // skills-inventory discovery for the /skills panel; nil disables it
-	Agents      client.AgentLister      // agent-definition discovery for the /agents panel; nil disables it
-	Soul        client.SoulFetcher      // soul (persona) inspection for the /soul panel; nil disables it
-	UserModel   client.UserModelLister  // user-model inspection for the /usermodel panel; nil disables it
-	Reflections client.ReflectionClient // proposal review and explicit reflection; nil disables it
-	Dream       client.DreamClient      // manual memory consolidation review; nil disables /dream
-	Models      client.ModelLister      // selectable-model discovery for the /models picker; nil disables it
-	Worktrees   client.WorktreeLister   // worktree discovery for the /worktrees overlay (issue #102); nil disables it
-	Projects    client.ProjectClient    // path-free Project lifecycle; capability-gated
+	Session      SessionCreator
+	Capabilities client.ServerCapabilitiesFetcher
+	Conv         Converser
+	MCP          client.MCP              // MCP/ToolHive inventory + resources/prompts; nil disables the overlay
+	Cmds         client.Commander        // slash-command discovery for the input palette; nil disables it
+	Skills       client.SkillLister      // skills-inventory discovery for the /skills panel; nil disables it
+	Agents       client.AgentLister      // agent-definition discovery for the /agents panel; nil disables it
+	Soul         client.SoulFetcher      // soul (persona) inspection for the /soul panel; nil disables it
+	UserModel    client.UserModelLister  // user-model inspection for the /usermodel panel; nil disables it
+	Reflections  client.ReflectionClient // proposal review and explicit reflection; nil disables it
+	Dream        client.DreamClient      // manual memory consolidation review; nil disables /dream
+	Models       client.ModelLister      // selectable-model discovery for the /models picker; nil disables it
+	Worktrees    client.WorktreeLister   // worktree discovery for the /worktrees overlay (issue #102); nil disables it
+	Projects     client.ProjectClient    // path-free Project lifecycle; capability-gated
 	// Sched is the schedule discovery + management surface for the /schedule overlay
 	// (issue #234); nil disables it (the overlay is honestly absent). The overlay can
 	// create/inspect/pause/resume/fire-now on any store-backed server; auto-firing on
@@ -627,6 +628,11 @@ type Model struct {
 	// (all-false) until connect and for an older server. STORED, UNRENDERED in
 	// Phase A — Phase B consumes it.
 	caps client.Capabilities
+	// The Project bit is bootstrapped through the session-free capability RPC.
+	// Keep its arrival state separate so a racing session response cannot replace
+	// that server-wide authority with an older per-session snapshot.
+	serverProjectsKnown bool
+	serverProjects      bool
 
 	// activeMode is the server-confirmed permission mode for THIS session. It is
 	// initialized from the launch mode and updated only from SessionReady/GetSession/
@@ -1089,6 +1095,21 @@ func (m Model) resetSession() Model {
 // model, preserving transcript-before-seed ordering.
 type startupResumeReadyMsg struct{}
 
+type serverCapabilitiesMsg struct {
+	caps client.Capabilities
+	err  error
+}
+
+func (m Model) serverCapabilitiesCmd() tea.Cmd {
+	if m.deps.Capabilities == nil {
+		return nil
+	}
+	return func() tea.Msg {
+		caps, err := m.deps.Capabilities.GetServerCapabilities(m.deps.Ctx)
+		return serverCapabilitiesMsg{caps: caps, err: err}
+	}
+}
+
 // Init starts the spinner and kicks off connect.
 //
 // Connect SEQUENCING (§4 key-removed safety): when a model lister is wired, it
@@ -1101,8 +1122,12 @@ type startupResumeReadyMsg struct{}
 // fallback leg. With no lister wired (old server / persistence off) it fires
 // CreateSession directly (the historical path, with an empty selection).
 func (m Model) Init() tea.Cmd {
+	bootstrap := m.serverCapabilitiesCmd()
 	if m.deps.BrowseSessions {
 		cmds := []tea.Cmd{m.sp.Tick}
+		if bootstrap != nil {
+			cmds = append(cmds, bootstrap)
+		}
 		if m.deps.Models != nil {
 			cmds = append(cmds, client.ListModelsCmd(m.deps.Ctx, m.deps.Models))
 		}
@@ -1112,13 +1137,13 @@ func (m Model) Init() tea.Cmd {
 		return tea.Batch(cmds...)
 	}
 	if m.deps.Resume != nil {
-		return tea.Batch(m.sp.Tick, func() tea.Msg { return startupResumeReadyMsg{} })
+		return tea.Batch(m.sp.Tick, bootstrap, func() tea.Msg { return startupResumeReadyMsg{} })
 	}
 	if m.deps.Models != nil {
-		return tea.Batch(m.sp.Tick, client.ListModelsCmd(m.deps.Ctx, m.deps.Models))
+		return tea.Batch(m.sp.Tick, bootstrap, client.ListModelsCmd(m.deps.Ctx, m.deps.Models))
 	}
 	// No-lister / old-server path: with no model lister wired there is nothing to
 	// reconcile, so fire CreateSession directly (with the empty selection) — do NOT
 	// wait on a ListModels that will never arrive, which would strand at "connecting…".
-	return tea.Batch(m.sp.Tick, m.createSessionCmd())
+	return tea.Batch(m.sp.Tick, bootstrap, m.createSessionCmd())
 }
