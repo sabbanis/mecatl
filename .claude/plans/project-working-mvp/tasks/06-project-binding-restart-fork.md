@@ -2,7 +2,7 @@
 id: 06-project-binding-restart-fork
 title: Captured Project binding restart, revocation, and fork semantics
 blocked_by: [05-project-lifecycle-acceptance]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "620"
