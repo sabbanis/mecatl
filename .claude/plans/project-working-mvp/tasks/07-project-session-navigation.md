@@ -2,7 +2,7 @@
 id: 07-project-session-navigation
 title: Project-filtered Session metadata paging and compact provenance
 blocked_by: [06-project-binding-restart-fork]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "620"
