@@ -2,8 +2,8 @@
 id: 07-project-session-navigation
 title: Project-filtered Session metadata paging and compact provenance
 blocked_by: [06-project-binding-restart-fork]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-project-working-mvp/07-project-session-navigation"
 worktree: ""
 issue: "620"
 retries: 0
