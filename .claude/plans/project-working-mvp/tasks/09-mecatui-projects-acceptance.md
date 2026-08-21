@@ -2,7 +2,7 @@
 id: 09-mecatui-projects-acceptance
 title: Mecatui path-free Projects UI and real-client acceptance journey
 blocked_by: [08-project-contract-transport-docs]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "620"
