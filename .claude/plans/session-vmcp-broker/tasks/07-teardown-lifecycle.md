@@ -2,7 +2,7 @@
 id: 07-teardown-lifecycle
 title: Scoped disconnect, forget, session close, and runtime shutdown
 blocked_by: [03-server-composition, 06-refresh-custody]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
