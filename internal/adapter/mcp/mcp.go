@@ -77,6 +77,9 @@ type ServerConfig struct {
 	// OAuth enables the adapter-local authorization-code controller. It is
 	// mutually exclusive with a static Authorization header.
 	OAuth *OAuthOptions
+	// HTTPClient optionally supplies the transport for the Streamable HTTP client.
+	// Nil preserves the default transport behavior.
+	HTTPClient *http.Client
 	// Timeout bounds the connect handshake and tool listing. If zero,
 	// defaultConnectTimeout is used. It does not bound later tool calls, which
 	// are governed by the per-call context.
@@ -487,6 +490,10 @@ func prepareOAuthServerConfig(ctx context.Context, cfg ServerConfig) (ServerConf
 
 func newMCPHTTPClient(cfg ServerConfig, oauth *OAuthController) *http.Client {
 	client := &http.Client{}
+	if cfg.HTTPClient != nil {
+		clientCopy := *cfg.HTTPClient
+		client = &clientCopy
+	}
 	if oauth != nil {
 		resourceURL, _ := url.Parse(cfg.URL)
 		client.CheckRedirect = mcpOAuthRedirectPolicy(requestOrigin(resourceURL), cfg.OAuth.Network.MaxRedirects)

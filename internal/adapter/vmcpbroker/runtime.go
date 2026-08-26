@@ -359,7 +359,7 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 		server = c.protected
 		if server == nil {
 			var err error
-			server, err = mcp.Connect(ctx, mcp.ServerConfig{Name: "broker", URL: c.endpoint, Headers: map[string]string{"Authorization": "Bearer " + grant.accessToken}}, nil)
+			server, err = mcp.Connect(ctx, mcp.ServerConfig{Name: "broker", URL: c.endpoint, Headers: map[string]string{"Authorization": "Bearer " + grant.accessToken}, HTTPClient: c.runtime.httpClient}, nil)
 			if err != nil {
 				return session.ToolResult{}, fmt.Errorf("vmcpbroker: connect protected broker endpoint: %w", err)
 			}
@@ -544,6 +544,7 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 
 	grant, err := r.exchangeDownstreamCode(ctx, code, transaction.verifier)
 	if err != nil {
+		r.restoreTransaction(target, transaction)
 		return err
 	}
 
@@ -557,6 +558,20 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 	}
 	r.grants[target] = grant
 	return nil
+}
+
+func (r *Runtime) restoreTransaction(target controlTarget, transaction authorizationTransaction) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || !transaction.expiresAt.After(time.Now()) || !r.validControlTargetLocked(target) {
+		return
+	}
+	if _, connected := r.grants[target]; connected {
+		return
+	}
+	if _, pending := r.transactions[target]; !pending {
+		r.transactions[target] = transaction
+	}
 }
 
 func (r *Runtime) exchangeDownstreamCode(ctx context.Context, code, verifier string) (downstreamGrant, error) {

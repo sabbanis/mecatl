@@ -16,12 +16,49 @@ import (
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/router"
+	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 )
 
 func TestSessionVMCPBroker_Scenario2_CallbackBindingAndReplay(t *testing.T) {
+	t.Run("downstream exchange failure preserves pending transaction", func(t *testing.T) {
+		runtime, _, _ := newCallbackRuntime(t, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+			return session.ToolResult{}, nil
+		})
+		if _, err := runtime.OpenSession("retry"); err != nil {
+			t.Fatalf("OpenSession(retry): %v", err)
+		}
+		pending, err := runtime.Connect(context.Background(), "retry", "github")
+		if err != nil {
+			t.Fatalf("Connect(retry): %v", err)
+		}
+		if err := runtime.Callback(context.Background(), "invalid-downstream-code", pending.AuthorizationRequired.Handle); err == nil {
+			t.Fatal("Callback with invalid downstream code succeeded")
+		}
+		retried, err := runtime.Connect(context.Background(), "retry", "github")
+		if err != nil {
+			t.Fatalf("Connect(retry) after failed downstream exchange: %v", err)
+		}
+		if retried.Status != ConnectionPending || retried.AuthorizationRequired == nil ||
+			retried.AuthorizationRequired.Handle != pending.AuthorizationRequired.Handle ||
+			retried.AuthorizationRequired.BrowserURL != pending.AuthorizationRequired.BrowserURL {
+			t.Fatalf("Connect(retry) after failed downstream exchange = %+v, want original pending transaction", retried)
+		}
+	})
+
 	runtime, client, upstreamTokenCalls := newCallbackRuntime(t, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
 		return session.ToolResult{}, nil
 	})
@@ -70,26 +107,7 @@ func TestSessionVMCPBroker_Scenario2_CallbackBindingAndReplay(t *testing.T) {
 }
 
 func TestSessionVMCPBroker_Scenario2_ConnectedToolExecutesWithoutCatalogueMutation(t *testing.T) {
-	var bearerRequests atomic.Int32
-	upstream := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "protected", Version: "test"}, nil)
-	mcpsdk.AddTool(upstream, &mcpsdk.Tool{Name: "mcp__github__list_issues"}, func(context.Context, *mcpsdk.CallToolRequest, struct{}) (*mcpsdk.CallToolResult, struct{}, error) {
-		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "protected upstream result"}}}, struct{}{}, nil
-	})
-	handler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return upstream }, nil)
-	broker := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "" {
-			http.Error(w, "missing bearer", http.StatusUnauthorized)
-			return
-		}
-		bearerRequests.Add(1)
-		handler.ServeHTTP(w, r)
-	}))
-	t.Cleanup(broker.Close)
-
-	runtime, client, _ := newCallbackRuntime(t, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
-		return session.ToolResult{}, nil
-	})
-	runtime.opener = streamingSessionOpener(runtime, broker.URL)
+	runtime, client, upstreamCalls := newToolHiveStreamingRuntime(t)
 	tools, err := runtime.OpenSession("parent")
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
@@ -108,17 +126,120 @@ func TestSessionVMCPBroker_Scenario2_ConnectedToolExecutesWithoutCatalogueMutati
 	if err := runtime.Callback(context.Background(), code, state); err != nil {
 		t.Fatalf("Callback: %v", err)
 	}
+	connected, err := runtime.Connect(context.Background(), "parent", "github")
+	if err != nil || connected.Status != ConnectionConnected {
+		t.Fatalf("Connect after callback = %+v, %v; want connected", connected, err)
+	}
 	result, err := before[0].Execute(context.Background(), session.NewToolCall("call", before[0].Spec().Name, json.RawMessage(`{}`)), tool.Environment{})
 	if err != nil {
 		t.Fatalf("protected Execute: %v", err)
 	}
-	if result.IsError || !strings.Contains(result.Content, "protected upstream result") || bearerRequests.Load() == 0 {
-		t.Fatalf("protected result/bearer requests = %+v/%d, want protected vMCP execution with a private bearer", result, bearerRequests.Load())
+	if result.IsError || !strings.Contains(result.Content, "protected upstream result") || upstreamCalls.Load() == 0 {
+		t.Fatalf("protected result/upstream calls = %+v/%d, want ToolHive vMCP execution with its injected upstream credential", result, upstreamCalls.Load())
 	}
 	after := tools.Tools()
 	if len(after) != len(before) || !reflect.DeepEqual(after[0].Spec(), before[0].Spec()) {
 		t.Fatalf("catalogue identity changed after connection: before=%+v after=%+v", before[0].Spec(), after[0].Spec())
 	}
+}
+
+func newToolHiveStreamingRuntime(t *testing.T) (*Runtime, *http.Client, *atomic.Int32) {
+	t.Helper()
+	const upstreamCredential = "upstream-credential-for-session-lineage"
+	var upstreamCalls atomic.Int32
+
+	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/authorize":
+			http.Redirect(w, r, r.URL.Query().Get("redirect_uri")+"?code=upstream-code&state="+url.QueryEscape(r.URL.Query().Get("state")), http.StatusFound)
+		case "/token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = io.WriteString(w, `{"access_token":"`+upstreamCredential+`","token_type":"Bearer","sub":"subject"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(upstream.Close)
+
+	protected := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "protected", Version: "test"}, nil)
+	mcpsdk.AddTool(protected, &mcpsdk.Tool{Name: "list_issues"}, func(context.Context, *mcpsdk.CallToolRequest, struct{}) (*mcpsdk.CallToolResult, struct{}, error) {
+		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "protected upstream result"}}}, struct{}{}, nil
+	})
+	protectedHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return protected }, &mcpsdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	protectedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Header.Get("Authorization") != "Bearer "+upstreamCredential {
+			http.Error(w, "missing expected upstream credential", http.StatusUnauthorized)
+			return
+		}
+		upstreamCalls.Add(1)
+		protectedHandler.ServeHTTP(w, r)
+	}))
+	t.Cleanup(func() {
+		protectedServer.CloseClientConnections()
+		protectedServer.Close()
+	})
+
+	mux := http.NewServeMux()
+	gateway := httptest.NewUnstartedServer(mux)
+	issuer := "https://" + gateway.Listener.Addr().String()
+	store := storage.NewMemoryStorage()
+	auth, err := runner.NewEmbeddedAuthServerWithStorage(context.Background(), &authserver.RunConfig{
+		SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer},
+		Upstreams: []authserver.UpstreamRunConfig{{Name: "upstream", Type: authserver.UpstreamProviderTypeOAuth2, OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+			AuthorizationEndpoint: upstream.URL + "/authorize", TokenEndpoint: upstream.URL + "/token", ClientID: "upstream-client", RedirectURI: issuer + "/oauth/callback", IdentityFromToken: &authserver.IdentityFromTokenRunConfig{SubjectPath: "sub"}, AllowPrivateIPs: true, InsecureAllowHTTP: true,
+		}}},
+	}, store)
+	if err != nil {
+		t.Fatalf("NewEmbeddedAuthServerWithStorage: %v", err)
+	}
+	reader := upstreamtoken.NewInProcessService(auth.IDPTokenStorage(), auth.UpstreamTokenRefresher())
+	incoming, _, authInfo, err := factory.NewIncomingAuthMiddleware(context.Background(), &vmcpconfig.IncomingAuthConfig{Type: "oidc", OIDC: &vmcpconfig.OIDCConfig{
+		Issuer: issuer, Audience: issuer, Resource: issuer, JWKSURL: issuer + "/.well-known/jwks.json", JwksAllowPrivateIP: true, ProtectedResourceAllowPrivateIP: true, InsecureAllowHTTP: true,
+	}}, "broker", nil, reader, auth.KeyProvider())
+	if err != nil {
+		t.Fatalf("NewIncomingAuthMiddleware: %v", err)
+	}
+	outgoing := vmcpauth.NewDefaultOutgoingAuthRegistry()
+	if err := outgoing.RegisterStrategy("upstream_inject", strategies.NewUpstreamInjectStrategy()); err != nil {
+		t.Fatalf("register upstream injection: %v", err)
+	}
+	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoing)
+	if err != nil {
+		t.Fatalf("NewHTTPBackendClient: %v", err)
+	}
+	resolver, err := aggregator.NewConflictResolver(&vmcpconfig.AggregationConfig{ConflictResolution: vmcp.ConflictStrategyPrefix})
+	if err != nil {
+		t.Fatalf("NewConflictResolver: %v", err)
+	}
+	registry := vmcp.NewImmutableRegistry([]vmcp.Backend{{ID: "github", Name: "github", BaseURL: protectedServer.URL, TransportType: "streamable-http", AuthConfig: &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: "upstream"}}}})
+	vmcpServer, err := vmcpserver.New(context.Background(), &vmcpserver.Config{Name: "broker", Version: "test", AuthMiddleware: incoming, AuthInfoHandler: authInfo, AuthServer: auth, Aggregator: aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil), SessionFactory: vmcpsession.NewSessionFactory(outgoing)}, router.NewSessionRouter(&vmcp.RoutingTable{}), backendClient, registry, nil)
+	if err != nil {
+		t.Fatalf("vmcp server.New: %v", err)
+	}
+	handler, err := vmcpServer.Handler(context.Background())
+	if err != nil {
+		t.Fatalf("vmcp Handler: %v", err)
+	}
+	mux.Handle("/", handler)
+	gateway.Config.Handler = mux
+	gateway.StartTLS()
+	t.Cleanup(func() {
+		if err := vmcpServer.Stop(context.Background()); err != nil {
+			t.Errorf("vMCP Stop: %v", err)
+		}
+		if err := auth.Close(); err != nil {
+			t.Errorf("embedded authserver Close: %v", err)
+		}
+		gateway.CloseClientConnections()
+		gateway.Close()
+	})
+
+	runtime, err := NewToolHiveStreamingHTTPRuntime([]Route{{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "github_list_issues", Schema: json.RawMessage(`{"type":"object"}`)}}}, gateway.URL+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: gateway.URL, CallbackURL: "https://client.invalid/callback", HTTPClient: gateway.Client()}, time.Minute)
+	if err != nil {
+		t.Fatalf("NewToolHiveStreamingHTTPRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	return runtime, gateway.Client(), &upstreamCalls
 }
 
 func newCallbackRuntime(t *testing.T, caller Caller) (*Runtime, *http.Client, *atomic.Int32) {
