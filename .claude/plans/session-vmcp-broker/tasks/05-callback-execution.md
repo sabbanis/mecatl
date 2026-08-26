@@ -2,8 +2,8 @@
 id: 05-callback-execution
 title: Callback binding and protected broker tool execution
 blocked_by: [03-server-composition, 04-oauth-transaction]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-session-vmcp-broker/05-callback-execution"
 worktree: ""
 issue: ""
 retries: 0
