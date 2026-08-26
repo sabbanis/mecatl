@@ -2,8 +2,8 @@
 id: 01b-profile-auth-routes
 title: Compile broker authorization routes from strict profiles
 blocked_by: [01-runtime-contract]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-session-vmcp-broker/01b-profile-auth-routes"
 worktree: ""
 issue: ""
 retries: 0
