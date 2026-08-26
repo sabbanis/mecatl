@@ -2,12 +2,12 @@
 id: 04-oauth-transaction
 title: Secure singleflight OAuth connection transactions
 blocked_by: [01b-profile-auth-routes, 02-session-tools]
-status: in-progress
+status: blocked
 branch: ""
 worktree: ""
 issue: ""
 retries: 0
-last_error: ""
+last_error: "ToolHive v0.40.0 embeds its own upstream OAuth client and exposes no injected no-proxy, exact-origin, DNS-pinned, redirect-bounded HTTP-client hook; implementing AC2.1 would require a ToolHive change or forbidden direct OAuth."
 accumulator: acc/session-vmcp-broker
 ---
 
