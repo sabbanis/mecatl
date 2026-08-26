@@ -1,7 +1,7 @@
 ---
 id: 03-server-composition
 title: Per-session server integration, catalogue collision, and restart
-blocked_by: [01-runtime-contract, 02-session-tools]
+blocked_by: [01b-profile-auth-routes, 02-session-tools]
 status: pending
 branch: ""
 worktree: ""

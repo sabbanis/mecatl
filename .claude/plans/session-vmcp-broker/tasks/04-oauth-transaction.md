@@ -1,7 +1,7 @@
 ---
 id: 04-oauth-transaction
 title: Secure singleflight OAuth connection transactions
-blocked_by: [02-session-tools]
+blocked_by: [01b-profile-auth-routes, 02-session-tools]
 status: pending
 branch: ""
 worktree: ""
