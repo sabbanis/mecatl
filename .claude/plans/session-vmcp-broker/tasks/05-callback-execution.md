@@ -2,12 +2,12 @@
 id: 05-callback-execution
 title: Callback binding and protected broker tool execution
 blocked_by: [03-server-composition, 04-oauth-transaction]
-status: in-progress
+status: done
 branch: "plan-session-vmcp-broker/05-callback-execution"
 worktree: ""
 issue: ""
 retries: 0
-last_error: "reopened: failed downstream token exchange must preserve the exact pending handle/URL; AC2.6 needs embedded ToolHive vMCP credential-injection proof, not a generic MCP transport fake."
+last_error: ""
 accumulator: acc/session-vmcp-broker
 ---
 
