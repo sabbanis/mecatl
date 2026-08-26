@@ -2,8 +2,8 @@
 id: 08-evidence-and-docs
 title: Broker architecture, resource inventory, and Stage 2 evidence
 blocked_by: [03-server-composition, 07-teardown-lifecycle]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-session-vmcp-broker/08-evidence-and-docs"
 worktree: ""
 issue: ""
 retries: 0
