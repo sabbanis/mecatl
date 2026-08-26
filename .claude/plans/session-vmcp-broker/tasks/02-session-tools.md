@@ -2,8 +2,8 @@
 id: 02-session-tools
 title: Auth-none broker sessions and isolated tool execution
 blocked_by: [01-runtime-contract]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-session-vmcp-broker/02-session-tools"
 worktree: ""
 issue: ""
 retries: 0
