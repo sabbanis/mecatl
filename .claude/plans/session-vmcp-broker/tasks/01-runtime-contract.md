@@ -2,7 +2,7 @@
 id: 01-runtime-contract
 title: Broker runtime contract and static session-tool wrappers
 blocked_by: []
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""

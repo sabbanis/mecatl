@@ -1,7 +1,7 @@
 # Session-scoped vMCP broker — acceptance plan
 
 **Phase:** capability — session-scoped brokered streaming-HTTP MCP
-**Status:** draft, 2026-08-26. Synthesized from the Stage 0/1 proofs and the settled Stage 2 broker design.
+**Status:** in-progress, 2026-08-26. Synthesized from the Stage 0/1 proofs and the settled Stage 2 broker design.
 **ADR:** [ADR-0237](../adr/0237-session-scoped-vmcp-broker.md) — broker ownership, stable tool routing, and the control/data-plane boundary.
 **Accumulator branch:** `acc/session-vmcp-broker` (off `main`).
 
