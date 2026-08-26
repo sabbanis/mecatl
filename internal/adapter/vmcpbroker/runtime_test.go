@@ -4,12 +4,22 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
+	"github.com/stacklok/toolhive/pkg/authserver"
+	"github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 func TestCompileProfiles_DerivesProtectedRoutesFromSupportedAuthModes(t *testing.T) {
@@ -75,6 +85,186 @@ func TestCompileProfiles_RejectsUnsupportedOrAmbiguousProfiles(t *testing.T) {
 				t.Fatalf("CompileProfiles error = %v, want ErrInvalidRoute", err)
 			}
 		})
+	}
+}
+
+func newEmbeddedToolHiveIssuer(t *testing.T) string {
+	t.Helper()
+	upstream := httptest.NewServer(http.NotFoundHandler())
+	t.Cleanup(upstream.Close)
+	gateway := httptest.NewUnstartedServer(nil)
+	issuer := "https://" + gateway.Listener.Addr().String()
+	auth, err := runner.NewEmbeddedAuthServerWithStorage(context.Background(), &authserver.RunConfig{
+		SchemaVersion:    "v1",
+		Issuer:           issuer,
+		AllowedAudiences: []string{issuer},
+		Upstreams: []authserver.UpstreamRunConfig{{
+			Name: "upstream", Type: authserver.UpstreamProviderTypeOAuth2,
+			OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+				AuthorizationEndpoint: upstream.URL + "/authorize",
+				TokenEndpoint:         upstream.URL + "/token",
+				ClientID:              "test-client",
+				RedirectURI:           issuer + "/oauth/callback",
+				IdentityFromToken:     &authserver.IdentityFromTokenRunConfig{SubjectPath: "sub"},
+				AllowPrivateIPs:       true,
+				InsecureAllowHTTP:     true,
+			},
+		}},
+	}, storage.NewMemoryStorage())
+	if err != nil {
+		t.Fatalf("NewEmbeddedAuthServerWithStorage: %v", err)
+	}
+	gateway.Config.Handler = auth.Handler()
+	gateway.StartTLS()
+	t.Cleanup(func() {
+		gateway.Close()
+		if err := auth.Close(); err != nil {
+			t.Errorf("embedded authserver close: %v", err)
+		}
+	})
+	return gateway.URL
+}
+
+func TestSessionVMCPBroker_Scenario2_FirstConnectRequiresAuthorization(t *testing.T) {
+	protected := Route{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "mcp__github__list_issues", Schema: json.RawMessage(`{"type":"object"}`)}}
+	issuer := newEmbeddedToolHiveIssuer(t)
+	runtime, err := NewToolHiveRuntime([]Route{protected}, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		return session.ToolResult{}, nil
+	}, issuer, time.Minute)
+	if err != nil {
+		t.Fatalf("NewToolHiveRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	if _, err := runtime.OpenSession("parent-session"); err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	result, err := runtime.Connect(context.Background(), "parent-session", "github")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if result.AuthorizationRequired == nil || result.AuthorizationRequired.Handle == "" || result.AuthorizationRequired.ExpiresAt.IsZero() {
+		t.Fatalf("Connect result = %+v, want opaque authorization rendezvous", result)
+	}
+	issuerURL, err := url.Parse(issuer)
+	if err != nil {
+		t.Fatalf("parse issuer: %v", err)
+	}
+	browserURL, err := url.Parse(result.AuthorizationRequired.BrowserURL)
+	if err != nil || browserURL.Scheme != issuerURL.Scheme || browserURL.Host != issuerURL.Host || browserURL.Path != "/oauth/authorize" {
+		t.Fatalf("browser URL = %q, want embedded ToolHive HTTPS /oauth/authorize URL", result.AuthorizationRequired.BrowserURL)
+	}
+	for _, forbidden := range []string{"token", "refresh", "verifier", "code", "secret", "locator"} {
+		if strings.Contains(strings.ToLower(fmt.Sprintf("%+v", result)), forbidden) {
+			t.Fatalf("Connect result exposed %q: %+v", forbidden, result)
+		}
+	}
+}
+
+func TestSessionVMCPBroker_Scenario2_ConnectSingleflight(t *testing.T) {
+	protected := Route{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "mcp__github__list_issues", Schema: json.RawMessage(`{"type":"object"}`)}}
+	runtime, err := NewToolHiveRuntime([]Route{protected}, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		return session.ToolResult{}, nil
+	}, "https://broker.example.test", time.Minute)
+	if err != nil {
+		t.Fatalf("NewToolHiveRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	if _, err := runtime.OpenSession("parent-session"); err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	first, err := runtime.Connect(context.Background(), "parent-session", "github")
+	if err != nil {
+		t.Fatalf("first Connect: %v", err)
+	}
+	cancelled, cancel := context.WithCancel(context.Background())
+	cancel()
+	const callers = 16
+	results := make(chan ConnectResult, callers)
+	errs := make(chan error, callers)
+	var wait sync.WaitGroup
+	for range callers {
+		wait.Go(func() {
+			result, err := runtime.Connect(cancelled, "parent-session", "github")
+			results <- result
+			errs <- err
+		})
+	}
+	wait.Wait()
+	close(results)
+	close(errs)
+	for err := range errs {
+		if err != nil {
+			t.Fatalf("cancelled concurrent waiter Connect: %v", err)
+		}
+	}
+	for result := range results {
+		if first.AuthorizationRequired.Handle != result.AuthorizationRequired.Handle || first.AuthorizationRequired.BrowserURL != result.AuthorizationRequired.BrowserURL {
+			t.Fatalf("Connect transactions differ: first=%+v concurrent=%+v", first, result)
+		}
+	}
+}
+
+func TestSessionVMCPBroker_Scenario2_RejectsInvalidControlTargets(t *testing.T) {
+	var calls atomic.Int32
+	protected := Route{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "mcp__github__list_issues", Schema: json.RawMessage(`{"type":"object"}`)}}
+	runtime, err := NewToolHiveRuntime([]Route{protected}, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		calls.Add(1)
+		return session.ToolResult{}, nil
+	}, "https://broker.example.test", time.Minute)
+	if err != nil {
+		t.Fatalf("NewToolHiveRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	opened, err := runtime.OpenSession("parent-session")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	if err := runtime.ForgetSession("parent-session"); err != nil {
+		t.Fatalf("ForgetSession: %v", err)
+	}
+
+	for _, target := range []struct{ session, backend session.SessionID }{
+		{"unknown", "github"}, {"subagent-child", "github"}, {"parent-session", "github"}, {"parent-session", "unconfigured"},
+	} {
+		if _, err := runtime.Connect(context.Background(), target.session, string(target.backend)); !errors.Is(err, ErrInvalidControlTarget) {
+			t.Errorf("Connect(%q, %q) error = %v, want ErrInvalidControlTarget", target.session, target.backend, err)
+		}
+	}
+	if calls.Load() != 0 {
+		t.Fatalf("invalid control target contacted caller %d times", calls.Load())
+	}
+	if _, err := opened.Tools()[0].Execute(context.Background(), session.NewToolCall("call", "mcp__github__list_issues", nil), tool.Environment{}); !errors.Is(err, ErrClosed) {
+		t.Fatalf("forgotten session tool error = %v, want ErrClosed", err)
+	}
+}
+
+func TestSessionVMCPBroker_Scenario2_ExpiredTransactionIsCollected(t *testing.T) {
+	protected := Route{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "mcp__github__list_issues", Schema: json.RawMessage(`{"type":"object"}`)}}
+	runtime, err := NewToolHiveRuntime([]Route{protected}, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		return session.ToolResult{}, nil
+	}, "https://broker.example.test", -time.Second)
+	if err != nil {
+		t.Fatalf("NewToolHiveRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	if _, err := runtime.OpenSession("parent-session"); err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	first, err := runtime.Connect(context.Background(), "parent-session", "github")
+	if err != nil {
+		t.Fatalf("first Connect: %v", err)
+	}
+	if err := runtime.Callback(first.AuthorizationRequired.Handle); !errors.Is(err, ErrInvalidControlTarget) {
+		t.Fatalf("expired callback error = %v, want ErrInvalidControlTarget", err)
+	}
+	second, err := runtime.Connect(context.Background(), "parent-session", "github")
+	if err != nil {
+		t.Fatalf("second Connect: %v", err)
+	}
+	if second.AuthorizationRequired.Handle == first.AuthorizationRequired.Handle {
+		t.Fatalf("expired transaction was reused: %+v", second)
 	}
 }
 

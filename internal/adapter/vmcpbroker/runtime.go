@@ -5,12 +5,16 @@ package vmcpbroker
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
@@ -23,6 +27,11 @@ var ErrClosed = errors.New("vmcpbroker: closed")
 
 // ErrInvalidRoute reports invalid static broker catalogue input.
 var ErrInvalidRoute = errors.New("vmcpbroker: invalid route")
+
+// ErrInvalidControlTarget reports an unknown, closed, tombstoned, or unconfigured
+// composition-private control target. It deliberately does not identify which part
+// of the target was invalid.
+var ErrInvalidControlTarget = errors.New("vmcpbroker: invalid control target")
 
 // Route joins a neutral, model-facing tool specification to its private broker
 // backend route. BackendID is consumed only by the injected broker caller; it
@@ -106,11 +115,42 @@ type Caller func(context.Context, session.SessionID, Route, json.RawMessage) (se
 
 // Runtime owns the stable catalogue and opens session-local executable wrappers.
 type Runtime struct {
-	mu     sync.RWMutex
-	routes []Route
-	caller Caller
-	opener sessionOpener
-	closed bool
+	mu                sync.RWMutex
+	routes            []Route
+	caller            Caller
+	opener            sessionOpener
+	sessions          map[session.SessionID]*SessionTools
+	tombstones        map[session.SessionID]struct{}
+	authorizeEndpoint string
+	transactionTTL    time.Duration
+	transactions      map[controlTarget]authorizationTransaction
+	closed            bool
+}
+
+type controlTarget struct {
+	sessionID session.SessionID
+	backendID string
+}
+
+type authorizationTransaction struct {
+	handle     string
+	browserURL string
+	expiresAt  time.Time
+}
+
+// AuthorizationRequired is the safe, browser-facing rendezvous for a pending
+// ToolHive authorization. Its handle is opaque and is meaningful only to this
+// Runtime; it contains no upstream OAuth material.
+type AuthorizationRequired struct {
+	Handle     string
+	BrowserURL string
+	ExpiresAt  time.Time
+}
+
+// ConnectResult is either connected (reserved for callback completion) or asks
+// the composition caller to present AuthorizationRequired.
+type ConnectResult struct {
+	AuthorizationRequired *AuthorizationRequired
 }
 
 type sessionOpener func(context.Context, session.SessionID) (Caller, func() error, error)
@@ -133,7 +173,49 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 		copied[i] = copyRoute(route)
 	}
 	sort.Slice(copied, func(i, j int) bool { return copied[i].Tool.Name < copied[j].Tool.Name })
-	return &Runtime{routes: copied, caller: caller}, nil
+	return &Runtime{
+		routes:       copied,
+		caller:       caller,
+		sessions:     make(map[session.SessionID]*SessionTools),
+		tombstones:   make(map[session.SessionID]struct{}),
+		transactions: make(map[controlTarget]authorizationTransaction),
+	}, nil
+}
+
+// NewToolHiveRuntime enables composition-private connection rendezvous for one
+// ToolHive embedded authorization server. The server owns all upstream OAuth
+// protocol state; this Runtime retains only a random downstream handle bound to
+// an opened canonical session and protected backend.
+func NewToolHiveRuntime(routes []Route, caller Caller, issuer string, transactionTTL time.Duration) (*Runtime, error) {
+	endpoint, err := toolHiveAuthorizeEndpoint(issuer)
+	if err != nil {
+		return nil, err
+	}
+	protected := make(map[string]struct{})
+	for _, route := range routes {
+		if route.Protected {
+			protected[route.BackendID] = struct{}{}
+		}
+	}
+	if len(protected) != 1 {
+		return nil, fmt.Errorf("%w: exactly one protected backend is required", ErrInvalidRoute)
+	}
+	runtime, err := NewRuntime(routes, caller)
+	if err != nil {
+		return nil, err
+	}
+	runtime.authorizeEndpoint = endpoint
+	runtime.transactionTTL = transactionTTL
+	return runtime, nil
+}
+
+func toolHiveAuthorizeEndpoint(issuer string) (string, error) {
+	parsed, err := url.Parse(issuer)
+	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
+		return "", fmt.Errorf("%w: ToolHive issuer must be an HTTPS origin", ErrInvalidRoute)
+	}
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/") + "/oauth/authorize"
+	return parsed.String(), nil
 }
 
 // NewStreamingHTTPRuntime opens each session's wrappers against endpoint, the
@@ -205,7 +287,151 @@ func (r *Runtime) OpenSession(id session.SessionID) (*SessionTools, error) {
 		tools[i] = &sessionTool{sessionID: id, route: route, caller: caller, owner: opened}
 	}
 	opened.tools = tools
+
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		_ = opened.Close()
+		return nil, ErrClosed
+	}
+	if _, tombstoned := r.tombstones[id]; tombstoned {
+		r.mu.Unlock()
+		_ = opened.Close()
+		return nil, ErrInvalidControlTarget
+	}
+	if _, exists := r.sessions[id]; exists {
+		r.mu.Unlock()
+		_ = opened.Close()
+		return nil, fmt.Errorf("%w: session is already open", ErrInvalidRoute)
+	}
+	r.sessions[id] = opened
+	r.mu.Unlock()
 	return opened, nil
+}
+
+// Connect returns the one pending embedded-ToolHive authorization rendezvous
+// for an opened canonical parent session and its configured protected backend.
+// A caller's cancellation never cancels the shared browser transaction.
+func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backendID string) (ConnectResult, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return ConnectResult{}, ErrClosed
+	}
+	r.collectExpiredLocked(time.Now())
+	target := controlTarget{sessionID: sessionID, backendID: backendID}
+	if !r.validControlTargetLocked(target) {
+		return ConnectResult{}, ErrInvalidControlTarget
+	}
+	if transaction, ok := r.transactions[target]; ok {
+		return authorizationResult(transaction), nil
+	}
+	handle, err := newOpaqueHandle()
+	if err != nil {
+		return ConnectResult{}, fmt.Errorf("vmcpbroker: create authorization rendezvous: %w", err)
+	}
+	browserURL, err := url.Parse(r.authorizeEndpoint)
+	if err != nil {
+		return ConnectResult{}, ErrInvalidControlTarget
+	}
+	query := browserURL.Query()
+	query.Set("state", handle)
+	browserURL.RawQuery = query.Encode()
+	transaction := authorizationTransaction{
+		handle:     handle,
+		browserURL: browserURL.String(),
+		expiresAt:  time.Now().Add(r.transactionTTL),
+	}
+	r.transactions[target] = transaction
+	return authorizationResult(transaction), nil
+}
+
+// Callback is the broker's downstream callback rendezvous gate. Callback
+// completion is deliberately deferred to the following transaction task; an
+// unknown or expired handle is inert and cannot create or restore authority.
+func (r *Runtime) Callback(handle string) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return ErrClosed
+	}
+	r.collectExpiredLocked(time.Now())
+	for _, transaction := range r.transactions {
+		if transaction.handle == handle {
+			return nil
+		}
+	}
+	return ErrInvalidControlTarget
+}
+
+// ForgetSession tombstones a canonical session and removes all its pending
+// control state. It is intentionally idempotent so close paths can retry.
+func (r *Runtime) ForgetSession(id session.SessionID) error {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return ErrClosed
+	}
+	opened, exists := r.sessions[id]
+	if !exists {
+		if _, tombstoned := r.tombstones[id]; tombstoned {
+			r.mu.Unlock()
+			return nil
+		}
+		r.mu.Unlock()
+		return ErrInvalidControlTarget
+	}
+	delete(r.sessions, id)
+	r.tombstones[id] = struct{}{}
+	for target := range r.transactions {
+		if target.sessionID == id {
+			delete(r.transactions, target)
+		}
+	}
+	r.mu.Unlock()
+	return opened.Close()
+}
+
+func (r *Runtime) validControlTargetLocked(target controlTarget) bool {
+	if target.sessionID == "" || target.backendID == "" {
+		return false
+	}
+	if _, opened := r.sessions[target.sessionID]; !opened {
+		return false
+	}
+	if _, tombstoned := r.tombstones[target.sessionID]; tombstoned {
+		return false
+	}
+	for _, route := range r.routes {
+		if route.BackendID == target.backendID && route.Protected {
+			return r.authorizeEndpoint != ""
+		}
+	}
+	return false
+}
+
+func (r *Runtime) collectExpiredLocked(now time.Time) {
+	for target, transaction := range r.transactions {
+		if !transaction.expiresAt.After(now) {
+			delete(r.transactions, target)
+		}
+	}
+}
+
+func authorizationResult(transaction authorizationTransaction) ConnectResult {
+	return ConnectResult{AuthorizationRequired: &AuthorizationRequired{
+		Handle:     transaction.handle,
+		BrowserURL: transaction.browserURL,
+		ExpiresAt:  transaction.expiresAt,
+	}}
+}
+
+func newOpaqueHandle() (string, error) {
+	bytes := make([]byte, 32)
+	if _, err := rand.Read(bytes); err != nil {
+		return "", err
+	}
+	return base64.RawURLEncoding.EncodeToString(bytes), nil
 }
 
 // Close prevents new session wrappers. Existing wrappers are intentionally not
