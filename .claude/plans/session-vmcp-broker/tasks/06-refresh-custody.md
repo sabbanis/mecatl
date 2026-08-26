@@ -2,18 +2,18 @@
 id: 06-refresh-custody
 title: Broker-only bearer refresh, secrecy, and OAuth capability boundary
 blocked_by: [05-callback-execution]
-status: done
+status: in-progress
 branch: "plan-session-vmcp-broker/06-refresh-custody"
 worktree: ""
 issue: ""
 retries: 0
-last_error: ""
+last_error: "reopened: terminal refresh failure must remove the grant; refresh must handle expiry during an established MCP transport and prove the embedded ToolHive path plus complete AC3.3 projection audit."
 accumulator: acc/session-vmcp-broker
 ---
 
 # Task brief
 
-Implement session-local broker transport renewal and all custody protections. Expired downstream bearer refresh occurs only inside the tool HTTP transport and concurrent renewal cannot restore removed state. Audit returned errors, diagnostics, tool/session/event projections and outbound metadata for every listed secret canary; use injected diagnostics only. Reject a second OAuth backend before a second auth lineage or upstream request, while preserving anonymous backends.
+Implement session-local broker transport renewal and all custody protections. A terminal downstream refresh failure must remove the unusable private grant so the next `Connect` returns `AuthorizationRequired`, never stale `Connected`. Refresh must also handle bearer expiry after an MCP transport is already established: close/reconnect the protected session-local transport as needed, refresh privately, and retry without a browser flow. Concurrent renewal cannot restore removed state. Prove the real embedded ToolHive refresh path in addition to tight unit tests; do not treat a standalone fake endpoint plus internal grant injection as sufficient. Audit returned errors, injected diagnostics, tool/session/event projections, browser responses, and outbound metadata for every listed secret canary with actual captures; use injected diagnostics only. Reject a second OAuth backend before a second auth lineage or upstream request, while preserving anonymous backends.
 
 ## Acceptance criteria
 
