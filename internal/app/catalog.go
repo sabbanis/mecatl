@@ -146,11 +146,12 @@ type catalogAssets struct {
 // startup and never per session/new. WARNs (anomalies: duplicate MCP names,
 // registration failures) are NOT gated — they fire on whichever path hits them.
 type catalogSession struct {
-	provider   port.LLMProvider
-	providerID string
-	model      string
-	clientMgr  *mcp.Manager
-	narrate    bool
+	provider    port.LLMProvider
+	providerID  string
+	model       string
+	clientMgr   *mcp.Manager
+	brokerTools []tool.Tool
+	narrate     bool
 	// noFS selects the NO-FILESYSTEM catalog profile (the "no-fs" session
 	// profile, issue #55): the core tier registers tools.NoFS() (WebFetch only)
 	// instead of tools.All()+Bash, Parallel and SkillDraft are skipped (both are
@@ -227,6 +228,7 @@ func assembleCatalog(ctx context.Context, cfg Config, reg *providerRegistry, sto
 		Rationale: "server-global MCP tools are process-wide configured infrastructure shared by every caller"}, func() {
 		mountGlobalMCP(ctx, cfg, cat, *a, s)
 	})
+	mountBrokerMCP(cat, s.brokerTools)
 	clientBefore := classified.names()
 	clientClose := mountClientMCP(ctx, cfg, cat, s)
 	classified.classifyAdded(clientBefore, server.ClassificationEntry{Kind: server.KindDerived,
@@ -276,6 +278,12 @@ func assembleCatalog(ctx context.Context, cfg Config, reg *providerRegistry, sto
 		closeFn = func() error { return nil }
 	}
 	return cat, closeFn
+}
+
+func mountBrokerMCP(cat *tool.Catalog, tools []tool.Tool) {
+	if len(tools) != 0 {
+		_, _ = mcp.Register(cat, tools)
+	}
 }
 
 // mountGlobalMCP mounts the server-global MCP tools (cfg.MCPServers + ToolHive),

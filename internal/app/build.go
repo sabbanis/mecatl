@@ -82,6 +82,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/tokenizer"
 	"github.com/stacklok/mecatl/internal/adapter/toolhivellm"
 	"github.com/stacklok/mecatl/internal/adapter/tools"
+	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 	"github.com/stacklok/mecatl/internal/adapter/xdgconfig"
 	"github.com/stacklok/mecatl/internal/buildinfo"
 	"github.com/stacklok/mecatl/internal/syscaller"
@@ -842,6 +843,11 @@ type Config struct {
 	MCPPrompts          bool
 	ToolHiveEnabled     bool
 	ToolHiveGroup       string
+	// VMCPBroker is root-internal session-scoped broker composition. Its binding
+	// index is deliberately external to engine/session persistence.
+	VMCPBroker           *vmcpbroker.Runtime
+	VMCPBrokerGeneration string
+	VMCPBrokerBindings   *vmcpbroker.BindingIndex
 
 	// File-based permission config (issue #13). PermissionsConventional turns on
 	// auto-discovery of the conventional per-project config (<ws>/.mecatl/settings.yaml
@@ -2140,9 +2146,12 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		// Per-session client MCP (ACP session/new mcpServers): builds a scoped engine
 		// over the client's streaming-HTTP servers, mounted for that session only. Built
 		// in buildEngine so it shares the main engine's exact collaborators.
-		SessionEngine:      sessFactory,
-		DebugSessionEngine: debugSessionEngineFactory(cfg, reg, provider, store, eventLog, policy, assets.globalMgr),
-		DebugMCP:           assets.globalMgr != nil && len(assets.globalMgr.Tools()) > 0,
+		SessionEngine:        sessFactory,
+		DebugSessionEngine:   debugSessionEngineFactory(cfg, reg, provider, store, eventLog, policy, assets.globalMgr),
+		DebugMCP:             assets.globalMgr != nil && len(assets.globalMgr.Tools()) > 0,
+		VMCPBroker:           cfg.VMCPBroker,
+		VMCPBrokerGeneration: cfg.VMCPBrokerGeneration,
+		VMCPBrokerBindings:   cfg.VMCPBrokerBindings,
 		// ModeNeedsEngine (ADR 0030 Layer 3): tells the Service whether a session's
 		// PermissionMode would resolve a model DIFFERING from the shared engine's model
 		// (cfg.Model) — i.e. whether a plan slot is configured AND it resolves to a
@@ -2723,6 +2732,14 @@ func sessionEngineFactory(
 		}
 		mountedClientMCP := mountedClientMCPNames(mgr)
 
+		brokerTools := server.VMCPBrokerTools(ctx)
+		if err := rejectBrokerGlobalToolCollisions(brokerTools, assets.globalMgr); err != nil {
+			if mgr != nil {
+				_ = mgr.Close()
+			}
+			return server.SessionEngineResult{}, err
+		}
+
 		// Assemble the per-session catalog through the SAME assembleCatalog the
 		// build-time shared catalog uses (issue #42 — the anti-drift seam): core +
 		// server-global MCP (+ resource meta-tools) + client MCP + Subagent trio +
@@ -2744,6 +2761,7 @@ func sessionEngineFactory(
 			providerID:      resolvedProviderID,
 			model:           resolvedModel,
 			clientMgr:       mgr,
+			brokerTools:     brokerTools,
 			narrate:         false,
 			noFS:            noFS,
 			mode:            mode,
@@ -2846,6 +2864,26 @@ func sessionEngineFactory(
 			Close:            closeFn,
 		}, nil
 	}
+}
+
+// rejectBrokerGlobalToolCollisions keeps session broker tools from shadowing
+// process-global MCP tools. Unlike ordinary catalog precedence this is a
+// configuration error: a broker session must not silently bind a different
+// backend after a restart or global configuration change.
+func rejectBrokerGlobalToolCollisions(brokerTools []tool.Tool, global *mcp.Manager) error {
+	if len(brokerTools) == 0 || global == nil {
+		return nil
+	}
+	globalNames := make(map[string]struct{}, len(global.Tools()))
+	for _, registered := range global.Tools() {
+		globalNames[registered.Spec().Name] = struct{}{}
+	}
+	for _, brokerTool := range brokerTools {
+		if _, exists := globalNames[brokerTool.Spec().Name]; exists {
+			return fmt.Errorf("session vMCP broker tool %q collides with server-global MCP tool", brokerTool.Spec().Name)
+		}
+	}
+	return nil
 }
 
 // catalogContextWindow returns the embedded models.dev catalog's total context

@@ -24,6 +24,55 @@ var ErrClosed = errors.New("vmcpbroker: closed")
 // ErrInvalidRoute reports invalid static broker catalogue input.
 var ErrInvalidRoute = errors.New("vmcpbroker: invalid route")
 
+// BindingIndex records which persisted parent sessions require broker
+// reattachment. It is root-internal state keyed by the canonical session ID and
+// immutable broker configuration generation; it is deliberately not session data.
+type BindingIndex struct {
+	mu      sync.RWMutex
+	entries map[session.SessionID]string
+}
+
+// NewBindingIndex constructs an empty root-owned binding index.
+func NewBindingIndex() *BindingIndex {
+	return &BindingIndex{entries: make(map[session.SessionID]string)}
+}
+
+// Bind records the broker configuration generation for id.
+func (i *BindingIndex) Bind(id session.SessionID, generation string) error {
+	if i == nil || id == "" || generation == "" {
+		return fmt.Errorf("%w: broker binding id and generation are required", ErrInvalidRoute)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if prior, ok := i.entries[id]; ok && prior != generation {
+		return fmt.Errorf("%w: broker binding generation conflicts for session %q", ErrInvalidRoute, id)
+	}
+	i.entries[id] = generation
+	return nil
+}
+
+// Generation returns the configured broker generation for id.
+func (i *BindingIndex) Generation(id session.SessionID) (string, bool) {
+	if i == nil {
+		return "", false
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	generation, ok := i.entries[id]
+	return generation, ok
+}
+
+// Unbind removes the record created by a failed create.
+func (i *BindingIndex) Unbind(id session.SessionID) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	delete(i.entries, id)
+	i.mu.Unlock()
+}
+
+
 // Route joins a neutral, model-facing tool specification to its private broker
 // backend route. BackendID is consumed only by the injected broker caller; it
 // is never copied into ToolSpec, a ToolCall, or a ToolResult.
