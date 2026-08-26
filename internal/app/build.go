@@ -843,11 +843,9 @@ type Config struct {
 	MCPPrompts          bool
 	ToolHiveEnabled     bool
 	ToolHiveGroup       string
-	// VMCPBroker is root-internal session-scoped broker composition. Its binding
-	// index is deliberately external to engine/session persistence.
-	VMCPBroker           *vmcpbroker.Runtime
-	VMCPBrokerGeneration string
-	VMCPBrokerBindings   *vmcpbroker.BindingIndex
+	// VMCPBroker is root-internal, process-lifetime composition state. Its
+	// session wrappers are not persisted or reattached after restart.
+	VMCPBroker *vmcpbroker.Runtime
 
 	// File-based permission config (issue #13). PermissionsConventional turns on
 	// auto-discovery of the conventional per-project config (<ws>/.mecatl/settings.yaml
@@ -2146,12 +2144,10 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		// Per-session client MCP (ACP session/new mcpServers): builds a scoped engine
 		// over the client's streaming-HTTP servers, mounted for that session only. Built
 		// in buildEngine so it shares the main engine's exact collaborators.
-		SessionEngine:        sessFactory,
-		DebugSessionEngine:   debugSessionEngineFactory(cfg, reg, provider, store, eventLog, policy, assets.globalMgr),
-		DebugMCP:             assets.globalMgr != nil && len(assets.globalMgr.Tools()) > 0,
-		VMCPBroker:           cfg.VMCPBroker,
-		VMCPBrokerGeneration: cfg.VMCPBrokerGeneration,
-		VMCPBrokerBindings:   cfg.VMCPBrokerBindings,
+		SessionEngine:      sessFactory,
+		DebugSessionEngine: debugSessionEngineFactory(cfg, reg, provider, store, eventLog, policy, assets.globalMgr),
+		DebugMCP:           assets.globalMgr != nil && len(assets.globalMgr.Tools()) > 0,
+		VMCPBroker:         cfg.VMCPBroker,
 		// ModeNeedsEngine (ADR 0030 Layer 3): tells the Service whether a session's
 		// PermissionMode would resolve a model DIFFERING from the shared engine's model
 		// (cfg.Model) — i.e. whether a plan slot is configured AND it resolves to a

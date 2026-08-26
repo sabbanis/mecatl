@@ -11,7 +11,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 )
 
-func TestMountBrokerMCPRegistersSessionOnlyTool(t *testing.T) {
+func TestSessionVMCPBroker_Scenario1_MountsSessionToolsOnly(t *testing.T) {
 	runtime, err := vmcpbroker.NewRuntime([]vmcpbroker.Route{{
 		BackendID: "calendar",
 		Tool: tool.ToolSpec{
@@ -39,7 +39,7 @@ func TestMountBrokerMCPRegistersSessionOnlyTool(t *testing.T) {
 	}
 }
 
-func TestRejectBrokerGlobalToolCollisions(t *testing.T) {
+func TestSessionVMCPBroker_Scenario1_RejectsGlobalToolCollision(t *testing.T) {
 	globalMgr := connectMainManager(t, "fake", newMCPTestServerBigJSON(t))
 	t.Cleanup(func() { _ = globalMgr.Close() })
 

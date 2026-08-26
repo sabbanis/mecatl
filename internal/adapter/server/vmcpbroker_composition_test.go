@@ -13,6 +13,7 @@ import (
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/mcp"
@@ -50,13 +51,11 @@ func TestSessionVMCPBroker_Scenario1_ReservesIDBeforeBrokerSession(t *testing.T)
 		}, nil
 	}
 	svc, err := server.NewService(server.Config{
-		Engine:                agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}),
-		Store:                 memstore.New(),
-		Workspaces:            func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
-		SessionEngine:         factory,
-		VMCPBroker:            runtime,
-		VMCPBrokerGeneration:  "config-v1",
-		VMCPBrokerBindings:    vmcpbroker.NewBindingIndex(),
+		Engine:        agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}),
+		Store:         memstore.New(),
+		Workspaces:    func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		SessionEngine: factory,
+		VMCPBroker:    runtime,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -81,54 +80,78 @@ func TestSessionVMCPBroker_Scenario1_ReservesIDBeforeBrokerSession(t *testing.T)
 	}
 }
 
-func TestSessionVMCPBroker_Scenario4_RestartIsExplicit(t *testing.T) {
-	const id = session.SessionID("broker-restart-id")
-	store := memstore.New()
-	bindings := vmcpbroker.NewBindingIndex()
-	factory := func(ctx context.Context, _ server.ProviderSelector, _ []mcp.ServerConfig, _ server.SessionProfile, _ string, _ session.PermissionMode) (server.SessionEngineResult, error) {
-		if len(server.VMCPBrokerTools(ctx)) != 1 {
-			return server.SessionEngineResult{}, errors.New("broker session was not reattached")
-		}
-		return server.SessionEngineResult{Engine: agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}), Close: func() error { return nil }}, nil
-	}
-	newRuntime := func(t *testing.T) *vmcpbroker.Runtime {
+type failSaveStore struct {
+	port.SessionStore
+	err error
+}
+
+func (s failSaveStore) Save(context.Context, *session.Session) error { return s.err }
+
+func TestSessionVMCPBroker_Scenario1_ClosesResourcesOnCreateFailure(t *testing.T) {
+	createRuntime := func(t *testing.T) *vmcpbroker.Runtime {
 		t.Helper()
-		runtime, err := vmcpbroker.NewRuntime([]vmcpbroker.Route{{BackendID: "calendar", Tool: tool.ToolSpec{Name: "mcp__calendar__list_events", Schema: json.RawMessage(`{"type":"object"}`)}}}, func(context.Context, session.SessionID, vmcpbroker.Route, json.RawMessage) (session.ToolResult, error) {
-			return session.ToolResult{}, nil
+		runtime, err := vmcpbroker.NewRuntime([]vmcpbroker.Route{{
+			BackendID: "calendar",
+			Tool:      tool.ToolSpec{Name: "mcp__calendar__list_events", Schema: json.RawMessage(`{"type":"object"}`)},
+		}}, func(_ context.Context, _ session.SessionID, _ vmcpbroker.Route, _ json.RawMessage) (session.ToolResult, error) {
+			return session.NewToolResult("call", "ok"), nil
 		})
 		if err != nil {
 			t.Fatalf("NewRuntime: %v", err)
 		}
+		t.Cleanup(func() { _ = runtime.Close() })
 		return runtime
 	}
-	firstRuntime := newRuntime(t)
-	first, err := server.NewService(server.Config{Engine: agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}), Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }, SessionEngine: factory, VMCPBroker: firstRuntime, VMCPBrokerGeneration: "config-v1", VMCPBrokerBindings: bindings})
-	if err != nil {
-		t.Fatalf("first NewService: %v", err)
-	}
-	if _, err := first.CreateSessionWithProfile(context.Background(), "/workspace", session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault, server.WithSessionID(id)); err != nil {
-		t.Fatalf("CreateSessionWithProfile: %v", err)
-	}
-	first.Close()
-	_ = firstRuntime.Close()
 
-	secondRuntime := newRuntime(t)
-	second, err := server.NewService(server.Config{Engine: agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}), Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }, SessionEngine: factory, VMCPBroker: secondRuntime, VMCPBrokerGeneration: "config-v1", VMCPBrokerBindings: bindings})
-	if err != nil {
-		t.Fatalf("second NewService: %v", err)
-	}
-	t.Cleanup(func() { second.Close(); _ = secondRuntime.Close() })
-	if _, err := second.StartRun(context.Background(), id, "restart"); err != nil {
-		t.Fatalf("restart with matching broker configuration: %v", err)
-	}
-	second.CloseSession(id)
+	for _, test := range []struct {
+		name       string
+		store      port.SessionStore
+		factoryErr error
+	}{
+		{name: "factory", store: memstore.New(), factoryErr: errors.New("factory failed")},
+		{name: "persistence", store: failSaveStore{SessionStore: memstore.New(), err: errors.New("save failed")}},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			var brokerTool tool.Tool
+			closedFactory := false
+			factory := func(ctx context.Context, _ server.ProviderSelector, _ []mcp.ServerConfig, _ server.SessionProfile, _ string, _ session.PermissionMode) (server.SessionEngineResult, error) {
+				brokerTools := server.VMCPBrokerTools(ctx)
+				if len(brokerTools) != 1 {
+					return server.SessionEngineResult{}, errors.New("broker tools were not opened")
+				}
+				brokerTool = brokerTools[0]
+				if test.factoryErr != nil {
+					return server.SessionEngineResult{}, test.factoryErr
+				}
+				return server.SessionEngineResult{
+					Engine: agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}),
+					Close:  func() error { closedFactory = true; return nil },
+				}, nil
+			}
+			svc, err := server.NewService(server.Config{
+				Engine:        agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}),
+				Store:         test.store,
+				Workspaces:    func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+				SessionEngine: factory,
+				VMCPBroker:    createRuntime(t),
+			})
+			if err != nil {
+				t.Fatalf("NewService: %v", err)
+			}
+			t.Cleanup(svc.Close)
 
-	withoutRuntime, err := server.NewService(server.Config{Engine: agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}), Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }, SessionEngine: factory, VMCPBrokerBindings: bindings})
-	if err != nil {
-		t.Fatalf("NewService without runtime: %v", err)
-	}
-	t.Cleanup(withoutRuntime.Close)
-	if _, err := withoutRuntime.StartRun(context.Background(), id, "must not use shared engine"); !errors.Is(err, server.ErrFailedPrecondition) {
-		t.Fatalf("restart without broker error = %v, want ErrFailedPrecondition", err)
+			if _, err := svc.CreateSessionWithProfile(context.Background(), "/workspace", session.ModeDefault, session.Limits{}, server.ProviderSelector{}, server.ProfileDefault, server.WithSessionID("failed-create")); err == nil {
+				t.Fatal("CreateSessionWithProfile succeeded, want failure")
+			}
+			if brokerTool == nil {
+				t.Fatal("factory did not receive broker tool")
+			}
+			if _, err := brokerTool.Execute(context.Background(), session.NewToolCall("call", brokerTool.Spec().Name, []byte(`{}`)), tool.Environment{}); !errors.Is(err, vmcpbroker.ErrClosed) {
+				t.Fatalf("broker tool after failed create error = %v, want ErrClosed", err)
+			}
+			if test.factoryErr == nil && !closedFactory {
+				t.Fatal("factory resource was not closed after persistence failure")
+			}
+		})
 	}
 }

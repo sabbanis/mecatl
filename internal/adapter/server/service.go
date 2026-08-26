@@ -589,12 +589,9 @@ type Config struct {
 	// uses the shared Engine (zero overhead). The composition root (internal/app)
 	// supplies it.
 	SessionEngine SessionEngineFactory
-	// VMCPBroker and its binding index are root-internal composition state. The
-	// binding index, not the session snapshot, identifies broker-enabled sessions
-	// across service reconstruction.
-	VMCPBroker           *vmcpbroker.Runtime
-	VMCPBrokerGeneration string
-	VMCPBrokerBindings   *vmcpbroker.BindingIndex
+	// VMCPBroker is root-internal, process-lifetime composition state. Its
+	// per-session wrappers are never persisted or reattached after restart.
+	VMCPBroker *vmcpbroker.Runtime
 
 	// ModeNeedsEngine reports whether a given session PermissionMode resolves a model
 	// that DIFFERS from the shared engine's model (ADR 0030 Layer 3) — i.e. whether a
@@ -1307,9 +1304,6 @@ func NewService(cfg Config) (*Service, error) {
 		return nil, err
 	}
 	cfg.ServerImplementation = normalizeServerImplementation(cfg.ServerImplementation)
-	if cfg.VMCPBroker != nil && (cfg.VMCPBrokerGeneration == "" || cfg.VMCPBrokerBindings == nil) {
-		return nil, fmt.Errorf("%w: VMCP broker requires a generation and binding index", ErrConfig)
-	}
 	if cfg.DefaultMode == "" {
 		cfg.DefaultMode = session.ModeDefault
 	}
@@ -2076,39 +2070,15 @@ func (s *Service) bindRelatedIncarnations(ctx context.Context, opts *createSessi
 	return nil
 }
 
-func (s *Service) openBrokerSession(id session.SessionID, bind bool) ([]tool.Tool, func() error, error) {
+func (s *Service) openBrokerSession(id session.SessionID) ([]tool.Tool, func() error, error) {
 	if s.cfg.VMCPBroker == nil {
 		return nil, nil, nil
 	}
-	if bind {
-		if err := s.cfg.VMCPBrokerBindings.Bind(id, s.cfg.VMCPBrokerGeneration); err != nil {
-			return nil, nil, fmt.Errorf("server: bind broker session %q: %w", id, err)
-		}
-	}
 	opened, err := s.cfg.VMCPBroker.OpenSession(id)
 	if err != nil {
-		if bind {
-			s.cfg.VMCPBrokerBindings.Unbind(id)
-		}
 		return nil, nil, fmt.Errorf("server: open broker session %q: %w", id, err)
 	}
 	return opened.Tools(), opened.Close, nil
-}
-
-// brokerEnabled reports a persisted root binding and rejects an absent or changed
-// runtime instead of silently selecting the shared engine.
-func (s *Service) brokerEnabled(id session.SessionID) (bool, error) {
-	if s.cfg.VMCPBrokerBindings == nil {
-		return false, nil
-	}
-	generation, bound := s.cfg.VMCPBrokerBindings.Generation(id)
-	if !bound {
-		return false, nil
-	}
-	if s.cfg.VMCPBroker == nil || generation != s.cfg.VMCPBrokerGeneration {
-		return false, fmt.Errorf("%w: broker configuration for persisted session %q cannot be reattached", ErrFailedPrecondition, id)
-	}
-	return true, nil
 }
 
 func (s *Service) createSession(ctx context.Context, workspace string, mode session.PermissionMode, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, opts createSessionOpts) (*session.Session, error) {
@@ -2162,6 +2132,7 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 		defer release()
 		mintID = func() session.SessionID { return opts.id }
 	}
+
 	// Issue #20 (model-switch context carryover): when a source session is
 	// named, validate it (turn-boundary) and snapshot its conversation ONCE
 	// here, so both create branches seed the new session's history BEFORE the
@@ -2279,7 +2250,7 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 		res, err = s.cfg.DebugSessionEngine(ctx, sel, profile, mode, opts.debugTargetID, session.DebugTargetFingerprint(debugTarget), debugTarget.Owner, opts.debugMCPServers, nil)
 	} else {
 		var brokerTools []tool.Tool
-		brokerTools, brokerClose, err = s.openBrokerSession(id, s.cfg.VMCPBroker != nil)
+		brokerTools, brokerClose, err = s.openBrokerSession(id)
 		if err != nil {
 			return nil, err
 		}
@@ -2287,7 +2258,6 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 			defer func() {
 				if brokerClose != nil {
 					_ = brokerClose()
-					s.cfg.VMCPBrokerBindings.Unbind(id)
 				}
 			}()
 			ctx = context.WithValue(ctx, brokerToolsContextKey{}, brokerTools)
@@ -2316,7 +2286,6 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 		openedBrokerClose := brokerClose
 		factoryClose := closeFn
 		closeFn = func() error {
-			defer s.cfg.VMCPBrokerBindings.Unbind(id)
 			if factoryClose != nil {
 				if err := factoryClose(); err != nil {
 					_ = openedBrokerClose()
@@ -2409,8 +2378,8 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 		}
 		return persisted, perr
 	}
-	// SessionEngineResult.Close now owns the broker session. Keep its durable
-	// binding for restart reattachment; the deferred rollback applies only failures.
+	// SessionEngineResult.Close now owns the broker session; the deferred rollback
+	// applies only to construction and persistence failures.
 	brokerClose = nil
 	return sess, nil
 }
@@ -4478,10 +4447,6 @@ func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Ses
 	se, hasEngine := s.sessionEngines[id]
 	envOverride, hasEnvOverride := s.sessionEnvironments[id]
 	s.mu.Unlock()
-	brokerBound, err := s.brokerEnabled(id)
-	if err != nil {
-		return nil, tool.Environment{}, err
-	}
 	switch {
 	case hasEngine && se.builtForMode != "" && se.builtForMode != sess.Mode:
 		// CASE 1 (ADR 0030 Layer 3): the registered per-session engine was built for a
@@ -4510,7 +4475,7 @@ func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Ses
 		s.mu.Lock()
 		envOverride, hasEnvOverride = s.sessionEnvironments[id]
 		s.mu.Unlock()
-	case !hasEngine && !s.needsRehydration(sess, brokerBound) && s.cfg.ModeNeedsEngine != nil && s.cfg.SessionEngine != nil && s.cfg.ModeNeedsEngine(sess.Mode):
+	case !hasEngine && !s.needsRehydration(sess) && s.cfg.ModeNeedsEngine != nil && s.cfg.SessionEngine != nil && s.cfg.ModeNeedsEngine(sess.Mode):
 		// CASE 2 (ADR 0030 Layer 3): a DEFAULT-FS session that would otherwise ride the
 		// shared engine, but its mode (plan) resolves a DIFFERENT model — promote it to a
 		// per-session factory engine. A default-FS session has the empty selector + a real
@@ -4523,7 +4488,7 @@ func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Ses
 		}
 		se, hasEngine = promoted, true
 	}
-	if !hasEngine && s.needsRehydration(sess, brokerBound) {
+	if !hasEngine && s.needsRehydration(sess) {
 		// RESTART REHYDRATION (issue #55, widened in the cloud-native Phase 1): a
 		// PERSISTED session that needed a PER-SESSION engine — a non-default
 		// provider/model selector, OR the no-fs profile — has its engine + (for no-fs)
@@ -4786,9 +4751,8 @@ func (s *Service) sessionNeedsPerFactory(sel ProviderSelector, specs []mcp.Serve
 // it — a session created before a restart into a still-down proxy would
 // keep riding whatever engine gets (re)built for it without ever picking up
 // a heal that lands after the restart.
-func (s *Service) needsRehydration(sess *session.Session, brokerBound bool) bool {
-	return brokerBound ||
-		sess.Kind == session.SessionKindDebug ||
+func (s *Service) needsRehydration(sess *session.Session) bool {
+	return sess.Kind == session.SessionKindDebug ||
 		s.cfg.LearnedSkills != nil && sess.Owner != nil && sess.Owner.Issuer != "" && sess.Owner.Subject != "" ||
 		sess.Profile == string(ProfileNoFS) ||
 		sess.ProviderID != "" || sess.ModelID != "" ||
@@ -4902,7 +4866,6 @@ func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *sessi
 	}
 	var res SessionEngineResult
 	var err error
-	var brokerClose func() error
 	if sess.Kind == session.SessionKindDebug {
 		target, loadErr := s.cfg.Store.Load(ctx, sess.Relationship.DebugTargetID)
 		if loadErr != nil || target == nil || sess.DebugTargetFingerprint == "" || !sess.Relationship.DebugTargetIncarnation.Valid() ||
@@ -4914,40 +4877,12 @@ func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *sessi
 		}
 		res, err = s.cfg.DebugSessionEngine(ctx, sel, profile, mode, sess.Relationship.DebugTargetID, sess.DebugTargetFingerprint, target.Owner, sess.DebugMCPServers, sess.DebugMCPTools)
 	} else {
-		var brokerBound bool
-		brokerBound, err = s.brokerEnabled(id)
-		if err != nil {
-			return nil, err
-		}
-		if brokerBound {
-			var brokerTools []tool.Tool
-			brokerTools, brokerClose, err = s.openBrokerSession(id, false)
-			if err != nil {
-				return nil, err
-			}
-			ctx = context.WithValue(ctx, brokerToolsContextKey{}, brokerTools)
-		}
 		res, err = s.cfg.SessionEngine(ctx, sel, nil, profile, sess.Workspace, mode)
 	}
 	if err != nil {
-		if brokerClose != nil {
-			_ = brokerClose()
-		}
 		return nil, fmt.Errorf("server: build session engine %q: %w", id, err)
 	}
 	closeFn := res.Close
-	if brokerClose != nil {
-		factoryClose := closeFn
-		closeFn = func() error {
-			if factoryClose != nil {
-				if err := factoryClose(); err != nil {
-					_ = brokerClose()
-					return err
-				}
-			}
-			return brokerClose()
-		}
-	}
 	se := &sessionEngine{
 		engine:          res.Engine,
 		caps:            res.Capabilities,
