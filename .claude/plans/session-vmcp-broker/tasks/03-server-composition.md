@@ -13,7 +13,7 @@ accumulator: acc/session-vmcp-broker
 
 # Task brief
 
-Wire a configured broker Runtime through root composition and the server's per-session engine factory. Reserve the canonical ID before broker session open; mount its tools through `assembleCatalog` without altering `Config.MCPServers` or the global manager. Reject broker/global fully-qualified tool collisions before any ambiguous wrapper mounts. Rehydrate broker-enabled persisted sessions explicitly or fail precondition; never silently use the shared engine. Keep controls private and no public wire/UI change.
+Wire the configured broker Runtime through root composition and the server's per-session engine factory. Read `.claude/plans/session-vmcp-broker/RESTART-HANDOVER.md` before coding; it is the corrective architecture source for this task. Reserve the canonical ID before broker session resources open; mount its tools through `assembleCatalog` without altering `Config.MCPServers` or the global manager. Reject broker/global fully-qualified tool collisions before any ambiguous wrapper mounts. Rehydrate a persisted broker-enabled session through a root-internal broker binding/index keyed by the canonical session ID and immutable broker/config generation, or fail precondition; never silently use the shared engine. Do not add or persist a broker field in `engine/session`, `engine/adapter/sessnap`, `engine/api`, or `engine/port`. Keep controls private and add no public wire/UI change.
 
 ## Acceptance criteria
 

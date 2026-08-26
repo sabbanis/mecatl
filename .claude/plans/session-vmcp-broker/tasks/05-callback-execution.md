@@ -13,7 +13,7 @@ accumulator: acc/session-vmcp-broker
 
 # Task brief
 
-Complete the one-backend OAuth callback boundary and make the already-mounted protected wrapper execute through vMCP after a valid connection. Bind callback completion strictly to the original opaque transaction; consume it once; do not permit replay or cross-session installation. Preserve the model-visible catalogue and tool identity before and after connection.
+Read `.claude/plans/session-vmcp-broker/RESTART-HANDOVER.md` before coding. Complete the one-backend ToolHive callback boundary and make the already-mounted protected wrapper execute through embedded vMCP after a valid connection. Bind callback completion strictly to the original opaque broker transaction; consume it once; do not permit replay or cross-session installation. The callback receives ToolHive's downstream authorization code and exchanges it only at ToolHive `/oauth/token`; it never accepts or exchanges an upstream provider authorization code. Preserve the model-visible catalogue and tool identity before and after connection.
 
 ## Acceptance criteria
 

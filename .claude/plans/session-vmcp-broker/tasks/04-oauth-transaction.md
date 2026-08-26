@@ -13,7 +13,7 @@ accumulator: acc/session-vmcp-broker
 
 # Task brief
 
-Implement composition-private `Connect(sessionID, backendID)` transaction creation for one protected backend. Use ToolHive plus `x/oauth2`, explicit bounded no-proxy exact-origin/DNS-pinned OAuth egress, opaque state, expiry collection, target validation, and per-session/backend singleflight. Browser input proves only broker-created state. Do not create a public API or modify direct MCP OAuth controller behavior.
+Read `.claude/plans/session-vmcp-broker/RESTART-HANDOVER.md` before coding; it supersedes the discarded direct-OAuth approach. Implement composition-private `Connect(sessionID, backendID)` for exactly one protected backend by composing the accepted Stage 0 ToolHive authserver/vMCP single-upstream path. The broker may create an opaque broker callback rendezvous and bind it to the canonical session/backend, but ToolHive owns upstream discovery, authorization URL construction, upstream PKCE/state, upstream callback, credential storage, and upstream token refresh. `Connect` returns the embedded ToolHive `/oauth/authorize` browser URL, not an upstream issuer URL; after callback, the broker exchanges ToolHive's downstream authorization code only at ToolHive `/oauth/token`. Keep the dedicated bounded no-proxy exact-origin/DNS-pinned egress policy at the boundary that actually makes external OAuth requests. Do not create a public API, change the direct-MCP OAuth controller, or hand-write an upstream OAuth protocol.
 
 ## Acceptance criteria
 
