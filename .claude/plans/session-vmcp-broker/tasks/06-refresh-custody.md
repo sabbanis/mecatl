@@ -2,12 +2,12 @@
 id: 06-refresh-custody
 title: Broker-only bearer refresh, secrecy, and OAuth capability boundary
 blocked_by: [05-callback-execution]
-status: in-progress
-branch: "plan-session-vmcp-broker/06-refresh-custody"
+status: done
+branch: "plan-session-vmcp-broker/06"
 worktree: ""
 issue: ""
 retries: 0
-last_error: "reopened: terminal refresh failure must remove the grant; refresh must handle expiry during an established MCP transport and prove the embedded ToolHive path plus complete AC3.3 projection audit."
+last_error: ""
 accumulator: acc/session-vmcp-broker
 ---
 
