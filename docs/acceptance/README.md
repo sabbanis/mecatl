@@ -124,6 +124,10 @@ when the code that satisfies the plan has landed.
   floor, `Client`/`Session`/`Run` choreography with permissions and strict steer,
   multimodal helpers, and the offline e2e against `mecated --mock`. Status: draft.
 
+- [Session-scoped vMCP broker](session-vmcp-broker.md) — a root-internal
+  ToolHive/vMCP broker with stable session-local MCP tools, one protected
+  upstream connection, and broker-owned credential custody. Status: draft.
+
 ## See also
 
 - [Development process](../development-process.md) — the spine end to end.
