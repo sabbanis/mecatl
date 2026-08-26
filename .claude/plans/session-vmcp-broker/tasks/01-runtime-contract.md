@@ -2,8 +2,8 @@
 id: 01-runtime-contract
 title: Broker runtime contract and static session-tool wrappers
 blocked_by: []
-status: in-progress
-branch: ""
+status: done
+branch: "plan-session-vmcp-broker/01-runtime-contract"
 worktree: ""
 issue: ""
 retries: 0
@@ -17,7 +17,5 @@ Create the root-internal `internal/adapter/vmcpbroker` boundary from the accepte
 
 ## Acceptance criteria
 
-- AC1.1: Creating a broker-enabled session reserves its canonical session ID before the per-session factory opens broker state; a construction or persistence failure releases the reservation and closes every partially-created session resource.
-  - verify: `TestSessionVMCPBroker_Scenario1_ReservesIDBeforeBrokerSession`
 - AC1.6: The model-facing call contains only the selected tool's declared arguments. `BackendID`, broker bearer material, ToolHive locators, and OAuth state are never tool arguments, tool descriptions, or tool results.
   - verify: `TestInvariant_vmcp_broker_route_is_not_model_input`

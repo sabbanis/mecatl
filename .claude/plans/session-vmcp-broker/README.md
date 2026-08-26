@@ -4,9 +4,9 @@ Accumulator: `acc/session-vmcp-broker`
 
 | Task | Depends on | Acceptance coverage |
 | --- | --- | --- |
-| 01-runtime-contract | — | AC1.1, AC1.6 |
+| 01-runtime-contract | — | AC1.6 |
 | 02-session-tools | 01 | AC1.3, AC1.4, AC2.7 |
-| 03-server-composition | 01, 02 | AC1.2, AC1.5, AC4.5 |
+| 03-server-composition | 01, 02 | AC1.1, AC1.2, AC1.5, AC4.5 |
 | 04-oauth-transaction | 02 | AC2.1–AC2.4 |
 | 05-callback-execution | 03, 04 | AC2.5, AC2.6 |
 | 06-refresh-custody | 05 | AC3.1–AC3.4 |
