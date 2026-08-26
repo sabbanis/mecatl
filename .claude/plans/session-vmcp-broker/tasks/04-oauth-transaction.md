@@ -2,12 +2,12 @@
 id: 04-oauth-transaction
 title: Secure singleflight OAuth connection transactions
 blocked_by: [01b-profile-auth-routes, 02-session-tools]
-status: in-progress
+status: done
 branch: "plan-session-vmcp-broker/04-oauth-transaction"
 worktree: ""
 issue: ""
 retries: 0
-last_error: "reopened: Connect only simulated an issuer URL; it must own or receive embedded ToolHive composition and prove the returned /oauth/authorize URL is usable."
+last_error: ""
 accumulator: acc/session-vmcp-broker
 ---
 
