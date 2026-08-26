@@ -2,7 +2,7 @@
 id: 08-evidence-and-docs
 title: Broker architecture, resource inventory, and Stage 2 evidence
 blocked_by: [03-server-composition, 07-teardown-lifecycle]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
