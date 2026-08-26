@@ -2,7 +2,7 @@
 id: 01b-profile-auth-routes
 title: Compile broker authorization routes from strict profiles
 blocked_by: [01-runtime-contract]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
