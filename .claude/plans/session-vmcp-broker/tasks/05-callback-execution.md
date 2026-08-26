@@ -2,7 +2,7 @@
 id: 05-callback-execution
 title: Callback binding and protected broker tool execution
 blocked_by: [03-server-composition, 04-oauth-transaction]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
