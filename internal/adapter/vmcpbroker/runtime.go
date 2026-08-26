@@ -6,6 +6,7 @@ package vmcpbroker
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -16,10 +17,13 @@ import (
 	"sync"
 	"time"
 
+	"github.com/ory/fosite"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/mcp"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
+	"github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // ErrClosed reports an operation on a closed runtime or session tool set.
@@ -122,10 +126,29 @@ type Runtime struct {
 	sessions          map[session.SessionID]*SessionTools
 	tombstones        map[session.SessionID]struct{}
 	authorizeEndpoint string
+	callbackURL       string
 	transactionTTL    time.Duration
 	transactions      map[controlTarget]authorizationTransaction
+	clientID          string
 	closed            bool
 }
+
+// ToolHiveRuntimeConfig binds the broker to its already-composed embedded
+// ToolHive authorization server. It is root-internal; the Runtime never treats
+// an issuer string alone as evidence of a usable ToolHive server.
+type ToolHiveRuntimeConfig struct {
+	AuthServer  *runner.EmbeddedAuthServer
+	Storage     storage.ClientRegistry
+	Issuer      string
+	CallbackURL string
+}
+
+type ConnectionStatus string
+
+const (
+	ConnectionPending   ConnectionStatus = "pending"
+	ConnectionConnected ConnectionStatus = "connected"
+)
 
 type controlTarget struct {
 	sessionID session.SessionID
@@ -134,6 +157,7 @@ type controlTarget struct {
 
 type authorizationTransaction struct {
 	handle     string
+	verifier   string
 	browserURL string
 	expiresAt  time.Time
 }
@@ -147,9 +171,9 @@ type AuthorizationRequired struct {
 	ExpiresAt  time.Time
 }
 
-// ConnectResult is either connected (reserved for callback completion) or asks
-// the composition caller to present AuthorizationRequired.
+// ConnectResult describes a broker connection without exposing OAuth material.
 type ConnectResult struct {
+	Status                ConnectionStatus
 	AuthorizationRequired *AuthorizationRequired
 }
 
@@ -186,10 +210,17 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 // ToolHive embedded authorization server. The server owns all upstream OAuth
 // protocol state; this Runtime retains only a random downstream handle bound to
 // an opened canonical session and protected backend.
-func NewToolHiveRuntime(routes []Route, caller Caller, issuer string, transactionTTL time.Duration) (*Runtime, error) {
-	endpoint, err := toolHiveAuthorizeEndpoint(issuer)
+func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeConfig, transactionTTL time.Duration) (*Runtime, error) {
+	if config.AuthServer == nil || config.Storage == nil || config.CallbackURL == "" {
+		return nil, fmt.Errorf("%w: embedded ToolHive authorization server, storage, and callback URL are required", ErrInvalidRoute)
+	}
+	endpoint, err := toolHiveAuthorizeEndpoint(config.Issuer)
 	if err != nil {
 		return nil, err
+	}
+	callback, err := url.Parse(config.CallbackURL)
+	if err != nil || callback.Scheme != "https" || callback.Host == "" {
+		return nil, fmt.Errorf("%w: callback URL must be HTTPS", ErrInvalidRoute)
 	}
 	protected := make(map[string]struct{})
 	for _, route := range routes {
@@ -204,8 +235,25 @@ func NewToolHiveRuntime(routes []Route, caller Caller, issuer string, transactio
 	if err != nil {
 		return nil, err
 	}
+	clientID, err := newOpaqueHandle()
+	if err != nil {
+		return nil, fmt.Errorf("vmcpbroker: create ToolHive client: %w", err)
+	}
+	if err := config.Storage.RegisterClient(context.Background(), &fosite.DefaultClient{
+		ID:            clientID,
+		RedirectURIs:  []string{config.CallbackURL},
+		GrantTypes:    []string{"authorization_code"},
+		ResponseTypes: []string{"code"},
+		Scopes:        []string{"openid"},
+		Audience:      []string{config.Issuer},
+		Public:        true,
+	}); err != nil {
+		return nil, fmt.Errorf("vmcpbroker: register ToolHive client: %w", err)
+	}
 	runtime.authorizeEndpoint = endpoint
+	runtime.callbackURL = config.CallbackURL
 	runtime.transactionTTL = transactionTTL
+	runtime.clientID = clientID
 	return runtime, nil
 }
 
@@ -330,15 +378,28 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	if err != nil {
 		return ConnectResult{}, fmt.Errorf("vmcpbroker: create authorization rendezvous: %w", err)
 	}
+	verifier, err := newOpaqueHandle()
+	if err != nil {
+		return ConnectResult{}, fmt.Errorf("vmcpbroker: create authorization rendezvous: %w", err)
+	}
 	browserURL, err := url.Parse(r.authorizeEndpoint)
 	if err != nil {
 		return ConnectResult{}, ErrInvalidControlTarget
 	}
 	query := browserURL.Query()
+	challenge := sha256.Sum256([]byte(verifier))
+	query.Set("response_type", "code")
+	query.Set("client_id", r.clientID)
+	query.Set("redirect_uri", r.callbackURL)
+	query.Set("scope", "openid")
+	query.Set("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:]))
+	query.Set("code_challenge_method", "S256")
+	query.Set("resource", strings.TrimSuffix(r.authorizeEndpoint, "/oauth/authorize"))
 	query.Set("state", handle)
 	browserURL.RawQuery = query.Encode()
 	transaction := authorizationTransaction{
 		handle:     handle,
+		verifier:   verifier,
 		browserURL: browserURL.String(),
 		expiresAt:  time.Now().Add(r.transactionTTL),
 	}
@@ -393,7 +454,7 @@ func (r *Runtime) ForgetSession(id session.SessionID) error {
 }
 
 func (r *Runtime) validControlTargetLocked(target controlTarget) bool {
-	if target.sessionID == "" || target.backendID == "" {
+	if target.sessionID == "" || target.backendID == "" || delegationChildSessionID(target.sessionID) {
 		return false
 	}
 	if _, opened := r.sessions[target.sessionID]; !opened {
@@ -410,6 +471,12 @@ func (r *Runtime) validControlTargetLocked(target controlTarget) bool {
 	return false
 }
 
+func delegationChildSessionID(id session.SessionID) bool {
+	return strings.HasPrefix(string(id), "subagent-") ||
+		strings.HasPrefix(string(id), "parallel-") ||
+		strings.HasPrefix(string(id), "team-")
+}
+
 func (r *Runtime) collectExpiredLocked(now time.Time) {
 	for target, transaction := range r.transactions {
 		if !transaction.expiresAt.After(now) {
@@ -419,7 +486,7 @@ func (r *Runtime) collectExpiredLocked(now time.Time) {
 }
 
 func authorizationResult(transaction authorizationTransaction) ConnectResult {
-	return ConnectResult{AuthorizationRequired: &AuthorizationRequired{
+	return ConnectResult{Status: ConnectionPending, AuthorizationRequired: &AuthorizationRequired{
 		Handle:     transaction.handle,
 		BrowserURL: transaction.browserURL,
 		ExpiresAt:  transaction.expiresAt,
