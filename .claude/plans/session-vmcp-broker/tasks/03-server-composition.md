@@ -2,7 +2,7 @@
 id: 03-server-composition
 title: Per-session server integration, catalogue collision, and restart
 blocked_by: [01b-profile-auth-routes, 02-session-tools]
-status: done
+status: in-progress
 branch: "plan-session-vmcp-broker/03-server-composition"
 worktree: ""
 issue: ""
@@ -13,7 +13,7 @@ accumulator: acc/session-vmcp-broker
 
 # Task brief
 
-Wire the configured broker Runtime through root composition and the server's per-session engine factory. Read `.claude/plans/session-vmcp-broker/RESTART-HANDOVER.md` before coding; it is the corrective architecture source for this task. Reserve the canonical ID before broker session resources open; mount its tools through `assembleCatalog` without altering `Config.MCPServers` or the global manager. Reject broker/global fully-qualified tool collisions before any ambiguous wrapper mounts. Rehydrate a persisted broker-enabled session through a root-internal broker binding/index keyed by the canonical session ID and immutable broker/config generation, or fail precondition; never silently use the shared engine. Do not add or persist a broker field in `engine/session`, `engine/adapter/sessnap`, `engine/api`, or `engine/port`. Keep controls private and add no public wire/UI change.
+Wire the configured broker Runtime through root composition and the server's per-session engine factory. Read `.claude/plans/session-vmcp-broker/RESTART-HANDOVER.md` before coding; it is the corrective architecture source for this task. Reserve the canonical ID before broker session resources open; mount its tools through `assembleCatalog` without altering `Config.MCPServers` or the global manager. Reject broker/global fully-qualified tool collisions before any ambiguous wrapper mounts. **Do not treat an in-memory BindingIndex reused between Service instances as restart persistence.** AC4.5 requires a root-internal persisted binding sidecar keyed by canonical session ID plus immutable broker/config generation, or a conservative `FailedPrecondition` after a real reconstructed process. Finish integration with a test that recreates both `Service` and the binding-store adapter. Do not add or persist a broker field in `engine/session`, `engine/adapter/sessnap`, `engine/api`, or `engine/port`. Keep controls private and add no public wire/UI change.
 
 ## Acceptance criteria
 
