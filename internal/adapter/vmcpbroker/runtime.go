@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/mcp"
@@ -29,6 +30,10 @@ import (
 
 // ErrClosed reports an operation on a closed runtime or session tool set.
 var ErrClosed = errors.New("vmcpbroker: closed")
+
+// ErrUnsupportedCapability reports a configured operation that this broker cannot
+// safely perform with the embedded ToolHive runtime.
+var ErrUnsupportedCapability = errors.New("vmcpbroker: unsupported capability")
 
 // ErrInvalidRoute reports invalid static broker catalogue input.
 var ErrInvalidRoute = errors.New("vmcpbroker: invalid route")
@@ -131,9 +136,12 @@ type Runtime struct {
 	transactionTTL    time.Duration
 	transactions      map[controlTarget]authorizationTransaction
 	grants            map[controlTarget]downstreamGrant
+	refreshes         map[controlTarget]*refreshOperation
+	oauthBackend      string
 	clientID          string
 	httpClient        *http.Client
 	tokenEndpoint     string
+	diagnostics       port.Diagnostics
 	closed            bool
 }
 
@@ -147,7 +155,8 @@ type ToolHiveRuntimeConfig struct {
 	CallbackURL string
 	// HTTPClient is used only for the embedded ToolHive downstream token exchange.
 	// It must be configured by composition when the embedded server uses a private CA.
-	HTTPClient *http.Client
+	HTTPClient  *http.Client
+	Diagnostics port.Diagnostics
 }
 
 type ConnectionStatus string
@@ -174,6 +183,11 @@ type downstreamGrant struct {
 	refreshToken string
 }
 
+type refreshOperation struct {
+	done chan struct{}
+	err  error
+}
+
 // AuthorizationRequired is the safe, browser-facing rendezvous for a pending
 // ToolHive authorization. Its handle is opaque and is meaningful only to this
 // Runtime; it contains no upstream OAuth material.
@@ -198,12 +212,16 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 	}
 	copied := make([]Route, len(routes))
 	seen := make(map[string]struct{}, len(routes))
+	var oauthBackend string
 	for i, route := range routes {
 		if route.BackendID == "" || route.Tool.Name == "" {
 			return nil, fmt.Errorf("%w: backend id and tool name are required", ErrInvalidRoute)
 		}
 		if _, ok := seen[route.Tool.Name]; ok {
 			return nil, fmt.Errorf("%w: duplicate tool %q", ErrInvalidRoute, route.Tool.Name)
+		}
+		if route.Protected && oauthBackend == "" {
+			oauthBackend = route.BackendID
 		}
 		seen[route.Tool.Name] = struct{}{}
 		copied[i] = copyRoute(route)
@@ -216,6 +234,9 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 		tombstones:   make(map[session.SessionID]struct{}),
 		transactions: make(map[controlTarget]authorizationTransaction),
 		grants:       make(map[controlTarget]downstreamGrant),
+		refreshes:    make(map[controlTarget]*refreshOperation),
+		oauthBackend: oauthBackend,
+		diagnostics:  port.NopDiagnostics{},
 	}, nil
 }
 
@@ -245,8 +266,8 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 			protected[route.BackendID] = struct{}{}
 		}
 	}
-	if len(protected) != 1 {
-		return nil, fmt.Errorf("%w: exactly one protected backend is required", ErrInvalidRoute)
+	if len(protected) == 0 {
+		return nil, fmt.Errorf("%w: one protected backend is required", ErrInvalidRoute)
 	}
 	runtime, err := NewRuntime(routes, caller)
 	if err != nil {
@@ -275,6 +296,9 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 	runtime.httpClient = config.HTTPClient
 	if runtime.httpClient == nil {
 		runtime.httpClient = http.DefaultClient
+	}
+	if config.Diagnostics != nil {
+		runtime.diagnostics = config.Diagnostics
 	}
 	return runtime, nil
 }
@@ -359,9 +383,9 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 		server = c.protected
 		if server == nil {
 			var err error
-			server, err = mcp.Connect(ctx, mcp.ServerConfig{Name: "broker", URL: c.endpoint, Headers: map[string]string{"Authorization": "Bearer " + grant.accessToken}, HTTPClient: c.runtime.httpClient}, nil)
+			server, err = c.connectProtected(ctx, route.BackendID, grant)
 			if err != nil {
-				return session.ToolResult{}, fmt.Errorf("vmcpbroker: connect protected broker endpoint: %w", err)
+				return session.ToolResult{}, err
 			}
 			c.protected = server
 		}
@@ -378,6 +402,26 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 		return session.ToolResult{}, fmt.Errorf("vmcpbroker: broker did not expose configured tool %q", route.Tool.Name)
 	}
 	return wrapped.Execute(ctx, session.NewToolCall("", wrapped.Spec().Name, args), tool.Environment{})
+}
+
+func (c *streamingCaller) connectProtected(ctx context.Context, backendID string, grant downstreamGrant) (*mcp.Server, error) {
+	server, err := c.connectWithBearer(ctx, grant.accessToken)
+	if err == nil {
+		return server, nil
+	}
+	refreshed, refreshErr := c.runtime.refreshDownstreamGrant(ctx, controlTarget{sessionID: c.sessionID, backendID: backendID}, grant)
+	if refreshErr != nil {
+		return nil, fmt.Errorf("vmcpbroker: protected broker transport unavailable: %w", refreshErr)
+	}
+	server, err = c.connectWithBearer(ctx, refreshed.accessToken)
+	if err != nil {
+		return nil, errors.New("vmcpbroker: protected broker transport unavailable")
+	}
+	return server, nil
+}
+
+func (c *streamingCaller) connectWithBearer(ctx context.Context, bearer string) (*mcp.Server, error) {
+	return mcp.Connect(ctx, mcp.ServerConfig{Name: "broker", URL: c.endpoint, Headers: map[string]string{"Authorization": "Bearer " + bearer}, HTTPClient: c.runtime.httpClient}, nil)
 }
 
 func (c *streamingCaller) close() error {
@@ -470,7 +514,13 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	}
 	r.collectExpiredLocked(time.Now())
 	target := controlTarget{sessionID: sessionID, backendID: backendID}
-	if !r.validControlTargetLocked(target) {
+	if !r.openSessionLocked(sessionID) || !r.protectedBackendLocked(backendID) {
+		return ConnectResult{}, ErrInvalidControlTarget
+	}
+	if backendID != r.oauthBackend {
+		return ConnectResult{}, ErrUnsupportedCapability
+	}
+	if r.authorizeEndpoint == "" {
 		return ConnectResult{}, ErrInvalidControlTarget
 	}
 	if _, connected := r.grants[target]; connected {
@@ -605,6 +655,92 @@ func (r *Runtime) exchangeDownstreamCode(ctx context.Context, code, verifier str
 	return downstreamGrant{accessToken: token.AccessToken, refreshToken: token.RefreshToken}, nil
 }
 
+func (r *Runtime) refreshDownstreamGrant(ctx context.Context, target controlTarget, expected downstreamGrant) (downstreamGrant, error) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return downstreamGrant{}, ErrClosed
+	}
+	current, ok := r.grants[target]
+	if !ok || current != expected || !r.refreshableTargetLocked(target) {
+		r.mu.Unlock()
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	if pending := r.refreshes[target]; pending != nil {
+		r.mu.Unlock()
+		select {
+		case <-pending.done:
+			if pending.err != nil {
+				return downstreamGrant{}, pending.err
+			}
+			return r.grantForTarget(target)
+		case <-ctx.Done():
+			return downstreamGrant{}, ctx.Err()
+		}
+	}
+	operation := &refreshOperation{done: make(chan struct{})}
+	r.refreshes[target] = operation
+	r.mu.Unlock()
+
+	grant, err := r.exchangeDownstreamRefresh(ctx, expected.refreshToken)
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.refreshes, target)
+	if err == nil {
+		current, ok := r.grants[target]
+		if r.closed {
+			err = ErrClosed
+		} else if !ok || current != expected || !r.refreshableTargetLocked(target) {
+			err = ErrInvalidControlTarget
+		} else {
+			r.grants[target] = grant
+		}
+	}
+	operation.err = err
+	close(operation.done)
+	if err != nil {
+		r.diagnostics.Log(context.Background(), port.LevelWarn, "broker transport bearer refresh failed")
+		return downstreamGrant{}, err
+	}
+	return grant, nil
+}
+
+func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, refreshToken string) (downstreamGrant, error) {
+	if refreshToken == "" || r.tokenEndpoint == "" {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	form := url.Values{
+		"grant_type":    {"refresh_token"},
+		"refresh_token": {refreshToken},
+		"client_id":     {r.clientID},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.tokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := r.httpClient.Do(request)
+	if err != nil {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	var token struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&token); err != nil || token.AccessToken == "" {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	if token.RefreshToken == "" {
+		token.RefreshToken = refreshToken
+	}
+	return downstreamGrant{accessToken: token.AccessToken, refreshToken: token.RefreshToken}, nil
+}
+
 // ForgetSession tombstones a canonical session and removes all its pending
 // control state. It is intentionally idempotent so close paths can retry.
 func (r *Runtime) ForgetSession(id session.SessionID) error {
@@ -638,22 +774,47 @@ func (r *Runtime) ForgetSession(id session.SessionID) error {
 	return opened.Close()
 }
 
+func (r *Runtime) refreshableTargetLocked(target controlTarget) bool {
+	return r.openSessionLocked(target.sessionID) &&
+		r.protectedBackendLocked(target.backendID) &&
+		target.backendID == r.oauthBackend
+}
+
 func (r *Runtime) validControlTargetLocked(target controlTarget) bool {
-	if target.sessionID == "" || target.backendID == "" || delegationChildSessionID(target.sessionID) {
+	return r.refreshableTargetLocked(target) && r.authorizeEndpoint != ""
+}
+
+func (r *Runtime) openSessionLocked(id session.SessionID) bool {
+	if id == "" || delegationChildSessionID(id) {
 		return false
 	}
-	if _, opened := r.sessions[target.sessionID]; !opened {
+	if _, opened := r.sessions[id]; !opened {
 		return false
 	}
-	if _, tombstoned := r.tombstones[target.sessionID]; tombstoned {
+	_, tombstoned := r.tombstones[id]
+	return !tombstoned
+}
+
+func (r *Runtime) protectedBackendLocked(backendID string) bool {
+	if backendID == "" {
 		return false
 	}
 	for _, route := range r.routes {
-		if route.BackendID == target.backendID && route.Protected {
-			return r.authorizeEndpoint != ""
+		if route.BackendID == backendID && route.Protected {
+			return true
 		}
 	}
 	return false
+}
+
+func (r *Runtime) grantForTarget(target controlTarget) (downstreamGrant, error) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	grant, ok := r.grants[target]
+	if !ok || r.closed || !r.refreshableTargetLocked(target) {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	return grant, nil
 }
 
 func (r *Runtime) grant(sessionID session.SessionID, backendID string) (downstreamGrant, bool) {
