@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"net/url"
 	"sort"
 	"strings"
@@ -129,7 +130,10 @@ type Runtime struct {
 	callbackURL       string
 	transactionTTL    time.Duration
 	transactions      map[controlTarget]authorizationTransaction
+	grants            map[controlTarget]downstreamGrant
 	clientID          string
+	httpClient        *http.Client
+	tokenEndpoint     string
 	closed            bool
 }
 
@@ -141,6 +145,9 @@ type ToolHiveRuntimeConfig struct {
 	Storage     storage.ClientRegistry
 	Issuer      string
 	CallbackURL string
+	// HTTPClient is used only for the embedded ToolHive downstream token exchange.
+	// It must be configured by composition when the embedded server uses a private CA.
+	HTTPClient *http.Client
 }
 
 type ConnectionStatus string
@@ -160,6 +167,11 @@ type authorizationTransaction struct {
 	verifier   string
 	browserURL string
 	expiresAt  time.Time
+}
+
+type downstreamGrant struct {
+	accessToken  string
+	refreshToken string
 }
 
 // AuthorizationRequired is the safe, browser-facing rendezvous for a pending
@@ -203,6 +215,7 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 		sessions:     make(map[session.SessionID]*SessionTools),
 		tombstones:   make(map[session.SessionID]struct{}),
 		transactions: make(map[controlTarget]authorizationTransaction),
+		grants:       make(map[controlTarget]downstreamGrant),
 	}, nil
 }
 
@@ -215,6 +228,10 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 		return nil, fmt.Errorf("%w: embedded ToolHive authorization server, storage, and callback URL are required", ErrInvalidRoute)
 	}
 	endpoint, err := toolHiveAuthorizeEndpoint(config.Issuer)
+	if err != nil {
+		return nil, err
+	}
+	tokenEndpoint, err := toolHiveTokenEndpoint(config.Issuer)
 	if err != nil {
 		return nil, err
 	}
@@ -251,24 +268,38 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 		return nil, fmt.Errorf("vmcpbroker: register ToolHive client: %w", err)
 	}
 	runtime.authorizeEndpoint = endpoint
+	runtime.tokenEndpoint = tokenEndpoint
 	runtime.callbackURL = config.CallbackURL
 	runtime.transactionTTL = transactionTTL
 	runtime.clientID = clientID
+	runtime.httpClient = config.HTTPClient
+	if runtime.httpClient == nil {
+		runtime.httpClient = http.DefaultClient
+	}
 	return runtime, nil
 }
 
 func toolHiveAuthorizeEndpoint(issuer string) (string, error) {
+	return toolHiveOAuthEndpoint(issuer, "/oauth/authorize")
+}
+
+func toolHiveTokenEndpoint(issuer string) (string, error) {
+	return toolHiveOAuthEndpoint(issuer, "/oauth/token")
+}
+
+func toolHiveOAuthEndpoint(issuer, suffix string) (string, error) {
 	parsed, err := url.Parse(issuer)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
 		return "", fmt.Errorf("%w: ToolHive issuer must be an HTTPS origin", ErrInvalidRoute)
 	}
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/") + "/oauth/authorize"
+	parsed.Path = strings.TrimSuffix(parsed.Path, "/") + suffix
 	return parsed.String(), nil
 }
 
 // NewStreamingHTTPRuntime opens each session's wrappers against endpoint, the
-// embedded broker's standard Streamable HTTP /mcp endpoint. Each OpenSession
-// owns one MCP client connection and Close releases only that connection.
+// embedded broker's standard Streamable HTTP /mcp endpoint. The MCP transport is
+// lazy: a protected connection is not initialized until the private downstream
+// bearer exists, so OpenSession can expose the stable catalogue before OAuth.
 func NewStreamingHTTPRuntime(routes []Route, endpoint string) (*Runtime, error) {
 	if endpoint == "" {
 		return nil, fmt.Errorf("%w: broker endpoint is required", ErrInvalidRoute)
@@ -279,29 +310,100 @@ func NewStreamingHTTPRuntime(routes []Route, endpoint string) (*Runtime, error) 
 	if err != nil {
 		return nil, err
 	}
-	runtime.opener = func(ctx context.Context, _ session.SessionID) (Caller, func() error, error) {
-		server, err := mcp.Connect(ctx, mcp.ServerConfig{Name: "broker", URL: endpoint}, nil)
-		if err != nil {
-			return nil, nil, fmt.Errorf("vmcpbroker: connect broker endpoint: %w", err)
-		}
-		tools := make(map[string]tool.Tool, len(server.Tools()))
-		for _, wrapped := range server.Tools() {
-			const brokerPrefix = "mcp__broker__"
-			name := wrapped.Spec().Name
-			if len(name) >= len(brokerPrefix) && name[:len(brokerPrefix)] == brokerPrefix {
-				tools[name[len(brokerPrefix):]] = wrapped
-			}
-		}
-		caller := func(ctx context.Context, _ session.SessionID, route Route, args json.RawMessage) (session.ToolResult, error) {
-			wrapped, ok := tools[route.Tool.Name]
-			if !ok {
-				return session.ToolResult{}, fmt.Errorf("vmcpbroker: broker did not expose configured tool %q", route.Tool.Name)
-			}
-			return wrapped.Execute(ctx, session.NewToolCall("", wrapped.Spec().Name, args), tool.Environment{})
-		}
-		return caller, server.Close, nil
-	}
+	runtime.opener = streamingSessionOpener(runtime, endpoint)
 	return runtime, nil
+}
+
+// NewToolHiveStreamingHTTPRuntime combines the embedded ToolHive authorization
+// server with its session-local /mcp transport. The downstream bearer is read
+// only by the transport at call time; it never becomes a tool argument or result.
+func NewToolHiveStreamingHTTPRuntime(routes []Route, endpoint string, config ToolHiveRuntimeConfig, transactionTTL time.Duration) (*Runtime, error) {
+	if endpoint == "" {
+		return nil, fmt.Errorf("%w: broker endpoint is required", ErrInvalidRoute)
+	}
+	runtime, err := NewToolHiveRuntime(routes, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		return session.ToolResult{}, errors.New("vmcpbroker: streaming caller was not initialized")
+	}, config, transactionTTL)
+	if err != nil {
+		return nil, err
+	}
+	runtime.opener = streamingSessionOpener(runtime, endpoint)
+	return runtime, nil
+}
+
+func streamingSessionOpener(runtime *Runtime, endpoint string) sessionOpener {
+	return func(_ context.Context, id session.SessionID) (Caller, func() error, error) {
+		caller := &streamingCaller{runtime: runtime, sessionID: id, endpoint: endpoint}
+		return caller.call, caller.close, nil
+	}
+}
+
+type streamingCaller struct {
+	mu        sync.Mutex
+	runtime   *Runtime
+	sessionID session.SessionID
+	endpoint  string
+	anonymous *mcp.Server
+	protected *mcp.Server
+}
+
+func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route Route, args json.RawMessage) (session.ToolResult, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	server := c.anonymous
+	if route.Protected {
+		grant, ok := c.runtime.grant(c.sessionID, route.BackendID)
+		if !ok {
+			return session.NewToolError("", "authorization required for this broker tool"), nil
+		}
+		server = c.protected
+		if server == nil {
+			var err error
+			server, err = mcp.Connect(ctx, mcp.ServerConfig{Name: "broker", URL: c.endpoint, Headers: map[string]string{"Authorization": "Bearer " + grant.accessToken}}, nil)
+			if err != nil {
+				return session.ToolResult{}, fmt.Errorf("vmcpbroker: connect protected broker endpoint: %w", err)
+			}
+			c.protected = server
+		}
+	} else if server == nil {
+		var err error
+		server, err = mcp.Connect(ctx, mcp.ServerConfig{Name: "broker", URL: c.endpoint}, nil)
+		if err != nil {
+			return session.ToolResult{}, fmt.Errorf("vmcpbroker: connect broker endpoint: %w", err)
+		}
+		c.anonymous = server
+	}
+	wrapped, ok := brokerTools(server)[route.Tool.Name]
+	if !ok {
+		return session.ToolResult{}, fmt.Errorf("vmcpbroker: broker did not expose configured tool %q", route.Tool.Name)
+	}
+	return wrapped.Execute(ctx, session.NewToolCall("", wrapped.Spec().Name, args), tool.Environment{})
+}
+
+func (c *streamingCaller) close() error {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var first error
+	for _, server := range []*mcp.Server{c.anonymous, c.protected} {
+		if server != nil {
+			if err := server.Close(); err != nil && first == nil {
+				first = err
+			}
+		}
+	}
+	return first
+}
+
+func brokerTools(server *mcp.Server) map[string]tool.Tool {
+	tools := make(map[string]tool.Tool, len(server.Tools()))
+	const brokerPrefix = "mcp__broker__"
+	for _, wrapped := range server.Tools() {
+		name := wrapped.Spec().Name
+		if strings.HasPrefix(name, brokerPrefix) {
+			tools[strings.TrimPrefix(name, brokerPrefix)] = wrapped
+		}
+	}
+	return tools
 }
 
 // OpenSession returns new executable wrappers for one already-reserved canonical
@@ -329,7 +431,7 @@ func (r *Runtime) OpenSession(id session.SessionID) (*SessionTools, error) {
 			return nil, err
 		}
 	}
-	opened := &SessionTools{closeFunc: closeFunc}
+	opened := &SessionTools{closeFunc: closeFunc, runtime: r}
 	tools := make([]tool.Tool, len(routes))
 	for i, route := range routes {
 		tools[i] = &sessionTool{sessionID: id, route: route, caller: caller, owner: opened}
@@ -371,6 +473,9 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	if !r.validControlTargetLocked(target) {
 		return ConnectResult{}, ErrInvalidControlTarget
 	}
+	if _, connected := r.grants[target]; connected {
+		return ConnectResult{Status: ConnectionConnected}, nil
+	}
 	if transaction, ok := r.transactions[target]; ok {
 		return authorizationResult(transaction), nil
 	}
@@ -407,22 +512,82 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	return authorizationResult(transaction), nil
 }
 
-// Callback is the broker's downstream callback rendezvous gate. Callback
-// completion is deliberately deferred to the following transaction task; an
-// unknown or expired handle is inert and cannot create or restore authority.
-func (r *Runtime) Callback(handle string) error {
+// Callback atomically consumes a broker-created state and exchanges the returned
+// downstream authorization code exclusively with ToolHive's embedded /oauth/token
+// endpoint. The code, verifier, and resulting grant never leave this adapter.
+func (r *Runtime) Callback(ctx context.Context, code, state string) error {
+	if code == "" || state == "" {
+		return ErrInvalidControlTarget
+	}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return ErrClosed
+	}
+	r.collectExpiredLocked(time.Now())
+	var (
+		target      controlTarget
+		transaction authorizationTransaction
+		found       bool
+	)
+	for candidate, pending := range r.transactions {
+		if pending.handle == state {
+			target, transaction, found = candidate, pending, true
+			delete(r.transactions, candidate)
+			break
+		}
+	}
+	r.mu.Unlock()
+	if !found {
+		return ErrInvalidControlTarget
+	}
+
+	grant, err := r.exchangeDownstreamCode(ctx, code, transaction.verifier)
+	if err != nil {
+		return err
+	}
+
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
 		return ErrClosed
 	}
-	r.collectExpiredLocked(time.Now())
-	for _, transaction := range r.transactions {
-		if transaction.handle == handle {
-			return nil
-		}
+	if !r.validControlTargetLocked(target) {
+		return ErrInvalidControlTarget
 	}
-	return ErrInvalidControlTarget
+	r.grants[target] = grant
+	return nil
+}
+
+func (r *Runtime) exchangeDownstreamCode(ctx context.Context, code, verifier string) (downstreamGrant, error) {
+	form := url.Values{
+		"grant_type":    {"authorization_code"},
+		"code":          {code},
+		"redirect_uri":  {r.callbackURL},
+		"client_id":     {r.clientID},
+		"code_verifier": {verifier},
+	}
+	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.tokenEndpoint, strings.NewReader(form.Encode()))
+	if err != nil {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
+	response, err := r.httpClient.Do(request)
+	if err != nil {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	var token struct {
+		AccessToken  string `json:"access_token"`
+		RefreshToken string `json:"refresh_token"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&token); err != nil || token.AccessToken == "" {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	return downstreamGrant{accessToken: token.AccessToken, refreshToken: token.RefreshToken}, nil
 }
 
 // ForgetSession tombstones a canonical session and removes all its pending
@@ -449,6 +614,11 @@ func (r *Runtime) ForgetSession(id session.SessionID) error {
 			delete(r.transactions, target)
 		}
 	}
+	for target := range r.grants {
+		if target.sessionID == id {
+			delete(r.grants, target)
+		}
+	}
 	r.mu.Unlock()
 	return opened.Close()
 }
@@ -469,6 +639,18 @@ func (r *Runtime) validControlTargetLocked(target controlTarget) bool {
 		}
 	}
 	return false
+}
+
+func (r *Runtime) grant(sessionID session.SessionID, backendID string) (downstreamGrant, bool) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	grant, ok := r.grants[controlTarget{sessionID: sessionID, backendID: backendID}]
+	return grant, ok && !r.closed
+}
+
+func (s *SessionTools) connected(sessionID session.SessionID, backendID string) bool {
+	_, ok := s.runtime.grant(sessionID, backendID)
+	return ok
 }
 
 func delegationChildSessionID(id session.SessionID) bool {
@@ -516,6 +698,7 @@ type SessionTools struct {
 	tools     []tool.Tool
 	closed    bool
 	closeFunc func() error
+	runtime   *Runtime
 }
 
 // Tools returns a copy of the stable model-facing wrapper list.
@@ -561,7 +744,7 @@ func (t *sessionTool) Execute(ctx context.Context, call session.ToolCall, _ tool
 	if call.Name != t.route.Tool.Name {
 		return session.NewToolError(call.ID, "broker tool call does not match wrapper"), nil
 	}
-	if t.route.Protected {
+	if t.route.Protected && !t.owner.connected(t.sessionID, t.route.BackendID) {
 		return session.NewToolError(call.ID, "authorization required for this broker tool"), nil
 	}
 	if err := ctx.Err(); err != nil {

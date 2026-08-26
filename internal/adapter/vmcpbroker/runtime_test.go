@@ -297,7 +297,7 @@ func TestSessionVMCPBroker_Scenario2_ExpiredTransactionIsCollected(t *testing.T)
 	if err != nil {
 		t.Fatalf("first Connect: %v", err)
 	}
-	if err := runtime.Callback(first.AuthorizationRequired.Handle); !errors.Is(err, ErrInvalidControlTarget) {
+	if err := runtime.Callback(context.Background(), "code", first.AuthorizationRequired.Handle); !errors.Is(err, ErrInvalidControlTarget) {
 		t.Fatalf("expired callback error = %v, want ErrInvalidControlTarget", err)
 	}
 	second, err := runtime.Connect(context.Background(), "parent-session", "github")
