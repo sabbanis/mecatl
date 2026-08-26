@@ -3,12 +3,80 @@ package vmcpbroker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"testing"
 
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
+	"github.com/stacklok/mecatl/internal/adapter/permconfig"
 )
+
+func TestCompileProfiles_DerivesProtectedRoutesFromSupportedAuthModes(t *testing.T) {
+	t.Parallel()
+
+	routes, err := CompileProfiles([]permconfig.MCPServerProfile{
+		{Name: "calendar", Auth: permconfig.MCPAuthProfile{Mode: "none"}},
+		{Name: "github", Auth: permconfig.MCPAuthProfile{Mode: "oauth"}},
+	}, []ToolDefinition{
+		{BackendID: "github", Name: "mcp__github__list_issues", Schema: json.RawMessage(`{"type":"object"}`)},
+		{BackendID: "calendar", Name: "mcp__calendar__list_events", Schema: json.RawMessage(`{"type":"object"}`)},
+	})
+	if err != nil {
+		t.Fatalf("CompileProfiles: %v", err)
+	}
+	if len(routes) != 2 {
+		t.Fatalf("routes = %d, want 2", len(routes))
+	}
+	if routes[0].Tool.Name != "mcp__calendar__list_events" || routes[0].Protected {
+		t.Fatalf("calendar route = %+v, want unprotected auth:none route", routes[0])
+	}
+	if routes[1].Tool.Name != "mcp__github__list_issues" || !routes[1].Protected {
+		t.Fatalf("github route = %+v, want protected auth:oauth route", routes[1])
+	}
+}
+
+func TestCompileProfiles_RejectsUnsupportedOrAmbiguousProfiles(t *testing.T) {
+	t.Parallel()
+
+	tests := []struct {
+		name       string
+		profiles   []permconfig.MCPServerProfile
+		discovered []ToolDefinition
+	}{
+		{
+			name:     "static bearer",
+			profiles: []permconfig.MCPServerProfile{{Name: "github", Auth: permconfig.MCPAuthProfile{Mode: "static_bearer"}}},
+		},
+		{
+			name:     "unknown auth mode",
+			profiles: []permconfig.MCPServerProfile{{Name: "github", Auth: permconfig.MCPAuthProfile{Mode: "custom"}}},
+		},
+		{
+			name: "duplicate profile names ignore case",
+			profiles: []permconfig.MCPServerProfile{
+				{Name: "github", Auth: permconfig.MCPAuthProfile{Mode: "none"}},
+				{Name: "GitHub", Auth: permconfig.MCPAuthProfile{Mode: "oauth"}},
+			},
+		},
+		{
+			name:     "empty profile name",
+			profiles: []permconfig.MCPServerProfile{{Auth: permconfig.MCPAuthProfile{Mode: "none"}}},
+		},
+		{
+			name:       "discovered unconfigured backend",
+			profiles:   []permconfig.MCPServerProfile{{Name: "calendar", Auth: permconfig.MCPAuthProfile{Mode: "none"}}},
+			discovered: []ToolDefinition{{BackendID: "github", Name: "mcp__github__list_issues"}},
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			if _, err := CompileProfiles(test.profiles, test.discovered); !errors.Is(err, ErrInvalidRoute) {
+				t.Fatalf("CompileProfiles error = %v, want ErrInvalidRoute", err)
+			}
+		})
+	}
+}
 
 func TestSessionVMCPBroker_Scenario1_ReservesIDBeforeBrokerSession(t *testing.T) {
 	t.Parallel()

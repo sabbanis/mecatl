@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strings"
 	"sync"
 
 	"github.com/stacklok/mecatl/engine/session"
@@ -51,14 +52,29 @@ type ToolDefinition struct {
 // It rejects a discovery result for a backend that the operator did not
 // configure, preventing a backend route from being invented at execution time.
 func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDefinition) ([]Route, error) {
-	configured := make(map[string]struct{}, len(profiles))
+	configured := make(map[string]bool, len(profiles))
 	for _, profile := range profiles {
-		configured[profile.Name] = struct{}{}
+		name := strings.ToLower(profile.Name)
+		if name == "" {
+			return nil, fmt.Errorf("%w: profile name is required", ErrInvalidRoute)
+		}
+		if _, ok := configured[name]; ok {
+			return nil, fmt.Errorf("%w: duplicate profile %q", ErrInvalidRoute, profile.Name)
+		}
+		switch profile.Auth.Mode {
+		case "none":
+			configured[name] = false
+		case "oauth":
+			configured[name] = true
+		default:
+			return nil, fmt.Errorf("%w: unsupported auth mode %q for backend %q", ErrInvalidRoute, profile.Auth.Mode, profile.Name)
+		}
 	}
 	routes := make([]Route, 0, len(discovered))
 	seen := make(map[string]struct{}, len(discovered))
 	for _, definition := range discovered {
-		if _, ok := configured[definition.BackendID]; !ok {
+		protected, ok := configured[strings.ToLower(definition.BackendID)]
+		if !ok {
 			return nil, fmt.Errorf("%w: unconfigured backend %q", ErrInvalidRoute, definition.BackendID)
 		}
 		if definition.Name == "" {
@@ -75,7 +91,8 @@ func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDe
 				Description: definition.Description,
 				Schema:      append(json.RawMessage(nil), definition.Schema...),
 			},
-			ReadOnly: definition.ReadOnly,
+			ReadOnly:  definition.ReadOnly,
+			Protected: protected,
 		})
 	}
 	sort.Slice(routes, func(i, j int) bool { return routes[i].Tool.Name < routes[j].Tool.Name })
