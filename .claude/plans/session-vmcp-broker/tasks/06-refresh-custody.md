@@ -2,7 +2,7 @@
 id: 06-refresh-custody
 title: Broker-only bearer refresh, secrecy, and OAuth capability boundary
 blocked_by: [05-callback-execution]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
