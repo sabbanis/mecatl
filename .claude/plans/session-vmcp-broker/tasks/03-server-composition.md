@@ -2,8 +2,8 @@
 id: 03-server-composition
 title: Per-session server integration, catalogue collision, and restart
 blocked_by: [01b-profile-auth-routes, 02-session-tools]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-session-vmcp-broker/03-server-composition"
 worktree: ""
 issue: ""
 retries: 1
