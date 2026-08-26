@@ -2,18 +2,18 @@
 id: 04-oauth-transaction
 title: Secure singleflight OAuth connection transactions
 blocked_by: [01b-profile-auth-routes, 02-session-tools]
-status: done
+status: in-progress
 branch: "plan-session-vmcp-broker/04-oauth-transaction"
 worktree: ""
 issue: ""
 retries: 0
-last_error: ""
+last_error: "reopened: Connect only simulated an issuer URL; it must own or receive embedded ToolHive composition and prove the returned /oauth/authorize URL is usable."
 accumulator: acc/session-vmcp-broker
 ---
 
 # Task brief
 
-Read `.claude/plans/session-vmcp-broker/RESTART-HANDOVER.md` before coding; it supersedes the discarded direct-OAuth approach. Implement composition-private `Connect(sessionID, backendID)` for exactly one protected backend by composing the accepted Stage 0 ToolHive authserver/vMCP single-upstream path. The broker may create an opaque broker callback rendezvous and bind it to the canonical session/backend, but ToolHive owns upstream discovery, authorization URL construction, upstream PKCE/state, upstream callback, credential storage, and upstream token refresh. `Connect` returns the embedded ToolHive `/oauth/authorize` browser URL, not an upstream issuer URL; after callback, the broker exchanges ToolHive's downstream authorization code only at ToolHive `/oauth/token`. This spike accepts ToolHive v0.40.0's built-in upstream OAuth client as an opaque dependency default: do not add a direct OAuth client or modify ToolHive merely to inject an egress policy. Record the observed default behavior and the absence of an injection seam in `STAGE2-RESULTS.md`; do not claim a mecatl-enforced no-proxy, DNS-pinned, or redirect policy. Do not create a public API or change the direct-MCP OAuth controller.
+Read `.claude/plans/session-vmcp-broker/RESTART-HANDOVER.md` before coding; it supersedes the discarded direct-OAuth approach. Retain only the salvageable opaque broker handle, per-session/backend transaction key, expiry collection, tombstones/`ForgetSession`, and safe browser-presentable result. Rework `Connect` so its production constructor owns or receives the actual embedded ToolHive authserver/vMCP composition—not merely an issuer URL string. ToolHive owns upstream discovery, authorization URL construction, upstream PKCE/state, upstream callback, credential storage, and upstream token refresh. The focused proof must follow the returned real ToolHive `/oauth/authorize` URL through the embedded server, demonstrating that ToolHive creates/owns authorization-session state and begins the configured upstream flow; a URL-shaped simulation is insufficient. Add explicit `Connected` and `Pending` result states. Reject a delegation-child ID by its reserved prefix even if it was opened. This spike accepts ToolHive v0.40.0's built-in upstream OAuth client as an opaque dependency default: do not add a direct OAuth client or modify ToolHive merely to inject an egress policy. Record the observed default behavior and the absence of an injection seam in `STAGE2-RESULTS.md`; do not claim a mecatl-enforced no-proxy, DNS-pinned, or redirect policy. Do not create a public API or change the direct-MCP OAuth controller.
 
 ## Acceptance criteria
 

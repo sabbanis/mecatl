@@ -2,12 +2,12 @@
 id: 05-callback-execution
 title: Callback binding and protected broker tool execution
 blocked_by: [03-server-composition, 04-oauth-transaction]
-status: in-progress
+status: pending
 branch: ""
 worktree: ""
 issue: ""
 retries: 0
-last_error: ""
+last_error: "blocked on Task 04 correction: production ToolHive ownership must precede downstream callback execution."
 accumulator: acc/session-vmcp-broker
 ---
 
