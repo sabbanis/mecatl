@@ -43,6 +43,8 @@ var ErrInvalidRoute = errors.New("vmcpbroker: invalid route")
 // of the target was invalid.
 var ErrInvalidControlTarget = errors.New("vmcpbroker: invalid control target")
 
+var errDownstreamRefreshRejected = errors.New("vmcpbroker: downstream refresh rejected")
+
 // Route joins a neutral, model-facing tool specification to its private broker
 // backend route. BackendID is consumed only by the injected broker caller; it
 // is never copied into ToolSpec, a ToolCall, or a ToolResult.
@@ -280,9 +282,9 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 	if err := config.Storage.RegisterClient(context.Background(), &fosite.DefaultClient{
 		ID:            clientID,
 		RedirectURIs:  []string{config.CallbackURL},
-		GrantTypes:    []string{"authorization_code"},
+		GrantTypes:    []string{"authorization_code", "refresh_token"},
 		ResponseTypes: []string{"code"},
-		Scopes:        []string{"openid"},
+		Scopes:        []string{"openid", "offline_access"},
 		Audience:      []string{config.Issuer},
 		Public:        true,
 	}); err != nil {
@@ -374,6 +376,7 @@ type streamingCaller struct {
 func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route Route, args json.RawMessage) (session.ToolResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	var grant downstreamGrant
 	server := c.anonymous
 	if route.Protected {
 		grant, ok := c.runtime.grant(c.sessionID, route.BackendID)
@@ -401,7 +404,39 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 	if !ok {
 		return session.ToolResult{}, fmt.Errorf("vmcpbroker: broker did not expose configured tool %q", route.Tool.Name)
 	}
+	result, err := wrapped.Execute(ctx, session.NewToolCall("", wrapped.Spec().Name, args), tool.Environment{})
+	if !route.Protected || !brokerTransportUnauthorized(result, err) {
+		return result, err
+	}
+
+	// An established streaming transport can outlive its short-lived bearer. Do
+	// not reuse that connection after an authorization failure: refresh the
+	// private grant, reconnect, and retry the one failed call.
+	if c.protected != nil {
+		_ = c.protected.Close()
+		c.protected = nil
+	}
+	refreshed, refreshErr := c.runtime.refreshDownstreamGrant(ctx, controlTarget{sessionID: c.sessionID, backendID: route.BackendID}, grant)
+	if refreshErr != nil {
+		return session.ToolResult{}, errors.New("vmcpbroker: protected broker transport unavailable")
+	}
+	server, connectErr := c.connectWithBearer(ctx, refreshed.accessToken)
+	if connectErr != nil {
+		return session.ToolResult{}, errors.New("vmcpbroker: protected broker transport unavailable")
+	}
+	c.protected = server
+	wrapped, ok = brokerTools(server)[route.Tool.Name]
+	if !ok {
+		return session.ToolResult{}, fmt.Errorf("vmcpbroker: broker did not expose configured tool %q", route.Tool.Name)
+	}
 	return wrapped.Execute(ctx, session.NewToolCall("", wrapped.Spec().Name, args), tool.Environment{})
+}
+
+func brokerTransportUnauthorized(result session.ToolResult, err error) bool {
+	if err != nil {
+		return strings.Contains(strings.ToLower(err.Error()), "unauthorized")
+	}
+	return result.IsError && strings.Contains(strings.ToLower(result.Content), "unauthorized")
 }
 
 func (c *streamingCaller) connectProtected(ctx context.Context, backendID string, grant downstreamGrant) (*mcp.Server, error) {
@@ -546,7 +581,7 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	query.Set("response_type", "code")
 	query.Set("client_id", r.clientID)
 	query.Set("redirect_uri", r.callbackURL)
-	query.Set("scope", "openid")
+	query.Set("scope", "openid offline_access")
 	query.Set("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:]))
 	query.Set("code_challenge_method", "S256")
 	query.Set("resource", strings.TrimSuffix(r.authorizeEndpoint, "/oauth/authorize"))
@@ -696,6 +731,12 @@ func (r *Runtime) refreshDownstreamGrant(ctx context.Context, target controlTarg
 		} else {
 			r.grants[target] = grant
 		}
+	} else if errors.Is(err, errDownstreamRefreshRejected) {
+		// ToolHive rejected this refresh token. Keeping it would make a later
+		// Connect falsely report Connected despite no usable authorization.
+		if current, ok := r.grants[target]; ok && current == expected {
+			delete(r.grants, target)
+		}
 	}
 	operation.err = err
 	close(operation.done)
@@ -726,14 +767,14 @@ func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, refreshToken st
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return downstreamGrant{}, ErrInvalidControlTarget
+		return downstreamGrant{}, errDownstreamRefreshRejected
 	}
 	var token struct {
 		AccessToken  string `json:"access_token"`
 		RefreshToken string `json:"refresh_token"`
 	}
 	if err := json.NewDecoder(response.Body).Decode(&token); err != nil || token.AccessToken == "" {
-		return downstreamGrant{}, ErrInvalidControlTarget
+		return downstreamGrant{}, errDownstreamRefreshRejected
 	}
 	if token.RefreshToken == "" {
 		token.RefreshToken = refreshToken
