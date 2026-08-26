@@ -2,8 +2,8 @@
 id: 07-teardown-lifecycle
 title: Scoped disconnect, forget, session close, and runtime shutdown
 blocked_by: [03-server-composition, 06-refresh-custody]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-session-vmcp-broker/07-teardown-lifecycle"
 worktree: ""
 issue: ""
 retries: 0
