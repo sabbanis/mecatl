@@ -85,6 +85,45 @@ a future Kubernetes Secret `resourceVersion` CAS backend. See
 
 ---
 
+## Session-scoped vMCP broker (ADR 0237, Stage 2 proof)
+
+`internal/adapter/vmcpbroker.Runtime` is root-internal, process-lifetime
+ToolHive/vMCP composition. It owns immutable `Route` values, the embedded ToolHive
+authserver/vMCP resources, and process-local maps of open sessions, tombstones,
+pending browser transactions, downstream grants, disconnect marks, and refresh
+operations. `OpenSession` returns one `SessionTools` set per already-reserved
+canonical parent session. Its wrappers expose neutral `tool.ToolSpec` values, keeping
+the broker-private `BackendID` route and every bearer/ToolHive/OAuth value out of the
+engine, session snapshot, events, tool metadata, tool arguments, and results.
+
+The static catalogue is derived from strict operator-profile auth modes: `none` is
+usable without connection; `oauth` is protected but remains visible and returns the
+bounded `authorization required for this broker tool` result until a trusted
+composition-private `Connect(sessionID, backendID)` succeeds. `Disconnect`, callback,
+and refresh work operate only on an opened non-delegation parent session. Closing a
+`SessionTools` tombstones it, rejects new calls, drains its calls and transport, then
+forgets it. `Runtime.Close` rejects new work, cancels and joins per-session work,
+closes transports, then closes the shared ToolHive resources. None of this state
+persists: process restart requires a new Runtime and a new explicit connection.
+
+The proof is deliberately separate from direct MCP OAuth: it does not reuse
+`mcp.OAuthController`, `mcp/oauthlogin`, `LoginMCP`, Ozz lifecycle, or the global MCP
+manager's credential lifecycle. ToolHive v0.40.0 owns the sole upstream OAuth path;
+its default upstream HTTP client is accepted as-is because no mecatl injection seam
+exists. Accordingly, this proof does not claim proxy, DNS-pinning, or redirect
+controls for upstream OAuth. ToolHive likewise lacks targeted
+`ConnectUpstream(existingAuthSession, upstream)`, so only one protected upstream
+lineage is supported and reconnect after disconnect is an explicit typed limitation.
+
+There is no `app.Build`, server wire, or mecatui wiring yet: the package is a
+hermetic in-process runtime proof, not an operator-accessible broker deployment.
+Stage 3 may add the agent-loop parking and exact-call continuation around this existing
+private `Connect` primitive; it must not add a second OAuth implementation. See
+[ADR 0237](../adr/0237-session-scoped-vmcp-broker.md) and
+[`STAGE2-RESULTS.md`](../../STAGE2-RESULTS.md).
+
+---
+
 ## Caller identity embedding and OIDC module boundary
 
 The engine accepts identity only after verification. `session.PrincipalFromClaims`

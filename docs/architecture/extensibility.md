@@ -95,6 +95,30 @@ for controller ownership, [ADR 0112](../adr/0112-mcp-oauth-loopback-runtime.md) 
 opt-in host runtime, and [ADR 0113](../adr/0113-operator-mcp-auth-profiles.md) for profile
 and command wiring.
 
+**Session-scoped vMCP broker (Stage 2 proof)** (`internal/adapter/vmcpbroker`) is
+not another `mcp.OAuthController` and is not a general MCP configuration route. It
+keeps a configured, immutable broker catalogue and opens session-local ordinary-tool
+wrappers only after the host has reserved a canonical parent session ID. The private
+route (`BackendID`) stays in the wrapper; the model sees neither it nor broker tokens,
+ToolHive locators, callback state, or a connect action. Before an explicit trusted
+composition call to `Runtime.Connect(sessionID, backendID)`, a protected wrapper
+returns a bounded authorization-required error while `auth:none` routes continue to
+use the standard streaming-HTTP client. There is no stdio transport.
+
+The runtime owns the embedded ToolHive authserver/vMCP composition and process-wide
+close; each `SessionTools` owns its client transport, drains it, and then forgets only
+its session. It has no `engine/`/`engine/port` seam, snapshot field, public RPC, or
+mecatui command, and is not yet wired by `app.Build`; it is currently exercised only
+by hermetic in-process proofs. It does not reuse the direct-MCP controller, the
+`mcp/oauthlogin` loopback runtime, `LoginMCP`, Ozz lifecycle, or global manager
+credential lifecycle. One protected upstream lineage is supported. A second protected
+backend, or reconnect after disconnect, returns the explicit ToolHive
+`ConnectUpstream` limitation rather than creating another lineage. ToolHive v0.40.0
+owns upstream OAuth through its built-in default upstream client; no mecatl injection
+seam was found, so the broker path makes no claim to enforce proxy, DNS-pinning, or
+redirect policy. See [ADR 0237](../adr/0237-session-scoped-vmcp-broker.md) and
+[`STAGE2-RESULTS.md`](../../STAGE2-RESULTS.md).
+
 **Progressive tool disclosure** (pattern 9) — a tool may optionally implement
 `tool.Disclosable`; the built-in `tool.Search` tool (catalog name `ToolSearch`,
 `tool.NewToolSearch`) hydrates hidden tools on demand by searching the catalog. A
