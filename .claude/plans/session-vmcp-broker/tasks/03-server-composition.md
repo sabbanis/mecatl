@@ -2,12 +2,12 @@
 id: 03-server-composition
 title: Per-session server integration, catalogue collision, and restart
 blocked_by: [01b-profile-auth-routes, 02-session-tools]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
 retries: 1
-last_error: "worker unavailable: service overloaded; red test saved in stash wip: task 03 broker composition red test (worker overload)"
+last_error: ""
 accumulator: acc/session-vmcp-broker
 ---
 
