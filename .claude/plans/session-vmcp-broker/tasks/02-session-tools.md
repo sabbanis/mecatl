@@ -2,7 +2,7 @@
 id: 02-session-tools
 title: Auth-none broker sessions and isolated tool execution
 blocked_by: [01-runtime-contract]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
