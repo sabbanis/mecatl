@@ -2,18 +2,18 @@
 id: 05-callback-execution
 title: Callback binding and protected broker tool execution
 blocked_by: [03-server-composition, 04-oauth-transaction]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
 retries: 0
-last_error: "blocked on Task 04 correction: production ToolHive ownership must precede downstream callback execution."
+last_error: ""
 accumulator: acc/session-vmcp-broker
 ---
 
 # Task brief
 
-Read `.claude/plans/session-vmcp-broker/RESTART-HANDOVER.md` before coding. Complete the one-backend ToolHive callback boundary and make the already-mounted protected wrapper execute through embedded vMCP after a valid connection. Bind callback completion strictly to the original opaque broker transaction; consume it once; do not permit replay or cross-session installation. The callback receives ToolHive's downstream authorization code and exchanges it only at ToolHive `/oauth/token`; it never accepts or exchanges an upstream provider authorization code. Preserve the model-visible catalogue and tool identity before and after connection.
+Read `.claude/plans/session-vmcp-broker/RESTART-HANDOVER.md` before coding. Turn the stored transaction into one real completed ToolHive connection: the broker callback receives ToolHive's downstream code plus opaque state, atomically locates and consumes the matching transaction, then exchanges that code only at ToolHive `/oauth/token` with the original private PKCE verifier. Retain the resulting downstream refresh/access lineage privately; later `Connect` returns `Connected`; inject the short-lived vMCP bearer only in the session-local MCP transport. Do not accept or exchange an upstream provider authorization code, call an upstream issuer/token endpoint, expose credentials to the model/session/event data, or mutate the model-visible catalogue/tool identity. Wrong, expired, duplicate, cross-session, or late callbacks must not install or resurrect a grant.
 
 ## Acceptance criteria
 

@@ -13,7 +13,7 @@ accumulator: acc/session-vmcp-broker
 
 # Task brief
 
-Finish the broker lifecycle: scoped idempotent disconnect, irreversible session tombstone/forget, close drains for in-flight calls, and shared Runtime shutdown ordering. Ensure session tool close runs before ForgetSession and no session close can close Runtime or another session's tools. Keep lifecycle state internal and do not mask ToolHive residuals with goleak exclusions.
+Finish the broker lifecycle: scoped idempotent disconnect, irreversible session tombstone/forget, close drains for in-flight calls, and shared Runtime shutdown ordering. Ensure session tool close runs before ForgetSession and no session close can close Runtime or another session's tools. Keep lifecycle state internal and do not mask ToolHive residuals with goleak exclusions. As part of Runtime ownership shutdown, determine whether ToolHive's downstream DCR client registry exposes removal; if it does, remove the per-Runtime registered client during `Runtime.Close`, and otherwise document the API limitation with focused evidence.
 
 ## Acceptance criteria
 
