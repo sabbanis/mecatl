@@ -132,18 +132,25 @@ type Runtime struct {
 	caller            Caller
 	opener            sessionOpener
 	sessions          map[session.SessionID]*SessionTools
+	lifecycles        map[session.SessionID]*sessionLifecycle
 	tombstones        map[session.SessionID]struct{}
 	authorizeEndpoint string
 	callbackURL       string
 	transactionTTL    time.Duration
 	transactions      map[controlTarget]authorizationTransaction
 	grants            map[controlTarget]downstreamGrant
+	disconnected      map[controlTarget]struct{}
 	refreshes         map[controlTarget]*refreshOperation
 	oauthBackend      string
 	clientID          string
 	httpClient        *http.Client
 	tokenEndpoint     string
 	diagnostics       port.Diagnostics
+	lifecycleCtx      context.Context
+	cancelLifecycle   context.CancelFunc
+	sharedClosers     []namedCloser
+	closeOnce         sync.Once
+	closeErr          error
 	closed            bool
 }
 
@@ -186,8 +193,24 @@ type downstreamGrant struct {
 }
 
 type refreshOperation struct {
-	done chan struct{}
-	err  error
+	done   chan struct{}
+	cancel context.CancelFunc
+	err    error
+}
+
+type sessionLifecycle struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+	wg     sync.WaitGroup
+}
+
+type namedCloser struct {
+	name  string
+	close func() error
+}
+
+type clientRegistryRemover interface {
+	RemoveClient(context.Context, string) error
 }
 
 // AuthorizationRequired is the safe, browser-facing rendezvous for a pending
@@ -229,16 +252,21 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 		copied[i] = copyRoute(route)
 	}
 	sort.Slice(copied, func(i, j int) bool { return copied[i].Tool.Name < copied[j].Tool.Name })
+	lifecycleCtx, cancelLifecycle := context.WithCancel(context.Background())
 	return &Runtime{
-		routes:       copied,
-		caller:       caller,
-		sessions:     make(map[session.SessionID]*SessionTools),
-		tombstones:   make(map[session.SessionID]struct{}),
-		transactions: make(map[controlTarget]authorizationTransaction),
-		grants:       make(map[controlTarget]downstreamGrant),
-		refreshes:    make(map[controlTarget]*refreshOperation),
-		oauthBackend: oauthBackend,
-		diagnostics:  port.NopDiagnostics{},
+		routes:          copied,
+		caller:          caller,
+		sessions:        make(map[session.SessionID]*SessionTools),
+		lifecycles:      make(map[session.SessionID]*sessionLifecycle),
+		tombstones:      make(map[session.SessionID]struct{}),
+		transactions:    make(map[controlTarget]authorizationTransaction),
+		grants:          make(map[controlTarget]downstreamGrant),
+		disconnected:    make(map[controlTarget]struct{}),
+		refreshes:       make(map[controlTarget]*refreshOperation),
+		oauthBackend:    oauthBackend,
+		diagnostics:     port.NopDiagnostics{},
+		lifecycleCtx:    lifecycleCtx,
+		cancelLifecycle: cancelLifecycle,
 	}, nil
 }
 
@@ -302,9 +330,25 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 	if config.Diagnostics != nil {
 		runtime.diagnostics = config.Diagnostics
 	}
+	runtime.sharedClosers = toolHiveClosers(config.AuthServer, config.Storage, clientID)
 	return runtime, nil
 }
 
+func toolHiveClosers(authServer *runner.EmbeddedAuthServer, registry storage.ClientRegistry, clientID string) []namedCloser {
+	closers := make([]namedCloser, 0, 2)
+	// ToolHive v0.40.0's ClientRegistry intentionally has no removal method.
+	// Keep this optional assertion so a future registry implementation can clean up
+	// this runtime's generated public client without widening the ToolHive API here.
+	if remover, ok := registry.(clientRegistryRemover); ok {
+		closers = append(closers, namedCloser{name: "client", close: func() error {
+			return remover.RemoveClient(context.Background(), clientID)
+		}})
+	}
+	// EmbeddedAuthServer owns the supplied storage and closes it itself. Closing
+	// the registry again panics for ToolHive's MemoryStorage.
+	closers = append(closers, namedCloser{name: "authserver", close: authServer.Close})
+	return closers
+}
 func toolHiveAuthorizeEndpoint(issuer string) (string, error) {
 	return toolHiveOAuthEndpoint(issuer, "/oauth/authorize")
 }
@@ -510,7 +554,7 @@ func (r *Runtime) OpenSession(id session.SessionID) (*SessionTools, error) {
 			return nil, err
 		}
 	}
-	opened := &SessionTools{closeFunc: closeFunc, runtime: r}
+	opened := &SessionTools{sessionID: id, closeFunc: closeFunc, runtime: r}
 	tools := make([]tool.Tool, len(routes))
 	for i, route := range routes {
 		tools[i] = &sessionTool{sessionID: id, route: route, caller: caller, owner: opened}
@@ -520,20 +564,22 @@ func (r *Runtime) OpenSession(id session.SessionID) (*SessionTools, error) {
 	r.mu.Lock()
 	if r.closed {
 		r.mu.Unlock()
-		_ = opened.Close()
+		_ = opened.closeOwned()
 		return nil, ErrClosed
 	}
 	if _, tombstoned := r.tombstones[id]; tombstoned {
 		r.mu.Unlock()
-		_ = opened.Close()
+		_ = opened.closeOwned()
 		return nil, ErrInvalidControlTarget
 	}
 	if _, exists := r.sessions[id]; exists {
 		r.mu.Unlock()
-		_ = opened.Close()
+		_ = opened.closeOwned()
 		return nil, fmt.Errorf("%w: session is already open", ErrInvalidRoute)
 	}
 	r.sessions[id] = opened
+	lifecycleCtx, cancel := context.WithCancel(r.lifecycleCtx)
+	r.lifecycles[id] = &sessionLifecycle{ctx: lifecycleCtx, cancel: cancel}
 	r.mu.Unlock()
 	return opened, nil
 }
@@ -557,6 +603,9 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	}
 	if r.authorizeEndpoint == "" {
 		return ConnectResult{}, ErrInvalidControlTarget
+	}
+	if _, disconnected := r.disconnected[target]; disconnected {
+		return ConnectResult{}, fmt.Errorf("%w: reconnect requires ToolHive ConnectUpstream", ErrUnsupportedCapability)
 	}
 	if _, connected := r.grants[target]; connected {
 		return ConnectResult{Status: ConnectionConnected}, nil
@@ -597,6 +646,40 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	return authorizationResult(transaction), nil
 }
 
+// Disconnect removes one backend's broker state without affecting other backends
+// in the same session. A disconnected OAuth backend cannot create a second
+// ToolHive lineage, so reconnect reports the explicit ConnectUpstream limitation.
+func (r *Runtime) Disconnect(sessionID session.SessionID, backendID string) error {
+	target := controlTarget{sessionID: sessionID, backendID: backendID}
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return ErrClosed
+	}
+	if _, tombstoned := r.tombstones[sessionID]; tombstoned {
+		r.mu.Unlock()
+		return nil
+	}
+	if !r.openSessionLocked(sessionID) || !r.knownBackendLocked(backendID) {
+		r.mu.Unlock()
+		return ErrInvalidControlTarget
+	}
+	delete(r.transactions, target)
+	delete(r.grants, target)
+	if r.protectedBackendLocked(backendID) {
+		r.disconnected[target] = struct{}{}
+	}
+	refresh := r.refreshes[target]
+	if refresh != nil {
+		refresh.cancel()
+	}
+	r.mu.Unlock()
+	if refresh != nil {
+		<-refresh.done
+	}
+	return nil
+}
+
 // Callback atomically consumes a broker-created state and exchanges the returned
 // downstream authorization code exclusively with ToolHive's embedded /oauth/token
 // endpoint. The code, verifier, and resulting grant never leave this adapter.
@@ -627,7 +710,12 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 		return ErrInvalidControlTarget
 	}
 
-	grant, err := r.exchangeDownstreamCode(ctx, code, transaction.verifier)
+	opCtx, done, err := r.beginOperation(ctx, target.sessionID)
+	if err != nil {
+		return err
+	}
+	defer done()
+	grant, err := r.exchangeDownstreamCode(opCtx, code, transaction.verifier)
 	if err != nil {
 		r.restoreTransaction(target, transaction)
 		return err
@@ -639,6 +727,36 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 		return ErrClosed
 	}
 	if !r.validControlTargetLocked(target) {
+		return ErrInvalidControlTarget
+	}
+	r.grants[target] = grant
+	return nil
+}
+
+func (r *Runtime) beginOperation(parent context.Context, id session.SessionID) (context.Context, func(), error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed {
+		return nil, nil, ErrClosed
+	}
+	lifecycle := r.lifecycles[id]
+	if lifecycle == nil || !r.openSessionLocked(id) {
+		return nil, nil, ErrInvalidControlTarget
+	}
+	ctx, cancel := context.WithCancel(lifecycle.ctx)
+	stop := context.AfterFunc(parent, cancel)
+	lifecycle.wg.Add(1)
+	return ctx, func() {
+		stop()
+		cancel()
+		lifecycle.wg.Done()
+	}, nil
+}
+
+func (r *Runtime) restoreGrant(target controlTarget, grant downstreamGrant) error {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || !r.refreshableTargetLocked(target) {
 		return ErrInvalidControlTarget
 	}
 	r.grants[target] = grant
@@ -713,11 +831,22 @@ func (r *Runtime) refreshDownstreamGrant(ctx context.Context, target controlTarg
 			return downstreamGrant{}, ctx.Err()
 		}
 	}
-	operation := &refreshOperation{done: make(chan struct{})}
+	lifecycle := r.lifecycles[target.sessionID]
+	if lifecycle == nil {
+		r.mu.Unlock()
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	refreshCtx, cancel := context.WithCancel(lifecycle.ctx)
+	stop := context.AfterFunc(ctx, cancel)
+	lifecycle.wg.Add(1)
+	operation := &refreshOperation{done: make(chan struct{}), cancel: cancel}
 	r.refreshes[target] = operation
 	r.mu.Unlock()
 
-	grant, err := r.exchangeDownstreamRefresh(ctx, expected.refreshToken)
+	grant, err := r.exchangeDownstreamRefresh(refreshCtx, expected.refreshToken)
+	stop()
+	cancel()
+	lifecycle.wg.Done()
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -732,8 +861,6 @@ func (r *Runtime) refreshDownstreamGrant(ctx context.Context, target controlTarg
 			r.grants[target] = grant
 		}
 	} else if errors.Is(err, errDownstreamRefreshRejected) {
-		// ToolHive rejected this refresh token. Keeping it would make a later
-		// Connect falsely report Connected despite no usable authorization.
 		if current, ok := r.grants[target]; ok && current == expected {
 			delete(r.grants, target)
 		}
@@ -782,25 +909,48 @@ func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, refreshToken st
 	return downstreamGrant{accessToken: token.AccessToken, refreshToken: token.RefreshToken}, nil
 }
 
-// ForgetSession tombstones a canonical session and removes all its pending
-// control state. It is intentionally idempotent so close paths can retry.
+// ForgetSession tombstones a canonical session, cancels its login and refresh
+// work, then removes its state after its wrappers have drained. It is idempotent.
 func (r *Runtime) ForgetSession(id session.SessionID) error {
+	opened, lifecycle, err := r.tombstoneAndCancel(id)
+	if err != nil || opened == nil {
+		return err
+	}
+	closeErr := opened.closeOwned()
+	lifecycle.wg.Wait()
+	r.finishForget(id)
+	return closeErr
+}
+
+func (r *Runtime) tombstoneAndCancel(id session.SessionID) (*SessionTools, *sessionLifecycle, error) {
 	r.mu.Lock()
+	defer r.mu.Unlock()
 	if r.closed {
-		r.mu.Unlock()
-		return ErrClosed
+		return nil, nil, ErrClosed
 	}
-	opened, exists := r.sessions[id]
-	if !exists {
-		if _, tombstoned := r.tombstones[id]; tombstoned {
-			r.mu.Unlock()
-			return nil
-		}
-		r.mu.Unlock()
-		return ErrInvalidControlTarget
+	if _, tombstoned := r.tombstones[id]; tombstoned {
+		return nil, nil, nil
 	}
-	delete(r.sessions, id)
+	opened := r.sessions[id]
+	lifecycle := r.lifecycles[id]
+	if opened == nil || lifecycle == nil {
+		return nil, nil, ErrInvalidControlTarget
+	}
 	r.tombstones[id] = struct{}{}
+	lifecycle.cancel()
+	for target, refresh := range r.refreshes {
+		if target.sessionID == id {
+			refresh.cancel()
+		}
+	}
+	return opened, lifecycle, nil
+}
+
+func (r *Runtime) finishForget(id session.SessionID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	delete(r.sessions, id)
+	delete(r.lifecycles, id)
 	for target := range r.transactions {
 		if target.sessionID == id {
 			delete(r.transactions, target)
@@ -811,8 +961,11 @@ func (r *Runtime) ForgetSession(id session.SessionID) error {
 			delete(r.grants, target)
 		}
 	}
-	r.mu.Unlock()
-	return opened.Close()
+	for target := range r.disconnected {
+		if target.sessionID == id {
+			delete(r.disconnected, target)
+		}
+	}
 }
 
 func (r *Runtime) refreshableTargetLocked(target controlTarget) bool {
@@ -834,6 +987,15 @@ func (r *Runtime) openSessionLocked(id session.SessionID) bool {
 	}
 	_, tombstoned := r.tombstones[id]
 	return !tombstoned
+}
+
+func (r *Runtime) knownBackendLocked(backendID string) bool {
+	for _, route := range r.routes {
+		if route.BackendID == backendID {
+			return true
+		}
+	}
+	return false
 }
 
 func (r *Runtime) protectedBackendLocked(backendID string) bool {
@@ -900,13 +1062,49 @@ func newOpaqueHandle() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(bytes), nil
 }
 
-// Close prevents new session wrappers. Existing wrappers are intentionally not
-// closed here; their owning session closes them before Runtime shutdown.
+// Close rejects all new work, cancels and joins per-session operations, drains
+// session transports, then closes the shared vMCP and authserver resources. The
+// embedded authserver owns and closes its storage.
 func (r *Runtime) Close() error {
-	r.mu.Lock()
-	r.closed = true
-	r.mu.Unlock()
-	return nil
+	r.closeOnce.Do(func() {
+		r.mu.Lock()
+		r.closed = true
+		r.cancelLifecycle()
+		sessions := make([]*SessionTools, 0, len(r.sessions))
+		lifecycles := make([]*sessionLifecycle, 0, len(r.lifecycles))
+		for id, opened := range r.sessions {
+			r.tombstones[id] = struct{}{}
+			sessions = append(sessions, opened)
+		}
+		for _, lifecycle := range r.lifecycles {
+			lifecycle.cancel()
+			lifecycles = append(lifecycles, lifecycle)
+		}
+		for _, refresh := range r.refreshes {
+			refresh.cancel()
+		}
+		r.mu.Unlock()
+
+		for _, opened := range sessions {
+			r.closeErr = errors.Join(r.closeErr, opened.closeOwned())
+		}
+		for _, lifecycle := range lifecycles {
+			lifecycle.wg.Wait()
+		}
+		r.mu.Lock()
+		r.sessions = make(map[session.SessionID]*SessionTools)
+		r.lifecycles = make(map[session.SessionID]*sessionLifecycle)
+		r.transactions = make(map[controlTarget]authorizationTransaction)
+		r.grants = make(map[controlTarget]downstreamGrant)
+		r.disconnected = make(map[controlTarget]struct{})
+		r.refreshes = make(map[controlTarget]*refreshOperation)
+		closers := append([]namedCloser(nil), r.sharedClosers...)
+		r.mu.Unlock()
+		for _, closer := range closers {
+			r.closeErr = errors.Join(r.closeErr, closer.close())
+		}
+	})
+	return r.closeErr
 }
 
 // SessionTools owns the wrappers for one session.
@@ -914,6 +1112,10 @@ type SessionTools struct {
 	mu        sync.RWMutex
 	tools     []tool.Tool
 	closed    bool
+	calls     sync.WaitGroup
+	closeOnce sync.Once
+	closeErr  error
+	sessionID session.SessionID
 	closeFunc func() error
 	runtime   *Runtime
 }
@@ -925,20 +1127,55 @@ func (s *SessionTools) Tools() []tool.Tool {
 	return append([]tool.Tool(nil), s.tools...)
 }
 
-// Close makes the session's wrappers unavailable. It is idempotent.
+// Close rejects new calls, drains its own in-flight calls and transport, then
+// irrevocably forgets only this session from the shared Runtime.
 func (s *SessionTools) Close() error {
+	_, _, err := s.runtime.tombstoneAndCancel(s.sessionID)
+	if err != nil && !errors.Is(err, ErrClosed) {
+		return err
+	}
+	closeErr := s.closeOwned()
+	if errors.Is(err, ErrClosed) {
+		return closeErr
+	}
+	s.runtime.mu.RLock()
+	lifecycle := s.runtime.lifecycles[s.sessionID]
+	s.runtime.mu.RUnlock()
+	if lifecycle != nil {
+		lifecycle.wg.Wait()
+	}
+	s.runtime.finishForget(s.sessionID)
+	return closeErr
+}
+
+func (s *SessionTools) beginCall() bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
 	if s.closed {
+		return false
+	}
+	s.calls.Add(1)
+	return true
+}
+
+func (r *Runtime) callAllowed(id session.SessionID, owner *SessionTools) bool {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	return !r.closed && r.sessions[id] == owner && r.openSessionLocked(id)
+}
+
+func (s *SessionTools) closeOwned() error {
+	s.closeOnce.Do(func() {
+		s.mu.Lock()
+		s.closed = true
+		closeFunc := s.closeFunc
 		s.mu.Unlock()
-		return nil
-	}
-	s.closed = true
-	closeFunc := s.closeFunc
-	s.mu.Unlock()
-	if closeFunc != nil {
-		return closeFunc()
-	}
-	return nil
+		s.calls.Wait()
+		if closeFunc != nil {
+			s.closeErr = closeFunc()
+		}
+	})
+	return s.closeErr
 }
 
 type sessionTool struct {
@@ -952,12 +1189,10 @@ func (t *sessionTool) Spec() tool.ToolSpec { return copyRoute(t.route).Tool }
 func (t *sessionTool) ReadOnly() bool      { return t.route.ReadOnly }
 
 func (t *sessionTool) Execute(ctx context.Context, call session.ToolCall, _ tool.Environment) (session.ToolResult, error) {
-	t.owner.mu.RLock()
-	closed := t.owner.closed
-	t.owner.mu.RUnlock()
-	if closed {
+	if !t.owner.beginCall() || !t.owner.runtime.callAllowed(t.sessionID, t.owner) {
 		return session.ToolResult{}, ErrClosed
 	}
+	defer t.owner.calls.Done()
 	if call.Name != t.route.Tool.Name {
 		return session.NewToolError(call.ID, "broker tool call does not match wrapper"), nil
 	}
