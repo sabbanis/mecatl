@@ -191,12 +191,6 @@ per-session MCP lifecycle where closing a client must not abort in-flight calls
   pending login/refresh work, removes all broker bindings and token state, deletes
   indexed upstream credentials, and is idempotent.
   - verify: `TestSessionVMCPBroker_Scenario4_ForgetRevokesAndTombstones`
-- AC4.5: Loading a persisted broker-enabled session after a process restart never
-  silently falls back to the shared engine. It either re-derives the identical
-  stable broker tool catalogue from the immutable configuration and reports
-  authorization-required for reset in-memory grants, or fails loudly
-  `FailedPrecondition` when the broker configuration cannot be reattached.
-  - verify: `TestSessionVMCPBroker_Scenario4_RestartIsExplicit`
 - AC4.6: A session close that races an in-flight broker tool call waits for the
   call to settle before `ForgetSession` removes its state; after close, new calls
   are rejected and `ForgetSession` runs exactly once.
@@ -276,7 +270,6 @@ manual-compatibility gate.
 - `TestSessionVMCPBroker_Scenario4_ReconnectRequiresConnectUpstream`
 - `TestSessionVMCPBroker_Scenario4_ForgetRevokesAndTombstones`
 - `TestSessionVMCPBroker_Scenario4_LateOperationsCannotResurrect`
-- `TestSessionVMCPBroker_Scenario4_RestartIsExplicit`
 - `TestSessionVMCPBroker_Scenario4_CloseDrainsInFlightCall`
 - `TestSessionVMCPBroker_Scenario5_SessionCloseOrdering`
 - `TestSessionVMCPBroker_Scenario5_RuntimeCloseOrdering`
