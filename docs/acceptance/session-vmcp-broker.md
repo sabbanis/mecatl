@@ -99,12 +99,13 @@ the repository's no-stdio-MCP invariant ([AGENTS.md](../../AGENTS.md)).
 **Acceptance:**
 - AC2.1: The first `Connect(session, protectedBackend)` with no usable upstream
   grant returns `AuthorizationRequired` containing one opaque handle, one HTTPS
-  browser URL at the configured issuer origin, and an expiry; it returns no token,
-  refresh value, verifier, code, secret, or ToolHive locator. Broker OAuth
-  discovery, callback, token, and credential-bearing redirects use a dedicated
-  no-proxy bounded client and refuse foreign/private origins except explicit
-  loopback test fixtures.
-  - verify: `TestSessionVMCPBroker_Scenario2_FirstConnectRequiresAuthorization`; `TestSessionVMCPBroker_Scenario2_RejectsForeignOAuthEgress`
+  browser URL at the embedded ToolHive `/oauth/authorize` endpoint, and an
+  expiry; it returns no token, refresh value, verifier, code, secret, or ToolHive
+  locator. This spike uses ToolHive v0.40.0's built-in upstream OAuth client
+  without a mecatl-injected egress client; its observed behavior and the missing
+  control seam are recorded as a ToolHive follow-up, not implemented through a
+  direct OAuth substitute.
+  - verify: `TestSessionVMCPBroker_Scenario2_FirstConnectRequiresAuthorization`; inspection — `STAGE2-RESULTS.md` records the ToolHive version/default and missing injection seam.
 - AC2.2: Concurrent and repeated `Connect` calls for the same session/backend
   share one pending browser transaction and return the same opaque handle and
   URL; cancellation of one waiter does not cancel the shared flow.

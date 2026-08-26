@@ -69,7 +69,7 @@ This is out of scope and violates the handover. Remove all of these changes:
 - `engine/api/session.txt`
 - the corresponding `engine/CHANGELOG.md` entry
 
-Do **not** replace it with another engine or port field. The restart/reattachment decision belongs to a root-internal broker/server binding store or another existing root-only composition mechanism keyed by canonical session ID and immutable broker/config generation. It must fail loudly when a persisted broker session cannot be reattached, never silently select the shared engine.
+Do **not** replace it with another engine or port field. Stage 2 broker/session bindings are process-lifetime only: a new Runtime starts empty after restart and explicit `Connect` is required again. Do not add a root-sidecar binding store or restart reattachment path for this spike.
 
 ### 2. Replace the direct OAuth implementation with ToolHive composition
 
@@ -94,7 +94,7 @@ Connect(session, protected-backend)
 
 The browser/callback may prove only possession of opaque broker-created state. It must not choose a mecatl session, backend, issuer, client, scopes, ToolHive locator, or storage key.
 
-Use the accepted Stage 0 single-upstream ToolHive construction and the actual ToolHive API/version it demonstrates. Keep ToolHive imports in a narrow implementation file. If the current ToolHive API cannot create/continue the expected authorization session without direct upstream OAuth, report the missing API as a blocker; do not emulate it.
+Use the accepted Stage 0 single-upstream ToolHive construction and the actual ToolHive API/version it demonstrates. Keep ToolHive imports in a narrow implementation file. For this spike, accept ToolHive v0.40.0's built-in upstream OAuth HTTP client as an opaque dependency default rather than adding direct OAuth or changing ToolHive to inject a client. Record the observed default behavior and the missing injection seam in `STAGE2-RESULTS.md`; do not claim that mecatl enforces a no-proxy, DNS-pinned, or redirect policy.
 
 ### 3. Derive protected routes from strict operator configuration
 
@@ -116,8 +116,8 @@ Current `SessionTools.Close` does not drain calls that have already passed its c
 The task files presently say 01–05 are complete, but 03–05 do not satisfy the accepted architecture. Before resuming the orchestration loop, the coordinator must reopen/rewrite the affected task graph rather than dispatching task 06 on top of it:
 
 1. Keep Task 01/02 only after checking their code against the revised profile compilation contract.
-2. Reopen Task 03 to remove the engine changes and move persistent broker binding to root-internal ownership.
-3. Replace Task 04 and Task 05 with ToolHive-authserver/vMCP integration tasks; their current direct-OAuth commits are not the implementation path.
+2. Keep Task 03 process-lifetime only; remove the engine changes and do not add restart reattachment or binding persistence.
+3. Replace Task 04 and Task 05 with ToolHive-authserver/vMCP integration tasks; their current direct-OAuth commits are not the implementation path. ToolHive v0.40.0's default upstream OAuth client is accepted for this spike, with its missing egress-client injection seam recorded as follow-up evidence.
 4. Rebase/rewrite Task 06 and Task 07 against the repaired runtime; do not try to layer refresh or teardown over the direct OAuth state machine.
 5. Update the acceptance plan/ADR only if the recovered latest Stage 2 handover changes scope; otherwise preserve their stated exclusions.
 
