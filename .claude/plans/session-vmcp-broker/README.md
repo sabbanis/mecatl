@@ -5,7 +5,7 @@ Accumulator: `acc/session-vmcp-broker`
 | Task | Depends on | Acceptance coverage |
 | --- | --- | --- |
 | 01-runtime-contract | — | AC1.6 |
-| 01b-profile-auth-routes | 01 | AC1.6, AC2.7, AC3.4 |
+| 01b-profile-auth-routes | 01 | AC1.6, AC2.7 |
 | 02-session-tools | 01 | AC1.3, AC1.4, AC2.7 |
 | 03-server-composition | 01b, 02 | AC1.1, AC1.2, AC1.5, AC4.5 |
 | 04-oauth-transaction | 01b, 02 | AC2.1–AC2.4 |

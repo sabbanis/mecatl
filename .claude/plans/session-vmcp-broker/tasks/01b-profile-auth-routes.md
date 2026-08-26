@@ -2,7 +2,7 @@
 id: 01b-profile-auth-routes
 title: Compile broker authorization routes from strict profiles
 blocked_by: [01-runtime-contract]
-status: in-progress
+status: pending
 branch: ""
 worktree: ""
 issue: ""
@@ -21,5 +21,3 @@ Repair the retained runtime contract before server or OAuth work resumes. `Compi
   - verify: `TestInvariant_vmcp_broker_route_is_not_model_input`
 - AC2.7: Calling the protected tool before explicit connection returns a bounded authorization-required tool error, while an anonymous configured tool remains executable. Stage 2 neither parks nor replays the agent run.
   - verify: `TestSessionVMCPBroker_Scenario2_UnconnectedProtectedToolIsBounded`
-- AC3.4: Selecting a second OAuth backend fails with a typed unsupported-capability error before creating another auth-session lineage or contacting that upstream; configured anonymous backends remain usable.
-  - verify: `TestSessionVMCPBroker_Scenario3_SecondOAuthBackendUnsupported`
