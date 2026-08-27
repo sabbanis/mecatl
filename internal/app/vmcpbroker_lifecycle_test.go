@@ -46,7 +46,7 @@ func TestSessionMCPAuthorization_Scenario2_RollbackAndCloseOrdering(t *testing.T
 		}
 	})
 
-	t.Run("normal close releases runtime after service", func(t *testing.T) {
+	t.Run("Built.Close closes broker process exactly once", func(t *testing.T) {
 		runtime := newRuntime(t)
 		process, err := vmcpbroker.NewProcess(runtime)
 		if err != nil {
@@ -61,16 +61,10 @@ func TestSessionMCPAuthorization_Scenario2_RollbackAndCloseOrdering(t *testing.T
 		if err != nil {
 			t.Fatalf("Build: %v", err)
 		}
-		tools, err := runtime.OpenSession("close-order")
-		if err != nil {
-			t.Fatalf("OpenSession: %v", err)
-		}
+		built.Close()
 		built.Close()
 		if _, err := runtime.OpenSession("after-close"); !errors.Is(err, vmcpbroker.ErrClosed) {
 			t.Fatalf("runtime after Built.Close = %v, want ErrClosed", err)
-		}
-		if err := tools.Close(); err != nil {
-			t.Fatalf("session tools Close: %v", err)
 		}
 	})
 }

@@ -7,7 +7,12 @@ import (
 	"net/url"
 )
 
-const maxCallbackValueBytes = 8 << 10
+const (
+	maxCallbackValueBytes = 8 << 10
+	// Each decoded byte can occupy three percent-encoded bytes. A valid query
+	// has two values plus the literal "code=&state=" separators.
+	maxCallbackQueryBytes = 2*3*maxCallbackValueBytes + len("code=&state=")
+)
 
 // CallbackHandler accepts only the broker-created authorization response. The
 // Runtime, not the browser, binds code/state to a session and backend.
@@ -21,6 +26,10 @@ func CallbackHandler(callback func(context.Context, string, string) error) http.
 		}
 		body, err := io.ReadAll(io.LimitReader(r.Body, 1))
 		if err != nil || len(body) != 0 {
+			callbackBadRequest(w)
+			return
+		}
+		if len(r.URL.RawQuery) > maxCallbackQueryBytes {
 			callbackBadRequest(w)
 			return
 		}

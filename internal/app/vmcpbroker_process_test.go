@@ -3,12 +3,15 @@ package app_test
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
 
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
+	"github.com/stacklok/mecatl/internal/adapter/mcpauthority"
+	"github.com/stacklok/mecatl/internal/adapter/permconfig"
 	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
@@ -57,5 +60,22 @@ func TestSessionMCPAuthorization_Scenario2_SettingsConstructBroker(t *testing.T)
 	t.Cleanup(built.Close)
 	if !constructed || built.VMCPBroker == nil || built.VMCPBrokerHandlers.Callback == nil {
 		t.Fatalf("broker construction = constructed:%t built:%#v", constructed, built)
+	}
+}
+
+func TestVMCPBrokerConstructorErrorAbortsBuild(t *testing.T) {
+	want := errors.New("discovery failed before authorization")
+	authority := mcpauthority.NewBroker(mcpauthority.BrokerConfig{
+		Profiles: []permconfig.MCPServerProfile{{Name: "calendar", Auth: permconfig.MCPAuthProfile{Mode: "none"}}},
+	})
+	_, err := app.Build(context.Background(), app.Config{
+		UseMock:      true,
+		MCPAuthority: authority,
+		VMCPBrokerConstructor: func(context.Context, app.VMCPBrokerDeclarations) (*vmcpbroker.Process, error) {
+			return nil, want
+		},
+	})
+	if !errors.Is(err, want) {
+		t.Fatalf("Build error = %v, want %v", err, want)
 	}
 }

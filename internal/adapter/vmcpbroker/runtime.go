@@ -154,7 +154,7 @@ func NewProcess(runtime *Runtime) (*Process, error) {
 	}, nil
 }
 
-// Close releases the Runtime after callers have closed its session tools.
+// Close releases the Runtime and its owned resources.
 func (p *Process) Close() error {
 	if p == nil || p.Runtime == nil {
 		return nil

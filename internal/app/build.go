@@ -857,10 +857,7 @@ type Config struct {
 	ToolHiveGroup      string
 	// VMCPBroker is root-internal, process-lifetime composition state. Its
 	// session wrappers are not persisted or reattached after restart.
-	VMCPBroker *vmcpbroker.Runtime
-	// VMCPBrokerDeclarations are the canonical, already-resolved broker inputs.
-	// Build never reparses configuration to construct this process-owned runtime.
-	VMCPBrokerDeclarations
+	VMCPBroker            *vmcpbroker.Runtime
 	VMCPBrokerConstructor func(context.Context, VMCPBrokerDeclarations) (*vmcpbroker.Process, error)
 	// mcpBrokerAuthority prevents all global-manager construction for a resolved
 	// broker configuration. Task 02 consumes declarations to build the Runtime.
