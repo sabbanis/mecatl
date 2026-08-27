@@ -266,7 +266,7 @@ func TestMalformedProjectMCPFailsSoftWithValueFreeWarning(t *testing.T) {
 	}
 }
 
-func TestProjectMCPIgnoredWithValueFreeWarning(t *testing.T) {
+func TestSessionMCPAuthorization_Scenario1_OperatorTierOnly(t *testing.T) {
 	const canary = `mcp:
   servers:
     - name: canary

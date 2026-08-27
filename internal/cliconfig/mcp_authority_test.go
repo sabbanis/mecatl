@@ -120,14 +120,6 @@ func TestSessionMCPAuthorization_Scenario1_ModeSpecificOAuthSchema(t *testing.T)
 	}
 }
 
-func TestSessionMCPAuthorization_Scenario1_OperatorTierOnly(t *testing.T) {
-	// The resolver supplies only its operator capture to this loader; project-tier
-	// MCP remains tested at the resolver boundary in permconfig.
-	if _, err := ResolveMCPAuthority(MCPAuthorityOptions{DefaultMode: MCPAuthorityGlobal}); err != nil {
-		t.Fatal(err)
-	}
-}
-
 func TestSessionMCPAuthorization_Scenario1_LegacyGlobalConflict(t *testing.T) {
 	legacy := &MCPServerList{entries: []mcpServerEntry{{}}}
 	if _, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: &permconfig.MCPSection{Mode: "broker"}, Legacy: legacy, DefaultMode: MCPAuthorityGlobal, BrokerSupported: true}); !errors.Is(err, ErrMCPProfileInvalid) {
