@@ -112,8 +112,8 @@ type brokerToolsContextKey struct{}
 // VMCPBrokerTools returns the root-internal session-local broker wrappers
 // attached before the composition-owned session-engine factory runs.
 func VMCPBrokerTools(ctx context.Context) []tool.Tool {
-	tools, _ := ctx.Value(brokerToolsContextKey{}).([]tool.Tool)
-	return append([]tool.Tool(nil), tools...)
+	brokerTools, _ := ctx.Value(brokerToolsContextKey{}).([]tool.Tool)
+	return append([]tool.Tool(nil), brokerTools...)
 }
 
 // SessionEngineResult is what a SessionEngineFactory returns: the built
@@ -2081,6 +2081,7 @@ func (s *Service) openBrokerSession(id session.SessionID) ([]tool.Tool, func() e
 	return opened.Tools(), opened.Close, nil
 }
 
+//nolint:gocyclo // Creation coordinates validation, id reservation, carryover, and shared/per-session assembly; extracting alters transactional cleanup.
 func (s *Service) createSession(ctx context.Context, workspace string, mode session.PermissionMode, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, opts createSessionOpts) (*session.Session, error) {
 	if err := s.validateDebugCreate(ctx, workspace, profile, specs, opts); err != nil {
 		return nil, err

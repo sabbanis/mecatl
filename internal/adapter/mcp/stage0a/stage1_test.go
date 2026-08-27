@@ -38,9 +38,9 @@ func TestStaticMultiBackendCatalogue(t *testing.T) {
 		defer backends[i].close()
 	}
 
-	first := catalogueFromSettings(t, ctx, []stage1Backend{backends[0], backends[1], backends[2]})
+	first := catalogueFromSettings(ctx, t, []stage1Backend{backends[0], backends[1], backends[2]})
 	backends[0].delay, backends[1].delay, backends[2].delay = 10*time.Millisecond, 30*time.Millisecond, 20*time.Millisecond
-	second := catalogueFromSettings(t, ctx, []stage1Backend{backends[2], backends[1], backends[0]})
+	second := catalogueFromSettings(ctx, t, []stage1Backend{backends[2], backends[1], backends[0]})
 	if !reflect.DeepEqual(first, second) {
 		t.Fatalf("catalogue changed with source ordering: first=%#v second=%#v", first, second)
 	}
@@ -110,7 +110,7 @@ type stage1ToolArgs struct {
 	Query string `json:"query" jsonschema:"The query to run"`
 }
 
-func catalogueFromSettings(t *testing.T, ctx context.Context, input []stage1Backend) []tool.ToolSpec {
+func catalogueFromSettings(ctx context.Context, t *testing.T, input []stage1Backend) []tool.ToolSpec {
 	t.Helper()
 	settingsPath := filepath.Join(t.TempDir(), "settings.yaml")
 	settings := "mcp:\n  servers:\n"

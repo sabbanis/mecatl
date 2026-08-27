@@ -19,13 +19,14 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
+	"github.com/stacklok/toolhive/pkg/authserver/runner"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
+
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/mcp"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
-	"github.com/stacklok/toolhive/pkg/authserver/runner"
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 // ErrClosed reports an operation on a closed runtime or session tool set.
@@ -168,8 +169,10 @@ type ToolHiveRuntimeConfig struct {
 	Diagnostics port.Diagnostics
 }
 
+// ConnectionStatus describes the authorization state of a broker connection.
 type ConnectionStatus string
 
+// Broker connection states.
 const (
 	ConnectionPending   ConnectionStatus = "pending"
 	ConnectionConnected ConnectionStatus = "connected"
@@ -794,7 +797,7 @@ func (r *Runtime) exchangeDownstreamCode(ctx context.Context, code, verifier str
 	if err != nil {
 		return downstreamGrant{}, ErrInvalidControlTarget
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return downstreamGrant{}, ErrInvalidControlTarget
 	}
@@ -892,7 +895,7 @@ func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, refreshToken st
 	if err != nil {
 		return downstreamGrant{}, ErrInvalidControlTarget
 	}
-	defer response.Body.Close()
+	defer func() { _ = response.Body.Close() }()
 	if response.StatusCode != http.StatusOK {
 		return downstreamGrant{}, errDownstreamRefreshRejected
 	}

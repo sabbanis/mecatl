@@ -260,10 +260,10 @@ func TestEmbeddedAuthorizationCodePKCE(t *testing.T) {
 	verifier := "stage0a-verifier-0123456789012345678901234567890123456789"
 	sum := sha256.Sum256([]byte(verifier))
 	challenge := base64.RawURLEncoding.EncodeToString(sum[:])
-	client := *gateway.Client()
-	client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
+	httpClient := *gateway.Client()
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	authorizeURL := gateway.URL + "/oauth/authorize?response_type=code&client_id=stage0a-mcp-client&redirect_uri=" + url.QueryEscape(redirectURI) + "&scope=openid&state=client-state&resource=" + url.QueryEscape(gateway.URL) + "&code_challenge=" + challenge + "&code_challenge_method=S256"
-	response, err := client.Get(authorizeURL)
+	response, err := httpClient.Get(authorizeURL)
 	if err != nil {
 		t.Fatalf("authorize: %v", err)
 	}
@@ -271,7 +271,7 @@ func TestEmbeddedAuthorizationCodePKCE(t *testing.T) {
 	if response.StatusCode != http.StatusFound {
 		t.Fatalf("embedded authorization request rejected")
 	}
-	response, err = client.Get(response.Header.Get("Location"))
+	response, err = httpClient.Get(response.Header.Get("Location"))
 	if err != nil {
 		t.Fatalf("upstream authorize: %v", err)
 	}
@@ -279,7 +279,7 @@ func TestEmbeddedAuthorizationCodePKCE(t *testing.T) {
 	if response.StatusCode != http.StatusFound {
 		t.Fatalf("upstream authorize status = %d", response.StatusCode)
 	}
-	response, err = client.Get(response.Header.Get("Location"))
+	response, err = httpClient.Get(response.Header.Get("Location"))
 	if err != nil {
 		t.Fatalf("callback: %v", err)
 	}
@@ -401,9 +401,9 @@ func (s scopedStorage) StoreDCRCredentials(ctx context.Context, creds *storage.D
 }
 
 func (s scopedStorage) StoreUpstreamTokens(ctx context.Context, tsid, provider string, tokens *storage.UpstreamTokens) error {
-	copy := *tokens
-	copy.UserID = s.scope + "/" + tokens.UserID
-	return s.Storage.StoreUpstreamTokens(ctx, s.key(tsid), provider, &copy)
+	tokenCopy := *tokens
+	tokenCopy.UserID = s.scope + "/" + tokens.UserID
+	return s.Storage.StoreUpstreamTokens(ctx, s.key(tsid), provider, &tokenCopy)
 }
 func (s scopedStorage) GetUpstreamTokens(ctx context.Context, tsid, provider string) (*storage.UpstreamTokens, error) {
 	return s.Storage.GetUpstreamTokens(ctx, s.key(tsid), provider)
@@ -485,8 +485,8 @@ func TestBearerTransportRejectsCrossOriginRedirect(t *testing.T) {
 	defer target.Close()
 	origin := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Redirect(w, r, target.URL, http.StatusFound) }))
 	defer origin.Close()
-	client := &http.Client{Timeout: time.Second, Transport: bearerTransport{token: "test-token", origin: origin.URL}}
-	if _, err := client.Get(origin.URL); err == nil {
+	httpClient := &http.Client{Timeout: time.Second, Transport: bearerTransport{token: "test-token", origin: origin.URL}}
+	if _, err := httpClient.Get(origin.URL); err == nil {
 		t.Fatal("cross-origin redirect unexpectedly succeeded")
 	}
 	if receivedAuthorization != "" {

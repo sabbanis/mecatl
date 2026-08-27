@@ -2329,14 +2329,13 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 	return child, runEnv, cleanupWS, advisory, editsSurvived, session.ToolResult{}, true
 }
 
-//nolint:gocyclo // Delegation validation order is security-significant and intentionally explicit.
-func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.Environment, emit func(session.Event), caps parentCaps) (session.ToolResult, error) {
+func (t *SubagentTool) validateRunArgs(call session.ToolCall, caps parentCaps) (subagentArgs, bool, []session.Message, session.ToolResult, bool) {
 	var args subagentArgs
 	if msg, ok := session.ParseArgs(call, &args); !ok {
-		return session.NewToolError(call.ID, "Subagent: "+msg), nil
+		return subagentArgs{}, false, nil, session.NewToolError(call.ID, "Subagent: "+msg), false
 	}
 	if strings.TrimSpace(args.Prompt) == "" {
-		return session.NewToolError(call.ID, "Subagent: 'prompt' is required and must be non-empty"), nil
+		return subagentArgs{}, false, nil, session.NewToolError(call.ID, "Subagent: 'prompt' is required and must be non-empty"), false
 	}
 	// Agent selection, limits, routing, and managed authority ceilings all use the
 	// same canonical lookup key. Normalize once so whitespace cannot select an
@@ -2349,8 +2348,8 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	// (mirrors the validateFork conflict pattern). The two offending values are echoed so a
 	// model repairing its JSON sees the numbers. Same-value or only-one-set is fine.
 	if _, conflict, runVal, legacyVal := resolveMaxRunTokens(args); conflict {
-		return session.NewToolError(call.ID,
-			fmt.Sprintf("Subagent: set only one of max_run_tokens or the deprecated max_tokens (they are the same budget); they were given conflicting values (max_run_tokens=%d, max_tokens=%d)", runVal, legacyVal)), nil
+		return subagentArgs{}, false, nil, session.NewToolError(call.ID,
+			fmt.Sprintf("Subagent: set only one of max_run_tokens or the deprecated max_tokens (they are the same budget); they were given conflicting values (max_run_tokens=%d, max_tokens=%d)", runVal, legacyVal)), false
 	}
 
 	// Precondition guards (D2/D3/D4 mode + issue-#34 fork), evaluated BEFORE engine
@@ -2360,6 +2359,11 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	// parent-conversation snapshot. writable selects the writable child engine, which
 	// edits the parent tree directly during the run (no fork, no merge — ADR 0077).
 	writable, forkHistory, errResult, ok := t.validatePreconditions(call.ID, args, caps)
+	return args, writable, forkHistory, errResult, ok
+}
+
+func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.Environment, emit func(session.Event), caps parentCaps) (session.ToolResult, error) {
+	args, writable, forkHistory, errResult, ok := t.validateRunArgs(call, caps)
 	if !ok {
 		return errResult, nil
 	}

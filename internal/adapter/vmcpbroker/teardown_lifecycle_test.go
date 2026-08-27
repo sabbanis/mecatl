@@ -10,9 +10,10 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
+
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
-	"github.com/stacklok/toolhive/pkg/authserver/storage"
 )
 
 func TestSessionVMCPBroker_Scenario4_DisconnectIsBackendScoped(t *testing.T) {

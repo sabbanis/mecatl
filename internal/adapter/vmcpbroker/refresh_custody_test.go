@@ -17,6 +17,7 @@ import (
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
@@ -180,7 +181,7 @@ func TestSessionVMCPBroker_Scenario3_RefreshCannotResurrectState(t *testing.T) {
 	var refreshes atomic.Int32
 	started := make(chan struct{})
 	release := make(chan struct{})
-	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+	tokenServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		refreshes.Add(1)
 		close(started)
 		<-release
@@ -450,11 +451,4 @@ func TestSessionVMCPBroker_Scenario3_SecondOAuthBackendUnsupported(t *testing.T)
 	if err != nil || anonymous.IsError || anonymous.Content != "anonymous result" {
 		t.Fatalf("anonymous route after rejected OAuth backend = %+v, %v", anonymous, err)
 	}
-}
-
-func errorText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return err.Error()
 }

@@ -2549,6 +2549,7 @@ func mountedClientMCPNames(mgr *mcp.Manager) []string {
 	return names
 }
 
+//nolint:gocyclo // Per-session assembly intentionally keeps resolution, catalog construction, and dependency wiring together.
 func sessionEngineFactory(
 	cfg Config,
 	reg *providerRegistry,

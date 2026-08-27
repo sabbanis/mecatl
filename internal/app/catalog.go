@@ -280,9 +280,9 @@ func assembleCatalog(ctx context.Context, cfg Config, reg *providerRegistry, sto
 	return cat, closeFn
 }
 
-func mountBrokerMCP(cat *tool.Catalog, tools []tool.Tool) {
-	if len(tools) != 0 {
-		_, _ = mcp.Register(cat, tools)
+func mountBrokerMCP(cat *tool.Catalog, brokerTools []tool.Tool) {
+	if len(brokerTools) != 0 {
+		_, _ = mcp.Register(cat, brokerTools)
 	}
 }
 
