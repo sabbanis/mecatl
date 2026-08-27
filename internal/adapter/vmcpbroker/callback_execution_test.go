@@ -145,6 +145,10 @@ func TestSessionVMCPBroker_Scenario2_ConnectedToolExecutesWithoutCatalogueMutati
 
 func newToolHiveStreamingRuntime(t *testing.T) (*Runtime, *http.Client, *atomic.Int32) {
 	t.Helper()
+	return newToolHiveStreamingRuntimeWithTool(t, "list_issues", "github_list_issues", "protected upstream result")
+}
+
+func newToolHiveStreamingRuntimeWithTool(t *testing.T, upstreamToolName, routeToolName, resultText string) (*Runtime, *http.Client, *atomic.Int32) {
 	const upstreamCredential = "upstream-credential-for-session-lineage"
 	var upstreamCalls atomic.Int32
 
@@ -162,8 +166,8 @@ func newToolHiveStreamingRuntime(t *testing.T) (*Runtime, *http.Client, *atomic.
 	t.Cleanup(upstream.Close)
 
 	protected := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "protected", Version: "test"}, nil)
-	mcpsdk.AddTool(protected, &mcpsdk.Tool{Name: "list_issues"}, func(context.Context, *mcpsdk.CallToolRequest, struct{}) (*mcpsdk.CallToolResult, struct{}, error) {
-		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "protected upstream result"}}}, struct{}{}, nil
+	mcpsdk.AddTool(protected, &mcpsdk.Tool{Name: upstreamToolName}, func(context.Context, *mcpsdk.CallToolRequest, struct{}) (*mcpsdk.CallToolResult, struct{}, error) {
+		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: resultText}}}, struct{}{}, nil
 	})
 	protectedHandler := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return protected }, &mcpsdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
 	protectedServer := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,7 +238,7 @@ func newToolHiveStreamingRuntime(t *testing.T) (*Runtime, *http.Client, *atomic.
 		gateway.Close()
 	})
 
-	runtime, err := NewToolHiveStreamingHTTPRuntime([]Route{{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "github_list_issues", Schema: json.RawMessage(`{"type":"object"}`)}}}, gateway.URL+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: gateway.URL, CallbackURL: "https://client.invalid/callback", HTTPClient: gateway.Client()}, time.Minute)
+	runtime, err := NewToolHiveStreamingHTTPRuntime([]Route{{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: routeToolName, Schema: json.RawMessage(`{"type":"object"}`)}}}, gateway.URL+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: gateway.URL, CallbackURL: "https://client.invalid/callback", HTTPClient: gateway.Client()}, time.Minute)
 	if err != nil {
 		t.Fatalf("NewToolHiveStreamingHTTPRuntime: %v", err)
 	}
