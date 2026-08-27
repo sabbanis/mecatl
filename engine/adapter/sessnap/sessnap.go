@@ -41,7 +41,10 @@ type Snapshot struct {
 	Incarnation session.IncarnationID  `json:"incarnation,omitempty"`
 	Messages    []messageDTO           `json:"messages"`
 	Pending     *session.PendingAsk    `json:"pending,omitempty"`
-	StopReason  session.StopReason     `json:"stop_reason,omitempty"`
+	// PendingMCPAuthorization is snapshot-only private continuation state. It is
+	// present iff StateAuthorizing; the aggregate validates it before mutation.
+	PendingMCPAuthorization *session.PendingMCPAuthorization `json:"pending_mcp_authorization,omitempty"`
+	StopReason              session.StopReason               `json:"stop_reason,omitempty"`
 	// Kind and Relationship are the validated producer taxonomy from ADR 0217.
 	// A missing kind is legacy data and restores as unknown (fail-closed).
 	Kind         session.SessionKind         `json:"kind,omitempty"`
@@ -197,6 +200,9 @@ func Of(s *session.Session) (Snapshot, error) {
 	if s == nil {
 		return Snapshot{}, ErrNilSession
 	}
+	if err := s.ValidateMCPAuthorizationState(); err != nil {
+		return Snapshot{}, fmt.Errorf("sessnap: validate MCP authorization state: %w", err)
+	}
 	relationship := s.Relationship
 	if relationship.BranchIndex != nil {
 		branchIndex := *relationship.BranchIndex
@@ -248,6 +254,10 @@ func Of(s *session.Session) (Snapshot, error) {
 	if ask, ok := s.PendingAsk(); ok {
 		a := ask
 		snap.Pending = &a
+	}
+	if pending, ok := s.PendingMCPAuthorization(); ok {
+		p := pending
+		snap.PendingMCPAuthorization = &p
 	}
 	// Capture the recorded terminal reason faithfully (no limit derivation) so a
 	// terminal session round-trips through the matching transition on restore.
@@ -320,7 +330,7 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 
 	// Drive the state machine to the recorded lifecycle state, seed the running
 	// totals + cumulative usage. New() lands in StateIdle; RestoreState advances.
-	if err := RestoreState(s, snap.State, snap.StopReason, snap.Pending, snap.Counters, usage, snap.Permanent, snap.LastError); err != nil {
+	if err := RestoreStateWithMCPAuthorization(s, snap.State, snap.StopReason, snap.Pending, snap.PendingMCPAuthorization, snap.Counters, usage, snap.Permanent, snap.LastError); err != nil {
 		return nil, err
 	}
 	if snap.State == session.StateFailed {
@@ -388,6 +398,9 @@ func ValidatePersistedAuthority(authority *session.Authority) error {
 // for the failure detail, issue #332 — meaningful only when state==StateFailed and
 // lastError!=""). It returns an error on an unknown state or a transition the
 // aggregate rejects.
+// RestoreState preserves the pre-MCP-authorization restore API. New snapshot
+// readers use RestoreStateWithMCPAuthorization so an older caller cannot
+// accidentally coerce private authorizing state into another lifecycle state.
 func RestoreState(
 	s *session.Session,
 	state session.State,
@@ -398,6 +411,27 @@ func RestoreState(
 	permanent bool,
 	lastError string,
 ) error {
+	return RestoreStateWithMCPAuthorization(s, state, stop, pending, nil, counters, usage, permanent, lastError)
+}
+
+// RestoreStateWithMCPAuthorization drives a fresh aggregate to the target
+// lifecycle state, including the private authorizing continuation.
+//
+//nolint:gocyclo // The restore switch mirrors the complete session lifecycle state machine.
+func RestoreStateWithMCPAuthorization(
+	s *session.Session,
+	state session.State,
+	stop session.StopReason,
+	pending *session.PendingAsk,
+	pendingMCPAuthorization *session.PendingMCPAuthorization,
+	counters session.Counters,
+	usage session.Usage,
+	permanent bool,
+	lastError string,
+) error {
+	if err := validateRestorePendingState(s, state, pending, pendingMCPAuthorization); err != nil {
+		return err
+	}
 	// Restore running totals directly; these are exported and authoritative.
 	s.Counters = counters
 	// Usage seeds the budget so it survives restart.
@@ -414,12 +448,15 @@ func RestoreState(
 		if err := beginTurnPreservingCounters(s, counters); err != nil {
 			return err
 		}
-		ask := session.PendingAsk{}
-		if pending != nil {
-			ask = *pending
-		}
-		if err := s.PauseForApproval(ask); err != nil {
+		if err := s.PauseForApproval(*pending); err != nil {
 			return fmt.Errorf("sessnap: restore awaiting: %w", err)
+		}
+	case session.StateAuthorizing:
+		if err := beginTurnPreservingCounters(s, counters); err != nil {
+			return err
+		}
+		if err := s.PauseForMCPAuthorization(*pendingMCPAuthorization); err != nil {
+			return fmt.Errorf("sessnap: restore authorizing: %w", err)
 		}
 	case session.StateCompleted:
 		// Stop(reason) records the exact captured reason; Complete is the special
@@ -446,6 +483,35 @@ func RestoreState(
 		}
 	default:
 		return fmt.Errorf("sessnap: unknown state %q", state)
+	}
+	return nil
+}
+
+func validateRestorePendingState(s *session.Session, state session.State, pending *session.PendingAsk, pendingMCPAuthorization *session.PendingMCPAuthorization) error {
+	if state == session.StateAwaiting {
+		if pending == nil || pendingMCPAuthorization != nil {
+			return fmt.Errorf("sessnap: awaiting state/pending mismatch")
+		}
+		return nil
+	}
+	if state == session.StateAuthorizing {
+		if pending != nil || pendingMCPAuthorization == nil {
+			return fmt.Errorf("sessnap: authorizing state/pending mismatch")
+		}
+		// Validate the exact trailing turn on a throwaway aggregate so malformed
+		// snapshots do not mutate the aggregate being restored before failing.
+		probe := session.New(s.ID, s.Mode, s.Workspace, s.Limits, s.CreatedAt)
+		probe.Conversation = s.Conversation
+		if err := probe.BeginTurn(); err != nil {
+			return fmt.Errorf("sessnap: validate authorizing: %w", err)
+		}
+		if err := probe.PauseForMCPAuthorization(*pendingMCPAuthorization); err != nil {
+			return fmt.Errorf("sessnap: authorizing state/pending mismatch: %w", err)
+		}
+		return nil
+	}
+	if pending != nil || pendingMCPAuthorization != nil {
+		return fmt.Errorf("sessnap: pending value outside matching state")
 	}
 	return nil
 }

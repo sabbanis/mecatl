@@ -61,6 +61,16 @@ func TestJSONLStoreSessionCreatorConformance(t *testing.T) {
 	})
 }
 
+func TestInvariant_authorizing_snapshot_store_conformance(t *testing.T) {
+	storeconformance.RunAuthorizingMCPAuthorization(t, func(t *testing.T) port.SessionStore {
+		st, err := jsonlstore.New(t.TempDir())
+		if err != nil {
+			t.Fatalf("jsonlstore.New: %v", err)
+		}
+		return st
+	})
+}
+
 // TestJSONLStorePrunableConformance runs the shared PrunableStore (retention
 // seam) table against the JSONL replay store.
 func TestJSONLStorePrunableConformance(t *testing.T) {

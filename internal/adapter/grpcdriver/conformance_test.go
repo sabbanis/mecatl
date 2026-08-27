@@ -59,6 +59,15 @@ func TestGRPCSessionLineageConformance(t *testing.T) {
 	}
 }
 
+func TestInvariant_authorizing_snapshot_store_conformance(t *testing.T) {
+	storeconformance.RunAuthorizingMCPAuthorization(t, func(t *testing.T) port.SessionStore {
+		conn := dialBufconn(t, func(gs *grpc.Server) {
+			driverv1.RegisterSessionStoreServiceServer(gs, NewSessionStoreServer(memstore.New()))
+		})
+		return mustNewSessionStore(t, conn)
+	})
+}
+
 // TestGRPCSessionStorePrunableConformance runs the shared PrunableStore
 // (retention seam) table over the same client → bufconn → server wrapper →
 // memstore path, so List/Delete are proven over the wire (proto Timestamp

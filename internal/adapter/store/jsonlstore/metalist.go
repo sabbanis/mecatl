@@ -56,12 +56,13 @@ type metaSnapshot struct {
 // a new session.State landing there cannot silently make the picker zero a
 // valid snapshot here.
 var knownStates = map[session.State]bool{
-	session.StateIdle:      true,
-	session.StateRunning:   true,
-	session.StateAwaiting:  true,
-	session.StateCompleted: true,
-	session.StateFailed:    true,
-	session.StateCancelled: true,
+	session.StateIdle:        true,
+	session.StateRunning:     true,
+	session.StateAwaiting:    true,
+	session.StateAuthorizing: true,
+	session.StateCompleted:   true,
+	session.StateFailed:      true,
+	session.StateCancelled:   true,
 }
 
 // lastLineSeekWindow is the tail-read window for readLastLine. A snapshot line

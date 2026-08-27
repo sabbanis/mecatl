@@ -159,6 +159,16 @@ func Run(t *testing.T, newStore func(t *testing.T) port.SessionStore) {
 		})
 	})
 
+	t.Run("authorizing snapshot state", func(t *testing.T) {
+		st := newStore(t)
+		s := authorizingSession(t, "conf-authorizing")
+		got := roundTrip(t, st, s)
+		pending, ok := got.PendingMCPAuthorization()
+		if got.State != session.StateAuthorizing || !ok || pending.AuthorizationID != "authorization-1" || pending.Call.ID != "parked" || len(pending.Deferred) != 1 || pending.Deferred[0].ID != "later" {
+			t.Fatalf("authorizing round trip = state %q pending %+v, %v", got.State, pending, ok)
+		}
+	})
+
 	t.Run("large snapshot (multi-megabyte media part)", func(t *testing.T) {
 		// The size-contract subtest: a realistic screenshot-sized inline media
 		// part (~5 MiB, well under session.MaxMediaBytes) must round-trip. A
@@ -359,6 +369,37 @@ func Run(t *testing.T, newStore func(t *testing.T) port.SessionStore) {
 			t.Errorf("re-Load saw %d messages, want 1 (the loaded copy's mutation must not reach the store)", got)
 		}
 	})
+}
+
+// RunAuthorizingMCPAuthorization verifies that the store preserves the private
+// authorizing continuation across a complete Save/Load round trip.
+func RunAuthorizingMCPAuthorization(t *testing.T, newStore func(t *testing.T) port.SessionStore) {
+	t.Helper()
+	st := newStore(t)
+	s := authorizingSession(t, "conf-authorizing")
+	got := roundTrip(t, st, s)
+	pending, ok := got.PendingMCPAuthorization()
+	if got.State != session.StateAuthorizing || !ok || pending.AuthorizationID != "authorization-1" || pending.Call.ID != "parked" || len(pending.Deferred) != 1 || pending.Deferred[0].ID != "later" {
+		t.Fatalf("authorizing round trip = state %q pending %+v, %v", got.State, pending, ok)
+	}
+}
+
+func authorizingSession(t *testing.T, id session.SessionID) *session.Session {
+	t.Helper()
+	s := newSession(id)
+	mustOK(t, "BeginTurn", s.BeginTurn())
+	calls := []session.ToolCall{
+		session.NewToolCall("done", "Read", json.RawMessage(`{"path":"done"}`)),
+		session.NewToolCall("parked", "mcp__calendar__create", json.RawMessage(`{"title":"review"}`)),
+		session.NewToolCall("later", "mcp__calendar__list", json.RawMessage(`{"after":"today"}`)),
+	}
+	mustOK(t, "RecordAssistant", s.RecordAssistant(session.NewAssistantMessage("", "", calls)))
+	mustOK(t, "RecordToolResults", s.RecordToolResults([]session.ToolResult{session.NewToolResult("done", "ok")}))
+	mustOK(t, "PauseForMCPAuthorization", s.PauseForMCPAuthorization(session.PendingMCPAuthorization{
+		AuthorizationID: "authorization-1", Backend: "calendar", RouteID: "calendar-route", ConfigID: "config-1",
+		ExpiresAt: time.Unix(1_800_000_000, 0), Call: calls[1], Deferred: calls[2:],
+	}))
+	return s
 }
 
 // RunPrunable executes the shared port.PrunableStore conformance table

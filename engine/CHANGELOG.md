@@ -139,6 +139,10 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 - **`agent.LRUForkReaper.Close`** — releases all retained Parallel winner-fork
   workspaces during graceful composition shutdown. Added (minor).
+- **Durable broker-authorization parking** ([ADR 0283](../docs/adr/0283-configured-resumable-mcp-authorization.md)) —
+  `session.StateAuthorizing`, `PendingMCPAuthorization`, and the dedicated
+  pause/claim/abort/interruption aggregate seams preserve and validate an exact
+  broker-protected call plus its deferred siblings across snapshots. Added (minor).
 - **Broker enrollment provenance** — `session.Session.BrokerEnrolled` and
   `session.Session.BrokerToolNames` record non-secret session-local vMCP
   enrollment and its model-visible wrapper inventory so hosts can require

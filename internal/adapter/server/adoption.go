@@ -98,7 +98,7 @@ func (s *Service) adoptionSource(ctx context.Context, id session.SessionID) (*se
 	if sess.State == session.StateAwaiting {
 		return sess, AdoptionReasonAwaiting, nil
 	}
-	if sess.State == session.StateRunning || s.IsLive(id) {
+	if sess.State == session.StateRunning || sess.State == session.StateAuthorizing || s.IsLive(id) {
 		return sess, AdoptionReasonActive, nil
 	}
 	if sess.State != session.StateIdle && !sess.State.IsTerminal() {

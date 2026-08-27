@@ -338,7 +338,7 @@ func (s *Service) migrateOneFamily(ctx context.Context, backend port.SessionMigr
 	if err != nil {
 		return maintenanceReasonChanged
 	}
-	if sess.State == session.StateRunning || sess.State == session.StateAwaiting || sess.Kind != family.Kind ||
+	if sess.State == session.StateRunning || sess.State == session.StateAwaiting || sess.State == session.StateAuthorizing || sess.Kind != family.Kind ||
 		sess.State != family.State || migrationSessionOwnerKey(sess.Owner) != family.OwnerKey {
 		return maintenanceReasonChanged
 	}

@@ -68,6 +68,7 @@ func TestKnownStatesMatchSessionPackage(t *testing.T) {
 		session.StateIdle,
 		session.StateRunning,
 		session.StateAwaiting,
+		session.StateAuthorizing,
 		session.StateCompleted,
 		session.StateFailed,
 		session.StateCancelled,

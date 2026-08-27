@@ -3456,6 +3456,9 @@ func (s *Service) ForkSession(ctx context.Context, srcID session.SessionID, titl
 	if err != nil {
 		return "", err
 	}
+	if src.State == session.StateAuthorizing {
+		return "", fmt.Errorf("%w: fork requires a session at a turn boundary; source %q is %s", ErrFailedPrecondition, srcID, src.State)
+	}
 	snap := session.ForkSnapshot(src.Conversation)
 	forked := session.New(s.cfg.NewID(), src.Mode, src.Workspace, src.Limits, s.cfg.Now())
 	if err := forked.SeedHistory(snap); err != nil {
@@ -3546,7 +3549,7 @@ func (s *Service) validateCarryover(ctx context.Context, srcID session.SessionID
 	if err != nil {
 		return nil, nil, session.Authority{}, false, err
 	}
-	if src.State == session.StateRunning || src.State == session.StateAwaiting {
+	if src.State == session.StateRunning || src.State == session.StateAwaiting || src.State == session.StateAuthorizing {
 		return nil, nil, session.Authority{}, false, fmt.Errorf("%w: carryover requires a session at a turn boundary; source %q is %s", ErrFailedPrecondition, srcID, src.State)
 	}
 	// The SOURCE's owner travels with the carried history (ADR 0204 decision 4):
@@ -7014,7 +7017,7 @@ func inventoryCapabilities(kind session.SessionKind, id session.SessionID, state
 		reasons.Delete = CapabilityReasonInspectOnlyKind
 		return caps, reasons
 	}
-	if state == session.StateAwaiting {
+	if state == session.StateAwaiting || state == session.StateAuthorizing {
 		reasons.PublicChat = CapabilityReasonAwaitingApproval
 		reasons.Fork = CapabilityReasonAwaitingApproval
 		reasons.Rename = CapabilityReasonAwaitingApproval

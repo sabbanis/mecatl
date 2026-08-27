@@ -5,11 +5,13 @@
     method func (*Principal).IdentityWellFramed() bool
     method func (*Principal).SameIdentity(other *Principal) bool
     method func (*Session).Abandon() error
+    method func (*Session).AbortMCPAuthorization(reason string) ([]ToolResult, error)
     method func (*Session).BeginRun(runID string)
     method func (*Session).BeginTurn() error
     method func (*Session).BindAuthority(authority Authority) error
     method func (*Session).BoundAuthority() (Authority, bool)
     method func (*Session).Cancel() error
+    method func (*Session).ClaimMCPAuthorization() (PendingMCPAuthorization, error)
     method func (*Session).Complete() error
     method func (*Session).Fail() error
     method func (*Session).FailedStepRetryPending() (RetryDisposition, StreamProgress, bool)
@@ -17,10 +19,13 @@
     method func (*Session).FailurePermanence() bool
     method func (*Session).Incarnation() IncarnationID
     method func (*Session).Interrupt() error
+    method func (*Session).InterruptMCPAuthorization() ([]ToolResult, error)
     method func (*Session).LastError() string
     method func (*Session).LimitTripped() (StopReason, bool)
     method func (*Session).PauseForApproval(ask PendingAsk) error
+    method func (*Session).PauseForMCPAuthorization(pending PendingMCPAuthorization) error
     method func (*Session).PendingAsk() (PendingAsk, bool)
+    method func (*Session).PendingMCPAuthorization() (PendingMCPAuthorization, bool)
     method func (*Session).PrepareFailedStepRetry() error
     method func (*Session).RecordAssistant(m Message) error
     method func (*Session).RecordFailureMetadata(disposition RetryDisposition, progress StreamProgress) error
@@ -49,12 +54,14 @@
     method func (*Session).SetTitle(text string)
     method func (*Session).Stop(reason StopReason) error
     method func (*Session).StopReason() (StopReason, bool)
+    method func (*Session).ValidateMCPAuthorizationState() error
     method func (Authority).Clone() Authority
     method func (Authority).Valid() bool
     method func (GrantType).Valid() bool
     method func (IncarnationID).Valid() bool
     method func (Limits).WithDefaults(d Limits) Limits
     method func (PendingAsk).Origin() AskOrigin
+    method func (PendingMCPAuthorization).Clone() PendingMCPAuthorization
     method func (RetryDisposition).Valid() bool
     method func (State).IsTerminal() bool
     method func (StreamProgress).Valid() bool
@@ -173,6 +180,7 @@ const SessionKindScheduled SessionKind = "scheduled"
 const SessionKindSubagent SessionKind = "subagent"
 const SessionKindTeamMember SessionKind = "team_member"
 const SessionKindUnknown SessionKind = "unknown"
+const StateAuthorizing State = "authorizing"
 const StateAwaiting State = "awaiting"
 const StateCancelled State = "cancelled"
 const StateCompleted State = "completed"
@@ -286,6 +294,7 @@ type NetworkAttemptPayload struct{SessionID SessionID "json:\"session_id\""; Run
 type ParallelEventKind string
 type ParallelPayload struct{ParentCallID string; Kind ParallelEventKind; Join string; BranchCount int; BranchIndex int; ChildID string; ChildIncarnation IncarnationID; BranchLabel string; Goal string; RoutedCategory string; RoutedModel string; RoutingReason string; Model string; ToolName string; IsError bool; ToolCount int; Text string; Detail string; InnerKind EventType; Failed bool; Workspace string; Stop StopReason; Usage Usage; DurationMs int64; Winner int; WinnerWorkspace string}
 type PendingAsk struct{AskID string; Tool string; Args json.RawMessage; Reason string; Call ToolCallID "json:\"call,omitempty\""; ConfiguredAsk bool; FlooredConfiguredAllow bool; HookOriginated bool "json:\"hook_originated,omitempty\""; PlanOriginated bool "json:\"plan_originated,omitempty\""}
+type PendingMCPAuthorization struct{AuthorizationID string; Backend string; RouteID string; ConfigID string; ExpiresAt time.Time; Call ToolCall; Deferred []ToolCall}
 type PermissionMode string
 type Principal struct{Issuer string; Subject string; GrantType GrantType; Name string}
 type RequestManifestPayload struct{Provider string "json:\"provider,omitempty\""; Model string "json:\"model,omitempty\""; ReasoningEffort string "json:\"reasoning_effort,omitempty\""; ContextWindow int "json:\"context_window,omitempty\""; ToolNames []string "json:\"tool_names\""; ToolDecisions []RequestToolDecision "json:\"tool_decisions\""; MessageCount int "json:\"message_count\""; MessageBytes int "json:\"message_bytes\""; Prompt []RequestPromptComponent "json:\"prompt\""}
@@ -322,4 +331,5 @@ var ErrInvalidContent error
 var ErrInvalidMediaURL error
 var ErrInvalidSessionMetadata error
 var ErrNoPendingAsk error
+var ErrNoPendingMCPAuthorization error
 var ErrOwnerAlreadySet error

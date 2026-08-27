@@ -89,6 +89,10 @@ func TestRedisStoreSessionCreatorConformance(t *testing.T) {
 	})
 }
 
+func TestInvariant_authorizing_snapshot_store_conformance(t *testing.T) {
+	storeconformance.RunAuthorizingMCPAuthorization(t, newTestStore)
+}
+
 // TestRedisStorePrunableConformance runs the shared PrunableStore (retention
 // seam: List/Delete) conformance table against the Redis-backed store.
 func TestRedisStorePrunableConformance(t *testing.T) {
