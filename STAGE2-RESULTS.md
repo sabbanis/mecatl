@@ -12,8 +12,8 @@ an operator-facing broker is deployed.
 | Anonymous broker route | PASS (hermetic) | The standard streaming-HTTP wrapper proof covers an `auth:none` route. |
 | Process/session teardown | PASS (hermetic) | `SessionTools.Close` rejects new calls, drains calls and its transport, then forgets its session; `Runtime.Close` closes session resources before shared closers. |
 | Deployed composition path | BLOCKED | No `app.Build`, server control surface, or mecatui wiring constructs this Runtime. The proof is root-internal only. |
-| Manual public documentation-server smoke | NOT RUN / BLOCKED | No executable composition root exists to place `https://modelcontextprotocol.io/mcp` behind the broker. No remote initialize, authenticated broker `tools/list`, or documentation tool call was exercised. |
-| Residual ToolHive goroutine evidence | NOT OBSERVED | No post-close goroutine capture was performed, so there is no stack evidence to report. No goleak exclusion was added for `internal/adapter/vmcpbroker`; this is not evidence that ToolHive leaves no residual goroutines. |
+| Manual public documentation-server smoke | PASS (manual, v0.45.0) | `go run ./.scratch/vmcpbroker-ac54` composed a loopback embedded ToolHive authserver/vMCP gateway over `https://modelcontextprotocol.io/mcp`, initialized authenticated `/mcp`, listed three tools, and completed `docs_search_model_context_protocol`. It is a vMCP boundary proof; the Runtime control lifecycle is separately proven hermetically. |
+| Residual ToolHive goroutine evidence | OBSERVED | The unfiltered post-close capture found seven `github.com/lestrrat-go/httprc/v3` goroutines after `vmcpServer.Stop` and `authServer.Close`; see the lifecycle finding below. No goleak exclusion was added. |
 
 ## Runtime and dependency surface
 
@@ -23,7 +23,7 @@ The public-in-package Stage 2 control operations are `OpenSession`, `Connect`,
 `Disconnect`, `Callback`, `ForgetSession`, and `Close`. They are composition-private;
 there is no wire endpoint and the model never supplies a backend ID.
 
-The root module pins `github.com/stacklok/toolhive v0.40.0`. The implementation and
+The root module pins `github.com/stacklok/toolhive v0.45.0`. The implementation and
 hermetic composition proof use these ToolHive APIs:
 
 - `runner.NewEmbeddedAuthServerWithStorage`, `EmbeddedAuthServer.Handler`, and
@@ -37,7 +37,7 @@ hermetic composition proof use these ToolHive APIs:
   `strategies.NewUpstreamInjectStrategy` for static backend routing and upstream-token
   injection.
 
-ToolHive owns the upstream OAuth interaction through its v0.40.0 default upstream
+ToolHive owns the upstream OAuth interaction through its v0.45.0 default upstream
 HTTP client. The accepted integration surface exposes no mecatl injection seam for
 that client. Consequently, this Stage 2 proof makes no claim that mecatl enforces a
 no-proxy, DNS-pinned, or redirect-bounded policy for ToolHive's upstream OAuth
@@ -65,33 +65,43 @@ traffic.
 
 ## Manual smoke boundary
 
-The required future smoke target is `https://modelcontextprotocol.io/mcp`. The command
-cannot be truthfully supplied as a runnable mecatl command today: no root composes a
-broker Runtime, accepts a trusted `Connect(sessionID, backendID)` action, or exposes a
-broker `/mcp` listener. The intended manual sequence, once that composition exists, is:
+The public smoke target is `https://modelcontextprotocol.io/mcp` and runs outside
+`task test`:
 
-```text
-start the broker-enabled composition with https://modelcontextprotocol.io/mcp as an auth:none backend
-→ create and reserve a parent session
-→ open its broker SessionTools
-→ initialize the broker /mcp transport
-→ call authenticated broker tools/list
-→ invoke one documentation tool
+```sh
+go run ./.scratch/vmcpbroker-ac54
 ```
 
-**Outcome:** not run. This document does not treat the hermetic `httptest` MCP servers
-as a substitute for the public documentation-server smoke.
+On 2026-08-27, against ToolHive v0.45.0, the scratch-only loopback gateway
+successfully initialized the remote backend through embedded vMCP, initialized
+an authenticated local `/mcp` client, listed three documentation tools, and
+called `docs_search_model_context_protocol`. Its redacted result is
+`.scratch/vmcpbroker-ac54/result.json`.
+
+This proves the real ToolHive vMCP boundary, not a shipped composition root or
+the broker Runtime control lifecycle. The latter is covered by the hermetic
+`TestSessionVMCPBroker_RuntimeOwnsEmbeddedVMCPVertical` proof. The scratch driver
+is operator-run evidence only and is not part of `task test`.
+
+## Post-close lifecycle finding
+
+After the scratch smoke closed its vMCP server and embedded authserver, the
+unfiltered capture at `.scratch/vmcpbroker-ac54/post-close-goroutines.txt` found
+seven residual goroutines from `github.com/lestrrat-go/httprc/v3`: five
+`worker.Run` workers, one `ctrlBackend.loop`, and one `Client.Start.func2`
+waiter. Their common creation site is `httprc.(*Client).Start`. This is retained
+as an upstream ToolHive-dependency finding; no goleak exclusion or suppression
+was added.
 
 ## Stage 3 decision
 
-**NO-GO for shipping Stage 3 conversation integration now.** The private Runtime
-primitive and hermetic lifecycle proofs are available, but an operator-accessible
-composition path and the required public-server smoke are absent. Stage 3 may proceed
-only after a composition root can safely create the Runtime, reserve the canonical
-session before `OpenSession`, authorize the trusted control caller, and demonstrate
-the manual smoke above. It must then add parking and exact original-call continuation
-around the existing private `Connect` primitive; it must not add another OAuth client,
-credential lifecycle, or dynamic catalogue path.
+**NO-GO for shipping Stage 3 conversation integration now.** The private Runtime,
+hermetic lifecycle proofs, and public vMCP boundary smoke are available, but an
+operator-accessible composition path remains absent. Stage 3 may proceed only after a
+composition root can safely create the Runtime, reserve the canonical session before
+`OpenSession`, and authorize the trusted control caller. It must then add parking and
+exact original-call continuation around the existing private `Connect` primitive; it
+must not add another OAuth client, credential lifecycle, or dynamic catalogue path.
 
 ## Related documents
 
