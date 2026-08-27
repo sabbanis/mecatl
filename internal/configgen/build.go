@@ -413,11 +413,13 @@ func mcpSubtree(docs Docs) *Subtree {
 	return &Subtree{
 		Key:          "mcp",
 		Tier:         TierOperator,
-		Doc:          "Strict OPERATOR-TIER named global Streamable HTTP MCP servers. Authentication is a closed none/static_bearer/oauth union; OAuth supports preregistered or CIMD clients and local or environment credentials. All secret-shaped values are MECATL_* environment references, never values in YAML. Project mcp blocks are ignored with a value-free warning.",
+		Doc: "Strict OPERATOR-TIER Streamable HTTP MCP authority configuration. Command roots default to broker for mecak8s and global for mecated, embedded mecatui, and mecatequi (which rejects broker mode); existing mecak8s deployments must set mode: global to preserve direct profiles. Broker mode permits anonymous backends and at most one OAuth backend, whose broker.callback_url is required exactly when it is present. Authentication is a closed none/static_bearer/oauth union; OAuth supports preregistered or CIMD clients and local or environment credentials. All secret-shaped values are MECATL_* environment references, never values in YAML. Project mcp blocks are ignored with a value-free warning.",
 		CommentedOut: true,
 		Fields:       fields,
 		Example: []string{
 			"mcp:",
+			"  # Explicitly preserve direct/global MCP profiles when migrating an existing mecak8s deployment.",
+			"  mode: global",
 			"  servers:",
 			"    - name: public",
 			"      url: https://mcp.example.com/public",

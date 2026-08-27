@@ -300,11 +300,13 @@ func ParseRetentionDuration(raw string) (time.Duration, error) {
 	return d, nil
 }
 
-// MCPSection is the strict operator-only mcp: subtree. Mode-specific OAuth
-// requirements are validated by the canonical authority loader after its command
-// root supplies a default mode.
+// MCPSection is the strict operator-only mcp: subtree. mecak8s defaults to
+// broker; mecated, embedded mecatui, and mecatequi default to global (mecatequi
+// rejects broker mode). Existing mecak8s direct-profile deployments must explicitly
+// select global mode. Mode-specific OAuth requirements are validated by the canonical
+// authority loader.
 type MCPSection struct {
-	// Mode selects global or broker authority. Empty defers to the command root.
+	// Mode selects global or broker authority. Empty uses the command-root default.
 	Mode string `yaml:"mode"`
 	// Broker contains options meaningful only when Mode resolves to broker.
 	Broker MCPBrokerProfile `yaml:"broker"`
@@ -314,7 +316,8 @@ type MCPSection struct {
 
 // MCPBrokerProfile contains broker-only trusted configuration.
 type MCPBrokerProfile struct {
-	// CallbackURL is the registered HTTPS OAuth redirect URI.
+	// CallbackURL is required exactly when broker mode has its one permitted OAuth
+	// backend, and is otherwise rejected. It is the registered HTTPS OAuth redirect URI.
 	CallbackURL string `yaml:"callback_url"`
 }
 
