@@ -75,6 +75,7 @@ type ToolDefinition struct {
 // configure, preventing a backend route from being invented at execution time.
 func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDefinition) ([]Route, error) {
 	configured := make(map[string]bool, len(profiles))
+	protectedProfiles := 0
 	for _, profile := range profiles {
 		name := strings.ToLower(profile.Name)
 		if name == "" {
@@ -87,6 +88,10 @@ func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDe
 		case "none":
 			configured[name] = false
 		case "oauth":
+			protectedProfiles++
+			if protectedProfiles > 1 {
+				return nil, fmt.Errorf("%w: only one protected backend is supported", ErrInvalidRoute)
+			}
 			configured[name] = true
 		default:
 			return nil, fmt.Errorf("%w: unsupported auth mode %q for backend %q", ErrInvalidRoute, profile.Auth.Mode, profile.Name)
