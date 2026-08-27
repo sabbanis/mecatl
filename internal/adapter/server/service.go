@@ -914,9 +914,10 @@ type Service struct {
 	// load-bearing for a race that cannot occur in practice.
 	modelsRefresher atomic.Pointer[func(context.Context)]
 
-	mu    sync.Mutex
-	runs  map[session.SessionID]*runState
-	teams map[string]*teamState
+	mu     sync.Mutex
+	closed bool
+	runs   map[session.SessionID]*runState
+	teams  map[string]*teamState
 	// teamsReserving counts CreateTeam calls that have passed the MaxTeams check
 	// but have not yet registered. Enrolment acquires member leases and publishes
 	// durable member snapshots, so the cap must be claimed BEFORE that work: a
@@ -2081,6 +2082,10 @@ func (s *Service) openBrokerSession(id session.SessionID) ([]tool.Tool, func() e
 		return nil, nil, nil
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return nil, nil, fmt.Errorf("%w: service is closed", ErrFailedPrecondition)
+	}
 	if _, finalized := s.brokerFinalized[id]; finalized {
 		s.mu.Unlock()
 		return nil, nil, fmt.Errorf("%w: broker session %q is closed", ErrFailedPrecondition, id)
@@ -2096,6 +2101,11 @@ func (s *Service) openBrokerSession(id session.SessionID) ([]tool.Tool, func() e
 		return nil, nil, fmt.Errorf("server: open broker session %q: %w", id, err)
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		_ = opened.Close()
+		return nil, nil, fmt.Errorf("%w: service is closed", ErrFailedPrecondition)
+	}
 	if _, finalized := s.brokerFinalized[id]; finalized {
 		s.mu.Unlock()
 		_ = opened.Close()
@@ -2711,8 +2721,8 @@ func (s *Service) CloseSession(id session.SessionID) {
 	broker := s.brokerSessions[id]
 	if broker != nil {
 		delete(s.brokerSessions, id)
-		s.brokerFinalized[id] = struct{}{}
 	}
+	s.brokerFinalized[id] = struct{}{}
 	// Drop any per-session environment override too: it closes over the (now
 	// disconnecting) connection, so it must not outlive the session.
 	delete(s.sessionEnvironments, id)
@@ -2794,6 +2804,11 @@ func (s *Service) Close() {
 	// Mid-stream (StateRunning) runs have no durable mid-flight snapshot, so they
 	// ARE cancelled to unwind blocked LLM/MCP calls (the Task #3 intent).
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
 	var runs []*runState
 	for _, rs := range s.runs {
 		runs = append(runs, rs)
@@ -5002,6 +5017,13 @@ func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *sessi
 		close:           closeFn,
 	}
 	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		if se.close != nil {
+			_ = se.close()
+		}
+		return nil, fmt.Errorf("%w: service is closed", ErrFailedPrecondition)
+	}
 	prior, hadPrior := s.sessionEngines[id]
 	if hadPrior && !replace {
 		// FIRST-REGISTRATION-WINS: a concurrent rehydration (or load) won the race;
