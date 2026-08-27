@@ -141,6 +141,9 @@ const (
 	// loop emits it and the relay persists it. It never carries raw errors, URLs,
 	// headers, request/response bodies, prompts, or credentials.
 	EvNetworkAttempt EventType = "network.attempt"
+	// EvMCPAuthorizationRequired is emitted only after the private authorizing
+	// state is durably saved. It carries no broker handle or tool arguments.
+	EvMCPAuthorizationRequired EventType = "mcp.authorization.required"
 	// EvResult is the terminal event: success / limit / error / cancelled.
 	EvResult EventType = "result"
 	// EvUserPrompt is emitted when a USER-ROLE message is recorded into the

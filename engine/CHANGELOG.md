@@ -139,6 +139,10 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 - **`agent.LRUForkReaper.Close`** — releases all retained Parallel winner-fork
   workspaces during graceful composition shutdown. Added (minor).
+- **Broker dispatch authorization seam** — `tool.AuthorizationRequester` and
+  `tool.DispatchSerial`, plus `agent.RunOutcomeAuthorizationParked`, let an
+  interactive main run durably park after ordinary gates without changing a
+  tool's `ReadOnly` semantics. Added (minor).
 - **Durable broker-authorization parking** ([ADR 0283](../docs/adr/0283-configured-resumable-mcp-authorization.md)) —
   `session.StateAuthorizing`, `PendingMCPAuthorization`, and the dedicated
   pause/claim/abort/interruption aggregate seams preserve and validate an exact

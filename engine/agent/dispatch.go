@@ -43,6 +43,9 @@ func readBatchable(t tool.Tool, known bool, c session.ToolCall) bool {
 	if !known || !t.ReadOnly() {
 		return false
 	}
+	if serial, ok := t.(tool.DispatchSerial); ok && serial.DispatchSerial() {
+		return false
+	}
 	if pm, ok := t.(parentMutatingCaller); ok && pm.MutatesParent(c) {
 		return false
 	}
@@ -65,7 +68,14 @@ func readBatchable(t tool.Tool, known bool, c session.ToolCall) bool {
 //     read-only calls that follow it execute.
 //
 // Results are keyed by CallID and re-assembled in input order.
-func (e *Engine) dispatch(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, calls []session.ToolCall) ([]session.ToolResult, bool) {
+type dispatchPark struct {
+	request  tool.AuthorizationRequest
+	call     session.ToolCall
+	deferred []session.ToolCall
+	tool     tool.AuthorizationRequester
+}
+
+func (e *Engine) dispatch(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, calls []session.ToolCall) ([]session.ToolResult, *dispatchPark, bool) {
 	results := make(map[session.ToolCallID]session.ToolResult, len(calls))
 
 	// Enqueue timestamp: every call in this turn enters dispatch NOW, before any
@@ -91,9 +101,13 @@ func (e *Engine) dispatch(ctx context.Context, r *Run, sess *session.Session, en
 		// parent Read/Grep/Glob in the same concurrent batch (torn read). Such a call
 		// flushes ALONE via runOne, restoring read-parallel/mutate-serial.
 		if !readBatchable(t, known, c) {
-			res, cancelled := e.runOne(ctx, r, sess, env, turnIdx, c, t, known, enqueue)
+			res, park, cancelled := e.runOne(ctx, r, sess, env, turnIdx, c, t, known, enqueue)
 			if cancelled {
-				return nil, true
+				return nil, nil, true
+			}
+			if park != nil {
+				park.deferred = calls[i+1:]
+				return orderedDispatchResults(calls[:i], results), park, false
 			}
 			results[c.ID] = res
 			i++
@@ -115,7 +129,7 @@ func (e *Engine) dispatch(ctx context.Context, r *Run, sess *session.Session, en
 
 		batchRes, cancelled := e.runReadBatch(ctx, r, sess, env, turnIdx, batch, enqueue)
 		if cancelled {
-			return nil, true
+			return nil, nil, true
 		}
 		for id, res := range batchRes {
 			results[id] = res
@@ -128,7 +142,15 @@ func (e *Engine) dispatch(ctx context.Context, r *Run, sess *session.Session, en
 	for k, c := range calls {
 		ordered[k] = results[c.ID]
 	}
-	return ordered, false
+	return ordered, nil, false
+}
+
+func orderedDispatchResults(calls []session.ToolCall, results map[session.ToolCallID]session.ToolResult) []session.ToolResult {
+	ordered := make([]session.ToolResult, len(calls))
+	for i, call := range calls {
+		ordered[i] = results[call.ID]
+	}
+	return ordered
 }
 
 // runReadBatch runs a batch of read-only tool calls concurrently. Each call still
@@ -523,7 +545,7 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 
 // runOne handles a single (mutating or unknown) tool call serially: authorize,
 // pre-hook, execute, post-hook. It returns the result and a cancelled flag.
-func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall, t tool.Tool, known bool, enqueue time.Time) (session.ToolResult, bool) {
+func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall, t tool.Tool, known bool, enqueue time.Time) (session.ToolResult, *dispatchPark, bool) {
 	if !known {
 		// Open a card for the unknown tool BEFORE its error result, exactly like the
 		// known-tool path opens one before the gate. A client (ACP/mecatui) keys a
@@ -534,7 +556,7 @@ func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env 
 		e.openCard(r, turnIdx, c)
 		res := session.NewToolError(c.ID, fmt.Sprintf("unknown tool %q", c.Name))
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, false
+		return res, nil, false
 	}
 
 	// Open the tool card BEFORE the permission/hook gate so any synthesized failure
@@ -550,37 +572,51 @@ func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env 
 	// correctly and never reaches authorize/execute. Outside plan mode the branch
 	// is inert (the tool is invisible via Catalog.Available).
 	if sess.Mode == session.ModePlan && c.Name == presentPlanToolName {
-		return e.surfacePlanAsk(ctx, r, sess, turnIdx, c)
+		res, cancelled := e.surfacePlanAsk(ctx, r, sess, turnIdx, c)
+		return res, nil, cancelled
 	}
 
 	decision, cancelled := e.authorize(ctx, r, sess, env, turnIdx, c)
 	if cancelled {
-		return session.ToolResult{}, true
+		return session.ToolResult{}, nil, true
 	}
 	if decision.Effect == governance.Deny {
 		res := denyResult(c, decision.Reason)
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, false
+		return res, nil, false
 	}
 
 	pre, herr := e.preHook(ctx, r, sess, turnIdx, c)
 	if herr != nil {
-		return session.ToolResult{}, true
+		return session.ToolResult{}, nil, true
 	}
 	if pre.blocked {
 		res := session.NewToolError(c.ID, pre.msg)
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, false
+		return res, nil, false
 	}
 	if pre.askApproval {
 		// A hook BLOCK refined into an approval (ADR 0062): surface it to the human.
 		// It runs the call on allow, denies it otherwise — all serial, like a policy
 		// ask (runOne is the mutate-serial path; surfacing here never overlaps a batch).
-		return e.askHookApproval(ctx, r, sess, env, turnIdx, c, t, pre.msg)
+		res, cancelled := e.askHookApproval(ctx, r, sess, env, turnIdx, c, t, pre.msg)
+		return res, nil, cancelled
+	}
+
+	if requester, ok := t.(tool.AuthorizationRequester); ok {
+		request, required, err := requester.RequestAuthorization(ctx)
+		if err != nil {
+			res := session.NewToolError(c.ID, "broker authorization required but unavailable")
+			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+			return res, nil, false
+		}
+		if required {
+			return session.ToolResult{}, &dispatchPark{request: request, call: pre.effective, tool: requester}, false
+		}
 	}
 
 	// Execute the EFFECTIVE call (args possibly rewritten by the PreToolUse hook).
-	return e.execute(ctx, r, sess, env, turnIdx, pre.effective, t, enqueue), false
+	return e.execute(ctx, r, sess, env, turnIdx, pre.effective, t, enqueue), nil, false
 }
 
 // surfaceAsk is the shared SPINE both ask sites (authorize's policy ask and
@@ -1754,6 +1790,11 @@ func (e *Engine) postHook(ctx context.Context, r *Run, sess *session.Session, tu
 // modified-notice flags the rewrite).
 func (e *Engine) openCard(r *Run, turnIdx int, c session.ToolCall) {
 	call := c
+	if t, known := e.lookupTool(r, c.Name); known {
+		if _, protected := t.(tool.AuthorizationRequester); protected {
+			call.Args = nil
+		}
+	}
 	e.emit(r, session.Event{Type: session.EvToolCall, Turn: turnIdx, ToolCall: &call})
 }
 

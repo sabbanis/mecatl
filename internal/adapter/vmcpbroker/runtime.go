@@ -770,6 +770,24 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	return authorizationResult(transaction), nil
 }
 
+// cancelAuthorization deletes only the exact pending transaction. It deliberately
+// does not disconnect the backend: a save failure must invalidate the unusable
+// browser rendezvous without changing the session's future connection posture.
+func (r *Runtime) cancelAuthorization(sessionID session.SessionID, backendID, handle string) error {
+	target := controlTarget{sessionID: sessionID, backendID: backendID}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if r.closed || !r.openSessionLocked(sessionID) {
+		return ErrInvalidControlTarget
+	}
+	transaction, ok := r.transactions[target]
+	if !ok || transaction.handle != handle {
+		return ErrInvalidControlTarget
+	}
+	delete(r.transactions, target)
+	return nil
+}
+
 // Disconnect removes one backend's broker state without affecting other backends
 // in the same session. A disconnected OAuth backend cannot create a second
 // ToolHive lineage, so reconnect reports the explicit ConnectUpstream limitation.
@@ -1315,8 +1333,43 @@ type sessionTool struct {
 	owner     *SessionTools
 }
 
-func (t *sessionTool) Spec() tool.ToolSpec { return copyRoute(t.route).Tool }
-func (t *sessionTool) ReadOnly() bool      { return t.route.ReadOnly }
+func (t *sessionTool) Spec() tool.ToolSpec  { return copyRoute(t.route).Tool }
+func (t *sessionTool) ReadOnly() bool       { return t.route.ReadOnly }
+func (t *sessionTool) DispatchSerial() bool { return t.route.Protected }
+
+// RequestAuthorization starts or observes the route's broker-private connection
+// transaction without exposing its browser URL or credentials to the engine.
+func (t *sessionTool) RequestAuthorization(ctx context.Context) (tool.AuthorizationRequest, bool, error) {
+	if !t.route.Protected {
+		return tool.AuthorizationRequest{}, false, nil
+	}
+	if !t.owner.beginCall() || !t.owner.runtime.callAllowed(t.sessionID, t.owner) {
+		return tool.AuthorizationRequest{}, false, ErrClosed
+	}
+	defer t.owner.calls.Done()
+	connected, err := t.owner.runtime.Connect(ctx, t.sessionID, t.route.BackendID)
+	if err != nil {
+		return tool.AuthorizationRequest{}, false, err
+	}
+	if connected.Status == ConnectionConnected {
+		return tool.AuthorizationRequest{}, false, nil
+	}
+	if connected.Status != ConnectionPending || connected.AuthorizationRequired == nil {
+		return tool.AuthorizationRequest{}, false, ErrInvalidControlTarget
+	}
+	return tool.AuthorizationRequest{
+		ID:        connected.AuthorizationRequired.Handle,
+		Backend:   t.route.BackendID,
+		RouteID:   t.route.Tool.Name,
+		ConfigID:  t.owner.runtime.EnrollmentID(),
+		ExpiresAt: connected.AuthorizationRequired.ExpiresAt,
+	}, true, nil
+}
+
+// CancelAuthorization invalidates precisely the pending broker transaction.
+func (t *sessionTool) CancelAuthorization(_ context.Context, authorizationID string) error {
+	return t.owner.runtime.cancelAuthorization(t.sessionID, t.route.BackendID, authorizationID)
+}
 
 func (t *sessionTool) Execute(ctx context.Context, call session.ToolCall, _ tool.Environment) (session.ToolResult, error) {
 	if !t.owner.beginCall() || !t.owner.runtime.callAllowed(t.sessionID, t.owner) {

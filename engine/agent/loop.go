@@ -563,15 +563,26 @@ func (e *Engine) catalogTools() []catalogToolInfo {
 	return out
 }
 
+// RunOutcome records why a run's event stream closed.
+type RunOutcome int32
+
+const (
+	// RunOutcomeCompleted means the run reached a normal terminal result.
+	RunOutcomeCompleted RunOutcome = iota
+	// RunOutcomeAuthorizationParked means the run saved an authorization pause.
+	RunOutcomeAuthorizationParked
+)
+
 // Run is the handle to one in-flight prompt. It exposes the Event stream plus the
 // out-of-band controls the bidi API needs (Approve resolves a permission.ask;
 // Cancel aborts the run). The Events channel is closed exactly once, when the run
 // terminates.
 type Run struct {
-	events chan session.Event
-	asks   *askRegistry
-	cancel context.CancelFunc
-	seq    atomic.Int64
+	events  chan session.Event
+	asks    *askRegistry
+	cancel  context.CancelFunc
+	seq     atomic.Int64
+	outcome atomic.Int32
 	// hardAbort is closed a short grace AFTER Cancel (hardAbortOnce arms the
 	// hardAbortGrace timer BEFORE the ctx cancel) — the explicit "stop blocking
 	// anywhere" unwedge signal every guarded send on this run selects on (emit,
@@ -845,6 +856,11 @@ func (r *Run) RunID() string { return r.runID }
 // Events returns the channel of domain Events for this run. It is closed when the
 // run ends (after the terminal result Event has been delivered).
 func (r *Run) Events() <-chan session.Event { return r.events }
+
+// Outcome reports why this Run's event stream closed.
+func (r *Run) Outcome() RunOutcome { return RunOutcome(r.outcome.Load()) }
+
+func (r *Run) setOutcome(outcome RunOutcome) { r.outcome.Store(int32(outcome)) }
 
 // Approve resolves the permission.ask identified by askID with the client's
 // verdict: VerdictDeny refuses the call, VerdictAllowOnce permits this call only,
@@ -1260,6 +1276,8 @@ func (e *Engine) drive(ctx context.Context, r *Run, sess *session.Session, env t
 // honoured), independent of total. skipFirstBoundaryInjections is used only by
 // failed-step retry reuses conversation state; live instruction sources are re-resolved.
 // while every later iteration resumes the ordinary boundary drains.
+//
+//nolint:gocyclo // The loop's ordered state machine is intentionally kept in one place.
 func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, total session.Usage, lastText string, skipFirstBoundaryInjections bool) {
 	// no-progress nudge accounting (Workstream A). noProgressNudges counts the
 	// continuation messages injected this run; nudgeCap is the budget (defaulted in
@@ -1411,11 +1429,44 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 			continue
 		}
 
-		// Step 6: dispatch the tool calls, then loop back to step 2.
-		results, cancelled := e.dispatch(ctx, r, sess, env, turnIdx, asst.ToolCalls)
+		results, park, cancelled := e.dispatch(ctx, r, sess, env, turnIdx, asst.ToolCalls)
 		if cancelled {
 			e.terminate(ctx, r, sess, session.StopCancelled, lastText, total, nil, false)
 			return
+		}
+		if park != nil {
+			if len(results) != 0 {
+				if err := sess.RecordToolResults(results); err != nil {
+					e.terminate(ctx, r, sess, session.StopError, lastText, total, err, false)
+					return
+				}
+				results = nil
+			}
+			if !e.deps.Interactive || e.deps.Role != "" {
+				res := session.NewToolError(park.call.ID, "broker authorization requires an interactive main run")
+				e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+				results = append(results, res)
+				for _, deferred := range park.deferred {
+					results = append(results, session.NewToolError(deferred.ID, "broker authorization deferred sibling was not executed"))
+				}
+			} else if err := sess.PauseForMCPAuthorization(session.PendingMCPAuthorization{
+				AuthorizationID: park.request.ID, Backend: park.request.Backend, RouteID: park.request.RouteID,
+				ConfigID: park.request.ConfigID, ExpiresAt: park.request.ExpiresAt, Call: park.call, Deferred: park.deferred,
+			}); err != nil {
+				res := session.NewToolError(park.call.ID, "cannot park for broker authorization")
+				e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+				results = append(results, res)
+			} else if err := e.saveRequired(ctx, sess); err != nil {
+				_ = park.tool.CancelAuthorization(ctx, park.request.ID)
+				aborted, abortErr := sess.AbortMCPAuthorization("broker authorization could not be saved")
+				if abortErr == nil {
+					results = append(results, aborted...)
+				}
+			} else {
+				r.setOutcome(RunOutcomeAuthorizationParked)
+				e.emit(r, session.Event{Type: session.EvMCPAuthorizationRequired, Turn: turnIdx})
+				return
+			}
 		}
 		if err := sess.RecordToolResults(results); err != nil {
 			e.terminate(ctx, r, sess, session.StopError, lastText, total, err, false)
@@ -2794,6 +2845,13 @@ func (e *Engine) emitResult(r *Run, _ *session.Session, reason session.StopReaso
 // its event log all silently stopped working with no line anywhere. r.diag
 // carries the session id and, for a child engine, the agent role — exactly the
 // correlation that absence made impossible to debug.
+func (e *Engine) saveRequired(ctx context.Context, sess *session.Session) error {
+	if e.deps.Store == nil {
+		return nil
+	}
+	return e.deps.Store.Save(ctx, sess)
+}
+
 func (e *Engine) save(ctx context.Context, r *Run, sess *session.Session) {
 	if e.deps.Store == nil {
 		return
