@@ -1314,7 +1314,10 @@ type ProviderCredentials struct {
 // that tears down composition-owned resources. Close is always safe to call.
 type Built struct {
 	Service *server.Service
-	Close   func()
+	// MCPAuthority is the immutable selected configuration retained for the
+	// broker construction stage. Result accessors return copies of payload data.
+	MCPAuthority *mcpauthority.Result
+	Close        func()
 }
 
 // Build assembles the LLM provider, session store, tool catalog, agent engine,
@@ -2343,7 +2346,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		commandConnClose()
 	})
 	profilesTransferred = true
-	return &Built{Service: svc, Close: closeAll}, nil
+	return &Built{Service: svc, MCPAuthority: cfg.MCPAuthority, Close: closeAll}, nil
 }
 
 // resolveAgentSeam resolves the agent-definition registry from cfg: the
@@ -5226,7 +5229,7 @@ func buildCatalog(ctx context.Context, cfg Config, reg *providerRegistry, provid
 	return cat, assets, mcpProvider, mcpInventory, mcpClose, nil
 }
 
-func applyMCPAuthority(cfg *Config, authority *mcpauthority.Result, lifecycle *interface{ Close() error }) error {
+func applyMCPAuthority(cfg *Config, authority *mcpauthority.Result, profileLifecycle *interface{ Close() error }) error {
 	if authority == nil {
 		return fmt.Errorf("MCP authority loader returned nil authority")
 	}
@@ -5238,10 +5241,10 @@ func applyMCPAuthority(cfg *Config, authority *mcpauthority.Result, lifecycle *i
 		cfg.mcpBrokerAuthority = true
 		return nil
 	}
-	servers, close := authority.Global()
+	servers, lifecycle := authority.Global()
 	cfg.MCPServers = servers
-	cfg.MCPProfileLifecycle = close
-	*lifecycle = close
+	cfg.MCPProfileLifecycle = lifecycle
+	*profileLifecycle = lifecycle
 	return nil
 }
 
@@ -5266,6 +5269,9 @@ func mcpResolveOptions(cfg Config) mcpsource.ResolveOptions {
 // returns nil when MCP is not configured (no static servers, ToolHive off) so the
 // Service simply keeps using the (empty) startup snapshot.
 func mcpSourceProber(cfg Config) func(ctx context.Context) []mcpsource.SourceInfo {
+	if cfg.mcpBrokerAuthority {
+		return nil
+	}
 	opts := mcpResolveOptions(cfg)
 	if len(opts.StaticServers) == 0 && !opts.ToolHiveEnabled {
 		return nil

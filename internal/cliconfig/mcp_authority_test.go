@@ -79,10 +79,30 @@ func TestInvariant_mcp_broker_callback_url_is_trusted_configuration(t *testing.T
 }
 
 func TestSessionMCPAuthorization_Scenario1_GlobalModeCompatibility(t *testing.T) {
-	got, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: &permconfig.MCPSection{Mode: "global"}, DefaultMode: MCPAuthorityBroker})
-	if err != nil || got.Global == nil || got.BrokerProfiles != nil {
+	section := &permconfig.MCPSection{Mode: "global", Servers: []permconfig.MCPServerProfile{
+		{Name: "none", URL: "https://none.example/mcp", Auth: permconfig.MCPAuthProfile{Mode: "none"}},
+		{Name: "bearer", URL: "https://bearer.example/mcp", Auth: permconfig.MCPAuthProfile{Mode: "static_bearer", StaticBearer: &permconfig.MCPStaticBearerProfile{TokenEnv: "MECATL_TOKEN"}}},
+		{Name: "oauth", URL: "https://oauth.example/mcp", Auth: permconfig.MCPAuthProfile{Mode: "oauth", OAuth: globalOAuthProfile()}},
+	}}
+	got, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: section, DefaultMode: MCPAuthorityBroker, LookupEnv: func(name string) (string, bool) {
+		switch name {
+		case "MECATL_TOKEN":
+			return "token", true
+		case "MECATL_CREDENTIAL":
+			return "AQ==", true
+		}
+		return "", false
+	}})
+	if err != nil || got.Global == nil || got.BrokerProfiles != nil || len(got.Global.Servers) != 3 {
 		t.Fatalf("global authority = %#v, %v", got, err)
 	}
+	if got.Global.Servers[1].Headers["Authorization"] != "Bearer token" || got.Global.Servers[2].OAuth == nil {
+		t.Fatalf("global auth compatibility lost: %#v", got.Global.Servers)
+	}
+}
+
+func globalOAuthProfile() *permconfig.MCPOAuthProfile {
+	return &permconfig.MCPOAuthProfile{Profile: "profile", Principal: "principal", Issuer: "https://issuer.example", Client: permconfig.MCPOAuthClientProfile{Mode: "cimd", CIMD: &permconfig.MCPCIMDClientProfile{DocumentURL: "https://issuer.example/client.json"}}, Scopes: []string{"read"}, Credentials: permconfig.MCPOAuthCredentialProfile{Mode: "environment", Environment: &permconfig.MCPEnvironmentCredentialProfile{CredentialEnv: "MECATL_CREDENTIAL"}}, Network: &permconfig.MCPOAuthNetworkProfile{}}
 }
 
 func TestSessionMCPAuthorization_Scenario1_ModeSpecificOAuthSchema(t *testing.T) {
@@ -93,6 +113,10 @@ func TestSessionMCPAuthorization_Scenario1_ModeSpecificOAuthSchema(t *testing.T)
 	section.Servers[0].Auth.OAuth.Profile = "global-only"
 	if _, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: section, DefaultMode: MCPAuthorityGlobal, BrokerSupported: true}); !errors.Is(err, ErrMCPProfileInvalid) {
 		t.Fatalf("broker profile field error = %v", err)
+	}
+	global := &permconfig.MCPSection{Mode: "global", Servers: []permconfig.MCPServerProfile{{Name: "x", URL: "https://mcp.example/mcp", Auth: permconfig.MCPAuthProfile{Mode: "oauth", OAuth: &permconfig.MCPOAuthProfile{Issuer: "https://issuer.example", Client: permconfig.MCPOAuthClientProfile{Mode: "cimd", CIMD: &permconfig.MCPCIMDClientProfile{DocumentURL: "https://issuer.example/client.json"}}, Scopes: []string{"read"}, Network: &permconfig.MCPOAuthNetworkProfile{}}}}}}
+	if _, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: global, DefaultMode: MCPAuthorityGlobal}); !errors.Is(err, ErrMCPProfileInvalid) {
+		t.Fatalf("global missing identity/source error = %v", err)
 	}
 }
 

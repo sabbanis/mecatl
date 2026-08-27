@@ -7,13 +7,17 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
 )
 
+// Mode identifies the sole selected MCP authority path.
 type Mode string
 
 const (
+	// Global selects the established global MCP manager.
 	Global Mode = "global"
+	// Broker selects session-scoped broker declarations.
 	Broker Mode = "broker"
 )
 
+// BrokerConfig is a copy-only broker declaration set retained for later composition.
 type BrokerConfig struct {
 	Profiles    []permconfig.MCPServerProfile
 	CallbackURL string
@@ -28,18 +32,25 @@ type Result struct {
 	broker *BrokerConfig
 }
 
-func NewGlobal(servers []mcp.ServerConfig, close interface{ Close() error }) *Result {
-	return &Result{mode: Global, global: append([]mcp.ServerConfig(nil), servers...), close: close}
+// NewGlobal creates a global-only authority result.
+func NewGlobal(servers []mcp.ServerConfig, lifecycle interface{ Close() error }) *Result {
+	return &Result{mode: Global, global: append([]mcp.ServerConfig(nil), servers...), close: lifecycle}
 }
 
+// NewBroker creates a broker-only authority result with a deep declaration copy.
 func NewBroker(config BrokerConfig) *Result {
 	return &Result{mode: Broker, broker: &BrokerConfig{Profiles: cloneProfiles(config.Profiles), CallbackURL: config.CallbackURL}}
 }
 
+// Mode returns the selected authority tag.
 func (r *Result) Mode() Mode { return r.mode }
+
+// Global returns copies of global servers and their lifecycle when selected.
 func (r *Result) Global() ([]mcp.ServerConfig, interface{ Close() error }) {
 	return append([]mcp.ServerConfig(nil), r.global...), r.close
 }
+
+// Broker returns a deep copy of broker declarations only when selected.
 func (r *Result) Broker() (BrokerConfig, bool) {
 	if r == nil || r.broker == nil {
 		return BrokerConfig{}, false
