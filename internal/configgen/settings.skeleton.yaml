@@ -343,7 +343,8 @@
 #|         allow_fallbacks: false
 
 #| === mcp === (tier: operator)
-#| Strict OPERATOR-TIER named global Streamable HTTP MCP servers. Authentication is a
+#| Strict OPERATOR-TIER Streamable HTTP MCP server configuration. `mode` selects either
+#| the global manager or the session broker for the complete server list. Authentication is a
 #| closed none/static_bearer/oauth union; OAuth supports preregistered or CIMD clients
 #| and local or environment credentials. All secret-shaped values are MECATL_*
 #| environment references, never values in YAML. Project mcp blocks are ignored with a
@@ -360,6 +361,7 @@
 #|
 #| Example:
 #|   mcp:
+#|     mode: global
 #|     servers:
 #|       - name: public
 #|         url: https://mcp.example.com/public

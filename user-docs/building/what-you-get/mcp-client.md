@@ -26,7 +26,7 @@ mecated serve \
   --workspace /path/to/workspace
 ```
 
-The flag value is `<name>=<URL>` where `name` is the identifier that becomes the namespace prefix and `URL` is the streaming-HTTP endpoint. Legacy flags and `MCP_<NAME>_TOKEN` are global-mode only. Mecated and embedded mecatui default to global; mecak8s defaults to broker, so existing mecak8s global deployments must add `mcp.mode: global` to operator settings. Broker mode accepts anonymous servers plus at most one protected OAuth backend, requires its configured HTTPS `mcp.broker.callback_url`, and does not use static bearer or global credential stores. The optional `mecatui` TUI has no `--mcp-server` flag; instead its embedded server reads operator-tier `mcp.servers` profiles from `~/.config/mecatl/settings.yaml` directly, with no flag required.
+The flag value is `<name>=<URL>` where `name` is the identifier that becomes the namespace prefix and `URL` is the streaming-HTTP endpoint. Legacy flags and `MCP_<NAME>_TOKEN` are global-mode only. Mecated and embedded mecatui default to global; mecak8s defaults to broker, so existing mecak8s global deployments must add `mcp.mode: global` to operator settings. Broker mode accepts anonymous servers plus at most one protected OAuth backend. Only broker mode with that OAuth backend requires its configured HTTPS `mcp.broker.callback_url`; broker mode does not use static bearer or global credential stores. The optional `mecatui` TUI has no `--mcp-server` flag; instead its embedded server reads operator-tier `mcp.servers` profiles from `~/.config/mecatl/settings.yaml` directly, with no flag required.
 
 **Auth token.** If the server requires a bearer token, set the environment variable `MCP_<NAME>_TOKEN` (uppercased name). mecatl sends it in the `Authorization: Bearer …` header and never logs it. Server names must match `[A-Za-z0-9_]+` and be case-insensitively unique (the name derives the env var), and a token-bearing URL must be `https` — or `http` to a loopback host — so the token is never sent in cleartext off-host:
 
@@ -46,7 +46,7 @@ refreshes lazily, persists refresh-token rotation, and remains warm after restar
 and ACP never open a browser. Environment-backed profiles are read-only and require an
 external Secret update plus process restart. Keep `static_bearer` as a rollback profile when
 the server supports it. See the
-[operator configuration guide](https://github.com/stacklok/mecatl/blob/main/docs/usage/configuration.md#global-mcp-authentication-profiles).
+[operator configuration guide](https://github.com/stacklok/mecatl/blob/main/docs/usage/configuration.md#mcp-authority-modes).
 
 **ToolHive discovery.** If you run MCP servers via [ToolHive](https://toolhive.io), mecatl discovers them automatically from the running workloads — no `--mcp-server` flag needed. ToolHive proxy URLs are HTTP, so the streaming-HTTP constraint is met transparently. Discovery is controlled by `--toolhive` (default `true`; pass `--toolhive=false` to disable) and `--toolhive-group` (default group when empty).
 

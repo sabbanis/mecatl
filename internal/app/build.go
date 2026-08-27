@@ -5241,6 +5241,9 @@ func applyMCPAuthority(cfg *Config, authority *mcpauthority.Result, profileLifec
 		cfg.mcpBrokerAuthority = true
 		return nil
 	}
+	if cfg.VMCPBroker != nil {
+		return fmt.Errorf("global MCP authority conflicts with an injected broker Runtime")
+	}
 	servers, lifecycle := authority.Global()
 	cfg.MCPServers = servers
 	cfg.MCPProfileLifecycle = lifecycle
