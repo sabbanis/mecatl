@@ -623,11 +623,12 @@ func (r *Runtime) EnrollmentID() string {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	type routeIdentity struct {
-		Name      string          `json:"name"`
-		Schema    json.RawMessage `json:"schema"`
-		BackendID string          `json:"backend_id"`
-		Protected bool            `json:"protected"`
-		ReadOnly  bool            `json:"read_only"`
+		Name        string          `json:"name"`
+		Description string          `json:"description"`
+		Schema      json.RawMessage `json:"schema"`
+		BackendID   string          `json:"backend_id"`
+		Protected   bool            `json:"protected"`
+		ReadOnly    bool            `json:"read_only"`
 	}
 	routes := make([]routeIdentity, len(r.routes))
 	for i, route := range r.routes {
@@ -636,7 +637,10 @@ func (r *Runtime) EnrollmentID() string {
 		if json.Unmarshal(schema, &decoded) == nil {
 			schema, _ = json.Marshal(decoded)
 		}
-		routes[i] = routeIdentity{route.Tool.Name, schema, route.BackendID, route.Protected, route.ReadOnly}
+		routes[i] = routeIdentity{
+			Name: route.Tool.Name, Description: route.Tool.Description, Schema: schema,
+			BackendID: route.BackendID, Protected: route.Protected, ReadOnly: route.ReadOnly,
+		}
 	}
 	payload, _ := json.Marshal(struct {
 		Routes            []routeIdentity `json:"routes"`
@@ -1032,17 +1036,20 @@ func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, refreshToken st
 // ForgetSession tombstones a canonical session, cancels its login and refresh
 // work, then removes its state after its wrappers have drained. It is idempotent.
 func (r *Runtime) ForgetSession(id session.SessionID) error {
-	opened, lifecycle, err := r.tombstoneAndCancel(id)
+	opened, lifecycle, err := r.tombstoneAndCancel(id, nil)
 	if err != nil || opened == nil {
+		if errors.Is(err, ErrInvalidControlTarget) {
+			return nil
+		}
 		return err
 	}
 	closeErr := opened.closeOwned()
 	lifecycle.wg.Wait()
-	r.finishForget(id)
+	r.finishForget(id, opened)
 	return closeErr
 }
 
-func (r *Runtime) tombstoneAndCancel(id session.SessionID) (*SessionTools, *sessionLifecycle, error) {
+func (r *Runtime) tombstoneAndCancel(id session.SessionID, owner *SessionTools) (*SessionTools, *sessionLifecycle, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	if r.closed {
@@ -1053,7 +1060,7 @@ func (r *Runtime) tombstoneAndCancel(id session.SessionID) (*SessionTools, *sess
 	}
 	opened := r.sessions[id]
 	lifecycle := r.lifecycles[id]
-	if opened == nil || lifecycle == nil {
+	if opened == nil || lifecycle == nil || owner != nil && opened != owner {
 		return nil, nil, ErrInvalidControlTarget
 	}
 	r.tombstones[id] = struct{}{}
@@ -1066,11 +1073,15 @@ func (r *Runtime) tombstoneAndCancel(id session.SessionID) (*SessionTools, *sess
 	return opened, lifecycle, nil
 }
 
-func (r *Runtime) finishForget(id session.SessionID) {
+func (r *Runtime) finishForget(id session.SessionID, owner *SessionTools) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
+	if r.sessions[id] != owner {
+		return
+	}
 	delete(r.sessions, id)
 	delete(r.lifecycles, id)
+	delete(r.tombstones, id)
 	for target := range r.transactions {
 		if target.sessionID == id {
 			delete(r.transactions, target)
@@ -1229,15 +1240,16 @@ func (r *Runtime) Close() error {
 
 // SessionTools owns the wrappers for one session.
 type SessionTools struct {
-	mu        sync.RWMutex
-	tools     []tool.Tool
-	closed    bool
-	calls     sync.WaitGroup
-	closeOnce sync.Once
-	closeErr  error
-	sessionID session.SessionID
-	closeFunc func() error
-	runtime   *Runtime
+	mu             sync.RWMutex
+	tools          []tool.Tool
+	closed         bool
+	calls          sync.WaitGroup
+	closeOnce      sync.Once
+	ownedCloseOnce sync.Once
+	closeErr       error
+	sessionID      session.SessionID
+	closeFunc      func() error
+	runtime        *Runtime
 }
 
 // Tools returns a copy of the stable model-facing wrapper list.
@@ -1250,22 +1262,20 @@ func (s *SessionTools) Tools() []tool.Tool {
 // Close rejects new calls, drains its own in-flight calls and transport, then
 // irrevocably forgets only this session from the shared Runtime.
 func (s *SessionTools) Close() error {
-	_, _, err := s.runtime.tombstoneAndCancel(s.sessionID)
-	if err != nil && !errors.Is(err, ErrClosed) {
-		return err
-	}
-	closeErr := s.closeOwned()
-	if errors.Is(err, ErrClosed) {
-		return closeErr
-	}
-	s.runtime.mu.RLock()
-	lifecycle := s.runtime.lifecycles[s.sessionID]
-	s.runtime.mu.RUnlock()
-	if lifecycle != nil {
+	s.closeOnce.Do(func() {
+		opened, lifecycle, err := s.runtime.tombstoneAndCancel(s.sessionID, s)
+		if err != nil && !errors.Is(err, ErrClosed) {
+			s.closeErr = err
+			return
+		}
+		s.closeErr = s.closeOwned()
+		if errors.Is(err, ErrClosed) || opened == nil || lifecycle == nil {
+			return
+		}
 		lifecycle.wg.Wait()
-	}
-	s.runtime.finishForget(s.sessionID)
-	return closeErr
+		s.runtime.finishForget(s.sessionID, s)
+	})
+	return s.closeErr
 }
 
 func (s *SessionTools) beginCall() bool {
@@ -1285,7 +1295,7 @@ func (r *Runtime) callAllowed(id session.SessionID, owner *SessionTools) bool {
 }
 
 func (s *SessionTools) closeOwned() error {
-	s.closeOnce.Do(func() {
+	s.ownedCloseOnce.Do(func() {
 		s.mu.Lock()
 		s.closed = true
 		closeFunc := s.closeFunc

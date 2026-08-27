@@ -220,24 +220,15 @@ func TestSessionVMCPBroker_Scenario3_RefreshCannotResurrectState(t *testing.T) {
 	<-started
 	forgot := make(chan error, 1)
 	go func() { forgot <- runtime.ForgetSession("refresh-session") }()
-	deadline := time.After(time.Second)
-	for {
-		runtime.mu.RLock()
-		_, tombstoned := runtime.tombstones["refresh-session"]
-		runtime.mu.RUnlock()
-		if tombstoned {
-			break
+	select {
+	case err := <-forgot:
+		if err != nil {
+			t.Fatalf("ForgetSession: %v", err)
 		}
-		select {
-		case <-deadline:
-			t.Fatal("ForgetSession did not tombstone the session before refresh completed")
-		case <-time.After(time.Millisecond):
-		}
+	case <-time.After(time.Second):
+		t.Fatal("ForgetSession did not finish after cancelling the refresh")
 	}
 	close(release)
-	if err := <-forgot; err != nil {
-		t.Fatalf("ForgetSession: %v", err)
-	}
 	wait.Wait()
 	close(results)
 	for outcome := range results {

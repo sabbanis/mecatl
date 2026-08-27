@@ -85,8 +85,8 @@ func TestSessionVMCPBroker_Scenario4_ForgetRevokesAndTombstones(t *testing.T) {
 	_, grant := runtime.grants[target]
 	_, pending := runtime.transactions[target]
 	runtime.mu.RUnlock()
-	if opened || !tombstoned || grant || pending {
-		t.Fatalf("forget state opened/tombstoned/grant/pending = %t/%t/%t/%t, want false/true/false/false", opened, tombstoned, grant, pending)
+	if opened || tombstoned || grant || pending {
+		t.Fatalf("forget state opened/tombstoned/grant/pending = %t/%t/%t/%t, want false/false/false/false", opened, tombstoned, grant, pending)
 	}
 }
 
@@ -103,8 +103,8 @@ func TestSessionVMCPBroker_Scenario4_LateOperationsCannotResurrect(t *testing.T)
 	if err := runtime.restoreGrant(target, downstreamGrant{accessToken: "late"}); !errors.Is(err, ErrInvalidControlTarget) {
 		t.Fatalf("late grant restore error = %v, want ErrInvalidControlTarget", err)
 	}
-	if err := runtime.Disconnect("parent", "github"); err != nil {
-		t.Fatalf("late Disconnect: %v", err)
+	if err := runtime.Disconnect("parent", "github"); !errors.Is(err, ErrInvalidControlTarget) {
+		t.Fatalf("late Disconnect: %v, want ErrInvalidControlTarget", err)
 	}
 	if _, err := runtime.Connect(context.Background(), "parent", "github"); !errors.Is(err, ErrInvalidControlTarget) {
 		t.Fatalf("late Connect error = %v, want ErrInvalidControlTarget", err)

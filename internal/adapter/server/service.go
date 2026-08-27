@@ -2533,6 +2533,14 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 			return nil, fmt.Errorf("%w: broker session %q closed during persistence", ErrFailedPrecondition, sess.ID)
 		}
 	}
+	if brokerEntry != nil {
+		s.mu.Lock()
+		committed := s.commitBrokerSessionLocked(sess.ID, brokerEntry)
+		s.mu.Unlock()
+		if !committed {
+			return nil, fmt.Errorf("%w: broker session %q closed during persistence", ErrFailedPrecondition, sess.ID)
+		}
+	}
 	brokerAbort = false
 	return sess, nil
 }

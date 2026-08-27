@@ -10,7 +10,7 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
-func TestInvariant_broker_runtime_never_resurrects_session(t *testing.T) {
+func TestInvariant_broker_runtime_finalization_is_attempt_scoped(t *testing.T) {
 	runtime := lifecycleRuntime(t)
 	defer func() { _ = runtime.Close() }()
 
@@ -27,8 +27,15 @@ func TestInvariant_broker_runtime_never_resurrects_session(t *testing.T) {
 	if err := owner.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := runtime.OpenSession("session-1"); err == nil {
-		t.Fatal("OpenSession after final close succeeded; sessions must not be resurrected")
+	replacement, err := runtime.OpenSession("session-1")
+	if err != nil {
+		t.Fatalf("OpenSession after final close: %v", err)
+	}
+	if err := owner.Close(); err != nil {
+		t.Fatalf("stale owner Close: %v", err)
+	}
+	if _, err := replacement.Tools()[0].Execute(context.Background(), session.NewToolCall("replacement", "mcp__calendar__list", []byte(`{}`)), tool.Environment{}); err != nil {
+		t.Fatalf("replacement owner's wrapper after stale close: %v", err)
 	}
 }
 

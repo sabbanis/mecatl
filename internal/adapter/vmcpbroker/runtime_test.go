@@ -24,6 +24,23 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
 )
 
+func TestEnrollmentID_IncludesToolDescription(t *testing.T) {
+	caller := func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		return session.ToolResult{}, nil
+	}
+	first, err := NewRuntime([]Route{{BackendID: "calendar", Tool: tool.ToolSpec{Name: "mcp__calendar__list", Description: "list events", Schema: json.RawMessage(`{"type":"object"}`)}}}, caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := NewRuntime([]Route{{BackendID: "calendar", Tool: tool.ToolSpec{Name: "mcp__calendar__list", Description: "list calendars", Schema: json.RawMessage(`{"type":"object"}`)}}}, caller)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.EnrollmentID() == second.EnrollmentID() {
+		t.Fatal("EnrollmentID did not change when ToolSpec.Description changed")
+	}
+}
+
 func TestInvariant_broker_runtime_has_no_legacy_route_tool_provenance(t *testing.T) {
 	t.Parallel()
 	if _, ok := reflect.TypeFor[Runtime]().MethodByName("RouteToolNames"); ok {
