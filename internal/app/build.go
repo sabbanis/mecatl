@@ -839,13 +839,25 @@ type Config struct {
 	// Build closes it after the global MCP manager/controllers and before other
 	// source lifecycles. It is nil for programmatic and legacy static configs.
 	MCPProfileLifecycle interface{ Close() error }
-	MCPResourceTools    bool
-	MCPPrompts          bool
-	ToolHiveEnabled     bool
-	ToolHiveGroup       string
+	// MCPAuthorityLoader resolves the strict operator configuration into exactly
+	// one authority branch. It is preferred over the legacy profile loader.
+	MCPAuthorityLoader interface {
+		LoadAuthority(*permconfig.MCPSection, string, bool) (string, []mcp.ServerConfig, interface{ Close() error }, []permconfig.MCPServerProfile, string, error)
+	}
+	// MCPAuthorityDefault is the command root's explicit mode for omitted mcp.mode.
+	MCPAuthorityDefault string
+	// MCPBrokerSupported declares whether this root can host broker authority.
+	MCPBrokerSupported bool
+	MCPResourceTools   bool
+	MCPPrompts         bool
+	ToolHiveEnabled    bool
+	ToolHiveGroup      string
 	// VMCPBroker is root-internal, process-lifetime composition state. Its
 	// session wrappers are not persisted or reattached after restart.
 	VMCPBroker *vmcpbroker.Runtime
+	// mcpBrokerAuthority prevents all global-manager construction for a resolved
+	// broker configuration. Task 02 consumes declarations to build the Runtime.
+	mcpBrokerAuthority bool
 
 	// File-based permission config (issue #13). PermissionsConventional turns on
 	// auto-discovery of the conventional per-project config (<ws>/.mecatl/settings.yaml
@@ -1432,14 +1444,28 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		return nil, learningErr
 	}
 	if resolver, ok := cfg.permResolver.(*permconfig.Resolver); ok {
-		if cfg.MCPProfileLoader == nil {
+		if cfg.MCPAuthorityLoader != nil {
+			mode, global, lifecycle, _, _, err := cfg.MCPAuthorityLoader.LoadAuthority(resolver.OperatorMCP(), cfg.MCPAuthorityDefault, cfg.MCPBrokerSupported)
+			if err != nil {
+				return nil, err
+			}
+			if mode == "broker" {
+				if len(cfg.MCPServers) != 0 || cfg.VMCPBroker != nil {
+					return nil, fmt.Errorf("broker MCP authority conflicts with programmatic global MCP servers or an injected Runtime")
+				}
+				cfg.mcpBrokerAuthority = true
+			} else {
+				cfg.MCPServers = global
+				cfg.MCPProfileLifecycle = lifecycle
+				profileLifecycle = lifecycle
+			}
+		} else if cfg.MCPProfileLoader == nil {
 			if mcpCfg := resolver.OperatorMCP(); mcpCfg != nil && len(mcpCfg.Servers) > 0 {
 				cfg.diag().Log(ctx, port.LevelWarn,
 					"operator-tier mcp.servers configured but no MCP profile loader is wired; servers ignored",
 					"count", len(mcpCfg.Servers))
 			}
-		}
-		if cfg.MCPProfileLoader != nil {
+		} else {
 			profiles, lifecycle, err := cfg.MCPProfileLoader.Load(resolver.OperatorMCP())
 			if err != nil {
 				return nil, err
@@ -1450,6 +1476,21 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		}
 		if models := resolver.OperatorModelPolicy(); models != nil {
 			cfg.contextWindows = map[string]map[string]int(models.ContextWindows)
+		}
+	} else if cfg.MCPAuthorityLoader != nil {
+		mode, global, lifecycle, _, _, err := cfg.MCPAuthorityLoader.LoadAuthority(nil, cfg.MCPAuthorityDefault, cfg.MCPBrokerSupported)
+		if err != nil {
+			return nil, err
+		}
+		if mode == "broker" {
+			if len(cfg.MCPServers) != 0 || cfg.VMCPBroker != nil {
+				return nil, fmt.Errorf("broker MCP authority conflicts with programmatic global MCP servers or an injected Runtime")
+			}
+			cfg.mcpBrokerAuthority = true
+		} else {
+			cfg.MCPServers = global
+			cfg.MCPProfileLifecycle = lifecycle
+			profileLifecycle = lifecycle
 		}
 	} else if cfg.MCPProfileLoader != nil {
 		profiles, lifecycle, err := cfg.MCPProfileLoader.Load(nil)
@@ -5239,6 +5280,9 @@ func mcpSourceProber(cfg Config) func(ctx context.Context) []mcpsource.SourceInf
 // wiring can pull a REFERENCED main server's tools out of it; the same value is
 // the mcp.Provider used for resources/prompts.
 func connectMCP(ctx context.Context, cfg Config) (*mcp.Manager, mcp.Provider, []mcpsource.SourceInfo, func()) {
+	if cfg.mcpBrokerAuthority {
+		return nil, nil, nil, func() {}
+	}
 	opts := mcpResolveOptions(cfg)
 	sources := mcpsource.ResolveSources(opts)
 

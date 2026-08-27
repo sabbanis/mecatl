@@ -1166,6 +1166,9 @@ func embeddedConfig(cfg config, diag port.Diagnostics) app.Config {
 	out.MCPProfileLoader = cliconfig.NewMCPProfileResolver(nil, os.LookupEnv)
 	out.ProviderCredentialLoader = cliconfig.NewProviderCredentialResolver(cfg.providerFlags, keys)
 	out.ProviderOverrides = cfg.providerFlags.EndpointOverrides()
+	out.MCPAuthorityLoader = cliconfig.NewMCPProfileResolver(nil, os.LookupEnv)
+	out.MCPAuthorityDefault = string(cliconfig.MCPAuthorityGlobal)
+	out.MCPBrokerSupported = true
 	return out
 }
 

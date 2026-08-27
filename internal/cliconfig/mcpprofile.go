@@ -85,6 +85,20 @@ func (r *MCPProfileResolver) Load(operator *permconfig.MCPSection) ([]mcp.Server
 	return profiles.Servers, profiles, nil
 }
 
+// LoadAuthority resolves the one configured MCP authority path without parsing
+// settings or opening broker resources. The flattened return avoids a cmd-side
+// dependency cycle while preserving the mutually exclusive payload at its source.
+func (r *MCPProfileResolver) LoadAuthority(operator *permconfig.MCPSection, defaultMode string, brokerSupported bool) (string, []mcp.ServerConfig, interface{ Close() error }, []permconfig.MCPServerProfile, string, error) {
+	authority, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: operator, Legacy: r.legacy, LookupEnv: r.lookup, DefaultMode: MCPAuthorityMode(defaultMode), BrokerSupported: brokerSupported})
+	if err != nil {
+		return "", nil, nil, nil, "", err
+	}
+	if authority.Mode == MCPAuthorityGlobal {
+		return string(authority.Mode), authority.Global.Servers, authority.Global, nil, "", nil
+	}
+	return string(authority.Mode), nil, nil, authority.BrokerProfiles, authority.CallbackURL, nil
+}
+
 // MCPProfiles owns the credential stores/readers backing Servers. Close it only
 // after every manager/controller using those servers has closed.
 type MCPProfiles struct {
@@ -281,10 +295,14 @@ func loadMCPProfile(input profileInput, lookup func(string) (string, bool), owne
 	}
 }
 
+func validGlobalOAuth(decl *permconfig.MCPOAuthProfile) bool {
+	return decl != nil && decl.Network != nil && decl.Profile != "" && decl.Principal != "" && decl.Issuer != "" && len(decl.Scopes) != 0 && decl.Credentials.Mode != ""
+}
+
 func loadOAuthProfile(profile permconfig.MCPServerProfile, lookup func(string) (string, bool), owner *MCPProfiles, stores map[string]credentialstore.Store) (*mcp.OAuthOptions, error) {
 	decl := profile.Auth.OAuth
-	if decl == nil || decl.Network == nil {
-		return nil, &MCPProfileError{Server: profile.Name, Field: "oauth.network", Kind: ErrMCPProfileInvalid}
+	if !validGlobalOAuth(decl) {
+		return nil, &MCPProfileError{Server: profile.Name, Field: "oauth", Kind: ErrMCPProfileInvalid}
 	}
 	opts := &mcp.OAuthOptions{
 		Subject:       mcp.OAuthSubject{Profile: decl.Profile, Principal: decl.Principal},

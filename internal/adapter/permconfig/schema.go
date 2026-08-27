@@ -300,10 +300,22 @@ func ParseRetentionDuration(raw string) (time.Duration, error) {
 	return d, nil
 }
 
-// MCPSection is the strict operator-only mcp: subtree.
+// MCPSection is the strict operator-only mcp: subtree. Mode-specific OAuth
+// requirements are validated by the canonical authority loader after its command
+// root supplies a default mode.
 type MCPSection struct {
-	// Servers is the ordered list of named global Streamable HTTP servers.
+	// Mode selects global or broker authority. Empty defers to the command root.
+	Mode string `yaml:"mode"`
+	// Broker contains options meaningful only when Mode resolves to broker.
+	Broker MCPBrokerProfile `yaml:"broker"`
+	// Servers is the ordered list of named Streamable HTTP servers.
 	Servers []MCPServerProfile `yaml:"servers"`
+}
+
+// MCPBrokerProfile contains broker-only trusted configuration.
+type MCPBrokerProfile struct {
+	// CallbackURL is the registered HTTPS OAuth redirect URI.
+	CallbackURL string `yaml:"callback_url"`
 }
 
 // MCPServerProfile is one named Streamable HTTP endpoint and its explicit auth mode.
@@ -420,7 +432,19 @@ var (
 
 const modeKey = "mode"
 
-func (s *MCPSection) strictFields() map[string]any { return map[string]any{"servers": &s.Servers} }
+func (s *MCPSection) strictFields() map[string]any {
+	return map[string]any{modeKey: &s.Mode, "broker": &s.Broker, "servers": &s.Servers}
+}
+
+func (b *MCPBrokerProfile) strictFields() map[string]any {
+	return map[string]any{"callback_url": &b.CallbackURL}
+}
+
+// UnmarshalYAML strictly decodes broker-only metadata. Mode-specific presence
+// and URL rules belong to the canonical authority loader.
+func (b *MCPBrokerProfile) UnmarshalYAML(node *yaml.Node) error {
+	return decodeStrictMapping(node, "mcp.broker", b.strictFields())
+}
 
 // UnmarshalYAML strictly decodes and validates an MCP operator section.
 func (s *MCPSection) UnmarshalYAML(node ast.Node) error {
@@ -460,7 +484,7 @@ func (s *MCPServerProfile) UnmarshalYAML(node ast.Node) error {
 	if s.Auth.Mode != "none" && u.Scheme != providerHTTPS && !mcpLoopback(u.Hostname()) {
 		return errors.New("mcp.servers[].url must use https for authenticated profiles except loopback http")
 	}
-	if s.Auth.OAuth != nil {
+	if s.Auth.OAuth != nil && s.Auth.OAuth.Network != nil {
 		allowed := map[string]struct{}{mcpURLOrigin(u): {}, s.Auth.OAuth.Issuer: {}}
 		for _, origin := range s.Auth.OAuth.Network.AdditionalOrigins {
 			allowed[origin] = struct{}{}
@@ -532,28 +556,25 @@ func (o *MCPOAuthProfile) UnmarshalYAML(node ast.Node) error {
 	if !mappingHasKey(node, "client") {
 		return errors.New("mcp.servers[].auth.oauth.client is required")
 	}
-	if !mappingHasKey(node, "credentials") {
-		return errors.New("mcp.servers[].auth.oauth.credentials is required")
+	if o.Profile != "" {
+		if err := validateMCPSafeValue("mcp.servers[].auth.oauth.profile", o.Profile); err != nil {
+			return err
+		}
 	}
-	if err := validateMCPSafeValue("mcp.servers[].auth.oauth.profile", o.Profile); err != nil {
-		return err
+	if o.Principal != "" {
+		if err := validateMCPSafeValue("mcp.servers[].auth.oauth.principal", o.Principal); err != nil {
+			return err
+		}
 	}
-	if err := validateMCPSafeValue("mcp.servers[].auth.oauth.principal", o.Principal); err != nil {
-		return err
-	}
-	if err := validateMCPOrigin("mcp.servers[].auth.oauth.issuer", o.Issuer); err != nil {
-		return err
-	}
-	if len(o.Scopes) == 0 {
-		return errors.New("mcp.servers[].auth.oauth.scopes is required")
+	if o.Issuer != "" {
+		if err := validateMCPOrigin("mcp.servers[].auth.oauth.issuer", o.Issuer); err != nil {
+			return err
+		}
 	}
 	for _, scope := range o.Scopes {
 		if err := validateMCPSafeValue("mcp.servers[].auth.oauth.scopes[]", scope); err != nil {
 			return err
 		}
-	}
-	if o.Network == nil {
-		return errors.New("mcp.servers[].auth.oauth.network is required")
 	}
 	return nil
 }

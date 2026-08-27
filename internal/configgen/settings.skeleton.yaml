@@ -349,7 +349,11 @@
 #| environment references, never values in YAML. Project mcp blocks are ignored with a
 #| value-free warning.
 # mcp:
-#   # Servers is the ordered list of named global Streamable HTTP servers.
+#   # Mode selects global or broker authority. Empty defers to the command root.
+#   mode: ""
+#   # Broker contains options meaningful only when Mode resolves to broker.
+#   broker: ""
+#   # Servers is the ordered list of named Streamable HTTP servers.
 #   servers: []
 #|
 #| Example:

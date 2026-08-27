@@ -585,6 +585,9 @@ func appConfig(cfg config, diag port.Diagnostics, obs observability) app.Config 
 		// MCP_<NAME>_TOKEN bearer already resolved into Headers at parse time).
 		MCPServers:               cfg.mcpServers.Servers(),
 		MCPProfileLoader:         cliconfig.NewMCPProfileResolver(cfg.mcpServers, os.LookupEnv),
+		MCPAuthorityLoader:       cliconfig.NewMCPProfileResolver(cfg.mcpServers, os.LookupEnv),
+		MCPAuthorityDefault:      string(cliconfig.MCPAuthorityBroker),
+		MCPBrokerSupported:       true,
 		ProviderCredentialLoader: cliconfig.NewProviderCredentialResolver(cfg.providerFlags, cfg.providerCredentials),
 		ProviderOverrides:        cfg.providerFlags.EndpointOverrides(),
 		EnableParallel:           cfg.enableParallel,

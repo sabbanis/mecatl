@@ -35,7 +35,23 @@ For the exhaustive, auto-generated key/type/default/tier table, see the
 this guide are illustrative; the reference page is the complete source of truth
 (generated from the schema, so it never drifts).
 
-### Global MCP authentication profiles
+### MCP authority modes
+
+`mcp.mode` selects one process-wide authority path for the complete `mcp.servers`
+list. `global` retains the existing direct MCP manager and `mecated mcp login`
+credential flow. `broker` reserves the complete list for the session broker; it
+accepts anonymous servers and at most one OAuth server, and rejects
+`static_bearer` and global OAuth `profile`, `principal`, and `credentials`
+fields. Broker OAuth reuses issuer, client, scopes, refresh intent, and network
+policy syntax, but ToolHive's upstream OAuth client has no mecatl egress-control
+injection seam.
+
+Mecated and embedded mecatui default to `global`; mecak8s defaults to `broker`.
+Existing mecak8s deployments that use global MCP servers must set `mcp.mode:
+global` explicitly before upgrading. Mecatequi does not support broker mode.
+A broker OAuth server requires `mcp.broker.callback_url`, the exact registered
+absolute HTTPS callback URL without userinfo, query, or fragment. It is rejected
+in global mode and is never derived from request Host or forwarded headers.
 
 All three headless roots read the same operator-tier `mcp.servers` profiles. A project
 `.mecatl/settings.yaml` cannot define them. Each server selects exactly one auth mode:

@@ -405,6 +405,8 @@ func appConfig(f flags, diag port.Diagnostics, obs observability) app.Config {
 		// never registered (a hand-built test config).
 		MCPServers:               f.mcpServers.Servers(),
 		MCPProfileLoader:         cliconfig.NewMCPProfileResolver(f.mcpServers, os.LookupEnv),
+		MCPAuthorityLoader:       cliconfig.NewMCPProfileResolver(f.mcpServers, os.LookupEnv),
+		MCPAuthorityDefault:      string(cliconfig.MCPAuthorityGlobal),
 		ProviderCredentialLoader: cliconfig.NewProviderCredentialResolver(f.providerFlags, f.providerCredentials),
 		ProviderOverrides:        f.providerFlags.EndpointOverrides(),
 		PermissionsConventional:  true,
