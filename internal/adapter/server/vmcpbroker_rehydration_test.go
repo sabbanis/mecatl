@@ -133,6 +133,79 @@ func scenario3EngineResult() server.SessionEngineResult {
 	}
 }
 
+func TestSessionMCPAuthorization_Scenario3_LoadWithMCPRetainsBrokerTools(t *testing.T) {
+	store := memstore.New()
+	runtime := scenario3Runtime(t)
+	t.Cleanup(func() { _ = runtime.Close() })
+	sess := session.New("broker-load", session.ModeDefault, "/workspace", session.Limits{}, time.Now())
+	sess.BrokerEnrollmentID = runtime.EnrollmentID()
+	if err := store.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	factoryCalls := 0
+	svc := scenario3Service(t, store, runtime, func(ctx context.Context, _ server.ProviderSelector, _ []mcp.ServerConfig, _ server.SessionProfile, _ string, _ session.PermissionMode) (server.SessionEngineResult, error) {
+		factoryCalls++
+		tools := server.VMCPBrokerTools(ctx)
+		if len(tools) != 1 || tools[0].Spec().Name != "mcp__calendar__list" {
+			return server.SessionEngineResult{}, errors.New("broker wrappers were dropped during MCP load")
+		}
+		return scenario3EngineResult(), nil
+	})
+	t.Cleanup(svc.Close)
+
+	if _, err := svc.LoadSessionWithMCP(context.Background(), sess.ID, []mcp.ServerConfig{{Name: "editor"}}); err != nil {
+		t.Fatalf("LoadSessionWithMCP: %v", err)
+	}
+	if factoryCalls != 1 {
+		t.Fatalf("factory calls = %d, want 1", factoryCalls)
+	}
+}
+
+func TestSessionMCPAuthorization_Scenario3_BrokerReloadRetriesWithoutResurrection(t *testing.T) {
+	store := memstore.New()
+	runtime := scenario3Runtime(t)
+	t.Cleanup(func() { _ = runtime.Close() })
+	sess := session.New("broker-retry", session.ModeDefault, "/workspace", session.Limits{}, time.Now())
+	sess.BrokerEnrollmentID = runtime.EnrollmentID()
+	if err := store.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+
+	calls := 0
+	var retained tool.Tool
+	svc := scenario3Service(t, store, runtime, func(ctx context.Context, _ server.ProviderSelector, _ []mcp.ServerConfig, _ server.SessionProfile, _ string, _ session.PermissionMode) (server.SessionEngineResult, error) {
+		calls++
+		tools := server.VMCPBrokerTools(ctx)
+		if len(tools) != 1 {
+			return server.SessionEngineResult{}, errors.New("broker wrappers were dropped during reload")
+		}
+		if calls == 1 {
+			return server.SessionEngineResult{}, errors.New("transient factory failure")
+		}
+		if retained == nil {
+			retained = tools[0]
+		} else if tools[0] != retained {
+			return server.SessionEngineResult{}, errors.New("same-process reload replaced the retained broker owner")
+		}
+		return scenario3EngineResult(), nil
+	})
+	t.Cleanup(svc.Close)
+
+	specs := []mcp.ServerConfig{{Name: "editor"}}
+	if _, err := svc.LoadSessionWithMCP(context.Background(), sess.ID, specs); err == nil {
+		t.Fatal("first LoadSessionWithMCP succeeded, want factory failure")
+	}
+	if _, err := svc.LoadSessionWithMCP(context.Background(), sess.ID, specs); err != nil {
+		t.Fatalf("retry LoadSessionWithMCP: %v", err)
+	}
+	if _, err := svc.LoadSessionWithMCP(context.Background(), sess.ID, specs); err != nil {
+		t.Fatalf("same-process reload: %v", err)
+	}
+	if calls != 3 {
+		t.Fatalf("factory calls = %d, want 3", calls)
+	}
+}
 func TestInvariant_broker_enrollment_identity_covers_compiled_inventory(t *testing.T) {
 	store := memstore.New()
 	original := scenario3Runtime(t)

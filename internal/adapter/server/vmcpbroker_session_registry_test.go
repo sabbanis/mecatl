@@ -18,7 +18,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 )
 
-func TestSessionMCPAuthorization_Scenario3_BrokerSessionRegistryRaces(t *testing.T) {
+func TestInvariant_broker_finalization_is_attempt_scoped(t *testing.T) {
 	store := memstore.New()
 	runtime := brokerRegistryRuntime(t)
 	defer func() { _ = runtime.Close() }()
@@ -54,7 +54,7 @@ func TestSessionMCPAuthorization_Scenario3_BrokerSessionRegistryRaces(t *testing
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _ = svc.buildAndRegisterSessionEngine(context.Background(), sess, ProviderSelector{}, ProfileDefault, session.ModeDefault, false)
+			_, _ = svc.buildAndRegisterSessionEngine(context.Background(), sess, ProviderSelector{}, nil, ProfileDefault, session.ModeDefault, false)
 		}()
 	}
 	<-entered
@@ -85,10 +85,10 @@ func TestSessionMCPAuthorization_Scenario3_BrokerSessionCloseOwnership(t *testin
 	}
 	svc := brokerRegistryService(t, store, runtime, nil)
 
-	if _, err := svc.buildAndRegisterSessionEngine(context.Background(), first, ProviderSelector{}, ProfileDefault, session.ModeDefault, false); err != nil {
+	if _, err := svc.buildAndRegisterSessionEngine(context.Background(), first, ProviderSelector{}, nil, ProfileDefault, session.ModeDefault, false); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := svc.buildAndRegisterSessionEngine(context.Background(), second, ProviderSelector{}, ProfileDefault, session.ModeDefault, false); err != nil {
+	if _, err := svc.buildAndRegisterSessionEngine(context.Background(), second, ProviderSelector{}, nil, ProfileDefault, session.ModeDefault, false); err != nil {
 		t.Fatal(err)
 	}
 	svc.CloseSession(first.ID)
@@ -105,7 +105,7 @@ func TestSessionMCPAuthorization_Scenario3_BrokerSessionCloseOwnership(t *testin
 	failing := brokerRegistryService(t, store, runtime, func(context.Context, ProviderSelector, []mcp.ServerConfig, SessionProfile, string, session.PermissionMode) (SessionEngineResult, error) {
 		return SessionEngineResult{}, context.Canceled
 	})
-	if _, err := failing.buildAndRegisterSessionEngine(context.Background(), second, ProviderSelector{}, ProfileDefault, session.ModeDefault, false); err == nil {
+	if _, err := failing.buildAndRegisterSessionEngine(context.Background(), second, ProviderSelector{}, nil, ProfileDefault, session.ModeDefault, false); err == nil {
 		t.Fatal("factory failure succeeded")
 	}
 	svc.mu.Lock()

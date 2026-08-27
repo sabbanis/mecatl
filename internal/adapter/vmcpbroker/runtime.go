@@ -39,6 +39,54 @@ var ErrUnsupportedCapability = errors.New("vmcpbroker: unsupported capability")
 // ErrInvalidRoute reports invalid static broker catalogue input.
 var ErrInvalidRoute = errors.New("vmcpbroker: invalid route")
 
+// BindingIndex records which persisted parent sessions require broker
+// reattachment. It is root-internal state keyed by the canonical session ID and
+// immutable broker configuration generation; it is deliberately not session data.
+type BindingIndex struct {
+	mu      sync.RWMutex
+	entries map[session.SessionID]string
+}
+
+// NewBindingIndex constructs an empty root-owned binding index.
+func NewBindingIndex() *BindingIndex {
+	return &BindingIndex{entries: make(map[session.SessionID]string)}
+}
+
+// Bind records the broker configuration generation for id.
+func (i *BindingIndex) Bind(id session.SessionID, generation string) error {
+	if i == nil || id == "" || generation == "" {
+		return fmt.Errorf("%w: broker binding id and generation are required", ErrInvalidRoute)
+	}
+	i.mu.Lock()
+	defer i.mu.Unlock()
+	if prior, ok := i.entries[id]; ok && prior != generation {
+		return fmt.Errorf("%w: broker binding generation conflicts for session %q", ErrInvalidRoute, id)
+	}
+	i.entries[id] = generation
+	return nil
+}
+
+// Generation returns the configured broker generation for id.
+func (i *BindingIndex) Generation(id session.SessionID) (string, bool) {
+	if i == nil {
+		return "", false
+	}
+	i.mu.RLock()
+	defer i.mu.RUnlock()
+	generation, ok := i.entries[id]
+	return generation, ok
+}
+
+// Unbind removes the record created for a final session close or failed create.
+func (i *BindingIndex) Unbind(id session.SessionID) {
+	if i == nil {
+		return
+	}
+	i.mu.Lock()
+	delete(i.entries, id)
+	i.mu.Unlock()
+}
+
 // ErrInvalidControlTarget reports an unknown, closed, tombstoned, or unconfigured
 // composition-private control target. It deliberately does not identify which part
 // of the target was invalid.
@@ -566,19 +614,6 @@ func brokerTools(server *mcp.Server) map[string]tool.Tool {
 		}
 	}
 	return tools
-}
-
-// RouteToolNames returns the stable, model-visible wrapper inventory from trusted
-// operator configuration. Backend routes and credentials remain private.
-func (r *Runtime) RouteToolNames() []string {
-	r.mu.RLock()
-	defer r.mu.RUnlock()
-	names := make([]string, len(r.routes))
-	for i, route := range r.routes {
-		names[i] = route.Tool.Name
-	}
-	sort.Strings(names)
-	return names
 }
 
 // EnrollmentID returns an opaque non-secret fingerprint of the trusted broker

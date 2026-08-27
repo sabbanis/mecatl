@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -22,6 +23,13 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
 )
+
+func TestInvariant_broker_runtime_has_no_legacy_route_tool_provenance(t *testing.T) {
+	t.Parallel()
+	if _, ok := reflect.TypeFor[Runtime]().MethodByName("RouteToolNames"); ok {
+		t.Fatal("Runtime still exposes legacy RouteToolNames provenance")
+	}
+}
 
 func TestCompileProfiles_DerivesProtectedRoutesFromSupportedAuthModes(t *testing.T) {
 	t.Parallel()
