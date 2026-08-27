@@ -325,6 +325,7 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"IsLive":                       {KindDerived, "combined Service-run and engine-child process-local registry; consumed by destructive maintenance, not a caller-facing verb"},
 	"MaintenanceMutationAvailable": {KindDerived, "read-only capability truth consumed by composition before scheduling automatic retention"},
 	"FinishRun":                    {KindDerived, "deregisters an id the wire adapter already finished draining from its own authorized run"},
+	"StartInteractiveRunContent":   {KindDerived, "internal relay entry that grants presentation only after its HTTP/gRPC handler authenticated and authorized the session"},
 	"PublishSessionEvent":          {KindDerived, "publishes to subscribers already registered via the (caller-owned) Subscribe for this id; PublishSessionEvent itself takes no ctx and makes no independent decision"},
 	"RecoverNotice":                {KindDerived, "pops a notice keyed by id that only the relay's own immediately-preceding, already-authorized StartRunContent call could have set"},
 	"LookupSteerMessageID":         {KindDerived, "pops a steer message-id correlation only the relay's own already-authorized Steer call could have parked; consumed by the gRPC relay's EvSteer echo stamp on the same stream"},

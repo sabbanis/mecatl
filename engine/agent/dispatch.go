@@ -604,6 +604,14 @@ func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env 
 	}
 
 	if requester, ok := t.(tool.AuthorizationRequester); ok {
+		// A transaction is an authority-bearing side effect. Only an attached,
+		// trusted main-client run may create one; all other runs fail closed before
+		// the adapter observes the request.
+		if !r.req.AuthorizationPresentation {
+			res := session.NewToolError(c.ID, "broker authorization requires an attached interactive main client")
+			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+			return res, nil, false
+		}
 		request, required, err := requester.RequestAuthorization(ctx)
 		if err != nil {
 			res := session.NewToolError(c.ID, "broker authorization required but unavailable")

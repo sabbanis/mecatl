@@ -720,7 +720,7 @@ func (h *HTTPHandler) prompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	run, err := h.svc.StartRunContent(r.Context(), id, body.Text, parts)
+	run, err := h.svc.StartInteractiveRunContent(r.Context(), id, body.Text, parts)
 	if err != nil {
 		writeServiceError(w, err)
 		return

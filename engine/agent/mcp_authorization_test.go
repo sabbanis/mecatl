@@ -2,11 +2,16 @@ package agent_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 	"time"
 
+	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
+	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/governance"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 )
@@ -15,76 +20,102 @@ type authorizationTool struct {
 	fakeTool
 	request tool.AuthorizationRequest
 	calls   int
+	cancel  func(context.Context, string) error
 }
 
 func (t *authorizationTool) RequestAuthorization(context.Context) (tool.AuthorizationRequest, bool, error) {
 	t.calls++
 	return t.request, true, nil
 }
-func (*authorizationTool) CancelAuthorization(context.Context, string) error { return nil }
-func (*authorizationTool) DispatchSerial() bool                              { return true }
+func (t *authorizationTool) CancelAuthorization(ctx context.Context, id string) error {
+	if t.cancel != nil {
+		return t.cancel(ctx, id)
+	}
+	return nil
+}
+func (*authorizationTool) DispatchSerial() bool { return true }
 
-func testMCPAuthorizationPark(t *testing.T) {
+type failingAuthorizationStore struct{ err error }
+
+func (s failingAuthorizationStore) Save(context.Context, *session.Session) error { return s.err }
+func (failingAuthorizationStore) Load(context.Context, session.SessionID) (*session.Session, error) {
+	return nil, port.ErrSessionNotFound
+}
+
+type mcpAuthorizationParkFixture struct {
+	protected *authorizationTool
+	sess      *session.Session
+	run       *agent.Run
+	events    []session.Event
+}
+
+func newMCPAuthorizationParkFixture(t *testing.T) mcpAuthorizationParkFixture {
+	t.Helper()
+	executed := false
 	protected := &authorizationTool{
 		fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true, exec: func(context.Context, session.ToolCall, tool.Workspace) (session.ToolResult, error) {
-			t.Fatal("parked protected call executed")
+			executed = true
 			return session.ToolResult{}, nil
 		}},
 		request: tool.AuthorizationRequest{ID: "request", Backend: "protected", RouteID: "mcp__protected__list", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
 	}
 	llm := mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{"secret":"must not reach a card"}`)))
-	e := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, protected), Interactive: true})
+	e := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, protected), Interactive: true, Store: memstore.New()})
 	sess := newSession(t, session.Limits{})
-	r := e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go"})
+	r := e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true})
 	events := drain(r)
+	if executed {
+		t.Fatal("parked protected call executed")
+	}
+	return mcpAuthorizationParkFixture{protected: protected, sess: sess, run: r, events: events}
+}
 
-	if sess.State != session.StateAuthorizing {
-		var toolResult string
-		for _, event := range events {
-			if event.ToolResult != nil {
-				toolResult = event.ToolResult.Content
-			}
-		}
-		t.Fatalf("state = %s, want authorizing (outcome %v, result %q)", sess.State, r.Outcome(), toolResult)
+func TestSessionMCPAuthorization_Scenario5_PendingHasNoExecutionEffects(t *testing.T) {
+	fixture := newMCPAuthorizationParkFixture(t)
+	if fixture.sess.Counters.ToolCalls != 0 || fixture.protected.calls != 1 {
+		t.Fatalf("tool calls/authorization requests = %d/%d, want 0/1", fixture.sess.Counters.ToolCalls, fixture.protected.calls)
 	}
-	if r.Outcome() != agent.RunOutcomeAuthorizationParked {
-		t.Fatalf("outcome = %v, want authorization parked", r.Outcome())
-	}
-	pending, ok := sess.PendingMCPAuthorization()
+}
+
+func TestInvariant_mcp_authorization_replays_effective_call(t *testing.T) {
+	fixture := newMCPAuthorizationParkFixture(t)
+	pending, ok := fixture.sess.PendingMCPAuthorization()
 	if !ok || string(pending.Call.Args) != `{"secret":"must not reach a card"}` {
-		t.Fatalf("pending = %#v, want exact private call", pending)
+		t.Fatalf("pending call = %#v, want effective exact call", pending)
 	}
-	if protected.calls != 1 || sess.Counters.ToolCalls != 0 {
-		t.Fatalf("authorization calls/tool counter = %d/%d, want 1/0", protected.calls, sess.Counters.ToolCalls)
-	}
-	for _, event := range events {
-		if event.Type == session.EvResult || event.Type == session.EvToolResult {
-			t.Fatalf("parked run emitted forbidden event %s", event.Type)
-		}
+}
+
+func TestInvariant_protected_broker_tool_card_redacts_arguments(t *testing.T) {
+	fixture := newMCPAuthorizationParkFixture(t)
+	for _, event := range fixture.events {
 		if event.Type == session.EvToolCall && event.ToolCall != nil && len(event.ToolCall.Args) != 0 {
 			t.Fatalf("protected tool card leaked arguments: %s", event.ToolCall.Args)
 		}
 	}
 }
 
-func TestSessionMCPAuthorization_Scenario5_PendingHasNoExecutionEffects(t *testing.T) {
-	testMCPAuthorizationPark(t)
-}
-
-func TestInvariant_mcp_authorization_replays_effective_call(t *testing.T) {
-	testMCPAuthorizationPark(t)
-}
-
-func TestInvariant_protected_broker_tool_card_redacts_arguments(t *testing.T) {
-	testMCPAuthorizationPark(t)
-}
-
 func TestSessionMCPAuthorization_Scenario5_ParkedRunOutcome(t *testing.T) {
-	testMCPAuthorizationPark(t)
+	fixture := newMCPAuthorizationParkFixture(t)
+	if fixture.sess.State != session.StateAuthorizing || fixture.run.Outcome() != agent.RunOutcomeAuthorizationParked {
+		t.Fatalf("state/outcome = %s/%v, want authorizing/authorization parked", fixture.sess.State, fixture.run.Outcome())
+	}
 }
 
 func TestSessionMCPAuthorization_Scenario6_RemoteMainMayPark(t *testing.T) {
-	testMCPAuthorizationPark(t)
+	protected := &authorizationTool{
+		fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true},
+		request:  tool.AuthorizationRequest{ID: "request", Backend: "protected", RouteID: "mcp__protected__list", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	llm := mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{}`)))
+	// A process-headless service may still have an attached authenticated remote
+	// main client. Presentation is a run capability, not an Engine-wide posture.
+	e := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, protected), Store: memstore.New()})
+	sess := newSession(t, session.Limits{})
+	r := e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true})
+	drain(r)
+	if sess.State != session.StateAuthorizing || r.Outcome() != agent.RunOutcomeAuthorizationParked {
+		t.Fatalf("state/outcome = %s/%v, want authorizing/authorization parked", sess.State, r.Outcome())
+	}
 }
 
 func TestInvariant_unattended_runs_never_park_for_mcp_authorization(t *testing.T) {
@@ -96,36 +127,114 @@ func TestInvariant_unattended_runs_never_park_for_mcp_authorization(t *testing.T
 	e := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, protected)})
 	sess := newSession(t, session.Limits{})
 	events := drain(e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go"}))
-	if sess.State == session.StateAuthorizing || protected.calls != 1 {
-		t.Fatalf("unattended state/calls = %s/%d, want non-authorizing/one", sess.State, protected.calls)
+	if sess.State == session.StateAuthorizing || protected.calls != 0 {
+		t.Fatalf("unattended state/calls = %s/%d, want non-authorizing/no transaction", sess.State, protected.calls)
 	}
+	foundResult := false
 	for _, event := range events {
 		if event.Type == session.EvMCPAuthorizationRequired {
 			t.Fatal("unattended run emitted authorization-required")
 		}
+		if event.ToolResult != nil && event.ToolResult.CallID == "call-1" && event.ToolResult.IsError {
+			foundResult = true
+		}
+	}
+	if !foundResult {
+		t.Fatal("unattended run did not pair protected call with an error result")
 	}
 }
 
 func TestSessionMCPAuthorization_Scenario5_GatesPrecedeConnect(t *testing.T) {
-	testMCPAuthorizationPark(t)
+	protected := &authorizationTool{fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true}, request: tool.AuthorizationRequest{ID: "request"}}
+	llm := mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{}`)), mockllm.TextTurn("done"))
+	e := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, protected), Policy: permpolicy.NewPolicy([]governance.Rule{{Scope: governance.ScopeBuiltinDefault, Effect: governance.Deny}}, nil)})
+	sess := newSession(t, session.Limits{})
+	drain(e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true}))
+	if protected.calls != 0 {
+		t.Fatalf("authorization transactions = %d, want none after permission denial", protected.calls)
+	}
 }
 
 func TestSessionMCPAuthorization_Scenario5_ParksMidTurnDeterministically(t *testing.T) {
-	testMCPAuthorizationPark(t)
+	fixture := newMCPAuthorizationParkFixture(t)
+	for _, event := range fixture.events {
+		if event.Type == session.EvResult || event.Type == session.EvToolResult {
+			t.Fatalf("parked run emitted forbidden event %s", event.Type)
+		}
+	}
 }
 
 func TestInvariant_mcp_authorization_save_precedes_required_event(t *testing.T) {
-	testMCPAuthorizationPark(t)
+	fixture := newMCPAuthorizationParkFixture(t)
+	seenRequired := false
+	for _, event := range fixture.events {
+		if event.Type == session.EvMCPAuthorizationRequired {
+			seenRequired = true
+			if fixture.sess.State != session.StateAuthorizing {
+				t.Fatalf("required event emitted before durable authorizing state: %s", fixture.sess.State)
+			}
+		}
+	}
+	if !seenRequired {
+		t.Fatal("parked run did not emit authorization-required event")
+	}
 }
 
 func TestSessionMCPAuthorization_Scenario5_SaveFailureCancelsTransaction(t *testing.T) {
-	testMCPAuthorizationPark(t)
+	var cancelledID string
+	protected := &authorizationTool{
+		fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true},
+		request:  tool.AuthorizationRequest{ID: "exact-transaction", Backend: "protected", RouteID: "mcp__protected__list", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
+		cancel: func(ctx context.Context, id string) error {
+			if ctx.Err() != nil {
+				t.Fatalf("cancellation context was cancelled: %v", ctx.Err())
+			}
+			cancelledID = id
+			return nil
+		},
+	}
+	second := &fakeTool{name: "read-after", readOnly: true}
+	llm := mockllm.New(
+		mockllm.ToolCallTurn(
+			toolCall("pending", protected.name, `{"secret":"not in an event"}`),
+			toolCall("sibling", second.name, `{}`),
+		),
+		mockllm.TextTurn("continued"),
+	)
+	e := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, protected, second), Store: failingAuthorizationStore{err: errors.New("save failed")}})
+	sess := newSession(t, session.Limits{})
+	events := drain(e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true}))
+	if cancelledID != "exact-transaction" {
+		t.Fatalf("cancelled transaction = %q, want exact-transaction (requests %d, state %s, events %v)", cancelledID, protected.calls, sess.State, typesOf(events))
+	}
+	if sess.State == session.StateAuthorizing {
+		t.Fatalf("state = %s, want non-authorizing after failed required save", sess.State)
+	}
+	var resultIDs []session.ToolCallID
+	for _, event := range events {
+		if event.ToolResult != nil {
+			resultIDs = append(resultIDs, event.ToolResult.CallID)
+		}
+	}
+	if len(resultIDs) < 2 || resultIDs[0] != "pending" || resultIDs[1] != "sibling" {
+		t.Fatalf("result event order = %v, want pending then sibling", resultIDs)
+	}
+	if err := session.ValidateToolPairing(sess.Conversation.Messages); err != nil {
+		t.Fatalf("tool pairing after failed save: %v", err)
+	}
 }
 
 func TestSessionMCPAuthorization_Scenario6_BrokerCallsSerialize(t *testing.T) {
-	testMCPAuthorizationPark(t)
+	fixture := newMCPAuthorizationParkFixture(t)
+	serial, ok := interface{}(fixture.protected).(tool.DispatchSerial)
+	if !ok || !serial.DispatchSerial() || !fixture.protected.ReadOnly() {
+		t.Fatalf("protected tool serial/read-only = %v/%v, want true/true", ok && serial.DispatchSerial(), fixture.protected.ReadOnly())
+	}
 }
 
 func TestSessionMCPAuthorization_Scenario6_UnrelatedReadsRemainParallel(t *testing.T) {
-	testMCPAuthorizationPark(t)
+	plain := &fakeTool{name: "plain-read", readOnly: true}
+	if serial, ok := interface{}(plain).(tool.DispatchSerial); ok && serial.DispatchSerial() {
+		t.Fatal("unrelated read-only tool was made dispatch-serial")
+	}
 }

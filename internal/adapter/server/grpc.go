@@ -324,7 +324,7 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 			return status.Error(codes.InvalidArgument, perr.Error())
 		}
 		id = session.SessionID(prompt.GetSessionId())
-		run, err = h.svc.StartRunContent(ctx, id, prompt.GetText(), parts)
+		run, err = h.svc.StartInteractiveRunContent(ctx, id, prompt.GetText(), parts)
 	case first.GetRetry() != nil:
 		retry := first.GetRetry()
 		if retry.GetSessionId() == "" {

@@ -4070,7 +4070,14 @@ func (s *Service) StartRun(ctx context.Context, id session.SessionID, text strin
 // scheduled sessions, unknown metadata, and every historical child/fire prefix
 // fail closed. The trusted scheduler uses StartScheduledRunContent instead.
 func (s *Service) StartRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
-	return s.startRunContent(ctx, id, text, parts, runPurposeChat)
+	return s.startRunContent(ctx, id, text, parts, runPurposeChat, false)
+}
+
+// StartInteractiveRunContent starts an attached, authenticated main-client run.
+// Only HTTP and gRPC interactive handlers call this entry; it grants the
+// run-scoped broker-authorization presentation capability.
+func (s *Service) StartInteractiveRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
+	return s.startRunContent(ctx, id, text, parts, runPurposeChat, true)
 }
 
 // StartScheduledRunContent is the trusted scheduler-purpose entry. It admits
@@ -4078,7 +4085,7 @@ func (s *Service) StartRunContent(ctx context.Context, id session.SessionID, tex
 // legacy unknown snapshots. It is intentionally absent from public transports;
 // scheduler composition calls it directly.
 func (s *Service) StartScheduledRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
-	return s.startRunContent(ctx, id, text, parts, runPurposeScheduler)
+	return s.startRunContent(ctx, id, text, parts, runPurposeScheduler, false)
 }
 
 // RetryFailedRun resumes the failed model step from the persisted conversation state
@@ -4176,7 +4183,7 @@ const (
 	scheduleFireSessionPrefix = "sched--"
 )
 
-func (s *Service) startRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content, purpose runPurpose) (*agent.Run, error) {
+func (s *Service) startRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content, purpose runPurpose, authorizationPresentation bool) (*agent.Run, error) {
 	if text == "" && len(parts) == 0 {
 		return nil, fmt.Errorf("%w: prompt text or parts is required", ErrInvalidArgument)
 	}
@@ -4288,7 +4295,7 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	// one mint site for a new run.
 	runID := newRunID()
 	sess.BeginRun(runID)
-	run := engine.Run(ctx, sess, env, agent.RunRequest{Text: text, Parts: parts, RunID: runID})
+	run := engine.Run(ctx, sess, env, agent.RunRequest{Text: text, Parts: parts, AuthorizationPresentation: authorizationPresentation, RunID: runID})
 	s.register(id, run, sess)
 	return run, nil
 }

@@ -681,7 +681,12 @@ func (r *Runtime) OpenSession(id session.SessionID) (*SessionTools, error) {
 	opened := &SessionTools{sessionID: id, closeFunc: closeFunc, runtime: r}
 	tools := make([]tool.Tool, len(routes))
 	for i, route := range routes {
-		tools[i] = &sessionTool{sessionID: id, route: route, caller: caller, owner: opened}
+		base := &sessionTool{sessionID: id, route: route, caller: caller, owner: opened}
+		if route.Protected {
+			tools[i] = &protectedSessionTool{sessionTool: base}
+		} else {
+			tools[i] = base
+		}
 	}
 	opened.tools = tools
 
@@ -1333,16 +1338,15 @@ type sessionTool struct {
 	owner     *SessionTools
 }
 
-func (t *sessionTool) Spec() tool.ToolSpec  { return copyRoute(t.route).Tool }
-func (t *sessionTool) ReadOnly() bool       { return t.route.ReadOnly }
-func (t *sessionTool) DispatchSerial() bool { return t.route.Protected }
+func (t *sessionTool) Spec() tool.ToolSpec { return copyRoute(t.route).Tool }
+func (t *sessionTool) ReadOnly() bool      { return t.route.ReadOnly }
+func (*sessionTool) DispatchSerial() bool  { return true }
 
-// RequestAuthorization starts or observes the route's broker-private connection
+type protectedSessionTool struct{ *sessionTool }
+
+// RequestAuthorization starts or observes the protected route's broker-private connection
 // transaction without exposing its browser URL or credentials to the engine.
-func (t *sessionTool) RequestAuthorization(ctx context.Context) (tool.AuthorizationRequest, bool, error) {
-	if !t.route.Protected {
-		return tool.AuthorizationRequest{}, false, nil
-	}
+func (t *protectedSessionTool) RequestAuthorization(ctx context.Context) (tool.AuthorizationRequest, bool, error) {
 	if !t.owner.beginCall() || !t.owner.runtime.callAllowed(t.sessionID, t.owner) {
 		return tool.AuthorizationRequest{}, false, ErrClosed
 	}
@@ -1367,7 +1371,7 @@ func (t *sessionTool) RequestAuthorization(ctx context.Context) (tool.Authorizat
 }
 
 // CancelAuthorization invalidates precisely the pending broker transaction.
-func (t *sessionTool) CancelAuthorization(_ context.Context, authorizationID string) error {
+func (t *protectedSessionTool) CancelAuthorization(_ context.Context, authorizationID string) error {
 	return t.owner.runtime.cancelAuthorization(t.sessionID, t.route.BackendID, authorizationID)
 }
 

@@ -777,6 +777,12 @@ type RunRequest struct {
 	// Parts carries non-text media (image/audio) alongside Text. nil for a text-only
 	// prompt. The media passes through to the engine untouched.
 	Parts []session.Content
+	// AuthorizationPresentation permits a broker-protected call to create an
+	// out-of-band authorization transaction for this run. It is intentionally
+	// run-scoped: composition grants it only to an attached, authenticated main
+	// HTTP/gRPC client. The zero value fails closed for workers, ACP, scheduler,
+	// detached, and background runs.
+	AuthorizationPresentation bool
 	// MaxRunTokensOverride, when > 0, is a per-run TIGHTEN-ONLY override of the engine's
 	// Deps.MaxRunTokens budget: the effective ceiling for THIS run is the lower of the
 	// two non-zero values (a per-call ceiling may make the run stricter than the operator
@@ -1442,24 +1448,25 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 				}
 				results = nil
 			}
-			if !e.deps.Interactive || e.deps.Role != "" {
-				res := session.NewToolError(park.call.ID, "broker authorization requires an interactive main run")
-				e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-				results = append(results, res)
-				for _, deferred := range park.deferred {
-					results = append(results, session.NewToolError(deferred.ID, "broker authorization deferred sibling was not executed"))
-				}
+			if !r.req.AuthorizationPresentation || e.deps.Role != "" {
+				results = append(results, e.authorizationParkFailures(r, turnIdx, park, "broker authorization requires an attached interactive main client")...)
 			} else if err := sess.PauseForMCPAuthorization(session.PendingMCPAuthorization{
 				AuthorizationID: park.request.ID, Backend: park.request.Backend, RouteID: park.request.RouteID,
 				ConfigID: park.request.ConfigID, ExpiresAt: park.request.ExpiresAt, Call: park.call, Deferred: park.deferred,
 			}); err != nil {
-				res := session.NewToolError(park.call.ID, "cannot park for broker authorization")
-				e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-				results = append(results, res)
+				results = append(results, e.authorizationParkFailures(r, turnIdx, park, "cannot park for broker authorization")...)
 			} else if err := e.saveRequired(ctx, sess); err != nil {
-				_ = park.tool.CancelAuthorization(ctx, park.request.ID)
-				aborted, abortErr := sess.AbortMCPAuthorization("broker authorization could not be saved")
+				cancelCtx := context.WithoutCancel(ctx)
+				cancelErr := park.tool.CancelAuthorization(cancelCtx, park.request.ID)
+				failure := "broker authorization could not be saved"
+				if cancelErr != nil {
+					failure = "broker authorization could not be cancelled after persistence failure"
+				}
+				aborted, abortErr := sess.AbortMCPAuthorization(failure)
 				if abortErr == nil {
+					for _, result := range aborted {
+						e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(result)})
+					}
 					results = append(results, aborted...)
 				}
 			} else {
@@ -1489,6 +1496,24 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 
 func shouldRunBoundaryInjections(firstIteration, skipFirst bool) bool {
 	return !firstIteration || !skipFirst
+}
+
+// authorizationParkFailures produces the ordered, paired terminal results for a
+// parking path that could not retain the protected call. It deliberately emits
+// each result here: these calls did not reach execute, so no other path creates
+// their client cards' completion event.
+func (e *Engine) authorizationParkFailures(r *Run, turnIdx int, park *dispatchPark, pendingMessage string) []session.ToolResult {
+	results := make([]session.ToolResult, 0, 1+len(park.deferred))
+	pending := session.NewToolError(park.call.ID, pendingMessage)
+	e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(pending)})
+	results = append(results, pending)
+	for _, deferred := range park.deferred {
+		result := session.NewToolError(deferred.ID, "broker authorization deferred sibling was not executed")
+		e.openCard(r, turnIdx, deferred)
+		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(result)})
+		results = append(results, result)
+	}
+	return results
 }
 
 // runBoundaryInjections runs the Step 2a turn-boundary injection drains, in
@@ -2847,7 +2872,7 @@ func (e *Engine) emitResult(r *Run, _ *session.Session, reason session.StopReaso
 // correlation that absence made impossible to debug.
 func (e *Engine) saveRequired(ctx context.Context, sess *session.Session) error {
 	if e.deps.Store == nil {
-		return nil
+		return errors.New("agent: MCP authorization requires a durable session store")
 	}
 	return e.deps.Store.Save(ctx, sess)
 }

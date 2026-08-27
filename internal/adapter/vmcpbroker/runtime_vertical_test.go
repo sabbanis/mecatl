@@ -113,7 +113,7 @@ func runEmbeddedDocumentationTool(t *testing.T) runtimeVerticalCapture {
 	sess := session.New("runtime-vertical", session.ModeDefault, "/workspace", session.Limits{}, time.Time{})
 	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/workspace"}, memfs.NewWorkspace("/workspace"), nil)
 	var events []byte
-	for event := range eng.Run(context.Background(), sess, env, agent.RunRequest{Text: "read the documentation"}).Events() {
+	for event := range eng.Run(context.Background(), sess, env, agent.RunRequest{Text: "read the documentation", AuthorizationPresentation: true}).Events() {
 		encoded, err := json.Marshal(event)
 		if err != nil {
 			t.Fatalf("marshal event: %v", err)

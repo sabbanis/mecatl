@@ -182,7 +182,7 @@ func TestSessionVMCPBroker_Scenario2_UnconnectedProtectedToolIsBounded(t *testin
 	for range eng.Run(context.Background(), sess, env, agent.RunRequest{Text: "call protected tool"}).Events() {
 	}
 	protectedResult := brokerToolResult(t, sess)
-	if !protectedResult.IsError || !strings.Contains(protectedResult.Content, "authorization required") || len(protectedResult.Content) > 200 {
+	if !protectedResult.IsError || !strings.Contains(protectedResult.Content, "attached interactive main client") || len(protectedResult.Content) > 200 {
 		t.Fatalf("protected result = %+v, want bounded authorization-required tool error", protectedResult)
 	}
 	if sess.State != session.StateCompleted || llm.Calls() != 2 {
