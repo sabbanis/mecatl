@@ -1,7 +1,7 @@
 # Configured resumable MCP authorization — acceptance plan
 
 **Phase:** capability — operator-configured session broker and resumable MCP authorization
-**Status:** draft, 2026-08-27. Synthesized from the Stage 3 handover, the accepted configuration discussion, and the completed five-axis `StateAuthorizing` review.
+**Status:** in-progress, 2026-08-27. Synthesized from the Stage 3 handover, the accepted configuration discussion, and the completed five-axis `StateAuthorizing` review.
 **ADR:** [ADR-0238](../adr/0238-configured-resumable-mcp-authorization.md) — one MCP authority mode, durable authorizing state, and exact continuation.
 **Accumulator branch:** `acc/session-vmcp-authorization` (off `acc/session-vmcp-broker`).
 
