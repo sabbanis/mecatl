@@ -131,6 +131,37 @@ func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDe
 // from the model-controlled arguments.
 type Caller func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error)
 
+// HandlerBundle contains root-internal HTTP handlers owned by a broker process.
+// It is intentionally not mounted here; command roots choose their own listeners.
+type HandlerBundle struct {
+	Callback http.Handler
+}
+
+// Process owns a broker Runtime and its root-internal handlers.
+type Process struct {
+	Runtime  *Runtime
+	Handlers HandlerBundle
+}
+
+// NewProcess binds the fixed callback handler to an already-built Runtime.
+func NewProcess(runtime *Runtime) (*Process, error) {
+	if runtime == nil {
+		return nil, errors.New("vmcpbroker: runtime is required")
+	}
+	return &Process{
+		Runtime:  runtime,
+		Handlers: HandlerBundle{Callback: CallbackHandler(runtime.Callback)},
+	}, nil
+}
+
+// Close releases the Runtime after callers have closed its session tools.
+func (p *Process) Close() error {
+	if p == nil || p.Runtime == nil {
+		return nil
+	}
+	return p.Runtime.Close()
+}
+
 // Runtime owns the stable catalogue and opens session-local executable wrappers.
 type Runtime struct {
 	mu                sync.RWMutex

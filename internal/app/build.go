@@ -858,6 +858,10 @@ type Config struct {
 	// VMCPBroker is root-internal, process-lifetime composition state. Its
 	// session wrappers are not persisted or reattached after restart.
 	VMCPBroker *vmcpbroker.Runtime
+	// VMCPBrokerDeclarations are the canonical, already-resolved broker inputs.
+	// Build never reparses configuration to construct this process-owned runtime.
+	VMCPBrokerDeclarations
+	VMCPBrokerConstructor func(context.Context, VMCPBrokerDeclarations) (*vmcpbroker.Process, error)
 	// mcpBrokerAuthority prevents all global-manager construction for a resolved
 	// broker configuration. Task 02 consumes declarations to build the Runtime.
 	mcpBrokerAuthority bool
@@ -1310,14 +1314,23 @@ type ProviderCredentials struct {
 	CustomProviderAPIKeys map[string]string
 }
 
+// VMCPBrokerDeclarations are the immutable operator declarations given to the
+// trusted process-level broker constructor. They contain no loaded credentials.
+type VMCPBrokerDeclarations struct {
+	Profiles    []permconfig.MCPServerProfile
+	CallbackURL string
+}
+
 // Built is the result of Build: the assembled server.Service plus a Close func
 // that tears down composition-owned resources. Close is always safe to call.
 type Built struct {
 	Service *server.Service
 	// MCPAuthority is the immutable selected configuration retained for the
 	// broker construction stage. Result accessors return copies of payload data.
-	MCPAuthority *mcpauthority.Result
-	Close        func()
+	MCPAuthority       *mcpauthority.Result
+	VMCPBroker         *vmcpbroker.Runtime
+	VMCPBrokerHandlers vmcpbroker.HandlerBundle
+	Close              func()
 }
 
 // Build assembles the LLM provider, session store, tool catalog, agent engine,
@@ -1340,6 +1353,13 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		}
 	})
 	profilesTransferred := false
+	var brokerProcess *vmcpbroker.Process
+	brokerTransferred := false
+	defer func() {
+		if !brokerTransferred && brokerProcess != nil {
+			_ = brokerProcess.Close()
+		}
+	}()
 	defer func() {
 		if !profilesTransferred {
 			closeProfiles()
@@ -1519,6 +1539,26 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		cfg.UseOpenAI = cfg.UseOpenAI || credentials.OpenAIKey != ""
 		cfg.ProviderCredentialLifecycle = lifecycle
 		providerCredentialLifecycle = lifecycle
+	}
+	if cfg.MCPAuthority != nil && cfg.MCPAuthority.Mode() == mcpauthority.Broker {
+		declarations, ok := cfg.MCPAuthority.Broker()
+		if !ok {
+			return nil, fmt.Errorf("broker MCP authority is incomplete")
+		}
+		if cfg.VMCPBrokerConstructor != nil {
+			process, err := cfg.VMCPBrokerConstructor(ctx, VMCPBrokerDeclarations{
+				Profiles:    declarations.Profiles,
+				CallbackURL: declarations.CallbackURL,
+			})
+			if err != nil {
+				return nil, fmt.Errorf("construct broker MCP authority: %w", err)
+			}
+			brokerProcess = process
+			if brokerProcess == nil || brokerProcess.Runtime == nil || brokerProcess.Handlers.Callback == nil {
+				return nil, fmt.Errorf("broker MCP constructor returned an incomplete process")
+			}
+			cfg.VMCPBroker = brokerProcess.Runtime
+		}
 	}
 
 	// Guardrails operator-tier config (issue #27, decision 3): fold the user-global +
@@ -2340,13 +2380,27 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		}
 		childLiveness.Close()
 		mcpClose()
+		if brokerProcess != nil {
+			_ = brokerProcess.Close()
+		}
 		closeProfiles()
 		agentClose()
 		storeClose()
 		commandConnClose()
 	})
 	profilesTransferred = true
-	return &Built{Service: svc, MCPAuthority: cfg.MCPAuthority, Close: closeAll}, nil
+	brokerTransferred = true
+	var brokerHandlers vmcpbroker.HandlerBundle
+	if brokerProcess != nil {
+		brokerHandlers = brokerProcess.Handlers
+	}
+	return &Built{
+		Service:            svc,
+		MCPAuthority:       cfg.MCPAuthority,
+		VMCPBroker:         cfg.VMCPBroker,
+		VMCPBrokerHandlers: brokerHandlers,
+		Close:              closeAll,
+	}, nil
 }
 
 // resolveAgentSeam resolves the agent-definition registry from cfg: the
