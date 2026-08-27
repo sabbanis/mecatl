@@ -119,4 +119,13 @@ func TestInvariant_mcp_authority_mode_is_single_construction_branch(t *testing.T
 	if authority.Mode != MCPAuthorityGlobal || authority.BrokerProfiles != nil || authority.Global == nil {
 		t.Fatalf("global authority must have only global construction input: %#v", authority)
 	}
+	broker := permconfig.MCPServerProfile{Name: "broker", URL: "https://broker.example/mcp", Auth: permconfig.MCPAuthProfile{Mode: "none"}}
+	selected, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: &permconfig.MCPSection{Mode: "broker", Servers: []permconfig.MCPServerProfile{broker}}, DefaultMode: MCPAuthorityGlobal, BrokerSupported: true})
+	if err != nil {
+		t.Fatal(err)
+	}
+	broker.Name = "mutated"
+	if selected.BrokerProfiles[0].Name != "broker" || selected.Global != nil {
+		t.Fatalf("broker result aliases input or carries global state: %#v", selected)
+	}
 }

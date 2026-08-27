@@ -64,6 +64,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/k8slease"
 	"github.com/stacklok/mecatl/internal/adapter/mcp"
 	mcpsource "github.com/stacklok/mecatl/internal/adapter/mcp/source"
+	"github.com/stacklok/mecatl/internal/adapter/mcpauthority"
 	"github.com/stacklok/mecatl/internal/adapter/memory"
 	"github.com/stacklok/mecatl/internal/adapter/modelhook"
 	"github.com/stacklok/mecatl/internal/adapter/openaicodex"
@@ -842,9 +843,11 @@ type Config struct {
 	// MCPAuthorityLoader resolves the strict operator configuration into exactly
 	// one authority branch. It is preferred over the legacy profile loader.
 	MCPAuthorityLoader interface {
-		LoadAuthority(*permconfig.MCPSection, string, bool) (string, []mcp.ServerConfig, interface{ Close() error }, []permconfig.MCPServerProfile, string, error)
+		LoadAuthority(*permconfig.MCPSection, string, bool) (*mcpauthority.Result, error)
 	}
-	// MCPAuthorityDefault is the command root's explicit mode for omitted mcp.mode.
+	// MCPAuthority is the retained immutable selection for the next broker
+	// construction stage; it is nil for legacy programmatic global setup.
+	MCPAuthority        *mcpauthority.Result
 	MCPAuthorityDefault string
 	// MCPBrokerSupported declares whether this root can host broker authority.
 	MCPBrokerSupported bool
@@ -1445,19 +1448,12 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	}
 	if resolver, ok := cfg.permResolver.(*permconfig.Resolver); ok {
 		if cfg.MCPAuthorityLoader != nil {
-			mode, global, lifecycle, _, _, err := cfg.MCPAuthorityLoader.LoadAuthority(resolver.OperatorMCP(), cfg.MCPAuthorityDefault, cfg.MCPBrokerSupported)
+			authority, err := cfg.MCPAuthorityLoader.LoadAuthority(resolver.OperatorMCP(), cfg.MCPAuthorityDefault, cfg.MCPBrokerSupported)
 			if err != nil {
 				return nil, err
 			}
-			if mode == "broker" {
-				if len(cfg.MCPServers) != 0 || cfg.VMCPBroker != nil {
-					return nil, fmt.Errorf("broker MCP authority conflicts with programmatic global MCP servers or an injected Runtime")
-				}
-				cfg.mcpBrokerAuthority = true
-			} else {
-				cfg.MCPServers = global
-				cfg.MCPProfileLifecycle = lifecycle
-				profileLifecycle = lifecycle
+			if err := applyMCPAuthority(&cfg, authority, &profileLifecycle); err != nil {
+				return nil, err
 			}
 		} else if cfg.MCPProfileLoader == nil {
 			if mcpCfg := resolver.OperatorMCP(); mcpCfg != nil && len(mcpCfg.Servers) > 0 {
@@ -1478,19 +1474,12 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 			cfg.contextWindows = map[string]map[string]int(models.ContextWindows)
 		}
 	} else if cfg.MCPAuthorityLoader != nil {
-		mode, global, lifecycle, _, _, err := cfg.MCPAuthorityLoader.LoadAuthority(nil, cfg.MCPAuthorityDefault, cfg.MCPBrokerSupported)
+		authority, err := cfg.MCPAuthorityLoader.LoadAuthority(nil, cfg.MCPAuthorityDefault, cfg.MCPBrokerSupported)
 		if err != nil {
 			return nil, err
 		}
-		if mode == "broker" {
-			if len(cfg.MCPServers) != 0 || cfg.VMCPBroker != nil {
-				return nil, fmt.Errorf("broker MCP authority conflicts with programmatic global MCP servers or an injected Runtime")
-			}
-			cfg.mcpBrokerAuthority = true
-		} else {
-			cfg.MCPServers = global
-			cfg.MCPProfileLifecycle = lifecycle
-			profileLifecycle = lifecycle
+		if err := applyMCPAuthority(&cfg, authority, &profileLifecycle); err != nil {
+			return nil, err
 		}
 	} else if cfg.MCPProfileLoader != nil {
 		profiles, lifecycle, err := cfg.MCPProfileLoader.Load(nil)
@@ -5235,6 +5224,25 @@ func buildCatalog(ctx context.Context, cfg Config, reg *providerRegistry, provid
 	}
 
 	return cat, assets, mcpProvider, mcpInventory, mcpClose, nil
+}
+
+func applyMCPAuthority(cfg *Config, authority *mcpauthority.Result, lifecycle *interface{ Close() error }) error {
+	if authority == nil {
+		return fmt.Errorf("MCP authority loader returned nil authority")
+	}
+	cfg.MCPAuthority = authority
+	if authority.Mode() == mcpauthority.Broker {
+		if len(cfg.MCPServers) != 0 || cfg.VMCPBroker != nil || cfg.ToolHiveEnabled {
+			return fmt.Errorf("broker MCP authority conflicts with programmatic global MCP servers, an injected Runtime, or ToolHive sources")
+		}
+		cfg.mcpBrokerAuthority = true
+		return nil
+	}
+	servers, close := authority.Global()
+	cfg.MCPServers = servers
+	cfg.MCPProfileLifecycle = close
+	*lifecycle = close
+	return nil
 }
 
 // mcpResolveOptions derives the source-resolver options purely from cfg, so the

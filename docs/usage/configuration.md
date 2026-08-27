@@ -35,7 +35,9 @@ For the exhaustive, auto-generated key/type/default/tier table, see the
 this guide are illustrative; the reference page is the complete source of truth
 (generated from the schema, so it never drifts).
 
-### MCP authority modes
+### Global MCP authentication profiles
+
+#### MCP authority modes
 
 `mcp.mode` selects one process-wide authority path for the complete `mcp.servers`
 list. `global` retains the existing direct MCP manager and `mecated mcp login`

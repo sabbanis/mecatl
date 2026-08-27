@@ -352,7 +352,9 @@
 #   # Mode selects global or broker authority. Empty defers to the command root.
 #   mode: ""
 #   # Broker contains options meaningful only when Mode resolves to broker.
-#   broker: ""
+#   broker:
+#     # CallbackURL is the registered HTTPS OAuth redirect URI.
+#     callback_url: ""
 #   # Servers is the ordered list of named Streamable HTTP servers.
 #   servers: []
 #|

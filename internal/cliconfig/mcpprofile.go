@@ -13,6 +13,7 @@ import (
 
 	"github.com/stacklok/mecatl/internal/adapter/credentialstore"
 	"github.com/stacklok/mecatl/internal/adapter/mcp"
+	"github.com/stacklok/mecatl/internal/adapter/mcpauthority"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
 )
 
@@ -88,15 +89,21 @@ func (r *MCPProfileResolver) Load(operator *permconfig.MCPSection) ([]mcp.Server
 // LoadAuthority resolves the one configured MCP authority path without parsing
 // settings or opening broker resources. The flattened return avoids a cmd-side
 // dependency cycle while preserving the mutually exclusive payload at its source.
-func (r *MCPProfileResolver) LoadAuthority(operator *permconfig.MCPSection, defaultMode string, brokerSupported bool) (string, []mcp.ServerConfig, interface{ Close() error }, []permconfig.MCPServerProfile, string, error) {
+func (r *MCPProfileResolver) LoadAuthority(operator *permconfig.MCPSection, defaultMode string, brokerSupported bool) (*mcpauthority.Result, error) {
 	authority, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: operator, Legacy: r.legacy, LookupEnv: r.lookup, DefaultMode: MCPAuthorityMode(defaultMode), BrokerSupported: brokerSupported})
 	if err != nil {
-		return "", nil, nil, nil, "", err
+		return nil, err
 	}
 	if authority.Mode == MCPAuthorityGlobal {
-		return string(authority.Mode), authority.Global.Servers, authority.Global, nil, "", nil
+		return mcpauthority.NewGlobal(authority.Global.Servers, authority.Global), nil
 	}
-	return string(authority.Mode), nil, nil, authority.BrokerProfiles, authority.CallbackURL, nil
+	return mcpauthority.NewBroker(mcpauthority.BrokerConfig{Profiles: cloneMCPProfiles(authority.BrokerProfiles), CallbackURL: authority.CallbackURL}), nil
+}
+
+func cloneMCPProfiles(in []permconfig.MCPServerProfile) []permconfig.MCPServerProfile {
+	result := mcpauthority.NewBroker(mcpauthority.BrokerConfig{Profiles: in})
+	profiles, _ := result.Broker()
+	return profiles.Profiles
 }
 
 // MCPProfiles owns the credential stores/readers backing Servers. Close it only

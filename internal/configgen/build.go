@@ -383,20 +383,30 @@ func docFor(docs Docs, key, fallback string) string {
 
 func mcpSubtree(docs Docs) *Subtree {
 	fields := fieldsOf("MCPSection", permconfig.MCPSection{}, docs)
-	servers := fields[0]
-	servers.SkeletonCollapse = true
-	servers.Nested = fieldsOf("MCPServerProfile", permconfig.MCPServerProfile{}, docs)
-	for _, serverField := range servers.Nested {
-		if serverField.Key != "auth" {
-			continue
+	var servers *Field
+	for _, field := range fields {
+		switch field.Key {
+		case "servers":
+			servers = field
+		case "broker":
+			field.Nested = fieldsOf("MCPBrokerProfile", permconfig.MCPBrokerProfile{}, docs)
 		}
-		serverField.Nested = fieldsOf("MCPAuthProfile", permconfig.MCPAuthProfile{}, docs)
-		for _, authField := range serverField.Nested {
-			switch authField.Key {
-			case "static_bearer":
-				authField.Nested = fieldsOf("MCPStaticBearerProfile", permconfig.MCPStaticBearerProfile{}, docs)
-			case "oauth":
-				authField.Nested = mcpOAuthFields(docs)
+	}
+	if servers != nil {
+		servers.SkeletonCollapse = true
+		servers.Nested = fieldsOf("MCPServerProfile", permconfig.MCPServerProfile{}, docs)
+		for _, serverField := range servers.Nested {
+			if serverField.Key != "auth" {
+				continue
+			}
+			serverField.Nested = fieldsOf("MCPAuthProfile", permconfig.MCPAuthProfile{}, docs)
+			for _, authField := range serverField.Nested {
+				switch authField.Key {
+				case "static_bearer":
+					authField.Nested = fieldsOf("MCPStaticBearerProfile", permconfig.MCPStaticBearerProfile{}, docs)
+				case "oauth":
+					authField.Nested = mcpOAuthFields(docs)
+				}
 			}
 		}
 	}
