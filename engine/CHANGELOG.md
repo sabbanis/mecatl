@@ -139,6 +139,11 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 - **`agent.LRUForkReaper.Close`** — releases all retained Parallel winner-fork
   workspaces during graceful composition shutdown. Added (minor).
+- **Broker enrollment provenance** — `session.Session.BrokerEnrolled` and
+  `session.Session.BrokerToolNames` record non-secret session-local vMCP
+  enrollment and its model-visible wrapper inventory so hosts can require
+  broker-aware rehydration and reject incompatible configuration instead of
+  silently falling back to a shared catalogue. Added (minor).
 
 - **Manual session compaction core** — `session.ReplaceHistoryAtBoundary` provides
   the pairing-validated, non-active aggregate rewrite seam; `agent.Engine.CompactSession`

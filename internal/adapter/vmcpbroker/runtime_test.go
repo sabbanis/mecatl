@@ -349,7 +349,7 @@ func TestSessionVMCPBroker_Scenario1_ReservesIDBeforeBrokerSession(t *testing.T)
 	}
 }
 
-func TestInvariant_vmcp_broker_route_is_not_model_input(t *testing.T) {
+func TestInvariant_session_broker_route_is_not_model_input(t *testing.T) {
 	t.Parallel()
 
 	const (

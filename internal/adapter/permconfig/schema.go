@@ -445,7 +445,7 @@ func (b *MCPBrokerProfile) strictFields() map[string]any {
 
 // UnmarshalYAML strictly decodes broker-only metadata. Mode-specific presence
 // and URL rules belong to the canonical authority loader.
-func (b *MCPBrokerProfile) UnmarshalYAML(node *yaml.Node) error {
+func (b *MCPBrokerProfile) UnmarshalYAML(node ast.Node) error {
 	return decodeStrictMapping(node, "mcp.broker", b.strictFields())
 }
 

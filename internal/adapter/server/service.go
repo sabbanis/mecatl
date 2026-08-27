@@ -2081,6 +2081,45 @@ func (s *Service) openBrokerSession(id session.SessionID) ([]tool.Tool, func() e
 	return opened.Tools(), opened.Close, nil
 }
 
+func (s *Service) brokerToolNames() []string {
+	if s.cfg.VMCPBroker == nil {
+		return nil
+	}
+	return s.cfg.VMCPBroker.RouteToolNames()
+}
+
+func (s *Service) brokerToolsCollideWithSharedCatalog(brokerTools []tool.Tool) bool {
+	for _, brokerTool := range brokerTools {
+		if s.cfg.Engine != nil && s.cfg.Engine.HasTool(brokerTool.Spec().Name) {
+			return true
+		}
+	}
+	return false
+}
+
+func sameBrokerToolNames(want, got []string) bool {
+	if len(want) != len(got) {
+		return false
+	}
+	for i := range want {
+		if want[i] != got[i] {
+			return false
+		}
+	}
+	return true
+}
+
+func (s *Service) reopenBrokerSession(id session.SessionID) ([]tool.Tool, func() error, error) {
+	if s.cfg.VMCPBroker == nil {
+		return nil, nil, fmt.Errorf("%w: broker runtime is unavailable", ErrFailedPrecondition)
+	}
+	opened, err := s.cfg.VMCPBroker.ReopenSession(id)
+	if err != nil {
+		return nil, nil, fmt.Errorf("server: reopen broker session %q: %w", id, err)
+	}
+	return opened.Tools(), opened.Close, nil
+}
+
 //nolint:gocyclo // Creation coordinates validation, id reservation, carryover, and shared/per-session assembly; extracting alters transactional cleanup.
 func (s *Service) createSession(ctx context.Context, workspace string, mode session.PermissionMode, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, opts createSessionOpts) (*session.Session, error) {
 	if err := s.validateDebugCreate(ctx, workspace, profile, specs, opts); err != nil {
@@ -2193,6 +2232,7 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 		if err := setSessionLabels(sess, sel, profile, owner, s.rootAuthority(sess.Kind, carriedAuthority, carriedAuthorityBound)); err != nil {
 			return nil, err
 		}
+		sess.BrokerEnrolled = s.cfg.VMCPBroker != nil
 		stampDefaultEnvironmentRef(sess)
 		if err := seedCarryover(sess, carrySnap); err != nil {
 			return nil, err
@@ -2261,6 +2301,9 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 					_ = brokerClose()
 				}
 			}()
+			if s.brokerToolsCollideWithSharedCatalog(brokerTools) {
+				return nil, fmt.Errorf("%w: broker tool collides with shared catalog", ErrFailedPrecondition)
+			}
 			ctx = context.WithValue(ctx, brokerToolsContextKey{}, brokerTools)
 		}
 		res, err = factory(ctx, sel, specs, profile, workspace, mode)
@@ -2321,6 +2364,8 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 	if debugTarget != nil {
 		sess.DebugTargetFingerprint = session.DebugTargetFingerprint(debugTarget)
 	}
+	sess.BrokerEnrolled = s.cfg.VMCPBroker != nil
+	sess.BrokerToolNames = s.brokerToolNames()
 	stampDefaultEnvironmentRef(sess)
 	if err := seedCarryover(sess, carrySnap); err != nil {
 		if closeFn != nil {
@@ -4754,6 +4799,7 @@ func (s *Service) sessionNeedsPerFactory(sel ProviderSelector, specs []mcp.Serve
 // a heal that lands after the restart.
 func (s *Service) needsRehydration(sess *session.Session) bool {
 	return sess.Kind == session.SessionKindDebug ||
+		sess.BrokerEnrolled ||
 		s.cfg.LearnedSkills != nil && sess.Owner != nil && sess.Owner.Issuer != "" && sess.Owner.Subject != "" ||
 		sess.Profile == string(ProfileNoFS) ||
 		sess.ProviderID != "" || sess.ModelID != "" ||
@@ -4852,7 +4898,7 @@ func (s *Service) rehydrateSession(ctx context.Context, sess *session.Session) (
 // On ProfileNoFS it (re-)registers the no-fs workspace override under the SAME lock as
 // the engine, the create-time discipline.
 //
-//nolint:gocyclo // Rehydration keeps validation, factory, and atomic registration together.
+//nolint:gocyclo // Registration must preserve its transactional broker rollback and existing race-safe replacement flow.
 func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *session.Session, sel ProviderSelector, profile SessionProfile, mode session.PermissionMode, replace bool) (*sessionEngine, error) {
 	id := sess.ID
 	// On replace we are swapping an existing registration, so the cap is not exceeded
@@ -4865,8 +4911,33 @@ func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *sessi
 			return nil, fmt.Errorf("%w: %d", ErrTooManySessionEngines, s.cfg.MaxSessionEngines)
 		}
 	}
+	if sess.BrokerEnrolled && s.cfg.VMCPBroker == nil {
+		return nil, fmt.Errorf("%w: persisted broker session %q cannot be rehydrated (broker runtime is unavailable)", ErrFailedPrecondition, id)
+	}
+	if sess.BrokerEnrolled && !sameBrokerToolNames(sess.BrokerToolNames, s.brokerToolNames()) {
+		return nil, fmt.Errorf("%w: persisted broker session %q has an incompatible route inventory", ErrFailedPrecondition, id)
+	}
 	var res SessionEngineResult
 	var err error
+	var brokerTools []tool.Tool
+	var brokerClose func() error
+	if sess.BrokerEnrolled {
+		brokerTools, brokerClose, err = s.reopenBrokerSession(id)
+		if err != nil {
+			return nil, fmt.Errorf("%w: broker session %q: %v", ErrFailedPrecondition, id, err)
+		}
+	}
+	if brokerClose != nil {
+		defer func() {
+			if brokerClose != nil {
+				_ = brokerClose()
+			}
+		}()
+		if s.brokerToolsCollideWithSharedCatalog(brokerTools) {
+			return nil, fmt.Errorf("%w: broker tool collides with shared catalog", ErrFailedPrecondition)
+		}
+		ctx = context.WithValue(ctx, brokerToolsContextKey{}, brokerTools)
+	}
 	if sess.Kind == session.SessionKindDebug {
 		target, loadErr := s.cfg.Store.Load(ctx, sess.Relationship.DebugTargetID)
 		if loadErr != nil || target == nil || sess.DebugTargetFingerprint == "" || !sess.Relationship.DebugTargetIncarnation.Valid() ||
@@ -4884,6 +4955,19 @@ func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *sessi
 		return nil, fmt.Errorf("server: build session engine %q: %w", id, err)
 	}
 	closeFn := res.Close
+	if brokerClose != nil {
+		openedBrokerClose := brokerClose
+		factoryClose := closeFn
+		closeFn = func() error {
+			if factoryClose != nil {
+				if closeErr := factoryClose(); closeErr != nil {
+					_ = openedBrokerClose()
+					return closeErr
+				}
+			}
+			return openedBrokerClose()
+		}
+	}
 	se := &sessionEngine{
 		engine:          res.Engine,
 		caps:            res.Capabilities,
@@ -4943,6 +5027,9 @@ func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *sessi
 	if replace && hadPrior && prior.close != nil {
 		_ = prior.close()
 	}
+	// The registered engine now owns the broker session through closeFn; rollback
+	// only applies until registration succeeds.
+	brokerClose = nil
 	return se, nil
 }
 

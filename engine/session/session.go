@@ -423,6 +423,15 @@ type Session struct {
 	// was authorized at creation. It is internal evidence only and is never
 	// projected to clients or the model.
 	DebugTargetFingerprint string
+	// BrokerEnrolled records that this session owns session-local vMCP wrappers.
+	// It is inert provenance: broker authorization state and credentials remain
+	// private to the root-internal runtime. It forces restart rehydration through
+	// the broker-aware factory rather than silently using the shared MCP catalog.
+	BrokerEnrolled bool
+	// BrokerToolNames is the non-secret, model-visible wrapper inventory stamped
+	// at enrollment. Composition compares it with trusted operator configuration
+	// before rehydrating; it never contains backend routes or credentials.
+	BrokerToolNames []string
 	// Title is a human-readable session label seeded ONCE from the first genuine
 	// user prompt (via SetTitle, called from the loop's recordPrompt), clamped to
 	// maxTitleRunes (120) runes. Subsequent prompts do NOT overwrite it (set-once).

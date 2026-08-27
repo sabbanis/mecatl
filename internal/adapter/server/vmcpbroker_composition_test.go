@@ -21,7 +21,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 )
 
-func TestSessionVMCPBroker_Scenario1_ReservesIDBeforeBrokerSession(t *testing.T) {
+func TestSessionMCPAuthorization_Scenario3_ReserveBeforeOpen(t *testing.T) {
 	const id = session.SessionID("broker-canonical-id")
 
 	runtime, err := vmcpbroker.NewRuntime([]vmcpbroker.Route{{

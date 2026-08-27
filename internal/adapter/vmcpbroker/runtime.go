@@ -568,6 +568,38 @@ func brokerTools(server *mcp.Server) map[string]tool.Tool {
 	return tools
 }
 
+// RouteToolNames returns the stable, model-visible wrapper inventory from trusted
+// operator configuration. Backend routes and credentials remain private.
+func (r *Runtime) RouteToolNames() []string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	names := make([]string, len(r.routes))
+	for i, route := range r.routes {
+		names[i] = route.Tool.Name
+	}
+	sort.Strings(names)
+	return names
+}
+
+// ReopenSession re-derives a persisted session's wrappers after a process-local
+// teardown. Its prior grant state has already been forgotten; only the configured
+// stable route inventory is recreated. It is deliberately distinct from
+// ForgetSession, which remains the final-close operation.
+func (r *Runtime) ReopenSession(id session.SessionID) (*SessionTools, error) {
+	r.mu.Lock()
+	if r.closed {
+		r.mu.Unlock()
+		return nil, ErrClosed
+	}
+	if _, exists := r.sessions[id]; exists {
+		r.mu.Unlock()
+		return nil, fmt.Errorf("%w: session is already open", ErrInvalidRoute)
+	}
+	delete(r.tombstones, id)
+	r.mu.Unlock()
+	return r.OpenSession(id)
+}
+
 // OpenSession returns new executable wrappers for one already-reserved canonical
 // mecatl session ID. Reservation and persistence remain server responsibilities;
 // this adapter never mints, rewrites, or exposes session IDs.

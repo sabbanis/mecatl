@@ -1472,7 +1472,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 			if err != nil {
 				return nil, err
 			}
-			if err := applyMCPAuthority(&cfg, authority, &profileLifecycle); err != nil {
+			if err := applyMCPAuthority(&cfg, authority, &mcpProfileLifecycle); err != nil {
 				return nil, err
 			}
 		} else if cfg.MCPProfileLoader == nil {
@@ -1498,7 +1498,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		if err != nil {
 			return nil, err
 		}
-		if err := applyMCPAuthority(&cfg, authority, &profileLifecycle); err != nil {
+		if err := applyMCPAuthority(&cfg, authority, &mcpProfileLifecycle); err != nil {
 			return nil, err
 		}
 	} else if cfg.MCPProfileLoader != nil {
