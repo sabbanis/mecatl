@@ -72,12 +72,9 @@ type Snapshot struct {
 	DebugMCPTools   []string `json:"debug_mcp_tools,omitempty"`
 	// DebugTargetFingerprint is the non-projectable target-incarnation binding.
 	DebugTargetFingerprint string `json:"debug_target_fingerprint,omitempty"`
-	// BrokerEnrolled is non-secret broker provenance. It exists solely to require
-	// broker-aware session rehydration after process restart.
-	BrokerEnrolled bool `json:"broker_enrolled,omitempty"`
-	// BrokerToolNames is the model-visible wrapper inventory at enrollment. It is
-	// non-secret provenance used only to reject an incompatible broker on restore.
-	BrokerToolNames []string `json:"broker_tool_names,omitempty"`
+	// BrokerEnrollmentID is an opaque non-secret fingerprint of the trusted
+	// broker configuration and compiled route inventory. Empty means unenrolled.
+	BrokerEnrollmentID string `json:"broker_enrollment_id,omitempty"`
 	// Title is the session's human-readable label seeded from the first genuine
 	// user prompt. omitempty keeps a pre-Title snapshot with no "title" key
 	// decoding to "" — additive, no format-tag bump (the same precedent as
@@ -223,8 +220,7 @@ func Of(s *session.Session) (Snapshot, error) {
 		DebugMCPServers:        append([]string(nil), s.DebugMCPServers...),
 		DebugMCPTools:          append([]string(nil), s.DebugMCPTools...),
 		DebugTargetFingerprint: s.DebugTargetFingerprint,
-		BrokerEnrolled:         s.BrokerEnrolled,
-		BrokerToolNames:        append([]string(nil), s.BrokerToolNames...),
+		BrokerEnrollmentID:     s.BrokerEnrollmentID,
 		Title:                  s.Title,
 		TitleProvenance:        s.TitleProvenance,
 		Kind:                   s.Kind,
@@ -299,8 +295,7 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 	s.DebugMCPServers = append([]string(nil), snap.DebugMCPServers...)
 	s.DebugMCPTools = append([]string(nil), snap.DebugMCPTools...)
 	s.DebugTargetFingerprint = snap.DebugTargetFingerprint
-	s.BrokerEnrolled = snap.BrokerEnrolled
-	s.BrokerToolNames = append([]string(nil), snap.BrokerToolNames...)
+	s.BrokerEnrollmentID = snap.BrokerEnrollmentID
 	s.EnvironmentRef = snap.EnvironmentRef
 	s.Adoption = snap.Clone()
 	// RunID restores by direct assignment, like Profile/Title above: it is an

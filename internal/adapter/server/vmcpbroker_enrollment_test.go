@@ -23,10 +23,10 @@ func TestSessionMCPAuthorization_Scenario3_PersistsBrokerEnrollment(t *testing.T
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if !persisted.BrokerEnrolled {
-		t.Fatal("persisted BrokerEnrolled = false, want true")
+	if persisted.BrokerEnrollmentID == "" {
+		t.Fatal("persisted BrokerEnrollmentID is empty, want enrollment identity")
 	}
-	if got, want := persisted.BrokerToolNames, []string{"mcp__calendar__list"}; len(got) != len(want) || got[0] != want[0] {
-		t.Fatalf("persisted BrokerToolNames = %v, want %v", got, want)
+	if got, want := persisted.BrokerEnrollmentID, runtime.EnrollmentID(); got != want {
+		t.Fatalf("persisted BrokerEnrollmentID = %q, want %q", got, want)
 	}
 }

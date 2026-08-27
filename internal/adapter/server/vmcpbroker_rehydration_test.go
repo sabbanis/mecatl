@@ -22,7 +22,7 @@ import (
 func TestInvariant_broker_rehydration_never_falls_back_global(t *testing.T) {
 	store := memstore.New()
 	sess := session.New("broker-restart", session.ModeDefault, "/workspace", session.Limits{}, time.Now())
-	sess.BrokerEnrolled = true
+	sess.BrokerEnrollmentID = "broker-enrollment"
 	if err := store.Save(context.Background(), sess); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
@@ -51,7 +51,7 @@ func TestInvariant_broker_rehydration_never_falls_back_global(t *testing.T) {
 	}
 }
 
-func TestSessionMCPAuthorization_Scenario3_RestoresBrokerCatalog(t *testing.T) {
+func TestSessionMCPAuthorization_Scenario3_BrokerSessionOwnership(t *testing.T) {
 	store := memstore.New()
 	runtime := scenario3Runtime(t)
 	defer func() { _ = runtime.Close() }()
@@ -62,6 +62,13 @@ func TestSessionMCPAuthorization_Scenario3_RestoresBrokerCatalog(t *testing.T) {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	first.Close()
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("close first runtime: %v", err)
+	}
+	// A process restart creates a new Runtime; closed broker sessions are never
+	// resurrected in the prior runtime.
+	runtime = scenario3Runtime(t)
+	defer func() { _ = runtime.Close() }()
 
 	factoryCalls := 0
 	restored := scenario3Service(t, store, runtime, func(ctx context.Context, _ server.ProviderSelector, _ []mcp.ServerConfig, _ server.SessionProfile, _ string, _ session.PermissionMode) (server.SessionEngineResult, error) {
@@ -126,7 +133,7 @@ func scenario3EngineResult() server.SessionEngineResult {
 	}
 }
 
-func TestInvariant_broker_rehydration_never_falls_back_global_on_route_change(t *testing.T) {
+func TestInvariant_broker_enrollment_identity_covers_compiled_inventory(t *testing.T) {
 	store := memstore.New()
 	original := scenario3Runtime(t)
 	first := scenario3Service(t, store, original, nil)
@@ -137,26 +144,22 @@ func TestInvariant_broker_rehydration_never_falls_back_global_on_route_change(t 
 	first.Close()
 	_ = original.Close()
 
-	changed, err := vmcpbroker.NewRuntime([]vmcpbroker.Route{{
-		BackendID: "calendar", Tool: tool.ToolSpec{Name: "mcp__calendar__changed", Schema: json.RawMessage(`{"type":"object"}`)},
-	}}, func(context.Context, session.SessionID, vmcpbroker.Route, json.RawMessage) (session.ToolResult, error) {
-		return session.NewToolResult("call", "ok"), nil
-	})
-	if err != nil {
-		t.Fatalf("NewRuntime: %v", err)
-	}
-	defer func() { _ = changed.Close() }()
-	factoryCalls := 0
-	restored := scenario3Service(t, store, changed, func(context.Context, server.ProviderSelector, []mcp.ServerConfig, server.SessionProfile, string, session.PermissionMode) (server.SessionEngineResult, error) {
-		factoryCalls++
-		return scenario3EngineResult(), nil
-	})
-	defer restored.Close()
-
-	if _, err := restored.StartRun(context.Background(), sess.ID, "continue"); !errors.Is(err, server.ErrFailedPrecondition) {
-		t.Fatalf("StartRun error = %v, want ErrFailedPrecondition", err)
-	}
-	if factoryCalls != 0 {
-		t.Fatalf("session factory calls = %d, want 0 after incompatible broker route change", factoryCalls)
+	for _, changedRoute := range []vmcpbroker.Route{
+		{BackendID: "calendar", Tool: tool.ToolSpec{Name: "mcp__calendar__list", Schema: json.RawMessage(`{"type":"string"}`)}},
+		{BackendID: "calendar-v2", Tool: tool.ToolSpec{Name: "mcp__calendar__list", Schema: json.RawMessage(`{"type":"object"}`)}},
+		{BackendID: "calendar", Tool: tool.ToolSpec{Name: "mcp__calendar__list", Schema: json.RawMessage(`{"type":"object"}`)}, Protected: true},
+	} {
+		changed, err := vmcpbroker.NewRuntime([]vmcpbroker.Route{changedRoute}, func(context.Context, session.SessionID, vmcpbroker.Route, json.RawMessage) (session.ToolResult, error) {
+			return session.NewToolResult("call", "ok"), nil
+		})
+		if err != nil {
+			t.Fatalf("NewRuntime: %v", err)
+		}
+		restored := scenario3Service(t, store, changed, nil)
+		if _, err := restored.StartRun(context.Background(), sess.ID, "continue"); !errors.Is(err, server.ErrFailedPrecondition) {
+			t.Fatalf("StartRun with changed compiled inventory = %v, want ErrFailedPrecondition", err)
+		}
+		restored.Close()
+		_ = changed.Close()
 	}
 }

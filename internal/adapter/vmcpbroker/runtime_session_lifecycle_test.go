@@ -10,7 +10,7 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
-func TestSessionMCPAuthorization_Scenario3_BrokerSessionOwnership(t *testing.T) {
+func TestInvariant_broker_runtime_never_resurrects_session(t *testing.T) {
 	runtime := lifecycleRuntime(t)
 	defer func() { _ = runtime.Close() }()
 
@@ -18,8 +18,8 @@ func TestSessionMCPAuthorization_Scenario3_BrokerSessionOwnership(t *testing.T) 
 	if err != nil {
 		t.Fatalf("OpenSession: %v", err)
 	}
-	if _, err := runtime.ReopenSession("session-1"); !errors.Is(err, ErrInvalidRoute) {
-		t.Fatalf("ReopenSession while owner is live = %v, want ErrInvalidRoute", err)
+	if _, err := runtime.OpenSession("session-1"); !errors.Is(err, ErrInvalidRoute) {
+		t.Fatalf("second OpenSession while owner is live = %v, want ErrInvalidRoute", err)
 	}
 	if _, err := owner.Tools()[0].Execute(context.Background(), session.NewToolCall("call", "mcp__calendar__list", []byte(`{}`)), tool.Environment{}); err != nil {
 		t.Fatalf("live owner's wrapper was tombstoned: %v", err)
@@ -27,8 +27,8 @@ func TestSessionMCPAuthorization_Scenario3_BrokerSessionOwnership(t *testing.T) 
 	if err := owner.Close(); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
-	if _, err := runtime.ReopenSession("session-1"); err != nil {
-		t.Fatalf("ReopenSession after final close: %v", err)
+	if _, err := runtime.OpenSession("session-1"); err == nil {
+		t.Fatal("OpenSession after final close succeeded; sessions must not be resurrected")
 	}
 }
 

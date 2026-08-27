@@ -581,23 +581,37 @@ func (r *Runtime) RouteToolNames() []string {
 	return names
 }
 
-// ReopenSession re-derives a persisted session's wrappers after a process-local
-// teardown. Its prior grant state has already been forgotten; only the configured
-// stable route inventory is recreated. It is deliberately distinct from
-// ForgetSession, which remains the final-close operation.
-func (r *Runtime) ReopenSession(id session.SessionID) (*SessionTools, error) {
-	r.mu.Lock()
-	if r.closed {
-		r.mu.Unlock()
-		return nil, ErrClosed
+// EnrollmentID returns an opaque non-secret fingerprint of the trusted broker
+// authority configuration and complete compiled route inventory. It is durable
+// session provenance only; none of the values it covers are exposed.
+func (r *Runtime) EnrollmentID() string {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	type routeIdentity struct {
+		Name      string          `json:"name"`
+		Schema    json.RawMessage `json:"schema"`
+		BackendID string          `json:"backend_id"`
+		Protected bool            `json:"protected"`
+		ReadOnly  bool            `json:"read_only"`
 	}
-	if _, exists := r.sessions[id]; exists {
-		r.mu.Unlock()
-		return nil, fmt.Errorf("%w: session is already open", ErrInvalidRoute)
+	routes := make([]routeIdentity, len(r.routes))
+	for i, route := range r.routes {
+		schema := append(json.RawMessage(nil), route.Tool.Schema...)
+		var decoded any
+		if json.Unmarshal(schema, &decoded) == nil {
+			schema, _ = json.Marshal(decoded)
+		}
+		routes[i] = routeIdentity{route.Tool.Name, schema, route.BackendID, route.Protected, route.ReadOnly}
 	}
-	delete(r.tombstones, id)
-	r.mu.Unlock()
-	return r.OpenSession(id)
+	payload, _ := json.Marshal(struct {
+		Routes            []routeIdentity `json:"routes"`
+		AuthorizeEndpoint string          `json:"authorize_endpoint"`
+		TokenEndpoint     string          `json:"token_endpoint"`
+		CallbackURL       string          `json:"callback_url"`
+		OAuthBackend      string          `json:"oauth_backend"`
+	}{routes, r.authorizeEndpoint, r.tokenEndpoint, r.callbackURL, r.oauthBackend})
+	digest := sha256.Sum256(payload)
+	return base64.RawURLEncoding.EncodeToString(digest[:])
 }
 
 // OpenSession returns new executable wrappers for one already-reserved canonical

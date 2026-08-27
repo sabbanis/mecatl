@@ -243,7 +243,7 @@ func TestFoldContractDocMatchesSessionFields(t *testing.T) {
 	//   run-scoped (latest segment): Counters
 	//   supplied via SessionMeta (not event-carried): ID, Mode, Limits, Workspace,
 	//     Profile, ProviderID, ModelID, ReasoningEffort, DebugMCPServers,
-	//     DebugMCPTools, DebugTargetFingerprint, BrokerEnrolled, BrokerToolNames,
+	//     DebugMCPTools, DebugTargetFingerprint, BrokerEnrollmentID,
 	//     Title, TitleProvenance, Kind, Relationship, CreatedAt; adoption metadata
 	//     is supplied via SessionMeta and restored as optional Session.Adoption
 	//     metadata
@@ -256,7 +256,7 @@ func TestFoldContractDocMatchesSessionFields(t *testing.T) {
 	wantSessionFields := map[string]struct{}{
 		"ID": {}, "State": {}, "Mode": {}, "Conversation": {}, "Limits": {},
 		"Counters": {}, "Usage": {}, "Workspace": {}, "Profile": {},
-		"ProviderID": {}, "ModelID": {}, "ReasoningEffort": {}, "DebugMCPServers": {}, "DebugMCPTools": {}, "DebugTargetFingerprint": {}, "BrokerEnrolled": {}, "BrokerToolNames": {}, "Kind": {},
+		"ProviderID": {}, "ModelID": {}, "ReasoningEffort": {}, "DebugMCPServers": {}, "DebugMCPTools": {}, "DebugTargetFingerprint": {}, "BrokerEnrollmentID": {}, "Kind": {},
 		"Relationship": {}, "Adoption": {}, "CreatedAt": {},
 		"Title": {}, "TitleProvenance": {}, "Owner": {}, "Authority": {}, "EnvironmentRef": {},
 	}

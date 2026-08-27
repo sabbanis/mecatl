@@ -143,11 +143,11 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   `session.StateAuthorizing`, `PendingMCPAuthorization`, and the dedicated
   pause/claim/abort/interruption aggregate seams preserve and validate an exact
   broker-protected call plus its deferred siblings across snapshots. Added (minor).
-- **Broker enrollment provenance** — `session.Session.BrokerEnrolled` and
-  `session.Session.BrokerToolNames` record non-secret session-local vMCP
-  enrollment and its model-visible wrapper inventory so hosts can require
-  broker-aware rehydration and reject incompatible configuration instead of
-  silently falling back to a shared catalogue. Added (minor).
+- **Broker enrollment identity** — replaced `session.Session.BrokerEnrolled` and
+  `session.Session.BrokerToolNames` with opaque non-secret
+  `session.Session.BrokerEnrollmentID`. The identity binds trusted broker authority
+  configuration and the complete compiled route inventory without persisting private
+  values, so rehydration fails closed on any mismatch. Changed (pre-v1 minor bump).
 
 - **Manual session compaction core** — `session.ReplaceHistoryAtBoundary` provides
   the pairing-validated, non-active aggregate rewrite seam; `agent.Engine.CompactSession`

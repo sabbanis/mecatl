@@ -102,10 +102,9 @@ type SessionMeta struct {
 	DebugMCPServers        []string
 	DebugMCPTools          []string
 	DebugTargetFingerprint string
-	// BrokerEnrolled and BrokerToolNames are non-secret broker provenance. They
-	// force broker-aware rehydration and reject a changed wrapper inventory.
-	BrokerEnrolled  bool
-	BrokerToolNames []string
+	// BrokerEnrollmentID is an opaque non-secret identity of the trusted broker
+	// configuration and compiled route inventory; empty means unenrolled.
+	BrokerEnrollmentID string
 	// Title and TitleProvenance are authoritative creation/discovery metadata when
 	// supplied. A legacy empty title is derived from the first genuine user event.
 	Title           string
@@ -186,8 +185,7 @@ func Fold(meta SessionMeta, events iter.Seq2[session.Event, error]) (*session.Se
 	s.DebugMCPServers = append([]string(nil), meta.DebugMCPServers...)
 	s.DebugMCPTools = append([]string(nil), meta.DebugMCPTools...)
 	s.DebugTargetFingerprint = meta.DebugTargetFingerprint
-	s.BrokerEnrolled = meta.BrokerEnrolled
-	s.BrokerToolNames = append([]string(nil), meta.BrokerToolNames...)
+	s.BrokerEnrollmentID = meta.BrokerEnrollmentID
 	if meta.AdoptionSourceID != "" || meta.AdoptionRequestDigest != "" {
 		s.Adoption = &session.AdoptionMetadata{
 			AdoptionSourceID:      meta.AdoptionSourceID,
