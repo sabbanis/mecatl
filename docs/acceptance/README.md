@@ -127,6 +127,10 @@ when the code that satisfies the plan has landed.
 - [Session-scoped vMCP broker](session-vmcp-broker.md) — a root-internal
   ToolHive/vMCP broker with stable session-local MCP tools, one protected
   upstream connection, and broker-owned credential custody. Status: draft.
+- [Configured resumable MCP authorization](session-vmcp-authorization.md) —
+  operator-selected global-or-broker MCP authority, durable authorizing state,
+  owner-authorized browser presentation, and exact protected-call continuation.
+  Status: draft.
 
 ## See also
 
