@@ -17,6 +17,7 @@ import (
 	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
@@ -29,7 +30,7 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
-func TestInvariant_protected_broker_call_is_never_automatically_replayed(t *testing.T) {
+func TestInvariant_vmcp_scoped_token_source_refreshes_expired_grants(t *testing.T) {
 	const staleBearer = "downstream-access-expired-canary"
 	const freshBearer = "downstream-access-fresh-canary"
 	const refreshBearer = "downstream-refresh-canary"
@@ -88,7 +89,7 @@ func TestInvariant_protected_broker_call_is_never_automatically_replayed(t *test
 		t.Fatalf("OpenSession: %v", err)
 	}
 	t.Cleanup(func() { _ = tools.Close() })
-	runtime.grants[controlTarget{sessionID: "refresh-session", backendID: "github"}] = downstreamGrant{accessToken: staleBearer, refreshToken: refreshBearer}
+	runtime.grants[controlTarget{sessionID: "refresh-session", backendID: "github"}] = downstreamGrant{token: &oauth2.Token{AccessToken: staleBearer, RefreshToken: refreshBearer, Expiry: time.Now().Add(-time.Hour)}, accessToken: staleBearer, refreshToken: refreshBearer}
 
 	result, err := tools.Tools()[0].Execute(context.Background(), session.NewToolCall("call", "github_list", json.RawMessage(`{}`)), tool.Environment{})
 	if err != nil {
@@ -97,8 +98,8 @@ func TestInvariant_protected_broker_call_is_never_automatically_replayed(t *test
 	if result.IsError || !strings.Contains(result.Content, "refreshed protected result") {
 		t.Fatal("protected call did not produce its single stale-bearer result")
 	}
-	if refreshes.Load() > 1 {
-		t.Fatalf("refresh requests = %d, want at most one pre-dispatch token refresh", refreshes.Load())
+	if refreshes.Load() != 1 || staleRequests.Load() != 0 || freshRequests.Load() == 0 {
+		t.Fatalf("refreshes/stale/fresh requests = %d/%d/%d, want 1/0/>0", refreshes.Load(), staleRequests.Load(), freshRequests.Load())
 	}
 }
 

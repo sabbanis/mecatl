@@ -221,7 +221,7 @@ func (e *Engine) runReadBatch(ctx context.Context, r *Run, sess *session.Session
 			// NEVER be raised from the parallel fan-out (Phase 2). The call runs (on
 			// allow) or is denied synchronously; either way its result is recorded now
 			// and it is excluded from the concurrent execution batch.
-			res, cancelled := e.askHookApproval(ctx, r, sess, env, turnIdx, c, t, pre.msg)
+			res, _, cancelled := e.askHookApproval(ctx, r, sess, env, turnIdx, c, t, pre.msg)
 			if cancelled {
 				return nil, true
 			}
@@ -494,14 +494,15 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 	// re-running it would re-block (re-ask), and a fresh process has no in-memory
 	// waiver to short-circuit it. The serialized HookOriginated marker is the only
 	// durable signal that this exact blocked call was already approved, so on Allow we
-	// skip preHook and execute directly (a deny was handled above). This mirrors
-	// askHookApproval's live-path allow tail.
+	// skip preHook, then enter the shared post-PreToolUse tail (a deny was handled
+	// above). This preserves broker authorization after restored guardrail approval.
 	if ask.HookOriginated {
 		var enqueue time.Time
 		if e.deps.Clock != nil {
 			enqueue = e.deps.Clock.Now()
 		}
-		return e.execute(ctx, r, sess, env, turnIdx, pendingCall, t, enqueue), false
+		res, _, cancelled := e.postPreToolUse(ctx, r, sess, env, turnIdx, pendingCall, t, enqueue)
+		return res, cancelled
 	}
 
 	// PLAN-ORIGINATED resume (issue #206, Wave 2): a plan-approval ask that the
@@ -545,7 +546,8 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 	if e.deps.Clock != nil {
 		enqueue = e.deps.Clock.Now()
 	}
-	return e.execute(ctx, r, sess, env, turnIdx, pre.effective, t, enqueue), false
+	res, _, cancelled := e.postPreToolUse(ctx, r, sess, env, turnIdx, pre.effective, t, enqueue)
+	return res, cancelled
 }
 
 // runOne handles a single (mutating or unknown) tool call serially: authorize,
@@ -608,14 +610,18 @@ func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env 
 		// A hook BLOCK refined into an approval (ADR 0062): surface it to the human.
 		// It runs the call on allow, denies it otherwise — all serial, like a policy
 		// ask (runOne is the mutate-serial path; surfacing here never overlaps a batch).
-		res, cancelled := e.askHookApproval(ctx, r, sess, env, turnIdx, c, t, pre.msg)
-		return res, nil, cancelled
+		res, park, cancelled := e.askHookApproval(ctx, r, sess, env, turnIdx, c, t, pre.msg)
+		return res, park, cancelled
 	}
 
+	return e.postPreToolUse(ctx, r, sess, env, turnIdx, pre.effective, t, enqueue)
+}
+
+// postPreToolUse is the sole tail after a call has passed PreToolUse. It is
+// shared by the ordinary dispatch path and approval continuations: approving a
+// policy or guardrail gate is never authority to skip broker authorization.
+func (e *Engine) postPreToolUse(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall, t tool.Tool, enqueue time.Time) (session.ToolResult, *dispatchPark, bool) {
 	if requester, ok := t.(tool.AuthorizationRequester); ok {
-		// A transaction is an authority-bearing side effect. Only an attached,
-		// trusted main-client run may create one; all other runs fail closed before
-		// the adapter observes the request.
 		if !r.req.AuthorizationPresentation || e.deps.Role != "" {
 			res := session.NewToolError(c.ID, "broker authorization requires an attached interactive main client")
 			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
@@ -628,12 +634,10 @@ func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env 
 			return res, nil, false
 		}
 		if required {
-			return session.ToolResult{}, &dispatchPark{request: request, call: pre.effective, tool: requester}, false
+			return session.ToolResult{}, &dispatchPark{request: request, call: c, tool: requester}, false
 		}
 	}
-
-	// Execute the EFFECTIVE call (args possibly rewritten by the PreToolUse hook).
-	return e.execute(ctx, r, sess, env, turnIdx, pre.effective, t, enqueue), nil, false
+	return e.execute(ctx, r, sess, env, turnIdx, c, t, enqueue), nil, false
 }
 
 // surfaceAsk is the shared SPINE both ask sites (authorize's policy ask and
@@ -903,7 +907,7 @@ func (e *Engine) preHook(ctx context.Context, r *Run, sess *session.Session, tur
 //
 // It is sequenced one-at-a-time exactly like a policy ask (runReadBatch resolves it
 // in Phase 1, never from the parallel fan-out), so two asks never surface at once.
-func (e *Engine) askHookApproval(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall, t tool.Tool, reason string) (session.ToolResult, bool) {
+func (e *Engine) askHookApproval(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall, t tool.Tool, reason string) (session.ToolResult, *dispatchPark, bool) {
 	ask := session.PendingAsk{
 		AskID:          newAskID(sess.ID, sess.Counters.ToolCalls, c.ID, r.askDiscriminator),
 		Tool:           c.Name,
@@ -917,11 +921,11 @@ func (e *Engine) askHookApproval(ctx context.Context, r *Run, sess *session.Sess
 	// only the verdict→action tail below is hook-specific.
 	verdictResult, ok, paused := e.surfaceAsk(ctx, r, sess, turnIdx, ask)
 	if !paused {
-		return session.NewToolError(c.ID, "internal: cannot pause for guardrail approval"), false
+		return session.NewToolError(c.ID, "internal: cannot pause for guardrail approval"), nil, false
 	}
 	if !ok {
 		// ctx cancelled while awaiting.
-		return session.ToolResult{}, true
+		return session.ToolResult{}, nil, true
 	}
 	verdict := verdictResult.verdict
 
@@ -944,13 +948,13 @@ func (e *Engine) askHookApproval(ctx context.Context, r *Run, sess *session.Sess
 		if e.deps.Clock != nil {
 			enqueue = e.deps.Clock.Now()
 		}
-		return e.execute(ctx, r, sess, env, turnIdx, c, t, enqueue), false
+		return e.postPreToolUse(ctx, r, sess, env, turnIdx, c, t, enqueue)
 	case session.VerdictAllowOnce:
 		var enqueue time.Time
 		if e.deps.Clock != nil {
 			enqueue = e.deps.Clock.Now()
 		}
-		return e.execute(ctx, r, sess, env, turnIdx, c, t, enqueue), false
+		return e.postPreToolUse(ctx, r, sess, env, turnIdx, c, t, enqueue)
 	default:
 		// VerdictDeny (incl. the zero value / fail-safe). Operator visibility: a HUMAN
 		// denied a guardrail block — a distinct, grep-able record from a checker
@@ -963,7 +967,7 @@ func (e *Engine) askHookApproval(ctx context.Context, r *Run, sess *session.Sess
 			"tool", c.Name, "turn", turnIdx, "decision", "deny")
 		res := session.NewToolError(c.ID, reason)
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, false
+		return res, nil, false
 	}
 }
 

@@ -1458,7 +1458,12 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 				AuthorizationID: park.request.ID, Backend: park.request.Backend, RouteID: park.request.RouteID,
 				ConfigID: park.request.ConfigID, ExpiresAt: park.request.ExpiresAt, Call: park.call, Deferred: park.deferred,
 			}); err != nil {
-				results = append(results, e.authorizationParkFailures(r, turnIdx, park, "cannot park for broker authorization")...)
+				cancelErr := park.tool.CancelAuthorization(context.WithoutCancel(ctx), park.request.ID)
+				failure := "cannot park for broker authorization"
+				if cancelErr != nil {
+					failure = "broker authorization could not be cancelled after parking failure"
+				}
+				results = append(results, e.authorizationParkFailures(r, turnIdx, park, failure)...)
 			} else if err := e.saveRequired(ctx, sess); err != nil {
 				cancelCtx := context.WithoutCancel(ctx)
 				cancelErr := park.tool.CancelAuthorization(cancelCtx, park.request.ID)

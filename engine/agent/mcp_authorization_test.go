@@ -279,3 +279,44 @@ func TestSessionMCPAuthorization_Scenario6_UnrelatedReadsRemainParallel(t *testi
 		t.Fatal("unrelated read-only tool was made dispatch-serial")
 	}
 }
+
+type authorizationApprovalHook struct{ tool string }
+
+func (h authorizationApprovalHook) Run(_ context.Context, ev governance.HookEvent) (governance.HookOutcome, error) {
+	if ev.Phase == governance.PhasePreToolUse && ev.Tool == h.tool {
+		return governance.HookOutcome{Block: true, AskApproval: true, Message: "operator approval required"}, nil
+	}
+	return governance.HookOutcome{}, nil
+}
+
+// TestInvariant_mcp_authorization_tail_covers_normal_guardrail_and_resume pins
+// that an allowed guardrail approval still enters the broker authorization tail;
+// approving a hook gate is not authority to execute a protected backend.
+func TestInvariant_mcp_authorization_tail_covers_normal_guardrail_and_resume(t *testing.T) {
+	protected := &authorizationTool{
+		fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true, exec: func(context.Context, session.ToolCall, tool.Workspace) (session.ToolResult, error) {
+			t.Fatal("protected tool executed before broker authorization")
+			return session.ToolResult{}, nil
+		}},
+		request: tool.AuthorizationRequest{ID: "broker-request", Backend: "protected", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	llm := mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{}`)))
+	e := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, protected), Hooks: authorizationApprovalHook{tool: protected.name}, Interactive: true, Store: memstore.New()})
+	sess := newSession(t, session.Limits{})
+	r := e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true})
+	var sawRequired, sawResult bool
+	for ev := range r.Events() {
+		if ev.Type == session.EvPermissionAsk && ev.Ask != nil {
+			r.Approve(ev.Ask.AskID, session.VerdictAllowOnce)
+		}
+		if ev.Type == session.EvMCPAuthorizationRequired {
+			sawRequired = true
+		}
+		if ev.Type == session.EvToolResult {
+			sawResult = true
+		}
+	}
+	if !sawRequired || sawResult || protected.calls != 1 || sess.State != session.StateAuthorizing {
+		t.Fatalf("required/result/requests/state = %v/%v/%d/%s, want true/false/1/authorizing", sawRequired, sawResult, protected.calls, sess.State)
+	}
+}

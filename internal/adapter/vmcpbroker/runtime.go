@@ -951,6 +951,15 @@ func (s scopedGrantTokenSource) Token() (*oauth2.Token, error) {
 	if err != nil {
 		return nil, err
 	}
+	// oauth2.Transport asks its TokenSource for every request. Refresh here, at
+	// the credential seam, so an expired grant is never emitted as a bearer
+	// header merely because a protected MCP connection was already established.
+	if grant.token != nil && !grant.token.Valid() {
+		grant, err = s.runtime.refreshDownstreamGrant(context.Background(), s.target, grant)
+		if err != nil {
+			return nil, err
+		}
+	}
 	if grant.token != nil {
 		return grant.token, nil
 	}
