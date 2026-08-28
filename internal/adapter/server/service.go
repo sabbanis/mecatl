@@ -917,7 +917,8 @@ type Service struct {
 	// parkedCompletions counts relay-drained runs that ended in the distinct
 	// authorization-parked outcome. It is not inferred from an event because a
 	// disconnecting relay can drain without delivering a client frame.
-	parkedCompletions atomic.Uint64
+	parkedCompletions   atomic.Uint64
+	authorizationExpiry map[session.SessionID]*time.Timer
 
 	mu     sync.Mutex
 	closed bool
@@ -1069,6 +1070,7 @@ type Service struct {
 	// shutdownCancel is called at the START of Close to signal shutdown; currently
 	// its only effect is to mark the closing state (in-flight runs are cancelled
 	// explicitly via run.Cancel below). Kept as a one-time idempotent signal.
+	shutdownCtx    context.Context
 	shutdownCancel context.CancelFunc
 
 	// schedMgr is the embedded store-shaped schedule manager (ADR 0076): the
@@ -1365,14 +1367,16 @@ func NewService(cfg Config) (*Service, error) {
 	if _, err := rand.Read(cleanupTokenKey[:]); err != nil {
 		return nil, fmt.Errorf("server: initialize cleanup token signer: %w", err)
 	}
-	_, shutdownCancel := context.WithCancel(context.Background())
+	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	svc := &Service{
 		cfg:                 cfg,
+		shutdownCtx:         shutdownCtx,
 		shutdownCancel:      shutdownCancel,
 		runs:                make(map[session.SessionID]*runState),
 		teams:               make(map[string]*teamState),
 		sessionEngines:      make(map[session.SessionID]*sessionEngine),
 		brokerSessions:      make(map[session.SessionID]*brokerSession),
+		authorizationExpiry: make(map[session.SessionID]*time.Timer),
 		sessionEnvironments: make(map[session.SessionID]tool.Environment),
 		reservedIDs:         make(map[session.SessionID]struct{}),
 		replayedApprovals:   make(map[session.SessionID]struct{}),
@@ -2807,6 +2811,10 @@ func (s *Service) CloseSession(id session.SessionID) {
 		s.cfg.OnCloseSession(id)
 	}
 	s.mu.Lock()
+	if timer := s.authorizationExpiry[id]; timer != nil {
+		timer.Stop()
+		delete(s.authorizationExpiry, id)
+	}
 	se, ok := s.sessionEngines[id]
 	if ok {
 		delete(s.sessionEngines, id)
@@ -2877,6 +2885,12 @@ func (s *Service) Close() {
 	// and before engine-close so runs unblock promptly rather than waiting on
 	// the full shutdown sequence.
 	s.shutdownCancel()
+	s.mu.Lock()
+	for _, timer := range s.authorizationExpiry {
+		timer.Stop()
+	}
+	clear(s.authorizationExpiry)
+	s.mu.Unlock()
 
 	// Cancel every in-flight run so an LLM/MCP call blocked on its context
 	// unwinds. Snapshot under s.mu, then cancel outside to avoid holding the
@@ -6520,14 +6534,69 @@ func (s *Service) deregister(id session.SessionID, run *agent.Run) {
 // It is idempotent and only acts when run is still the registered run.
 func (s *Service) FinishRun(id session.SessionID, run *agent.Run) {
 	s.mu.Lock()
-	defer s.mu.Unlock()
 	if st, ok := s.runs[id]; !ok || st.run != run {
+		s.mu.Unlock()
 		return
 	}
-	if run.Outcome() == agent.RunOutcomeAuthorizationParked {
+	parked := run.Outcome() == agent.RunOutcomeAuthorizationParked
+	if parked {
 		s.parkedCompletions.Add(1)
 	}
 	delete(s.runs, id)
+	s.mu.Unlock()
+	if parked {
+		s.scheduleMCPAuthorizationExpiry(id)
+	}
+}
+
+func (s *Service) scheduleMCPAuthorizationExpiry(id session.SessionID) {
+	sess, err := s.GetSession(context.Background(), id)
+	if err != nil {
+		return
+	}
+	pending, ok := sess.PendingMCPAuthorization()
+	if !ok {
+		return
+	}
+	delay := time.Until(pending.ExpiresAt)
+	if delay < 0 {
+		delay = 0
+	}
+	timer := time.AfterFunc(delay, func() { s.expireMCPAuthorization(id, pending.AuthorizationID) })
+	s.mu.Lock()
+	if old := s.authorizationExpiry[id]; old != nil {
+		old.Stop()
+	}
+	s.authorizationExpiry[id] = timer
+	s.mu.Unlock()
+}
+
+func (s *Service) expireMCPAuthorization(id session.SessionID, authorizationID string) {
+	unlock := s.runEntryMu.lock(id)
+	defer unlock()
+	sess, err := s.GetSession(context.Background(), id)
+	if err != nil {
+		return
+	}
+	pending, ok := matchingMCPAuthorization(sess, MCPAuthorizationControl{SessionID: id, AuthorizationID: authorizationID})
+	if !ok || pending.ExpiresAt.After(s.cfg.Now()) || s.cfg.VMCPBroker == nil {
+		return
+	}
+	if err := s.acquireLease(context.Background(), id); err != nil {
+		return
+	}
+	if err := s.cfg.VMCPBroker.CancelAuthorization(context.Background(), id, pending.RouteID, authorizationID); err != nil {
+		return
+	}
+	run, err := s.resolveMCPAuthorization(context.Background(), sess, "MCP authorization expired")
+	if err != nil || run == nil {
+		return
+	}
+	go func() {
+		for range run.Events() {
+		}
+		s.FinishRun(id, run)
+	}()
 }
 
 // ParkedCompletions reports relay-drained authorization parks observed by this
