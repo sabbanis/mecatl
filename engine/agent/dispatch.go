@@ -576,22 +576,24 @@ func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env 
 		return res, nil, cancelled
 	}
 
-	decision, cancelled := e.authorize(ctx, r, sess, env, turnIdx, c)
-	if cancelled {
-		return session.ToolResult{}, nil, true
-	}
-	if decision.Effect == governance.Deny {
-		res := denyResult(c, decision.Reason)
-		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, nil, false
-	}
-
 	pre, herr := e.preHook(ctx, r, sess, turnIdx, c)
 	if herr != nil {
 		return session.ToolResult{}, nil, true
 	}
 	if pre.blocked {
 		res := session.NewToolError(c.ID, pre.msg)
+		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+		return res, nil, false
+	}
+
+	// Permission decisions apply to the post-hook effective call. This keeps a
+	// PreToolUse rewrite from obtaining authorization for different arguments.
+	decision, cancelled := e.authorize(ctx, r, sess, env, turnIdx, pre.effective)
+	if cancelled {
+		return session.ToolResult{}, nil, true
+	}
+	if decision.Effect == governance.Deny {
+		res := denyResult(c, decision.Reason)
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
 		return res, nil, false
 	}

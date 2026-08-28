@@ -3,6 +3,7 @@ package session
 import (
 	"crypto/sha256"
 	"encoding/hex"
+	"time"
 )
 
 // EventType is the kind of a domain Event. This is the single event taxonomy
@@ -1374,6 +1375,17 @@ type TeamPayload struct {
 	Cause string
 }
 
+// MCPAuthorizationPayload is the safe client-facing correlation for a parked
+// broker authorization. It deliberately contains only the transaction ID,
+// backend label, protected call ID, and expiry; URLs, credentials, tool
+// arguments, and broker route/configuration details stay private.
+type MCPAuthorizationPayload struct {
+	AuthorizationID string
+	Backend         string
+	Call            ToolCallID
+	ExpiresAt       time.Time
+}
+
 // Event is the domain-owned, provider-neutral unit of the streaming model. The
 // loop runs as a producer writing Events to a channel; server adapters relay
 // them to the gRPC server-stream or HTTP SSE.
@@ -1401,6 +1413,10 @@ type Event struct {
 	// NetworkAttempt is set on EvNetworkAttempt. It is log-only sanitized
 	// transport/provider evidence emitted by the loop from the resilience observer.
 	NetworkAttempt *NetworkAttemptPayload
+	// MCPAuthorization is set on EvMCPAuthorizationRequired. It is the safe
+	// correlation required by an attached client to present the authorization;
+	// it never contains a URL, credential, arguments, route, or config ID.
+	MCPAuthorization *MCPAuthorizationPayload
 	// Result is set on EvResult.
 	Result *ResultPayload
 	// TurnEnd is set on EvTurnEnd (this turn's usage + elapsed time).

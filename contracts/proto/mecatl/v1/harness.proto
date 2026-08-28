@@ -1838,12 +1838,23 @@ message Event {
   // includes them.
   string run_id = 22;
 
+  // mcp_authorization is the safe correlation for a durably parked broker
+  // authorization. It carries no URL, credential, arguments, route, or config.
+  MCPAuthorization mcp_authorization = 23;
 }
 
 // ModelRetry identifies the failed-step retry intent being driven.
 message ModelRetry {
   RetryDisposition retry_disposition = 1;
   StreamProgress stream_progress = 2;
+}
+
+// MCPAuthorization is the safe projection of session.MCPAuthorizationPayload.
+message MCPAuthorization {
+  string authorization_id = 1;
+  string backend = 2;
+  string call_id = 3;
+  google.protobuf.Timestamp expires_at = 4;
 }
 
 // SteerEcho is the proto projection of session.SteerPayload (EvSteer): the

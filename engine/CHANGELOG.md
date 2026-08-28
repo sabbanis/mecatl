@@ -103,6 +103,12 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 - **`agent.AgentMeta.WritableAuthorityCeiling`** (issue #517, [ADR 0242](../docs/adr/0242-route-unpinned-writable-named-specialists.md)) — adds the exported mode-specific managed-authority ceiling used when a fresh named specialist runs with direct write. Adding a field to an exported struct breaks external unkeyed literals, so this is Changed/breaking (pre-v1 a minor bump).
 
+- **`agent.RunOutcome` zero value is now `RunOutcomeUnknown`** — active runs no
+  longer report a fabricated completed outcome before their terminal event. The
+  existing terminal constants now follow the explicit unknown value; callers
+  persisting or comparing their numeric values must migrate. Changed (pre-v1
+  minor bump).
+
 - **`agent.SteerOutcome` enum: superseded/slot_full dropped, appended added**
   (issue #512, the landed steer-while-running contract). The round-2/task-13
   rework replaced `SteerSuperseded` with `SteerSlotFull`, and the round-3
@@ -139,6 +145,10 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 - **`agent.LRUForkReaper.Close`** — releases all retained Parallel winner-fork
   workspaces during graceful composition shutdown. Added (minor).
+- **Broker authorization correlation event** — `session.MCPAuthorizationPayload`
+  and `session.Event.MCPAuthorization` expose only the parked transaction ID,
+  backend, call ID, and expiry to attached clients. Added (minor).
+
 - **Broker dispatch authorization seam** — `tool.AuthorizationRequester` and
   `tool.DispatchSerial`, plus `agent.RunOutcomeAuthorizationParked` and the
   run-scoped `agent.RunRequest.AuthorizationPresentation` capability, let an

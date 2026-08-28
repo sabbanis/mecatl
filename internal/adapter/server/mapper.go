@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"math"
 
+	"google.golang.org/protobuf/types/known/timestamppb"
+
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/session"
@@ -149,6 +151,9 @@ func toProto(ev session.Event) *mecatlv1.Event {
 			StreamProgress:   streamProgressToProto(ev.ModelRetry.Progress),
 		}
 	}
+	if ev.MCPAuthorization != nil {
+		out.McpAuthorization = toProtoMCPAuthorization(*ev.MCPAuthorization)
+	}
 	if ev.Result != nil {
 		out.Result = toProtoResult(*ev.Result)
 	}
@@ -188,7 +193,15 @@ func toProto(ev session.Event) *mecatlv1.Event {
 	return out
 }
 
-// toProtoSteer maps a session.SteerPayload to its proto SteerEcho form: the
+func toProtoMCPAuthorization(p session.MCPAuthorizationPayload) *mecatlv1.MCPAuthorization {
+	return &mecatlv1.MCPAuthorization{
+		AuthorizationId: valid(p.AuthorizationID),
+		Backend:         valid(p.Backend),
+		CallId:          valid(string(p.Call)),
+		ExpiresAt:       timestamppb.New(p.ExpiresAt),
+	}
+}
+
 // CLIENT-VISIBLE, authoritative echo of the committed operator steer (EvSteer).
 // The text is operator-supplied (producer-influenced), so it rides the valid()
 // backstop like every other non-harness string.

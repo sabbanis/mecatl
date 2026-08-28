@@ -171,10 +171,12 @@ func newEmbeddedToolHive(t *testing.T) embeddedToolHive {
 	})
 	return embeddedToolHive{
 		config: ToolHiveRuntimeConfig{
-			AuthServer:  auth,
-			Storage:     store,
-			Issuer:      gateway.URL,
-			CallbackURL: "https://client.invalid/callback",
+			AuthServer:            auth,
+			Storage:               store,
+			Issuer:                gateway.URL,
+			AuthorizationEndpoint: gateway.URL + "/oauth/authorize",
+			TokenEndpoint:         gateway.URL + "/oauth/token",
+			CallbackURL:           "https://client.invalid/callback",
 		},
 		client:   gateway.Client(),
 		upstream: upstreamStarted,

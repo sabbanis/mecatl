@@ -563,13 +563,17 @@ func (e *Engine) catalogTools() []catalogToolInfo {
 	return out
 }
 
-// RunOutcome records why a run's event stream closed.
+// RunOutcome records why a Run's event stream closed. Its zero value is Unknown:
+// callers may read Outcome while a run is active, before the loop has selected a
+// terminal disposition.
 type RunOutcome int32
 
 const (
-	// RunOutcomeCompleted means the run reached a normal terminal result.
-	RunOutcomeCompleted RunOutcome = iota
-	// RunOutcomeAuthorizationParked means the run saved an authorization pause.
+	// RunOutcomeUnknown means the run is still active or has not yet recorded its outcome.
+	RunOutcomeUnknown RunOutcome = iota
+	// RunOutcomeCompleted means the run emitted its terminal EvResult.
+	RunOutcomeCompleted
+	// RunOutcomeAuthorizationParked means the run durably paused without EvResult.
 	RunOutcomeAuthorizationParked
 )
 
@@ -1470,8 +1474,17 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 					results = append(results, aborted...)
 				}
 			} else {
+				// A parked run is non-terminal but cannot leave detached children alive:
+				// they have no client result channel once this stream closes.
+				e.drainChildren(ctx, r)
 				r.setOutcome(RunOutcomeAuthorizationParked)
-				e.emit(r, session.Event{Type: session.EvMCPAuthorizationRequired, Turn: turnIdx})
+				e.emit(r, session.Event{Type: session.EvMCPAuthorizationRequired, Turn: turnIdx,
+					MCPAuthorization: &session.MCPAuthorizationPayload{
+						AuthorizationID: park.request.ID,
+						Backend:         park.request.Backend,
+						Call:            park.call.ID,
+						ExpiresAt:       park.request.ExpiresAt,
+					}})
 				return
 			}
 		}
@@ -2685,6 +2698,7 @@ func (e *Engine) terminate(ctx context.Context, r *Run, sess *session.Session, r
 		errMsg = cause.Error()
 	}
 	e.fireStop(ctx, r, sess, reason)
+	r.setOutcome(RunOutcomeCompleted)
 	e.emitResult(r, sess, reason, text, usage, errMsg, disposition, progress)
 	e.save(ctx, r, sess)
 }
@@ -2743,6 +2757,9 @@ func (e *Engine) terminateComplete(ctx context.Context, r *Run, sess *session.Se
 	e.save(ctx, r, sess)
 	e.observeCompletion(ctx, r, sess, reason, usage)
 	e.fireStop(ctx, r, sess, reason)
+	// The result is terminal even when the provider represented its failure as a
+	// terminal chunk rather than a Go error.
+	r.setOutcome(RunOutcomeCompleted)
 	// terminateComplete has no Go error to classify (the provider relays a stop
 	// CHUNK, not an error), so the permanence bit is always false here — honest
 	// fail-open. Only the error terminate() path carries a real classified cause.

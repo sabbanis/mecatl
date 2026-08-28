@@ -21,6 +21,7 @@ import (
 	"github.com/ory/fosite"
 	"github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
@@ -243,10 +244,12 @@ type Runtime struct {
 // ToolHive authorization server. It is root-internal; the Runtime never treats
 // an issuer string alone as evidence of a usable ToolHive server.
 type ToolHiveRuntimeConfig struct {
-	AuthServer  *runner.EmbeddedAuthServer
-	Storage     storage.ClientRegistry
-	Issuer      string
-	CallbackURL string
+	AuthServer            *runner.EmbeddedAuthServer
+	Storage               storage.ClientRegistry
+	Issuer                string
+	AuthorizationEndpoint string
+	TokenEndpoint         string
+	CallbackURL           string
 	// HTTPClient is used only for the embedded ToolHive downstream token exchange.
 	// It must be configured by composition when the embedded server uses a private CA.
 	HTTPClient  *http.Client
@@ -275,6 +278,9 @@ type authorizationTransaction struct {
 }
 
 type downstreamGrant struct {
+	// token retains OAuth expiry, type, and refresh semantics. The two legacy
+	// fields mirror it for the isolated custody tests while callers use token.
+	token        *oauth2.Token
 	accessToken  string
 	refreshToken string
 }
@@ -362,14 +368,14 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 // protocol state; this Runtime retains only a random downstream handle bound to
 // an opened canonical session and protected backend.
 func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeConfig, transactionTTL time.Duration) (*Runtime, error) {
-	if config.AuthServer == nil || config.Storage == nil || config.CallbackURL == "" {
-		return nil, fmt.Errorf("%w: embedded ToolHive authorization server, storage, and callback URL are required", ErrInvalidRoute)
+	if config.AuthServer == nil || config.Storage == nil || config.CallbackURL == "" || config.AuthorizationEndpoint == "" || config.TokenEndpoint == "" {
+		return nil, fmt.Errorf("%w: embedded ToolHive authorization server, storage, trusted OAuth endpoints, and callback URL are required", ErrInvalidRoute)
 	}
-	endpoint, err := toolHiveAuthorizeEndpoint(config.Issuer)
+	endpoint, err := trustedToolHiveOAuthEndpoint(config.AuthorizationEndpoint)
 	if err != nil {
 		return nil, err
 	}
-	tokenEndpoint, err := toolHiveTokenEndpoint(config.Issuer)
+	tokenEndpoint, err := trustedToolHiveOAuthEndpoint(config.TokenEndpoint)
 	if err != nil {
 		return nil, err
 	}
@@ -417,13 +423,13 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 	if config.Diagnostics != nil {
 		runtime.diagnostics = config.Diagnostics
 	}
-	runtime.sharedClosers = toolHiveClosers(config.AuthServer, config.Storage, clientID)
+	runtime.sharedClosers = toolHiveClosers(config.Storage, clientID)
 	return runtime, nil
 }
 
-func toolHiveClosers(authServer *runner.EmbeddedAuthServer, registry storage.ClientRegistry, clientID string) []namedCloser {
-	closers := make([]namedCloser, 0, 2)
-	// ToolHive v0.40.0's ClientRegistry intentionally has no removal method.
+func toolHiveClosers(registry storage.ClientRegistry, clientID string) []namedCloser {
+	closers := make([]namedCloser, 0, 1)
+	// ToolHive v0.45.0's ClientRegistry intentionally has no removal method.
 	// Keep this optional assertion so a future registry implementation can clean up
 	// this runtime's generated public client without widening the ToolHive API here.
 	if remover, ok := registry.(clientRegistryRemover); ok {
@@ -431,25 +437,13 @@ func toolHiveClosers(authServer *runner.EmbeddedAuthServer, registry storage.Cli
 			return remover.RemoveClient(context.Background(), clientID)
 		}})
 	}
-	// EmbeddedAuthServer owns the supplied storage and closes it itself. Closing
-	// the registry again panics for ToolHive's MemoryStorage.
-	closers = append(closers, namedCloser{name: "authserver", close: authServer.Close})
 	return closers
 }
-func toolHiveAuthorizeEndpoint(issuer string) (string, error) {
-	return toolHiveOAuthEndpoint(issuer, "/oauth/authorize")
-}
-
-func toolHiveTokenEndpoint(issuer string) (string, error) {
-	return toolHiveOAuthEndpoint(issuer, "/oauth/token")
-}
-
-func toolHiveOAuthEndpoint(issuer, suffix string) (string, error) {
-	parsed, err := url.Parse(issuer)
+func trustedToolHiveOAuthEndpoint(endpoint string) (string, error) {
+	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {
-		return "", fmt.Errorf("%w: ToolHive issuer must be an HTTPS origin", ErrInvalidRoute)
+		return "", fmt.Errorf("%w: trusted ToolHive OAuth endpoint must be an HTTPS URL", ErrInvalidRoute)
 	}
-	parsed.Path = strings.TrimSuffix(parsed.Path, "/") + suffix
 	return parsed.String(), nil
 }
 
@@ -507,7 +501,6 @@ type streamingCaller struct {
 func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route Route, args json.RawMessage) (session.ToolResult, error) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	var grant downstreamGrant
 	server := c.anonymous
 	if route.Protected {
 		grant, ok := c.runtime.grant(c.sessionID, route.BackendID)
@@ -536,42 +529,13 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 		return session.ToolResult{}, fmt.Errorf("vmcpbroker: broker did not expose configured tool %q", route.Tool.Name)
 	}
 	result, err := wrapped.Execute(ctx, session.NewToolCall("", wrapped.Spec().Name, args), tool.Environment{})
-	if !route.Protected || !brokerTransportUnauthorized(result, err) {
-		return result, err
-	}
-
-	// An established streaming transport can outlive its short-lived bearer. Do
-	// not reuse that connection after an authorization failure: refresh the
-	// private grant, reconnect, and retry the one failed call.
-	if c.protected != nil {
-		_ = c.protected.Close()
-		c.protected = nil
-	}
-	refreshed, refreshErr := c.runtime.refreshDownstreamGrant(ctx, controlTarget{sessionID: c.sessionID, backendID: route.BackendID}, grant)
-	if refreshErr != nil {
-		return session.ToolResult{}, errors.New("vmcpbroker: protected broker transport unavailable")
-	}
-	server, connectErr := c.connectWithBearer(ctx, refreshed.accessToken)
-	if connectErr != nil {
-		return session.ToolResult{}, errors.New("vmcpbroker: protected broker transport unavailable")
-	}
-	c.protected = server
-	wrapped, ok = brokerTools(server)[route.Tool.Name]
-	if !ok {
-		return session.ToolResult{}, fmt.Errorf("vmcpbroker: broker did not expose configured tool %q", route.Tool.Name)
-	}
-	return wrapped.Execute(ctx, session.NewToolCall("", wrapped.Spec().Name, args), tool.Environment{})
-}
-
-func brokerTransportUnauthorized(result session.ToolResult, err error) bool {
-	if err != nil {
-		return strings.Contains(strings.ToLower(err.Error()), "unauthorized")
-	}
-	return result.IsError && strings.Contains(strings.ToLower(result.Content), "unauthorized")
+	// A completed MCP call is never retried here: neither model-visible result
+	// text nor an ambiguous transport error establishes that no side effect ran.
+	return result, err
 }
 
 func (c *streamingCaller) connectProtected(ctx context.Context, backendID string, grant downstreamGrant) (*mcp.Server, error) {
-	server, err := c.connectWithBearer(ctx, grant.accessToken)
+	server, err := c.connectWithBearer(ctx, grant.bearer())
 	if err == nil {
 		return server, nil
 	}
@@ -579,7 +543,7 @@ func (c *streamingCaller) connectProtected(ctx context.Context, backendID string
 	if refreshErr != nil {
 		return nil, fmt.Errorf("vmcpbroker: protected broker transport unavailable: %w", refreshErr)
 	}
-	server, err = c.connectWithBearer(ctx, refreshed.accessToken)
+	server, err = c.connectWithBearer(ctx, refreshed.bearer())
 	if err != nil {
 		return nil, errors.New("vmcpbroker: protected broker transport unavailable")
 	}
@@ -925,34 +889,32 @@ func (r *Runtime) restoreTransaction(target controlTarget, transaction authoriza
 }
 
 func (r *Runtime) exchangeDownstreamCode(ctx context.Context, code, verifier string) (downstreamGrant, error) {
-	form := url.Values{
-		"grant_type":    {"authorization_code"},
-		"code":          {code},
-		"redirect_uri":  {r.callbackURL},
-		"client_id":     {r.clientID},
-		"code_verifier": {verifier},
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.tokenEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
+	cfg := r.oauthConfig()
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, r.httpClient)
+	token, err := cfg.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", verifier))
+	if err != nil || token == nil || token.AccessToken == "" {
 		return downstreamGrant{}, ErrInvalidControlTarget
 	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := r.httpClient.Do(request)
-	if err != nil {
-		return downstreamGrant{}, ErrInvalidControlTarget
+	return newDownstreamGrant(token), nil
+}
+
+func newDownstreamGrant(token *oauth2.Token) downstreamGrant {
+	return downstreamGrant{token: token, accessToken: token.AccessToken, refreshToken: token.RefreshToken}
+}
+
+func (g downstreamGrant) bearer() string {
+	if g.token != nil {
+		return g.token.AccessToken
 	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
-		return downstreamGrant{}, ErrInvalidControlTarget
+	return g.accessToken
+}
+
+func (r *Runtime) oauthConfig() oauth2.Config {
+	return oauth2.Config{
+		ClientID:    r.clientID,
+		RedirectURL: r.callbackURL,
+		Endpoint:    oauth2.Endpoint{AuthURL: r.authorizeEndpoint, TokenURL: r.tokenEndpoint},
 	}
-	var token struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&token); err != nil || token.AccessToken == "" {
-		return downstreamGrant{}, ErrInvalidControlTarget
-	}
-	return downstreamGrant{accessToken: token.AccessToken, refreshToken: token.RefreshToken}, nil
 }
 
 func (r *Runtime) refreshDownstreamGrant(ctx context.Context, target controlTarget, expected downstreamGrant) (downstreamGrant, error) {
@@ -990,7 +952,7 @@ func (r *Runtime) refreshDownstreamGrant(ctx context.Context, target controlTarg
 	r.refreshes[target] = operation
 	r.mu.Unlock()
 
-	grant, err := r.exchangeDownstreamRefresh(refreshCtx, expected.refreshToken)
+	grant, err := r.exchangeDownstreamRefresh(refreshCtx, expected)
 	stop()
 	cancel()
 	lifecycle.wg.Done()
@@ -1021,39 +983,21 @@ func (r *Runtime) refreshDownstreamGrant(ctx context.Context, target controlTarg
 	return grant, nil
 }
 
-func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, refreshToken string) (downstreamGrant, error) {
-	if refreshToken == "" || r.tokenEndpoint == "" {
+func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, grant downstreamGrant) (downstreamGrant, error) {
+	token := grant.token
+	if token == nil {
+		token = &oauth2.Token{AccessToken: grant.accessToken, RefreshToken: grant.refreshToken, Expiry: time.Now().Add(-time.Second)}
+	}
+	if token.RefreshToken == "" || r.tokenEndpoint == "" {
 		return downstreamGrant{}, ErrInvalidControlTarget
 	}
-	form := url.Values{
-		"grant_type":    {"refresh_token"},
-		"refresh_token": {refreshToken},
-		"client_id":     {r.clientID},
-	}
-	request, err := http.NewRequestWithContext(ctx, http.MethodPost, r.tokenEndpoint, strings.NewReader(form.Encode()))
-	if err != nil {
-		return downstreamGrant{}, ErrInvalidControlTarget
-	}
-	request.Header.Set("Content-Type", "application/x-www-form-urlencoded")
-	response, err := r.httpClient.Do(request)
-	if err != nil {
-		return downstreamGrant{}, ErrInvalidControlTarget
-	}
-	defer func() { _ = response.Body.Close() }()
-	if response.StatusCode != http.StatusOK {
+	ctx = context.WithValue(ctx, oauth2.HTTPClient, r.httpClient)
+	cfg := r.oauthConfig()
+	refreshed, err := cfg.TokenSource(ctx, token).Token()
+	if err != nil || refreshed == nil || refreshed.AccessToken == "" {
 		return downstreamGrant{}, errDownstreamRefreshRejected
 	}
-	var token struct {
-		AccessToken  string `json:"access_token"`
-		RefreshToken string `json:"refresh_token"`
-	}
-	if err := json.NewDecoder(response.Body).Decode(&token); err != nil || token.AccessToken == "" {
-		return downstreamGrant{}, errDownstreamRefreshRejected
-	}
-	if token.RefreshToken == "" {
-		token.RefreshToken = refreshToken
-	}
-	return downstreamGrant{accessToken: token.AccessToken, refreshToken: token.RefreshToken}, nil
+	return newDownstreamGrant(refreshed), nil
 }
 
 // ForgetSession tombstones a canonical session, cancels its login and refresh
@@ -1217,8 +1161,8 @@ func newOpaqueHandle() (string, error) {
 }
 
 // Close rejects all new work, cancels and joins per-session operations, drains
-// session transports, then closes the shared vMCP and authserver resources. The
-// embedded authserver owns and closes its storage.
+// session transports, then releases Runtime-owned resources. The process bundle
+// owns the borrowed embedded ToolHive authorization server and its storage.
 func (r *Runtime) Close() error {
 	r.closeOnce.Do(func() {
 		r.mu.Lock()
