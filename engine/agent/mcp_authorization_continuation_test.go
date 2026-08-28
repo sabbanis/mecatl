@@ -32,7 +32,14 @@ func TestInvariant_mcp_authorization_continuation_exactly_once(t *testing.T) {
 	if sess.State != session.StateAuthorizing {
 		t.Fatalf("park state = %s, want authorizing", sess.State)
 	}
-	drain(engine.ResumeMCPAuthorization(context.Background(), sess, agent.MemEnv("/ws")))
+	pending, ok := sess.PendingMCPAuthorization()
+	if !ok {
+		t.Fatal("pending authorization missing")
+	}
+	if _, err := sess.ClaimMCPAuthorization(); err != nil {
+		t.Fatalf("ClaimMCPAuthorization: %v", err)
+	}
+	drain(engine.ContinueMCPAuthorization(context.Background(), sess, agent.MemEnv("/ws"), pending))
 	if got := executed.Load(); got != 1 {
 		t.Fatalf("protected executions = %d, want 1", got)
 	}

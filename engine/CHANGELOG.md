@@ -150,9 +150,9 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   unusable when precise cancellation cannot confirm removal, so a failed durable
   parking transition cannot orphan a reusable broker transaction. Added (minor).
 
-- **MCP authorization continuation** — `agent.Engine.ResumeMCPAuthorization`
-  claims a connected durable broker authorization and resumes its exact effective
-  call at the post-permission/PreToolUse execution boundary. Added (minor).
+- **MCP authorization continuation** — `agent.Engine.ContinueMCPAuthorization`
+  executes a Service-claimed durable broker authorization at the
+  post-permission/PreToolUse execution boundary. Added (minor).
 
 - **Explicit restored-approval presentation capability** —
   `agent.Engine.ResumeApprovalWithPresentation` lets the authenticated Service

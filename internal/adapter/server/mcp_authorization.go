@@ -13,9 +13,8 @@ import (
 // MCPAuthorizationControl is the safe correlation supplied by an attached
 // client. It has no success assertion, browser code, or credential field.
 type MCPAuthorizationControl struct {
+	SessionID       session.SessionID
 	AuthorizationID string
-	RouteID         string
-	CallID          session.ToolCallID
 }
 
 // MCPAuthorizationPresentation returns a live browser URL only after loading
@@ -63,12 +62,19 @@ func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.Sessio
 	if status.Status != vmcpbroker.ConnectionConnected {
 		return nil, ErrNotFound
 	}
+	claimed, err := sess.ClaimMCPAuthorization()
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	if err := s.cfg.Store.Save(ctx, sess); err != nil {
+		return nil, fmt.Errorf("%w: persist authorization claim", ErrInternal)
+	}
 	engine, env, err := s.engineAndEnvironmentFor(ctx, sess)
 	if err != nil {
 		return nil, fmt.Errorf("%w: continuation engine", ErrFailedPrecondition)
 	}
 	ctx = memory.WithWorkspace(ctx, sess.Workspace)
-	run := engine.ResumeMCPAuthorization(ctx, sess, env)
+	run := engine.ContinueMCPAuthorization(ctx, sess, env, claimed)
 	s.register(id, run, sess)
 	return run, nil
 }
@@ -107,7 +113,7 @@ func (s *Service) CancelMCPAuthorization(ctx context.Context, id session.Session
 
 func matchingMCPAuthorization(sess *session.Session, control MCPAuthorizationControl) (session.PendingMCPAuthorization, bool) {
 	pending, ok := sess.PendingMCPAuthorization()
-	if !ok || pending.AuthorizationID != control.AuthorizationID || pending.RouteID != control.RouteID || pending.Call.ID != control.CallID {
+	if !ok || control.SessionID != sess.ID || pending.AuthorizationID != control.AuthorizationID {
 		return session.PendingMCPAuthorization{}, false
 	}
 	return pending, true

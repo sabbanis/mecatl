@@ -1120,17 +1120,11 @@ func askDiscriminatorFor(req RunRequest, serial int64) (value string, colonRejec
 	return fmt.Sprintf("r%d", serial), d != ""
 }
 
-// ResumeMCPAuthorization continues one durably claimed broker authorization.
-// The stored effective call already passed permission and PreToolUse before it
-// parked, so this path intentionally enters at execute: PostToolUse, audit,
-// event emission, result recording, and the ordinary model loop remain shared.
-func (e *Engine) ResumeMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *Run {
+// ContinueMCPAuthorization executes an already durably claimed continuation.
+// Claiming belongs to the service's locked transaction, before this goroutine is
+// registered, so cancellation and a second recheck cannot race it.
+func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment, pending session.PendingMCPAuthorization) *Run {
 	return e.startRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
-		pending, err := sess.ClaimMCPAuthorization()
-		if err != nil {
-			e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, err, false)
-			return
-		}
 		toolToRun, ok := e.deps.Catalog.Lookup(pending.Call.Name)
 		if !ok {
 			results := []session.ToolResult{session.NewToolError(pending.Call.ID, "broker authorization continuation tool is unavailable")}
