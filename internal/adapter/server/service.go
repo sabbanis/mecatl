@@ -2804,6 +2804,22 @@ func (s *Service) SetSessionEnvironment(id session.SessionID, env tool.Environme
 // editor disconnect already implies the run is being abandoned, so blocking briefly
 // for the in-flight call to unwind is the correct, leak-free behaviour.
 func (s *Service) CloseSession(id session.SessionID) {
+	// A close is a control-plane contender for a parked authorization. Serialize it
+	// with recheck, cancellation, and expiry before broker state is forgotten.
+	unlock := s.runEntryMu.lock(id)
+	defer unlock()
+	if s.cfg.VMCPBroker != nil {
+		if sess, err := s.cfg.Store.Load(context.Background(), id); err == nil {
+			if pending, ok := sess.PendingMCPAuthorization(); ok {
+				_ = s.cfg.VMCPBroker.CancelAuthorization(context.Background(), id, pending.RouteID, pending.AuthorizationID)
+				if results, err := sess.AbortMCPAuthorization("MCP authorization interrupted by session close"); err == nil {
+					if sess.RecordToolResults(results) == nil {
+						_ = s.cfg.Store.Save(context.Background(), sess)
+					}
+				}
+			}
+		}
+	}
 	// Release composition-owned session-scoped state first (e.g. the per-session
 	// learned permission rules) so it never outlives the session, even if the
 	// per-session engine teardown below is a no-op for this id.
