@@ -66,10 +66,12 @@ func newServiceWithImplementation(t *testing.T, llm *mockllm.Provider, rules []g
 	for _, tl := range tools {
 		cat.MustRegister(tl)
 	}
+	store := memstore.New()
 	engine := agent.NewEngine(agent.Deps{
 		LLM:     llm,
 		Catalog: cat,
 		Policy:  permpolicy.NewPolicy(rules, nil),
+		Store:   store,
 		Model:   "test-model",
 	})
 	svc, err := server.NewService(server.Config{
@@ -82,7 +84,7 @@ func newServiceWithImplementation(t *testing.T, llm *mockllm.Provider, rules []g
 			}
 			return "https://user:secret@provider.example:8443/api/../v1?token=secret#fragment"
 		},
-		Store:      memstore.New(),
+		Store:      store,
 		Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
 		Now:        func() time.Time { return time.Unix(0, 0) },
 		// The server reads DefaultCapabilities (composition-computed), not the engine.

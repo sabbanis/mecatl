@@ -7,6 +7,7 @@ import (
 	"io"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
@@ -40,6 +41,18 @@ func (s *scriptTool) Execute(_ context.Context, in session.ToolCall, _ tool.Envi
 }
 func (s *scriptTool) ran() bool   { return s.executed.Load() }
 func (s *scriptTool) runs() int64 { return s.runCount.Load() }
+
+type parkedAuthorizationTool struct{ scriptTool }
+
+func (*parkedAuthorizationTool) RequestAuthorization(context.Context) (tool.AuthorizationRequest, bool, error) {
+	return tool.AuthorizationRequest{
+		ID: "authorization_id", Backend: "Configured MCP", RouteID: "route", ConfigID: "config",
+		ExpiresAt: time.Unix(1_800_000_000, 0),
+	}, true, nil
+}
+
+func (*parkedAuthorizationTool) CancelAuthorization(context.Context, string) error { return nil }
+func (*parkedAuthorizationTool) DispatchSerial() bool                              { return true }
 
 // call builds a session.ToolCall.
 func call(id, name, args string) session.ToolCall {

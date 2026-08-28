@@ -46,6 +46,11 @@ func readBatchable(t tool.Tool, known bool, c session.ToolCall) bool {
 	if serial, ok := t.(tool.DispatchSerial); ok && serial.DispatchSerial() {
 		return false
 	}
+	// Authorization requesters park the run and therefore must use the serial
+	// gate spine in runOne; a batch cannot return its parking transaction.
+	if _, ok := t.(tool.AuthorizationRequester); ok {
+		return false
+	}
 	if pm, ok := t.(parentMutatingCaller); ok && pm.MutatesParent(c) {
 		return false
 	}
@@ -576,6 +581,19 @@ func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env 
 		return res, nil, cancelled
 	}
 
+	// Permission is the first shared gate. A broker authorization transaction is
+	// authority-bearing, so it must never be opened before the ordinary policy
+	// has admitted the original model call.
+	decision, cancelled := e.authorize(ctx, r, sess, env, turnIdx, c)
+	if cancelled {
+		return session.ToolResult{}, nil, true
+	}
+	if decision.Effect == governance.Deny {
+		res := denyResult(c, decision.Reason)
+		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
+		return res, nil, false
+	}
+
 	pre, herr := e.preHook(ctx, r, sess, turnIdx, c)
 	if herr != nil {
 		return session.ToolResult{}, nil, true
@@ -586,17 +604,6 @@ func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env 
 		return res, nil, false
 	}
 
-	// Permission decisions apply to the post-hook effective call. This keeps a
-	// PreToolUse rewrite from obtaining authorization for different arguments.
-	decision, cancelled := e.authorize(ctx, r, sess, env, turnIdx, pre.effective)
-	if cancelled {
-		return session.ToolResult{}, nil, true
-	}
-	if decision.Effect == governance.Deny {
-		res := denyResult(c, decision.Reason)
-		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, nil, false
-	}
 	if pre.askApproval {
 		// A hook BLOCK refined into an approval (ADR 0062): surface it to the human.
 		// It runs the call on allow, denies it otherwise — all serial, like a policy
@@ -609,7 +616,7 @@ func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env 
 		// A transaction is an authority-bearing side effect. Only an attached,
 		// trusted main-client run may create one; all other runs fail closed before
 		// the adapter observes the request.
-		if !r.req.AuthorizationPresentation {
+		if !r.req.AuthorizationPresentation || e.deps.Role != "" {
 			res := session.NewToolError(c.ID, "broker authorization requires an attached interactive main client")
 			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
 			return res, nil, false

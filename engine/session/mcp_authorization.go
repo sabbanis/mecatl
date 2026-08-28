@@ -144,13 +144,15 @@ func (s *Session) ValidateMCPAuthorizationState() error {
 func validatePendingMCPAuthorization(messages []Message, pending PendingMCPAuthorization) error {
 	for name, value := range map[string]string{
 		"authorization ID": pending.AuthorizationID,
-		"backend":          pending.Backend,
 		"route ID":         pending.RouteID,
 		"config ID":        pending.ConfigID,
 	} {
 		if !validMCPAuthorizationCorrelation(value) {
 			return fmt.Errorf("invalid %s", name)
 		}
+	}
+	if !validMCPAuthorizationLabel(pending.Backend) {
+		return fmt.Errorf("invalid backend")
 	}
 	if pending.ExpiresAt.IsZero() {
 		return fmt.Errorf("invalid expiry")
@@ -239,6 +241,17 @@ func validMCPAuthorizationCall(call ToolCall) bool {
 	return validMCPAuthorizationCorrelation(string(call.ID)) && strings.TrimSpace(call.Name) != ""
 }
 
+func validMCPAuthorizationLabel(value string) bool {
+	if strings.TrimSpace(value) == "" || len(value) > 256 {
+		return false
+	}
+	for _, r := range value {
+		if unicode.IsControl(r) {
+			return false
+		}
+	}
+	return true
+}
 func validMCPAuthorizationCorrelation(value string) bool {
 	if value == "" || len(value) > 256 {
 		return false

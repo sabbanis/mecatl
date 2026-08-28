@@ -107,7 +107,7 @@ func TestSessionVMCPBroker_Scenario2_CallbackBindingAndReplay(t *testing.T) {
 	}
 }
 
-func TestSessionVMCPBroker_Scenario2_ConnectedToolExecutesWithoutCatalogueMutation(t *testing.T) {
+func TestInvariant_vmcp_transport_uses_scoped_bearer_token_source(t *testing.T) {
 	runtime, client, upstreamCalls := newToolHiveStreamingRuntime(t)
 	tools, err := runtime.OpenSession("parent")
 	if err != nil {
@@ -324,4 +324,66 @@ func completeToolHiveAuthorization(t *testing.T, client *http.Client, browserURL
 		t.Fatal("ToolHive callback omitted downstream code or state")
 	}
 	return code, state
+}
+
+func TestInvariant_mcp_authorization_required_payload_has_no_private_or_secret_data(t *testing.T) {
+	runtime, _, _ := newCallbackRuntime(t, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		return session.ToolResult{}, nil
+	})
+	runtime.routes[0].BackendID = "broker-private-secret"
+	runtime.routes[0].AuthorizationLabel = "Configured GitHub"
+	runtime.oauthBackend = "broker-private-secret"
+	tools, err := runtime.OpenSession("safe-payload")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	defer func() { _ = tools.Close() }()
+	requester, ok := tools.Tools()[0].(tool.AuthorizationRequester)
+	if !ok {
+		t.Fatal("protected tool does not expose the authorization seam")
+	}
+	request, required, err := requester.RequestAuthorization(context.Background())
+	if err != nil || !required {
+		t.Fatalf("RequestAuthorization = %+v, %v, %v; want required request", request, required, err)
+	}
+	if request.Backend != "Configured GitHub" || strings.Contains(request.Backend, "broker-private-secret") {
+		t.Fatalf("authorization label = %q, want public tool label without private backend identity", request.Backend)
+	}
+}
+
+func TestInvariant_mcp_authorization_transaction_has_one_linearized_terminal_owner(t *testing.T) {
+	runtime, _, _ := newCallbackRuntime(t, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		return session.ToolResult{}, nil
+	})
+	if _, err := runtime.OpenSession("race"); err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	pending, err := runtime.Connect(context.Background(), "race", "github")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	target := controlTarget{sessionID: "race", backendID: "github"}
+
+	// Model a callback that has claimed the transaction and is blocked in its
+	// downstream exchange. Cancellation must win the only terminal transition;
+	// no later completion may install a grant after it removes this entry.
+	runtime.mu.Lock()
+	transaction := runtime.transactions[target]
+	transaction.exchanging = true
+	runtime.transactions[target] = transaction
+	runtime.mu.Unlock()
+	if err := runtime.cancelAuthorization("race", "github", pending.AuthorizationRequired.Handle); err != nil {
+		t.Fatalf("cancelAuthorization: %v", err)
+	}
+
+	runtime.mu.Lock()
+	_, stillPending := runtime.transactions[target]
+	_, granted := runtime.grants[target]
+	runtime.mu.Unlock()
+	if stillPending || granted {
+		t.Fatalf("cancelled transaction state pending=%v grant=%v, want neither", stillPending, granted)
+	}
+	if connected, err := runtime.Connect(context.Background(), "race", "github"); err != nil || connected.Status != ConnectionPending || connected.AuthorizationRequired.Handle == pending.AuthorizationRequired.Handle {
+		t.Fatalf("Connect after cancellation = %+v, %v; want a distinct pending transaction", connected, err)
+	}
 }

@@ -3,6 +3,7 @@ package agent_test
 import (
 	"context"
 	"errors"
+	"fmt"
 	"testing"
 	"time"
 
@@ -21,10 +22,14 @@ type authorizationTool struct {
 	request tool.AuthorizationRequest
 	calls   int
 	cancel  func(context.Context, string) error
+	order   *[]string
 }
 
 func (t *authorizationTool) RequestAuthorization(context.Context) (tool.AuthorizationRequest, bool, error) {
 	t.calls++
+	if t.order != nil {
+		*t.order = append(*t.order, "broker")
+	}
 	return t.request, true, nil
 }
 func (t *authorizationTool) CancelAuthorization(ctx context.Context, id string) error {
@@ -40,6 +45,42 @@ type failingAuthorizationStore struct{ err error }
 func (s failingAuthorizationStore) Save(context.Context, *session.Session) error { return s.err }
 func (failingAuthorizationStore) Load(context.Context, session.SessionID) (*session.Session, error) {
 	return nil, port.ErrSessionNotFound
+}
+
+type orderedAuthorizationPolicy struct{ order *[]string }
+
+func (p orderedAuthorizationPolicy) Evaluate(context.Context, session.SessionID, session.PermissionMode, session.ToolCall, tool.WorkspaceReader) governance.PermissionDecision {
+	*p.order = append(*p.order, "permission")
+	return governance.PermissionDecision{Effect: governance.Allow}
+}
+
+func (orderedAuthorizationPolicy) Learn(session.SessionID, session.ToolCall) {}
+
+type orderedAuthorizationHook struct{ order *[]string }
+
+func (h orderedAuthorizationHook) Run(_ context.Context, ev governance.HookEvent) (governance.HookOutcome, error) {
+	if ev.Phase == governance.PhasePreToolUse {
+		*h.order = append(*h.order, "pre")
+	}
+	return governance.HookOutcome{}, nil
+}
+
+func TestInvariant_mcp_authorization_gate_order_all_entry_paths(t *testing.T) {
+	order := []string{}
+	protected := &authorizationTool{
+		fakeTool: fakeTool{name: "mcp__protected__list", readOnly: false, exec: func(_ context.Context, call session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
+			order = append(order, "execute")
+			return session.NewToolResult(call.ID, "ok"), nil
+		}},
+		request: tool.AuthorizationRequest{ID: "request", Backend: "safe-label", RouteID: "private-route", ConfigID: "private-config", ExpiresAt: time.Now().Add(time.Hour)},
+		order:   &order,
+	}
+	llm := mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{}`)), mockllm.TextTurn("done"))
+	e := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, protected), Policy: orderedAuthorizationPolicy{order: &order}, Hooks: orderedAuthorizationHook{order: &order}, Store: memstore.New()})
+	drain(e.Run(context.Background(), newSession(t, session.Limits{}), agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true}))
+	if got, want := fmt.Sprint(order), "[permission pre broker]"; got != want {
+		t.Fatalf("gate order = %s, want %s", got, want)
+	}
 }
 
 type mcpAuthorizationParkFixture struct {
@@ -94,7 +135,7 @@ func TestInvariant_protected_broker_tool_card_redacts_arguments(t *testing.T) {
 	}
 }
 
-func TestSessionMCPAuthorization_Scenario5_ParkedRunOutcome(t *testing.T) {
+func TestMCPAuthorizationParkedRelayLifecycle(t *testing.T) {
 	fixture := newMCPAuthorizationParkFixture(t)
 	if fixture.sess.State != session.StateAuthorizing || fixture.run.Outcome() != agent.RunOutcomeAuthorizationParked {
 		t.Fatalf("state/outcome = %s/%v, want authorizing/authorization parked", fixture.sess.State, fixture.run.Outcome())

@@ -99,9 +99,13 @@ var errDownstreamRefreshRejected = errors.New("vmcpbroker: downstream refresh re
 // backend route. BackendID is consumed only by the injected broker caller; it
 // is never copied into ToolSpec, a ToolCall, or a ToolResult.
 type Route struct {
+	// BackendID is composition-private and is never projected outside this adapter.
 	BackendID string
-	Tool      tool.ToolSpec
-	ReadOnly  bool
+	// AuthorizationLabel is the configured, client-safe label for authorization
+	// status. It must not be inferred from BackendID.
+	AuthorizationLabel string
+	Tool               tool.ToolSpec
+	ReadOnly           bool
 	// Protected routes require a prior composition-private connection. A protected
 	// wrapper stays visible before authorization so the model-facing catalog is stable.
 	Protected bool
@@ -123,7 +127,7 @@ type ToolDefinition struct {
 // It rejects a discovery result for a backend that the operator did not
 // configure, preventing a backend route from being invented at execution time.
 func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDefinition) ([]Route, error) {
-	configured := make(map[string]bool, len(profiles))
+	configured := make(map[string]string, len(profiles))
 	protectedProfiles := 0
 	for _, profile := range profiles {
 		name := strings.ToLower(profile.Name)
@@ -135,13 +139,13 @@ func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDe
 		}
 		switch profile.Auth.Mode {
 		case "none":
-			configured[name] = false
+			configured[name] = profile.Name
 		case "oauth":
+			configured[name] = profile.Name
 			protectedProfiles++
 			if protectedProfiles > 1 {
 				return nil, fmt.Errorf("%w: only one protected backend is supported", ErrInvalidRoute)
 			}
-			configured[name] = true
 		default:
 			return nil, fmt.Errorf("%w: unsupported auth mode %q for backend %q", ErrInvalidRoute, profile.Auth.Mode, profile.Name)
 		}
@@ -149,9 +153,16 @@ func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDe
 	routes := make([]Route, 0, len(discovered))
 	seen := make(map[string]struct{}, len(discovered))
 	for _, definition := range discovered {
-		protected, ok := configured[strings.ToLower(definition.BackendID)]
+		label, ok := configured[strings.ToLower(definition.BackendID)]
 		if !ok {
 			return nil, fmt.Errorf("%w: unconfigured backend %q", ErrInvalidRoute, definition.BackendID)
+		}
+		protected := false
+		for _, profile := range profiles {
+			if strings.EqualFold(profile.Name, definition.BackendID) {
+				protected = profile.Auth.Mode == "oauth"
+				break
+			}
 		}
 		if definition.Name == "" {
 			return nil, fmt.Errorf("%w: tool name is required", ErrInvalidRoute)
@@ -161,7 +172,8 @@ func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDe
 		}
 		seen[definition.Name] = struct{}{}
 		routes = append(routes, Route{
-			BackendID: definition.BackendID,
+			BackendID:          definition.BackendID,
+			AuthorizationLabel: label,
 			Tool: tool.ToolSpec{
 				Name:        definition.Name,
 				Description: definition.Description,
@@ -275,6 +287,10 @@ type authorizationTransaction struct {
 	verifier   string
 	browserURL string
 	expiresAt  time.Time
+	// exchanging reserves callback completion while the downstream exchange is
+	// in flight. Cancellation removes this same map entry, so the final install
+	// below has one linearized winner rather than resurrecting a cancelled grant.
+	exchanging bool
 }
 
 type downstreamGrant struct {
@@ -535,7 +551,7 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 }
 
 func (c *streamingCaller) connectProtected(ctx context.Context, backendID string, grant downstreamGrant) (*mcp.Server, error) {
-	server, err := c.connectWithBearer(ctx, grant.bearer())
+	server, err := c.connectWithTokenSource(ctx, backendID)
 	if err == nil {
 		return server, nil
 	}
@@ -543,15 +559,21 @@ func (c *streamingCaller) connectProtected(ctx context.Context, backendID string
 	if refreshErr != nil {
 		return nil, fmt.Errorf("vmcpbroker: protected broker transport unavailable: %w", refreshErr)
 	}
-	server, err = c.connectWithBearer(ctx, refreshed.bearer())
+	if refreshed.bearer() == "" {
+		return nil, errors.New("vmcpbroker: protected broker transport refresh returned an empty token")
+	}
+	server, err = c.connectWithTokenSource(ctx, backendID)
 	if err != nil {
-		return nil, errors.New("vmcpbroker: protected broker transport unavailable")
+		return nil, fmt.Errorf("vmcpbroker: protected broker transport unavailable: %w", err)
 	}
 	return server, nil
 }
 
-func (c *streamingCaller) connectWithBearer(ctx context.Context, bearer string) (*mcp.Server, error) {
-	return mcp.Connect(ctx, mcp.ServerConfig{Name: "broker", URL: c.endpoint, Headers: map[string]string{"Authorization": "Bearer " + bearer}, HTTPClient: c.runtime.httpClient}, nil)
+func (c *streamingCaller) connectWithTokenSource(ctx context.Context, backendID string) (*mcp.Server, error) {
+	return mcp.Connect(ctx, mcp.ServerConfig{
+		Name: "broker", URL: c.endpoint, HTTPClient: c.runtime.httpClient,
+		TokenSource: scopedGrantTokenSource{runtime: c.runtime, target: controlTarget{sessionID: c.sessionID, backendID: backendID}},
+	}, nil)
 }
 
 func (c *streamingCaller) close() error {
@@ -810,9 +832,10 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 		found       bool
 	)
 	for candidate, pending := range r.transactions {
-		if pending.handle == state {
+		if pending.handle == state && !pending.exchanging {
 			target, transaction, found = candidate, pending, true
-			delete(r.transactions, candidate)
+			pending.exchanging = true
+			r.transactions[candidate] = pending
 			break
 		}
 	}
@@ -834,12 +857,16 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed {
-		return ErrClosed
-	}
-	if !r.validControlTargetLocked(target) {
+	if r.closed || !r.validControlTargetLocked(target) {
 		return ErrInvalidControlTarget
 	}
+	pending, ok := r.transactions[target]
+	if !ok || pending.handle != transaction.handle || !pending.exchanging {
+		// Cancellation won while the exchange was in flight. It is deliberately
+		// terminal: do not resurrect an authority grant after cancellation.
+		return ErrInvalidControlTarget
+	}
+	delete(r.transactions, target)
 	r.grants[target] = grant
 	return nil
 }
@@ -883,9 +910,14 @@ func (r *Runtime) restoreTransaction(target controlTarget, transaction authoriza
 	if _, connected := r.grants[target]; connected {
 		return
 	}
-	if _, pending := r.transactions[target]; !pending {
-		r.transactions[target] = transaction
+	if existing, ok := r.transactions[target]; ok {
+		if existing.handle == transaction.handle && existing.exchanging {
+			transaction.exchanging = false
+			r.transactions[target] = transaction
+		}
+		return
 	}
+	r.transactions[target] = transaction
 }
 
 func (r *Runtime) exchangeDownstreamCode(ctx context.Context, code, verifier string) (downstreamGrant, error) {
@@ -907,6 +939,25 @@ func (g downstreamGrant) bearer() string {
 		return g.token.AccessToken
 	}
 	return g.accessToken
+}
+
+type scopedGrantTokenSource struct {
+	runtime *Runtime
+	target  controlTarget
+}
+
+func (s scopedGrantTokenSource) Token() (*oauth2.Token, error) {
+	grant, err := s.runtime.grantForTarget(s.target)
+	if err != nil {
+		return nil, err
+	}
+	if grant.token != nil {
+		return grant.token, nil
+	}
+	if grant.accessToken == "" {
+		return nil, ErrInvalidControlTarget
+	}
+	return &oauth2.Token{AccessToken: grant.accessToken, TokenType: "Bearer"}, nil
 }
 
 func (r *Runtime) oauthConfig() oauth2.Config {
@@ -1305,9 +1356,15 @@ func (t *protectedSessionTool) RequestAuthorization(ctx context.Context) (tool.A
 	if connected.Status != ConnectionPending || connected.AuthorizationRequired == nil {
 		return tool.AuthorizationRequest{}, false, ErrInvalidControlTarget
 	}
+	label := t.route.AuthorizationLabel
+	if label == "" {
+		// Direct Runtime construction is used by embedders and tests; the public
+		// tool name is safe, whereas BackendID is never a fallback label.
+		label = t.route.Tool.Name
+	}
 	return tool.AuthorizationRequest{
 		ID:        connected.AuthorizationRequired.Handle,
-		Backend:   t.route.BackendID,
+		Backend:   label,
 		RouteID:   t.route.Tool.Name,
 		ConfigID:  t.owner.runtime.EnrollmentID(),
 		ExpiresAt: connected.AuthorizationRequired.ExpiresAt,
