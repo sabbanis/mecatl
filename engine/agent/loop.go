@@ -1158,6 +1158,14 @@ func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Ses
 	})
 }
 
+// ContinueAfterMCPAuthorization resumes the ordinary model loop after the
+// service durably paired a nonconnected authorization outcome.
+func (e *Engine) ContinueAfterMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *Run {
+	return e.startRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
+		e.runLoop(ctx, r, sess, env, session.Usage{})
+	})
+}
+
 // startRun mints a Run with the full concurrency preamble (events buffer, ask
 // registry, run-scoped diagnostics, interactive child-ask router, ask-review
 // breaker, child-run registry) and launches body in the run goroutine under the
