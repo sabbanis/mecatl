@@ -155,6 +155,70 @@ func TestInvariant_authorizing_state_all_lifecycle_consumers_explicit(t *testing
 	}
 }
 
+func TestSessionMCPAuthorization_Scenario7_ExpiryResolvesOnce(t *testing.T) {
+	const id session.SessionID = "expired-without-runtime-transaction"
+	svc, store, runtime := lifecycleAuthorizationService(t, id)
+	t.Cleanup(func() { _ = runtime.Close() })
+	svc.cfg.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+
+	// A process-local Runtime transaction can already be gone when the durable
+	// authorizing snapshot expires. Expiry still owns the aggregate repair.
+	svc.expireMCPAuthorization(id, "authorization-exact")
+	assertAuthorizationPaired(t, store, id, "expired")
+
+	// The exact handle was consumed; a duplicate expiry must not append a second
+	// paired result.
+	svc.expireMCPAuthorization(id, "authorization-exact")
+	assertAuthorizationPaired(t, store, id, "expired")
+}
+
+func TestInvariant_mcp_authorization_resolution_single_winner(t *testing.T) {
+	const id session.SessionID = "resolution-single-winner"
+	svc, store, runtime := lifecycleAuthorizationService(t, id)
+	t.Cleanup(func() { _ = runtime.Close() })
+	svc.cfg.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+	control := MCPAuthorizationControl{SessionID: id, AuthorizationID: "authorization-exact"}
+
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		<-start
+		_, _ = svc.CancelMCPAuthorization(context.Background(), id, control)
+	}()
+	go func() {
+		defer wg.Done()
+		<-start
+		svc.expireMCPAuthorization(id, control.AuthorizationID)
+	}()
+	close(start)
+	wg.Wait()
+
+	sess, err := store.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := session.ValidateToolPairing(sess.Conversation.Messages); err != nil {
+		t.Fatalf("paired history: %v", err)
+	}
+	var protected, deferred int
+	for _, message := range sess.Conversation.Messages {
+		if message.ToolResult == nil {
+			continue
+		}
+		switch message.ToolResult.CallID {
+		case "call-protected":
+			protected++
+		case "call-deferred":
+			deferred++
+		}
+	}
+	if protected != 1 || deferred != 1 {
+		t.Fatalf("resolution result counts = protected:%d deferred:%d, want one each", protected, deferred)
+	}
+}
+
 func portSessionDiscoveryAuthorizing(id session.SessionID) port.SessionDiscoveryMeta {
 	return port.SessionDiscoveryMeta{ID: id, Kind: session.SessionKindMain, State: session.StateAuthorizing}
 }

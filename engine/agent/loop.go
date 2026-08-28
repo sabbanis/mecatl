@@ -1152,8 +1152,8 @@ func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Ses
 			return
 		}
 		e.save(ctx, r, sess)
-		// The resumed loop's result accounting is a fresh run delta; seed from the
-		// aggregate only to retain the existing runLoop usage parameter contract.
+		// The continuation has a fresh per-run usage delta; cumulative usage stays
+		// on the aggregate for budget accounting only.
 		e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
 	})
 }
@@ -1162,7 +1162,7 @@ func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Ses
 // service durably paired a nonconnected authorization outcome.
 func (e *Engine) ContinueAfterMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *Run {
 	return e.startRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
-		e.runLoop(ctx, r, sess, env, session.Usage{})
+		e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
 	})
 }
 

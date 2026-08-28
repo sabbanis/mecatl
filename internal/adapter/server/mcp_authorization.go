@@ -21,15 +21,22 @@ type MCPAuthorizationControl struct {
 // and authorizing the owner session. Invalid/foreign/stale controls collapse to
 // ErrNotFound before the Runtime is consulted.
 func (s *Service) MCPAuthorizationPresentation(ctx context.Context, id session.SessionID, control MCPAuthorizationControl) (string, error) {
-	sess, err := s.GetSession(ctx, id)
+	// Authorize the caller before taking the control lock or consulting the
+	// process-local Runtime; all later reads are reloaded under the lease.
+	if _, err := s.GetSession(ctx, id); err != nil {
+		return "", ErrNotFound
+	}
+	unlock := s.runEntryMu.lock(id)
+	defer unlock()
+	if err := s.acquireLease(ctx, id); err != nil {
+		return "", err
+	}
+	sess, err := s.cfg.Store.Load(ctx, id)
 	if err != nil {
 		return "", ErrNotFound
 	}
 	pending, ok := matchingMCPAuthorization(sess, control)
-	if !ok || s.cfg.VMCPBroker == nil {
-		return "", ErrNotFound
-	}
-	if !pending.ExpiresAt.After(s.cfg.Now()) {
+	if !ok || s.cfg.VMCPBroker == nil || !pending.ExpiresAt.After(s.cfg.Now()) {
 		return "", ErrNotFound
 	}
 	status, err := s.cfg.VMCPBroker.CheckAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
@@ -42,9 +49,17 @@ func (s *Service) MCPAuthorizationPresentation(ctx context.Context, id session.S
 // RecheckMCPAuthorization observes the broker transaction. Pending is inert;
 // only a connected observation claims and launches the stored continuation.
 func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.SessionID, control MCPAuthorizationControl) (*agent.Run, error) {
+	// The first load is owner authorization only. The control decision uses the
+	// fresh snapshot obtained after both the in-process lock and cross-process lease.
+	if _, err := s.GetSession(ctx, id); err != nil {
+		return nil, ErrNotFound
+	}
 	unlock := s.runEntryMu.lock(id)
 	defer unlock()
-	sess, err := s.GetSession(ctx, id)
+	if err := s.acquireLease(ctx, id); err != nil {
+		return nil, err
+	}
+	sess, err := s.cfg.Store.Load(ctx, id)
 	if err != nil {
 		return nil, ErrNotFound
 	}
@@ -52,13 +67,8 @@ func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.Sessio
 	if !ok || s.cfg.VMCPBroker == nil {
 		return nil, ErrNotFound
 	}
-	if err := s.acquireLease(ctx, id); err != nil {
-		return nil, err
-	}
 	if !pending.ExpiresAt.After(s.cfg.Now()) {
-		if err := s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID); err != nil {
-			return nil, ErrNotFound
-		}
+		_ = s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
 		return s.resolveMCPAuthorization(ctx, sess, "MCP authorization expired")
 	}
 	status, err := s.cfg.VMCPBroker.CheckAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
@@ -82,6 +92,7 @@ func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.Sessio
 	if err := s.cfg.Store.Save(ctx, sess); err != nil {
 		return nil, fmt.Errorf("%w: persist authorization claim", ErrInternal)
 	}
+	s.stopMCPAuthorizationExpiry(id)
 	ctx = memory.WithWorkspace(ctx, sess.Workspace)
 	run := engine.ContinueMCPAuthorization(ctx, sess, env, claimed)
 	s.register(id, run, sess)
@@ -91,9 +102,15 @@ func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.Sessio
 // CancelMCPAuthorization resolves one exact pending authorization with paired
 // errors. It deliberately does not call Runtime.Disconnect.
 func (s *Service) CancelMCPAuthorization(ctx context.Context, id session.SessionID, control MCPAuthorizationControl) (*agent.Run, error) {
+	if _, err := s.GetSession(ctx, id); err != nil {
+		return nil, ErrNotFound
+	}
 	unlock := s.runEntryMu.lock(id)
 	defer unlock()
-	sess, err := s.GetSession(ctx, id)
+	if err := s.acquireLease(ctx, id); err != nil {
+		return nil, err
+	}
+	sess, err := s.cfg.Store.Load(ctx, id)
 	if err != nil {
 		return nil, ErrNotFound
 	}
@@ -101,12 +118,9 @@ func (s *Service) CancelMCPAuthorization(ctx context.Context, id session.Session
 	if !ok || s.cfg.VMCPBroker == nil {
 		return nil, ErrNotFound
 	}
-	if err := s.acquireLease(ctx, id); err != nil {
-		return nil, err
-	}
-	if err := s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID); err != nil {
-		return nil, ErrNotFound
-	}
+	// The Runtime's transaction may already be absent after a process-local
+	// failure. The durable aggregate remains authoritative for the paired repair.
+	_ = s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
 	return s.resolveMCPAuthorization(ctx, sess, "MCP authorization cancelled")
 }
 
@@ -121,6 +135,7 @@ func (s *Service) resolveMCPAuthorization(ctx context.Context, sess *session.Ses
 	if err := s.cfg.Store.Save(ctx, sess); err != nil {
 		return nil, fmt.Errorf("%w: persist authorization resolution", ErrInternal)
 	}
+	s.stopMCPAuthorizationExpiry(sess.ID)
 	engine, env, err := s.engineAndEnvironmentFor(ctx, sess)
 	if err != nil {
 		return nil, fmt.Errorf("%w: continuation engine", ErrFailedPrecondition)

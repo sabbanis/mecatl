@@ -79,6 +79,16 @@ type WorkspaceFactory func(root string) tool.Workspace
 // server can stamp session creation timestamps deterministically in tests.
 type Clock func() time.Time
 
+// MCPAuthorizationTimer is the cancellable process-local expiry handle for a
+// parked broker authorization.
+type MCPAuthorizationTimer interface {
+	Stop() bool
+}
+
+// MCPAuthorizationTimerFactory is injected with the service clock so tests can
+// drive expiry without a wall-clock sleep.
+type MCPAuthorizationTimerFactory func(time.Duration, func()) MCPAuthorizationTimer
+
 // IDGenerator returns a fresh, unique session id. It defaults to a random hex
 // id when nil; tests may inject a deterministic generator.
 type IDGenerator func() session.SessionID
@@ -391,6 +401,9 @@ type Config struct {
 	DefaultLimits session.Limits
 	// Now supplies the creation timestamp; defaults to time.Now.
 	Now Clock
+	// MCPAuthorizationTimer creates the one process-local expiry observation for
+	// each durable parked broker authorization. It defaults to time.AfterFunc.
+	MCPAuthorizationTimer MCPAuthorizationTimerFactory
 	// NewID allocates session ids; defaults to a crypto-random hex generator.
 	NewID IDGenerator
 	// MCPProvider exposes the connected MCP servers' resources/prompts to the
@@ -917,8 +930,9 @@ type Service struct {
 	// parkedCompletions counts relay-drained runs that ended in the distinct
 	// authorization-parked outcome. It is not inferred from an event because a
 	// disconnecting relay can drain without delivering a client frame.
-	parkedCompletions   atomic.Uint64
-	authorizationExpiry map[session.SessionID]*time.Timer
+	parkedCompletions             atomic.Uint64
+	authorizationExpiry           map[session.SessionID]MCPAuthorizationTimer
+	authorizationExpiryGeneration map[session.SessionID]uint64
 
 	mu     sync.Mutex
 	closed bool
@@ -1340,6 +1354,11 @@ func NewService(cfg Config) (*Service, error) {
 	if cfg.Now == nil {
 		cfg.Now = time.Now
 	}
+	if cfg.MCPAuthorizationTimer == nil {
+		cfg.MCPAuthorizationTimer = func(delay time.Duration, f func()) MCPAuthorizationTimer {
+			return time.AfterFunc(delay, f)
+		}
+	}
 	if cfg.NewID == nil {
 		cfg.NewID = randomID
 	}
@@ -1369,23 +1388,24 @@ func NewService(cfg Config) (*Service, error) {
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	svc := &Service{
-		cfg:                 cfg,
-		shutdownCtx:         shutdownCtx,
-		shutdownCancel:      shutdownCancel,
-		runs:                make(map[session.SessionID]*runState),
-		teams:               make(map[string]*teamState),
-		sessionEngines:      make(map[session.SessionID]*sessionEngine),
-		brokerSessions:      make(map[session.SessionID]*brokerSession),
-		authorizationExpiry: make(map[session.SessionID]*time.Timer),
-		sessionEnvironments: make(map[session.SessionID]tool.Environment),
-		reservedIDs:         make(map[session.SessionID]struct{}),
-		replayedApprovals:   make(map[session.SessionID]struct{}),
-		steerMsgIDs:         make(map[session.SessionID][]steerMsgID),
-		heldLeases:          make(map[session.SessionID]*heldLease),
-		cleanupTokenKey:     cleanupTokenKey,
-		cleanupPlans:        make(map[string]cleanupTokenPayload),
-		cleanupJobs:         make(map[string]cleanupJobRecord),
-		subscriptions:       make(map[session.SessionID]map[int64]chan session.Event),
+		cfg:                           cfg,
+		shutdownCtx:                   shutdownCtx,
+		shutdownCancel:                shutdownCancel,
+		runs:                          make(map[session.SessionID]*runState),
+		teams:                         make(map[string]*teamState),
+		sessionEngines:                make(map[session.SessionID]*sessionEngine),
+		brokerSessions:                make(map[session.SessionID]*brokerSession),
+		authorizationExpiry:           make(map[session.SessionID]MCPAuthorizationTimer),
+		authorizationExpiryGeneration: make(map[session.SessionID]uint64),
+		sessionEnvironments:           make(map[session.SessionID]tool.Environment),
+		reservedIDs:                   make(map[session.SessionID]struct{}),
+		replayedApprovals:             make(map[session.SessionID]struct{}),
+		steerMsgIDs:                   make(map[session.SessionID][]steerMsgID),
+		heldLeases:                    make(map[session.SessionID]*heldLease),
+		cleanupTokenKey:               cleanupTokenKey,
+		cleanupPlans:                  make(map[string]cleanupTokenPayload),
+		cleanupJobs:                   make(map[string]cleanupJobRecord),
+		subscriptions:                 make(map[session.SessionID]map[int64]chan session.Event),
 	}
 	// Narrow the durable log to the cursor seam once (ADR 0250). A backend that
 	// does not implement it leaves this nil, and the watch surface reports the
@@ -2853,6 +2873,7 @@ func (s *Service) closeSessionResourcesLocked(id session.SessionID) {
 		s.cfg.OnCloseSession(id)
 	}
 	s.mu.Lock()
+	s.authorizationExpiryGeneration[id]++
 	if timer := s.authorizationExpiry[id]; timer != nil {
 		timer.Stop()
 		delete(s.authorizationExpiry, id)
@@ -2936,6 +2957,7 @@ func (s *Service) prepareClose() bool {
 	}
 	for id, timer := range s.authorizationExpiry {
 		timer.Stop()
+		s.authorizationExpiryGeneration[id]++
 		authorizationIDs[id] = struct{}{}
 	}
 	clear(s.authorizationExpiry)
@@ -4035,21 +4057,9 @@ func (s *Service) reopenLoadedSession(ctx context.Context, sess *session.Session
 	// re-derives idempotent rules). It reads the LOADED conversation to correlate the
 	// verdicts, so it must run after GetSession and before the engine runs.
 	s.maybeReplayApprovals(ctx, sess)
-	// Runtime authorization transactions are process-local. A restored
-	// authorizing snapshot must therefore be interrupted, never resumed against a
-	// newly constructed Runtime which happens to report the same backend connected.
-	if sess.State == session.StateAuthorizing {
-		results, rerr := sess.InterruptMCPAuthorization()
-		if rerr != nil {
-			return nil, fmt.Errorf("server: interrupt restored MCP authorization: %w", rerr)
-		}
-		if rerr = sess.RecordToolResults(results); rerr != nil {
-			return nil, fmt.Errorf("server: record restored MCP authorization: %w", rerr)
-		}
-		if rerr = s.cfg.Store.Save(ctx, sess); rerr != nil {
-			return nil, fmt.Errorf("server: persist restored MCP authorization interruption: %w", rerr)
-		}
-	}
+	// Runtime authorization continuity is determined only by the lease-protected
+	// run-entry/control path. A read-only load must never consume an authorizing
+	// snapshot before that path has established exclusive ownership.
 	if sess.State == session.StateFailed && sess.FailurePermanence() {
 		// Capture permanence BEFORE Recover() clears it (resetToIdle sets
 		// permanent=false). Store the pre-flight advisory so the relay can emit
@@ -4393,22 +4403,16 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	// check above therefore runs while runEntryMu is held and before reopen/save.
 	// Reaching this branch proves the running snapshot has no same-process owner
 	// and may be repaired.
-	if sess.State == session.StateAuthorizing {
-		// Runtime authority is process-local. A restored authorizing snapshot is
-		// interruption, never continuity: pair the frozen calls before any new
-		// prompt can run and never ask Runtime to reconnect or execute them.
-		results, ierr := sess.InterruptMCPAuthorization()
-		if ierr != nil {
-			return nil, fmt.Errorf("server: interrupt restored authorization: %w", ierr)
-		}
-		if ierr = sess.RecordToolResults(results); ierr != nil {
-			return nil, fmt.Errorf("server: record interrupted authorization: %w", ierr)
-		}
-		if ierr = s.cfg.Store.Save(ctx, sess); ierr != nil {
-			return nil, fmt.Errorf("server: persist interrupted authorization: %w", ierr)
-		}
+	// Re-read the only state that carries a process-local continuation after the
+	// real lease is held. A live Runtime transaction means this process still owns
+	// the exact parked operation, so a new prompt must not replace it. A missing
+	// transaction is restart/loss evidence and is repaired once before the prompt.
+	interruptedAuthorization := false
+	sess, interruptedAuthorization, err = s.reconcileAuthorizingPrompt(ctx, id, sess)
+	if err != nil {
+		return nil, err
 	}
-	if sess.State == session.StateRunning {
+	if sess.State == session.StateRunning && !interruptedAuthorization {
 		if err := sess.Abandon(); err != nil {
 			return nil, fmt.Errorf("server: abandon stale running session: %w", err)
 		}
@@ -4432,6 +4436,43 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	run := engine.Run(ctx, sess, env, agent.RunRequest{Text: text, Parts: parts, AuthorizationPresentation: authorizationPresentation, RunID: runID})
 	s.register(id, run, sess)
 	return run, nil
+}
+
+// reconcileAuthorizingPrompt is called while runEntryMu and the session lease are
+// held. It distinguishes an in-process broker transaction from a snapshot restored
+// without that Runtime: the former remains exclusively controllable by recheck or
+// cancel, while the latter is interrupted and paired before a fresh prompt begins.
+func (s *Service) reconcileAuthorizingPrompt(ctx context.Context, id session.SessionID, sess *session.Session) (*session.Session, bool, error) {
+	if sess.State != session.StateAuthorizing {
+		return sess, false, nil
+	}
+	loaded, err := s.cfg.Store.Load(ctx, id)
+	if err != nil {
+		return nil, false, ErrNotFound
+	}
+	if loaded.State != session.StateAuthorizing {
+		return loaded, false, nil
+	}
+	pending, ok := loaded.PendingMCPAuthorization()
+	if !ok {
+		return nil, false, fmt.Errorf("%w: invalid authorizing session", ErrFailedPrecondition)
+	}
+	if s.cfg.VMCPBroker != nil {
+		if _, checkErr := s.cfg.VMCPBroker.CheckAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID); checkErr == nil {
+			return nil, false, fmt.Errorf("%w: session %q has a live MCP authorization", ErrFailedPrecondition, id)
+		}
+	}
+	results, err := loaded.InterruptMCPAuthorization()
+	if err != nil {
+		return nil, false, fmt.Errorf("server: interrupt restored authorization: %w", err)
+	}
+	if err = loaded.RecordToolResults(results); err != nil {
+		return nil, false, fmt.Errorf("server: record interrupted authorization: %w", err)
+	}
+	if err = s.cfg.Store.Save(ctx, loaded); err != nil {
+		return nil, false, fmt.Errorf("server: persist interrupted authorization: %w", err)
+	}
+	return loaded, true, nil
 }
 
 // Steer routes an operator steer (mid-run injected input, issue #512) for a
@@ -6653,6 +6694,8 @@ func (s *Service) FinishRun(id session.SessionID, run *agent.Run) {
 }
 
 func (s *Service) scheduleMCPAuthorizationExpiry(id session.SessionID) {
+	unlock := s.runEntryMu.lock(id)
+	defer unlock()
 	sess, err := s.GetSession(context.Background(), id)
 	if err != nil {
 		return
@@ -6661,23 +6704,65 @@ func (s *Service) scheduleMCPAuthorizationExpiry(id session.SessionID) {
 	if !ok {
 		return
 	}
-	delay := time.Until(pending.ExpiresAt)
+	delay := pending.ExpiresAt.Sub(s.cfg.Now())
 	if delay < 0 {
 		delay = 0
 	}
-	timer := time.AfterFunc(delay, func() { s.expireMCPAuthorization(id, pending.AuthorizationID) })
+
+	// Generation ownership makes an expired callback from an earlier park a no-op
+	// after recheck/cancel/close replaces or removes the exact authorization.
 	s.mu.Lock()
-	if old := s.authorizationExpiry[id]; old != nil {
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	generation := s.authorizationExpiryGeneration[id] + 1
+	s.authorizationExpiryGeneration[id] = generation
+	old := s.authorizationExpiry[id]
+	delete(s.authorizationExpiry, id)
+	s.mu.Unlock()
+	if old != nil {
 		old.Stop()
+	}
+	timer := s.cfg.MCPAuthorizationTimer(delay, func() { s.expireScheduledMCPAuthorization(id, pending.AuthorizationID, generation) })
+	s.mu.Lock()
+	if s.closed || s.authorizationExpiryGeneration[id] != generation {
+		s.mu.Unlock()
+		timer.Stop()
+		return
 	}
 	s.authorizationExpiry[id] = timer
 	s.mu.Unlock()
 }
 
+func (s *Service) stopMCPAuthorizationExpiry(id session.SessionID) {
+	s.mu.Lock()
+	s.authorizationExpiryGeneration[id]++
+	if timer := s.authorizationExpiry[id]; timer != nil {
+		timer.Stop()
+		delete(s.authorizationExpiry, id)
+	}
+	s.mu.Unlock()
+}
+
+func (s *Service) expireScheduledMCPAuthorization(id session.SessionID, authorizationID string, generation uint64) {
+	s.mu.Lock()
+	if s.closed || s.authorizationExpiryGeneration[id] != generation {
+		s.mu.Unlock()
+		return
+	}
+	delete(s.authorizationExpiry, id)
+	s.mu.Unlock()
+	s.expireMCPAuthorization(id, authorizationID)
+}
+
 func (s *Service) expireMCPAuthorization(id session.SessionID, authorizationID string) {
 	unlock := s.runEntryMu.lock(id)
 	defer unlock()
-	sess, err := s.GetSession(context.Background(), id)
+	if err := s.acquireLease(context.Background(), id); err != nil {
+		return
+	}
+	sess, err := s.cfg.Store.Load(context.Background(), id)
 	if err != nil {
 		return
 	}
@@ -6685,21 +6770,24 @@ func (s *Service) expireMCPAuthorization(id session.SessionID, authorizationID s
 	if !ok || pending.ExpiresAt.After(s.cfg.Now()) || s.cfg.VMCPBroker == nil {
 		return
 	}
-	if err := s.acquireLease(context.Background(), id); err != nil {
-		return
-	}
-	if err := s.cfg.VMCPBroker.CancelAuthorization(context.Background(), id, pending.RouteID, authorizationID); err != nil {
-		return
-	}
+	// Expiry resolves the durable state even when the local Runtime correlation
+	// has already disappeared (restart/lost callback state). It never lets that
+	// process-local absence strand unmatched history.
+	_ = s.cfg.VMCPBroker.CancelAuthorization(context.Background(), id, pending.RouteID, authorizationID)
 	run, err := s.resolveMCPAuthorization(context.Background(), sess, "MCP authorization expired")
 	if err != nil || run == nil {
 		return
 	}
-	go func() {
-		for range run.Events() {
-		}
-		s.FinishRun(id, run)
-	}()
+	go s.drainMCPAuthorizationContinuation(id, run)
+}
+
+func (s *Service) drainMCPAuthorizationContinuation(id session.SessionID, run *agent.Run) {
+	logCtx := context.WithoutCancel(context.Background())
+	for ev := range run.Events() {
+		s.relayEvent(logCtx, id, ev, false, nil)
+		s.PublishSessionEvent(id, ev)
+	}
+	s.FinishRun(id, run)
 }
 
 // ParkedCompletions reports relay-drained authorization parks observed by this
