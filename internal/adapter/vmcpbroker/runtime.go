@@ -838,6 +838,7 @@ func (r *Runtime) CancelAuthorization(ctx context.Context, id session.SessionID,
 		return ErrInvalidControlTarget
 	}
 	delete(r.transactions, target)
+	delete(r.authorizations, target)
 	delete(r.grants, target)
 	delete(r.authorizations, target)
 	return nil
@@ -874,6 +875,7 @@ func (r *Runtime) Disconnect(sessionID session.SessionID, backendID string) erro
 		return ErrInvalidControlTarget
 	}
 	delete(r.transactions, target)
+	delete(r.authorizations, target)
 	delete(r.grants, target)
 	if r.protectedBackendLocked(backendID) {
 		r.disconnected[target] = struct{}{}
@@ -1199,6 +1201,11 @@ func (r *Runtime) finishForget(id session.SessionID, owner *SessionTools) {
 	for target := range r.transactions {
 		if target.sessionID == id {
 			delete(r.transactions, target)
+		}
+	}
+	for target := range r.authorizations {
+		if target.sessionID == id {
+			delete(r.authorizations, target)
 		}
 	}
 	for target := range r.grants {
