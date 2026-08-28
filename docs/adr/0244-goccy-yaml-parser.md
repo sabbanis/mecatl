@@ -106,7 +106,7 @@ separate decision.
 - `internal/adapter/daemonconfig/daemonconfig.go` (`parse`)
 - `internal/adapter/permconfig/permconfig.go` (`parseYAML`)
 - `cmd/mecated/configvalidate.go` (`parseSettingsDocument`)
-- `cmd/mecatui/learning_settings.go` (`operatorLearningSettings.readDocument`)
+- `cmd/mecatui/learning_settings.go`
 - `engine/adapter/agentfs/discover.go` (`parseAgentDef`)
 - `engine/adapter/skillfs/discover.go` (`ParseSkill`)
 - `engine/adapter/rulesfs/discover.go` (`parseRule`)
