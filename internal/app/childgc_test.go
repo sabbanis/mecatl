@@ -409,6 +409,7 @@ func TestClassifyRetentionRequiresPositiveDurableMetadata(t *testing.T) {
 		{"invalid relationship", port.SessionDiscoveryMeta{ID: "child", Kind: session.SessionKindSubagent, State: session.StateCompleted}, retentionProtectedUnknown},
 		{"running main", port.SessionDiscoveryMeta{ID: "main", Kind: session.SessionKindMain, State: session.StateRunning}, retentionProtectedState},
 		{"awaiting main", port.SessionDiscoveryMeta{ID: "main", Kind: session.SessionKindMain, State: session.StateAwaiting}, retentionProtectedState},
+		{"authorizing main", port.SessionDiscoveryMeta{ID: "main", Kind: session.SessionKindMain, State: session.StateAuthorizing}, retentionProtectedState},
 		{"explicit main", port.SessionDiscoveryMeta{ID: "main", Kind: session.SessionKindMain, State: session.StateCompleted}, retentionMain},
 		{"explicit subagent", port.SessionDiscoveryMeta{ID: "opaque", Kind: session.SessionKindSubagent, Relationship: validSubagent, State: session.StateCompleted}, retentionSubagent},
 		{"explicit scheduled", port.SessionDiscoveryMeta{ID: "opaque", Kind: session.SessionKindScheduled, Relationship: validScheduled, State: session.StateCompleted}, retentionScheduled},

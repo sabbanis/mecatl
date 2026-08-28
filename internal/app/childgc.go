@@ -223,7 +223,7 @@ func classifyRetention(meta port.SessionDiscoveryMeta) retentionClass {
 		return retentionProtectedUnknown
 	}
 	switch meta.State {
-	case session.StateRunning, session.StateAwaiting:
+	case session.StateRunning, session.StateAwaiting, session.StateAuthorizing:
 		return retentionProtectedState
 	case session.StateIdle, session.StateCompleted, session.StateFailed, session.StateCancelled:
 		// These are terminal/idle candidates; family classification follows below.

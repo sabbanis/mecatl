@@ -2788,6 +2788,32 @@ func (s *Service) SetSessionEnvironment(id session.SessionID, env tool.Environme
 	s.mu.Unlock()
 }
 
+// abortParkedMCPAuthorization invalidates and pairs one durable authorization.
+// The caller must hold runEntryMu for id, making this operation a single
+// control-plane contender with recheck, cancellation, expiry, and close. Broker
+// invalidation deliberately happens before the aggregate mutation: once this
+// function wins, a callback cannot install a grant even if persistence later
+// fails. A missing process-local transaction does not prevent history repair —
+// that is the expected restart/interrupted-authority case.
+func (s *Service) abortParkedMCPAuthorization(ctx context.Context, id session.SessionID, reason string) {
+	sess, err := s.cfg.Store.Load(ctx, id)
+	if err != nil {
+		return
+	}
+	pending, ok := sess.PendingMCPAuthorization()
+	if !ok {
+		return
+	}
+	if s.cfg.VMCPBroker != nil {
+		_ = s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
+	}
+	results, err := sess.AbortMCPAuthorization(reason)
+	if err != nil || sess.RecordToolResults(results) != nil {
+		return
+	}
+	_ = s.cfg.Store.Save(ctx, sess)
+}
+
 // CloseSession tears down the per-session engine registered for id (if any) and
 // removes it from the registry. It is idempotent: an id with no per-session
 // engine is a no-op. The ACP adapter calls it when an editor disconnects so a
@@ -2804,22 +2830,22 @@ func (s *Service) SetSessionEnvironment(id session.SessionID, env tool.Environme
 // editor disconnect already implies the run is being abandoned, so blocking briefly
 // for the in-flight call to unwind is the correct, leak-free behaviour.
 func (s *Service) CloseSession(id session.SessionID) {
-	// A close is a control-plane contender for a parked authorization. Serialize it
-	// with recheck, cancellation, and expiry before broker state is forgotten.
 	unlock := s.runEntryMu.lock(id)
 	defer unlock()
-	if s.cfg.VMCPBroker != nil {
-		if sess, err := s.cfg.Store.Load(context.Background(), id); err == nil {
-			if pending, ok := sess.PendingMCPAuthorization(); ok {
-				_ = s.cfg.VMCPBroker.CancelAuthorization(context.Background(), id, pending.RouteID, pending.AuthorizationID)
-				if results, err := sess.AbortMCPAuthorization("MCP authorization interrupted by session close"); err == nil {
-					if sess.RecordToolResults(results) == nil {
-						_ = s.cfg.Store.Save(context.Background(), sess)
-					}
-				}
-			}
-		}
-	}
+	s.closeSessionLocked(id)
+}
+
+// closeSessionLocked performs teardown while its caller holds runEntryMu for id.
+func (s *Service) closeSessionLocked(id session.SessionID) {
+	// A close is a control-plane contender for a parked authorization. Serialize it
+	// with recheck, cancellation, and expiry before broker state is forgotten.
+	s.abortParkedMCPAuthorization(context.Background(), id, "MCP authorization interrupted by session close")
+	s.closeSessionResourcesLocked(id)
+}
+
+// closeSessionResourcesLocked tears down an already-deleted or lifecycle-settled
+// session without loading its snapshot again. The caller holds runEntryMu for id.
+func (s *Service) closeSessionResourcesLocked(id session.SessionID) {
 	// Release composition-owned session-scoped state first (e.g. the per-session
 	// learned permission rules) so it never outlives the session, even if the
 	// per-session engine teardown below is a no-op for this id.
@@ -2892,6 +2918,50 @@ func (s *Service) EndSession(ctx context.Context, id session.SessionID) error {
 	return nil
 }
 
+func (s *Service) prepareClose() bool {
+	// Freeze the service and snapshot every id that can own a process-local broker
+	// authorization. The union intentionally includes broker owners, expiry timers,
+	// held leases, and not-yet-deregistered authorizing runs. Snapshot under s.mu,
+	// then take each per-id control lock outside it: recheck/cancel/expiry may need
+	// s.mu themselves, so holding both would deadlock.
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return false
+	}
+	s.closed = true
+	authorizationIDs := make(map[session.SessionID]struct{})
+	for id := range s.brokerSessions {
+		authorizationIDs[id] = struct{}{}
+	}
+	for id, timer := range s.authorizationExpiry {
+		timer.Stop()
+		authorizationIDs[id] = struct{}{}
+	}
+	clear(s.authorizationExpiry)
+	for id := range s.heldLeases {
+		authorizationIDs[id] = struct{}{}
+	}
+	for id, rs := range s.runs {
+		if rs.authorizing.Load() {
+			authorizationIDs[id] = struct{}{}
+		}
+	}
+	s.mu.Unlock()
+
+	ids := make([]session.SessionID, 0, len(authorizationIDs))
+	for id := range authorizationIDs {
+		ids = append(ids, id)
+	}
+	sort.Slice(ids, func(i, j int) bool { return ids[i] < ids[j] })
+	for _, id := range ids {
+		unlock := s.runEntryMu.lock(id)
+		s.abortParkedMCPAuthorization(context.Background(), id, "MCP authorization interrupted by service shutdown")
+		unlock()
+	}
+	return true
+}
+
 // Close tears down all per-session engines' MCP managers. It is the Service's
 // shutdown hook so a process exit does not leak any per-session MCP connection.
 // It is safe to call multiple times.
@@ -2901,16 +2971,22 @@ func (s *Service) Close() {
 	// and before engine-close so runs unblock promptly rather than waiting on
 	// the full shutdown sequence.
 	s.shutdownCancel()
-	s.mu.Lock()
-	for _, timer := range s.authorizationExpiry {
-		timer.Stop()
+
+	if !s.prepareClose() {
+		return
 	}
-	clear(s.authorizationExpiry)
-	s.mu.Unlock()
 
 	// Cancel every in-flight run so an LLM/MCP call blocked on its context
-	// unwinds. Snapshot under s.mu, then cancel outside to avoid holding the
-	// lock across Cancel (which may block briefly on hardAbort).
+	// unwinds. Snapshot after the authorization-control pass: a recheck that won
+	// its per-id lock just before shutdown may have registered its continuation
+	// while Close waited, and that winner must not escape the shutdown cancel.
+	// Cancel outside s.mu because Cancel may block briefly on hardAbort.
+	s.mu.Lock()
+	runs := make([]*runState, 0, len(s.runs))
+	for _, rs := range s.runs {
+		runs = append(runs, rs)
+	}
+	s.mu.Unlock()
 	//
 	// AWAITING runs are EXCLUDED: a run parked on a permission ask persists a
 	// durable StateAwaiting snapshot (the relay's Persist-on-ask) that is the
@@ -2929,19 +3005,8 @@ func (s *Service) Close() {
 	// correct, since the fire path persists no awaiting snapshot to preserve.
 	// Mid-stream (StateRunning) runs have no durable mid-flight snapshot, so they
 	// ARE cancelled to unwind blocked LLM/MCP calls (the Task #3 intent).
-	s.mu.Lock()
-	if s.closed {
-		s.mu.Unlock()
-		return
-	}
-	s.closed = true
-	var runs []*runState
-	for _, rs := range s.runs {
-		runs = append(runs, rs)
-	}
-	s.mu.Unlock()
 	for _, rs := range runs {
-		if rs.awaiting.Load() || rs.authorizing.Load() {
+		if rs.awaiting.Load() {
 			continue // resumable cross-process via the durable awaiting snapshot
 		}
 		rs.run.Cancel()
@@ -3338,7 +3403,7 @@ func (s *Service) DeleteSession(ctx context.Context, id session.SessionID) error
 		}
 		return fmt.Errorf("%w: delete session: %v", ErrInternal, err)
 	}
-	s.CloseSession(id)
+	s.closeSessionResourcesLocked(id)
 	return nil
 }
 
@@ -3389,7 +3454,7 @@ func (s *Service) DeleteSessionForRetentionCandidate(ctx context.Context, candid
 	if !deleted {
 		return errRetentionCandidateChanged
 	}
-	s.CloseSession(candidate.ID)
+	s.closeSessionResourcesLocked(candidate.ID)
 	return nil
 }
 
@@ -3399,7 +3464,7 @@ func retentionCandidateMatches(sess *session.Session, candidate port.SessionDisc
 	}
 	ownerMatches := candidate.Owner == nil && sess.Owner == nil || candidate.Owner != nil && candidate.Owner.SameIdentity(sess.Owner)
 	return sess.ID == candidate.ID && ownerMatches && sess.Kind == candidate.Kind && sess.State == candidate.State &&
-		sess.State != session.StateRunning && sess.State != session.StateAwaiting && sess.Kind != session.SessionKindUnknown &&
+		sess.State != session.StateRunning && sess.State != session.StateAwaiting && sess.State != session.StateAuthorizing && sess.Kind != session.SessionKindUnknown &&
 		session.ValidateSessionMetadata(sess.Kind, sess.Relationship) == nil
 }
 
@@ -3435,8 +3500,8 @@ func (s *Service) DeleteSessionForRetention(ctx context.Context, id session.Sess
 		sess.Kind == session.SessionKindUnknown || sess.Kind == session.SessionKindMain && hasLegacyNonChatPrefix(id) {
 		return fmt.Errorf("%w: retention candidate has no valid durable taxonomy", ErrFailedPrecondition)
 	}
-	if sess.State == session.StateRunning || sess.State == session.StateAwaiting || s.IsLive(id) {
-		return fmt.Errorf("%w: retention candidate is active or awaiting approval", ErrFailedPrecondition)
+	if sess.State == session.StateRunning || sess.State == session.StateAwaiting || sess.State == session.StateAuthorizing || s.IsLive(id) {
+		return fmt.Errorf("%w: retention candidate is active, awaiting approval, or authorizing", ErrFailedPrecondition)
 	}
 	if err := prunable.Delete(ctx, id); err != nil {
 		if errors.Is(err, port.ErrSessionNotFound) {
@@ -3447,7 +3512,7 @@ func (s *Service) DeleteSessionForRetention(ctx context.Context, id session.Sess
 		}
 		return fmt.Errorf("%w: delete retention candidate: %v", ErrInternal, err)
 	}
-	s.CloseSession(id)
+	s.closeSessionResourcesLocked(id)
 	return nil
 }
 
@@ -3507,8 +3572,8 @@ func (s *Service) managementTarget(ctx context.Context, id session.SessionID, co
 	if sess.Kind != session.SessionKindMain || hasLegacyNonChatPrefix(id) {
 		return nil, false, fmt.Errorf("%w: session is not a main session", ErrFailedPrecondition)
 	}
-	if sess.State == session.StateRunning || sess.State == session.StateAwaiting || s.IsLive(id) {
-		return nil, false, fmt.Errorf("%w: session is active or awaiting approval", ErrFailedPrecondition)
+	if sess.State == session.StateRunning || sess.State == session.StateAwaiting || sess.State == session.StateAuthorizing || s.IsLive(id) {
+		return nil, false, fmt.Errorf("%w: session is active, awaiting approval, or authorizing", ErrFailedPrecondition)
 	}
 	return sess, false, nil
 }
@@ -6315,6 +6380,12 @@ func (s *Service) renewLoop(renewCtx context.Context, id session.SessionID) {
 func (s *Service) onLeaseLost(ctx context.Context, id session.SessionID, cause error) {
 	s.cfg.Diagnostics.Log(ctx, port.LevelWarn, "lost session lease; cancelling run",
 		"session", string(id), "owner", s.cfg.LeaseOwner, "err", cause.Error())
+	// Lease loss is a control-plane resolution contender, not merely a run
+	// cancellation. Serialize with recheck/cancel/expiry/close and invalidate the
+	// exact broker transaction before dropping the held-lease entry or allowing
+	// broker resources to disappear.
+	unlock := s.runEntryMu.lock(id)
+	s.abortParkedMCPAuthorization(context.WithoutCancel(ctx), id, "MCP authorization interrupted by session lease loss")
 	if run, ok := s.LookupRun(id); ok {
 		run.Cancel()
 	}
@@ -6324,6 +6395,7 @@ func (s *Service) onLeaseLost(ctx context.Context, id session.SessionID, cause e
 		delete(s.heldLeases, id)
 	}
 	s.mu.Unlock()
+	unlock()
 }
 
 // releaseLease stops the session's renewer and releases its cross-process lease,

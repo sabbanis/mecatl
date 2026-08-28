@@ -840,7 +840,6 @@ func (r *Runtime) CancelAuthorization(ctx context.Context, id session.SessionID,
 	delete(r.transactions, target)
 	delete(r.authorizations, target)
 	delete(r.grants, target)
-	delete(r.authorizations, target)
 	return nil
 }
 

@@ -64,7 +64,7 @@ func deliverFireStarted(svc *server.Service, queue port.DeliveryQueue) func(ctx 
 				"schedule", sched.Spec.Name, "fire", fire.ID, "origin", string(origin), "kind", "fire started")
 			return
 		}
-		if svc.IsLive(origin) || originSess.State == session.StateAwaiting {
+		if svc.IsLive(origin) || originSess.State == session.StateAwaiting || originSess.State == session.StateAuthorizing {
 			// Enqueued; the loop drains it. Done.
 			return
 		}
@@ -171,7 +171,7 @@ func deliverFireResult(svc *server.Service, queue port.DeliveryQueue) func(ctx c
 		// past its pending ask / collide with its in-flight run. The note is
 		// already enqueued; the loop's Step 2a drain records it at the origin's
 		// next turn boundary (busy) or the resumeFromAwaiting boundary (awaiting).
-		if svc.IsLive(origin) || originSess.State == session.StateAwaiting {
+		if svc.IsLive(origin) || originSess.State == session.StateAwaiting || originSess.State == session.StateAuthorizing {
 			// Enqueued; the loop drains it. Done.
 			return
 		}
