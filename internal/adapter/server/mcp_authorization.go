@@ -71,16 +71,16 @@ func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.Sessio
 	if status.Status != vmcpbroker.ConnectionConnected {
 		return nil, ErrNotFound
 	}
+	engine, env, err := s.engineAndEnvironmentFor(ctx, sess)
+	if err != nil {
+		return nil, fmt.Errorf("%w: continuation engine", ErrFailedPrecondition)
+	}
 	claimed, err := sess.ClaimMCPAuthorization()
 	if err != nil {
 		return nil, ErrNotFound
 	}
 	if err := s.cfg.Store.Save(ctx, sess); err != nil {
 		return nil, fmt.Errorf("%w: persist authorization claim", ErrInternal)
-	}
-	engine, env, err := s.engineAndEnvironmentFor(ctx, sess)
-	if err != nil {
-		return nil, fmt.Errorf("%w: continuation engine", ErrFailedPrecondition)
 	}
 	ctx = memory.WithWorkspace(ctx, sess.Workspace)
 	run := engine.ContinueMCPAuthorization(ctx, sess, env, claimed)
