@@ -894,6 +894,11 @@ var engineCloseTimeout = 10 * time.Second
 // awaiting session remains loadable (a client can GET it and re-attach), but an
 // Approve/Cancel that finds the session only in the store — with no live run —
 // returns ErrNoActiveRun rather than silently succeeding.
+type mcpAuthorizationExpiry struct {
+	timer MCPAuthorizationTimer
+}
+
+// Service coordinates session lifecycle and live runs.
 type Service struct {
 	cfg Config
 
@@ -930,9 +935,8 @@ type Service struct {
 	// parkedCompletions counts relay-drained runs that ended in the distinct
 	// authorization-parked outcome. It is not inferred from an event because a
 	// disconnecting relay can drain without delivering a client frame.
-	parkedCompletions             atomic.Uint64
-	authorizationExpiry           map[session.SessionID]MCPAuthorizationTimer
-	authorizationExpiryGeneration map[session.SessionID]uint64
+	parkedCompletions   atomic.Uint64
+	authorizationExpiry map[session.SessionID]*mcpAuthorizationExpiry
 
 	mu     sync.Mutex
 	closed bool
@@ -1388,24 +1392,23 @@ func NewService(cfg Config) (*Service, error) {
 	}
 	shutdownCtx, shutdownCancel := context.WithCancel(context.Background())
 	svc := &Service{
-		cfg:                           cfg,
-		shutdownCtx:                   shutdownCtx,
-		shutdownCancel:                shutdownCancel,
-		runs:                          make(map[session.SessionID]*runState),
-		teams:                         make(map[string]*teamState),
-		sessionEngines:                make(map[session.SessionID]*sessionEngine),
-		brokerSessions:                make(map[session.SessionID]*brokerSession),
-		authorizationExpiry:           make(map[session.SessionID]MCPAuthorizationTimer),
-		authorizationExpiryGeneration: make(map[session.SessionID]uint64),
-		sessionEnvironments:           make(map[session.SessionID]tool.Environment),
-		reservedIDs:                   make(map[session.SessionID]struct{}),
-		replayedApprovals:             make(map[session.SessionID]struct{}),
-		steerMsgIDs:                   make(map[session.SessionID][]steerMsgID),
-		heldLeases:                    make(map[session.SessionID]*heldLease),
-		cleanupTokenKey:               cleanupTokenKey,
-		cleanupPlans:                  make(map[string]cleanupTokenPayload),
-		cleanupJobs:                   make(map[string]cleanupJobRecord),
-		subscriptions:                 make(map[session.SessionID]map[int64]chan session.Event),
+		cfg:                 cfg,
+		shutdownCtx:         shutdownCtx,
+		shutdownCancel:      shutdownCancel,
+		runs:                make(map[session.SessionID]*runState),
+		teams:               make(map[string]*teamState),
+		sessionEngines:      make(map[session.SessionID]*sessionEngine),
+		brokerSessions:      make(map[session.SessionID]*brokerSession),
+		authorizationExpiry: make(map[session.SessionID]*mcpAuthorizationExpiry),
+		sessionEnvironments: make(map[session.SessionID]tool.Environment),
+		reservedIDs:         make(map[session.SessionID]struct{}),
+		replayedApprovals:   make(map[session.SessionID]struct{}),
+		steerMsgIDs:         make(map[session.SessionID][]steerMsgID),
+		heldLeases:          make(map[session.SessionID]*heldLease),
+		cleanupTokenKey:     cleanupTokenKey,
+		cleanupPlans:        make(map[string]cleanupTokenPayload),
+		cleanupJobs:         make(map[string]cleanupJobRecord),
+		subscriptions:       make(map[session.SessionID]map[int64]chan session.Event),
 	}
 	// Narrow the durable log to the cursor seam once (ADR 0250). A backend that
 	// does not implement it leaves this nil, and the watch surface reports the
@@ -2860,9 +2863,12 @@ func (s *Service) CloseSession(id session.SessionID) {
 
 // closeSessionLocked performs teardown while its caller holds runEntryMu for id.
 func (s *Service) closeSessionLocked(id session.SessionID) {
-	// A close is a control-plane contender for a parked authorization. Serialize it
-	// with recheck, cancellation, and expiry before broker state is forgotten.
-	s.abortParkedMCPAuthorization(context.Background(), id, "MCP authorization interrupted by session close")
+	// A close may repair durable authorizing state only while this process holds
+	// (or acquires) its session lease. Resource teardown remains best-effort even
+	// when a peer owns the durable session.
+	if err := s.acquireLease(context.Background(), id); err == nil {
+		s.abortParkedMCPAuthorization(context.Background(), id, "MCP authorization interrupted by session close")
+	}
 	s.closeSessionResourcesLocked(id)
 }
 
@@ -2876,9 +2882,8 @@ func (s *Service) closeSessionResourcesLocked(id session.SessionID) {
 		s.cfg.OnCloseSession(id)
 	}
 	s.mu.Lock()
-	s.authorizationExpiryGeneration[id]++
 	if timer := s.authorizationExpiry[id]; timer != nil {
-		timer.Stop()
+		timer.timer.Stop()
 		delete(s.authorizationExpiry, id)
 	}
 	se, ok := s.sessionEngines[id]
@@ -2959,8 +2964,7 @@ func (s *Service) prepareClose() bool {
 		authorizationIDs[id] = struct{}{}
 	}
 	for id, timer := range s.authorizationExpiry {
-		timer.Stop()
-		s.authorizationExpiryGeneration[id]++
+		timer.timer.Stop()
 		authorizationIDs[id] = struct{}{}
 	}
 	clear(s.authorizationExpiry)
@@ -6716,45 +6720,37 @@ func (s *Service) scheduleMCPAuthorizationExpiry(id session.SessionID) {
 		delay = 0
 	}
 
-	// Generation ownership makes an expired callback from an earlier park a no-op
-	// after recheck/cancel/close replaces or removes the exact authorization.
+	entry := &mcpAuthorizationExpiry{}
+	entry.timer = s.cfg.MCPAuthorizationTimer(delay, func() {
+		s.expireScheduledMCPAuthorization(id, pending.AuthorizationID, entry)
+	})
 	s.mu.Lock()
 	if s.closed {
 		s.mu.Unlock()
+		entry.timer.Stop()
 		return
 	}
-	generation := s.authorizationExpiryGeneration[id] + 1
-	s.authorizationExpiryGeneration[id] = generation
 	old := s.authorizationExpiry[id]
-	delete(s.authorizationExpiry, id)
+	s.authorizationExpiry[id] = entry
 	s.mu.Unlock()
 	if old != nil {
-		old.Stop()
+		old.timer.Stop()
 	}
-	timer := s.cfg.MCPAuthorizationTimer(delay, func() { s.expireScheduledMCPAuthorization(id, pending.AuthorizationID, generation) })
-	s.mu.Lock()
-	if s.closed || s.authorizationExpiryGeneration[id] != generation {
-		s.mu.Unlock()
-		timer.Stop()
-		return
-	}
-	s.authorizationExpiry[id] = timer
-	s.mu.Unlock()
 }
 
 func (s *Service) stopMCPAuthorizationExpiry(id session.SessionID) {
 	s.mu.Lock()
-	s.authorizationExpiryGeneration[id]++
-	if timer := s.authorizationExpiry[id]; timer != nil {
-		timer.Stop()
-		delete(s.authorizationExpiry, id)
-	}
+	entry := s.authorizationExpiry[id]
+	delete(s.authorizationExpiry, id)
 	s.mu.Unlock()
+	if entry != nil {
+		entry.timer.Stop()
+	}
 }
 
-func (s *Service) expireScheduledMCPAuthorization(id session.SessionID, authorizationID string, generation uint64) {
+func (s *Service) expireScheduledMCPAuthorization(id session.SessionID, authorizationID string, entry *mcpAuthorizationExpiry) {
 	s.mu.Lock()
-	if s.closed || s.authorizationExpiryGeneration[id] != generation {
+	if s.closed || s.authorizationExpiry[id] != entry {
 		s.mu.Unlock()
 		return
 	}

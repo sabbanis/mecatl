@@ -136,7 +136,7 @@ func TestSessionMCPAuthorization_Scenario8_LeaseAndShutdownResolveBeforeForget(t
 		const id session.SessionID = "service-shutdown"
 		svc, store, runtime := lifecycleAuthorizationService(t, id)
 		svc.mu.Lock()
-		svc.authorizationExpiry[id] = time.NewTimer(time.Hour)
+		svc.authorizationExpiry[id] = &mcpAuthorizationExpiry{timer: time.NewTimer(time.Hour)}
 		svc.mu.Unlock()
 		svc.Close()
 		assertAuthorizationPaired(t, store, id, "service shutdown")
@@ -169,6 +169,19 @@ func TestSessionMCPAuthorization_Scenario7_ExpiryResolvesOnce(t *testing.T) {
 	// The exact handle was consumed; a duplicate expiry must not append a second
 	// paired result.
 	svc.expireMCPAuthorization(id, "authorization-exact")
+	assertAuthorizationPaired(t, store, id, "expired")
+}
+
+func TestSessionMCPAuthorization_Scenario7_CancelClassifiesExpiry(t *testing.T) {
+	const id session.SessionID = "cancel-expired"
+	svc, store, runtime := lifecycleAuthorizationService(t, id)
+	t.Cleanup(func() { _ = runtime.Close() })
+	svc.cfg.Now = func() time.Time { return time.Now().Add(2 * time.Hour) }
+
+	_, err := svc.CancelMCPAuthorization(context.Background(), id, MCPAuthorizationControl{SessionID: id, AuthorizationID: "authorization-exact"})
+	if err != nil {
+		t.Fatalf("CancelMCPAuthorization: %v", err)
+	}
 	assertAuthorizationPaired(t, store, id, "expired")
 }
 

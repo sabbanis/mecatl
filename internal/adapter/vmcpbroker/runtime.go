@@ -827,11 +827,12 @@ type AuthorizationStatus struct {
 }
 
 // CheckAuthorization validates the session-local route and opaque handle, then
-// reports only its pending/connected state. Backend ids stay inside Runtime.
+// reports only its pending/connected state. It deliberately does not expire or
+// remove the transaction: the Service owns the durable expiry decision. Backend
+// ids stay inside Runtime.
 func (r *Runtime) CheckAuthorization(_ context.Context, id session.SessionID, routeID, authorizationID string) (AuthorizationStatus, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.collectExpiredLocked(r.now())
 	target, ok := r.targetForRouteLocked(id, routeID)
 	if !ok || authorizationID == "" || r.authorizations[target] != authorizationID {
 		return AuthorizationStatus{}, ErrInvalidControlTarget

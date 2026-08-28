@@ -124,6 +124,9 @@ func (s *Service) CancelMCPAuthorization(ctx context.Context, id session.Session
 	// The Runtime's transaction may already be absent after a process-local
 	// failure. The durable aggregate remains authoritative for the paired repair.
 	_ = s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
+	if !pending.ExpiresAt.After(s.cfg.Now()) {
+		return s.resolveMCPAuthorization(ctx, sess, "MCP authorization expired")
+	}
 	return s.resolveMCPAuthorization(ctx, sess, "MCP authorization cancelled")
 }
 
