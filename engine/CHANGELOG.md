@@ -150,6 +150,11 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   unusable when precise cancellation cannot confirm removal, so a failed durable
   parking transition cannot orphan a reusable broker transaction. Added (minor).
 
+- **`tool.AuthorizationRequester.InvalidateAuthorization` now reports failure** —
+  its `error` result makes a failed cancellation observable so the engine can retain
+  ownership of the parked broker authorization rather than silently orphaning a
+  reusable transaction. Changed (pre-v1 minor bump).
+
 - **Broker authorization correlation event** — `session.MCPAuthorizationPayload`
   and `session.Event.MCPAuthorization` expose only the parked transaction ID,
   backend, call ID, and expiry to attached clients. Added (minor).

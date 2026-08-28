@@ -761,7 +761,7 @@ func (h *HTTPHandler) relayRunSSE(w http.ResponseWriter, r *http.Request, id ses
 		if persistAtEnd {
 			h.svc.Persist(context.WithoutCancel(r.Context()), id)
 		}
-		h.svc.deregister(id, run)
+		h.svc.FinishRun(id, run)
 	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")

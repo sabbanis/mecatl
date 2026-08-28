@@ -914,6 +914,11 @@ type Service struct {
 	// load-bearing for a race that cannot occur in practice.
 	modelsRefresher atomic.Pointer[func(context.Context)]
 
+	// parkedCompletions counts relay-drained runs that ended in the distinct
+	// authorization-parked outcome. It is not inferred from an event because a
+	// disconnecting relay can drain without delivering a client frame.
+	parkedCompletions atomic.Uint64
+
 	mu     sync.Mutex
 	closed bool
 	runs   map[session.SessionID]*runState
@@ -6474,14 +6479,27 @@ func (s *Service) deregister(id session.SessionID, run *agent.Run) {
 	s.mu.Unlock()
 }
 
-// FinishRun removes run from the in-flight registry for id. It is the EXPORTED
-// counterpart of register that every wire adapter must call (typically via
-// `defer`) once it has finished draining run.Events(), so a completed run does
-// not leak in the registry. It is idempotent and only removes the entry if run
-// is still the one recorded (a later run for the same session is never
-// clobbered), so it is safe to call unconditionally after a drain.
+// FinishRun records the drained run's terminal outcome and removes it from the
+// in-flight registry. Wire relays call it only after draining run.Events(). A
+// parked authorization is deliberately distinct from an event: the outcome
+// remains authoritative even if a disconnected client did not receive its frame.
+// It is idempotent and only acts when run is still the registered run.
 func (s *Service) FinishRun(id session.SessionID, run *agent.Run) {
-	s.deregister(id, run)
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if st, ok := s.runs[id]; !ok || st.run != run {
+		return
+	}
+	if run.Outcome() == agent.RunOutcomeAuthorizationParked {
+		s.parkedCompletions.Add(1)
+	}
+	delete(s.runs, id)
+}
+
+// ParkedCompletions reports relay-drained authorization parks observed by this
+// Service process. Unlike ActiveRuns, it is a cumulative completion metric.
+func (s *Service) ParkedCompletions() uint64 {
+	return s.parkedCompletions.Load()
 }
 
 // Subscribe registers a new per-session live event subscriber and returns a

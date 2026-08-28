@@ -1387,9 +1387,10 @@ func (t *protectedSessionTool) CancelAuthorization(_ context.Context, authorizat
 
 // InvalidateAuthorization makes this retained wrapper unusable. It is the
 // authoritative fallback when precise transaction cancellation cannot confirm
-// removal, preventing any unowned transaction from being reused.
-func (t *protectedSessionTool) InvalidateAuthorization(_ context.Context, _ string) {
-	_ = t.owner.Close()
+// removal; Close tombstones the session before any fallible cleanup, so even an
+// error leaves this requester unable to create or execute a transaction.
+func (t *protectedSessionTool) InvalidateAuthorization(_ context.Context, _ string) error {
+	return t.owner.Close()
 }
 
 func (t *sessionTool) Execute(ctx context.Context, call session.ToolCall, _ tool.Environment) (session.ToolResult, error) {

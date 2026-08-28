@@ -2,11 +2,14 @@ package server_test
 
 import (
 	"bufio"
+	"context"
 	"net/http"
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
+	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/server"
@@ -45,4 +48,40 @@ func TestMCPAuthorizationParkedRelayLifecycle(t *testing.T) {
 	if stored.State != session.StateAuthorizing {
 		t.Fatalf("session state = %s, want authorizing", stored.State)
 	}
+	if got := svc.ParkedCompletions(); got != 1 {
+		t.Fatalf("HTTP parked completions = %d, want 1", got)
+	}
+
+	t.Run("grpc", func(t *testing.T) {
+		protected := &parkedAuthorizationTool{scriptTool: scriptTool{name: "mcp__configured__read", readOnly: true, content: "must not execute"}}
+		svc := newService(t, mockllm.New(mockllm.ToolCallTurn(call("call-1", protected.name, `{}`))), allowRules(), protected)
+		client, cleanup := dialGRPC(t, svc)
+		defer cleanup()
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		created, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+		if err != nil {
+			t.Fatalf("CreateSession: %v", err)
+		}
+		stream, err := client.Converse(ctx)
+		if err != nil {
+			t.Fatalf("Converse: %v", err)
+		}
+		if err := stream.Send(&mecatlv1.ConverseRequest{Kind: &mecatlv1.ConverseRequest_Prompt{Prompt: &mecatlv1.Prompt{SessionId: created.GetSessionId(), Text: "go"}}}); err != nil {
+			t.Fatalf("Send prompt: %v", err)
+		}
+		if err := stream.CloseSend(); err != nil {
+			t.Fatalf("CloseSend: %v", err)
+		}
+		events := recvAll(t, stream)
+		if !hasType(events, "mcp.authorization.required") || hasType(events, "result") {
+			t.Fatalf("gRPC events = %+v, want authorization required and no terminal result", events)
+		}
+		if got := svc.ParkedCompletions(); got != 1 {
+			t.Fatalf("gRPC parked completions = %d, want 1", got)
+		}
+		if _, ok := svc.LookupRun(session.SessionID(created.GetSessionId())); ok {
+			t.Fatal("gRPC relay retained parked run after drain")
+		}
+	})
 }

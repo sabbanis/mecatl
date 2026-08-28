@@ -1497,10 +1497,11 @@ func (e *Engine) authorizationParkFailures(r *Run, turnIdx int, park *dispatchPa
 	return results
 }
 
-func invalidateAuthorization(ctx context.Context, park *dispatchPark) {
-	if park.tool.CancelAuthorization(context.WithoutCancel(ctx), park.request.ID) != nil {
-		park.tool.InvalidateAuthorization(context.WithoutCancel(ctx), park.request.ID)
+func invalidateAuthorization(ctx context.Context, park *dispatchPark) error {
+	if park.tool.CancelAuthorization(context.WithoutCancel(ctx), park.request.ID) == nil {
+		return nil
 	}
+	return park.tool.InvalidateAuthorization(context.WithoutCancel(ctx), park.request.ID)
 }
 
 // parkAuthorization is the one durable parking tail for both normal dispatch and
@@ -1521,12 +1522,16 @@ func (e *Engine) parkAuthorization(ctx context.Context, r *Run, sess *session.Se
 		ConfigID: park.request.ConfigID, ExpiresAt: park.request.ExpiresAt, Call: park.call, Deferred: park.deferred,
 	}); err != nil {
 		failure := "cannot park for broker authorization"
-		invalidateAuthorization(ctx, park)
+		if err := invalidateAuthorization(ctx, park); err != nil {
+			failure = "broker authorization invalidation failed"
+		}
 		return e.authorizationParkFailures(r, turnIdx, park, failure), false
 	}
 	if err := e.saveRequired(ctx, sess); err != nil {
 		failure := "broker authorization could not be saved"
-		invalidateAuthorization(ctx, park)
+		if err := invalidateAuthorization(ctx, park); err != nil {
+			failure = "broker authorization invalidation failed"
+		}
 		aborted, abortErr := sess.AbortMCPAuthorization(failure)
 		if abortErr != nil {
 			return nil, false

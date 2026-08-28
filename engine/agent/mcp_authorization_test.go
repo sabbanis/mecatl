@@ -38,8 +38,8 @@ func (t *authorizationTool) CancelAuthorization(ctx context.Context, id string) 
 	}
 	return nil
 }
-func (*authorizationTool) InvalidateAuthorization(context.Context, string) {}
-func (*authorizationTool) DispatchSerial() bool                            { return true }
+func (*authorizationTool) InvalidateAuthorization(context.Context, string) error { return nil }
+func (*authorizationTool) DispatchSerial() bool                                  { return true }
 
 type failingAuthorizationStore struct{ err error }
 
@@ -134,9 +134,30 @@ func TestInvariant_restored_permission_approval_preserves_mcp_authorization_park
 	policy := permpolicy.NewPolicy([]governance.Rule{{Scope: governance.ScopeBuiltinDefault, Effect: governance.Ask}}, nil)
 	sess := session.New("restored-mcp-park", session.ModeDefault, "/ws", session.Limits{}, time.Unix(0, 0))
 
+	store := memstore.New()
 	first := &fakeTool{name: "mcp__protected__list", readOnly: true}
-	e1 := newEngine(agent.Deps{LLM: mockllm.New(mockllm.ToolCallTurn(toolCall("protected", first.name, `{}`))), Catalog: catalogWith(t, first), Policy: policy})
-	askID, restored := driveToAwaiting(t, e1, sess, agent.MemEnv("/ws"), "go")
+	e1 := newEngine(agent.Deps{LLM: mockllm.New(mockllm.ToolCallTurn(toolCall("protected", first.name, `{}`))), Catalog: catalogWith(t, first), Policy: policy, Store: store})
+	var askID string
+	var restored *session.Session
+	r := e1.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go"})
+	for event := range r.Events() {
+		if event.Type != session.EvPermissionAsk || event.Ask == nil || askID != "" {
+			continue
+		}
+		askID = event.Ask.AskID
+		if err := store.Save(context.Background(), sess); err != nil {
+			t.Fatalf("Save awaiting session: %v", err)
+		}
+		var err error
+		restored, err = store.Load(context.Background(), sess.ID)
+		if err != nil {
+			t.Fatalf("Load awaiting session: %v", err)
+		}
+		r.Cancel()
+	}
+	if askID == "" || restored == nil || restored.State != session.StateAwaiting {
+		t.Fatalf("restored awaiting state = %v/%v/%v, want ask/loaded/awaiting", askID, restored != nil, restored != nil && restored.State == session.StateAwaiting)
+	}
 
 	protected := &authorizationTool{
 		fakeTool: fakeTool{name: first.name, readOnly: true, exec: func(context.Context, session.ToolCall, tool.Workspace) (session.ToolResult, error) {

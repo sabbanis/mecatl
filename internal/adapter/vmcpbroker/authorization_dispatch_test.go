@@ -33,7 +33,10 @@ func TestInvariant_mcp_authorization_failed_invalidation_retains_ownership(t *te
 	if err := requester.CancelAuthorization(context.Background(), "missing"); !errors.Is(err, ErrInvalidControlTarget) {
 		t.Fatalf("CancelAuthorization missing = %v, want ErrInvalidControlTarget", err)
 	}
-	requester.InvalidateAuthorization(context.Background(), "missing")
+	opened.closeFunc = func() error { return errors.New("transport close failed") }
+	if err := requester.InvalidateAuthorization(context.Background(), "missing"); err == nil {
+		t.Fatal("InvalidateAuthorization succeeded despite failed cleanup")
+	}
 	if _, _, err := requester.RequestAuthorization(context.Background()); !errors.Is(err, ErrClosed) {
 		t.Fatalf("retained requester after invalidation = %v, want ErrClosed", err)
 	}
