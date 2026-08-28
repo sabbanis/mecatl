@@ -229,8 +229,8 @@ one change.
 
 **Acceptance:**
 
-- AC7.1: root and engine direct production imports use `github.com/goccy/go-yaml`; yaml.v3 has no direct production import, direct require, or engine adapter allowlist entry.
-  - verify: `TestGoccyYAMLMigration_Scenario7_NoDirectYAMLV3UsesRemain`
+- AC7.1: root and engine direct production imports use only `github.com/goccy/go-yaml` for YAML parsing; yaml.v2, yaml.v3, `sigs.k8s.io/yaml`, and any other YAML parser are denied by a repository lint rule. Transitive dependencies are out of scope.
+  - verify: `TestGoccyYAMLMigration_Scenario7_OnlyGoccyYAMLParserIsDirectlyImported`
 - AC7.2: goccy is allowed only where the current parser dependency belongs, and engine domain/port/agent layering remains unchanged.
   - verify: inspection — `task lint` runs depguard, vet, and the engine layering checks.
 - AC7.3: the engine independently resolves, builds, and tests with goccy in its small standalone closure and no root-module dependency.
