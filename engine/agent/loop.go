@@ -1519,7 +1519,16 @@ func invalidateAuthorization(ctx context.Context, park *dispatchPark) error {
 func (e *Engine) parkAuthorization(ctx context.Context, r *Run, sess *session.Session, turnIdx int, park *dispatchPark, completed []session.ToolResult) ([]session.ToolResult, bool) {
 	if len(completed) != 0 {
 		if err := sess.RecordToolResults(completed); err != nil {
-			return nil, false
+			// The requester has already allocated a broker transaction, but no
+			// durable aggregate transition can now own it.  Cancel its exact ID,
+			// then force the requester to tombstone it if cancellation cannot be
+			// confirmed.  Never leave the handle usable merely because recording
+			// the preceding completions failed.
+			failure := "cannot record completions before broker authorization"
+			if cleanupErr := invalidateAuthorization(ctx, park); cleanupErr != nil {
+				failure = "broker authorization invalidation failed"
+			}
+			return e.authorizationParkFailures(r, turnIdx, park, failure), false
 		}
 	}
 	if !r.req.AuthorizationPresentation || e.deps.Role != "" {

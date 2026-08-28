@@ -941,10 +941,18 @@ func (r *Runtime) exchangeDownstreamCode(ctx context.Context, code, verifier str
 	cfg := r.oauthConfig()
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, r.httpClient)
 	token, err := cfg.Exchange(ctx, code, oauth2.SetAuthURLParam("code_verifier", verifier))
-	if err != nil || token == nil || token.AccessToken == "" {
+	if err != nil || !validBearerToken(token) {
 		return downstreamGrant{}, ErrInvalidControlTarget
 	}
 	return newDownstreamGrant(token), nil
+}
+
+// validBearerToken admits only an OAuth bearer credential. Empty TokenType is
+// OAuth's bearer default; any explicit non-bearer type must never reach the
+// transport, where oauth2 would otherwise emit a different authorization scheme.
+func validBearerToken(token *oauth2.Token) bool {
+	return token != nil && token.AccessToken != "" &&
+		(token.TokenType == "" || strings.EqualFold(token.TokenType, "Bearer"))
 }
 
 func newDownstreamGrant(token *oauth2.Token) downstreamGrant {
@@ -978,6 +986,9 @@ func (s scopedGrantTokenSource) Token() (*oauth2.Token, error) {
 		}
 	}
 	if grant.token != nil {
+		if !validBearerToken(grant.token) {
+			return nil, ErrInvalidControlTarget
+		}
 		return grant.token, nil
 	}
 	if grant.accessToken == "" {
@@ -1071,7 +1082,7 @@ func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, grant downstrea
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, r.httpClient)
 	cfg := r.oauthConfig()
 	refreshed, err := cfg.TokenSource(ctx, token).Token()
-	if err != nil || refreshed == nil || refreshed.AccessToken == "" {
+	if err != nil || !validBearerToken(refreshed) {
 		return downstreamGrant{}, errDownstreamRefreshRejected
 	}
 	return newDownstreamGrant(refreshed), nil

@@ -3,6 +3,7 @@ package vmcpbroker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -29,6 +30,7 @@ import (
 	"github.com/stacklok/toolhive/pkg/vmcp/router"
 	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
 	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
+	"golang.org/x/oauth2"
 
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
@@ -385,5 +387,35 @@ func TestInvariant_mcp_authorization_transaction_has_one_linearized_terminal_own
 	}
 	if connected, err := runtime.Connect(context.Background(), "race", "github"); err != nil || connected.Status != ConnectionPending || connected.AuthorizationRequired.Handle == pending.AuthorizationRequired.Handle {
 		t.Fatalf("Connect after cancellation = %+v, %v; want a distinct pending transaction", connected, err)
+	}
+}
+
+func TestInvariant_mcp_authorization_rejects_non_bearer_token_before_transport(t *testing.T) {
+	for _, token := range []*oauth2.Token{
+		{AccessToken: "access"},
+		{AccessToken: "access", TokenType: "Bearer"},
+		{AccessToken: "access", TokenType: "bearer"},
+	} {
+		if !validBearerToken(token) {
+			t.Fatalf("validBearerToken(%+v) = false, want true", token)
+		}
+	}
+	for _, token := range []*oauth2.Token{
+		nil,
+		{TokenType: "Bearer"},
+		{AccessToken: "access", TokenType: "Basic"},
+		{AccessToken: "access", TokenType: "Bearer "},
+	} {
+		if validBearerToken(token) {
+			t.Fatalf("validBearerToken(%+v) = true, want false", token)
+		}
+	}
+
+	target := controlTarget{sessionID: "session", backendID: "protected"}
+	runtime := &Runtime{grants: map[controlTarget]downstreamGrant{
+		target: {token: &oauth2.Token{AccessToken: "access", TokenType: "Basic"}},
+	}}
+	if _, err := (scopedGrantTokenSource{runtime: runtime, target: target}).Token(); !errors.Is(err, ErrInvalidControlTarget) {
+		t.Fatalf("non-bearer Token() error = %v, want ErrInvalidControlTarget", err)
 	}
 }

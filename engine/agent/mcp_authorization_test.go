@@ -338,14 +338,42 @@ func TestInvariant_unattended_runs_never_park_for_mcp_authorization(t *testing.T
 }
 
 func TestSessionMCPAuthorization_Scenario5_GatesPrecedeConnect(t *testing.T) {
-	protected := &authorizationTool{fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true}, request: tool.AuthorizationRequest{ID: "request"}}
-	llm := mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{}`)), mockllm.TextTurn("done"))
-	e := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, protected), Policy: permpolicy.NewPolicy([]governance.Rule{{Scope: governance.ScopeBuiltinDefault, Effect: governance.Deny}}, nil)})
-	sess := newSession(t, session.Limits{})
-	drain(e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true}))
-	if protected.calls != 0 {
-		t.Fatalf("authorization transactions = %d, want none after permission denial", protected.calls)
+	for _, tc := range []struct {
+		name string
+		deps agent.Deps
+	}{
+		{
+			name: "permission denial",
+			deps: agent.Deps{Policy: permpolicy.NewPolicy([]governance.Rule{{Scope: governance.ScopeBuiltinDefault, Effect: governance.Deny}}, nil)},
+		},
+		{
+			name: "pre-tool-use block",
+			deps: agent.Deps{Hooks: preBlockAuthorizationHook{}},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			protected := &authorizationTool{fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true}, request: tool.AuthorizationRequest{ID: "request"}}
+			llm := mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{}`)), mockllm.TextTurn("done"))
+			deps := tc.deps
+			deps.LLM = llm
+			deps.Catalog = catalogWith(t, protected)
+			e := newEngine(deps)
+			sess := newSession(t, session.Limits{})
+			drain(e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true}))
+			if protected.calls != 0 {
+				t.Fatalf("authorization transactions = %d, want none after %s", protected.calls, tc.name)
+			}
+		})
 	}
+}
+
+type preBlockAuthorizationHook struct{}
+
+func (preBlockAuthorizationHook) Run(_ context.Context, ev governance.HookEvent) (governance.HookOutcome, error) {
+	if ev.Phase == governance.PhasePreToolUse {
+		return governance.HookOutcome{Block: true, Message: "blocked before broker authorization"}, nil
+	}
+	return governance.HookOutcome{}, nil
 }
 
 func TestSessionMCPAuthorization_Scenario5_ParksMidTurnDeterministically(t *testing.T) {
@@ -574,6 +602,57 @@ func TestSessionMCPAuthorization_Scenario6_UnrelatedReadsRemainParallel(t *testi
 	drain(r)
 	if overlap.max() != 2 || protected.calls != 1 || sess.State != session.StateAuthorizing {
 		t.Fatalf("read overlap/broker requests/state = %d/%d/%s, want 2/1/authorizing", overlap.max(), protected.calls, sess.State)
+	}
+}
+
+// TestInvariant_mcp_authorization_parks_mid_turn_after_preceding_completion
+// exercises one actual same-process turn: a normal earlier call completes, the
+// protected middle call parks, and the later sibling remains unexecuted and is
+// preserved only as the durable deferred continuation.
+func TestInvariant_mcp_authorization_parks_mid_turn_after_preceding_completion(t *testing.T) {
+	var laterRuns int
+	earlier := &fakeTool{name: "earlier-read", readOnly: true, exec: func(_ context.Context, call session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
+		return session.NewToolResult(call.ID, "earlier complete"), nil
+	}}
+	protected := &authorizationTool{
+		fakeTool: fakeTool{name: "mcp__protected__read", readOnly: true, exec: func(context.Context, session.ToolCall, tool.Workspace) (session.ToolResult, error) {
+			t.Fatal("protected call executed instead of parking")
+			return session.ToolResult{}, nil
+		}},
+		request: tool.AuthorizationRequest{ID: "transaction", Backend: "protected", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	later := &fakeTool{name: "later-read", readOnly: true, exec: func(_ context.Context, call session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
+		laterRuns++
+		return session.NewToolResult(call.ID, "must not run"), nil
+	}}
+	e := newEngine(agent.Deps{LLM: mockllm.New(mockllm.ToolCallTurn(
+		toolCall("earlier", earlier.name, `{}`),
+		toolCall("protected", protected.name, `{}`),
+		toolCall("later", later.name, `{}`),
+	)), Catalog: catalogWith(t, earlier, protected, later), Store: memstore.New()})
+	sess := newSession(t, session.Limits{})
+	events := drain(e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true}))
+	if laterRuns != 0 || sess.State != session.StateAuthorizing {
+		t.Fatalf("later runs/state = %d/%s, want 0/authorizing", laterRuns, sess.State)
+	}
+	pending, ok := sess.PendingMCPAuthorization()
+	if !ok || pending.Call.ID != "protected" || len(pending.Deferred) != 1 || pending.Deferred[0].ID != "later" {
+		t.Fatalf("pending continuation = %#v, want protected then deferred later", pending)
+	}
+	var resultBeforeRequired, required bool
+	for _, event := range events {
+		if event.ToolResult != nil && event.ToolResult.CallID == "earlier" {
+			resultBeforeRequired = !required
+		}
+		if event.Type == session.EvMCPAuthorizationRequired {
+			required = true
+		}
+		if event.ToolResult != nil && event.ToolResult.CallID == "later" {
+			t.Fatal("later sibling emitted a result while parked")
+		}
+	}
+	if !resultBeforeRequired || !required {
+		t.Fatalf("events did not retain earlier completion before required park: %v", typesOf(events))
 	}
 }
 
