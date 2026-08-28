@@ -236,6 +236,7 @@ type Runtime struct {
 	callbackURL       string
 	transactionTTL    time.Duration
 	transactions      map[controlTarget]authorizationTransaction
+	authorizations    map[controlTarget]string
 	grants            map[controlTarget]downstreamGrant
 	disconnected      map[controlTarget]struct{}
 	refreshes         map[controlTarget]*refreshOperation
@@ -373,6 +374,7 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 		lifecycles:      make(map[session.SessionID]*sessionLifecycle),
 		tombstones:      make(map[session.SessionID]struct{}),
 		transactions:    make(map[controlTarget]authorizationTransaction),
+		authorizations:  make(map[controlTarget]string),
 		grants:          make(map[controlTarget]downstreamGrant),
 		disconnected:    make(map[controlTarget]struct{}),
 		refreshes:       make(map[controlTarget]*refreshOperation),
@@ -775,6 +777,7 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 		expiresAt:  time.Now().Add(r.transactionTTL),
 	}
 	r.transactions[target] = transaction
+	r.authorizations[target] = handle
 	return authorizationResult(transaction), nil
 }
 
@@ -793,7 +796,63 @@ func (r *Runtime) cancelAuthorization(sessionID session.SessionID, backendID, ha
 		return ErrInvalidControlTarget
 	}
 	delete(r.transactions, target)
+	delete(r.authorizations, target)
 	return nil
+}
+
+// AuthorizationStatus observes a precise, already-created authorization. It
+// never creates a browser transaction; all invalid targets are one error class.
+type AuthorizationStatus struct {
+	Status     ConnectionStatus
+	BrowserURL string
+	ExpiresAt  time.Time
+}
+
+// CheckAuthorization validates the session-local route and opaque handle, then
+// reports only its pending/connected state. Backend ids stay inside Runtime.
+func (r *Runtime) CheckAuthorization(_ context.Context, id session.SessionID, routeID, authorizationID string) (AuthorizationStatus, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.collectExpiredLocked(time.Now())
+	target, ok := r.targetForRouteLocked(id, routeID)
+	if !ok || authorizationID == "" || r.authorizations[target] != authorizationID {
+		return AuthorizationStatus{}, ErrInvalidControlTarget
+	}
+	if pending, ok := r.transactions[target]; ok && pending.handle == authorizationID {
+		return AuthorizationStatus{Status: ConnectionPending, BrowserURL: pending.browserURL, ExpiresAt: pending.expiresAt}, nil
+	}
+	if _, ok := r.grants[target]; ok {
+		return AuthorizationStatus{Status: ConnectionConnected}, nil
+	}
+	return AuthorizationStatus{}, ErrInvalidControlTarget
+}
+
+// CancelAuthorization cancels exactly one handle without Disconnect, allowing a
+// later fresh authorization transaction for the same protected route.
+func (r *Runtime) CancelAuthorization(ctx context.Context, id session.SessionID, routeID, authorizationID string) error {
+	_, _ = ctx, authorizationID
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	target, ok := r.targetForRouteLocked(id, routeID)
+	if !ok || authorizationID == "" || r.authorizations[target] != authorizationID {
+		return ErrInvalidControlTarget
+	}
+	delete(r.transactions, target)
+	delete(r.grants, target)
+	delete(r.authorizations, target)
+	return nil
+}
+
+func (r *Runtime) targetForRouteLocked(id session.SessionID, routeID string) (controlTarget, bool) {
+	if r.closed || !r.openSessionLocked(id) {
+		return controlTarget{}, false
+	}
+	for _, route := range r.routes {
+		if route.Protected && route.Tool.Name == routeID {
+			return controlTarget{sessionID: id, backendID: route.BackendID}, true
+		}
+	}
+	return controlTarget{}, false
 }
 
 // Disconnect removes one backend's broker state without affecting other backends
@@ -1228,6 +1287,7 @@ func (r *Runtime) collectExpiredLocked(now time.Time) {
 	for target, transaction := range r.transactions {
 		if !transaction.expiresAt.After(now) {
 			delete(r.transactions, target)
+			delete(r.authorizations, target)
 		}
 	}
 }

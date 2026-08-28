@@ -1120,6 +1120,50 @@ func askDiscriminatorFor(req RunRequest, serial int64) (value string, colonRejec
 	return fmt.Sprintf("r%d", serial), d != ""
 }
 
+// ResumeMCPAuthorization continues one durably claimed broker authorization.
+// The stored effective call already passed permission and PreToolUse before it
+// parked, so this path intentionally enters at execute: PostToolUse, audit,
+// event emission, result recording, and the ordinary model loop remain shared.
+func (e *Engine) ResumeMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *Run {
+	return e.startRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
+		pending, err := sess.ClaimMCPAuthorization()
+		if err != nil {
+			e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, err, false)
+			return
+		}
+		toolToRun, ok := e.deps.Catalog.Lookup(pending.Call.Name)
+		if !ok {
+			results := []session.ToolResult{session.NewToolError(pending.Call.ID, "broker authorization continuation tool is unavailable")}
+			for _, deferred := range pending.Deferred {
+				results = append(results, session.NewToolError(deferred.ID, "broker authorization deferred sibling was not executed"))
+			}
+			if recordErr := sess.RecordToolResults(results); recordErr != nil {
+				e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, recordErr, false)
+				return
+			}
+			e.save(ctx, r, sess)
+			e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, fmt.Errorf("tool %q unavailable", pending.Call.Name), false)
+			return
+		}
+		result := e.execute(ctx, r, sess, env, sess.Counters.Turns, pending.Call, toolToRun, time.Time{})
+		results := []session.ToolResult{result}
+		for _, deferred := range pending.Deferred {
+			deferredResult := session.NewToolError(deferred.ID, "broker authorization deferred sibling was not executed")
+			e.openCard(r, sess.Counters.Turns, deferred)
+			e.emit(r, session.Event{Type: session.EvToolResult, Turn: sess.Counters.Turns, ToolResult: ptr(deferredResult)})
+			results = append(results, deferredResult)
+		}
+		if err := sess.RecordToolResults(results); err != nil {
+			e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, err, false)
+			return
+		}
+		e.save(ctx, r, sess)
+		// The resumed loop's result accounting is a fresh run delta; seed from the
+		// aggregate only to retain the existing runLoop usage parameter contract.
+		e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
+	})
+}
+
 // startRun mints a Run with the full concurrency preamble (events buffer, ask
 // registry, run-scoped diagnostics, interactive child-ask router, ask-review
 // breaker, child-run registry) and launches body in the run goroutine under the

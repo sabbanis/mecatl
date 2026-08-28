@@ -4279,6 +4279,21 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	// check above therefore runs while runEntryMu is held and before reopen/save.
 	// Reaching this branch proves the running snapshot has no same-process owner
 	// and may be repaired.
+	if sess.State == session.StateAuthorizing {
+		// Runtime authority is process-local. A restored authorizing snapshot is
+		// interruption, never continuity: pair the frozen calls before any new
+		// prompt can run and never ask Runtime to reconnect or execute them.
+		results, ierr := sess.InterruptMCPAuthorization()
+		if ierr != nil {
+			return nil, fmt.Errorf("server: interrupt restored authorization: %w", ierr)
+		}
+		if ierr = sess.RecordToolResults(results); ierr != nil {
+			return nil, fmt.Errorf("server: record interrupted authorization: %w", ierr)
+		}
+		if ierr = s.cfg.Store.Save(ctx, sess); ierr != nil {
+			return nil, fmt.Errorf("server: persist interrupted authorization: %w", ierr)
+		}
+	}
 	if sess.State == session.StateRunning {
 		if err := sess.Abandon(); err != nil {
 			return nil, fmt.Errorf("server: abandon stale running session: %w", err)
