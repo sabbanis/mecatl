@@ -2,7 +2,6 @@ package agentfs
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -11,22 +10,10 @@ import (
 
 	yaml "github.com/goccy/go-yaml"
 	"github.com/goccy/go-yaml/ast"
-	"github.com/goccy/go-yaml/token"
 
+	"github.com/stacklok/mecatl/engine/adapter/yamldiag"
 	"github.com/stacklok/mecatl/engine/tool"
 )
-
-// frontmatterParseError uses only goccy's typed token location; parser text can
-// include YAML-derived content and must not enter a discovery diagnostic.
-func frontmatterParseError(err error) string {
-	var located interface{ GetToken() *token.Token }
-	if errors.As(err, &located) {
-		if parserToken := located.GetToken(); parserToken != nil && parserToken.Position != nil && parserToken.Position.Line > 0 && parserToken.Position.Column > 0 {
-			return fmt.Sprintf("malformed YAML frontmatter at line %d, column %d", parserToken.Position.Line, parserToken.Position.Column)
-		}
-	}
-	return "malformed YAML frontmatter"
-}
 
 // AgentFileExt is the conventional extension of an agent-definition file. A def
 // lives at <dir>/<name>.md (a FLAT file, not a <name>/AGENT.md subdir), matching
@@ -387,7 +374,7 @@ func parseAgentDef(raw []byte, _ string) (AgentDef, string, []string) {
 	}
 	var fm frontmatter
 	if err := yaml.Unmarshal([]byte(fmText), &fm); err != nil {
-		return AgentDef{}, frontmatterParseError(err), nil
+		return AgentDef{}, yamldiag.FrontmatterParseError(err), nil
 	}
 	name := strings.TrimSpace(fm.Name)
 	if name == "" {

@@ -307,6 +307,7 @@ linters:
             - '!$test'
           allow:
             - $gostd
+            - github.com/stacklok/mecatl/engine/adapter/yamldiag
             - github.com/stacklok/mecatl/engine/tool
             - github.com/goccy/go-yaml
           deny:
@@ -319,6 +320,7 @@ linters:
             - '!$test'
           allow:
             - $gostd
+            - github.com/stacklok/mecatl/engine/adapter/yamldiag
             - github.com/stacklok/mecatl/engine/learning
             - github.com/stacklok/mecatl/engine/prompt
             - github.com/stacklok/mecatl/engine/session
@@ -334,11 +336,23 @@ linters:
             - '!$test'
           allow:
             - $gostd
+            - github.com/stacklok/mecatl/engine/adapter/yamldiag
             - github.com/stacklok/mecatl/engine/prompt
             - github.com/goccy/go-yaml
           deny:
             - pkg: os/exec
               desc: 'rulesfs discovers <name>.md rule files via os.ReadDir/ReadFile; it must never spawn processes'
+        engine-adapter-yamldiag:
+          list-mode: strict
+          files:
+            - '**/engine/adapter/yamldiag/**.go'
+            - '!$test'
+          allow:
+            - $gostd
+            - github.com/goccy/go-yaml
+          deny:
+            - pkg: os
+              desc: 'yamldiag formats parser diagnostics; it must not touch the real OS'
         engine-adapter-nofs:
           list-mode: strict
           files:

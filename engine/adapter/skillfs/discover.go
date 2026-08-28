@@ -2,7 +2,6 @@ package skillfs
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -10,22 +9,10 @@ import (
 	"strings"
 
 	yaml "github.com/goccy/go-yaml"
-	"github.com/goccy/go-yaml/token"
 
+	"github.com/stacklok/mecatl/engine/adapter/yamldiag"
 	"github.com/stacklok/mecatl/engine/tool"
 )
-
-// frontmatterParseError uses only goccy's typed token location; parser text can
-// include YAML-derived content and must not enter a discovery diagnostic.
-func frontmatterParseError(err error) string {
-	var located interface{ GetToken() *token.Token }
-	if errors.As(err, &located) {
-		if parserToken := located.GetToken(); parserToken != nil && parserToken.Position != nil && parserToken.Position.Line > 0 && parserToken.Position.Column > 0 {
-			return fmt.Sprintf("malformed YAML frontmatter at line %d, column %d", parserToken.Position.Line, parserToken.Position.Column)
-		}
-	}
-	return "malformed YAML frontmatter"
-}
 
 // SkillFileName is the conventional file every skill directory contains. A skill
 // lives at <dir>/<name>/SKILL.md, mirroring the Agent Skills layout.
@@ -294,7 +281,7 @@ func ParseSkill(raw []byte, path string) (Skill, string, []string) {
 	}
 	var fm frontmatter
 	if err := yaml.Unmarshal([]byte(fmText), &fm); err != nil {
-		return Skill{}, frontmatterParseError(err), nil
+		return Skill{}, yamldiag.FrontmatterParseError(err), nil
 	}
 	name := strings.TrimSpace(fm.Name)
 	if name == "" {
