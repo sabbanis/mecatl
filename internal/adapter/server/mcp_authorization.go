@@ -29,6 +29,9 @@ func (s *Service) MCPAuthorizationPresentation(ctx context.Context, id session.S
 	if !ok || s.cfg.VMCPBroker == nil {
 		return "", ErrNotFound
 	}
+	if !pending.ExpiresAt.After(s.cfg.Now()) {
+		return "", ErrNotFound
+	}
 	status, err := s.cfg.VMCPBroker.CheckAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
 	if err != nil || status.Status != vmcpbroker.ConnectionPending {
 		return "", ErrNotFound
@@ -51,6 +54,12 @@ func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.Sessio
 	}
 	if err := s.acquireLease(ctx, id); err != nil {
 		return nil, err
+	}
+	if !pending.ExpiresAt.After(s.cfg.Now()) {
+		if err := s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID); err != nil {
+			return nil, ErrNotFound
+		}
+		return s.resolveMCPAuthorization(ctx, sess, "MCP authorization expired")
 	}
 	status, err := s.cfg.VMCPBroker.CheckAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
 	if err != nil {
