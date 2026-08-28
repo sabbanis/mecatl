@@ -3970,6 +3970,21 @@ func (s *Service) reopenLoadedSession(ctx context.Context, sess *session.Session
 	// re-derives idempotent rules). It reads the LOADED conversation to correlate the
 	// verdicts, so it must run after GetSession and before the engine runs.
 	s.maybeReplayApprovals(ctx, sess)
+	// Runtime authorization transactions are process-local. A restored
+	// authorizing snapshot must therefore be interrupted, never resumed against a
+	// newly constructed Runtime which happens to report the same backend connected.
+	if sess.State == session.StateAuthorizing {
+		results, rerr := sess.InterruptMCPAuthorization()
+		if rerr != nil {
+			return nil, fmt.Errorf("server: interrupt restored MCP authorization: %w", rerr)
+		}
+		if rerr = sess.RecordToolResults(results); rerr != nil {
+			return nil, fmt.Errorf("server: record restored MCP authorization: %w", rerr)
+		}
+		if rerr = s.cfg.Store.Save(ctx, sess); rerr != nil {
+			return nil, fmt.Errorf("server: persist restored MCP authorization interruption: %w", rerr)
+		}
+	}
 	if sess.State == session.StateFailed && sess.FailurePermanence() {
 		// Capture permanence BEFORE Recover() clears it (resetToIdle sets
 		// permanent=false). Store the pre-flight advisory so the relay can emit
