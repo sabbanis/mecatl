@@ -1183,12 +1183,19 @@ func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Ses
 	return e.PrepareMCPAuthorizationContinuation(ctx, sess, env, pending).Start()
 }
 
+// PrepareAfterMCPAuthorization prepares the ordinary model loop after the service
+// has durably paired a nonconnected authorization outcome. The caller must register
+// Run before Start so cancellation and expiry cannot lose the continuation.
+func (e *Engine) PrepareAfterMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *PreparedRun {
+	return e.prepareRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
+		e.runLoop(ctx, r, sess, env)
+	})
+}
+
 // ContinueAfterMCPAuthorization resumes the ordinary model loop after the
 // service durably paired a nonconnected authorization outcome.
 func (e *Engine) ContinueAfterMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *Run {
-	return e.startRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
-		e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
-	})
+	return e.PrepareAfterMCPAuthorization(ctx, sess, env).Start()
 }
 
 // startRun mints a Run with the full concurrency preamble (events buffer, ask

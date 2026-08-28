@@ -44,3 +44,25 @@ func TestPreparedMCPAuthorizationContinuation_StartGatesExecution(t *testing.T) 
 		t.Fatalf("execution after Start = %d, want 1", got)
 	}
 }
+
+func TestPreparedMCPAuthorizationContinuation_AfterResolutionStartGatesLoop(t *testing.T) {
+	engine := newEngine(agent.Deps{LLM: mockllm.New(mockllm.TextTurn("continued")), Catalog: catalogWith(t)})
+	sess := newSession(t, session.Limits{})
+	if err := sess.BeginTurn(); err != nil {
+		t.Fatalf("BeginTurn: %v", err)
+	}
+	if err := sess.RecordAssistant(session.NewAssistantMessage("", "", nil)); err != nil {
+		t.Fatalf("RecordAssistant: %v", err)
+	}
+
+	prepared := engine.PrepareAfterMCPAuthorization(context.Background(), sess, agent.MemEnv("/ws"))
+	select {
+	case <-prepared.Run().Events():
+		t.Fatal("continuation emitted before Start")
+	default:
+	}
+	drain(prepared.Start())
+	if sess.State != session.StateCompleted {
+		t.Fatalf("state after Start = %q, want completed", sess.State)
+	}
+}

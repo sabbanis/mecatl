@@ -146,9 +146,12 @@ func (s *Service) resolveMCPAuthorization(ctx context.Context, sess *session.Ses
 	if err != nil {
 		return nil, fmt.Errorf("%w: continuation engine", ErrFailedPrecondition)
 	}
-	run := engine.ContinueAfterMCPAuthorization(memory.WithWorkspace(ctx, sess.Workspace), sess, env)
-	s.register(sess.ID, run, sess)
-	return run, nil
+	prepared := engine.PrepareAfterMCPAuthorization(memory.WithWorkspace(ctx, sess.Workspace), sess, env)
+	if !s.register(sess.ID, prepared.Run(), sess) {
+		s.repairMCPAuthorizationRegistration(ctx, sess)
+		return nil, ErrNoActiveRun
+	}
+	return prepared.Start(), nil
 }
 
 func (s *Service) repairMCPAuthorizationRegistration(ctx context.Context, sess *session.Session) {

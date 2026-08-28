@@ -44,3 +44,30 @@ func TestCheckAuthorization_ExpiredStatusDoesNotDeleteRuntimeCorrelation(t *test
 		t.Fatal("status lookup destructively removed authorization correlation")
 	}
 }
+
+func TestConnect_UsesInjectedClockForTransactionExpiry(t *testing.T) {
+	toolHive := newEmbeddedToolHive(t)
+	runtime, err := NewToolHiveRuntime([]Route{{
+		BackendID: "backend", Protected: true,
+		Tool: tool.ToolSpec{Name: "mcp__backend__read", Schema: json.RawMessage(`{"type":"object"}`)},
+	}}, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		return session.ToolResult{}, nil
+	}, toolHive.config, time.Minute)
+	if err != nil {
+		t.Fatalf("NewToolHiveRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	if _, err := runtime.OpenSession("session"); err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	at := time.Unix(123, 0)
+	runtime.SetClock(func() time.Time { return at })
+
+	result, err := runtime.Connect(context.Background(), "session", "backend")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	if got, want := result.AuthorizationRequired.ExpiresAt, at.Add(time.Minute); !got.Equal(want) {
+		t.Fatalf("transaction expiry = %s, want injected clock expiry %s", got, want)
+	}
+}

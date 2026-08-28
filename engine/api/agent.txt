@@ -15,6 +15,7 @@
     method func (*Engine).ContinueMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment, pending session.PendingMCPAuthorization) *Run
     method func (*Engine).HasTool(name string) bool
     method func (*Engine).Model() string
+    method func (*Engine).PrepareAfterMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *PreparedRun
     method func (*Engine).PrepareMCPAuthorizationContinuation(ctx context.Context, sess *session.Session, env tool.Environment, pending session.PendingMCPAuthorization) *PreparedRun
     method func (*Engine).ResumeApproval(ctx context.Context, sess *session.Session, env tool.Environment, askID string, verdict session.ApprovalVerdict) *Run
     method func (*Engine).RetryFailedStep(ctx context.Context, sess *session.Session, env tool.Environment) *Run

@@ -2840,6 +2840,24 @@ func (s *Service) abortParkedMCPAuthorization(ctx context.Context, id session.Se
 	_ = s.cfg.Store.Save(ctx, sess)
 }
 
+// invalidateParkedMCPAuthorization invalidates only this process's Runtime
+// transaction after lease loss. The durable snapshot belongs to the successor;
+// it repairs the authorizing state through its lease-gated restart path.
+func (s *Service) invalidateParkedMCPAuthorization(ctx context.Context, id session.SessionID) {
+	if s.cfg.VMCPBroker == nil {
+		return
+	}
+	sess, err := s.cfg.Store.Load(ctx, id)
+	if err != nil {
+		return
+	}
+	pending, ok := sess.PendingMCPAuthorization()
+	if !ok {
+		return
+	}
+	_ = s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
+}
+
 // CloseSession tears down the per-session engine registered for id (if any) and
 // removes it from the registry. It is idempotent: an id with no per-session
 // engine is a no-op. The ACP adapter calls it when an editor disconnects so a
@@ -6428,12 +6446,12 @@ func (s *Service) renewLoop(renewCtx context.Context, id session.SessionID) {
 func (s *Service) onLeaseLost(ctx context.Context, id session.SessionID, cause error) {
 	s.cfg.Diagnostics.Log(ctx, port.LevelWarn, "lost session lease; cancelling run",
 		"session", string(id), "owner", s.cfg.LeaseOwner, "err", cause.Error())
-	// Lease loss is a control-plane resolution contender, not merely a run
-	// cancellation. Serialize with recheck/cancel/expiry/close and invalidate the
-	// exact broker transaction before dropping the held-lease entry or allowing
-	// broker resources to disappear.
+	// Once renewal reports loss, this process no longer owns durable state. Stop its
+	// local expiry worker and invalidate only its process-local Runtime handle; the
+	// new holder performs the lease-gated interruption repair on re-entry.
 	unlock := s.runEntryMu.lock(id)
-	s.abortParkedMCPAuthorization(context.WithoutCancel(ctx), id, "MCP authorization interrupted by session lease loss")
+	s.stopMCPAuthorizationExpiry(id)
+	s.invalidateParkedMCPAuthorization(context.WithoutCancel(ctx), id)
 	if run, ok := s.LookupRun(id); ok {
 		run.Cancel()
 	}
@@ -6707,7 +6725,16 @@ func (s *Service) FinishRun(id session.SessionID, run *agent.Run) {
 func (s *Service) scheduleMCPAuthorizationExpiry(id session.SessionID) {
 	unlock := s.runEntryMu.lock(id)
 	defer unlock()
-	sess, err := s.GetSession(context.Background(), id)
+	// This is a Service-owned lifecycle callback, not a caller-facing control:
+	// load the durable state directly rather than applying GetSession's request-owner
+	// policy to a background context with no principal.
+	s.mu.Lock()
+	closed := s.closed
+	s.mu.Unlock()
+	if closed {
+		return
+	}
+	sess, err := s.cfg.Store.Load(context.Background(), id)
 	if err != nil {
 		return
 	}

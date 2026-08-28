@@ -129,7 +129,18 @@ func TestSessionMCPAuthorization_Scenario8_LeaseAndShutdownResolveBeforeForget(t
 		svc, store, runtime := lifecycleAuthorizationService(t, id)
 		defer func() { _ = runtime.Close() }()
 		svc.onLeaseLost(context.Background(), id, errors.New("renewal ownership lost"))
-		assertAuthorizationPaired(t, store, id, "lease loss")
+		// A lost holder must not overwrite the successor's durable snapshot. It only
+		// cancels its local transaction; the lease holder repairs on its next entry.
+		sess, err := store.Load(context.Background(), id)
+		if err != nil {
+			t.Fatalf("Load: %v", err)
+		}
+		if sess.State != session.StateAuthorizing {
+			t.Fatalf("state after lost lease = %q, want authorizing for successor repair", sess.State)
+		}
+		if _, ok := sess.PendingMCPAuthorization(); !ok {
+			t.Fatal("lost holder cleared durable pending authorization")
+		}
 	})
 
 	t.Run("service shutdown", func(t *testing.T) {

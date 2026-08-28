@@ -789,7 +789,7 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 		handle:     handle,
 		verifier:   verifier,
 		browserURL: browserURL.String(),
-		expiresAt:  time.Now().Add(r.transactionTTL),
+		expiresAt:  r.now().Add(r.transactionTTL),
 	}
 	r.transactions[target] = transaction
 	r.authorizations[target] = handle
