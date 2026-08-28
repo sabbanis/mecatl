@@ -2,8 +2,10 @@ package agent_test
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -31,14 +33,18 @@ func (s awaitingSnapshotStore) Save(ctx context.Context, sess *session.Session) 
 
 type authorizationTool struct {
 	fakeTool
-	request tool.AuthorizationRequest
-	calls   int
-	cancel  func(context.Context, string) error
-	order   *[]string
+	request   tool.AuthorizationRequest
+	calls     int
+	requestFn func(context.Context) (tool.AuthorizationRequest, bool, error)
+	cancel    func(context.Context, string) error
+	order     *[]string
 }
 
-func (t *authorizationTool) RequestAuthorization(context.Context) (tool.AuthorizationRequest, bool, error) {
+func (t *authorizationTool) RequestAuthorization(ctx context.Context) (tool.AuthorizationRequest, bool, error) {
 	t.calls++
+	if t.requestFn != nil {
+		return t.requestFn(ctx)
+	}
 	if t.order != nil {
 		*t.order = append(*t.order, "broker")
 	}
@@ -58,6 +64,50 @@ type failingAuthorizationStore struct{ err error }
 func (s failingAuthorizationStore) Save(context.Context, *session.Session) error { return s.err }
 func (failingAuthorizationStore) Load(context.Context, session.SessionID) (*session.Session, error) {
 	return nil, port.ErrSessionNotFound
+}
+
+type authorizationEventOrder struct {
+	mu      sync.Mutex
+	entries []string
+}
+
+func (o *authorizationEventOrder) add(entry string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.entries = append(o.entries, entry)
+}
+
+func (o *authorizationEventOrder) snapshot() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return append([]string(nil), o.entries...)
+}
+
+type orderedAuthorizationStore struct {
+	port.SessionStore
+	order *authorizationEventOrder
+}
+
+func (s orderedAuthorizationStore) Save(ctx context.Context, sess *session.Session) error {
+	s.order.add("save")
+	return s.SessionStore.Save(ctx, sess)
+}
+
+type orderedAuthorizationSink struct{ order *authorizationEventOrder }
+
+func (s orderedAuthorizationSink) Emit(_ context.Context, event session.Event) {
+	if event.Type == session.EvMCPAuthorizationRequired {
+		s.order.add("required")
+	}
+}
+
+type authorizationObservationHook struct{ post atomic.Int32 }
+
+func (h *authorizationObservationHook) Run(_ context.Context, event governance.HookEvent) (governance.HookOutcome, error) {
+	if event.Phase == governance.PhasePostToolUse {
+		h.post.Add(1)
+	}
+	return governance.HookOutcome{}, nil
 }
 
 type orderedAuthorizationPolicy struct{ order *[]string }
@@ -302,18 +352,69 @@ func TestSessionMCPAuthorization_Scenario5_ParksMidTurnDeterministically(t *test
 }
 
 func TestInvariant_mcp_authorization_save_precedes_required_event(t *testing.T) {
-	fixture := newMCPAuthorizationParkFixture(t)
-	seenRequired := false
-	for _, event := range fixture.events {
-		if event.Type == session.EvMCPAuthorizationRequired {
-			seenRequired = true
-			if fixture.sess.State != session.StateAuthorizing {
-				t.Fatalf("required event emitted before durable authorizing state: %s", fixture.sess.State)
-			}
+	order := &authorizationEventOrder{}
+	protected := &authorizationTool{
+		fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true},
+		request:  tool.AuthorizationRequest{ID: "request", Backend: "protected", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	e := newEngine(agent.Deps{
+		LLM:     mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{}`))),
+		Catalog: catalogWith(t, protected),
+		Store:   orderedAuthorizationStore{SessionStore: memstore.New(), order: order},
+		Sink:    orderedAuthorizationSink{order: order},
+	})
+	drain(e.Run(context.Background(), newSession(t, session.Limits{}), agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true}))
+
+	entries := order.snapshot()
+	if len(entries) < 2 || entries[len(entries)-2] != "save" || entries[len(entries)-1] != "required" {
+		t.Fatalf("save/required order = %v, want final [save required]", entries)
+	}
+}
+
+func TestInvariant_mcp_authorization_pending_has_no_posthook_recorder_or_failure_effects(t *testing.T) {
+	hooks := &authorizationObservationHook{}
+	recorder := &recordingLogger{}
+	protected := &authorizationTool{
+		fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true, exec: func(context.Context, session.ToolCall, tool.Workspace) (session.ToolResult, error) {
+			t.Fatal("protected tool executed while authorization was pending")
+			return session.ToolResult{}, nil
+		}},
+		request: tool.AuthorizationRequest{ID: "request", Backend: "protected", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	e := newEngine(agent.Deps{LLM: mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{}`))), Catalog: catalogWith(t, protected), Hooks: hooks, ToolCallRecorder: recorder, Store: memstore.New()})
+	sess := newSession(t, session.Limits{})
+	events := drain(e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true}))
+	if hooks.post.Load() != 0 || recorder.calls != 0 || sess.Counters.ToolCalls != 0 {
+		t.Fatalf("post hooks/recorder/tool calls = %d/%d/%d, want 0/0/0", hooks.post.Load(), recorder.calls, sess.Counters.ToolCalls)
+	}
+	for _, event := range events {
+		if event.Type == session.EvToolResult || event.Type == session.EvResult {
+			t.Fatalf("pending authorization emitted execution/failure event %s", event.Type)
 		}
 	}
-	if !seenRequired {
-		t.Fatal("parked run did not emit authorization-required event")
+}
+
+func TestInvariant_mcp_authorization_hook_mutation_fails_closed(t *testing.T) {
+	protected := &authorizationTool{
+		fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true, exec: func(context.Context, session.ToolCall, tool.Workspace) (session.ToolResult, error) {
+			t.Fatal("hook-mutated protected tool executed without broker authorization")
+			return session.ToolResult{}, nil
+		}},
+		request: tool.AuthorizationRequest{ID: "request", Backend: "protected", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	hooks := &mutatingHooks{mutate: map[governance.HookPhase]json.RawMessage{
+		governance.PhasePreToolUse: json.RawMessage(`{"scope":"effective"}`),
+	}}
+	e := newEngine(agent.Deps{LLM: mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{"scope":"original"}`))), Catalog: catalogWith(t, protected), Hooks: hooks, Store: memstore.New()})
+	sess := newSession(t, session.Limits{})
+	events := drain(e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true}))
+	if protected.calls != 1 || sess.State == session.StateAuthorizing {
+		t.Fatalf("broker requests/state = %d/%s, want 1/non-authorizing after incompatible hook mutation", protected.calls, sess.State)
+	}
+	for _, event := range events {
+		if event.Type == session.EvMCPAuthorizationRequired {
+			t.Fatal("hook-mutated call retained a broker authorization with mismatched recorded arguments")
+		}
 	}
 }
 
@@ -362,17 +463,68 @@ func TestSessionMCPAuthorization_Scenario5_SaveFailureCancelsTransaction(t *test
 }
 
 func TestSessionMCPAuthorization_Scenario6_BrokerCallsSerialize(t *testing.T) {
-	fixture := newMCPAuthorizationParkFixture(t)
-	serial, ok := interface{}(fixture.protected).(tool.DispatchSerial)
-	if !ok || !serial.DispatchSerial() || !fixture.protected.ReadOnly() {
-		t.Fatalf("protected tool serial/read-only = %v/%v, want true/true", ok && serial.DispatchSerial(), fixture.protected.ReadOnly())
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	request := func(context.Context) (tool.AuthorizationRequest, bool, error) {
+		entered <- struct{}{}
+		<-release
+		return tool.AuthorizationRequest{ID: "request", Backend: "protected", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)}, true, nil
+	}
+	first := &authorizationTool{fakeTool: fakeTool{name: "mcp__first__list", readOnly: true}, requestFn: request}
+	second := &authorizationTool{fakeTool: fakeTool{name: "mcp__second__list", readOnly: true}, requestFn: request}
+	e := newEngine(agent.Deps{LLM: mockllm.New(mockllm.ToolCallTurn(toolCall("first", first.name, `{}`), toolCall("second", second.name, `{}`))), Catalog: catalogWith(t, first, second), Store: memstore.New()})
+	sess := newSession(t, session.Limits{})
+	r := e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true})
+
+	select {
+	case <-entered:
+	case <-time.After(time.Second):
+		t.Fatal("first broker authorization request did not start")
+	}
+	select {
+	case <-entered:
+		t.Fatal("second broker authorization request overlapped the first")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(release)
+	drain(r)
+	if first.calls != 1 || second.calls != 0 || sess.State != session.StateAuthorizing {
+		t.Fatalf("broker requests/state = %d/%d/%s, want 1/0/authorizing", first.calls, second.calls, sess.State)
 	}
 }
 
 func TestSessionMCPAuthorization_Scenario6_UnrelatedReadsRemainParallel(t *testing.T) {
-	plain := &fakeTool{name: "plain-read", readOnly: true}
-	if serial, ok := interface{}(plain).(tool.DispatchSerial); ok && serial.DispatchSerial() {
-		t.Fatal("unrelated read-only tool was made dispatch-serial")
+	entered := make(chan struct{}, 2)
+	release := make(chan struct{})
+	var overlap overlapTracker
+	read := func(ctx context.Context, call session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
+		overlap.enter()
+		defer overlap.leave()
+		entered <- struct{}{}
+		select {
+		case <-release:
+			return session.NewToolResult(call.ID, "read"), nil
+		case <-ctx.Done():
+			return session.ToolResult{}, ctx.Err()
+		}
+	}
+	first := &fakeTool{name: "first-read", readOnly: true, exec: read}
+	second := &fakeTool{name: "second-read", readOnly: true, exec: read}
+	protected := &authorizationTool{fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true}, request: tool.AuthorizationRequest{ID: "request", Backend: "protected", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)}}
+	e := newEngine(agent.Deps{LLM: mockllm.New(mockllm.ToolCallTurn(toolCall("first", first.name, `{}`), toolCall("second", second.name, `{}`), toolCall("protected", protected.name, `{}`))), Catalog: catalogWith(t, first, second, protected), Store: memstore.New()})
+	sess := newSession(t, session.Limits{})
+	r := e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true})
+	for range 2 {
+		select {
+		case <-entered:
+		case <-time.After(time.Second):
+			t.Fatal("unrelated reads did not overlap")
+		}
+	}
+	close(release)
+	drain(r)
+	if overlap.max() != 2 || protected.calls != 1 || sess.State != session.StateAuthorizing {
+		t.Fatalf("read overlap/broker requests/state = %d/%d/%s, want 2/1/authorizing", overlap.max(), protected.calls, sess.State)
 	}
 }
 
@@ -515,5 +667,9 @@ func TestInvariant_restored_middle_call_authorization_park_preserves_pairing(t *
 	}
 	if len(recorded) != 3 || recorded[0].CallID != "earlier-call" || !recorded[0].IsError {
 		t.Fatalf("recorded results = %#v, want earlier interrupted result followed by parked-call cleanup", recorded)
+	}
+	const earlierLostResult = "tool call completed before process loss, but its result was not durably recorded; its effects may have occurred and it must not be retried automatically"
+	if recorded[0].Content != earlierLostResult {
+		t.Fatalf("earlier interrupted result = %q, want %q", recorded[0].Content, earlierLostResult)
 	}
 }

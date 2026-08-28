@@ -253,14 +253,15 @@ func (e *Engine) runReadBatch(ctx context.Context, r *Run, sess *session.Session
 	return out, false
 }
 
-// resumeAbortedSiblingMessage is the synthetic error result text recorded for a
-// tool call on the trailing assistant message that the awaiting re-entry will NOT
-// dispatch (a sibling of the pending call, or — Q4 — the pending call itself when
-// it was a SURFACED-child ask whose child run did not survive the restart). It is
-// the closeOutInterruptedTurn analogue for the awaiting seam: model-facing replayed
-// history, so it must accurately state why the call never got a real result and
-// never claim a user action that did not happen.
+// resumeAbortedSiblingMessage is the synthetic error result for an unanswered
+// later sibling of a restored pending call. The process had already parked at
+// the pending call, so it never reached this later call.
 const resumeAbortedSiblingMessage = "tool call aborted: the run was resumed at a different pending approval after restart; this sibling call's verdict was lost"
+
+// resumeLostEarlierResultMessage describes an unanswered earlier sibling. It may
+// have run before the process was lost, but no durable result proves what happened;
+// automatic replay would risk duplicating its side effects.
+const resumeLostEarlierResultMessage = "tool call completed before process loss, but its result was not durably recorded; its effects may have occurred and it must not be retried automatically"
 
 // Q4 (surfaced child asks) — VERIFIED no PendingAsk marker field needed. A SURFACED
 // child ask never sets the PARENT session's pending: only the CHILD session's own
@@ -355,7 +356,7 @@ func (e *Engine) driveFromAwaiting(ctx context.Context, r *Run, sess *session.Se
 			if _, done := answered[call.ID]; done {
 				continue
 			}
-			interrupted := session.NewToolError(call.ID, resumeAbortedSiblingMessage)
+			interrupted := session.NewToolError(call.ID, resumeLostEarlierResultMessage)
 			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(interrupted)})
 			completed = append(completed, interrupted)
 		}

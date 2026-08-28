@@ -21,8 +21,9 @@ func TestInvariant_mcp_authorization_parking_behavior_matrix(t *testing.T) {
 		role         string
 		presentation bool
 		parks        bool
+		requests     int
 	}{
-		{name: "main-presenter", presentation: true, parks: true},
+		{name: "main-presenter", presentation: true, parks: true, requests: 1},
 		{name: "main-unattended"},
 		{name: "child-presenter", role: "subagent", presentation: true},
 		{name: "child-unattended", role: "subagent"},
@@ -38,6 +39,9 @@ func TestInvariant_mcp_authorization_parking_behavior_matrix(t *testing.T) {
 			parked := sess.State == session.StateAuthorizing
 			if parked != tc.parks {
 				t.Fatalf("parked = %v, want %v (requests=%d, state=%s, events=%v)", parked, tc.parks, protected.calls, sess.State, typesOf(events))
+			}
+			if protected.calls != tc.requests {
+				t.Fatalf("broker authorization requests = %d, want %d", protected.calls, tc.requests)
 			}
 			for _, event := range events {
 				if event.Type == session.EvMCPAuthorizationRequired && !tc.parks {
