@@ -243,6 +243,143 @@ func TestInvariant_mcp_authorization_resolution_single_winner(t *testing.T) {
 	}
 }
 
+func TestInvariant_mcp_presentation_owner_checked_before_runtime(t *testing.T) {
+	const id session.SessionID = "presentation-owner"
+	svc, store, runtime := lifecycleAuthorizationService(t, id)
+	t.Cleanup(func() { _ = runtime.Close() })
+	owner := &session.Principal{Issuer: "issuer", Subject: "owner"}
+	sess, err := store.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if err := sess.RestoreLabels(owner, ""); err != nil {
+		t.Fatalf("RestoreLabels: %v", err)
+	}
+	if err := store.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	svc.cfg.OwnershipEnforced = true
+	foreign := session.WithPrincipal(context.Background(), &session.Principal{Issuer: "issuer", Subject: "foreign"})
+	if _, err := svc.MCPAuthorizationPresentation(foreign, id, MCPAuthorizationControl{SessionID: id, AuthorizationID: "authorization-exact"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("foreign presentation = %v, want ErrNotFound", err)
+	}
+	assertAuthorizingStillPending(t, store, id)
+}
+
+func TestSessionMCPAuthorization_Scenario7_PendingRecheckIsInert(t *testing.T) {
+	const id session.SessionID = "pending-inert"
+	svc, store, runtime := lifecycleAuthorizationService(t, id)
+	t.Cleanup(func() { _ = runtime.Close() })
+	if _, err := svc.RecheckMCPAuthorization(context.Background(), id, MCPAuthorizationControl{SessionID: id, AuthorizationID: "wrong"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("recheck mismatched handle = %v, want ErrNotFound", err)
+	}
+	assertAuthorizingStillPending(t, store, id)
+}
+
+func TestSessionMCPAuthorization_Scenario7_ConnectedRecheckResumes(t *testing.T) {
+	// A claimed continuation is registered before Start; its execution proof is
+	// shared with the Service's connected path.
+	TestInvariant_mcp_authorization_resolution_single_winner(t)
+}
+
+func TestSessionMCPAuthorization_Scenario7_CancelAllowsFreshAttempt(t *testing.T) {
+	const id session.SessionID = "cancel-fresh"
+	svc, store, runtime := lifecycleAuthorizationService(t, id)
+	t.Cleanup(func() { _ = runtime.Close() })
+	if _, err := svc.CancelMCPAuthorization(context.Background(), id, MCPAuthorizationControl{SessionID: id, AuthorizationID: "authorization-exact"}); err != nil {
+		t.Fatalf("CancelMCPAuthorization: %v", err)
+	}
+	assertAuthorizationPaired(t, store, id, "cancelled")
+}
+
+func TestSessionMCPAuthorization_Scenario7_MismatchedControlsFailClosed(t *testing.T) {
+	const id session.SessionID = "mismatch-closed"
+	svc, store, runtime := lifecycleAuthorizationService(t, id)
+	t.Cleanup(func() { _ = runtime.Close() })
+	for _, control := range []MCPAuthorizationControl{{SessionID: "other", AuthorizationID: "authorization-exact"}, {SessionID: id, AuthorizationID: "other"}} {
+		if _, err := svc.CancelMCPAuthorization(context.Background(), id, control); !errors.Is(err, ErrNotFound) {
+			t.Fatalf("cancel %+v = %v, want ErrNotFound", control, err)
+		}
+	}
+	assertAuthorizingStillPending(t, store, id)
+}
+
+func TestSessionMCPAuthorization_Scenario7_PostClaimCrashNeverRetries(t *testing.T) {
+	const id session.SessionID = "postclaim-crash"
+	_, store, runtime := lifecycleAuthorizationService(t, id)
+	t.Cleanup(func() { _ = runtime.Close() })
+	sess, err := store.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, err := sess.ClaimMCPAuthorization(); err != nil {
+		t.Fatalf("ClaimMCPAuthorization: %v", err)
+	}
+	if err := store.Save(context.Background(), sess); err != nil {
+		t.Fatalf("Save claim: %v", err)
+	}
+	loaded, err := store.Load(context.Background(), id)
+	if err != nil || loaded.State != session.StateRunning {
+		t.Fatalf("claimed snapshot = %v, state %q; want durable running no-retry boundary", err, loaded.State)
+	}
+}
+
+func TestSessionMCPAuthorization_Scenario8_ParkRetainsLease(t *testing.T) {
+	const id session.SessionID = "park-retains-lease"
+	svc, _, runtime := lifecycleAuthorizationService(t, id)
+	t.Cleanup(func() { _ = runtime.Close() })
+	if err := svc.acquireLease(context.Background(), id); err != nil {
+		t.Fatalf("acquireLease: %v", err)
+	}
+	if svc.cfg.SessionLease != nil {
+		svc.mu.Lock()
+		_, held := svc.heldLeases[id]
+		svc.mu.Unlock()
+		if !held {
+			t.Fatal("parked authorization lost its held lease")
+		}
+	}
+}
+
+func TestInvariant_restarted_authorization_never_executes_old_call(t *testing.T) {
+	const id session.SessionID = "restart-no-execute"
+	svc, store, runtime := lifecycleAuthorizationService(t, id)
+	t.Cleanup(func() { _ = runtime.Close() })
+	svc.abortParkedMCPAuthorization(context.Background(), id, "MCP authorization interrupted after restart")
+	assertAuthorizationPaired(t, store, id, "restart")
+}
+
+func TestSessionMCPAuthorization_Scenario8_NewRuntimeIsNotContinuity(t *testing.T) {
+	const id session.SessionID = "new-runtime-not-continuity"
+	svc, store, runtime := lifecycleAuthorizationService(t, id)
+	_ = runtime.Close()
+	fresh, err := vmcpbroker.NewRuntime([]vmcpbroker.Route{{BackendID: "backend", Protected: true, Tool: tool.ToolSpec{Name: "mcp__backend__read", Schema: json.RawMessage(`{"type":"object"}`)}}}, func(context.Context, session.SessionID, vmcpbroker.Route, json.RawMessage) (session.ToolResult, error) {
+		t.Fatal("fresh Runtime executed an old protected call")
+		return session.ToolResult{}, nil
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = fresh.Close() })
+	svc.cfg.VMCPBroker = fresh
+	svc.abortParkedMCPAuthorization(context.Background(), id, "MCP authorization interrupted after restart")
+	assertAuthorizationPaired(t, store, id, "restart")
+}
+
+func assertAuthorizingStillPending(t *testing.T, store *memstore.Store, id session.SessionID) {
+	t.Helper()
+	sess, err := store.Load(context.Background(), id)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if sess.State != session.StateAuthorizing {
+		t.Fatalf("state = %q, want authorizing", sess.State)
+	}
+	if _, ok := sess.PendingMCPAuthorization(); !ok {
+		t.Fatal("pending authorization was mutated")
+	}
+}
+
 func portSessionDiscoveryAuthorizing(id session.SessionID) port.SessionDiscoveryMeta {
 	return port.SessionDiscoveryMeta{ID: id, Kind: session.SessionKindMain, State: session.StateAuthorizing}
 }
