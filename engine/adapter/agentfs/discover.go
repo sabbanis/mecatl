@@ -10,6 +10,7 @@ import (
 	"strings"
 
 	yaml "github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/ast"
 	"github.com/goccy/go-yaml/token"
 
 	"github.com/stacklok/mecatl/engine/tool"
@@ -99,27 +100,35 @@ type rawMCPMapping struct {
 	Command   string            `yaml:"command"`
 }
 
-func (l *mcpServerList) UnmarshalYAML(unmarshal func(any) error) error {
-	var value any
-	if err := unmarshal(&value); err != nil {
-		return err
-	}
-	switch value := value.(type) {
-	case string:
-		for _, name := range splitList(value) {
+func (l *mcpServerList) UnmarshalYAML(node ast.Node) error {
+	switch node.Type() {
+	case ast.StringType:
+		var name string
+		if err := yaml.NodeToValue(node, &name); err != nil {
+			return err
+		}
+		for _, name := range splitList(name) {
 			l.servers = append(l.servers, AgentMCPServer{Name: name})
 		}
 		return nil
-	case []any:
-		for _, item := range value {
-			switch item := item.(type) {
-			case string:
-				for _, name := range splitList(item) {
+	case ast.SequenceType:
+		sequence, ok := node.(*ast.SequenceNode)
+		if !ok {
+			return fmt.Errorf("mcpServers: invalid sequence")
+		}
+		for _, item := range sequence.Values {
+			switch item.Type() {
+			case ast.StringType:
+				var name string
+				if err := yaml.NodeToValue(item, &name); err != nil {
+					return err
+				}
+				for _, name := range splitList(name) {
 					l.servers = append(l.servers, AgentMCPServer{Name: name})
 				}
-			case map[string]any:
-				mapping, err := mcpMapping(item)
-				if err != nil {
+			case ast.MappingType:
+				var mapping rawMCPMapping
+				if err := yaml.NodeToValue(item, &mapping); err != nil {
 					return err
 				}
 				l.appendMapping(mapping)
@@ -131,45 +140,6 @@ func (l *mcpServerList) UnmarshalYAML(unmarshal func(any) error) error {
 	default:
 		return fmt.Errorf("mcpServers: expected a string, a list, or a list of mappings")
 	}
-}
-
-func mcpMapping(value map[string]any) (rawMCPMapping, error) {
-	var mapping rawMCPMapping
-	for key, raw := range value {
-		switch key {
-		case "name", "url", "type", "transport", "command":
-			text, ok := raw.(string)
-			if !ok {
-				return rawMCPMapping{}, fmt.Errorf("mcpServers entry field %q must be a string", key)
-			}
-			switch key {
-			case "name":
-				mapping.Name = text
-			case "url":
-				mapping.URL = text
-			case "type":
-				mapping.Type = text
-			case "transport":
-				mapping.Transport = text
-			case "command":
-				mapping.Command = text
-			}
-		case "headers":
-			headers, ok := raw.(map[string]any)
-			if !ok {
-				return rawMCPMapping{}, fmt.Errorf("mcpServers entry field %q must be a mapping", key)
-			}
-			mapping.Headers = make(map[string]string, len(headers))
-			for header, rawValue := range headers {
-				text, ok := rawValue.(string)
-				if !ok {
-					return rawMCPMapping{}, fmt.Errorf("mcpServers header %q must be a string", header)
-				}
-				mapping.Headers[header] = text
-			}
-		}
-	}
-	return mapping, nil
 }
 
 // appendMapping normalises one inline mapping into an AgentMCPServer, recording a

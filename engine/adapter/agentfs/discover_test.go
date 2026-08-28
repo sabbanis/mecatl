@@ -655,6 +655,20 @@ review the change`), "reviewer.md")
 		t.Fatalf("mcpServers = %+v, want reference and inline HTTP server", def.MCPServers)
 	}
 
+	_, reason, _ = parseAgentDef([]byte(`---
+name: invalid-header
+description: invalid header type
+mcpServers:
+  - name: remote
+    url: https://mcp.example.test
+    headers:
+      Authorization: [super-secret-token]
+---
+body`), "invalid-header.md")
+	if !strings.Contains(reason, "malformed YAML frontmatter") || strings.Contains(reason, "super-secret-token") {
+		t.Fatalf("invalid header reason = %q, want a value-free malformed-frontmatter diagnostic", reason)
+	}
+
 	_, reason, _ = parseAgentDef([]byte("---\nname: leaked-secret\ndescription: [unterminated\n---\nbody"), "bad.md")
 	if !strings.Contains(reason, "malformed YAML frontmatter at line") {
 		t.Fatalf("malformed frontmatter reason = %q, want safe location", reason)
