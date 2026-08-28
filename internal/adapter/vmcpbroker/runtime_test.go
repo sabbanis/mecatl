@@ -174,12 +174,41 @@ func newEmbeddedToolHive(t *testing.T) embeddedToolHive {
 			AuthServer:            auth,
 			Storage:               store,
 			Issuer:                gateway.URL,
+			Resource:              gateway.URL,
 			AuthorizationEndpoint: gateway.URL + "/oauth/authorize",
 			TokenEndpoint:         gateway.URL + "/oauth/token",
 			CallbackURL:           "https://client.invalid/callback",
 		},
 		client:   gateway.Client(),
 		upstream: upstreamStarted,
+	}
+}
+
+func TestSessionVMCPBroker_UsesConfiguredTrustedOAuthResource(t *testing.T) {
+	protected := Route{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "mcp__github__list_issues", Schema: json.RawMessage(`{"type":"object"}`)}}
+	toolHive := newEmbeddedToolHive(t)
+	toolHive.config.Resource = toolHive.config.Issuer + "/configured-resource"
+	runtime, err := NewToolHiveRuntime([]Route{protected}, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		return session.ToolResult{}, nil
+	}, toolHive.config, time.Minute)
+	if err != nil {
+		t.Fatalf("NewToolHiveRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	if _, err := runtime.OpenSession("parent-session"); err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+
+	result, err := runtime.Connect(context.Background(), "parent-session", "github")
+	if err != nil {
+		t.Fatalf("Connect: %v", err)
+	}
+	browserURL, err := url.Parse(result.AuthorizationRequired.BrowserURL)
+	if err != nil {
+		t.Fatalf("parse browser URL: %v", err)
+	}
+	if got := browserURL.Query().Get("resource"); got != toolHive.config.Resource {
+		t.Fatalf("authorization resource = %q, want configured trusted resource %q", got, toolHive.config.Resource)
 	}
 }
 

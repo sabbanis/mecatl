@@ -257,9 +257,12 @@ type Runtime struct {
 // ToolHive authorization server. It is root-internal; the Runtime never treats
 // an issuer string alone as evidence of a usable ToolHive server.
 type ToolHiveRuntimeConfig struct {
-	AuthServer            *runner.EmbeddedAuthServer
-	Storage               storage.ClientRegistry
-	Issuer                string
+	AuthServer *runner.EmbeddedAuthServer
+	Storage    storage.ClientRegistry
+	Issuer     string
+	// Resource is the explicit trusted OAuth resource value sent to the embedded
+	// authorization server. It is configuration, never inferred from an endpoint.
+	Resource              string
 	AuthorizationEndpoint string
 	TokenEndpoint         string
 	CallbackURL           string
@@ -385,20 +388,9 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 // protocol state; this Runtime retains only a random downstream handle bound to
 // an opened canonical session and protected backend.
 func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeConfig, transactionTTL time.Duration) (*Runtime, error) {
-	if config.AuthServer == nil || config.Storage == nil || config.CallbackURL == "" || config.AuthorizationEndpoint == "" || config.TokenEndpoint == "" {
-		return nil, fmt.Errorf("%w: embedded ToolHive authorization server, storage, trusted OAuth issuer/endpoints, and callback URL are required", ErrInvalidRoute)
-	}
-	endpoint, err := trustedToolHiveOAuthEndpoint(config.AuthorizationEndpoint)
+	endpoint, tokenEndpoint, resource, err := validatedToolHiveRuntimeConfig(config)
 	if err != nil {
 		return nil, err
-	}
-	tokenEndpoint, err := trustedToolHiveOAuthEndpoint(config.TokenEndpoint)
-	if err != nil {
-		return nil, err
-	}
-	resource, err := trustedToolHiveOAuthEndpoint(config.Issuer)
-	if err != nil {
-		return nil, fmt.Errorf("%w: trusted ToolHive OAuth issuer/resource: %w", ErrInvalidRoute, err)
 	}
 	callback, err := url.Parse(config.CallbackURL)
 	if err != nil || callback.Scheme != "https" || callback.Host == "" {
@@ -461,6 +453,25 @@ func toolHiveClosers(registry storage.ClientRegistry, clientID string) []namedCl
 	}
 	return closers
 }
+func validatedToolHiveRuntimeConfig(config ToolHiveRuntimeConfig) (authorize, token, resource string, err error) {
+	if config.AuthServer == nil || config.Storage == nil || config.CallbackURL == "" || config.Issuer == "" || config.Resource == "" || config.AuthorizationEndpoint == "" || config.TokenEndpoint == "" {
+		return "", "", "", fmt.Errorf("%w: embedded ToolHive authorization server, storage, trusted OAuth issuer/resource/endpoints, and callback URL are required", ErrInvalidRoute)
+	}
+	authorize, err = trustedToolHiveOAuthEndpoint(config.AuthorizationEndpoint)
+	if err != nil {
+		return "", "", "", err
+	}
+	token, err = trustedToolHiveOAuthEndpoint(config.TokenEndpoint)
+	if err != nil {
+		return "", "", "", err
+	}
+	resource, err = trustedToolHiveOAuthEndpoint(config.Resource)
+	if err != nil {
+		return "", "", "", fmt.Errorf("%w: trusted ToolHive OAuth resource: %w", ErrInvalidRoute, err)
+	}
+	return authorize, token, resource, nil
+}
+
 func trustedToolHiveOAuthEndpoint(endpoint string) (string, error) {
 	parsed, err := url.Parse(endpoint)
 	if err != nil || parsed.Scheme != "https" || parsed.Host == "" || parsed.RawQuery != "" || parsed.Fragment != "" {

@@ -90,6 +90,7 @@ func TestSessionMCPAuthorization_Scenario4_RejectsMalformedState(t *testing.T) {
 		{"empty backend", func(p *PendingMCPAuthorization) { p.Backend = "" }},
 		{"zero expiry", func(p *PendingMCPAuthorization) { p.ExpiresAt = time.Time{} }},
 		{"mismatched call", func(p *PendingMCPAuthorization) { p.Call.ID = "other" }},
+		{"mismatched call name", func(p *PendingMCPAuthorization) { p.Call.Name = "mcp__calendar__delete" }},
 		{"duplicate deferred", func(p *PendingMCPAuthorization) { p.Deferred[0].ID = p.Call.ID }},
 	}
 	for _, tc := range cases {

@@ -198,7 +198,7 @@ func validatePendingMCPAuthorization(messages []Message, pending PendingMCPAutho
 	pendingAt := -1
 	for i, call := range calls {
 		if call.ID == pending.Call.ID {
-			if !reflect.DeepEqual(call, pending.Call) {
+			if call.Name != pending.Call.Name {
 				return fmt.Errorf("pending call does not match trailing assistant call")
 			}
 			pendingAt = i

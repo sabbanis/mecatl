@@ -858,7 +858,7 @@ func (h *HTTPHandler) approve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ask_id is required")
 		return
 	}
-	run, err := h.svc.ApproveRun(r.Context(), id, body.AskID, verdictFromHTTP(body.Verdict, body.Allow), body.ExpectedRunID)
+	run, err := h.svc.ApproveInteractiveRun(r.Context(), id, body.AskID, verdictFromHTTP(body.Verdict, body.Allow), body.ExpectedRunID)
 	if err != nil {
 		writeServiceError(w, err)
 		return

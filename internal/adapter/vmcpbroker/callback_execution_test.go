@@ -239,7 +239,7 @@ func newToolHiveStreamingRuntimeWithTool(t *testing.T, upstreamToolName, routeTo
 		gateway.Close()
 	})
 
-	runtime, err := NewToolHiveStreamingHTTPRuntime([]Route{{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: routeToolName, Schema: json.RawMessage(`{"type":"object"}`)}}}, gateway.URL+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: gateway.URL, AuthorizationEndpoint: gateway.URL + "/oauth/authorize", TokenEndpoint: gateway.URL + "/oauth/token", CallbackURL: "https://client.invalid/callback", HTTPClient: gateway.Client()}, time.Minute)
+	runtime, err := NewToolHiveStreamingHTTPRuntime([]Route{{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: routeToolName, Schema: json.RawMessage(`{"type":"object"}`)}}}, gateway.URL+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: gateway.URL, Resource: gateway.URL, AuthorizationEndpoint: gateway.URL + "/oauth/authorize", TokenEndpoint: gateway.URL + "/oauth/token", CallbackURL: "https://client.invalid/callback", HTTPClient: gateway.Client()}, time.Minute)
 	if err != nil {
 		t.Fatalf("NewToolHiveStreamingHTTPRuntime: %v", err)
 	}
@@ -288,7 +288,7 @@ func newCallbackRuntime(t *testing.T, caller Caller) (*Runtime, *http.Client, *a
 	gateway.StartTLS()
 	t.Cleanup(func() { gateway.Close(); _ = auth.Close() })
 
-	runtime, err := NewToolHiveRuntime([]Route{{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "mcp__github__list_issues", Schema: json.RawMessage(`{"type":"object"}`)}}}, caller, ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: gateway.URL, AuthorizationEndpoint: gateway.URL + "/oauth/authorize", TokenEndpoint: gateway.URL + "/oauth/token", CallbackURL: "https://client.invalid/callback", HTTPClient: gateway.Client()}, time.Minute)
+	runtime, err := NewToolHiveRuntime([]Route{{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "mcp__github__list_issues", Schema: json.RawMessage(`{"type":"object"}`)}}}, caller, ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: gateway.URL, Resource: gateway.URL, AuthorizationEndpoint: gateway.URL + "/oauth/authorize", TokenEndpoint: gateway.URL + "/oauth/token", CallbackURL: "https://client.invalid/callback", HTTPClient: gateway.Client()}, time.Minute)
 	if err != nil {
 		t.Fatalf("NewToolHiveRuntime: %v", err)
 	}

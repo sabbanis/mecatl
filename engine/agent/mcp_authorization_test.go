@@ -33,11 +33,12 @@ func (s awaitingSnapshotStore) Save(ctx context.Context, sess *session.Session) 
 
 type authorizationTool struct {
 	fakeTool
-	request   tool.AuthorizationRequest
-	calls     int
-	requestFn func(context.Context) (tool.AuthorizationRequest, bool, error)
-	cancel    func(context.Context, string) error
-	order     *[]string
+	request    tool.AuthorizationRequest
+	calls      int
+	requestFn  func(context.Context) (tool.AuthorizationRequest, bool, error)
+	cancel     func(context.Context, string) error
+	invalidate func(context.Context, string) error
+	order      *[]string
 }
 
 func (t *authorizationTool) RequestAuthorization(ctx context.Context) (tool.AuthorizationRequest, bool, error) {
@@ -56,8 +57,13 @@ func (t *authorizationTool) CancelAuthorization(ctx context.Context, id string) 
 	}
 	return nil
 }
-func (*authorizationTool) InvalidateAuthorization(context.Context, string) error { return nil }
-func (*authorizationTool) DispatchSerial() bool                                  { return true }
+func (t *authorizationTool) InvalidateAuthorization(ctx context.Context, id string) error {
+	if t.invalidate != nil {
+		return t.invalidate(ctx, id)
+	}
+	return nil
+}
+func (*authorizationTool) DispatchSerial() bool { return true }
 
 type failingAuthorizationStore struct{ err error }
 
@@ -394,27 +400,70 @@ func TestInvariant_mcp_authorization_pending_has_no_posthook_recorder_or_failure
 	}
 }
 
-func TestInvariant_mcp_authorization_hook_mutation_fails_closed(t *testing.T) {
+func TestInvariant_mcp_authorization_preserves_pre_hook_mutated_call_across_continuation(t *testing.T) {
+	const originalArgs = `{"scope":"original"}`
+	const effectiveArgs = `{"scope":"effective"}`
+	var executed []string
 	protected := &authorizationTool{
-		fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true, exec: func(context.Context, session.ToolCall, tool.Workspace) (session.ToolResult, error) {
-			t.Fatal("hook-mutated protected tool executed without broker authorization")
-			return session.ToolResult{}, nil
+		fakeTool: fakeTool{name: "mcp__protected__list", readOnly: true, exec: func(_ context.Context, call session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
+			executed = append(executed, string(call.Args))
+			return session.NewToolResult(call.ID, "executed"), nil
 		}},
 		request: tool.AuthorizationRequest{ID: "request", Backend: "protected", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
 	}
 	hooks := &mutatingHooks{mutate: map[governance.HookPhase]json.RawMessage{
-		governance.PhasePreToolUse: json.RawMessage(`{"scope":"effective"}`),
+		governance.PhasePreToolUse: json.RawMessage(effectiveArgs),
 	}}
-	e := newEngine(agent.Deps{LLM: mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, `{"scope":"original"}`))), Catalog: catalogWith(t, protected), Hooks: hooks, Store: memstore.New()})
+	store := memstore.New()
+	e := newEngine(agent.Deps{LLM: mockllm.New(mockllm.ToolCallTurn(toolCall("call-1", protected.name, originalArgs))), Catalog: catalogWith(t, protected), Hooks: hooks, Store: store})
 	sess := newSession(t, session.Limits{})
 	events := drain(e.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go", AuthorizationPresentation: true}))
-	if protected.calls != 1 || sess.State == session.StateAuthorizing {
-		t.Fatalf("broker requests/state = %d/%s, want 1/non-authorizing after incompatible hook mutation", protected.calls, sess.State)
+
+	if len(executed) != 0 || sess.State != session.StateAuthorizing {
+		t.Fatalf("executions/state = %v/%s, want none/authorizing", executed, sess.State)
+	}
+	pending, ok := sess.PendingMCPAuthorization()
+	if !ok || string(pending.Call.Args) != effectiveArgs {
+		t.Fatalf("pending call = %#v, want effective args %s", pending.Call, effectiveArgs)
+	}
+	for _, message := range sess.Conversation.Messages {
+		if message.Role == session.RoleAssistant && len(message.ToolCalls) != 0 && string(message.ToolCalls[0].Args) != originalArgs {
+			t.Fatalf("assistant call args = %s, want original %s", message.ToolCalls[0].Args, originalArgs)
+		}
 	}
 	for _, event := range events {
-		if event.Type == session.EvMCPAuthorizationRequired {
-			t.Fatal("hook-mutated call retained a broker authorization with mismatched recorded arguments")
+		if event.Type == session.EvToolResult || event.Type == session.EvResult {
+			t.Fatalf("authorization park emitted execution/terminal event %s", event.Type)
 		}
+	}
+	if err := store.Save(context.Background(), sess); err != nil {
+		t.Fatalf("save parked session: %v", err)
+	}
+	restored, err := store.Load(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("load parked session: %v", err)
+	}
+	pending, ok = restored.PendingMCPAuthorization()
+	if !ok || string(pending.Call.Args) != effectiveArgs {
+		t.Fatalf("restored pending call = %#v, want effective args %s", pending.Call, effectiveArgs)
+	}
+
+	claim, err := restored.ClaimMCPAuthorization()
+	if err != nil {
+		t.Fatalf("claim parked authorization: %v", err)
+	}
+	result, err := protected.Execute(context.Background(), claim.Call, agent.MemEnv("/ws"))
+	if err != nil {
+		t.Fatalf("execute claimed call: %v", err)
+	}
+	if err := restored.RecordToolResults([]session.ToolResult{result}); err != nil {
+		t.Fatalf("record claimed result: %v", err)
+	}
+	if err := session.ValidateToolPairing(restored.Conversation.Messages); err != nil {
+		t.Fatalf("pair claimed continuation: %v", err)
+	}
+	if got, want := fmt.Sprint(executed), "["+effectiveArgs+"]"; got != want {
+		t.Fatalf("continuation executed args = %s, want %s", got, want)
 	}
 }
 

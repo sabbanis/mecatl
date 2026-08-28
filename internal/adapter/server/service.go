@@ -5326,6 +5326,13 @@ func (s *Service) Approve(ctx context.Context, id session.SessionID, askID strin
 	return err
 }
 
+// ApproveInteractiveRun is ApproveRun for an authenticated interactive client.
+// It grants broker-authorization presentation only to that caller's resumed run;
+// all generic and internal approval paths remain unable to park a transaction.
+func (s *Service) ApproveInteractiveRun(ctx context.Context, id session.SessionID, askID string, verdict session.ApprovalVerdict, expectedRunID string) (*agent.Run, error) {
+	return s.approveRun(ctx, id, askID, verdict, expectedRunID, true)
+}
+
 // ApproveRun is Approve plus the resumed *agent.Run handle (cloud-native Phase 2).
 // On the SAME-PROCESS path (a live registered run) it resolves the ask over the
 // channel and returns (nil, nil): there is no new run, the existing relay delivers
@@ -5352,6 +5359,10 @@ func (s *Service) Approve(ctx context.Context, id session.SessionID, askID strin
 // follow-up (additive, out of the Phase 2 gate) — see docs/adr/0027-cloud-native.md
 // Phase 2.
 func (s *Service) ApproveRun(ctx context.Context, id session.SessionID, askID string, verdict session.ApprovalVerdict, expectedRunID string) (*agent.Run, error) {
+	return s.approveRun(ctx, id, askID, verdict, expectedRunID, false)
+}
+
+func (s *Service) approveRun(ctx context.Context, id session.SessionID, askID string, verdict session.ApprovalVerdict, expectedRunID string, authorizationPresentation bool) (*agent.Run, error) {
 	// Authorize before reading the in-memory registry: a mismatch must be
 	// indistinguishable from a missing handle and cannot signal a live run.
 	if _, err := s.GetSession(ctx, id); err != nil {
@@ -5368,7 +5379,7 @@ func (s *Service) ApproveRun(ctx context.Context, id session.SessionID, askID st
 		run.Approve(askID, verdict)
 		return nil, nil
 	}
-	return s.resumeFromAwaiting(ctx, id, askID, verdict, expectedRunID)
+	return s.resumeFromAwaiting(ctx, id, askID, verdict, expectedRunID, authorizationPresentation)
 }
 
 // resumeFromAwaiting is the service half of the fourth (awaiting-only) run-entry
@@ -5393,7 +5404,7 @@ func (s *Service) ApproveRun(ctx context.Context, id session.SessionID, askID st
 // mirrors rehydrateSession's loser-teardown/MaxSessionEngines guard via
 // engineAndEnvironmentFor; the resumed run is registered into s.runs like any other so
 // a concurrent Cancel/Approve reaches it and FinishRun cleans it up.
-func (s *Service) resumeFromAwaiting(ctx context.Context, id session.SessionID, askID string, verdict session.ApprovalVerdict, expectedRunID string) (*agent.Run, error) {
+func (s *Service) resumeFromAwaiting(ctx context.Context, id session.SessionID, askID string, verdict session.ApprovalVerdict, expectedRunID string, authorizationPresentation bool) (*agent.Run, error) {
 	unlock := s.resumeMu.lock(id)
 	defer unlock()
 
@@ -5449,7 +5460,7 @@ func (s *Service) resumeFromAwaiting(ctx context.Context, id session.SessionID, 
 		return nil, err
 	}
 	ctx = memory.WithWorkspace(ctx, sess.Workspace)
-	run := engine.ResumeApprovalWithPresentation(ctx, sess, env, askID, verdict, true)
+	run := engine.ResumeApprovalWithPresentation(ctx, sess, env, askID, verdict, authorizationPresentation)
 	s.register(id, run, sess)
 	return run, nil
 }
@@ -5532,8 +5543,9 @@ func (s *Service) ApprovePlan(ctx context.Context, id session.SessionID, targetM
 	// ApprovePlan is an atomic RPC addressed at the session, not at a run: the
 	// caller approves THE PLAN this session is parked on, and the askID is read
 	// off the snapshot rather than supplied. There is no caller expectation to
-	// enforce, so it passes no expected run id.
-	resumed, rerr := s.resumeFromAwaiting(ctx, id, ask.AskID, verdict, "")
+	// enforce, so it passes no expected run id. A plan approval never grants
+	// broker-authorization presentation.
+	resumed, rerr := s.resumeFromAwaiting(ctx, id, ask.AskID, verdict, "", false)
 	if rerr != nil {
 		return nil, rerr
 	}
