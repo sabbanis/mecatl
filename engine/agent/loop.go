@@ -1120,11 +1120,28 @@ func askDiscriminatorFor(req RunRequest, serial int64) (value string, colonRejec
 	return fmt.Sprintf("r%d", serial), d != ""
 }
 
-// ContinueMCPAuthorization executes an already durably claimed continuation.
-// Claiming belongs to the service's locked transaction, before this goroutine is
-// registered, so cancellation and a second recheck cannot race it.
-func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment, pending session.PendingMCPAuthorization) *Run {
-	return e.startRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
+// PreparedRun is a fully initialized, inert Run. Its Start method releases the
+// execution goroutine exactly once, allowing a trusted service to register the run
+// before the stored protected call can execute.
+type PreparedRun struct {
+	run   *Run
+	start func()
+	once  sync.Once
+}
+
+// Run returns the inert run handle for registration before Start.
+func (p *PreparedRun) Run() *Run { return p.run }
+
+// Start releases the prepared run exactly once and returns its stable handle.
+func (p *PreparedRun) Start() *Run {
+	p.once.Do(p.start)
+	return p.run
+}
+
+// PrepareMCPAuthorizationContinuation prepares an already durably claimed
+// continuation without executing it. The caller must register Run before Start.
+func (e *Engine) PrepareMCPAuthorizationContinuation(ctx context.Context, sess *session.Session, env tool.Environment, pending session.PendingMCPAuthorization) *PreparedRun {
+	return e.prepareRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
 		toolToRun, ok := e.deps.Catalog.Lookup(pending.Call.Name)
 		if !ok {
 			results := []session.ToolResult{session.NewToolError(pending.Call.ID, "broker authorization continuation tool is unavailable")}
@@ -1139,6 +1156,7 @@ func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Ses
 			e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, fmt.Errorf("tool %q unavailable", pending.Call.Name), false)
 			return
 		}
+		e.openCard(r, sess.Counters.Turns, pending.Call)
 		result := e.execute(ctx, r, sess, env, sess.Counters.Turns, pending.Call, toolToRun, time.Time{})
 		results := []session.ToolResult{result}
 		for _, deferred := range pending.Deferred {
@@ -1158,6 +1176,13 @@ func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Ses
 	})
 }
 
+// ContinueMCPAuthorization executes an already durably claimed continuation.
+// It is the immediate-start compatibility entry point; service controls use the
+// prepared form to register before execution.
+func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment, pending session.PendingMCPAuthorization) *Run {
+	return e.PrepareMCPAuthorizationContinuation(ctx, sess, env, pending).Start()
+}
+
 // ContinueAfterMCPAuthorization resumes the ordinary model loop after the
 // service durably paired a nonconnected authorization outcome.
 func (e *Engine) ContinueAfterMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *Run {
@@ -1173,6 +1198,12 @@ func (e *Engine) ContinueAfterMCPAuthorization(ctx context.Context, sess *sessio
 // Engine.Run (→ drive) and ResumeApproval (→ driveFromAwaiting) so the two
 // entry seams cannot drift in their concurrency setup.
 func (e *Engine) startRun(ctx context.Context, sess *session.Session, req RunRequest, body func(context.Context, *Run)) *Run {
+	return e.prepareRun(ctx, sess, req, body).Start()
+}
+
+// prepareRun mints a Run without starting its goroutine. It is used by the
+// service continuation path, which must register the handle before execution.
+func (e *Engine) prepareRun(ctx context.Context, sess *session.Session, req RunRequest, body func(context.Context, *Run)) *PreparedRun {
 	ctx, cancel := context.WithCancel(ctx)
 	serial := runSerial.Add(1)
 	ctx = port.WithRunAttemptContext(ctx, sess.ID, serial)
@@ -1269,21 +1300,23 @@ func (e *Engine) startRun(ctx context.Context, sess *session.Session, req RunReq
 	// unregister reports false and no retract is ever emitted — correct:
 	// nothing was ever surfaced.
 	r.children.unregisterAsk = r.unregisterChildAsk
-	go func() {
-		// Defers run LIFO: cancel first (releases the run's ctx tree), then the
-		// belt-and-braces seal — its abort-before-emitMu ordering closes emitAbort,
-		// which is what unwinds any guarded send still parked on a full events
-		// channel (Run.emitOrAbort selects on it; the run ctx is NOT a guarded
-		// send's escape hatch), then sets sealed so every later emit is a safe
-		// no-op — and only THEN close(r.events): seal-before-close is the
-		// send-on-closed-channel panic guard. (drive's terminate paths normally
-		// drain+seal already; this defer covers them idempotently.)
-		defer close(r.events)
-		defer r.children.seal()
-		defer cancel()
-		body(ctx, r)
-	}()
-	return r
+	start := func() {
+		go func() {
+			// Defers run LIFO: cancel first (releases the run's ctx tree), then the
+			// belt-and-braces seal — its abort-before-emitMu ordering closes emitAbort,
+			// which is what unwinds any guarded send still parked on a full events
+			// channel (Run.emitOrAbort selects on it; the run ctx is NOT a guarded
+			// send's escape hatch), then sets sealed so every later emit is a safe
+			// no-op — and only THEN close(r.events): seal-before-close is the
+			// send-on-closed-channel panic guard. (drive's terminate paths normally
+			// drain+seal already; this defer covers them idempotently.)
+			defer close(r.events)
+			defer r.children.seal()
+			defer cancel()
+			body(ctx, r)
+		}()
+	}
+	return &PreparedRun{run: r, start: start}
 }
 
 // drive runs the loop algorithm for one prompt. It always terminates the session

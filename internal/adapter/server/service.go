@@ -1415,6 +1415,9 @@ func NewService(cfg Config) (*Service, error) {
 			svc.cursorLog = cl
 		}
 	}
+	if cfg.VMCPBroker != nil {
+		cfg.VMCPBroker.SetClock(cfg.Now)
+	}
 	// Seed the model inventory from the static snapshot. ListModels and the
 	// ModelSelection cap read this atomic so a later live-catalog SetModels swap is
 	// race-free. A nil cfg.Models seeds an empty (non-nil) slice so the pointer is
@@ -6654,11 +6657,15 @@ func (s *Service) SettleIfStale(ctx context.Context, id session.SessionID) (bool
 // dies with it, so a leftover entry from the PREVIOUS run could never drain —
 // and clearing here keeps a promoted follow-up run's own steers (tracked AFTER
 // its register) from ever matching a dead run's text.
-func (s *Service) register(id session.SessionID, run *agent.Run, sess *session.Session) {
+func (s *Service) register(id session.SessionID, run *agent.Run, sess *session.Session) bool {
 	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.closed {
+		return false
+	}
 	s.runs[id] = &runState{run: run, sess: sess}
 	delete(s.steerMsgIDs, id)
-	s.mu.Unlock()
+	return true
 }
 
 // deregister removes the in-flight run for id (only if it is still the one

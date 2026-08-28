@@ -246,6 +246,7 @@ type Runtime struct {
 	tokenEndpoint     string
 	resource          string
 	diagnostics       port.Diagnostics
+	now               func() time.Time
 	lifecycleCtx      context.Context
 	cancelLifecycle   context.CancelFunc
 	sharedClosers     []namedCloser
@@ -292,9 +293,10 @@ type authorizationTransaction struct {
 	verifier   string
 	browserURL string
 	expiresAt  time.Time
-	// exchanging reserves callback completion while the downstream exchange is
-	// in flight. Cancellation removes this same map entry, so the final install
-	// below has one linearized winner rather than resurrecting a cancelled grant.
+	// cancel stops the exact callback token exchange. Cancellation owns this
+	// transaction, not the whole session lifecycle, so a loser cannot install a
+	// grant after cancel, expiry, or close won.
+	cancel     context.CancelFunc
 	exchanging bool
 }
 
@@ -380,9 +382,22 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 		refreshes:       make(map[controlTarget]*refreshOperation),
 		oauthBackend:    oauthBackend,
 		diagnostics:     port.NopDiagnostics{},
+		now:             time.Now,
 		lifecycleCtx:    lifecycleCtx,
 		cancelLifecycle: cancelLifecycle,
 	}, nil
+}
+
+// SetClock installs the process clock used for broker-transaction expiry. It is
+// called once by the owning Service so durable and runtime expiry share one
+// authority; a nil clock restores the production clock.
+func (r *Runtime) SetClock(now func() time.Time) {
+	if now == nil {
+		now = time.Now
+	}
+	r.mu.Lock()
+	r.now = now
+	r.mu.Unlock()
 }
 
 // NewToolHiveRuntime enables composition-private connection rendezvous for one
@@ -727,7 +742,7 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	if r.closed {
 		return ConnectResult{}, ErrClosed
 	}
-	r.collectExpiredLocked(time.Now())
+	r.collectExpiredLocked(r.now())
 	target := controlTarget{sessionID: sessionID, backendID: backendID}
 	if !r.openSessionLocked(sessionID) || !r.protectedBackendLocked(backendID) {
 		return ConnectResult{}, ErrInvalidControlTarget
@@ -797,6 +812,9 @@ func (r *Runtime) cancelAuthorization(sessionID session.SessionID, backendID, ha
 	}
 	delete(r.transactions, target)
 	delete(r.authorizations, target)
+	if transaction.cancel != nil {
+		transaction.cancel()
+	}
 	return nil
 }
 
@@ -813,7 +831,7 @@ type AuthorizationStatus struct {
 func (r *Runtime) CheckAuthorization(_ context.Context, id session.SessionID, routeID, authorizationID string) (AuthorizationStatus, error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.collectExpiredLocked(time.Now())
+	r.collectExpiredLocked(r.now())
 	target, ok := r.targetForRouteLocked(id, routeID)
 	if !ok || authorizationID == "" || r.authorizations[target] != authorizationID {
 		return AuthorizationStatus{}, ErrInvalidControlTarget
@@ -837,9 +855,13 @@ func (r *Runtime) CancelAuthorization(ctx context.Context, id session.SessionID,
 	if !ok || authorizationID == "" || r.authorizations[target] != authorizationID {
 		return ErrInvalidControlTarget
 	}
+	transaction := r.transactions[target]
 	delete(r.transactions, target)
 	delete(r.authorizations, target)
 	delete(r.grants, target)
+	if transaction.cancel != nil {
+		transaction.cancel()
+	}
 	return nil
 }
 
@@ -902,7 +924,7 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 		r.mu.Unlock()
 		return ErrClosed
 	}
-	r.collectExpiredLocked(time.Now())
+	r.collectExpiredLocked(r.now())
 	var (
 		target      controlTarget
 		transaction authorizationTransaction
@@ -911,8 +933,11 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 	for candidate, pending := range r.transactions {
 		if pending.handle == state && !pending.exchanging {
 			target, transaction, found = candidate, pending, true
+			exchangeCtx, cancel := context.WithCancel(ctx)
+			pending.cancel = cancel
 			pending.exchanging = true
 			r.transactions[candidate] = pending
+			ctx = exchangeCtx
 			break
 		}
 	}
@@ -981,7 +1006,7 @@ func (r *Runtime) restoreGrant(target controlTarget, grant downstreamGrant) erro
 func (r *Runtime) restoreTransaction(target controlTarget, transaction authorizationTransaction) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed || !transaction.expiresAt.After(time.Now()) || !r.validControlTargetLocked(target) || r.authorizations[target] != transaction.handle {
+	if r.closed || !transaction.expiresAt.After(r.now()) || !r.validControlTargetLocked(target) || r.authorizations[target] != transaction.handle {
 		return
 	}
 	if _, connected := r.grants[target]; connected {
@@ -1294,6 +1319,9 @@ func (r *Runtime) collectExpiredLocked(now time.Time) {
 		if !transaction.expiresAt.After(now) {
 			delete(r.transactions, target)
 			delete(r.authorizations, target)
+			if transaction.cancel != nil {
+				transaction.cancel()
+			}
 		}
 	}
 }
@@ -1332,6 +1360,11 @@ func (r *Runtime) Close() error {
 			lifecycle.cancel()
 			lifecycles = append(lifecycles, lifecycle)
 		}
+		for _, transaction := range r.transactions {
+			if transaction.cancel != nil {
+				transaction.cancel()
+			}
+		}
 		for _, refresh := range r.refreshes {
 			refresh.cancel()
 		}
@@ -1347,6 +1380,7 @@ func (r *Runtime) Close() error {
 		r.sessions = make(map[session.SessionID]*SessionTools)
 		r.lifecycles = make(map[session.SessionID]*sessionLifecycle)
 		r.transactions = make(map[controlTarget]authorizationTransaction)
+		r.authorizations = make(map[controlTarget]string)
 		r.grants = make(map[controlTarget]downstreamGrant)
 		r.disconnected = make(map[controlTarget]struct{})
 		r.refreshes = make(map[controlTarget]*refreshOperation)

@@ -94,9 +94,12 @@ func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.Sessio
 	}
 	s.stopMCPAuthorizationExpiry(id)
 	ctx = memory.WithWorkspace(ctx, sess.Workspace)
-	run := engine.ContinueMCPAuthorization(ctx, sess, env, claimed)
-	s.register(id, run, sess)
-	return run, nil
+	prepared := engine.PrepareMCPAuthorizationContinuation(ctx, sess, env, claimed)
+	if !s.register(id, prepared.Run(), sess) {
+		s.repairMCPAuthorizationRegistration(ctx, sess)
+		return nil, ErrNoActiveRun
+	}
+	return prepared.Start(), nil
 }
 
 // CancelMCPAuthorization resolves one exact pending authorization with paired
@@ -143,6 +146,17 @@ func (s *Service) resolveMCPAuthorization(ctx context.Context, sess *session.Ses
 	run := engine.ContinueAfterMCPAuthorization(memory.WithWorkspace(ctx, sess.Workspace), sess, env)
 	s.register(sess.ID, run, sess)
 	return run, nil
+}
+
+func (s *Service) repairMCPAuthorizationRegistration(ctx context.Context, sess *session.Session) {
+	// The connected claim is a no-retry boundary. If process shutdown wins before
+	// the inert continuation can register, abandon pairs every unmatched call
+	// rather than leaving a claimed protected action executable after restart.
+	if err := sess.Abandon(); err != nil {
+		return
+	}
+	_ = s.cfg.Store.Save(context.WithoutCancel(ctx), sess)
+	s.stopMCPAuthorizationExpiry(sess.ID)
 }
 
 func matchingMCPAuthorization(sess *session.Session, control MCPAuthorizationControl) (session.PendingMCPAuthorization, bool) {
