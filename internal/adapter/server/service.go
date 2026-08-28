@@ -1220,6 +1220,10 @@ type runState struct {
 	run      *agent.Run
 	sess     *session.Session
 	awaiting atomic.Bool
+	// authorizing mirrors a durably parked broker transaction. Like awaiting it
+	// must survive relay deregistration and shutdown cancellation so Service keeps
+	// the session lease until an explicit resolution or process exit.
+	authorizing atomic.Bool
 }
 
 // keyedMutex is a map of per-key mutexes with reference counting, so a caller can
@@ -2907,7 +2911,7 @@ func (s *Service) Close() {
 	}
 	s.mu.Unlock()
 	for _, rs := range runs {
-		if rs.awaiting.Load() {
+		if rs.awaiting.Load() || rs.authorizing.Load() {
 			continue // resumable cross-process via the durable awaiting snapshot
 		}
 		rs.run.Cancel()
@@ -5773,6 +5777,9 @@ func (s *Service) Persist(ctx context.Context, id session.SessionID) {
 	}
 	if st.sess.State == session.StateAwaiting {
 		st.awaiting.Store(true)
+	}
+	if st.sess.State == session.StateAuthorizing {
+		st.authorizing.Store(true)
 	}
 }
 

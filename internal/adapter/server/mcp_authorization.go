@@ -54,7 +54,10 @@ func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.Sessio
 		return nil, err
 	}
 	status, err := s.cfg.VMCPBroker.CheckAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
-	if err != nil || status.Status == vmcpbroker.ConnectionPending {
+	if err != nil {
+		return nil, ErrNotFound
+	}
+	if status.Status == vmcpbroker.ConnectionPending {
 		return nil, nil
 	}
 	if status.Status != vmcpbroker.ConnectionConnected {

@@ -937,7 +937,7 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 		return ErrInvalidControlTarget
 	}
 	pending, ok := r.transactions[target]
-	if !ok || pending.handle != transaction.handle || !pending.exchanging {
+	if !ok || pending.handle != transaction.handle || !pending.exchanging || r.authorizations[target] != transaction.handle {
 		// Cancellation won while the exchange was in flight. It is deliberately
 		// terminal: do not resurrect an authority grant after cancellation.
 		return ErrInvalidControlTarget
@@ -980,7 +980,7 @@ func (r *Runtime) restoreGrant(target controlTarget, grant downstreamGrant) erro
 func (r *Runtime) restoreTransaction(target controlTarget, transaction authorizationTransaction) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	if r.closed || !transaction.expiresAt.After(time.Now()) || !r.validControlTargetLocked(target) {
+	if r.closed || !transaction.expiresAt.After(time.Now()) || !r.validControlTargetLocked(target) || r.authorizations[target] != transaction.handle {
 		return
 	}
 	if _, connected := r.grants[target]; connected {
