@@ -20,7 +20,7 @@ contracts and source conformance behavior. Use the task-01 safe diagnostic
 approach where an adapter exposes malformed-frontmatter diagnostics, but do not
 move YAML into engine domain, port, or agent packages.
 
-Update root and engine module metadata/sums and parser-specific engine allowlist entries as needed for this vertical slice. Add a repository lint guard that denies all direct production YAML-parser imports except `github.com/goccy/go-yaml` (including yaml.v2, yaml.v3, and `sigs.k8s.io/yaml`); it must not reject transitive dependencies. Do not migrate root configuration adapters, settings editors, or lenient root readers here. Keep the engine
+Update root and engine module metadata/sums and parser-specific engine allowlist entries as needed for this vertical slice. Do not migrate root configuration adapters, settings editors, or lenient root readers here. Keep the engine
 standalone closure small and verify with commands run from the prescribed
 Taskfile workflow.
 
@@ -34,8 +34,6 @@ Taskfile workflow.
   - verify: `TestGoccyYAMLMigration_Scenario3_RuleFrontmatterCompatibility`
 - AC3.4: the three adapters continue to satisfy their source conformance coverage after the parser replacement.
   - verify: `task test` — runs the engine adapter/source conformance suites; the scenario-specific tests above pin parser behavior.
-- AC7.1: root and engine direct production imports use only `github.com/goccy/go-yaml` for YAML parsing; yaml.v2, yaml.v3, `sigs.k8s.io/yaml`, and any other YAML parser are denied by a repository lint rule. Transitive dependencies are out of scope.
-  - verify: `TestGoccyYAMLMigration_Scenario7_OnlyGoccyYAMLParserIsDirectlyImported`
 
 ## Worker notes
 

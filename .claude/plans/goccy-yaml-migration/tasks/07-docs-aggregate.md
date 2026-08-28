@@ -23,12 +23,17 @@ allowlists where needed. Do not edit the acceptance plan or ADR. Regenerate
 
 Run the repository-level proof that goccy remains constrained to parser-owning
 adapter/command packages, engine layering and standalone closure remain intact,
-and all root/engine gates plus the offline demo pass after tidy/sync. Address
-only integration defects exposed by those gates; do not enlarge YAML syntax or
-configuration surface.
+and all root/engine gates plus the offline demo pass after tidy/sync. Add the
+repository lint guard that denies every direct production YAML-parser import
+except `github.com/goccy/go-yaml` (including yaml.v2, yaml.v3, and
+`sigs.k8s.io/yaml`); it must not inspect or reject transitive dependencies.
+Address only integration defects exposed by those gates; do not enlarge YAML
+syntax or configuration surface.
 
 ## Acceptance criteria
 
+- AC7.1: root and engine direct production imports use only `github.com/goccy/go-yaml` for YAML parsing; yaml.v2, yaml.v3, `sigs.k8s.io/yaml`, and any other YAML parser are denied by a repository lint rule. Transitive dependencies are out of scope.
+  - verify: `TestGoccyYAMLMigration_Scenario7_OnlyGoccyYAMLParserIsDirectlyImported`
 - AC7.2: goccy is allowed only where the current parser dependency belongs, and engine domain/port/agent layering remains unchanged.
   - verify: inspection — `task lint` runs depguard, vet, and the engine layering checks.
 - AC7.3: the engine independently resolves, builds, and tests with goccy in its small standalone closure and no root-module dependency.
