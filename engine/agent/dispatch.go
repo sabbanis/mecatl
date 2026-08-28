@@ -321,6 +321,12 @@ func (e *Engine) driveFromAwaiting(ctx context.Context, r *Run, sess *session.Se
 	msgs := sess.Conversation.Messages
 	calls := msgs[lastAssistant].ToolCalls
 	turnIdx := sess.Counters.Turns - 1
+	answered := make(map[session.ToolCallID]struct{})
+	for _, m := range msgs[lastAssistant+1:] {
+		if m.Role == session.RoleTool && m.ToolResult != nil {
+			answered[m.ToolResult.CallID] = struct{}{}
+		}
+	}
 
 	// Step 2: leave StateAwaiting via the awaiting-only ResumeWith seam (clears
 	// pending, preserves Counters/Usage). This is the SAME seam the live loop calls
@@ -340,8 +346,21 @@ func (e *Engine) driveFromAwaiting(ctx context.Context, r *Run, sess *session.Se
 		return
 	}
 	if park != nil {
+		// The first process may have executed calls before the permission ask but
+		// died before their results were recorded. Close only those earlier,
+		// still-unanswered calls: later siblings remain deferred with the broker
+		// transaction and must not be replayed or prematurely paired.
+		var completed []session.ToolResult
+		for _, call := range calls[:pendingIdx] {
+			if _, done := answered[call.ID]; done {
+				continue
+			}
+			interrupted := session.NewToolError(call.ID, resumeAbortedSiblingMessage)
+			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(interrupted)})
+			completed = append(completed, interrupted)
+		}
 		park.deferred = calls[pendingIdx+1:]
-		failed, parked := e.parkAuthorization(ctx, r, sess, turnIdx, park, nil)
+		failed, parked := e.parkAuthorization(ctx, r, sess, turnIdx, park, completed)
 		if parked {
 			return
 		}
@@ -361,12 +380,6 @@ func (e *Engine) driveFromAwaiting(ctx context.Context, r *Run, sess *session.Se
 	// partially-dispatched turn) keep their recorded result and are skipped. Order
 	// follows ToolCalls, so the recorded tool messages pair 1:1 with the assistant's
 	// calls and ValidateToolPairing passes.
-	answered := make(map[session.ToolCallID]struct{})
-	for _, m := range msgs[lastAssistant+1:] {
-		if m.Role == session.RoleTool && m.ToolResult != nil {
-			answered[m.ToolResult.CallID] = struct{}{}
-		}
-	}
 	var toRecord []session.ToolResult
 	for i, c := range calls {
 		if _, done := answered[c.ID]; done {

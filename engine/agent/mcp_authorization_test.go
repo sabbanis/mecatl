@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +17,17 @@ import (
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 )
+
+// awaitingSnapshotStore simulates a process ending after the durable park save,
+// before the cancellation path can overwrite that snapshot.
+type awaitingSnapshotStore struct{ port.SessionStore }
+
+func (s awaitingSnapshotStore) Save(ctx context.Context, sess *session.Session) error {
+	if sess.State != session.StateAwaiting {
+		return nil
+	}
+	return s.SessionStore.Save(ctx, sess)
+}
 
 type authorizationTool struct {
 	fakeTool
@@ -167,7 +179,7 @@ func TestInvariant_restored_permission_approval_preserves_mcp_authorization_park
 		request: tool.AuthorizationRequest{ID: "restored-transaction", Backend: "Configured MCP", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
 	}
 	e2 := newEngine(agent.Deps{LLM: mockllm.New(), Catalog: catalogWith(t, protected), Policy: policy, Store: memstore.New()})
-	events := resumeEvents(e2.ResumeApproval(context.Background(), restored, agent.MemEnv("/ws"), askID, session.VerdictAllowOnce))
+	events := resumeEvents(e2.ResumeApprovalWithPresentation(context.Background(), restored, agent.MemEnv("/ws"), askID, session.VerdictAllowOnce, true))
 
 	if restored.State != session.StateAuthorizing {
 		t.Fatalf("restored state = %s, want authorizing", restored.State)
@@ -180,6 +192,33 @@ func TestInvariant_restored_permission_approval_preserves_mcp_authorization_park
 		if event.Type == session.EvToolResult || event.Type == session.EvResult {
 			t.Fatalf("restored authorization park emitted %s", event.Type)
 		}
+	}
+}
+
+func TestInvariant_mcp_authorization_resume_presentation_is_caller_granted(t *testing.T) {
+	call := toolCall("protected", "mcp__protected__list", `{}`)
+	sess := session.New("resume-without-presentation", session.ModeDefault, "/ws", session.Limits{}, time.Unix(0, 0))
+	if err := sess.RecordUserPrompt("go", nil); err != nil {
+		t.Fatalf("record prompt: %v", err)
+	}
+	if err := sess.BeginTurn(); err != nil {
+		t.Fatalf("begin turn: %v", err)
+	}
+	if err := sess.RecordAssistant(session.NewAssistantMessage("", "", []session.ToolCall{call})); err != nil {
+		t.Fatalf("record assistant: %v", err)
+	}
+	ask := session.PendingAsk{AskID: "resume-without-presentation:1:protected:r1", Tool: call.Name, Call: call.ID}
+	if err := sess.PauseForApproval(ask); err != nil {
+		t.Fatalf("pause for approval: %v", err)
+	}
+	protected := &authorizationTool{fakeTool: fakeTool{name: call.Name, readOnly: true}, request: tool.AuthorizationRequest{ID: "transaction", Backend: "protected"}}
+	e := newEngine(agent.Deps{LLM: mockllm.New(), Catalog: catalogWith(t, protected), Policy: permpolicy.NewPolicy([]governance.Rule{{Scope: governance.ScopeBuiltinDefault, Effect: governance.Ask}}, nil)})
+	drain(e.ResumeApproval(context.Background(), sess, agent.MemEnv("/ws"), ask.AskID, session.VerdictAllowOnce))
+	if sess.State == session.StateAuthorizing {
+		t.Fatal("unprivileged ResumeApproval parked a broker authorization")
+	}
+	if _, ok := sess.PendingMCPAuthorization(); ok {
+		t.Fatal("unprivileged ResumeApproval retained a broker authorization transaction")
 	}
 }
 
@@ -375,5 +414,106 @@ func TestInvariant_mcp_authorization_tail_covers_normal_guardrail_and_resume(t *
 	}
 	if !sawRequired || sawResult || protected.calls != 1 || sess.State != session.StateAuthorizing {
 		t.Fatalf("required/result/requests/state = %v/%v/%d/%s, want true/false/1/authorizing", sawRequired, sawResult, protected.calls, sess.State)
+	}
+}
+
+// TestSessionMCPAuthorization_Scenario7_RestoredPermissionParkCompletesEarlierSiblings
+// pins restart recovery: calls executed before a restored permission ask are
+// closed out rather than replayed before the broker authorization park.
+func TestInvariant_restored_middle_call_authorization_park_preserves_pairing(t *testing.T) {
+	store := awaitingSnapshotStore{SessionStore: memstore.New()}
+	var earlierCalls atomic.Int32
+	var laterCalls atomic.Int32
+	earlier := &fakeTool{name: "earlier", readOnly: true, exec: func(_ context.Context, call session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
+		earlierCalls.Add(1)
+		return session.NewToolResult(call.ID, "earlier result"), nil
+	}}
+	pending := &fakeTool{name: "pending", readOnly: false}
+	later := &fakeTool{name: "later", readOnly: true, exec: func(_ context.Context, call session.ToolCall, _ tool.Workspace) (session.ToolResult, error) {
+		laterCalls.Add(1)
+		return session.NewToolResult(call.ID, "later result"), nil
+	}}
+	llm := mockllm.New(mockllm.ToolCallTurn(
+		toolCall("earlier-call", earlier.name, `{}`),
+		toolCall("pending-call", pending.name, `{}`),
+		toolCall("later-call", later.name, `{}`),
+	))
+	policy := permpolicy.NewPolicy([]governance.Rule{
+		{Tool: earlier.name, Effect: governance.Allow, Scope: governance.ScopeBuiltinDefault},
+		{Tool: later.name, Effect: governance.Allow, Scope: governance.ScopeBuiltinDefault},
+	}, nil)
+	first := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, earlier, pending, later), Policy: policy, Store: store, Interactive: true})
+	sess := newSession(t, session.Limits{})
+	run := first.Run(context.Background(), sess, agent.MemEnv("/ws"), agent.RunRequest{Text: "go"})
+	for event := range run.Events() {
+		if event.Type == session.EvPermissionAsk {
+			if err := store.Save(context.Background(), sess); err != nil {
+				t.Fatalf("persist awaiting snapshot: %v", err)
+			}
+			run.Cancel()
+		}
+	}
+	if earlierCalls.Load() != 1 || laterCalls.Load() != 0 {
+		t.Fatalf("first run calls = %d/%d, want 1/0", earlierCalls.Load(), laterCalls.Load())
+	}
+
+	restored, err := store.Load(context.Background(), sess.ID)
+	if err != nil {
+		t.Fatalf("load restored session: %v", err)
+	}
+	if restored.State != session.StateAwaiting {
+		t.Fatalf("restored state = %s, want awaiting snapshot", restored.State)
+	}
+	protected := &authorizationTool{
+		fakeTool: fakeTool{name: pending.name, readOnly: true, exec: func(context.Context, session.ToolCall, tool.Workspace) (session.ToolResult, error) {
+			t.Fatal("protected tool executed before broker authorization")
+			return session.ToolResult{}, nil
+		}},
+		request: tool.AuthorizationRequest{ID: "restored-broker-request", Backend: "protected", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	resumed := newEngine(agent.Deps{LLM: llm, Catalog: catalogWith(t, earlier, protected, later), Policy: policy, Store: store, Interactive: true})
+	ask, ok := restored.PendingAsk()
+	if !ok {
+		t.Fatal("restored session has no pending approval")
+	}
+	events := drain(resumed.ResumeApprovalWithPresentation(context.Background(), restored, agent.MemEnv("/ws"), ask.AskID, session.VerdictAllowOnce, true))
+
+	if earlierCalls.Load() != 1 || laterCalls.Load() != 0 {
+		t.Fatalf("calls after restore = earlier %d later %d, want 1/0 (no replay)", earlierCalls.Load(), laterCalls.Load())
+	}
+	if restored.State != session.StateAuthorizing {
+		t.Fatalf("restored state = %s, want authorizing (events %v)", restored.State, typesOf(events))
+	}
+	pendingAuthorization, ok := restored.PendingMCPAuthorization()
+	if !ok || pendingAuthorization.Call.ID != "pending-call" || len(pendingAuthorization.Deferred) != 1 || pendingAuthorization.Deferred[0].ID != "later-call" {
+		t.Fatalf("pending authorization = %#v, want pending-call with later-call deferred", pendingAuthorization)
+	}
+	aborted, err := restored.AbortMCPAuthorization("test cleanup")
+	if err != nil {
+		t.Fatalf("abort parked authorization: %v", err)
+	}
+	if err := restored.RecordToolResults(aborted); err != nil {
+		t.Fatalf("record aborted parked calls: %v", err)
+	}
+	if err := session.ValidateToolPairing(restored.Conversation.Messages); err != nil {
+		t.Fatalf("tool pairing after restored park cleanup: %v", err)
+	}
+	var resultIDs []session.ToolCallID
+	for _, event := range events {
+		if event.ToolResult != nil {
+			resultIDs = append(resultIDs, event.ToolResult.CallID)
+		}
+	}
+	if len(resultIDs) != 1 || resultIDs[0] != "earlier-call" {
+		t.Fatalf("interrupted result events = %v, want [earlier-call]", resultIDs)
+	}
+	var recorded []session.ToolResult
+	for _, message := range restored.Conversation.Messages {
+		if message.ToolResult != nil {
+			recorded = append(recorded, *message.ToolResult)
+		}
+	}
+	if len(recorded) != 3 || recorded[0].CallID != "earlier-call" || !recorded[0].IsError {
+		t.Fatalf("recorded results = %#v, want earlier interrupted result followed by parked-call cleanup", recorded)
 	}
 }

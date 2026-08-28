@@ -243,6 +243,7 @@ type Runtime struct {
 	clientID          string
 	httpClient        *http.Client
 	tokenEndpoint     string
+	resource          string
 	diagnostics       port.Diagnostics
 	lifecycleCtx      context.Context
 	cancelLifecycle   context.CancelFunc
@@ -385,7 +386,7 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 // an opened canonical session and protected backend.
 func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeConfig, transactionTTL time.Duration) (*Runtime, error) {
 	if config.AuthServer == nil || config.Storage == nil || config.CallbackURL == "" || config.AuthorizationEndpoint == "" || config.TokenEndpoint == "" {
-		return nil, fmt.Errorf("%w: embedded ToolHive authorization server, storage, trusted OAuth endpoints, and callback URL are required", ErrInvalidRoute)
+		return nil, fmt.Errorf("%w: embedded ToolHive authorization server, storage, trusted OAuth issuer/endpoints, and callback URL are required", ErrInvalidRoute)
 	}
 	endpoint, err := trustedToolHiveOAuthEndpoint(config.AuthorizationEndpoint)
 	if err != nil {
@@ -394,6 +395,10 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 	tokenEndpoint, err := trustedToolHiveOAuthEndpoint(config.TokenEndpoint)
 	if err != nil {
 		return nil, err
+	}
+	resource, err := trustedToolHiveOAuthEndpoint(config.Issuer)
+	if err != nil {
+		return nil, fmt.Errorf("%w: trusted ToolHive OAuth issuer/resource: %w", ErrInvalidRoute, err)
 	}
 	callback, err := url.Parse(config.CallbackURL)
 	if err != nil || callback.Scheme != "https" || callback.Host == "" {
@@ -429,6 +434,7 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 	}
 	runtime.authorizeEndpoint = endpoint
 	runtime.tokenEndpoint = tokenEndpoint
+	runtime.resource = resource
 	runtime.callbackURL = config.CallbackURL
 	runtime.transactionTTL = transactionTTL
 	runtime.clientID = clientID
@@ -748,7 +754,7 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	query.Set("scope", "openid offline_access")
 	query.Set("code_challenge", base64.RawURLEncoding.EncodeToString(challenge[:]))
 	query.Set("code_challenge_method", "S256")
-	query.Set("resource", strings.TrimSuffix(r.authorizeEndpoint, "/oauth/authorize"))
+	query.Set("resource", r.resource)
 	query.Set("state", handle)
 	browserURL.RawQuery = query.Encode()
 	transaction := authorizationTransaction{

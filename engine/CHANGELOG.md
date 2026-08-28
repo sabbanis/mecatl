@@ -150,6 +150,12 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   unusable when precise cancellation cannot confirm removal, so a failed durable
   parking transition cannot orphan a reusable broker transaction. Added (minor).
 
+- **Explicit restored-approval presentation capability** —
+  `agent.Engine.ResumeApprovalWithPresentation` lets the authenticated Service
+  explicitly retain presentation authority across a restored permission approval;
+  the existing `ResumeApproval` now fails closed for a subsequent broker
+  authorization park. Added (minor).
+
 - **`tool.AuthorizationRequester.InvalidateAuthorization` now reports failure** —
   its `error` result makes a failed cancellation observable so the engine can retain
   ownership of the parked broker authorization rather than silently orphaning a

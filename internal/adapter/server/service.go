@@ -5449,7 +5449,7 @@ func (s *Service) resumeFromAwaiting(ctx context.Context, id session.SessionID, 
 		return nil, err
 	}
 	ctx = memory.WithWorkspace(ctx, sess.Workspace)
-	run := engine.ResumeApproval(ctx, sess, env, askID, verdict)
+	run := engine.ResumeApprovalWithPresentation(ctx, sess, env, askID, verdict, true)
 	s.register(id, run, sess)
 	return run, nil
 }

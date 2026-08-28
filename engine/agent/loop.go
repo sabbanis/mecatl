@@ -1064,21 +1064,29 @@ func (e *Engine) RetryFailedStep(ctx context.Context, sess *session.Session, env
 // terminal EvResult (Stop == StopError, the Error field), exactly like any other
 // terminal — it never silently completes. The pending tool executes EXACTLY ONCE on
 // the allow path and NOT AT ALL on a precondition failure or a deny.
+// ResumeApproval resumes a restored approval without an authorization-presentation
+// capability. Callers outside the authenticated Service boundary fail closed if the
+// approved call subsequently needs a broker authorization park.
 func (e *Engine) ResumeApproval(ctx context.Context, sess *session.Session, env tool.Environment, askID string, verdict session.ApprovalVerdict) *Run {
-	// The resumed run CONTINUES the run that parked awaiting this ask — it is not
-	// a new one — so it carries that run's identity forward, read from the session
-	// the host restored it onto (ADR 0249). This is what makes a cross-process
-	// Approve after a restart the SAME run to every observer.
-	//
-	// The fallback is deliberately confined to THIS seam. A prompt entry must
-	// never read the id off the session: a reused session still carries the id of
-	// the run that just ended, and inheriting it would silently attribute a brand
-	// new run's events to the previous one.
-	//
-	// A restored approval is entered only by a client presenting the original
-	// permission decision; it retains authority to present a subsequent broker
-	// authorization park in the same logical turn.
-	return e.startRun(ctx, sess, RunRequest{RunID: sess.RunID(), AuthorizationPresentation: true}, func(ctx context.Context, r *Run) {
+	return e.resumeApproval(ctx, sess, env, askID, verdict, false)
+}
+
+// ResumeApprovalWithPresentation resumes a restored approval with the caller's
+// explicit authorization-presentation capability. Service supplies this only after
+// authenticating the client that resumes the run.
+func (e *Engine) ResumeApprovalWithPresentation(ctx context.Context, sess *session.Session, env tool.Environment, askID string, verdict session.ApprovalVerdict, authorizationPresentation bool) *Run {
+	return e.resumeApproval(ctx, sess, env, askID, verdict, authorizationPresentation)
+}
+
+// resumeApproval carries the resumed run's identity forward, read from the
+// session the host restored it onto (ADR 0249), rather than minting a new one —
+// this is what makes a cross-process Approve after a restart the SAME run to
+// every observer. The fallback is deliberately confined to THIS seam: a prompt
+// entry must never read the id off the session, since a reused session still
+// carries the id of the run that just ended and inheriting it would silently
+// attribute a brand new run's events to the previous one.
+func (e *Engine) resumeApproval(ctx context.Context, sess *session.Session, env tool.Environment, askID string, verdict session.ApprovalVerdict, authorizationPresentation bool) *Run {
+	return e.startRun(ctx, sess, RunRequest{RunID: sess.RunID(), AuthorizationPresentation: authorizationPresentation}, func(ctx context.Context, r *Run) {
 		e.driveFromAwaiting(ctx, r, sess, env, askID, verdict)
 	})
 }

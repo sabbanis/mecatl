@@ -759,13 +759,13 @@ sanitized reason codes, so a replacement process resumes without transcript/path
 material in job state. A crash before v2 verification retains v1; one after atomic
 promotion may leave both, with verified v2 authoritative and the retry removing v1.
 
-**Session-scoped vMCP broker re-audit (ADR 0237, Stage 2 proof).** List 1 gains
-rows 61–62: the optional root-internal Runtime and its session-local transports and
-bindings. Neither is wired by `app.Build` yet; the inventory records the implemented
-lifetime rather than claiming a deployed path. List 2 gains row 38: routes can be
-re-derived from operator configuration, but every session grant, transaction,
-tombstone, disconnect mark, refresh operation, and transport is deliberately lost on
-restart. There is no broker snapshot field, credential store, or reattachment path.
+**Session-scoped vMCP broker re-audit (ADR 0237, Stage 3 proof).** List 1 rows
+64–66 record the optional root-internal Runtime, the Service-owned, session-local
+transport wrappers, and the reset-by-design parked-completion health counter. A durable opaque enrollment identity admits rehydration only when
+the trusted broker configuration and compiled route inventory are identical. Runtime
+state itself (grants, transactions, refreshes, transports, and tombstones) remains
+reset-by-design: a restart constructs a new Runtime and opens a fresh wrapper set;
+the old Runtime never resurrects a closed session.
 
 ## List 1: resource inventory
 
@@ -928,8 +928,9 @@ rather than papered over.
 
 **Mecatui status-line re-audit (ADR 0247).** List 1 row 64 owns the local source lifecycle. It contains only display-safe input and generated presentation state, never session authority or transcript data, so List 2 gains no row. Shutdown is bounded rather than silently abandoning a live command tree; a process restart deliberately starts from fresh local status state.
 
-| 64 | Optional session-scoped vMCP broker Runtime (ADR 0237 Stage 2 proof): immutable routes; ToolHive authserver/vMCP closers; process-local session, lifecycle, tombstone, transaction, grant, disconnect, and refresh maps | root-internal `internal/adapter/vmcpbroker.Runtime`; no `app.Build` wiring yet | process, when an embedding constructs it | `Runtime.Close` marks closed, cancels the lifecycle context and every session/refresh, drains session transports and lifecycle waitgroups, clears maps, then closes the registered ToolHive resources in order; idempotent | **reconstructible, but not reattached**: a future composition root can rebuild immutable routes and ToolHive resources. Today a restart creates no Runtime because no root wires one; no state is restored | `internal/adapter/vmcpbroker/runtime.go` (`Runtime`, `NewToolHiveStreamingHTTPRuntime`, `Close`) |
-| 65 | Session-local broker tools and streaming-HTTP transports: `SessionTools`, one private route wrapper per configured tool, `streamingCaller`, and its anonymous/protected `mcp.Server` clients | `Runtime.OpenSession` / `streamingSessionOpener` | session | `SessionTools.Close` tombstones, rejects new calls, drains its `WaitGroup`, closes its transport clients, waits lifecycle work, then `finishForget`s only that session; Runtime close performs the same teardown for all sessions | **lost / reset-by-design**: routes may be re-derived, but no session transport, broker grant, pending callback, refresh, or tombstone is persisted or reattached. A later process must open a new broker session and explicitly connect again | `internal/adapter/vmcpbroker/runtime.go` (`OpenSession`, `streamingCaller.close`, `SessionTools.Close`, `ForgetSession`) |
+| 64 | Optional session-scoped vMCP broker Runtime plus the Service registry of one `SessionTools` owner per enrolled persisted session (ADR 0237 Stage 3 proof) | root-internal `internal/adapter/vmcpbroker.Runtime`, registry owned by `internal/adapter/server.Service`; no `app.Build` wiring yet | process / live Service session | `Service.CloseSession` and `Service.Close` remove and close the registered wrappers exactly once before Runtime close; factory rollback closes only the owner it created | **derived + reset-by-design**: a restart constructs a new Runtime, validates the durable enrollment identity, then opens fresh transports; runtime grants and transactions are not persisted | `internal/adapter/server/service.go` (`openBrokerSession`, `CloseSession`, `Close`), `internal/adapter/vmcpbroker/runtime.go` (`Runtime`) |
+| 65 | Session-local broker tools and streaming-HTTP transports: `SessionTools`, one private route wrapper per configured tool, `streamingCaller`, and its anonymous/protected `mcp.Server` clients | Service registry obtains them through `Runtime.OpenSession` | session | `SessionTools.Close` is idempotent, tombstones, rejects new calls, drains its `WaitGroup`, closes transport clients, waits lifecycle work, and forgets only its own session | **reset-by-design**: the durable enrollment identity contains no secret/grant/transport material; exact configuration equality is required before fresh session wrappers can be opened | `internal/adapter/vmcpbroker/runtime.go` (`OpenSession`, `streamingCaller.close`, `SessionTools.Close`, `ForgetSession`) |
+| 66 | Broker-authorization parked-completion counter (`Service.parkedCompletions`) | `internal/adapter/server.Service` | process | no explicit cleanup; its atomic counter dies with `Service.Close` | **reset-by-design**: it is an operator-health observation, not session state or authorization evidence; restart begins at zero and never reconstructs a grant/transaction | `internal/adapter/server/service.go` (`parkedCompletions`, `recordAuthorizationParkedCompletion`, `ParkedAuthorizationCompletions`) |
 
 **Steer-while-running re-audit (List 1 / List 2 — issue #512, ADR 0232).** List 1 row 60 inventories the in-memory inbox, stream handoff, and watermark correlation. List 2 row 37 records the pending bundle's deliberate restart-loss; only a drained steer becomes durable ordinary user history.
 
