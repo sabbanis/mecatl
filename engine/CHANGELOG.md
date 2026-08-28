@@ -145,6 +145,11 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 - **`agent.LRUForkReaper.Close`** — releases all retained Parallel winner-fork
   workspaces during graceful composition shutdown. Added (minor).
+- **Authoritative broker-authorization invalidation** —
+  `tool.AuthorizationRequester.InvalidateAuthorization` makes a retained requester
+  unusable when precise cancellation cannot confirm removal, so a failed durable
+  parking transition cannot orphan a reusable broker transaction. Added (minor).
+
 - **Broker authorization correlation event** — `session.MCPAuthorizationPayload`
   and `session.Event.MCPAuthorization` expose only the parked transaction ID,
   backend, call ID, and expiry to attached clients. Added (minor).

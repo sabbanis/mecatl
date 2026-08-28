@@ -23,6 +23,10 @@ type AuthorizationRequester interface {
 	Tool
 	RequestAuthorization(context.Context) (request AuthorizationRequest, required bool, err error)
 	CancelAuthorization(ctx context.Context, authorizationID string) error
+	// InvalidateAuthorization makes any retained requester unusable when precise
+	// cancellation cannot confirm transaction removal. It MUST invalidate before
+	// returning; cleanup failures must not leave the requester usable.
+	InvalidateAuthorization(ctx context.Context, authorizationID string)
 }
 
 // DispatchSerial is an optional execution-order hint. Unlike ReadOnly, it does

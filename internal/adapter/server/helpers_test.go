@@ -52,6 +52,7 @@ func (*parkedAuthorizationTool) RequestAuthorization(context.Context) (tool.Auth
 }
 
 func (*parkedAuthorizationTool) CancelAuthorization(context.Context, string) error { return nil }
+func (*parkedAuthorizationTool) InvalidateAuthorization(context.Context, string)   {}
 func (*parkedAuthorizationTool) DispatchSerial() bool                              { return true }
 
 // call builds a session.ToolCall.

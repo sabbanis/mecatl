@@ -863,8 +863,9 @@ type RunRequest struct {
 // be the one the caller is holding).
 func (r *Run) RunID() string { return r.runID }
 
-// Events returns the channel of domain Events for this run. It is closed when the
-// run ends (after the terminal result Event has been delivered).
+// Events returns the channel of domain Events for this run. It closes after a
+// terminal result Event, or after a durable MCP-authorization park (which emits
+// no terminal result because the session remains authorizing).
 func (r *Run) Events() <-chan session.Event { return r.events }
 
 // Outcome reports why this Run's event stream closed.
@@ -1073,7 +1074,11 @@ func (e *Engine) ResumeApproval(ctx context.Context, sess *session.Session, env 
 	// never read the id off the session: a reused session still carries the id of
 	// the run that just ended, and inheriting it would silently attribute a brand
 	// new run's events to the previous one.
-	return e.startRun(ctx, sess, RunRequest{RunID: sess.RunID()}, func(ctx context.Context, r *Run) {
+	//
+	// A restored approval is entered only by a client presenting the original
+	// permission decision; it retains authority to present a subsequent broker
+	// authorization park in the same logical turn.
+	return e.startRun(ctx, sess, RunRequest{RunID: sess.RunID(), AuthorizationPresentation: true}, func(ctx context.Context, r *Run) {
 		e.driveFromAwaiting(ctx, r, sess, env, askID, verdict)
 	})
 }
@@ -1445,51 +1450,9 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 			return
 		}
 		if park != nil {
-			if len(results) != 0 {
-				if err := sess.RecordToolResults(results); err != nil {
-					e.terminate(ctx, r, sess, session.StopError, lastText, total, err, false)
-					return
-				}
-				results = nil
-			}
-			if !r.req.AuthorizationPresentation || e.deps.Role != "" {
-				results = append(results, e.authorizationParkFailures(r, turnIdx, park, "broker authorization requires an attached interactive main client")...)
-			} else if err := sess.PauseForMCPAuthorization(session.PendingMCPAuthorization{
-				AuthorizationID: park.request.ID, Backend: park.request.Backend, RouteID: park.request.RouteID,
-				ConfigID: park.request.ConfigID, ExpiresAt: park.request.ExpiresAt, Call: park.call, Deferred: park.deferred,
-			}); err != nil {
-				cancelErr := park.tool.CancelAuthorization(context.WithoutCancel(ctx), park.request.ID)
-				failure := "cannot park for broker authorization"
-				if cancelErr != nil {
-					failure = "broker authorization could not be cancelled after parking failure"
-				}
-				results = append(results, e.authorizationParkFailures(r, turnIdx, park, failure)...)
-			} else if err := e.saveRequired(ctx, sess); err != nil {
-				cancelCtx := context.WithoutCancel(ctx)
-				cancelErr := park.tool.CancelAuthorization(cancelCtx, park.request.ID)
-				failure := "broker authorization could not be saved"
-				if cancelErr != nil {
-					failure = "broker authorization could not be cancelled after persistence failure"
-				}
-				aborted, abortErr := sess.AbortMCPAuthorization(failure)
-				if abortErr == nil {
-					for _, result := range aborted {
-						e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(result)})
-					}
-					results = append(results, aborted...)
-				}
-			} else {
-				// A parked run is non-terminal but cannot leave detached children alive:
-				// they have no client result channel once this stream closes.
-				e.drainChildren(ctx, r)
-				r.setOutcome(RunOutcomeAuthorizationParked)
-				e.emit(r, session.Event{Type: session.EvMCPAuthorizationRequired, Turn: turnIdx,
-					MCPAuthorization: &session.MCPAuthorizationPayload{
-						AuthorizationID: park.request.ID,
-						Backend:         park.request.Backend,
-						Call:            park.call.ID,
-						ExpiresAt:       park.request.ExpiresAt,
-					}})
+			var parked bool
+			results, parked = e.parkAuthorization(ctx, r, sess, turnIdx, park, results)
+			if parked {
 				return
 			}
 		}
@@ -1532,6 +1495,52 @@ func (e *Engine) authorizationParkFailures(r *Run, turnIdx int, park *dispatchPa
 		results = append(results, result)
 	}
 	return results
+}
+
+func invalidateAuthorization(ctx context.Context, park *dispatchPark) {
+	if park.tool.CancelAuthorization(context.WithoutCancel(ctx), park.request.ID) != nil {
+		park.tool.InvalidateAuthorization(context.WithoutCancel(ctx), park.request.ID)
+	}
+}
+
+// parkAuthorization is the one durable parking tail for both normal dispatch and
+// restored permission approvals. It records any already-completed preceding calls
+// before persisting the authorizing aggregate, and only reports a parked outcome
+// after that required save succeeds.
+func (e *Engine) parkAuthorization(ctx context.Context, r *Run, sess *session.Session, turnIdx int, park *dispatchPark, completed []session.ToolResult) ([]session.ToolResult, bool) {
+	if len(completed) != 0 {
+		if err := sess.RecordToolResults(completed); err != nil {
+			return nil, false
+		}
+	}
+	if !r.req.AuthorizationPresentation || e.deps.Role != "" {
+		return e.authorizationParkFailures(r, turnIdx, park, "broker authorization requires an attached interactive main client"), false
+	}
+	if err := sess.PauseForMCPAuthorization(session.PendingMCPAuthorization{
+		AuthorizationID: park.request.ID, Backend: park.request.Backend, RouteID: park.request.RouteID,
+		ConfigID: park.request.ConfigID, ExpiresAt: park.request.ExpiresAt, Call: park.call, Deferred: park.deferred,
+	}); err != nil {
+		failure := "cannot park for broker authorization"
+		invalidateAuthorization(ctx, park)
+		return e.authorizationParkFailures(r, turnIdx, park, failure), false
+	}
+	if err := e.saveRequired(ctx, sess); err != nil {
+		failure := "broker authorization could not be saved"
+		invalidateAuthorization(ctx, park)
+		aborted, abortErr := sess.AbortMCPAuthorization(failure)
+		if abortErr != nil {
+			return nil, false
+		}
+		for _, result := range aborted {
+			e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(result)})
+		}
+		return aborted, false
+	}
+	e.drainChildren(ctx, r)
+	r.setOutcome(RunOutcomeAuthorizationParked)
+	e.emit(r, session.Event{Type: session.EvMCPAuthorizationRequired, Turn: turnIdx,
+		MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: park.request.ID, Backend: park.request.Backend, Call: park.call.ID, ExpiresAt: park.request.ExpiresAt}})
+	return nil, true
 }
 
 // runBoundaryInjections runs the Step 2a turn-boundary injection drains, in
@@ -2881,17 +2890,9 @@ func (e *Engine) emitResult(r *Run, _ *session.Session, reason session.StopReaso
 	})
 }
 
-// save best-effort persists the session if a Store is configured.
-//
-// A failure is WARNed once per run, never propagated: a persist failure must not
-// abort a turn that is otherwise fine, and no other channel reports it — there is
-// no session.Event for a persistence failure, no EvResult field, and no tool
-// result, so the operator log is its only home. Discarding the error outright (as
-// this did) made real data loss completely invisible: a child session whose id
-// the store could not name was never persisted, and resume, InspectSubagent and
-// its event log all silently stopped working with no line anywhere. r.diag
-// carries the session id and, for a child engine, the agent role — exactly the
-// correlation that absence made impossible to debug.
+// saveRequired persists a state transition that cannot safely continue unless it
+// is durable. MCP authorization parking uses it before exposing a transaction to
+// a client, unlike save below, which remains best-effort for ordinary progress.
 func (e *Engine) saveRequired(ctx context.Context, sess *session.Session) error {
 	if e.deps.Store == nil {
 		return errors.New("agent: MCP authorization requires a durable session store")
@@ -2899,6 +2900,9 @@ func (e *Engine) saveRequired(ctx context.Context, sess *session.Session) error 
 	return e.deps.Store.Save(ctx, sess)
 }
 
+// save best-effort persists ordinary session progress. A failure is WARNed once
+// per run and never aborts a turn; no session.Event reports persistence failure,
+// so the correlated diagnostic is the operator-visible signal.
 func (e *Engine) save(ctx context.Context, r *Run, sess *session.Session) {
 	if e.deps.Store == nil {
 		return

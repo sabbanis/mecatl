@@ -3,11 +3,41 @@ package vmcpbroker
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"testing"
 
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 )
+
+func TestInvariant_mcp_authorization_failed_invalidation_retains_ownership(t *testing.T) {
+	runtime, err := NewRuntime([]Route{{
+		BackendID: "protected", Protected: true, ReadOnly: true,
+		Tool: tool.ToolSpec{Name: "mcp__protected__list", Schema: json.RawMessage(`{"type":"object"}`)},
+	}}, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
+		t.Fatal("retained requester executed after authoritative invalidation")
+		return session.ToolResult{}, nil
+	})
+	if err != nil {
+		t.Fatalf("NewRuntime: %v", err)
+	}
+	t.Cleanup(func() { _ = runtime.Close() })
+	opened, err := runtime.OpenSession("retained")
+	if err != nil {
+		t.Fatalf("OpenSession: %v", err)
+	}
+	requester, ok := opened.Tools()[0].(tool.AuthorizationRequester)
+	if !ok {
+		t.Fatal("protected wrapper does not implement AuthorizationRequester")
+	}
+	if err := requester.CancelAuthorization(context.Background(), "missing"); !errors.Is(err, ErrInvalidControlTarget) {
+		t.Fatalf("CancelAuthorization missing = %v, want ErrInvalidControlTarget", err)
+	}
+	requester.InvalidateAuthorization(context.Background(), "missing")
+	if _, _, err := requester.RequestAuthorization(context.Background()); !errors.Is(err, ErrClosed) {
+		t.Fatalf("retained requester after invalidation = %v, want ErrClosed", err)
+	}
+}
 
 func TestInvariant_broker_tools_preserve_read_only_semantics(t *testing.T) {
 	runtime, err := NewRuntime([]Route{

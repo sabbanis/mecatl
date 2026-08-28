@@ -334,9 +334,23 @@ func (e *Engine) driveFromAwaiting(ctx context.Context, r *Run, sess *session.Se
 	// Step 3: resolve the pending call EXACTLY ONCE through the verdict. A cancelled
 	// ctx mid-resolution (cancelled=true) ends the run as cancelled, executing nothing
 	// further.
-	pendingResult, cancelled := e.resolvePendingCall(ctx, r, sess, env, turnIdx, calls[pendingIdx], ask, verdict)
+	pendingResult, park, cancelled := e.resolvePendingCall(ctx, r, sess, env, turnIdx, calls[pendingIdx], ask, verdict)
 	if cancelled {
 		e.terminate(ctx, r, sess, session.StopCancelled, "", session.Usage{}, nil, false)
+		return
+	}
+	if park != nil {
+		park.deferred = calls[pendingIdx+1:]
+		failed, parked := e.parkAuthorization(ctx, r, sess, turnIdx, park, nil)
+		if parked {
+			return
+		}
+		if err := sess.RecordToolResults(failed); err != nil {
+			e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, err, false)
+			return
+		}
+		e.save(ctx, r, sess)
+		e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
 		return
 	}
 
@@ -452,7 +466,7 @@ func locatePendingCall(msgs []session.Message, ask session.PendingAsk) (lastAssi
 // the accepted Phase 2 wart; the rule covers later calls in THIS resumed run, Phase
 // 3b makes it durable). The card is opened before the gate/result (the "ToolCall card
 // before the gate" invariant) on every branch.
-func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, pendingCall session.ToolCall, ask session.PendingAsk, verdict session.ApprovalVerdict) (session.ToolResult, bool) {
+func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, pendingCall session.ToolCall, ask session.PendingAsk, verdict session.ApprovalVerdict) (session.ToolResult, *dispatchPark, bool) {
 	// Record the resolved verdict on the event stream (the resume-from-awaiting
 	// twin of the authorize emit) so the durable EventLog captures the approval
 	// record on the resume path too. Tool NAME + verdict string + askID + the
@@ -477,7 +491,7 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 		e.openCard(r, turnIdx, pendingCall)
 		res := denyResult(pendingCall, fmt.Sprintf("denied by user: %s", ask.Reason))
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, false
+		return res, nil, false
 	}
 	if verdict == session.VerdictAllowAlways {
 		e.deps.Policy.Learn(sess.ID, pendingCall)
@@ -487,7 +501,7 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 	if !known {
 		res := session.NewToolError(pendingCall.ID, fmt.Sprintf("unknown tool %q", pendingCall.Name))
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, false
+		return res, nil, false
 	}
 	// HOOK-ORIGINATED resume (ADR 0062): a hook-blocked call that the human authorized
 	// while parked AWAITING must EXECUTE WITHOUT re-running the PreToolUse hook —
@@ -501,8 +515,8 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 		if e.deps.Clock != nil {
 			enqueue = e.deps.Clock.Now()
 		}
-		res, _, cancelled := e.postPreToolUse(ctx, r, sess, env, turnIdx, pendingCall, t, enqueue)
-		return res, cancelled
+		res, park, cancelled := e.postPreToolUse(ctx, r, sess, env, turnIdx, pendingCall, t, enqueue)
+		return res, park, cancelled
 	}
 
 	// PLAN-ORIGINATED resume (issue #206, Wave 2): a plan-approval ask that the
@@ -521,17 +535,17 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 		r.planApprovedTarget = planApprovedTargetForVerdict(verdict)
 		res := session.NewToolResult(pendingCall.ID, "plan approved by operator: proceeding to execution")
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, false
+		return res, nil, false
 	}
 
 	pre, herr := e.preHook(ctx, r, sess, turnIdx, pendingCall)
 	if herr != nil {
-		return session.ToolResult{}, true // ctx cancelled while running the hook
+		return session.ToolResult{}, nil, true // ctx cancelled while running the hook
 	}
 	if pre.blocked {
 		res := session.NewToolError(pendingCall.ID, pre.msg)
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, false
+		return res, nil, false
 	}
 	// A non-hook-originated (policy) ask cannot itself yield an askable hook block on
 	// resume: a re-run preHook here that wanted to ask would have nowhere to surface
@@ -540,14 +554,14 @@ func (e *Engine) resolvePendingCall(ctx context.Context, r *Run, sess *session.S
 	if pre.askApproval {
 		res := session.NewToolError(pendingCall.ID, pre.msg)
 		e.emit(r, session.Event{Type: session.EvToolResult, Turn: turnIdx, ToolResult: ptr(res)})
-		return res, false
+		return res, nil, false
 	}
 	var enqueue time.Time
 	if e.deps.Clock != nil {
 		enqueue = e.deps.Clock.Now()
 	}
-	res, _, cancelled := e.postPreToolUse(ctx, r, sess, env, turnIdx, pre.effective, t, enqueue)
-	return res, cancelled
+	res, park, cancelled := e.postPreToolUse(ctx, r, sess, env, turnIdx, pre.effective, t, enqueue)
+	return res, park, cancelled
 }
 
 // runOne handles a single (mutating or unknown) tool call serially: authorize,

@@ -38,7 +38,8 @@ func (t *authorizationTool) CancelAuthorization(ctx context.Context, id string) 
 	}
 	return nil
 }
-func (*authorizationTool) DispatchSerial() bool { return true }
+func (*authorizationTool) InvalidateAuthorization(context.Context, string) {}
+func (*authorizationTool) DispatchSerial() bool                            { return true }
 
 type failingAuthorizationStore struct{ err error }
 
@@ -123,6 +124,41 @@ func TestInvariant_mcp_authorization_replays_effective_call(t *testing.T) {
 	pending, ok := fixture.sess.PendingMCPAuthorization()
 	if !ok || string(pending.Call.Args) != `{"secret":"must not reach a card"}` {
 		t.Fatalf("pending call = %#v, want effective exact call", pending)
+	}
+}
+
+// TestInvariant_restored_permission_approval_preserves_mcp_authorization_park
+// models process death after a normal permission ask. The fresh engine must retain
+// the broker transaction durably rather than recording a zero-value tool result.
+func TestInvariant_restored_permission_approval_preserves_mcp_authorization_park(t *testing.T) {
+	policy := permpolicy.NewPolicy([]governance.Rule{{Scope: governance.ScopeBuiltinDefault, Effect: governance.Ask}}, nil)
+	sess := session.New("restored-mcp-park", session.ModeDefault, "/ws", session.Limits{}, time.Unix(0, 0))
+
+	first := &fakeTool{name: "mcp__protected__list", readOnly: true}
+	e1 := newEngine(agent.Deps{LLM: mockllm.New(mockllm.ToolCallTurn(toolCall("protected", first.name, `{}`))), Catalog: catalogWith(t, first), Policy: policy})
+	askID, restored := driveToAwaiting(t, e1, sess, agent.MemEnv("/ws"), "go")
+
+	protected := &authorizationTool{
+		fakeTool: fakeTool{name: first.name, readOnly: true, exec: func(context.Context, session.ToolCall, tool.Workspace) (session.ToolResult, error) {
+			t.Fatal("protected tool executed instead of parking for authorization")
+			return session.ToolResult{}, nil
+		}},
+		request: tool.AuthorizationRequest{ID: "restored-transaction", Backend: "Configured MCP", RouteID: "route", ConfigID: "config", ExpiresAt: time.Now().Add(time.Hour)},
+	}
+	e2 := newEngine(agent.Deps{LLM: mockllm.New(), Catalog: catalogWith(t, protected), Policy: policy, Store: memstore.New()})
+	events := resumeEvents(e2.ResumeApproval(context.Background(), restored, agent.MemEnv("/ws"), askID, session.VerdictAllowOnce))
+
+	if restored.State != session.StateAuthorizing {
+		t.Fatalf("restored state = %s, want authorizing", restored.State)
+	}
+	pending, ok := restored.PendingMCPAuthorization()
+	if !ok || pending.AuthorizationID != "restored-transaction" || pending.Call.ID != "protected" {
+		t.Fatalf("pending authorization = %#v, want durable restored transaction", pending)
+	}
+	for _, event := range events {
+		if event.Type == session.EvToolResult || event.Type == session.EvResult {
+			t.Fatalf("restored authorization park emitted %s", event.Type)
+		}
 	}
 }
 

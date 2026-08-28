@@ -1,6 +1,7 @@
     ifacemethod func (AgentDefSource).ListAgentDefs(ctx context.Context) ([]AgentDef, error)
     ifacemethod func (AuthorityResourceResolver).AuthorityResourcePath(path string) (target string, workspace string, err error)
     ifacemethod func (AuthorizationRequester).CancelAuthorization(ctx context.Context, authorizationID string) error
+    ifacemethod func (AuthorizationRequester).InvalidateAuthorization(ctx context.Context, authorizationID string)
     ifacemethod func (AuthorizationRequester).RequestAuthorization(context.Context) (request AuthorizationRequest, required bool, err error)
     ifacemethod func (CommandRunner).Run(ctx context.Context, command string) (CommandResult, error)
     ifacemethod func (CommandStreamer).RunStreaming(ctx context.Context, command string, out io.Writer) (exitCode int, err error)
@@ -107,7 +108,7 @@ type AgentMCPServer struct{Name string; URL string; Headers map[string]string}
 type AgentOrigin string
 type AuthorityResourceResolver interface{AuthorityResourcePath(path string) (target string, workspace string, err error)}
 type AuthorizationRequest struct{ID string; Backend string; RouteID string; ConfigID string; ExpiresAt time.Time}
-type AuthorizationRequester interface{CancelAuthorization(ctx context.Context, authorizationID string) error; RequestAuthorization(context.Context) (request AuthorizationRequest, required bool, err error); Tool}
+type AuthorizationRequester interface{CancelAuthorization(ctx context.Context, authorizationID string) error; InvalidateAuthorization(ctx context.Context, authorizationID string); RequestAuthorization(context.Context) (request AuthorizationRequest, required bool, err error); Tool}
 type Catalog struct{}
 type CommandResult struct{Stdout string; Stderr string; ExitCode int}
 type CommandRunner interface{Run(ctx context.Context, command string) (CommandResult, error)}
