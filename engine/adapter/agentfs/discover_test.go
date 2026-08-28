@@ -628,3 +628,38 @@ func TestParseMemoryFieldAbsentIsUnset(t *testing.T) {
 		}
 	}
 }
+
+func TestGoccyYAMLMigration_Scenario3_AgentFrontmatterCompatibility(t *testing.T) {
+	t.Parallel()
+
+	def, reason, _ := parseAgentDef([]byte(`---
+name: reviewer
+description: reviews changes
+tools: Read, Grep
+mcpServers:
+  - github
+  - name: issue-tracker
+    url: https://mcp.example.test
+    headers:
+      Authorization: Bearer token
+unknown-future-field: ignored
+---
+review the change`), "reviewer.md")
+	if reason != "" {
+		t.Fatalf("parse agent frontmatter: %s", reason)
+	}
+	if got, want := strings.Join(def.Tools, ","), "Read,Grep"; got != want {
+		t.Fatalf("tools = %q, want %q", got, want)
+	}
+	if len(def.MCPServers) != 2 || !def.MCPServers[0].IsReference() || def.MCPServers[1].URL != "https://mcp.example.test" {
+		t.Fatalf("mcpServers = %+v, want reference and inline HTTP server", def.MCPServers)
+	}
+
+	_, reason, _ = parseAgentDef([]byte("---\nname: leaked-secret\ndescription: [unterminated\n---\nbody"), "bad.md")
+	if !strings.Contains(reason, "malformed YAML frontmatter at line") {
+		t.Fatalf("malformed frontmatter reason = %q, want safe location", reason)
+	}
+	if strings.Contains(reason, "leaked-secret") || strings.Contains(reason, "unterminated") {
+		t.Fatalf("malformed frontmatter reason leaked YAML source: %q", reason)
+	}
+}

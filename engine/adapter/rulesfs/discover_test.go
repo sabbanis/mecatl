@@ -187,3 +187,31 @@ func TestDirSourceIgnoresNonMarkdown(t *testing.T) {
 		t.Fatalf("want only a.md, got %+v", discovered)
 	}
 }
+
+func TestGoccyYAMLMigration_Scenario3_RuleFrontmatterCompatibility(t *testing.T) {
+	t.Parallel()
+
+	for _, raw := range []string{
+		"---\npaths: \"**/*.go, **/*_test.go\"\nunknown-future-field: ignored\n---\nbody",
+		"---\npaths: [\"**/*.go\", \"**/*_test.go\"]\nunknown-future-field: ignored\n---\nbody",
+	} {
+		rule, reason, _ := parseRule([]byte(raw), "compatibility")
+		if reason != "" {
+			t.Fatalf("parse rule frontmatter: %s", reason)
+		}
+		if got, want := strings.Join(rule.Paths, ","), "**/*.go,**/*_test.go"; got != want {
+			t.Fatalf("paths = %q, want %q", got, want)
+		}
+	}
+
+	dir := t.TempDir()
+	writeRule(t, dir, "good.md", "---\npaths: [\"**/*.go\"]\n---\nbody")
+	writeRule(t, dir, "bad.md", "---\npaths: [leaked-secret\n---\nbody")
+	discovered, skips, err := DirSource{Dir: dir}.Rules(t.Context())
+	if err != nil || len(discovered) != 1 || len(skips) != 1 {
+		t.Fatalf("per-file failure isolation: discovered=%+v skips=%+v err=%v", discovered, skips, err)
+	}
+	if reason := skips[0].Reason; !strings.Contains(reason, "malformed YAML frontmatter at line") || strings.Contains(reason, "leaked-secret") {
+		t.Fatalf("malformed frontmatter reason = %q, want safe location without YAML source", reason)
+	}
+}

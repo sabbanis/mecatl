@@ -709,3 +709,34 @@ func TestParseSkillAllowedTools(t *testing.T) {
 		}
 	})
 }
+
+func TestGoccyYAMLMigration_Scenario3_SkillFrontmatterCompatibility(t *testing.T) {
+	t.Parallel()
+
+	skill, reason, _ := ParseSkill([]byte(`---
+name: review
+description: review changes
+allowed-tools: [Read, "Grep Bash"]
+metadata:
+  audience: engineers
+unknown-future-field: ignored
+---
+review the change`), "review/SKILL.md")
+	if reason != "" {
+		t.Fatalf("parse skill frontmatter: %s", reason)
+	}
+	if got, want := strings.Join(skill.AllowedTools, ","), "Read,Grep,Bash"; got != want {
+		t.Fatalf("allowed-tools = %q, want %q", got, want)
+	}
+	if skill.Metadata["audience"] != "engineers" {
+		t.Fatalf("metadata = %#v, want normalized metadata", skill.Metadata)
+	}
+
+	_, reason, _ = ParseSkill([]byte("---\nname: leaked-secret\ndescription: [unterminated\n---\nbody"), "bad/SKILL.md")
+	if !strings.Contains(reason, "malformed YAML frontmatter at line") {
+		t.Fatalf("malformed frontmatter reason = %q, want safe location", reason)
+	}
+	if strings.Contains(reason, "leaked-secret") || strings.Contains(reason, "unterminated") {
+		t.Fatalf("malformed frontmatter reason leaked YAML source: %q", reason)
+	}
+}

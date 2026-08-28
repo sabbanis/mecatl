@@ -2,16 +2,30 @@ package agentfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	yaml "go.yaml.in/yaml/v3"
+	yaml "github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/token"
 
 	"github.com/stacklok/mecatl/engine/tool"
 )
+
+// frontmatterParseError uses only goccy's typed token location; parser text can
+// include YAML-derived content and must not enter a discovery diagnostic.
+func frontmatterParseError(err error) string {
+	var located interface{ GetToken() *token.Token }
+	if errors.As(err, &located) {
+		if parserToken := located.GetToken(); parserToken != nil && parserToken.Position != nil && parserToken.Position.Line > 0 && parserToken.Position.Column > 0 {
+			return fmt.Sprintf("malformed YAML frontmatter at line %d, column %d", parserToken.Position.Line, parserToken.Position.Column)
+		}
+	}
+	return "malformed YAML frontmatter"
+}
 
 // AgentFileExt is the conventional extension of an agent-definition file. A def
 // lives at <dir>/<name>.md (a FLAT file, not a <name>/AGENT.md subdir), matching
@@ -85,34 +99,77 @@ type rawMCPMapping struct {
 	Command   string            `yaml:"command"`
 }
 
-func (l *mcpServerList) UnmarshalYAML(node *yaml.Node) error {
-	switch node.Kind {
-	case yaml.ScalarNode:
-		for _, name := range splitList(node.Value) {
+func (l *mcpServerList) UnmarshalYAML(unmarshal func(any) error) error {
+	var value any
+	if err := unmarshal(&value); err != nil {
+		return err
+	}
+	switch value := value.(type) {
+	case string:
+		for _, name := range splitList(value) {
 			l.servers = append(l.servers, AgentMCPServer{Name: name})
 		}
 		return nil
-	case yaml.SequenceNode:
-		for _, item := range node.Content {
-			switch item.Kind {
-			case yaml.ScalarNode:
-				for _, name := range splitList(item.Value) {
+	case []any:
+		for _, item := range value {
+			switch item := item.(type) {
+			case string:
+				for _, name := range splitList(item) {
 					l.servers = append(l.servers, AgentMCPServer{Name: name})
 				}
-			case yaml.MappingNode:
-				var m rawMCPMapping
-				if err := item.Decode(&m); err != nil {
+			case map[string]any:
+				mapping, err := mcpMapping(item)
+				if err != nil {
 					return err
 				}
-				l.appendMapping(m)
+				l.appendMapping(mapping)
 			default:
-				return fmt.Errorf("mcpServers entry: expected a string or a mapping, got YAML kind %d", item.Kind)
+				return fmt.Errorf("mcpServers entry: expected a string or a mapping")
 			}
 		}
 		return nil
 	default:
-		return fmt.Errorf("mcpServers: expected a string, a list, or a list of mappings, got YAML kind %d", node.Kind)
+		return fmt.Errorf("mcpServers: expected a string, a list, or a list of mappings")
 	}
+}
+
+func mcpMapping(value map[string]any) (rawMCPMapping, error) {
+	var mapping rawMCPMapping
+	for key, raw := range value {
+		switch key {
+		case "name", "url", "type", "transport", "command":
+			text, ok := raw.(string)
+			if !ok {
+				return rawMCPMapping{}, fmt.Errorf("mcpServers entry field %q must be a string", key)
+			}
+			switch key {
+			case "name":
+				mapping.Name = text
+			case "url":
+				mapping.URL = text
+			case "type":
+				mapping.Type = text
+			case "transport":
+				mapping.Transport = text
+			case "command":
+				mapping.Command = text
+			}
+		case "headers":
+			headers, ok := raw.(map[string]any)
+			if !ok {
+				return rawMCPMapping{}, fmt.Errorf("mcpServers entry field %q must be a mapping", key)
+			}
+			mapping.Headers = make(map[string]string, len(headers))
+			for header, rawValue := range headers {
+				text, ok := rawValue.(string)
+				if !ok {
+					return rawMCPMapping{}, fmt.Errorf("mcpServers header %q must be a string", header)
+				}
+				mapping.Headers[header] = text
+			}
+		}
+	}
+	return mapping, nil
 }
 
 // appendMapping normalises one inline mapping into an AgentMCPServer, recording a
@@ -182,20 +239,28 @@ func NormalizeHeaders(in map[string]string) map[string]string {
 // into a trimmed, empty-free []string.
 type stringOrSlice []string
 
-func (s *stringOrSlice) UnmarshalYAML(node *yaml.Node) error {
-	switch node.Kind {
-	case yaml.SequenceNode:
-		var arr []string
-		if err := node.Decode(&arr); err != nil {
-			return err
-		}
-		*s = splitList(arr...)
+func (s *stringOrSlice) UnmarshalYAML(unmarshal func(any) error) error {
+	var value any
+	if err := unmarshal(&value); err != nil {
+		return err
+	}
+	switch value := value.(type) {
+	case string:
+		*s = splitList(value)
 		return nil
-	case yaml.ScalarNode:
-		*s = splitList(node.Value)
+	case []any:
+		values := make([]string, 0, len(value))
+		for _, item := range value {
+			text, ok := item.(string)
+			if !ok {
+				return fmt.Errorf("expected a string or a list of strings")
+			}
+			values = append(values, text)
+		}
+		*s = splitList(values...)
 		return nil
 	default:
-		return fmt.Errorf("expected a string or a list, got YAML kind %d", node.Kind)
+		return fmt.Errorf("expected a string or a list")
 	}
 }
 
@@ -352,7 +417,7 @@ func parseAgentDef(raw []byte, _ string) (AgentDef, string, []string) {
 	}
 	var fm frontmatter
 	if err := yaml.Unmarshal([]byte(fmText), &fm); err != nil {
-		return AgentDef{}, fmt.Sprintf("malformed YAML frontmatter: %v", err), nil
+		return AgentDef{}, frontmatterParseError(err), nil
 	}
 	name := strings.TrimSpace(fm.Name)
 	if name == "" {

@@ -2,16 +2,30 @@ package rulesfs
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
 
-	yaml "go.yaml.in/yaml/v3"
+	yaml "github.com/goccy/go-yaml"
+	"github.com/goccy/go-yaml/token"
 
 	"github.com/stacklok/mecatl/engine/prompt"
 )
+
+// frontmatterParseError uses only goccy's typed token location; parser text can
+// include YAML-derived content and must not enter a discovery diagnostic.
+func frontmatterParseError(err error) string {
+	var located interface{ GetToken() *token.Token }
+	if errors.As(err, &located) {
+		if parserToken := located.GetToken(); parserToken != nil && parserToken.Position != nil && parserToken.Position.Line > 0 && parserToken.Position.Column > 0 {
+			return fmt.Sprintf("malformed YAML frontmatter at line %d, column %d", parserToken.Position.Line, parserToken.Position.Column)
+		}
+	}
+	return "malformed YAML frontmatter"
+}
 
 // RuleFileExt is the conventional extension of a rule file. A rule lives at
 // <dir>/<name>.md (a FLAT file, not a <name>/RULE.md subdir), matching Claude
@@ -47,20 +61,28 @@ type frontmatter struct {
 // per-package carry pattern (a shared helpers package was rejected).
 type stringOrSlice []string
 
-func (s *stringOrSlice) UnmarshalYAML(node *yaml.Node) error {
-	switch node.Kind {
-	case yaml.SequenceNode:
-		var arr []string
-		if err := node.Decode(&arr); err != nil {
-			return err
-		}
-		*s = splitList(arr...)
+func (s *stringOrSlice) UnmarshalYAML(unmarshal func(any) error) error {
+	var value any
+	if err := unmarshal(&value); err != nil {
+		return err
+	}
+	switch value := value.(type) {
+	case string:
+		*s = splitList(value)
 		return nil
-	case yaml.ScalarNode:
-		*s = splitList(node.Value)
+	case []any:
+		values := make([]string, 0, len(value))
+		for _, item := range value {
+			text, ok := item.(string)
+			if !ok {
+				return fmt.Errorf("expected a string or a list of strings")
+			}
+			values = append(values, text)
+		}
+		*s = splitList(values...)
 		return nil
 	default:
-		return fmt.Errorf("expected a string or a list, got YAML kind %d", node.Kind)
+		return fmt.Errorf("expected a string or a list")
 	}
 }
 
@@ -222,7 +244,7 @@ func parseRule(raw []byte, name string) (Rule, string, []string) {
 	if fmText != "" {
 		var fm frontmatter
 		if err := yaml.Unmarshal([]byte(fmText), &fm); err != nil {
-			return Rule{}, fmt.Sprintf("malformed YAML frontmatter: %v", err), nil
+			return Rule{}, frontmatterParseError(err), nil
 		}
 		paths = []string(fm.Paths)
 	}
