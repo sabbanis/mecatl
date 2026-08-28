@@ -1392,13 +1392,13 @@ func decodeStrictMapping(node *yaml.Node, where string, known map[string]any) er
 	for i := 0; i+1 < len(node.Content); i += 2 {
 		keyNode, valNode := node.Content[i], node.Content[i+1]
 		if _, duplicate := seen[keyNode.Value]; duplicate {
-			return fmt.Errorf("%s: duplicate key %q (line %d)", where, keyNode.Value, keyNode.Line)
+			return fmt.Errorf("%s: duplicate key (line %d)", where, keyNode.Line)
 		}
 		seen[keyNode.Value] = struct{}{}
 		target, ok := known[keyNode.Value]
 		if !ok {
-			return fmt.Errorf("%s: unknown key %q (line %d); known keys: %s",
-				where, keyNode.Value, keyNode.Line, knownKeyList(known))
+			return fmt.Errorf("%s: unknown key (line %d); known keys: %s",
+				where, keyNode.Line, knownKeyList(known))
 		}
 		if err := valNode.Decode(target); err != nil {
 			return fmt.Errorf("%s.%s: %w", where, keyNode.Value, err)

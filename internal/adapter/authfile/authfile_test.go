@@ -42,6 +42,29 @@ func TestDefaultPathIsSettingsYAMLSibling(t *testing.T) {
 	}
 }
 
+func TestSafeYAMLDiagnosticsDoNotExposeAuthContent(t *testing.T) {
+	for _, tc := range []struct {
+		name, contents, kind, line string
+	}{
+		{"syntax", "providers:\n  openai:\n    api_key: secret-fragment\n     oauth: nope\n", "YAML syntax error", "line 4"},
+		{"schema", "providers: [secret-fragment]\n", "schema error", "line 1"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			path := writeFile(t, dir, tc.contents, 0o600)
+			_, warning := Load(path, false, fakeEnv(dir), testKnownProviders)
+			for _, want := range []string{path, tc.kind, tc.line} {
+				if !strings.Contains(warning, want) {
+					t.Errorf("warning %q does not contain %q", warning, want)
+				}
+			}
+			if strings.Contains(warning, "secret-fragment") {
+				t.Errorf("warning leaked auth content: %q", warning)
+			}
+		})
+	}
+}
+
 func TestLoadFillsAPIKey(t *testing.T) {
 	dir := t.TempDir()
 	writeFile(t, dir, "providers:\n  anthropic:\n    api_key: sk-ant-good\n", 0o600)

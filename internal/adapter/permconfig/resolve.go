@@ -2,7 +2,6 @@ package permconfig
 
 import (
 	"context"
-	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -832,9 +831,9 @@ func (r *Resolver) applyTrustGate(rules []governance.Rule, report *Report) []gov
 // root-independent user-global config (XDG/home) at ScopeUser, all fully trusted.
 // Read from the host filesystem via the injectable env (NOT a workspace — these
 // live outside any session root). Fail-soft per file.
-func (r *Resolver) captureOperatorParseError(data []byte, err error) {
-	if (hasTopLevelKey(data, "providers") || hasTopLevelKey(data, "provider_overrides")) && r.operatorProviderConfigErr == nil {
-		r.operatorProviderConfigErr = errors.New("operator provider configuration is invalid")
+func (r *Resolver) captureOperatorParseError(path string, data []byte, err error) {
+	if (hasTopLevelKey(data, "providers") || hasTopLevelKey(data, "provider_overrides") || hasLikelyTopLevelKey(data, "providers") || hasLikelyTopLevelKey(data, "provider_overrides")) && r.operatorProviderConfigErr == nil {
+		r.operatorProviderConfigErr = settingsDiagnostic(path, data, err)
 	}
 	if hasTopLevelKey(data, "retention") && r.operatorRetentionErr == nil {
 		r.operatorRetentionErr = err
@@ -861,7 +860,7 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 		}
 		cfg, perr := parseYAML(data)
 		if perr != nil {
-			r.captureOperatorParseError(data, perr)
+			r.captureOperatorParseError(path, data, perr)
 			deny, ask, allow, counted := lostRuleCounts(data)
 			r.diag.Log(context.Background(), port.LevelWarn, "permission config: explicit file invalid; skipping (its rules are LOST, deny/ask included)",
 				"file", path, "err", perr,
@@ -902,7 +901,7 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 		path := filepath.Join(cfgDir, userSubdirMecatl)
 		if data, err := r.env.ReadFile(path); err == nil {
 			if cfg, perr := parseYAML(data); perr != nil {
-				r.captureOperatorParseError(data, perr)
+				r.captureOperatorParseError(path, data, perr)
 				deny, ask, allow, counted := lostRuleCounts(data)
 				r.diag.Log(context.Background(), port.LevelWarn, "permission config: user YAML invalid; skipping (its rules are LOST, deny/ask included)",
 					"file", path, "err", perr,

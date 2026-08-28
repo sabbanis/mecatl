@@ -17,8 +17,10 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"runtime"
 	"slices"
+	"strconv"
 	"strings"
 
 	yaml "go.yaml.in/yaml/v3"
@@ -128,7 +130,7 @@ func (f *File) OAuth(name string) OAuthEntry {
 func LoadStrict(path string, explicit bool, env xdgconfig.ResolveEnv, knownProviders []string) (*File, error) {
 	file, warning := Load(path, explicit, env, knownProviders)
 	if warning != "" {
-		return nil, errors.New("auth file validation failed")
+		return nil, errors.New(warning)
 	}
 	return file, nil
 }
@@ -204,14 +206,14 @@ func Load(path string, explicit bool, env xdgconfig.ResolveEnv, knownProviders [
 	dec.KnownFields(true)
 	var raw rawFile
 	if err := dec.Decode(&raw); err != nil || raw.Providers == nil {
-		return nil, schemaWarning(path)
+		return nil, schemaWarning(path, data, err)
 	}
 	// Exactly one YAML document is accepted. A second document is ambiguous
 	// credential input even when it is empty or null, so fail closed with the
 	// same generic, value-free warning used for other whole-file shape errors.
 	var trailing yaml.Node
 	if err := dec.Decode(&trailing); !errors.Is(err, io.EOF) {
-		return nil, schemaWarning(path)
+		return nil, schemaWarning(path, data, err)
 	}
 	// Count, never the names: an unknown provider name is an arbitrary YAML
 	// key, and a key typed where the provider name belongs (inverted nesting)
@@ -270,11 +272,38 @@ func (f *File) ValidateKnown(knownProviders []string) string {
 	return joinWarnings(append([]string{f.baseWarning}, contentWarnings...)...)
 }
 
-func schemaWarning(path string) string {
+func schemaWarning(path string, data []byte, err error) string {
+	line := yamlErrorLine(data, err)
+	kind := "YAML syntax error"
+	var typeErr *yaml.TypeError
+	if errors.As(err, &typeErr) || err == nil {
+		kind = "schema error"
+	}
 	return fmt.Sprintf(
-		"auth file %s: does not match the expected schema (providers.<name>.api_key or providers.openai-codex.oauth) — check indentation and field names",
-		path,
+		"auth file %s: %s at line %d: expected schema (providers.<name>.api_key or providers.openai-codex.oauth) — check indentation and field names",
+		path, kind, line,
 	)
+}
+
+var yamlLinePattern = regexp.MustCompile(`(?:line |line: )(\d+)`)
+
+func yamlErrorLine(data []byte, err error) int {
+	line := 1
+	if err != nil {
+		if match := yamlLinePattern.FindStringSubmatch(err.Error()); len(match) == 2 {
+			if parsed, convErr := strconv.Atoi(match[1]); convErr == nil && parsed > 0 {
+				line = parsed
+			}
+		}
+	}
+	lines := strings.Split(string(data), "\n")
+	if line > len(lines) {
+		line = len(lines)
+	}
+	if line < 1 {
+		line = 1
+	}
+	return line
 }
 
 func validateProviderEntry(name string, entry providerEntry) (providerEntry, bool) {

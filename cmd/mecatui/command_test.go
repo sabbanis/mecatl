@@ -17,6 +17,7 @@ import (
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
 	"github.com/stacklok/mecatl/cmd/mecatui/ui"
+	"github.com/stacklok/mecatl/internal/app"
 )
 
 // resolveInvocation is a PURE seam (no os.Args, no os.Exit, no I/O), so these
@@ -24,6 +25,45 @@ import (
 // do not mutate global state, prepare a run, or call os.Exit.
 
 // --- Requirement 1: pure resolution seam (mode + remaining + address) -------
+
+func TestMecatuiMalformedOperatorSettingsPrecedesAuthValidation(t *testing.T) {
+	for _, name := range []string{"OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENCODE_API_KEY"} {
+		t.Setenv(name, "")
+	}
+	configHome := t.TempDir()
+	t.Setenv("XDG_CONFIG_HOME", configHome)
+	mecatlDir := filepath.Join(configHome, "mecatl")
+	if err := os.MkdirAll(mecatlDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "settings-secret-must-not-escape"
+	if err := os.WriteFile(filepath.Join(mecatlDir, "settings.yaml"), []byte("providers:\n  gateway:\n    base_url: https://gateway.example\n     default_model: "+secret+"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(mecatlDir, "auth.yaml"), []byte("providers:\n  gateway:\n    api_key: auth-secret-must-not-escape\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, cfg, err := parseTransportFlags(modeLocal, io.Discard, []string{"--workspace", t.TempDir(), "--toolhive-llm=false"})
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	_, err = app.Build(context.Background(), embeddedConfig(cfg, nil))
+	if err == nil {
+		t.Fatal("Build succeeded with malformed operator settings")
+	}
+	got := err.Error()
+	settingsPath := filepath.Join(mecatlDir, "settings.yaml")
+	for _, want := range []string{settingsPath, "YAML syntax error", "line 4"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("error %q does not contain %q", got, want)
+		}
+	}
+	for _, forbidden := range []string{"auth file validation failed", "auth-secret-must-not-escape", secret} {
+		if strings.Contains(got, forbidden) {
+			t.Errorf("error leaked or collapsed diagnostic %q", forbidden)
+		}
+	}
+}
 
 func TestResolveLocalWordIsUnknownCommand(t *testing.T) {
 	res := resolveInvocation([]string{"mecatui", "local", "--workspace", "/tmp/w"})

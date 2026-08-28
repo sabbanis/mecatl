@@ -3,6 +3,8 @@ package app
 import (
 	"context"
 	"errors"
+	"fmt"
+	"strings"
 	"sync/atomic"
 	"testing"
 
@@ -53,6 +55,52 @@ func TestADR_0238_BuildLoadsProviderCredentialLoaderOnce(t *testing.T) {
 	if got := loader.definitions["gateway"]; got != definitions["gateway"] {
 		t.Fatalf("loader definitions = %#v, want resolved operator definition %#v", got, definitions["gateway"])
 	}
+}
+
+func TestBuildMissingCustomCredentialFailsWithProviderAuthPath(t *testing.T) {
+	definitions := permconfig.ProviderDefinitions{"gateway": {
+		ID: "gateway", BaseURL: "https://gateway.example/v1", DefaultModel: "model",
+		APIFlavor: "openai-responses", Auth: permconfig.ProviderAuth{Method: "api_key"},
+	}}
+	loader := &capturingProviderCredentialLoader{profile: ProviderCredentials{
+		CustomProviderAPIKeys:        map[string]string{},
+		MissingCustomProviderAPIKeys: []string{"gateway"},
+	}}
+	_, err := Build(context.Background(), Config{Workspace: t.TempDir(), DefaultProvider: "gateway", ProviderDefinitions: definitions, ProviderCredentialLoader: loader})
+	if err == nil || !strings.Contains(err.Error(), `custom provider "gateway" requires an auth.yaml entry at providers.gateway.api_key`) {
+		t.Fatalf("Build error = %v, want actionable custom credential relationship", err)
+	}
+	if strings.Contains(err.Error(), "secret") {
+		t.Fatalf("Build error leaked credential content: %v", err)
+	}
+}
+
+func TestBuildMissingCustomCredentialDoesNotOverrideMock(t *testing.T) {
+	definitions := permconfig.ProviderDefinitions{"gateway": {
+		ID: "gateway", BaseURL: "https://gateway.example/v1", DefaultModel: "model",
+		APIFlavor: "openai-responses", Auth: permconfig.ProviderAuth{Method: "api_key"},
+	}}
+	loader := &capturingProviderCredentialLoader{profile: ProviderCredentials{
+		CustomProviderAPIKeys:        map[string]string{},
+		MissingCustomProviderAPIKeys: []string{"gateway"},
+	}}
+	diag := new(captureDiag)
+	built, err := Build(context.Background(), Config{
+		Workspace: t.TempDir(), Model: "mock", MockProvider: mockllm.New(), Diagnostics: diag,
+		DefaultProvider: "gateway", ProviderDefinitions: definitions, ProviderCredentialLoader: loader,
+	})
+	if err != nil {
+		t.Fatalf("Build with mock = %v, want mock short-circuit", err)
+	}
+	if diag.warnCount("custom provider disabled: missing auth credential") != 1 {
+		t.Fatalf("missing custom credential warning = %#v", diag.entries)
+	}
+	for _, entry := range diag.entries {
+		if strings.Contains(fmt.Sprint(entry.args), "secret") {
+			t.Fatalf("warning leaked secret-shaped content: %#v", entry)
+		}
+	}
+	built.Close()
 }
 
 func TestADR_0238_BuildOwnsProviderCredentialLifecycle(t *testing.T) {

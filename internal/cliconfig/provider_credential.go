@@ -29,8 +29,15 @@ func (r *ProviderCredentialResolver) Load(definitions permconfig.ProviderDefinit
 		known = append(known, id)
 	}
 	sort.Strings(known)
-	if r.flags != nil && r.flags.authSnapshotReady && r.flags.authSnapshot != nil && r.flags.authSnapshot.ValidateKnown(known) != "" {
-		return app.ProviderCredentials{}, nil, errors.New("auth file validation failed")
+	if r.flags != nil && r.flags.authSnapshotReady {
+		if r.flags.authSnapshot != nil {
+			if warning := r.flags.authSnapshot.ValidateKnown(known); warning != "" {
+				return app.ProviderCredentials{}, nil, errors.New(warning)
+			}
+		}
+		if r.flags.authSnapshot == nil && r.flags.authSnapshotWarn != "" {
+			return app.ProviderCredentials{}, nil, errors.New(r.flags.authSnapshotWarn)
+		}
 	}
 
 	credentials := app.ProviderCredentials{
@@ -47,8 +54,11 @@ func (r *ProviderCredentialResolver) Load(definitions permconfig.ProviderDefinit
 			}
 			if key != "" {
 				credentials.CustomProviderAPIKeys[id] = key
+			} else {
+				credentials.MissingCustomProviderAPIKeys = append(credentials.MissingCustomProviderAPIKeys, id)
 			}
 		}
 	}
+	sort.Strings(credentials.MissingCustomProviderAPIKeys)
 	return credentials, nil, nil
 }

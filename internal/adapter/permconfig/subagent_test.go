@@ -80,17 +80,17 @@ func TestPermissionsStrictUnknownKeys(t *testing.T) {
 		{
 			name: "typo'd subagent key",
 			doc:  "permissions:\n  subagnet:\n    allow:\n      - \"Bash(ls)\"\n",
-			frag: `unknown key "subagnet"`,
+			frag: "permissions: unknown key (line 2); known keys: allow, ask, deny, subagent",
 		},
 		{
 			name: "typo'd allow key",
 			doc:  "permissions:\n  alow:\n    - \"Bash(ls)\"\n",
-			frag: `unknown key "alow"`,
+			frag: "permissions: unknown key (line 2); known keys: allow, ask, deny, subagent",
 		},
 		{
 			name: "typo'd key inside the subagent block",
 			doc:  "permissions:\n  subagent:\n    dany:\n      - \"Bash(rm:*)\"\n",
-			frag: `permissions.subagent: unknown key "dany"`,
+			frag: "permissions.subagent: permissions.subagent: unknown key (line 3); known keys: allow, ask, deny",
 		},
 	}
 	for _, tc := range cases {

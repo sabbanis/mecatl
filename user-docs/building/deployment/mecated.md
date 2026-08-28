@@ -98,7 +98,10 @@ provider with an HTTPS base URL, required default model, and one explicit API fl
 `api_key` provider's credential in the matching `providers.<id>.api_key` record in
 owner-readable `~/.config/mecatl/auth.yaml`; `auth.method: none` needs no credential.
 The ID is persisted with sessions, so removing or renaming it makes those sessions fail
-loudly instead of selecting another provider. Built-in endpoint settings belong under
+loudly instead of selecting another provider. If a required key is absent, mecatl
+warns and disables that provider when another route is available; it fails before
+startup when that provider is selected or is the only route. YAML diagnostics identify
+the file and parser line without echoing credentials, values, or unknown keys. Built-in endpoint settings belong under
 `provider_overrides`; the matching `--*-base-url` flag wins. See the
 [configuration reference](https://github.com/stacklok/mecatl/blob/main/docs/configuration-reference.md)
 for the strict schema.

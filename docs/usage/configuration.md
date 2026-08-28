@@ -35,6 +35,18 @@ For the exhaustive, auto-generated key/type/default/tier table, see the
 this guide are illustrative; the reference page is the complete source of truth
 (generated from the schema, so it never drifts).
 
+### Safe startup diagnostics
+
+Malformed operator settings and `auth.yaml` fail before an embedded `mecatui`
+opens its alternate screen. Diagnostics identify the file path and parser line,
+but intentionally never echo YAML values, unknown keys, credentials, or endpoint
+URLs. Schema errors name only fixed schema paths and conditions. A custom provider
+using `auth.method: api_key` needs `providers.<provider-id>.api_key` in
+`auth.yaml`; a missing entry disables that provider with a warning when another
+provider remains available, and is a startup error when it is selected or no
+provider remains. `auth.method: none` does not require `auth.yaml`. `mecatui
+connect` does not read local settings or credentials.
+
 ### Global MCP authentication profiles
 
 All three headless roots read the same operator-tier `mcp.servers` profiles. A project

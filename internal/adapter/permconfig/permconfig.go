@@ -1,7 +1,10 @@
 package permconfig
 
 import (
+	"errors"
 	"fmt"
+	"regexp"
+	"strconv"
 	"strings"
 
 	yaml "go.yaml.in/yaml/v3"
@@ -14,10 +17,8 @@ import (
 // input read on the hot path; an unbounded file or rule list would let a single
 // pathological config balloon memory or per-evaluate work.
 const (
-	// maxConfigBytes rejects an over-large config file before parsing. A real
-	// permission config is a short allow/ask/deny list — a few hundred KB is far
-	// beyond any legitimate use.
-	maxConfigBytes = 256 * 1024
+	settingsSchemaError = "settings schema error"
+	maxConfigBytes      = 256 * 1024
 	// maxRulesPerConfig caps how many rules one config file contributes; specs
 	// beyond the cap are dropped (and reported), so the file keeps asking for the
 	// uncovered calls rather than silently growing the merged rule set.
@@ -63,6 +64,144 @@ func parseYAML(data []byte) (Config, error) {
 		return Config{}, fmt.Errorf("parse permission config: %w", err)
 	}
 	return cfg, nil
+}
+
+var yamlLinePattern = regexp.MustCompile(`(?:line |line: )(\d+)`)
+
+// settingsDiagnostic turns parser and schema failures into an operator-safe
+// diagnostic. Decoder errors can include a scalar or arbitrary YAML key, so the
+// original error is deliberately never projected.
+func settingsDiagnostic(path string, data []byte, err error) error {
+	if strings.HasPrefix(err.Error(), "permission config too large:") {
+		return fmt.Errorf("settings file %s: size limit exceeded (max %d bytes)", path, maxConfigBytes)
+	}
+	line := yamlErrorLine(data, err)
+	kind, detail := "YAML syntax error", "invalid YAML syntax"
+	near := false
+	var typeErr *yaml.TypeError
+	if errors.As(err, &typeErr) {
+		kind, detail = settingsSchemaError, "a field has the wrong type"
+	} else {
+		s := err.Error()
+		switch {
+		case strings.Contains(s, "providers entry auth"):
+			kind, detail = settingsSchemaError, "providers.<provider>.auth.method is invalid"
+		case strings.Contains(s, "providers entry"):
+			kind, detail = settingsSchemaError, "providers.<provider> must have a valid base_url, default_model, api_flavor, and auth"
+		case strings.Contains(s, "providers:"):
+			kind, detail = settingsSchemaError, "providers must be a mapping of valid provider definitions"
+		case strings.Contains(s, "provider_overrides"):
+			kind, detail = settingsSchemaError, "provider_overrides must name a supported built-in provider"
+		}
+	}
+	if kind == "YAML syntax error" && strings.Contains(err.Error(), "did not find expected key") {
+		if recoveredLine, recovered := aliasesIndentRecovery(data); recovered {
+			line, near = recoveredLine, true
+		}
+	}
+	location := "at"
+	if near {
+		location = "near"
+	}
+	return fmt.Errorf("settings file %s: %s %s line %d: %s", path, kind, location, line, detail)
+}
+
+// aliasesIndentRecovery finds the narrow indentation pattern that yaml.v3 reports
+// at the preceding aliases entry rather than at the later misindented mapping.
+// It returns no recovery unless all of the expected models.aliases structure is
+// present, and never returns source text.
+func aliasesIndentRecovery(data []byte) (int, bool) {
+	lines := strings.Split(string(data), "\n")
+	modelsIndent, modelsChildIndent, aliasesIndent, childIndent := -1, -1, -1, -1
+	for i, line := range lines {
+		if yamlBlankOrComment(line) {
+			continue
+		}
+		indent := yamlIndent(line)
+		if modelsIndent < 0 {
+			if yamlSectionHeader(line, "models") {
+				modelsIndent = indent
+			}
+			continue
+		}
+		if aliasesIndent < 0 {
+			if indent <= modelsIndent {
+				return 0, false
+			}
+			if !yamlMappingLine(line) {
+				continue
+			}
+			if modelsChildIndent < 0 {
+				modelsChildIndent = indent
+			}
+			if indent == modelsChildIndent && yamlSectionHeader(line, "aliases") {
+				aliasesIndent = indent
+			}
+			continue
+		}
+		if indent <= aliasesIndent {
+			return 0, false
+		}
+		if !yamlMappingLine(line) {
+			continue
+		}
+		if childIndent < 0 {
+			childIndent = indent
+			continue
+		}
+		if indent != childIndent {
+			return i + 1, true
+		}
+	}
+	return 0, false
+}
+
+func yamlBlankOrComment(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	return trimmed == "" || strings.HasPrefix(trimmed, "#")
+}
+
+func yamlIndent(line string) int {
+	return len(line) - len(strings.TrimLeft(line, " "))
+}
+
+func yamlSectionHeader(line, key string) bool {
+	trimmed := strings.TrimSpace(line)
+	if !strings.HasPrefix(trimmed, key+":") {
+		return false
+	}
+	rest := strings.TrimSpace(strings.TrimPrefix(trimmed, key+":"))
+	return rest == "" || strings.HasPrefix(rest, "#")
+}
+
+func yamlMappingLine(line string) bool {
+	trimmed := strings.TrimSpace(line)
+	if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+		return false
+	}
+	return strings.IndexByte(trimmed, ':') > 0
+}
+
+func yamlErrorLine(data []byte, err error) int {
+	line := 1
+	if match := yamlLinePattern.FindStringSubmatch(err.Error()); len(match) == 2 {
+		if parsed, convErr := strconv.Atoi(match[1]); convErr == nil && parsed > 0 {
+			line = parsed
+		}
+	}
+	lines := strings.Split(string(data), "\n")
+	if line > len(lines) {
+		line = len(lines)
+	}
+	if line < 1 {
+		line = 1
+	}
+	return line
+}
+
+func hasLikelyTopLevelKey(data []byte, key string) bool {
+	quoted := regexp.QuoteMeta(key)
+	return regexp.MustCompile(`(?m)^(?:` + quoted + `|'` + quoted + `'|"` + quoted + `")\s*:`).Match(data)
 }
 
 func hasTopLevelKey(data []byte, key string) bool {

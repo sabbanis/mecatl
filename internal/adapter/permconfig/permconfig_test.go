@@ -1,6 +1,8 @@
 package permconfig
 
 import (
+	"strconv"
+	"strings"
 	"testing"
 
 	"github.com/stacklok/mecatl/engine/governance"
@@ -69,6 +71,56 @@ func TestParseYAMLEmptyAndNil(t *testing.T) {
 func TestParseYAMLMalformedErrors(t *testing.T) {
 	if _, err := parseYAML([]byte("permissions: [this is not: valid: yaml")); err == nil {
 		t.Fatal("expected an error for malformed YAML")
+	}
+}
+
+func TestSettingsDiagnosticRecoversMisindentedModelAliasLine(t *testing.T) {
+	data := []byte(strings.Repeat("\n", 62) + "models:\n  aliases:\n    safe: target\n" +
+		strings.Repeat("\n", 10) + "   sentinel-alias: sentinel-value\n")
+	err := func() error {
+		_, err := parseYAML(data)
+		return err
+	}()
+	if err == nil {
+		t.Fatal("parseYAML unexpectedly succeeded")
+	}
+	if got := yamlErrorLine(data, err); got != 63 {
+		t.Fatalf("yaml parser context line = %d, want 63 (error: %v)", got, err)
+	}
+
+	diagnostic := settingsDiagnostic("settings.yaml", data, err).Error()
+	for _, want := range []string{"YAML syntax error near line 76", "settings.yaml"} {
+		if !strings.Contains(diagnostic, want) {
+			t.Errorf("diagnostic = %q, want %q", diagnostic, want)
+		}
+	}
+	for _, unwanted := range []string{"at line 63", "sentinel-alias", "sentinel-value"} {
+		if strings.Contains(diagnostic, unwanted) {
+			t.Errorf("diagnostic = %q, must not contain %q", diagnostic, unwanted)
+		}
+	}
+}
+
+func TestSettingsDiagnosticKeepsParserLineWhenAliasRecoveryDoesNotApply(t *testing.T) {
+	data := []byte("permissions: [this is not: valid: yaml")
+	_, err := parseYAML(data)
+	if err == nil {
+		t.Fatal("parseYAML unexpectedly succeeded")
+	}
+	line := yamlErrorLine(data, err)
+	diagnostic := settingsDiagnostic("settings.yaml", data, err).Error()
+	if !strings.Contains(diagnostic, "YAML syntax error at line "+strconv.Itoa(line)) {
+		t.Errorf("diagnostic = %q, want parser line %d", diagnostic, line)
+	}
+}
+
+func TestAliasesIndentRecoveryIgnoresValidAliases(t *testing.T) {
+	data := []byte("models:\n  aliases:\n    safe: target\n    other: target\n")
+	if _, err := parseYAML(data); err != nil {
+		t.Fatalf("parseYAML: %v", err)
+	}
+	if line, recovered := aliasesIndentRecovery(data); recovered {
+		t.Errorf("aliasesIndentRecovery = (%d, true), want no recovery", line)
 	}
 }
 

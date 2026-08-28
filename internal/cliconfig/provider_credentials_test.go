@@ -3,6 +3,7 @@ package cliconfig
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
 	"github.com/stacklok/mecatl/internal/adapter/xdgconfig"
@@ -44,6 +45,54 @@ func TestOperatorDefinedLLMProviders_Scenario2_AvailabilityFollowsAuthMethod(t *
 	}
 }
 
+func TestProviderCredentialResolverReportsOnlyMissingAPIKeyProviders(t *testing.T) {
+	defs := permconfig.ProviderDefinitions{
+		"keyed": {ID: "keyed", Auth: permconfig.ProviderAuth{Method: "api_key"}},
+		"none":  {ID: "none", Auth: permconfig.ProviderAuth{Method: "none"}},
+	}
+	flags := &ProviderFlags{}
+	keys := flags.resolve(envWithAuth("/config/mecatl/auth.yaml", "providers: {}\n"), time.Now())
+	credentials, _, err := NewProviderCredentialResolver(flags, keys).Load(defs)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if got := credentials.MissingCustomProviderAPIKeys; len(got) != 1 || got[0] != "keyed" {
+		t.Fatalf("missing custom providers = %v, want [keyed]", got)
+	}
+}
+
+func TestMalformedAuthSnapshotDiagnosticsStaySafeAcrossConsumers(t *testing.T) {
+	const path = "/config/mecatl/auth.yaml"
+	const secret = "auth-secret-fragment"
+	env := envWithAuth(path, "providers:\n  custom:\n    api_key: "+secret+"\n     malformed: true\n")
+	defs := permconfig.ProviderDefinitions{"custom": {ID: "custom", Auth: permconfig.ProviderAuth{Method: "api_key"}}}
+	flags := &ProviderFlags{}
+	keys := flags.resolve(env, time.Now())
+	for _, call := range []struct {
+		name string
+		run  func() error
+	}{
+		{"ResolveProviderCredentials", func() error { _, err := ResolveProviderCredentials(flags, defs, env); return err }},
+		{"ProviderCredentialResolver.Load", func() error { _, _, err := NewProviderCredentialResolver(flags, keys).Load(defs); return err }},
+	} {
+		t.Run(call.name, func(t *testing.T) {
+			err := call.run()
+			if err == nil {
+				t.Fatal("malformed auth snapshot was accepted")
+			}
+			got := err.Error()
+			for _, want := range []string{path, "YAML syntax error", "line 4"} {
+				if !strings.Contains(got, want) {
+					t.Errorf("error %q does not contain %q", got, want)
+				}
+			}
+			if strings.Contains(got, secret) {
+				t.Errorf("error leaked auth content: %q", got)
+			}
+		})
+	}
+}
+
 func TestInvariant_custom_provider_auth_bootstrap_single_source(t *testing.T) {
 	defs := permconfig.ProviderDefinitions{"custom": {ID: "custom", Auth: permconfig.ProviderAuth{Method: "api_key"}}}
 	reads := 0
@@ -77,7 +126,7 @@ func TestInvariant_custom_provider_authfile_strict(t *testing.T) {
 	if err == nil {
 		t.Fatal("unknown custom auth provider was accepted")
 	}
-	if strings.Contains(err.Error(), "secret") || strings.Contains(err.Error(), "unknown") {
+	if strings.Contains(err.Error(), "secret") {
 		t.Fatalf("strict auth error leaked file data: %v", err)
 	}
 }

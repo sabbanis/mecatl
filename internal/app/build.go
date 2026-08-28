@@ -27,6 +27,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strings"
 	"sync"
 	"time"
@@ -1267,6 +1268,17 @@ type ProviderCredentials struct {
 	OpenCodeKey           string
 	OpenAICodexCredential openaicodex.Credential
 	CustomProviderAPIKeys map[string]string
+	// MissingCustomProviderAPIKeys names validated api_key provider definitions
+	// with no usable auth.yaml entry. IDs originate from the strict provider schema.
+	MissingCustomProviderAPIKeys []string
+}
+
+func missingCustomCredential(id string, missing []string) bool {
+	return slices.Contains(missing, id)
+}
+
+func missingCustomCredentialError(id string) error {
+	return fmt.Errorf("custom provider %q requires an auth.yaml entry at providers.%s.api_key", id, id)
 }
 
 // Built is the result of Build: the assembled server.Service plus a Close func
@@ -1286,8 +1298,12 @@ type Built struct {
 //
 //nolint:gocyclo // composition root: long sequential wiring with reverse-order teardown; inherent.
 func Build(ctx context.Context, cfg Config) (*Built, error) {
+	if cfg.MockProvider != nil {
+		cfg.UseMock = true
+	}
 	mcpProfileLifecycle := cfg.MCPProfileLifecycle
 	providerCredentialLifecycle := cfg.ProviderCredentialLifecycle
+	var missingCustomProviderCredentials []string
 	closeProfiles := sync.OnceFunc(func() {
 		cfg.MCPProfileLifecycle = mcpProfileLifecycle
 		closeMCPProfileLifecycle(ctx, cfg)
@@ -1452,6 +1468,10 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 			return nil, err
 		}
 		cfg.CustomProviderAPIKeys = credentials.CustomProviderAPIKeys
+		missingCustomProviderCredentials = credentials.MissingCustomProviderAPIKeys
+		for _, id := range missingCustomProviderCredentials {
+			cfg.diag().Log(context.Background(), port.LevelWarn, "custom provider disabled: missing auth credential", "provider", id, "required", "providers.<id>.api_key")
+		}
 		cfg.OpenAIKey = credentials.OpenAIKey
 		cfg.OpenRouterKey = credentials.OpenRouterKey
 		cfg.AnthropicKey = credentials.AnthropicKey
@@ -1543,8 +1563,14 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// does NOT lower the precedence of key-driven providers. No-op when absent.
 	cfg = foldOperatorDefaultProvider(cfg)
 
+	if !cfg.UseMock && cfg.MockProvider == nil && missingCustomCredential(cfg.DefaultProvider, missingCustomProviderCredentials) {
+		return nil, missingCustomCredentialError(cfg.DefaultProvider)
+	}
 	reg, provider, err := buildProvider(ctx, cfg)
 	if err != nil {
+		if errors.Is(err, errNoProvider) && len(missingCustomProviderCredentials) > 0 {
+			return nil, missingCustomCredentialError(missingCustomProviderCredentials[0])
+		}
 		return nil, err
 	}
 	reg.contextWindows = cfg.contextWindows
