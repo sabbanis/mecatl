@@ -1855,6 +1855,9 @@ message MCPAuthorization {
   string backend = 2;
   string call_id = 3;
   google.protobuf.Timestamp expires_at = 4;
+  // status is pending on required/current status events, or one of connected,
+  // cancelled, expired, interrupted, failed, or closed on resolved events.
+  string status = 5;
 }
 
 // SteerEcho is the proto projection of session.SteerPayload (EvSteer): the

@@ -1188,7 +1188,7 @@ func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Ses
 // Run before Start so cancellation and expiry cannot lose the continuation.
 func (e *Engine) PrepareAfterMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *PreparedRun {
 	return e.prepareRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
-		e.runLoop(ctx, r, sess, env)
+		e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
 	})
 }
 

@@ -145,6 +145,9 @@ const (
 	// EvMCPAuthorizationRequired is emitted only after the private authorizing
 	// state is durably saved. It carries no broker handle or tool arguments.
 	EvMCPAuthorizationRequired EventType = "mcp.authorization.required"
+	// EvMCPAuthorizationResolved closes a required authorization marker. It carries
+	// the same safe correlation and a closed terminal status only.
+	EvMCPAuthorizationResolved EventType = "mcp.authorization.resolved"
 	// EvResult is the terminal event: success / limit / error / cancelled.
 	EvResult EventType = "result"
 	// EvUserPrompt is emitted when a USER-ROLE message is recorded into the
@@ -1375,6 +1378,20 @@ type TeamPayload struct {
 	Cause string
 }
 
+// MCPAuthorizationStatus is the closed authorization event grammar. Pending
+// appears only on a required/current-status event; every other value closes it.
+type MCPAuthorizationStatus string
+
+const (
+	MCPAuthorizationPending     MCPAuthorizationStatus = "pending"
+	MCPAuthorizationConnected   MCPAuthorizationStatus = "connected"
+	MCPAuthorizationCancelled   MCPAuthorizationStatus = "cancelled"
+	MCPAuthorizationExpired     MCPAuthorizationStatus = "expired"
+	MCPAuthorizationInterrupted MCPAuthorizationStatus = "interrupted"
+	MCPAuthorizationFailed      MCPAuthorizationStatus = "failed"
+	MCPAuthorizationClosed      MCPAuthorizationStatus = "closed"
+)
+
 // MCPAuthorizationPayload is the safe client-facing correlation for a parked
 // broker authorization. It deliberately contains only the transaction ID,
 // backend label, protected call ID, and expiry; URLs, credentials, tool
@@ -1384,6 +1401,7 @@ type MCPAuthorizationPayload struct {
 	Backend         string
 	Call            ToolCallID
 	ExpiresAt       time.Time
+	Status          MCPAuthorizationStatus
 }
 
 // Event is the domain-owned, provider-neutral unit of the streaming model. The

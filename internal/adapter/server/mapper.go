@@ -199,6 +199,7 @@ func toProtoMCPAuthorization(p session.MCPAuthorizationPayload) *mecatlv1.MCPAut
 		Backend:         valid(p.Backend),
 		CallId:          valid(string(p.Call)),
 		ExpiresAt:       timestamppb.New(p.ExpiresAt),
+		Status:          string(p.Status),
 	}
 }
 
