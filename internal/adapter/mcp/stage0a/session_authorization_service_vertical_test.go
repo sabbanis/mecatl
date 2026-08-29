@@ -2,7 +2,9 @@ package stage0a_test
 
 import (
 	"context"
+	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -33,6 +35,7 @@ import (
 
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/server"
@@ -46,25 +49,39 @@ import (
 // correlation carried across the browser rendezvous is the model-safe call ID.
 func TestSessionMCPAuthorization_RealRuntimeServiceVertical(t *testing.T) {
 	const callID = "mcp-call-safe-01"
-	fixture := newServiceVerticalToolHive(t)
+
+	var callback http.Handler
+	callbackQueries := make(chan url.Values, 1)
+	callbackServer := httptest.NewUnstartedServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callbackQueries <- r.URL.Query()
+		if callback == nil {
+			http.Error(w, "callback not installed", http.StatusServiceUnavailable)
+			return
+		}
+		callback.ServeHTTP(w, r)
+	}))
+	callbackServer.StartTLS()
+	t.Cleanup(callbackServer.Close)
+
+	fixture := newServiceVerticalToolHive(t, callbackServer.URL+"/callback")
 
 	settings := filepath.Join(t.TempDir(), "settings.yaml")
 	if err := os.WriteFile(settings, []byte(`mcp:
   mode: broker
   servers:
     - name: github
-      url: https://github.invalid/mcp
+      url: `+fixture.backend.URL+`
       auth:
         mode: oauth
         oauth:
-          issuer: https://issuer.invalid
+          issuer: `+fixture.gateway.URL+`
           client:
             mode: cimd
-            cimd: {document_url: https://issuer.invalid/client.json}
+            cimd: {document_url: `+fixture.gateway.URL+`/client.json}
           scopes: [read]
           network: {}
   broker:
-    callback_url: https://client.invalid/callback
+    callback_url: `+callbackServer.URL+`/callback
 `), 0o600); err != nil {
 		t.Fatalf("write settings: %v", err)
 	}
@@ -73,16 +90,22 @@ func TestSessionMCPAuthorization_RealRuntimeServiceVertical(t *testing.T) {
 		mockllm.ToolCallTurn(session.NewToolCall(callID, "github_protected", json.RawMessage(`{}`))),
 		mockllm.TextTurn("model final"),
 	)
+	owner := &session.Principal{Issuer: "https://identity.example", Subject: "alice", GrantType: session.GrantTypeUser}
+	ownerCtx := session.WithPrincipal(context.Background(), owner)
+	foreignCtx := session.WithPrincipal(context.Background(), &session.Principal{Issuer: owner.Issuer, Subject: "bob", GrantType: session.GrantTypeUser})
+	audit := &serviceVerticalAudit{}
 	built, err := app.Build(context.Background(), app.Config{
 		Workspace:           t.TempDir(),
 		MockProvider:        provider,
 		AllowAllTools:       true,
+		OwnershipEnforced:   true,
+		ToolCallRecorder:    audit,
 		PermissionConfigs:   []string{settings},
 		MCPAuthorityLoader:  cliconfig.NewMCPProfileResolver(nil, func(string) (string, bool) { return "", false }),
 		MCPAuthorityDefault: string(cliconfig.MCPAuthorityBroker),
 		MCPBrokerSupported:  true,
 		VMCPBrokerConstructor: func(_ context.Context, declarations app.VMCPBrokerDeclarations) (*vmcpbroker.Process, error) {
-			if len(declarations.Profiles) != 1 || declarations.Profiles[0].Name != "github" {
+			if len(declarations.Profiles) != 1 || declarations.Profiles[0].Name != "github" || declarations.Profiles[0].URL != fixture.backend.URL || declarations.Profiles[0].Auth.OAuth == nil || declarations.Profiles[0].Auth.OAuth.Issuer != fixture.gateway.URL || declarations.CallbackURL != callbackServer.URL+"/callback" {
 				t.Fatalf("broker declarations = %#v", declarations)
 			}
 			runtime, err := vmcpbroker.NewToolHiveStreamingHTTPRuntime([]vmcpbroker.Route{{
@@ -99,24 +122,41 @@ func TestSessionMCPAuthorization_RealRuntimeServiceVertical(t *testing.T) {
 		t.Fatalf("Build: %v", err)
 	}
 	t.Cleanup(built.Close)
+	callback = built.VMCPBrokerHandlers.Callback
 
-	sess, err := built.Service.CreateSession(context.Background(), t.TempDir(), session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(ownerCtx, t.TempDir(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	run, err := built.Service.StartInteractiveRunContent(context.Background(), sess.ID, "read protected data", nil)
+	run, err := built.Service.StartInteractiveRunContent(ownerCtx, sess.ID, "read protected data", nil)
 	if err != nil {
 		t.Fatalf("StartInteractiveRunContent: %v", err)
 	}
-	for range run.Events() {
+	var parkedEvents []session.Event
+	for event := range run.Events() {
+		parkedEvents = append(parkedEvents, event)
 	}
 	if run.Outcome() != agent.RunOutcomeAuthorizationParked {
-		parked, loadErr := built.Service.GetSession(context.Background(), sess.ID)
+		parked, loadErr := built.Service.GetSession(ownerCtx, sess.ID)
 		t.Fatalf("parked outcome = %v, session=%#v, messages=%s, load=%v", run.Outcome(), parked, serviceVerticalMessages(parked), loadErr)
 	}
 	built.Service.FinishRun(sess.ID, run)
+	for _, event := range parkedEvents {
+		if event.ToolCall != nil && len(event.ToolCall.Args) != 0 {
+			t.Fatalf("protected tool card leaked arguments: %#v", event.ToolCall)
+		}
+		if event.MCPAuthorization != nil {
+			if event.MCPAuthorization.AuthorizationID == "" || event.MCPAuthorization.Call != callID || event.MCPAuthorization.Backend != "github_protected" {
+				t.Fatalf("required authorization event = %#v, want safe correlation", event.MCPAuthorization)
+			}
+			encoded, marshalErr := json.Marshal(event)
+			if marshalErr != nil || strings.Contains(string(encoded), "upstream-code") || strings.Contains(string(encoded), callbackServer.URL) {
+				t.Fatalf("required authorization event leaked secret/browser URL: %s (%v)", encoded, marshalErr)
+			}
+		}
+	}
 
-	parked, err := built.Service.GetSession(context.Background(), sess.ID)
+	parked, err := built.Service.GetSession(ownerCtx, sess.ID)
 	if err != nil {
 		t.Fatalf("load parked session: %v", err)
 	}
@@ -125,20 +165,21 @@ func TestSessionMCPAuthorization_RealRuntimeServiceVertical(t *testing.T) {
 		t.Fatalf("durable pending authorization = %#v, want exact safe call correlation", pending)
 	}
 	control := server.MCPAuthorizationControl{SessionID: sess.ID, AuthorizationID: pending.AuthorizationID}
-	browserURL, err := built.Service.MCPAuthorizationPresentation(context.Background(), sess.ID, control)
+	if _, err := built.Service.MCPAuthorizationPresentation(foreignCtx, sess.ID, control); !errors.Is(err, server.ErrNotFound) {
+		t.Fatalf("foreign presentation = %v, want ErrNotFound", err)
+	}
+	browserURL, err := built.Service.MCPAuthorizationPresentation(ownerCtx, sess.ID, control)
 	if err != nil || browserURL == "" {
 		t.Fatalf("owner presentation = %q, %v", browserURL, err)
 	}
 
-	code, state := serviceVerticalBrowserAuthorization(t, fixture.gateway.Client(), browserURL)
-	callback := httptest.NewRequest(http.MethodGet, "https://client.invalid/callback?"+url.Values{"code": {code}, "state": {state}}.Encode(), nil)
-	callbackResult := httptest.NewRecorder()
-	built.VMCPBrokerHandlers.Callback.ServeHTTP(callbackResult, callback)
-	if callbackResult.Code != http.StatusOK {
-		t.Fatalf("browser callback status = %d", callbackResult.Code)
+	serviceVerticalBrowserAuthorization(t, fixture.browserClient(callbackServer), browserURL)
+	callbackQuery := <-callbackQueries
+	if callbackQuery.Get("code") == "" || callbackQuery.Get("state") == "" || callbackQuery.Get("scope") == "" {
+		t.Fatalf("callback query = %q, want non-empty code/state/scope", callbackQuery.Encode())
 	}
 
-	continued, err := built.Service.RecheckMCPAuthorization(context.Background(), sess.ID, control)
+	continued, err := built.Service.RecheckMCPAuthorization(ownerCtx, sess.ID, control)
 	if err != nil || continued == nil {
 		t.Fatalf("connected recheck = %v, %v", continued, err)
 	}
@@ -148,13 +189,22 @@ func TestSessionMCPAuthorization_RealRuntimeServiceVertical(t *testing.T) {
 	if fixture.handlerCalls.Load() != 1 {
 		t.Fatalf("actual protected MCP tool handler calls = %d, want 1", fixture.handlerCalls.Load())
 	}
+	if audit.calls.Load() != 1 {
+		t.Fatalf("protected tool audit calls = %d, want 1", audit.calls.Load())
+	}
+	if rerun, err := built.Service.RecheckMCPAuthorization(ownerCtx, sess.ID, control); !errors.Is(err, server.ErrNotFound) || rerun != nil || fixture.handlerCalls.Load() != 1 {
+		t.Fatalf("second recheck = (%v, %v), calls=%d; want no retry", rerun, err, fixture.handlerCalls.Load())
+	}
 
-	finished, err := built.Service.GetSession(context.Background(), sess.ID)
+	finished, err := built.Service.GetSession(ownerCtx, sess.ID)
 	if err != nil {
 		t.Fatalf("load finished session: %v", err)
 	}
 	if finished.State != session.StateCompleted {
 		t.Fatalf("finished session state = %s", finished.State)
+	}
+	if err := session.ValidateToolPairing(finished.Conversation.Messages); err != nil {
+		t.Fatalf("finished tool pairing: %v", err)
 	}
 	results := 0
 	for _, message := range finished.Conversation.Messages {
@@ -173,20 +223,38 @@ func TestSessionMCPAuthorization_RealRuntimeServiceVertical(t *testing.T) {
 	}
 }
 
+type serviceVerticalAudit struct{ calls atomic.Int32 }
+
+func (a *serviceVerticalAudit) ToolCall(_ session.SessionID, _ session.ToolCall, _ session.ToolResult, _, _ time.Duration) {
+	a.calls.Add(1)
+}
+
+var _ port.ToolCallRecorder = (*serviceVerticalAudit)(nil)
+
 type serviceVerticalToolHiveFixture struct {
 	gateway      *httptest.Server
+	backend      *httptest.Server
 	config       vmcpbroker.ToolHiveRuntimeConfig
 	handlerCalls atomic.Int32
 }
 
-func newServiceVerticalToolHive(t *testing.T) *serviceVerticalToolHiveFixture {
+func (f *serviceVerticalToolHiveFixture) browserClient(callback *httptest.Server) *http.Client {
+	pool := x509.NewCertPool()
+	pool.AddCert(f.gateway.Certificate())
+	pool.AddCert(callback.Certificate())
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig.RootCAs = pool
+	return &http.Client{Transport: transport}
+}
+
+func newServiceVerticalToolHive(t *testing.T, callbackURL string) *serviceVerticalToolHiveFixture {
 	t.Helper()
 	fixture := &serviceVerticalToolHiveFixture{}
 	const upstreamCredential = "vertical-upstream-credential"
 	upstream := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
 		case "/authorize":
-			http.Redirect(w, r, r.URL.Query().Get("redirect_uri")+"?code=upstream-code&state="+url.QueryEscape(r.URL.Query().Get("state")), http.StatusFound)
+			http.Redirect(w, r, r.URL.Query().Get("redirect_uri")+"?code=upstream-code&state="+url.QueryEscape(r.URL.Query().Get("state"))+"&scope=read", http.StatusFound)
 		case "/token":
 			w.Header().Set("Content-Type", "application/json")
 			_, _ = io.WriteString(w, `{"access_token":"`+upstreamCredential+`","token_type":"Bearer","sub":"subject"}`)
@@ -210,6 +278,7 @@ func newServiceVerticalToolHive(t *testing.T) *serviceVerticalToolHiveFixture {
 		protectedHandler.ServeHTTP(w, r)
 	}))
 	t.Cleanup(backend.Close)
+	fixture.backend = backend
 
 	mux := http.NewServeMux()
 	gateway := httptest.NewUnstartedServer(mux)
@@ -250,7 +319,7 @@ func newServiceVerticalToolHive(t *testing.T) *serviceVerticalToolHiveFixture {
 	gateway.StartTLS()
 	t.Cleanup(func() { _ = vmcpServer.Stop(context.Background()); _ = auth.Close(); gateway.Close() })
 	fixture.gateway = gateway
-	fixture.config = vmcpbroker.ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: gateway.URL, Resource: gateway.URL, AuthorizationEndpoint: gateway.URL + "/oauth/authorize", TokenEndpoint: gateway.URL + "/oauth/token", CallbackURL: "https://client.invalid/callback", HTTPClient: gateway.Client()}
+	fixture.config = vmcpbroker.ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: gateway.URL, Resource: gateway.URL, AuthorizationEndpoint: gateway.URL + "/oauth/authorize", TokenEndpoint: gateway.URL + "/oauth/token", CallbackURL: callbackURL, HTTPClient: gateway.Client()}
 	return fixture
 }
 
@@ -269,38 +338,21 @@ func serviceVerticalMessages(sess *session.Session) string {
 	return strings.Join(messages, " | ")
 }
 
-func serviceVerticalBrowserAuthorization(t *testing.T, client *http.Client, browserURL string) (string, string) {
+func serviceVerticalBrowserAuthorization(t *testing.T, client *http.Client, browserURL string) {
 	t.Helper()
-	noRedirect := *client
-	noRedirect.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
-	response, err := noRedirect.Get(browserURL)
+	response, err := client.Get(browserURL)
 	if err != nil {
-		t.Fatalf("authorize: %v", err)
+		t.Fatalf("follow authorization redirect: %v", err)
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusFound {
-		t.Fatalf("authorize status = %d", response.StatusCode)
+	if response.StatusCode != http.StatusOK {
+		t.Fatalf("callback status = %d, want %d", response.StatusCode, http.StatusOK)
 	}
-	response, err = noRedirect.Get(response.Header.Get("Location"))
-	if err != nil {
-		t.Fatalf("upstream authorize: %v", err)
+	if response.Header.Get("Cache-Control") != "no-store" || response.Header.Get("Referrer-Policy") != "no-referrer" {
+		t.Fatalf("callback security headers = Cache-Control:%q Referrer-Policy:%q", response.Header.Get("Cache-Control"), response.Header.Get("Referrer-Policy"))
 	}
-	defer response.Body.Close()
-	response, err = noRedirect.Get(response.Header.Get("Location"))
-	if err != nil {
-		t.Fatalf("embedded callback: %v", err)
+	body, err := io.ReadAll(response.Body)
+	if err != nil || string(body) != "Authorization complete. You may close this window.\n" {
+		t.Fatalf("callback response = %q, %v", body, err)
 	}
-	defer response.Body.Close()
-	if response.StatusCode != http.StatusSeeOther {
-		t.Fatalf("embedded callback status = %d", response.StatusCode)
-	}
-	callback, err := url.Parse(response.Header.Get("Location"))
-	if err != nil {
-		t.Fatalf("parse callback: %v", err)
-	}
-	code, state := callback.Query().Get("code"), callback.Query().Get("state")
-	if code == "" || state == "" {
-		t.Fatalf("callback correlation = code:%q state:%q", code, state)
-	}
-	return code, state
 }
