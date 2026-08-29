@@ -108,6 +108,8 @@ var ErrInvalidControlTarget = errors.New("vmcpbroker: invalid control target")
 
 var errDownstreamRefreshRejected = errors.New("vmcpbroker: downstream refresh rejected")
 
+const profileAuthOAuth = "oauth"
+
 // Route joins a neutral, model-facing tool specification to its private broker
 // backend route. BackendID is consumed only by the injected broker caller; it
 // is never copied into ToolSpec, a ToolCall, or a ToolResult.
@@ -153,7 +155,7 @@ func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDe
 		switch profile.Auth.Mode {
 		case "none":
 			configured[name] = profile.Name
-		case "oauth":
+		case profileAuthOAuth:
 			configured[name] = profile.Name
 			protectedProfiles++
 			if protectedProfiles > 1 {
@@ -173,7 +175,7 @@ func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDe
 		protected := false
 		for _, profile := range profiles {
 			if strings.EqualFold(profile.Name, definition.BackendID) {
-				protected = profile.Auth.Mode == "oauth"
+				protected = profile.Auth.Mode == profileAuthOAuth
 				break
 			}
 		}
@@ -218,6 +220,67 @@ type HandlerBundle struct {
 	Callback          http.Handler
 }
 
+// Mount registers the broker's complete fixed route table and the configured
+// callback path. The callback path is supplied by the composition root from
+// the canonical public callback URL; it must not overlap a broker route.
+// Collisions are returned as errors rather than exposing ServeMux's panic.
+func (b HandlerBundle) Mount(mux *http.ServeMux, callbackPath string) (err error) {
+	if mux == nil {
+		return errors.New("vmcpbroker: handler mux is required")
+	}
+	routes := make([]struct {
+		path    string
+		handler http.Handler
+	}, 0, 8)
+	for _, route := range []struct {
+		path    string
+		handler http.Handler
+	}{
+		{brokerAuthorizePath, b.Authorization},
+		{brokerTokenPath, b.Token},
+		{brokerUpstreamCallbackPath, b.UpstreamCallback},
+		{brokerDiscoveryPath, b.Discovery},
+		{brokerJWKSPath, b.JWKS},
+		{brokerProtectedResourcePath, b.ProtectedResource},
+		{brokerMCPPath, b.VMCP},
+	} {
+		if route.handler != nil {
+			routes = append(routes, route)
+		}
+	}
+	if callbackPath != "" || b.Callback != nil {
+		if callbackPath == "" || b.Callback == nil {
+			return errors.New("vmcpbroker: incomplete callback handler")
+		}
+		routes = append(routes, struct {
+			path    string
+			handler http.Handler
+		}{callbackPath, b.Callback})
+	}
+	if len(routes) == 0 {
+		return errors.New("vmcpbroker: incomplete handler bundle")
+	}
+	seen := make(map[string]struct{}, len(routes))
+	for _, route := range routes {
+		if route.path == "" || route.handler == nil {
+			return errors.New("vmcpbroker: incomplete handler bundle")
+		}
+		if _, ok := seen[route.path]; ok {
+			return fmt.Errorf("vmcpbroker: callback route conflicts with broker route %q", route.path)
+		}
+		seen[route.path] = struct{}{}
+	}
+	defer func() {
+		if recovered := recover(); recovered != nil {
+			err = fmt.Errorf("vmcpbroker: handler route conflict: %v", recovered)
+		}
+	}()
+	for _, route := range routes {
+		mux.Handle(route.path, route.handler)
+	}
+	return nil
+}
+
 // Process owns a broker Runtime and its root-internal handlers.
 type Process struct {
 	Runtime  *Runtime
@@ -249,6 +312,9 @@ const (
 // NewToolHiveProcess builds the process-owned embedded authorization server and
 // Streamable HTTP vMCP handler. The callback origin is the sole public authority.
 func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProfile, callbackURL string, diag port.Diagnostics) (*Process, error) {
+	if !hasProtectedProfile(profiles) {
+		return newAnonymousToolHiveProcess(ctx, profiles, diag)
+	}
 	callback, err := canonicalCallbackURL(callbackURL)
 	if err != nil {
 		return nil, err
@@ -284,7 +350,7 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	backends := make([]vmcp.Backend, 0, len(profiles))
 	for _, p := range profiles {
 		b := vmcp.Backend{ID: p.Name, Name: p.Name, BaseURL: p.URL, TransportType: "streamable-http"}
-		if p.Auth.Mode == "oauth" {
+		if p.Auth.Mode == profileAuthOAuth {
 			b.AuthConfig = &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: protected.Name}}
 		}
 		backends = append(backends, b)
@@ -313,6 +379,78 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	return &Process{Runtime: runtime, Handlers: HandlerBundle{Authorization: embedded, Token: embedded, UpstreamCallback: embedded, Discovery: embedded, JWKS: embedded, ProtectedResource: authInfo, VMCP: vmcpHandler, Callback: CallbackHandler(runtime.Callback)}}, nil
 }
 
+func hasProtectedProfile(profiles []permconfig.MCPServerProfile) bool {
+	for _, profile := range profiles {
+		if profile.Auth.Mode == profileAuthOAuth {
+			return true
+		}
+	}
+	return false
+}
+
+func newAnonymousToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProfile, diag port.Diagnostics) (*Process, error) {
+	routes, err := discoverRoutes(ctx, profiles, diag)
+	if err != nil {
+		return nil, err
+	}
+	outgoing := vmcpauth.NewDefaultOutgoingAuthRegistry()
+	if err := outgoing.RegisterStrategy(authtypes.StrategyTypeUnauthenticated, strategies.NewUnauthenticatedStrategy()); err != nil {
+		return nil, err
+	}
+	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoing)
+	if err != nil {
+		return nil, err
+	}
+	resolver, err := aggregator.NewConflictResolver(&vmcpconfig.AggregationConfig{ConflictResolution: vmcp.ConflictStrategyPrefix})
+	if err != nil {
+		return nil, err
+	}
+	backends := make([]vmcp.Backend, 0, len(profiles))
+	for _, profile := range profiles {
+		backends = append(backends, vmcp.Backend{ID: profile.Name, Name: profile.Name, BaseURL: profile.URL, TransportType: "streamable-http"})
+	}
+	server, err := vmcpserver.New(ctx, &vmcpserver.Config{Name: "mecatl-broker", Version: "v1", EndpointPath: brokerMCPPath, Aggregator: aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil), SessionFactory: vmcpsession.NewSessionFactory(outgoing)}, router.NewSessionRouter(&vmcp.RoutingTable{}), backendClient, vmcp.NewImmutableRegistry(backends), nil)
+	if err != nil {
+		return nil, err
+	}
+	vmcpHandler, err := server.Handler(ctx)
+	if err != nil {
+		_ = server.Stop(context.Background())
+		return nil, err
+	}
+	runtime, err := newAnonymousRuntime(routes, profiles)
+	if err != nil {
+		_ = server.Stop(context.Background())
+		return nil, err
+	}
+	runtime.sharedClosers = append(runtime.sharedClosers, namedCloser{name: "vmcp", close: func() error { return server.Stop(context.Background()) }})
+	return &Process{Runtime: runtime, Handlers: HandlerBundle{VMCP: vmcpHandler}}, nil
+}
+
+func newAnonymousRuntime(routes []Route, profiles []permconfig.MCPServerProfile) (*Runtime, error) {
+	servers := make(map[string]mcp.ServerConfig, len(profiles))
+	for _, profile := range profiles {
+		servers[profile.Name] = mcp.ServerConfig{Name: profile.Name, URL: profile.URL}
+	}
+	return NewRuntime(routes, func(ctx context.Context, _ session.SessionID, route Route, args json.RawMessage) (session.ToolResult, error) {
+		config, ok := servers[route.BackendID]
+		if !ok {
+			return session.ToolResult{}, ErrInvalidControlTarget
+		}
+		upstream, err := mcp.Connect(ctx, config, nil)
+		if err != nil {
+			return session.ToolResult{}, fmt.Errorf("vmcpbroker: connect anonymous upstream: %w", err)
+		}
+		defer func() { _ = upstream.Close() }()
+		for _, wrapped := range upstream.Tools() {
+			if wrapped.Spec().Name == route.Tool.Name {
+				return wrapped.Execute(ctx, session.NewToolCall("", route.Tool.Name, args), tool.Environment{})
+			}
+		}
+		return session.ToolResult{}, fmt.Errorf("vmcpbroker: anonymous upstream did not expose configured tool %q", route.Tool.Name)
+	})
+}
+
 func canonicalCallbackURL(raw string) (*url.URL, error) {
 	u, err := url.Parse(raw)
 	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path == "" || u.String() != raw {
@@ -324,7 +462,7 @@ func canonicalCallbackURL(raw string) (*url.URL, error) {
 func protectedProfile(profiles []permconfig.MCPServerProfile) (permconfig.MCPServerProfile, error) {
 	var result *permconfig.MCPServerProfile
 	for i := range profiles {
-		if profiles[i].Auth.Mode == "oauth" {
+		if profiles[i].Auth.Mode == profileAuthOAuth {
 			if result != nil {
 				return permconfig.MCPServerProfile{}, fmt.Errorf("%w: only one protected backend is supported", ErrInvalidRoute)
 			}
