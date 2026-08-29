@@ -120,6 +120,16 @@ type ToolProgressMsg struct {
 	Text string
 }
 
+// MCPAuthorizationMsg is a broker authorization status marker. It deliberately
+// carries only safe correlation and status; presentation URLs and effective tool
+// arguments never cross the event stream.
+type MCPAuthorizationMsg struct {
+	AuthorizationID string
+	Backend         string
+	CallID          string
+	Status          string
+}
+
 // PermissionAskMsg opens the approval modal; AskID is the exact correlation key
 // echoed back in ResumeApproval — never inferred from the tool name.
 type PermissionAskMsg struct {
@@ -1093,6 +1103,9 @@ func EventToMsg(ev *mecatlv1.Event) tea.Msg {
 		}
 	case "tool.progress":
 		return ToolProgressMsg{Text: ev.GetText()}
+	case "mcp.authorization.required", "mcp.authorization.resolved":
+		a := ev.GetMcpAuthorization()
+		return MCPAuthorizationMsg{AuthorizationID: a.GetAuthorizationId(), Backend: a.GetBackend(), CallID: a.GetCallId(), Status: a.GetStatus()}
 	case "permission.ask":
 		a := ev.GetAsk()
 		return PermissionAskMsg{AskID: a.GetAskId(), Tool: a.GetTool(), Args: a.GetArgs(), Reason: a.GetReason()}

@@ -95,7 +95,24 @@ func TestProjectUpdateToolResult(t *testing.T) {
 	}
 }
 
-// TestProjectUpdateDropped asserts the events with no session/update projection
+func TestProjectUpdateMCPAuthorizationIsExplicitlyIneligible(t *testing.T) {
+	t.Parallel()
+
+	got, ok := projectUpdate(session.Event{Type: session.EvMCPAuthorizationRequired, MCPAuthorization: &session.MCPAuthorizationPayload{
+		AuthorizationID: "authorization-1", Backend: "github", Call: "call-1", Status: session.MCPAuthorizationPending,
+	}})
+	if !ok {
+		t.Fatal("expected failed tool-card projection")
+	}
+	update := got.(toolCallUpdate)
+	if update.ToolCallID != "call-1" || update.Status != toolStatusFailed {
+		t.Fatalf("authorization update = %+v", update)
+	}
+	if len(update.Content) != 1 || update.Content[0].Content.Text != "MCP authorization is unavailable for ACP sessions" {
+		t.Fatalf("authorization content = %+v", update.Content)
+	}
+}
+
 // this phase are dropped. subagent.start/team.start are dropped (the parent
 // tool_call already names the work); subagent.tool/end and team.member/end DO
 // project (see their dedicated tests below). EvHook with a nil payload is also

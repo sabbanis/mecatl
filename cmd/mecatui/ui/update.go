@@ -808,6 +808,13 @@ func (m Model) onRenderTick() (tea.Model, tea.Cmd) {
 	return m, nil
 }
 
+func mcpAuthorizationNotice(msg client.MCPAuthorizationMsg) string {
+	if msg.Status == "pending" {
+		return fmt.Sprintf("MCP authorization required for %s. Open Browser, Recheck, or Cancel.", msg.Backend)
+	}
+	return fmt.Sprintf("MCP authorization for %s: %s.", msg.Backend, msg.Status)
+}
+
 // updateStreamEvent reduces the per-event stream msgs into the conversation. It
 // is the back half of Update, split out so the cyclomatic complexity of each
 // stays manageable. Unknown msgs are a no-op.
@@ -959,6 +966,9 @@ func (m *Model) beginTurnEvent() {
 // only so neither dispatcher grows past the cyclomatic-complexity bound.
 func (m Model) updateStreamSecondary(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case client.MCPAuthorizationMsg:
+		m.conv.addNotice(mcpAuthorizationNotice(msg))
+		return m.afterEvent()
 	case client.PermissionRetractMsg:
 		// An active approval surface consumes retractions through HandleMsg. A
 		// stale retraction after close is transport-only and needs no approval state.

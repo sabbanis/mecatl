@@ -70,6 +70,11 @@ func TestEventToMsg(t *testing.T) {
 			ToolProgressMsg{Text: "scanned 64/512 files"},
 		},
 		{
+			"mcp.authorization.required",
+			&mecatlv1.Event{Type: "mcp.authorization.required", McpAuthorization: &mecatlv1.MCPAuthorization{AuthorizationId: "authorization-1", Backend: "github", CallId: "call-1", Status: "pending"}},
+			MCPAuthorizationMsg{AuthorizationID: "authorization-1", Backend: "github", CallID: "call-1", Status: "pending"},
+		},
+		{
 			"permission.ask",
 			&mecatlv1.Event{Type: "permission.ask", Ask: &mecatlv1.PermissionAsk{AskId: "a1", Tool: "Write", Args: "{}", Reason: "why"}},
 			PermissionAskMsg{AskID: "a1", Tool: "Write", Args: "{}", Reason: "why"},
