@@ -41,3 +41,12 @@ func TestInvariant_mcp_authorization_events_are_safe_correlation_only(t *testing
 		}
 	}
 }
+
+func TestMCPAuthorizationWireResolvedStatus(t *testing.T) {
+	t.Parallel()
+
+	ev := toProto(session.Event{Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{
+		AuthorizationID: "authorization-1", Backend: "github", Call: "call-1", Status: session.MCPAuthorizationCancelled,
+	}})
+	require.Equal(t, "cancelled", ev.GetMcpAuthorization().GetStatus())
+}

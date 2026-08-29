@@ -735,20 +735,7 @@ func (h *HTTPHandler) relayMCPAuthorizationControlSSE(w http.ResponseWriter, r *
 		writeServiceError(w, ErrNotFound)
 		return
 	}
-	control := MCPAuthorizationControl{SessionID: id, AuthorizationID: authorizationID}
-	payload := &session.MCPAuthorizationPayload{AuthorizationID: pending.AuthorizationID, Backend: pending.Backend, Call: pending.Call.ID, ExpiresAt: pending.ExpiresAt}
-	var run *agent.Run
-	if cancel {
-		payload.Status = session.MCPAuthorizationCancelled
-		run, err = h.svc.CancelMCPAuthorization(r.Context(), id, control)
-	} else {
-		run, err = h.svc.RecheckMCPAuthorization(r.Context(), id, control)
-		if run == nil && err == nil {
-			payload.Status = session.MCPAuthorizationPending
-		} else {
-			payload.Status = session.MCPAuthorizationConnected
-		}
-	}
+	result, err := h.svc.ControlMCPAuthorization(r.Context(), id, MCPAuthorizationControl{SessionID: id, AuthorizationID: authorizationID}, cancel)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -762,31 +749,27 @@ func (h *HTTPHandler) relayMCPAuthorizationControlSSE(w http.ResponseWriter, r *
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
 	enc := json.NewEncoder(w)
-	typ := session.EvMCPAuthorizationResolved
-	if payload.Status == session.MCPAuthorizationPending {
-		typ = session.EvMCPAuthorizationRequired
-	}
-	ev := session.Event{Type: typ, MCPAuthorization: payload}
+	ev := result.Event
 	_, _ = w.Write([]byte("data: "))
 	_ = enc.Encode(toProto(ev))
 	_, _ = w.Write([]byte("\n"))
 	flusher.Flush()
-	if run == nil {
+	if result.Run == nil {
 		return
 	}
-	defer h.svc.FinishRun(id, run)
-	for event := range run.Events() {
-		h.svc.appendEvent(context.WithoutCancel(r.Context()), id, event)
+	defer h.svc.FinishRun(id, result.Run)
+	for event := range result.Run.Events() {
+		h.svc.relayEvent(r.Context(), context.WithoutCancel(r.Context()), id, event, false)
 		if _, err := w.Write([]byte("data: ")); err != nil {
-			run.Cancel()
+			result.Run.Cancel()
 			return
 		}
 		if err := enc.Encode(toProto(event)); err != nil {
-			run.Cancel()
+			result.Run.Cancel()
 			return
 		}
 		if _, err := w.Write([]byte("\n")); err != nil {
-			run.Cancel()
+			result.Run.Cancel()
 			return
 		}
 		flusher.Flush()

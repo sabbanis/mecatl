@@ -18,6 +18,22 @@ func TestSessionMCPAuthorization_Scenario9_EventFoldRequiresPrivateState(t *test
 			ExpiresAt: time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC), Status: session.MCPAuthorizationPending,
 		},
 	}}
+	require.ErrorIs(t, foldMCPAuthorizationEvents(events), ErrPrivateStateRequired)
+}
+
+func TestSessionMCPAuthorization_Scenario9_EventFoldRejectsMalformedLifecycle(t *testing.T) {
+	t.Parallel()
+
+	for _, events := range [][]session.Event{
+		{{Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: "auth-1", Status: session.MCPAuthorizationConnected}}},
+		{{Type: session.EvMCPAuthorizationRequired, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: "auth-1", Status: session.MCPAuthorizationConnected}}},
+		{{Type: session.EvMCPAuthorizationRequired, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: "auth-1", Status: session.MCPAuthorizationPending}}, {Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: "auth-1", Status: session.MCPAuthorizationPending}}},
+	} {
+		require.ErrorIs(t, foldMCPAuthorizationEvents(events), ErrPrivateStateRequired)
+	}
+}
+
+func foldMCPAuthorizationEvents(events []session.Event) error {
 	_, err := Fold(SessionMeta{ID: "s1", CreatedAt: time.Date(2026, 8, 29, 11, 0, 0, 0, time.UTC)}, func(yield func(session.Event, error) bool) {
 		for _, event := range events {
 			if !yield(event, nil) {
@@ -25,5 +41,5 @@ func TestSessionMCPAuthorization_Scenario9_EventFoldRequiresPrivateState(t *test
 			}
 		}
 	})
-	require.ErrorIs(t, err, ErrPrivateStateRequired)
+	return err
 }

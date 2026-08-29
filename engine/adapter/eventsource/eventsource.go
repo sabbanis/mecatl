@@ -358,6 +358,8 @@ type folder struct {
 	// authorization marker. The safe grammar intentionally omits the effective
 	// call, so no event-only fold may yield an executable session.
 	privateAuthorization bool
+	authorizationOpen    map[string]struct{}
+	authorizationBad     bool
 
 	// counters of the CURRENT run segment (reset on each terminal, so the final
 	// values reflect the latest run — mirroring resetToIdle on Reopen).
@@ -374,10 +376,7 @@ type folder struct {
 func (f *folder) consume(ev session.Event) {
 	switch ev.Type {
 	case session.EvMCPAuthorizationRequired, session.EvMCPAuthorizationResolved:
-		// Required/resolved markers prove the log contains a broker-protected call
-		// whose effective arguments are deliberately snapshot-only. Even a resolved
-		// pair cannot reconstruct that call from safe event data.
-		f.privateAuthorization = true
+		f.consumeMCPAuthorization(ev)
 	case session.EvCompactionArchive, session.EvUserPrompt:
 		f.consumeHistoryEvent(ev)
 	case session.EvModelRetry:
@@ -465,6 +464,50 @@ func (f *folder) consumeHistoryEvent(ev session.Event) {
 		if f.firstGenuineText == "" && session.IsGenuineUserPrompt(msg) && strings.TrimSpace(msg.Text) != "" {
 			f.firstGenuineText = msg.Text
 		}
+	}
+}
+
+func (f *folder) consumeMCPAuthorization(ev session.Event) {
+	f.privateAuthorization = true
+	payload := ev.MCPAuthorization
+	if payload == nil || payload.AuthorizationID == "" {
+		f.authorizationBad = true
+		return
+	}
+
+	switch ev.Type {
+	case session.EvMCPAuthorizationRequired:
+		if payload.Status != session.MCPAuthorizationPending {
+			f.authorizationBad = true
+			return
+		}
+		if f.authorizationOpen == nil {
+			f.authorizationOpen = make(map[string]struct{})
+		}
+		if _, duplicate := f.authorizationOpen[payload.AuthorizationID]; duplicate {
+			f.authorizationBad = true
+			return
+		}
+		f.authorizationOpen[payload.AuthorizationID] = struct{}{}
+	case session.EvMCPAuthorizationResolved:
+		if !validMCPAuthorizationResolvedStatus(payload.Status) || f.authorizationOpen == nil {
+			f.authorizationBad = true
+			return
+		}
+		if _, open := f.authorizationOpen[payload.AuthorizationID]; !open {
+			f.authorizationBad = true
+			return
+		}
+		delete(f.authorizationOpen, payload.AuthorizationID)
+	}
+}
+
+func validMCPAuthorizationResolvedStatus(status session.MCPAuthorizationStatus) bool {
+	switch status {
+	case session.MCPAuthorizationConnected, session.MCPAuthorizationCancelled, session.MCPAuthorizationExpired, session.MCPAuthorizationInterrupted, session.MCPAuthorizationFailed, session.MCPAuthorizationClosed:
+		return true
+	default:
+		return false
 	}
 }
 

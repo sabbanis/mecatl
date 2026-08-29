@@ -296,6 +296,7 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"Steer":                        {KindCallerOwned, "authorizes via GetSession before enqueueing to the live run's inbox or promoting through StartRunContent"},
 	"CancelSteer":                  {KindCallerOwned, "authorizes via GetSession before reaching into the live run's steer inbox"},
 	"MCPAuthorizationPresentation": {KindCallerOwned, "authorizes via GetSession before exact Runtime authorization lookup"},
+	"ControlMCPAuthorization":      {KindCallerOwned, "authorizes via GetSession before exact Runtime control lookup and continuation claim"},
 	"RecheckMCPAuthorization":      {KindCallerOwned, "authorizes via GetSession before exact Runtime status lookup and continuation claim"},
 	"CancelMCPAuthorization":       {KindCallerOwned, "authorizes via GetSession before exact Runtime cancellation and paired history repair"},
 	"Persist":                      {KindCallerOwned, "authorizes via GetSession before consulting the live run registry"},

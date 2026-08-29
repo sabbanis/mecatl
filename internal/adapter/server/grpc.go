@@ -1293,46 +1293,32 @@ func (h *HarnessServer) relayMCPAuthorizationControl(req *mecatlv1.MCPAuthorizat
 		return status.Error(codes.InvalidArgument, ErrInvalidArgument.Error())
 	}
 	id := session.SessionID(req.GetSessionId())
-	sess, err := h.svc.GetSession(stream.Context(), id)
+	result, err := h.svc.ControlMCPAuthorization(stream.Context(), id, MCPAuthorizationControl{SessionID: id, AuthorizationID: req.GetAuthorizationId()}, cancel)
 	if err != nil {
 		return toStatus(err)
 	}
-	pending, ok := sess.PendingMCPAuthorization()
-	if !ok || pending.AuthorizationID != req.GetAuthorizationId() {
-		return status.Error(codes.NotFound, "MCP authorization not found")
-	}
-	payload := &session.MCPAuthorizationPayload{AuthorizationID: pending.AuthorizationID, Backend: pending.Backend, Call: pending.Call.ID, ExpiresAt: pending.ExpiresAt}
-	control := MCPAuthorizationControl{SessionID: id, AuthorizationID: pending.AuthorizationID}
-	var run *agent.Run
-	if cancel {
-		payload.Status = session.MCPAuthorizationCancelled
-		run, err = h.svc.CancelMCPAuthorization(stream.Context(), id, control)
-	} else {
-		run, err = h.svc.RecheckMCPAuthorization(stream.Context(), id, control)
-		if run == nil && err == nil {
-			payload.Status = session.MCPAuthorizationPending
-		} else {
-			payload.Status = session.MCPAuthorizationConnected
+	if err := stream.Send(toProto(result.Event)); err != nil {
+		if result.Run != nil {
+			result.Run.Cancel()
 		}
-	}
-	if err != nil {
-		return toStatus(err)
-	}
-	typ := session.EvMCPAuthorizationResolved
-	if payload.Status == session.MCPAuthorizationPending {
-		typ = session.EvMCPAuthorizationRequired
-	}
-	if err := stream.Send(toProto(session.Event{Type: typ, MCPAuthorization: payload})); err != nil {
 		return err
 	}
-	if run == nil {
+	if result.Run == nil {
 		return nil
 	}
-	defer h.svc.FinishRun(id, run)
-	for ev := range run.Events() {
+	defer h.svc.FinishRun(id, result.Run)
+	logCtx := context.WithoutCancel(stream.Context())
+	failed := false
+	for ev := range result.Run.Events() {
+		// Match the normal durable relay: append before attempting a send, and
+		// continue draining after the first client failure.
+		forward := h.svc.relayEvent(stream.Context(), logCtx, id, ev, false)
+		if failed || !forward {
+			continue
+		}
 		if err := stream.Send(toProto(ev)); err != nil {
-			run.Cancel()
-			return err
+			failed = true
+			result.Run.Cancel()
 		}
 	}
 	return nil

@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/session"
@@ -16,6 +17,13 @@ import (
 type MCPAuthorizationControl struct {
 	SessionID       session.SessionID
 	AuthorizationID string
+}
+
+// MCPAuthorizationControlResult is the Service-authoritative status and optional
+// continuation selected for an exact authorization control operation.
+type MCPAuthorizationControlResult struct {
+	Event session.Event
+	Run   *agent.Run
 }
 
 // MCPAuthorizationPresentation returns a live browser URL only after loading
@@ -45,6 +53,53 @@ func (s *Service) MCPAuthorizationPresentation(ctx context.Context, id session.S
 		return "", ErrNotFound
 	}
 	return status.BrowserURL, nil
+}
+
+// ControlMCPAuthorization executes an exact recheck or cancellation and returns
+// the status selected by the Service, rather than requiring a wire adapter to
+// infer it from a nil/non-nil continuation.
+func (s *Service) ControlMCPAuthorization(ctx context.Context, id session.SessionID, control MCPAuthorizationControl, cancel bool) (MCPAuthorizationControlResult, error) {
+	sess, err := s.GetSession(ctx, id)
+	if err != nil {
+		return MCPAuthorizationControlResult{}, ErrNotFound
+	}
+	pending, ok := matchingMCPAuthorization(sess, control)
+	if !ok {
+		return MCPAuthorizationControlResult{}, ErrNotFound
+	}
+	payload := &session.MCPAuthorizationPayload{AuthorizationID: pending.AuthorizationID, Backend: pending.Backend, Call: pending.Call.ID, ExpiresAt: pending.ExpiresAt}
+	var run *agent.Run
+	if cancel {
+		run, err = s.CancelMCPAuthorization(ctx, id, control)
+		payload.Status = mcpAuthorizationResolutionStatusForCancel(pending, s.cfg.Now())
+	} else {
+		run, err = s.RecheckMCPAuthorization(ctx, id, control)
+		if run == nil && err == nil {
+			payload.Status = session.MCPAuthorizationPending
+		} else {
+			payload.Status = session.MCPAuthorizationConnected
+		}
+	}
+	if err != nil {
+		return MCPAuthorizationControlResult{}, err
+	}
+	typ := session.EvMCPAuthorizationResolved
+	if payload.Status == session.MCPAuthorizationPending {
+		typ = session.EvMCPAuthorizationRequired
+	}
+	return MCPAuthorizationControlResult{Event: session.Event{Type: typ, MCPAuthorization: payload}, Run: run}, nil
+}
+
+func (s *Service) recordMCPAuthorizationEvent(ctx context.Context, id session.SessionID, ev session.Event) {
+	s.appendEvent(context.WithoutCancel(ctx), id, ev)
+	s.PublishSessionEvent(id, ev)
+}
+
+func mcpAuthorizationResolutionStatusForCancel(pending session.PendingMCPAuthorization, now time.Time) session.MCPAuthorizationStatus {
+	if !pending.ExpiresAt.After(now) {
+		return session.MCPAuthorizationExpired
+	}
+	return session.MCPAuthorizationCancelled
 }
 
 // RecheckMCPAuthorization observes the broker transaction. Pending is inert;
@@ -93,7 +148,7 @@ func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.Sessio
 	if err := s.cfg.Store.Save(ctx, sess); err != nil {
 		return nil, fmt.Errorf("%w: persist authorization claim", ErrInternal)
 	}
-	s.appendEvent(context.WithoutCancel(ctx), id, session.Event{Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: claimed.AuthorizationID, Backend: claimed.Backend, Call: claimed.Call.ID, ExpiresAt: claimed.ExpiresAt, Status: session.MCPAuthorizationConnected}})
+	s.recordMCPAuthorizationEvent(ctx, id, session.Event{Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: claimed.AuthorizationID, Backend: claimed.Backend, Call: claimed.Call.ID, ExpiresAt: claimed.ExpiresAt, Status: session.MCPAuthorizationConnected}})
 	s.stopMCPAuthorizationExpiry(id)
 	ctx = memory.WithWorkspace(ctx, sess.Workspace)
 	prepared := engine.PrepareMCPAuthorizationContinuation(ctx, sess, env, claimed)
@@ -147,7 +202,7 @@ func (s *Service) resolveMCPAuthorization(ctx context.Context, sess *session.Ses
 	if err := s.cfg.Store.Save(ctx, sess); err != nil {
 		return nil, fmt.Errorf("%w: persist authorization resolution", ErrInternal)
 	}
-	s.appendEvent(context.WithoutCancel(ctx), sess.ID, session.Event{Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: pending.AuthorizationID, Backend: pending.Backend, Call: pending.Call.ID, ExpiresAt: pending.ExpiresAt, Status: mcpAuthorizationResolutionStatus(reason)}})
+	s.recordMCPAuthorizationEvent(ctx, sess.ID, session.Event{Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: pending.AuthorizationID, Backend: pending.Backend, Call: pending.Call.ID, ExpiresAt: pending.ExpiresAt, Status: mcpAuthorizationResolutionStatus(reason)}})
 	s.stopMCPAuthorizationExpiry(sess.ID)
 	engine, env, err := s.engineAndEnvironmentFor(ctx, sess)
 	if err != nil {
