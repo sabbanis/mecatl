@@ -368,6 +368,9 @@ func (s *mcpState) HandleMsg(msg tea.Msg) (cmd tea.Cmd, handled bool, closed boo
 			return updated, tea.Batch(cmd, updated.waitMCPAuthorizationEvent()), true
 		}
 		return updated, cmd, true
+	case mcpAuthorizationStreamClosedMsg:
+		m.authorizationEvents = nil
+		return m, nil, true
 	case mcpAuthorizationStreamMsg:
 		mm, cmd := m.updateMCPAuthorizationStream(msg)
 		return mm, cmd, true

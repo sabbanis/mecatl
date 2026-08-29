@@ -725,16 +725,6 @@ func (h *HTTPHandler) relayMCPAuthorizationControlSSE(w http.ResponseWriter, r *
 		writeError(w, http.StatusBadRequest, "session and authorization IDs are required")
 		return
 	}
-	sess, err := h.svc.GetSession(r.Context(), id)
-	if err != nil {
-		writeServiceError(w, err)
-		return
-	}
-	pending, ok := sess.PendingMCPAuthorization()
-	if !ok || pending.AuthorizationID != authorizationID {
-		writeServiceError(w, ErrNotFound)
-		return
-	}
 	result, err := h.svc.ControlMCPAuthorization(r.Context(), id, MCPAuthorizationControl{SessionID: id, AuthorizationID: authorizationID}, cancel)
 	if err != nil {
 		writeServiceError(w, err)

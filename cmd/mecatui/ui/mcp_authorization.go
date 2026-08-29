@@ -88,6 +88,7 @@ func controlMCPAuthorizationCmd(ctx context.Context, control client.MCPAuthoriza
 
 type mcpAuthorizationStreamMsg struct{ stream *client.EventStream }
 type mcpAuthorizationEventMsg struct{ msg tea.Msg }
+type mcpAuthorizationStreamClosedMsg struct{}
 
 func (m Model) updateMCPAuthorizationStream(msg mcpAuthorizationStreamMsg) (tea.Model, tea.Cmd) {
 	if msg.stream == nil {
@@ -104,7 +105,7 @@ func (m Model) waitMCPAuthorizationEvent() tea.Cmd {
 	return func() tea.Msg {
 		msg, ok := <-ch
 		if !ok {
-			return nil
+			return mcpAuthorizationStreamClosedMsg{}
 		}
 		return mcpAuthorizationEventMsg{msg: msg}
 	}

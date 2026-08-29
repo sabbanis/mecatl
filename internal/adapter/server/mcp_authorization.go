@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"strings"
-	"time"
 
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/session"
@@ -55,43 +54,88 @@ func (s *Service) MCPAuthorizationPresentation(ctx context.Context, id session.S
 	return status.BrowserURL, nil
 }
 
-// ControlMCPAuthorization executes an exact recheck or cancellation and returns
-// the status selected by the Service, rather than requiring a wire adapter to
-// infer it from a nil/non-nil continuation.
+// ControlMCPAuthorization executes an exact recheck or cancellation while owning
+// the session lock and lease. Its event is the authoritative outcome selected in
+// that critical section; transports relay it verbatim.
 func (s *Service) ControlMCPAuthorization(ctx context.Context, id session.SessionID, control MCPAuthorizationControl, cancel bool) (MCPAuthorizationControlResult, error) {
-	sess, err := s.GetSession(ctx, id)
+	// This first load authorizes the caller. The snapshot used for the decision is
+	// always reloaded after the lock and lease are held.
+	if _, err := s.GetSession(ctx, id); err != nil {
+		return MCPAuthorizationControlResult{}, ErrNotFound
+	}
+	unlock := s.runEntryMu.lock(id)
+	defer unlock()
+	if err := s.acquireLease(ctx, id); err != nil {
+		return MCPAuthorizationControlResult{}, err
+	}
+	sess, err := s.cfg.Store.Load(ctx, id)
 	if err != nil {
 		return MCPAuthorizationControlResult{}, ErrNotFound
 	}
 	pending, ok := matchingMCPAuthorization(sess, control)
-	if !ok {
+	if !ok || s.cfg.VMCPBroker == nil {
 		return MCPAuthorizationControlResult{}, ErrNotFound
 	}
-	payload := &session.MCPAuthorizationPayload{AuthorizationID: pending.AuthorizationID, Backend: pending.Backend, Call: pending.Call.ID, ExpiresAt: pending.ExpiresAt}
-	var run *agent.Run
-	if cancel {
-		run, err = s.CancelMCPAuthorization(ctx, id, control)
-		payload.Status = mcpAuthorizationResolutionStatusForCancel(pending, s.cfg.Now())
-	} else {
-		run, err = s.RecheckMCPAuthorization(ctx, id, control)
-		if run == nil {
-			payload.Status = session.MCPAuthorizationPending
-		} else if !pending.ExpiresAt.After(s.cfg.Now()) {
-			// A continuation run also follows an expired authorization's paired
-			// repair. Never infer "connected" merely because a Run exists.
-			payload.Status = session.MCPAuthorizationExpired
-		} else {
-			payload.Status = session.MCPAuthorizationConnected
+
+	resolved := func(status session.MCPAuthorizationStatus, reason string) (MCPAuthorizationControlResult, error) {
+		run, err := s.resolveMCPAuthorization(ctx, sess, reason)
+		if err != nil {
+			return MCPAuthorizationControlResult{}, err
 		}
+		return mcpAuthorizationControlResult(pending, status, run), nil
 	}
+	if cancel {
+		// A missing process-local transaction cannot undo the durable paired repair.
+		_ = s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
+		if !pending.ExpiresAt.After(s.cfg.Now()) {
+			return resolved(session.MCPAuthorizationExpired, "MCP authorization expired")
+		}
+		return resolved(session.MCPAuthorizationCancelled, "MCP authorization cancelled")
+	}
+	if !pending.ExpiresAt.After(s.cfg.Now()) {
+		_ = s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
+		return resolved(session.MCPAuthorizationExpired, "MCP authorization expired")
+	}
+	status, err := s.cfg.VMCPBroker.CheckAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
+	if err != nil || status.Status != vmcpbroker.ConnectionPending && status.Status != vmcpbroker.ConnectionConnected {
+		return MCPAuthorizationControlResult{}, ErrNotFound
+	}
+	if status.Status == vmcpbroker.ConnectionPending {
+		return mcpAuthorizationControlResult(pending, session.MCPAuthorizationPending, nil), nil
+	}
+	engine, env, err := s.engineAndEnvironmentFor(ctx, sess)
 	if err != nil {
-		return MCPAuthorizationControlResult{}, err
+		return MCPAuthorizationControlResult{}, fmt.Errorf("%w: continuation engine", ErrFailedPrecondition)
 	}
+	claimed, err := sess.ClaimMCPAuthorization()
+	if err != nil {
+		return MCPAuthorizationControlResult{}, ErrNotFound
+	}
+	if err := s.cfg.Store.Save(ctx, sess); err != nil {
+		return MCPAuthorizationControlResult{}, fmt.Errorf("%w: persist authorization claim", ErrInternal)
+	}
+	s.recordMCPAuthorizationEvent(ctx, id, session.Event{Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: claimed.AuthorizationID, Backend: claimed.Backend, Call: claimed.Call.ID, ExpiresAt: claimed.ExpiresAt, Status: session.MCPAuthorizationConnected}})
+	s.stopMCPAuthorizationExpiry(id)
+	prepared := engine.PrepareMCPAuthorizationContinuation(memory.WithWorkspace(ctx, sess.Workspace), sess, env, claimed)
+	if !s.register(id, prepared.Run(), sess) {
+		s.repairMCPAuthorizationRegistration(ctx, sess)
+		return MCPAuthorizationControlResult{}, ErrNoActiveRun
+	}
+	return mcpAuthorizationControlResult(pending, session.MCPAuthorizationConnected, prepared.Start()), nil
+}
+
+func mcpAuthorizationControlResult(pending session.PendingMCPAuthorization, status session.MCPAuthorizationStatus, run *agent.Run) MCPAuthorizationControlResult {
 	typ := session.EvMCPAuthorizationResolved
-	if payload.Status == session.MCPAuthorizationPending {
+	if status == session.MCPAuthorizationPending {
 		typ = session.EvMCPAuthorizationRequired
 	}
-	return MCPAuthorizationControlResult{Event: session.Event{Type: typ, MCPAuthorization: payload}, Run: run}, nil
+	return MCPAuthorizationControlResult{Event: session.Event{Type: typ, MCPAuthorization: &session.MCPAuthorizationPayload{
+		AuthorizationID: pending.AuthorizationID,
+		Backend:         pending.Backend,
+		Call:            pending.Call.ID,
+		ExpiresAt:       pending.ExpiresAt,
+		Status:          status,
+	}}, Run: run}
 }
 
 func (s *Service) recordMCPAuthorizationEvent(ctx context.Context, id session.SessionID, ev session.Event) {
@@ -99,96 +143,18 @@ func (s *Service) recordMCPAuthorizationEvent(ctx context.Context, id session.Se
 	s.PublishSessionEvent(id, ev)
 }
 
-func mcpAuthorizationResolutionStatusForCancel(pending session.PendingMCPAuthorization, now time.Time) session.MCPAuthorizationStatus {
-	if !pending.ExpiresAt.After(now) {
-		return session.MCPAuthorizationExpired
-	}
-	return session.MCPAuthorizationCancelled
-}
-
 // RecheckMCPAuthorization observes the broker transaction. Pending is inert;
 // only a connected observation claims and launches the stored continuation.
 func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.SessionID, control MCPAuthorizationControl) (*agent.Run, error) {
-	// The first load is owner authorization only. The control decision uses the
-	// fresh snapshot obtained after both the in-process lock and cross-process lease.
-	if _, err := s.GetSession(ctx, id); err != nil {
-		return nil, ErrNotFound
-	}
-	unlock := s.runEntryMu.lock(id)
-	defer unlock()
-	if err := s.acquireLease(ctx, id); err != nil {
-		return nil, err
-	}
-	sess, err := s.cfg.Store.Load(ctx, id)
-	if err != nil {
-		return nil, ErrNotFound
-	}
-	pending, ok := matchingMCPAuthorization(sess, control)
-	if !ok || s.cfg.VMCPBroker == nil {
-		return nil, ErrNotFound
-	}
-	if !pending.ExpiresAt.After(s.cfg.Now()) {
-		_ = s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
-		return s.resolveMCPAuthorization(ctx, sess, "MCP authorization expired")
-	}
-	status, err := s.cfg.VMCPBroker.CheckAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
-	if err != nil {
-		return nil, ErrNotFound
-	}
-	if status.Status == vmcpbroker.ConnectionPending {
-		return nil, nil
-	}
-	if status.Status != vmcpbroker.ConnectionConnected {
-		return nil, ErrNotFound
-	}
-	engine, env, err := s.engineAndEnvironmentFor(ctx, sess)
-	if err != nil {
-		return nil, fmt.Errorf("%w: continuation engine", ErrFailedPrecondition)
-	}
-	claimed, err := sess.ClaimMCPAuthorization()
-	if err != nil {
-		return nil, ErrNotFound
-	}
-	if err := s.cfg.Store.Save(ctx, sess); err != nil {
-		return nil, fmt.Errorf("%w: persist authorization claim", ErrInternal)
-	}
-	s.recordMCPAuthorizationEvent(ctx, id, session.Event{Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: claimed.AuthorizationID, Backend: claimed.Backend, Call: claimed.Call.ID, ExpiresAt: claimed.ExpiresAt, Status: session.MCPAuthorizationConnected}})
-	s.stopMCPAuthorizationExpiry(id)
-	ctx = memory.WithWorkspace(ctx, sess.Workspace)
-	prepared := engine.PrepareMCPAuthorizationContinuation(ctx, sess, env, claimed)
-	if !s.register(id, prepared.Run(), sess) {
-		s.repairMCPAuthorizationRegistration(ctx, sess)
-		return nil, ErrNoActiveRun
-	}
-	return prepared.Start(), nil
+	result, err := s.ControlMCPAuthorization(ctx, id, control, false)
+	return result.Run, err
 }
 
 // CancelMCPAuthorization resolves one exact pending authorization with paired
 // errors. It deliberately does not call Runtime.Disconnect.
 func (s *Service) CancelMCPAuthorization(ctx context.Context, id session.SessionID, control MCPAuthorizationControl) (*agent.Run, error) {
-	if _, err := s.GetSession(ctx, id); err != nil {
-		return nil, ErrNotFound
-	}
-	unlock := s.runEntryMu.lock(id)
-	defer unlock()
-	if err := s.acquireLease(ctx, id); err != nil {
-		return nil, err
-	}
-	sess, err := s.cfg.Store.Load(ctx, id)
-	if err != nil {
-		return nil, ErrNotFound
-	}
-	pending, ok := matchingMCPAuthorization(sess, control)
-	if !ok || s.cfg.VMCPBroker == nil {
-		return nil, ErrNotFound
-	}
-	// The Runtime's transaction may already be absent after a process-local
-	// failure. The durable aggregate remains authoritative for the paired repair.
-	_ = s.cfg.VMCPBroker.CancelAuthorization(ctx, id, pending.RouteID, pending.AuthorizationID)
-	if !pending.ExpiresAt.After(s.cfg.Now()) {
-		return s.resolveMCPAuthorization(ctx, sess, "MCP authorization expired")
-	}
-	return s.resolveMCPAuthorization(ctx, sess, "MCP authorization cancelled")
+	result, err := s.ControlMCPAuthorization(ctx, id, control, true)
+	return result.Run, err
 }
 
 func (s *Service) resolveMCPAuthorization(ctx context.Context, sess *session.Session, reason string) (*agent.Run, error) {
