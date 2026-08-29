@@ -59,6 +59,8 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h.mux.HandleFunc("POST /v1/sessions/{id}/rename", h.renameSession)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/delete", h.deleteSession)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/compact", h.compactSession)
+	h.mux.HandleFunc("GET /v1/sessions/{id}/mcp-authorizations/{authorization_id}/presentation", h.mcpAuthorizationPresentation)
+	h.mux.HandleFunc("POST /v1/sessions/{id}/mcp-authorizations/{control...}", h.mcpAuthorizationControl)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/prompt", h.prompt)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/retry", h.retry)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/approve", h.approve)
@@ -686,6 +688,110 @@ func (h *HTTPHandler) writeSession(w http.ResponseWriter, status int, sess *sess
 // comfortably covers the 20 MiB decoded cap (~27 MiB base64) with headroom while
 // still bounding the read.
 const maxPromptBodyBytes = 32 << 20 // 32 MiB
+
+func (h *HTTPHandler) mcpAuthorizationPresentation(w http.ResponseWriter, r *http.Request) {
+	id, authorizationID := session.SessionID(r.PathValue("id")), r.PathValue("authorization_id")
+	if id == "" || authorizationID == "" {
+		writeError(w, http.StatusBadRequest, "session and authorization IDs are required")
+		return
+	}
+	url, err := h.svc.MCPAuthorizationPresentation(r.Context(), id, MCPAuthorizationControl{SessionID: id, AuthorizationID: authorizationID})
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, &mecatlv1.MCPAuthorizationPresentation{Url: valid(url)})
+}
+
+func (h *HTTPHandler) mcpAuthorizationControl(w http.ResponseWriter, r *http.Request) {
+	authorizationID, action, ok := strings.Cut(r.PathValue("control"), ":")
+	if !ok || authorizationID == "" {
+		writeError(w, http.StatusBadRequest, "invalid MCP authorization control")
+		return
+	}
+	switch action {
+	case "recheck":
+		h.relayMCPAuthorizationControlSSE(w, r, authorizationID, false)
+	case "cancel":
+		h.relayMCPAuthorizationControlSSE(w, r, authorizationID, true)
+	default:
+		writeError(w, http.StatusBadRequest, "invalid MCP authorization control")
+	}
+}
+
+func (h *HTTPHandler) relayMCPAuthorizationControlSSE(w http.ResponseWriter, r *http.Request, authorizationID string, cancel bool) {
+	id := session.SessionID(r.PathValue("id"))
+	if id == "" || authorizationID == "" {
+		writeError(w, http.StatusBadRequest, "session and authorization IDs are required")
+		return
+	}
+	sess, err := h.svc.GetSession(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	pending, ok := sess.PendingMCPAuthorization()
+	if !ok || pending.AuthorizationID != authorizationID {
+		writeServiceError(w, ErrNotFound)
+		return
+	}
+	control := MCPAuthorizationControl{SessionID: id, AuthorizationID: authorizationID}
+	payload := &session.MCPAuthorizationPayload{AuthorizationID: pending.AuthorizationID, Backend: pending.Backend, Call: pending.Call.ID, ExpiresAt: pending.ExpiresAt}
+	var run *agent.Run
+	if cancel {
+		payload.Status = session.MCPAuthorizationCancelled
+		run, err = h.svc.CancelMCPAuthorization(r.Context(), id, control)
+	} else {
+		run, err = h.svc.RecheckMCPAuthorization(r.Context(), id, control)
+		if run == nil && err == nil {
+			payload.Status = session.MCPAuthorizationPending
+		} else {
+			payload.Status = session.MCPAuthorizationConnected
+		}
+	}
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.WriteHeader(http.StatusOK)
+	enc := json.NewEncoder(w)
+	typ := session.EvMCPAuthorizationResolved
+	if payload.Status == session.MCPAuthorizationPending {
+		typ = session.EvMCPAuthorizationRequired
+	}
+	ev := session.Event{Type: typ, MCPAuthorization: payload}
+	_, _ = w.Write([]byte("data: "))
+	_ = enc.Encode(toProto(ev))
+	_, _ = w.Write([]byte("\n"))
+	flusher.Flush()
+	if run == nil {
+		return
+	}
+	defer h.svc.FinishRun(id, run)
+	for event := range run.Events() {
+		h.svc.appendEvent(context.WithoutCancel(r.Context()), id, event)
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			run.Cancel()
+			return
+		}
+		if err := enc.Encode(toProto(event)); err != nil {
+			run.Cancel()
+			return
+		}
+		if _, err := w.Write([]byte("\n")); err != nil {
+			run.Cancel()
+			return
+		}
+		flusher.Flush()
+	}
+}
 
 // prompt handles POST /v1/sessions/{id}/prompt, streaming the run's events as
 // Server-Sent Events. It starts a run on the shared engine and relays each

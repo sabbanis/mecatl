@@ -3,6 +3,7 @@ package server
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/session"
@@ -92,6 +93,7 @@ func (s *Service) RecheckMCPAuthorization(ctx context.Context, id session.Sessio
 	if err := s.cfg.Store.Save(ctx, sess); err != nil {
 		return nil, fmt.Errorf("%w: persist authorization claim", ErrInternal)
 	}
+	s.appendEvent(context.WithoutCancel(ctx), id, session.Event{Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: claimed.AuthorizationID, Backend: claimed.Backend, Call: claimed.Call.ID, ExpiresAt: claimed.ExpiresAt, Status: session.MCPAuthorizationConnected}})
 	s.stopMCPAuthorizationExpiry(id)
 	ctx = memory.WithWorkspace(ctx, sess.Workspace)
 	prepared := engine.PrepareMCPAuthorizationContinuation(ctx, sess, env, claimed)
@@ -131,6 +133,10 @@ func (s *Service) CancelMCPAuthorization(ctx context.Context, id session.Session
 }
 
 func (s *Service) resolveMCPAuthorization(ctx context.Context, sess *session.Session, reason string) (*agent.Run, error) {
+	pending, ok := sess.PendingMCPAuthorization()
+	if !ok {
+		return nil, ErrNotFound
+	}
 	results, err := sess.AbortMCPAuthorization(reason)
 	if err != nil {
 		return nil, ErrNotFound
@@ -141,6 +147,7 @@ func (s *Service) resolveMCPAuthorization(ctx context.Context, sess *session.Ses
 	if err := s.cfg.Store.Save(ctx, sess); err != nil {
 		return nil, fmt.Errorf("%w: persist authorization resolution", ErrInternal)
 	}
+	s.appendEvent(context.WithoutCancel(ctx), sess.ID, session.Event{Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: pending.AuthorizationID, Backend: pending.Backend, Call: pending.Call.ID, ExpiresAt: pending.ExpiresAt, Status: mcpAuthorizationResolutionStatus(reason)}})
 	s.stopMCPAuthorizationExpiry(sess.ID)
 	engine, env, err := s.engineAndEnvironmentFor(ctx, sess)
 	if err != nil {
@@ -163,6 +170,21 @@ func (s *Service) repairMCPAuthorizationRegistration(ctx context.Context, sess *
 	}
 	_ = s.cfg.Store.Save(context.WithoutCancel(ctx), sess)
 	s.stopMCPAuthorizationExpiry(sess.ID)
+}
+
+func mcpAuthorizationResolutionStatus(reason string) session.MCPAuthorizationStatus {
+	switch {
+	case strings.Contains(strings.ToLower(reason), "expired"):
+		return session.MCPAuthorizationExpired
+	case strings.Contains(strings.ToLower(reason), "interrupted"):
+		return session.MCPAuthorizationInterrupted
+	case strings.Contains(strings.ToLower(reason), "closed"):
+		return session.MCPAuthorizationClosed
+	case strings.Contains(strings.ToLower(reason), "failed"):
+		return session.MCPAuthorizationFailed
+	default:
+		return session.MCPAuthorizationCancelled
+	}
 }
 
 func matchingMCPAuthorization(sess *session.Session, control MCPAuthorizationControl) (session.PendingMCPAuthorization, bool) {

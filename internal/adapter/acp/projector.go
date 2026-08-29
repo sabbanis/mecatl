@@ -86,6 +86,14 @@ func projectUpdate(ev session.Event) (any, bool) {
 			Content: diffContentFor(ev.ToolCall.Name, ev.ToolCall.Args),
 		}, true
 
+	case session.EvMCPAuthorizationRequired:
+		// ACP cannot present browser authorization. A defensive projection turns an
+		// accidental park into an ordinary failed tool card without exposing args.
+		if ev.MCPAuthorization == nil {
+			return nil, false
+		}
+		return toolCallUpdate{SessionUpdate: updateToolCallUpdate, ToolCallID: string(ev.MCPAuthorization.Call), Status: toolStatusFailed, Content: textToolContent("MCP authorization is unavailable for ACP sessions")}, true
+
 	case session.EvToolResult:
 		if ev.ToolResult == nil {
 			return nil, false

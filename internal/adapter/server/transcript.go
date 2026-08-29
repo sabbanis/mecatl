@@ -62,9 +62,23 @@ func (s *Service) transcriptFromSession(sess *session.Session) (*SessionTranscri
 	if !validSessionIdentityMetadata(sess.ID, sess.Relationship) {
 		return nil, fmt.Errorf("%w: transcript contains invalid session identity metadata", ErrInternal)
 	}
+	messages := session.CloneMessages(sess.Conversation.Messages)
+	if pending, ok := sess.PendingMCPAuthorization(); ok {
+		privateCalls := map[session.ToolCallID]struct{}{pending.Call.ID: {}}
+		for _, call := range pending.Deferred {
+			privateCalls[call.ID] = struct{}{}
+		}
+		for i := range messages {
+			for j := range messages[i].ToolCalls {
+				if _, private := privateCalls[messages[i].ToolCalls[j].ID]; private {
+					messages[i].ToolCalls[j].Args = nil
+				}
+			}
+		}
+	}
 	return &SessionTranscript{
 		SessionID:    sess.ID,
-		Messages:     session.CloneMessages(sess.Conversation.Messages),
+		Messages:     messages,
 		Complete:     true,
 		Kind:         sess.Kind,
 		Relationship: sess.Relationship,
