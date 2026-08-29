@@ -175,6 +175,11 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   ownership of the parked broker authorization rather than silently orphaning a
   reusable transaction. Changed (pre-v1 minor bump).
 
+- **Broker authorization event grammar** — `session.MCPAuthorizationStatus`,
+  `session.EvMCPAuthorizationResolved`, and the `Status` field on
+  `session.MCPAuthorizationPayload` distinguish pending from terminal safe
+  correlation events. Added (minor).
+
 - **Broker authorization correlation event** — `session.MCPAuthorizationPayload`
   and `session.Event.MCPAuthorization` expose only the parked transaction ID,
   backend, call ID, and expiry to attached clients. Added (minor).

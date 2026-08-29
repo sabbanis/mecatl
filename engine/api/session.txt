@@ -86,6 +86,7 @@ const EvCompaction EventType = "compaction"
 const EvCompactionArchive EventType = "compaction.archive"
 const EvHook EventType = "hook"
 const EvMCPAuthorizationRequired EventType = "mcp.authorization.required"
+const EvMCPAuthorizationResolved EventType = "mcp.authorization.resolved"
 const EvMessageDelta EventType = "message.delta"
 const EvModelRetry EventType = "model.retry"
 const EvNetworkAttempt EventType = "network.attempt"
@@ -126,6 +127,13 @@ const HookAdvisory HookDecision = "advisory"
 const HookBlocked HookDecision = "blocked"
 const HookInfo HookDecision = "info"
 const HookModified HookDecision = "modified"
+const MCPAuthorizationCancelled MCPAuthorizationStatus = "cancelled"
+const MCPAuthorizationClosed MCPAuthorizationStatus = "closed"
+const MCPAuthorizationConnected MCPAuthorizationStatus = "connected"
+const MCPAuthorizationExpired MCPAuthorizationStatus = "expired"
+const MCPAuthorizationFailed MCPAuthorizationStatus = "failed"
+const MCPAuthorizationInterrupted MCPAuthorizationStatus = "interrupted"
+const MCPAuthorizationPending MCPAuthorizationStatus = "pending"
 const MaxMediaBytes untyped int = 10485760
 const MaxPromptMediaBytes untyped int = 20971520
 const MaxPromptMediaParts untyped int = 16
@@ -288,7 +296,8 @@ type HookDecision string
 type HookPayload struct{Phase string; Tool string; Decision HookDecision; CallID ToolCallID}
 type IncarnationID string
 type Limits struct{MaxTurns int; MaxToolCalls int; MaxConsecutiveFailures int}
-type MCPAuthorizationPayload struct{AuthorizationID string; Backend string; Call ToolCallID; ExpiresAt time.Time}
+type MCPAuthorizationPayload struct{AuthorizationID string; Backend string; Call ToolCallID; ExpiresAt time.Time; Status MCPAuthorizationStatus}
+type MCPAuthorizationStatus string
 type MediaKind string
 type Message struct{Role Role; Text string; ToolCalls []ToolCall; ToolResult *ToolResult; Reasoning string; ProviderPhase string; ReasoningItemID string; Parts []Content}
 type ModelRetryPayload struct{Disposition RetryDisposition; Progress StreamProgress}

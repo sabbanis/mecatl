@@ -1647,7 +1647,7 @@ func (e *Engine) parkAuthorization(ctx context.Context, r *Run, sess *session.Se
 	e.drainChildren(ctx, r)
 	r.setOutcome(RunOutcomeAuthorizationParked)
 	e.emit(r, session.Event{Type: session.EvMCPAuthorizationRequired, Turn: turnIdx,
-		MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: park.request.ID, Backend: park.request.Backend, Call: park.call.ID, ExpiresAt: park.request.ExpiresAt}})
+		MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: park.request.ID, Backend: park.request.Backend, Call: park.call.ID, ExpiresAt: park.request.ExpiresAt, Status: session.MCPAuthorizationPending}})
 	return nil, true
 }
 

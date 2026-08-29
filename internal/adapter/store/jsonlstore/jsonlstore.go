@@ -767,7 +767,11 @@ const (
 // "ev" bytes (json.Marshal of a session.Event), so the two tags MUST agree or a
 // log written by one path is unreadable by the other (the one-codec claim). The
 // unexported alias keeps the in-file call sites terse.
-const EventLogFormat = "eventlog-json/1"
+const (
+	// EventLogFormat is the newest event grammar written by this store.
+	EventLogFormat   = "eventlog-json/2"
+	eventLogFormatV1 = "eventlog-json/1"
+)
 
 // eventLogFormat is the in-file alias of EventLogFormat (keeps the existing call
 // sites terse; the two are the one constant).
@@ -1100,7 +1104,7 @@ func (st *Store) Read(ctx context.Context, id session.SessionID) iter.Seq2[sessi
 				return
 			}
 			switch rec.V {
-			case eventLogFormat:
+			case eventLogFormat, eventLogFormatV1:
 			case eventLogGenerationTag, eventLogGapTag:
 				// Not events. port.EventLog.Read's shipped contract is that it
 				// returns EVENTS, so the generation header and gap markers are
@@ -1109,7 +1113,7 @@ func (st *Store) Read(ctx context.Context, id session.SessionID) iter.Seq2[sessi
 				// an event. Cursor readers see them via ReadAfter.
 				continue
 			default:
-				yield(session.Event{}, fmt.Errorf("jsonlstore: unknown event-log format %q (want %q)", rec.V, eventLogFormat))
+				yield(session.Event{}, fmt.Errorf("jsonlstore: unknown event-log format %q (want %q or %q)", rec.V, eventLogFormat, eventLogFormatV1))
 				return
 			}
 			var ev session.Event

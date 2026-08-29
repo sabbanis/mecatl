@@ -511,7 +511,7 @@ func TestEventLogAppendReadCumulative(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read events file: %v", err)
 	}
-	if !strings.Contains(string(raw), `"v":"eventlog-json/1"`) {
+	if !strings.Contains(string(raw), `"v":"eventlog-json/2"`) {
 		t.Fatalf("events file missing the format tag: %s", raw)
 	}
 

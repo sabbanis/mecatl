@@ -283,6 +283,16 @@ service HarnessService {
   // as a performance one. Ownership is enforced exactly as on GetSession.
   rpc WatchSessionEvents(WatchSessionEventsRequest) returns (stream WatchSessionEventsResponse);
 
+  // GetMCPAuthorizationPresentation returns the live browser URL for one owned,
+  // still-pending authorization. The request carries correlation only.
+  rpc GetMCPAuthorizationPresentation(MCPAuthorizationControlRequest) returns (MCPAuthorizationPresentation);
+  // RecheckMCPAuthorization observes one pending authorization and streams either
+  // its current safe pending status or a resolved status followed by continuation events.
+  rpc RecheckMCPAuthorization(MCPAuthorizationControlRequest) returns (stream Event);
+  // CancelMCPAuthorization resolves one pending authorization and streams the
+  // safe resolved status followed by continuation events.
+  rpc CancelMCPAuthorization(MCPAuthorizationControlRequest) returns (stream Event);
+
   // ListSessions returns the stored-session inventory — the picker metadata a
   // client renders to let an operator open an EXISTING session by id (issue #245
   // Phase 1). It is backed by `port.PrunableStore.List` (type-asserted on the
@@ -1730,6 +1740,18 @@ enum SteerOutcome {
   // (the inbox was closed). The server promoted the text to a fresh follow-up
   // run (promoted=true on the event) rather than dropping it.
   STEER_OUTCOME_TOO_LATE = 5;
+}
+
+// MCPAuthorizationControlRequest carries only safe session and authorization correlation.
+message MCPAuthorizationControlRequest {
+  string session_id = 1;
+  string authorization_id = 2;
+}
+
+// MCPAuthorizationPresentation exposes a live browser URL only to the owned
+// pending authorization presentation operation; it is never an event payload.
+message MCPAuthorizationPresentation {
+  string url = 1;
 }
 
 // Event mirrors the domain session.Event one-for-one. `type` is the string

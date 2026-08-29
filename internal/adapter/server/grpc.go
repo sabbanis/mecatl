@@ -1267,6 +1267,77 @@ func (h *HarnessServer) StreamSessionEvents(req *mecatlv1.StreamSessionEventsReq
 	return nil
 }
 
+// GetMCPAuthorizationPresentation returns a browser URL only after the Service
+// has authorized the caller and validated the exact pending correlation.
+func (h *HarnessServer) GetMCPAuthorizationPresentation(ctx context.Context, req *mecatlv1.MCPAuthorizationControlRequest) (*mecatlv1.MCPAuthorizationPresentation, error) {
+	if req.GetSessionId() == "" || req.GetAuthorizationId() == "" {
+		return nil, status.Error(codes.InvalidArgument, ErrInvalidArgument.Error())
+	}
+	url, err := h.svc.MCPAuthorizationPresentation(ctx, session.SessionID(req.GetSessionId()), MCPAuthorizationControl{SessionID: session.SessionID(req.GetSessionId()), AuthorizationID: req.GetAuthorizationId()})
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &mecatlv1.MCPAuthorizationPresentation{Url: valid(url)}, nil
+}
+
+func (h *HarnessServer) RecheckMCPAuthorization(req *mecatlv1.MCPAuthorizationControlRequest, stream grpc.ServerStreamingServer[mecatlv1.Event]) error {
+	return h.relayMCPAuthorizationControl(req, stream, false)
+}
+
+func (h *HarnessServer) CancelMCPAuthorization(req *mecatlv1.MCPAuthorizationControlRequest, stream grpc.ServerStreamingServer[mecatlv1.Event]) error {
+	return h.relayMCPAuthorizationControl(req, stream, true)
+}
+
+func (h *HarnessServer) relayMCPAuthorizationControl(req *mecatlv1.MCPAuthorizationControlRequest, stream grpc.ServerStreamingServer[mecatlv1.Event], cancel bool) error {
+	if req.GetSessionId() == "" || req.GetAuthorizationId() == "" {
+		return status.Error(codes.InvalidArgument, ErrInvalidArgument.Error())
+	}
+	id := session.SessionID(req.GetSessionId())
+	sess, err := h.svc.GetSession(stream.Context(), id)
+	if err != nil {
+		return toStatus(err)
+	}
+	pending, ok := sess.PendingMCPAuthorization()
+	if !ok || pending.AuthorizationID != req.GetAuthorizationId() {
+		return status.Error(codes.NotFound, "MCP authorization not found")
+	}
+	payload := &session.MCPAuthorizationPayload{AuthorizationID: pending.AuthorizationID, Backend: pending.Backend, Call: pending.Call.ID, ExpiresAt: pending.ExpiresAt}
+	control := MCPAuthorizationControl{SessionID: id, AuthorizationID: pending.AuthorizationID}
+	var run *agent.Run
+	if cancel {
+		payload.Status = session.MCPAuthorizationCancelled
+		run, err = h.svc.CancelMCPAuthorization(stream.Context(), id, control)
+	} else {
+		run, err = h.svc.RecheckMCPAuthorization(stream.Context(), id, control)
+		if run == nil && err == nil {
+			payload.Status = session.MCPAuthorizationPending
+		} else {
+			payload.Status = session.MCPAuthorizationConnected
+		}
+	}
+	if err != nil {
+		return toStatus(err)
+	}
+	typ := session.EvMCPAuthorizationResolved
+	if payload.Status == session.MCPAuthorizationPending {
+		typ = session.EvMCPAuthorizationRequired
+	}
+	if err := stream.Send(toProto(session.Event{Type: typ, MCPAuthorization: payload})); err != nil {
+		return err
+	}
+	if run == nil {
+		return nil
+	}
+	defer h.svc.FinishRun(id, run)
+	for ev := range run.Events() {
+		if err := stream.Send(toProto(ev)); err != nil {
+			run.Cancel()
+			return err
+		}
+	}
+	return nil
+}
+
 // StreamSessionLive is the LIVE per-session event stream (ADR 0075
 // fire-result-delivery Scenario 6 / Wave 3): a thin transport over the in-process
 // per-session subscription registry (Service.Subscribe / PublishSessionEvent). It

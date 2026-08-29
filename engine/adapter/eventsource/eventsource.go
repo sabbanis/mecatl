@@ -135,6 +135,10 @@ var (
 	// ErrStream is returned when the event iterator yields an error; it wraps the
 	// underlying per-item error.
 	ErrStream = errors.New("eventsource: event stream error")
+	// ErrPrivateStateRequired is returned when a broker authorization marker is
+	// present. Its effective call is snapshot-private and must never be guessed
+	// from safe durable events.
+	ErrPrivateStateRequired = errors.New("eventsource: private snapshot state required")
 	// ErrReconstruct is returned when the folded events cannot be reconstructed into
 	// a valid Session (an unpairable conversation, an inconsistent terminal state).
 	ErrReconstruct = errors.New("eventsource: cannot reconstruct session")
@@ -159,6 +163,9 @@ func Fold(meta SessionMeta, events iter.Seq2[session.Event, error]) (*session.Se
 			return nil, fmt.Errorf("%w: %w", ErrStream, err)
 		}
 		f.consume(ev)
+	}
+	if f.privateAuthorization {
+		return nil, ErrPrivateStateRequired
 	}
 	f.finalizeOpenTurn()
 
@@ -347,6 +354,11 @@ type folder struct {
 	retryDisposition session.RetryDisposition
 	retryProgress    session.StreamProgress
 
+	// privateAuthorization records that this event stream contains a broker
+	// authorization marker. The safe grammar intentionally omits the effective
+	// call, so no event-only fold may yield an executable session.
+	privateAuthorization bool
+
 	// counters of the CURRENT run segment (reset on each terminal, so the final
 	// values reflect the latest run — mirroring resetToIdle on Reopen).
 	curTurns      int
@@ -361,6 +373,11 @@ type folder struct {
 // consume folds one event into the accumulator.
 func (f *folder) consume(ev session.Event) {
 	switch ev.Type {
+	case session.EvMCPAuthorizationRequired, session.EvMCPAuthorizationResolved:
+		// Required/resolved markers prove the log contains a broker-protected call
+		// whose effective arguments are deliberately snapshot-only. Even a resolved
+		// pair cannot reconstruct that call from safe event data.
+		f.privateAuthorization = true
 	case session.EvCompactionArchive, session.EvUserPrompt:
 		f.consumeHistoryEvent(ev)
 	case session.EvModelRetry:

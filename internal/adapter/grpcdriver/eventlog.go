@@ -32,7 +32,10 @@ import (
 // readers (this client's Read, the server wrapper's Append decode-or-passthrough)
 // must keep ACCEPTING every previously-shipped tag while Append WRITES only the
 // newest. The driver round-trips envelopes verbatim and cannot migrate them.
-const EventLogFormat = "eventlog-json/1"
+const (
+	EventLogFormat   = "eventlog-json/2"
+	eventLogFormatV1 = "eventlog-json/1"
+)
 
 // EventLog is a port.EventLog over a remote EventLogService driver. Encode
 // (session.Event → JSON) happens HERE on Append and decode (JSON →
@@ -98,8 +101,8 @@ func (l *EventLog) Read(ctx context.Context, id session.SessionID) iter.Seq2[ses
 				return
 			}
 			env := resp.GetEvent()
-			if got := env.GetFormat(); got != EventLogFormat {
-				yield(session.Event{}, fmt.Errorf("grpcdriver: read events %q: unknown event format %q (this client speaks %q)", id, got, EventLogFormat))
+			if got := env.GetFormat(); got != EventLogFormat && got != eventLogFormatV1 {
+				yield(session.Event{}, fmt.Errorf("grpcdriver: read events %q: unknown event format %q", id, got))
 				return
 			}
 			var ev session.Event
@@ -145,8 +148,8 @@ func (s *eventLogServer) Append(ctx context.Context, req *driverv1.AppendRequest
 	if env == nil {
 		return nil, status.Error(codes.InvalidArgument, "event is required")
 	}
-	if got := env.GetFormat(); got != EventLogFormat {
-		return nil, status.Errorf(codes.InvalidArgument, "unknown event format %q (this server speaks %q)", got, EventLogFormat)
+	if got := env.GetFormat(); got != EventLogFormat && got != eventLogFormatV1 {
+		return nil, status.Errorf(codes.InvalidArgument, "unknown event format %q", got)
 	}
 	if len(env.GetPayload()) == 0 {
 		return nil, status.Error(codes.InvalidArgument, "event payload is empty")

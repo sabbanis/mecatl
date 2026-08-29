@@ -1383,13 +1383,20 @@ type TeamPayload struct {
 type MCPAuthorizationStatus string
 
 const (
-	MCPAuthorizationPending     MCPAuthorizationStatus = "pending"
-	MCPAuthorizationConnected   MCPAuthorizationStatus = "connected"
-	MCPAuthorizationCancelled   MCPAuthorizationStatus = "cancelled"
-	MCPAuthorizationExpired     MCPAuthorizationStatus = "expired"
+	// MCPAuthorizationPending marks a still-open authorization request.
+	MCPAuthorizationPending MCPAuthorizationStatus = "pending"
+	// MCPAuthorizationConnected records a successfully claimed connection.
+	MCPAuthorizationConnected MCPAuthorizationStatus = "connected"
+	// MCPAuthorizationCancelled records an operator cancellation.
+	MCPAuthorizationCancelled MCPAuthorizationStatus = "cancelled"
+	// MCPAuthorizationExpired records expiry.
+	MCPAuthorizationExpired MCPAuthorizationStatus = "expired"
+	// MCPAuthorizationInterrupted records process interruption.
 	MCPAuthorizationInterrupted MCPAuthorizationStatus = "interrupted"
-	MCPAuthorizationFailed      MCPAuthorizationStatus = "failed"
-	MCPAuthorizationClosed      MCPAuthorizationStatus = "closed"
+	// MCPAuthorizationFailed records authorization failure.
+	MCPAuthorizationFailed MCPAuthorizationStatus = "failed"
+	// MCPAuthorizationClosed records runtime/session closure.
+	MCPAuthorizationClosed MCPAuthorizationStatus = "closed"
 )
 
 // MCPAuthorizationPayload is the safe client-facing correlation for a parked
