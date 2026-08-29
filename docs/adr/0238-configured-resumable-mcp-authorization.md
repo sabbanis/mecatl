@@ -197,7 +197,7 @@ there is no separate OAuth-deny verdict:
   exact pending transaction, permits a later fresh attempt, and never calls permanent
   `Disconnect`;
 - a service-owned expiry worker resolves the pending call at the fixed expiry;
-- callback accepts only broker-created code/state and independently commits Runtime state.
+- callback accepts one broker-created `code` and `state`, plus optional ToolHive compatibility `scope`; `scope` is accepted and ignored, and Runtime state is independently committed from only code/state.
 
 HTTP supplies exact GET-presentation and POST-recheck/cancel counterparts beneath
 `/v1/sessions/{id}/mcp-authorizations/{authorization_id}`; the two mutating responses are
