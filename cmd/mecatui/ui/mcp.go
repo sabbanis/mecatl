@@ -361,6 +361,9 @@ func (*mcpState) HandleWheel(tea.MouseWheelMsg) (cmd tea.Cmd, handled bool) {
 //nolint:gocyclo // multiple MCP message types share one reducer
 func (s *mcpState) HandleMsg(msg tea.Msg) (cmd tea.Cmd, handled bool, closed bool) {
 	switch msg := msg.(type) {
+	case mcpAuthorizationStreamMsg:
+		mm, cmd := m.updateMCPAuthorizationStream(msg)
+		return mm, cmd, true
 	case client.MCPSourcesMsg:
 		s.loading = false
 		if s.refreshing {

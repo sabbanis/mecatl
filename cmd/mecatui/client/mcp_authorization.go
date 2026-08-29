@@ -7,6 +7,14 @@ import (
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 )
 
+// MCPAuthorizationController is the separate browser-authorization control
+// surface. It is deliberately not a permission approver.
+type MCPAuthorizationController interface {
+	MCPAuthorizationPresentation(context.Context, string, string) (string, error)
+	RecheckMCPAuthorization(context.Context, string, string) (*EventStream, error)
+	CancelMCPAuthorization(context.Context, string, string) (*EventStream, error)
+}
+
 // MCPAuthorizationPresentation returns the owned authorization's live browser
 // URL. It is intentionally separate from stream events: URLs are presentation
 // secrets and are never replayed or rendered from durable event data.

@@ -967,8 +967,7 @@ func (m *Model) beginTurnEvent() {
 func (m Model) updateStreamSecondary(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case client.MCPAuthorizationMsg:
-		m.conv.addNotice(mcpAuthorizationNotice(msg))
-		return m.afterEvent()
+		return m.applyMCPAuthorization(msg)
 	case client.PermissionRetractMsg:
 		// An active approval surface consumes retractions through HandleMsg. A
 		// stale retraction after close is transport-only and needs no approval state.
@@ -1755,6 +1754,8 @@ func (m Model) dispatchPhaseKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	switch m.phase {
 	case phaseAwaitingApproval:
 		return m, nil
+	case phaseAuthorizing:
+		return m.onMCPAuthorizationKey(msg)
 	case phaseRunning:
 		return m.onRunningKey(msg)
 	case phaseIdle:

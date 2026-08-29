@@ -748,29 +748,51 @@ func (h *HTTPHandler) relayMCPAuthorizationControlSSE(w http.ResponseWriter, r *
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
 	w.WriteHeader(http.StatusOK)
-	enc := json.NewEncoder(w)
-	ev := result.Event
-	_, _ = w.Write([]byte("data: "))
-	_ = enc.Encode(toProto(ev))
-	_, _ = w.Write([]byte("\n"))
 	flusher.Flush()
+	enc := json.NewEncoder(w)
+	failed := false
+	fail := func() {
+		failed = true
+		if result.Run != nil {
+			result.Run.Cancel()
+		}
+	}
+	// The control status is already durably recorded by the Service when it is a
+	// terminal resolution. A pending recheck is a current-status replay, not a
+	// second durable "required" record.
+	if _, err := w.Write([]byte("data: ")); err != nil {
+		fail()
+	} else if err := enc.Encode(toProto(result.Event)); err != nil {
+		fail()
+	} else if _, err := w.Write([]byte("\n")); err != nil {
+		fail()
+	} else {
+		flusher.Flush()
+	}
 	if result.Run == nil {
 		return
 	}
 	defer h.svc.FinishRun(id, result.Run)
+	logCtx := context.WithoutCancel(r.Context())
 	for event := range result.Run.Events() {
-		h.svc.relayEvent(r.Context(), context.WithoutCancel(r.Context()), id, event, false)
+		if failed {
+			h.svc.appendEvent(logCtx, id, event)
+			continue
+		}
+		if !h.svc.relayEvent(r.Context(), logCtx, id, event, false) {
+			continue
+		}
 		if _, err := w.Write([]byte("data: ")); err != nil {
-			result.Run.Cancel()
-			return
+			fail()
+			continue
 		}
 		if err := enc.Encode(toProto(event)); err != nil {
-			result.Run.Cancel()
-			return
+			fail()
+			continue
 		}
 		if _, err := w.Write([]byte("\n")); err != nil {
-			result.Run.Cancel()
-			return
+			fail()
+			continue
 		}
 		flusher.Flush()
 	}

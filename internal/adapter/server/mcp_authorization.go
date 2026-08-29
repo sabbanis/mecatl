@@ -74,8 +74,12 @@ func (s *Service) ControlMCPAuthorization(ctx context.Context, id session.Sessio
 		payload.Status = mcpAuthorizationResolutionStatusForCancel(pending, s.cfg.Now())
 	} else {
 		run, err = s.RecheckMCPAuthorization(ctx, id, control)
-		if run == nil && err == nil {
+		if run == nil {
 			payload.Status = session.MCPAuthorizationPending
+		} else if !pending.ExpiresAt.After(s.cfg.Now()) {
+			// A continuation run also follows an expired authorization's paired
+			// repair. Never infer "connected" merely because a Run exists.
+			payload.Status = session.MCPAuthorizationExpired
 		} else {
 			payload.Status = session.MCPAuthorizationConnected
 		}

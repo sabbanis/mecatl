@@ -95,7 +95,7 @@ func TestProjectUpdateToolResult(t *testing.T) {
 	}
 }
 
-func TestProjectUpdateMCPAuthorizationIsExplicitlyIneligible(t *testing.T) {
+func TestSessionMCPAuthorization_Scenario9_ACPIsExplicitlyIneligible(t *testing.T) {
 	t.Parallel()
 
 	got, ok := projectUpdate(session.Event{Type: session.EvMCPAuthorizationRequired, MCPAuthorization: &session.MCPAuthorizationPayload{

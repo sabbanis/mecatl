@@ -520,6 +520,12 @@ func (a *Agent) handleSessionPrompt(ctx context.Context, params json.RawMessage)
 	if strings.TrimSpace(text) == "" && len(parts) == 0 {
 		return nil, newMethodErr(codeInvalidParams, "acp: session/prompt: prompt has no content")
 	}
+	// ACP has no browser presentation or authorization controls. Refuse a restored
+	// authorizing aggregate before attempting a new run, rather than degrading it
+	// into an illegal-transition error or an EOF with no paired tool result.
+	if sess, getErr := a.svc.GetSession(ctx, session.SessionID(req.SessionID)); getErr == nil && sess.State == session.StateAuthorizing {
+		return nil, newMethodErr(codeInvalidParams, "acp: session/prompt: MCP authorization is unavailable for ACP sessions")
+	}
 
 	if !a.acquire(req.SessionID) {
 		return nil, newMethodErr(codeInvalidParams, "acp: session/prompt: a prompt is already in flight for this session")
