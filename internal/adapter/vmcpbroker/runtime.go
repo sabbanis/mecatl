@@ -19,8 +19,21 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
+	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/runner"
 	"github.com/stacklok/toolhive/pkg/authserver/storage"
+	"github.com/stacklok/toolhive/pkg/vmcp"
+	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
+	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/factory"
+	"github.com/stacklok/toolhive/pkg/vmcp/auth/strategies"
+	authtypes "github.com/stacklok/toolhive/pkg/vmcp/auth/types"
+	vmcpclient "github.com/stacklok/toolhive/pkg/vmcp/client"
+	vmcpconfig "github.com/stacklok/toolhive/pkg/vmcp/config"
+	"github.com/stacklok/toolhive/pkg/vmcp/router"
+	vmcpserver "github.com/stacklok/toolhive/pkg/vmcp/server"
+	vmcpsession "github.com/stacklok/toolhive/pkg/vmcp/session"
 	"golang.org/x/oauth2"
 
 	"github.com/stacklok/mecatl/engine/port"
@@ -195,7 +208,14 @@ type Caller func(context.Context, session.SessionID, Route, json.RawMessage) (se
 // HandlerBundle contains root-internal HTTP handlers owned by a broker process.
 // It is intentionally not mounted here; command roots choose their own listeners.
 type HandlerBundle struct {
-	Callback http.Handler
+	Authorization     http.Handler
+	Token             http.Handler
+	UpstreamCallback  http.Handler
+	Discovery         http.Handler
+	JWKS              http.Handler
+	ProtectedResource http.Handler
+	VMCP              http.Handler
+	Callback          http.Handler
 }
 
 // Process owns a broker Runtime and its root-internal handlers.
@@ -213,6 +233,145 @@ func NewProcess(runtime *Runtime) (*Process, error) {
 		Runtime:  runtime,
 		Handlers: HandlerBundle{Callback: CallbackHandler(runtime.Callback)},
 	}, nil
+}
+
+const (
+	brokerBasePath              = "/v1/mcp/broker"
+	brokerAuthorizePath         = brokerBasePath + "/oauth/authorize"
+	brokerTokenPath             = brokerBasePath + "/oauth/token"
+	brokerUpstreamCallbackPath  = brokerBasePath + "/oauth/callback"
+	brokerDiscoveryPath         = brokerBasePath + "/.well-known/openid-configuration"
+	brokerJWKSPath              = brokerBasePath + "/.well-known/jwks.json"
+	brokerProtectedResourcePath = brokerBasePath + "/.well-known/oauth-protected-resource"
+	brokerMCPPath               = brokerBasePath + "/mcp"
+)
+
+// NewToolHiveProcess builds the process-owned embedded authorization server and
+// Streamable HTTP vMCP handler. The callback origin is the sole public authority.
+func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProfile, callbackURL string, diag port.Diagnostics) (*Process, error) {
+	callback, err := canonicalCallbackURL(callbackURL)
+	if err != nil {
+		return nil, err
+	}
+	protected, err := protectedProfile(profiles)
+	if err != nil {
+		return nil, err
+	}
+	issuer := callback.Scheme + "://" + callback.Host + brokerBasePath
+	store := storage.NewMemoryStorage()
+	auth, err := runner.NewEmbeddedAuthServerWithStorage(ctx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: []authserver.UpstreamRunConfig{{Name: protected.Name, Type: authserver.UpstreamProviderTypeOIDC, OIDCConfig: &authserver.OIDCUpstreamRunConfig{IssuerURL: protected.Auth.OAuth.Issuer, ClientID: brokerClientID(protected), ClientSecretEnvVar: brokerSecretEnv(protected), RedirectURI: issuer + "/oauth/callback", Scopes: append([]string(nil), protected.Auth.OAuth.Scopes...)}}}}, store)
+	if err != nil {
+		return nil, fmt.Errorf("vmcpbroker: create embedded auth server: %w", err)
+	}
+	fail := func(err error) (*Process, error) { _ = auth.Close(); return nil, err }
+	reader := upstreamtoken.NewInProcessService(auth.IDPTokenStorage(), auth.UpstreamTokenRefresher())
+	incoming, _, authInfo, err := factory.NewIncomingAuthMiddleware(ctx, &vmcpconfig.IncomingAuthConfig{Type: "oidc", OIDC: &vmcpconfig.OIDCConfig{Issuer: issuer, Audience: issuer, Resource: issuer, JWKSURL: issuer + "/.well-known/jwks.json"}}, "mecatl-broker", nil, reader, auth.KeyProvider())
+	if err != nil {
+		return fail(err)
+	}
+	outgoing := vmcpauth.NewDefaultOutgoingAuthRegistry()
+	if err := outgoing.RegisterStrategy("upstream_inject", strategies.NewUpstreamInjectStrategy()); err != nil {
+		return fail(err)
+	}
+	backendClient, err := vmcpclient.NewHTTPBackendClient(outgoing)
+	if err != nil {
+		return fail(err)
+	}
+	resolver, err := aggregator.NewConflictResolver(&vmcpconfig.AggregationConfig{ConflictResolution: vmcp.ConflictStrategyPrefix})
+	if err != nil {
+		return fail(err)
+	}
+	backends := make([]vmcp.Backend, 0, len(profiles))
+	for _, p := range profiles {
+		b := vmcp.Backend{ID: p.Name, Name: p.Name, BaseURL: p.URL, TransportType: "streamable-http"}
+		if p.Auth.Mode == "oauth" {
+			b.AuthConfig = &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: protected.Name}}
+		}
+		backends = append(backends, b)
+	}
+	server, err := vmcpserver.New(ctx, &vmcpserver.Config{Name: "mecatl-broker", Version: "v1", EndpointPath: brokerMCPPath, AuthMiddleware: incoming, AuthInfoHandler: authInfo, AuthServer: auth, Aggregator: aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil), SessionFactory: vmcpsession.NewSessionFactory(outgoing)}, router.NewSessionRouter(&vmcp.RoutingTable{}), backendClient, vmcp.NewImmutableRegistry(backends), nil)
+	if err != nil {
+		return fail(err)
+	}
+	vmcpHandler, err := server.Handler(ctx)
+	if err != nil {
+		_ = server.Stop(context.Background())
+		return fail(err)
+	}
+	routes, err := discoverRoutes(ctx, profiles, diag)
+	if err != nil {
+		_ = server.Stop(context.Background())
+		return fail(err)
+	}
+	runtime, err := NewToolHiveStreamingHTTPRuntime(routes, issuer+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: issuer, Resource: issuer, AuthorizationEndpoint: issuer + "/oauth/authorize", TokenEndpoint: issuer + "/oauth/token", CallbackURL: callback.String(), Diagnostics: diag}, 5*time.Minute)
+	if err != nil {
+		_ = server.Stop(context.Background())
+		return fail(err)
+	}
+	runtime.sharedClosers = append(runtime.sharedClosers, namedCloser{name: "vmcp", close: func() error { return server.Stop(context.Background()) }}, namedCloser{name: "authserver", close: auth.Close})
+	embedded := http.StripPrefix(brokerBasePath, auth.Handler())
+	return &Process{Runtime: runtime, Handlers: HandlerBundle{Authorization: embedded, Token: embedded, UpstreamCallback: embedded, Discovery: embedded, JWKS: embedded, ProtectedResource: authInfo, VMCP: vmcpHandler, Callback: CallbackHandler(runtime.Callback)}}, nil
+}
+
+func canonicalCallbackURL(raw string) (*url.URL, error) {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "https" || u.Host == "" || u.User != nil || u.RawQuery != "" || u.Fragment != "" || u.Path == "" || u.String() != raw {
+		return nil, fmt.Errorf("%w: callback URL must be canonical HTTPS with an exact path", ErrInvalidRoute)
+	}
+	return u, nil
+}
+
+func protectedProfile(profiles []permconfig.MCPServerProfile) (permconfig.MCPServerProfile, error) {
+	var result *permconfig.MCPServerProfile
+	for i := range profiles {
+		if profiles[i].Auth.Mode == "oauth" {
+			if result != nil {
+				return permconfig.MCPServerProfile{}, fmt.Errorf("%w: only one protected backend is supported", ErrInvalidRoute)
+			}
+			result = &profiles[i]
+		}
+	}
+	if result == nil || result.Auth.OAuth == nil {
+		return permconfig.MCPServerProfile{}, fmt.Errorf("%w: one protected backend is required", ErrInvalidRoute)
+	}
+	return *result, nil
+}
+func brokerClientID(p permconfig.MCPServerProfile) string {
+	if c := p.Auth.OAuth.Client.Preregistered; c != nil {
+		return c.ID
+	}
+	if c := p.Auth.OAuth.Client.CIMD; c != nil {
+		return c.DocumentURL
+	}
+	return ""
+}
+func brokerSecretEnv(p permconfig.MCPServerProfile) string {
+	if c := p.Auth.OAuth.Client.Preregistered; c != nil {
+		return c.SecretEnv
+	}
+	return ""
+}
+func discoverRoutes(ctx context.Context, profiles []permconfig.MCPServerProfile, diag port.Diagnostics) ([]Route, error) {
+	configs := make([]mcp.ServerConfig, 0, len(profiles))
+	for _, p := range profiles {
+		configs = append(configs, mcp.ServerConfig{Name: p.Name, URL: p.URL})
+	}
+	manager, err := mcp.NewManager(ctx, configs, nil, diag)
+	if err != nil {
+		return nil, fmt.Errorf("vmcpbroker: discover configured tools: %w", err)
+	}
+	defer func() { _ = manager.Close() }()
+	defs := make([]ToolDefinition, 0)
+	for _, wrapped := range manager.Tools() {
+		spec := wrapped.Spec()
+		for _, p := range profiles {
+			if strings.HasPrefix(spec.Name, "mcp__"+p.Name+"__") {
+				defs = append(defs, ToolDefinition{BackendID: p.Name, Name: spec.Name, Description: spec.Description, Schema: spec.Schema, ReadOnly: wrapped.ReadOnly()})
+				break
+			}
+		}
+	}
+	return CompileProfiles(profiles, defs)
 }
 
 // Close releases the Runtime and its owned resources.

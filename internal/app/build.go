@@ -1318,6 +1318,15 @@ type VMCPBrokerDeclarations struct {
 	CallbackURL string
 }
 
+func hasBrokerOAuth(profiles []permconfig.MCPServerProfile) bool {
+	for _, profile := range profiles {
+		if profile.Auth.Mode == "oauth" {
+			return true
+		}
+	}
+	return false
+}
+
 // Built is the result of Build: the assembled server.Service plus a Close func
 // that tears down composition-owned resources. Close is always safe to call.
 type Built struct {
@@ -1542,16 +1551,22 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		if !ok {
 			return nil, fmt.Errorf("broker MCP authority is incomplete")
 		}
-		if cfg.VMCPBrokerConstructor != nil {
-			process, err := cfg.VMCPBrokerConstructor(ctx, VMCPBrokerDeclarations{
-				Profiles:    declarations.Profiles,
-				CallbackURL: declarations.CallbackURL,
-			})
+		if cfg.VMCPBrokerConstructor == nil && !hasBrokerOAuth(declarations.Profiles) {
+			// An anonymous-only broker has no session-scoped credential lineage. Keep
+			// the legacy empty broker authority inert until a protected profile exists.
+		} else {
+			var process *vmcpbroker.Process
+			var err error
+			if cfg.VMCPBrokerConstructor != nil {
+				process, err = cfg.VMCPBrokerConstructor(ctx, VMCPBrokerDeclarations{Profiles: declarations.Profiles, CallbackURL: declarations.CallbackURL})
+			} else {
+				process, err = vmcpbroker.NewToolHiveProcess(ctx, declarations.Profiles, declarations.CallbackURL, cfg.diag())
+			}
 			if err != nil {
 				return nil, fmt.Errorf("construct broker MCP authority: %w", err)
 			}
 			brokerProcess = process
-			if brokerProcess == nil || brokerProcess.Runtime == nil || brokerProcess.Handlers.Callback == nil {
+			if brokerProcess == nil || brokerProcess.Runtime == nil || brokerProcess.Handlers.Callback == nil || (cfg.VMCPBrokerConstructor == nil && (brokerProcess.Handlers.Authorization == nil || brokerProcess.Handlers.Token == nil || brokerProcess.Handlers.UpstreamCallback == nil || brokerProcess.Handlers.Discovery == nil || brokerProcess.Handlers.JWKS == nil || brokerProcess.Handlers.ProtectedResource == nil || brokerProcess.Handlers.VMCP == nil)) {
 				return nil, fmt.Errorf("broker MCP constructor returned an incomplete process")
 			}
 			cfg.VMCPBroker = brokerProcess.Runtime
