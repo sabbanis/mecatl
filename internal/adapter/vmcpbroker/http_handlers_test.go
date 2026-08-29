@@ -4,12 +4,13 @@ import (
 	"context"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strings"
 	"testing"
 )
 
 func TestInvariant_mcp_callback_input_is_bounded_and_never_reflected(t *testing.T) {
-	code, state := "code-canary", "state-canary"
+	code, state, scope := "code-canary", "state-canary", "openid profile"
 	called := false
 	calls := 0
 	h := CallbackHandler(func(_ context.Context, gotCode, gotState string) error {
@@ -18,13 +19,15 @@ func TestInvariant_mcp_callback_input_is_bounded_and_never_reflected(t *testing.
 		return nil
 	})
 	maxValue := strings.Repeat("a", maxCallbackValueBytes)
+	// Each decoded byte can occupy three percent-encoded bytes. A valid query
+	// has code, state, and the optional scope plus their literal separators.
 	maximallyEncoded := strings.Repeat("%41", maxCallbackValueBytes)
-	if got := len("code=" + maximallyEncoded + "&state=" + maximallyEncoded); got != maxCallbackQueryBytes {
+	if got := len("code=" + maximallyEncoded + "&state=" + maximallyEncoded + "&scope=" + maximallyEncoded); got != maxCallbackQueryBytes {
 		t.Fatalf("max raw query bytes = %d, want %d", got, maxCallbackQueryBytes)
 	}
 	for name, query := range map[string]string{
-		"decoded values at limit":  "code=" + maxValue + "&state=" + maxValue,
-		"percent encoded boundary": "code=" + maximallyEncoded + "&state=" + maximallyEncoded,
+		"decoded values at limit":  "code=" + maxValue + "&state=" + maxValue + "&scope=" + maxValue,
+		"percent encoded boundary": "code=" + maximallyEncoded + "&state=" + maximallyEncoded + "&scope=" + maximallyEncoded,
 	} {
 		t.Run(name, func(t *testing.T) {
 			called = false
@@ -50,15 +53,18 @@ func TestInvariant_mcp_callback_input_is_bounded_and_never_reflected(t *testing.
 		}
 	})
 	cases := map[string]*http.Request{
-		"success":         httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+code+"&state="+state, nil),
+		"success":         httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+code+"&state="+state+"&scope="+url.QueryEscape(scope), nil),
 		"post":            httptest.NewRequest(http.MethodPost, "https://attacker.invalid/callback?code="+code+"&state="+state, nil),
 		"body":            httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+code+"&state="+state, strings.NewReader("x")),
 		"duplicate":       httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+code+"&code=again&state="+state, nil),
 		"duplicate-state": httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+code+"&state="+state+"&state=again", nil),
+		"duplicate-scope": httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+code+"&state="+state+"&scope=openid&scope=profile", nil),
+		"empty-scope":     httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+code+"&state="+state+"&scope=", nil),
 		"missing":         httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+code, nil),
 		"unexpected":      httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+code+"&state="+state+"&backend=forged", nil),
 		"malformed":       httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code=%zz&state="+state, nil),
-		"oversized":       httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+strings.Repeat("a", 8193)+"&state="+state, nil),
+		"oversized":       httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+strings.Repeat("a", maxCallbackValueBytes+1)+"&state="+state, nil),
+		"oversized-scope": httptest.NewRequest(http.MethodGet, "https://attacker.invalid/callback?code="+code+"&state="+state+"&scope="+strings.Repeat("a", maxCallbackValueBytes+1), nil),
 	}
 	for name, request := range cases {
 		t.Run(name, func(t *testing.T) {
@@ -69,7 +75,7 @@ func TestInvariant_mcp_callback_input_is_bounded_and_never_reflected(t *testing.
 			if rr.Header().Get("Cache-Control") != "no-store" || rr.Header().Get("Referrer-Policy") != "no-referrer" {
 				t.Fatalf("missing privacy headers: %#v", rr.Header())
 			}
-			if strings.Contains(rr.Body.String(), code) || strings.Contains(rr.Body.String(), state) || strings.Contains(rr.Body.String(), "attacker.invalid") {
+			if strings.Contains(rr.Body.String(), code) || strings.Contains(rr.Body.String(), state) || strings.Contains(rr.Body.String(), scope) || strings.Contains(rr.Body.String(), "attacker.invalid") {
 				t.Fatalf("response reflects untrusted input: %q", rr.Body.String())
 			}
 			if name == "success" {

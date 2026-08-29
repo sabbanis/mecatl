@@ -136,15 +136,18 @@ Broker profiles never enter the global credential lifecycle
   configured callback URL's canonical origin/path contract.
   - verify: `TestSessionMCPAuthorization_Scenario2_MountsTrustedHandlers`
 - AC2.4: The callback handler is GET-only and accepts exactly one non-empty decoded
-  `code` and one `state`, each at most 8 KiB. Duplicate, missing, unexpected, malformed,
-  body-bearing, or oversized input maps to the same generic HTTP 400; success maps to a
-  fixed HTTP 200. Every response sets `Cache-Control: no-store` and
-  `Referrer-Policy: no-referrer`, performs no redirect, and reflects neither value nor
-  browser URLs in responses, diagnostics, traces, metrics, or access-log fields. A browser
-  denial without a code remains pending for explicit cancel or expiry.
+  `code` and one `state`, each at most 8 KiB, plus an optional single non-empty decoded
+  `scope` at most 8 KiB. `scope` is compatibility-only and is ignored completely.
+  Duplicate, missing, unexpected, malformed, body-bearing, empty, or oversized input maps
+  to the same generic HTTP 400; success maps to a fixed HTTP 200. Every response sets
+  `Cache-Control: no-store` and `Referrer-Policy: no-referrer`, performs no redirect, and
+  reflects neither value nor browser URLs in responses, diagnostics, traces, metrics, or
+  access-log fields. A browser denial without a code remains pending for explicit cancel or
+  expiry.
   - verify: `TestInvariant_mcp_callback_input_is_bounded_and_never_reflected`
-- AC2.5: Callback requests carry only broker-created code/state and cannot choose a
-  session, owner, backend, MCP endpoint, issuer, client, or scopes.
+- AC2.5: Callback requests carry broker-created code/state plus at most one ignored
+  provider `scope`; they cannot choose a session, owner, backend, MCP endpoint, issuer,
+  client, or authority scope.
   - verify: `TestInvariant_mcp_callback_cannot_select_authority`
 - AC2.6: Construction failure closes every acquired ToolHive/profile resource, and
   normal shutdown closes session tools before the Runtime and the Runtime before any

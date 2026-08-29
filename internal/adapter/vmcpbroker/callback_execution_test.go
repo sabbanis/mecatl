@@ -88,8 +88,16 @@ func TestSessionVMCPBroker_Scenario2_CallbackBindingAndReplay(t *testing.T) {
 	if connected, err := runtime.Connect(context.Background(), "second", "github"); err != nil || connected.Status != ConnectionPending {
 		t.Fatalf("second Connect after cross-session callback = %+v, %v; want pending unchanged", connected, err)
 	}
-	if err := runtime.Callback(context.Background(), code, state); err != nil {
-		t.Fatalf("Callback: %v", err)
+	callbackHandler := CallbackHandler(runtime.Callback)
+	callbackRequest := httptest.NewRequest(http.MethodGet, "https://client.invalid/callback?"+url.Values{
+		"code":  {code},
+		"scope": {"openid profile"},
+		"state": {state},
+	}.Encode(), nil)
+	callbackResponse := httptest.NewRecorder()
+	callbackHandler.ServeHTTP(callbackResponse, callbackRequest)
+	if callbackResponse.Code != http.StatusOK {
+		t.Fatalf("callback handler = %d, want 200", callbackResponse.Code)
 	}
 	if err := runtime.Callback(context.Background(), code, state); err == nil {
 		t.Fatal("duplicate callback succeeded")

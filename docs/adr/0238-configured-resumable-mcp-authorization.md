@@ -101,16 +101,19 @@ unsupported auth, failed protected pre-authorization discovery, duplicate/collid
 or a second protected backend. Broker profiles never enter the global manager, global
 direct OAuth controller, or global credential store.
 
-The callback is `GET` only. It accepts exactly one percent-decoded `code` and one `state`,
-each non-empty and at most 8 KiB; duplicate, missing, unexpected, malformed, body-bearing,
-or oversized input receives the same generic HTTP 400. Success returns HTTP 200 with a
-fixed text response. Every response sets `Cache-Control: no-store` and
-`Referrer-Policy: no-referrer`; there is no callback redirect. The handler never reflects
-code, state, or browser URL in responses, diagnostics, traces, metrics, or access logs.
-Callback input cannot select a session, owner, backend, issuer, client, scopes, or MCP
-endpoint. A browser denial that supplies no code remains pending until explicit client
-cancel or expiry. Session tools close before the Runtime; Runtime construction participates
-in normal `app.Build` rollback.
+The callback is `GET` only. It accepts exactly one percent-decoded `code` and one
+`state`, each non-empty and at most 8 KiB, plus at most one non-empty percent-decoded
+`scope` at most 8 KiB. `scope` is accepted only for ToolHive OAuth callback compatibility
+and is ignored entirely: it never reaches Runtime, authority resolution, persistence,
+responses, diagnostics, traces, metrics, or access logs. Duplicate, missing, unexpected,
+malformed, body-bearing, empty, or oversized input receives the same generic HTTP 400.
+Success returns HTTP 200 with a fixed text response. Every response sets
+`Cache-Control: no-store` and `Referrer-Policy: no-referrer`; there is no callback redirect.
+The handler never reflects code, state, scope, or browser URL in responses, diagnostics,
+traces, metrics, or access logs. Callback input cannot select a session, owner, backend,
+issuer, client, authority scope, or MCP endpoint. A browser denial that supplies no code
+remains pending until explicit client cancel or expiry. Session tools close before the
+Runtime; Runtime construction participates in normal `app.Build` rollback.
 
 A remotely reachable broker control plane requires verified caller identity and ownership
 enforcement. Ownerless controls are permitted only in an explicitly local/loopback

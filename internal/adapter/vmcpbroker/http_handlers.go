@@ -10,8 +10,8 @@ import (
 const (
 	maxCallbackValueBytes = 8 << 10
 	// Each decoded byte can occupy three percent-encoded bytes. A valid query
-	// has two values plus the literal "code=&state=" separators.
-	maxCallbackQueryBytes = 2*3*maxCallbackValueBytes + len("code=&state=")
+	// has code and state, and may include one scope, plus literal separators.
+	maxCallbackQueryBytes = 3*3*maxCallbackValueBytes + len("code=&state=&scope=")
 )
 
 // CallbackHandler accepts only the broker-created authorization response. The
@@ -34,7 +34,7 @@ func CallbackHandler(callback func(context.Context, string, string) error) http.
 			return
 		}
 		values, err := url.ParseQuery(r.URL.RawQuery)
-		if err != nil || len(values) != 2 {
+		if err != nil || (len(values) != 2 && len(values) != 3) {
 			callbackBadRequest(w)
 			return
 		}
@@ -44,7 +44,17 @@ func CallbackHandler(callback func(context.Context, string, string) error) http.
 			return
 		}
 		state, ok := callbackValue(values, "state")
-		if !ok || callback == nil || callback(r.Context(), code, state) != nil {
+		if !ok {
+			callbackBadRequest(w)
+			return
+		}
+		if len(values) == 3 {
+			if _, ok := callbackValue(values, "scope"); !ok {
+				callbackBadRequest(w)
+				return
+			}
+		}
+		if callback == nil || callback(r.Context(), code, state) != nil {
 			callbackBadRequest(w)
 			return
 		}
