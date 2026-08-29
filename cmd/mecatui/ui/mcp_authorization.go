@@ -87,16 +87,27 @@ func controlMCPAuthorizationCmd(ctx context.Context, control client.MCPAuthoriza
 }
 
 type mcpAuthorizationStreamMsg struct{ stream *client.EventStream }
+type mcpAuthorizationEventMsg struct{ msg tea.Msg }
 
 func (m Model) updateMCPAuthorizationStream(msg mcpAuthorizationStreamMsg) (tea.Model, tea.Cmd) {
 	if msg.stream == nil {
 		return m, nil
 	}
 	ch := make(chan tea.Msg, 16)
-	go func() {
-		msg.stream.ReadLoop(m.deps.Ctx, ch)
-	}()
-	return m, client.WaitForMsg(ch)
+	m.authorizationEvents = ch
+	go msg.stream.ReadLoop(m.deps.Ctx, ch)
+	return m, m.waitMCPAuthorizationEvent()
+}
+
+func (m Model) waitMCPAuthorizationEvent() tea.Cmd {
+	ch := m.authorizationEvents
+	return func() tea.Msg {
+		msg, ok := <-ch
+		if !ok {
+			return nil
+		}
+		return mcpAuthorizationEventMsg{msg: msg}
+	}
 }
 
 func (m Model) renderMCPAuthorization() string {

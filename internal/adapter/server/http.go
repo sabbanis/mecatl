@@ -779,7 +779,7 @@ func (h *HTTPHandler) relayMCPAuthorizationControlSSE(w http.ResponseWriter, r *
 			h.svc.appendEvent(logCtx, id, event)
 			continue
 		}
-		if !h.svc.relayEvent(r.Context(), logCtx, id, event, false) {
+		if !h.svc.relayEvent(logCtx, id, event, false, nil) {
 			continue
 		}
 		if _, err := w.Write([]byte("data: ")); err != nil {

@@ -1312,7 +1312,7 @@ func (h *HarnessServer) relayMCPAuthorizationControl(req *mecatlv1.MCPAuthorizat
 	for ev := range result.Run.Events() {
 		// Match the normal durable relay: append before attempting a send, and
 		// continue draining after the first client failure.
-		forward := h.svc.relayEvent(stream.Context(), logCtx, id, ev, false)
+		forward := h.svc.relayEvent(logCtx, id, ev, false, nil)
 		if failed || !forward {
 			continue
 		}

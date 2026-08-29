@@ -518,6 +518,9 @@ type Model struct {
 	// authorization is separate from permission approval: MCP browser authorization
 	// has no allow/always/deny verdict and never carries tool arguments or a URL.
 	authorization mcpAuthorizationState
+	// authorizationEvents is the active recheck/cancel stream. It is distinct
+	// from the converse stream so browser controls cannot consume approval frames.
+	authorizationEvents <-chan tea.Msg
 	// debugAskCycle rotates the /debug-ask built-in (Deps.DebugAsk) through its
 	// canned long-args payloads so repeated invocations exercise the different
 	// wrap shapes (one long line, a compound pipeline, a heredoc).

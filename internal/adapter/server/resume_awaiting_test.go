@@ -104,7 +104,9 @@ func driveServiceToAwaiting(t *testing.T, svc *server.Service, id session.Sessio
 // gate: an awaiting session whose process died is resumed by a DIFFERENT Service
 // (over the same store) via Approve → resumeFromAwaiting; the pending Write executes
 // EXACTLY ONCE and the resumed run reaches a clean StopEndTurn terminal.
-func TestApproveAfterRestartResumesAwaiting(t *testing.T) {
+// TestSessionMCPAuthorization_Scenario9_PermissionRegression preserves the
+// independent awaiting-approval restart path.
+func TestSessionMCPAuthorization_Scenario9_PermissionRegression(t *testing.T) {
 	dir := t.TempDir()
 	store1, err := jsonlstore.New(dir)
 	if err != nil {
