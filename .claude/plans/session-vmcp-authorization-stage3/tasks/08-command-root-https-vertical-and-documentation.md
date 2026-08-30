@@ -3,7 +3,7 @@ id: 08-command-root-https-vertical-and-documentation
 title: Command-root HTTPS vertical and final documentation
 blocked_by:
   - 07b-configured-toolhive-broker-construction-and-handler-bundle
-status: completed
+status: done
 branch: plan-session-vmcp-authorization/08-command-root-https-vertical-and-documentation
 worktree: ""
 issue: ""
@@ -16,7 +16,7 @@ accumulator: acc/session-vmcp-authorization
 
 Mount the complete broker handler bundle supplied by `app.Build` on each command root's existing primary HTTP mux and listener; start no second listener. Own route mounting and collision checks only: keep broker authorization, token, Streamable-HTTP vMCP, and exact callback routes separate from health, drain, metrics, API, and control routes. Apply the previously implemented caller-identity and loopback-only ownership policy.
 
-Prove the command roots with loopback TLS: `mecated` and `mecak8s` must reach the mounted broker routes through HTTPS without calling Runtime callback methods directly. Complete the Stage 3 documentation, resource inventory, and evidence. After the config-driven end-to-end protected-flow proof is green, repeat the ToolHive authserver/vMCP reuse-and-deduplication review against the final Stage 3 diff; compare it with `TOOLHIVE-REUSE-REVIEW.md`, verify that the construction/mounting path has not reintroduced duplicated OAuth or vMCP protocol behavior, and record any remaining ToolHive API limitation honestly in `STAGE3-RESULTS.md`. Production sidecar exposure, ingress/Helm/Kind topology, and external callback deployment remain Stage 5.
+Prove the command roots with loopback TLS: `mecated` and `mecak8s` must reach the mounted broker routes through HTTPS without calling Runtime callback methods directly. Complete the Stage 3 documentation, resource inventory, and deterministic evidence. Task 09 owns the required manual real-SaaS mecak8s qualification after the operator supplies its provider, credential, and public-callback details. After that qualification, repeat the ToolHive authserver/vMCP reuse-and-deduplication review against the final Stage 3 diff; compare it with `TOOLHIVE-REUSE-REVIEW.md`, verify that the construction/mounting path has not reintroduced duplicated OAuth or vMCP protocol behavior, and record any remaining ToolHive API limitation honestly in `STAGE3-RESULTS.md`. Production sidecar exposure, ingress/Helm/Kind topology, and external callback deployment beyond the Task 09 qualification remain Stage 5.
 
 ## Acceptance criteria
 

@@ -2,7 +2,7 @@
 id: 01-mcp-authority-configuration
 title: Canonical MCP authority configuration
 blocked_by: []
-status: in-progress
+status: done
 branch: ""
 worktree: ""
 issue: ""
