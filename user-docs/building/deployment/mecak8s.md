@@ -142,6 +142,19 @@ client uses the `mecatui-kind` public OIDC client; there is no implicit browser 
 ordinary offline tests. See the [fixture's setup and CA instructions](https://github.com/stacklok/mecatl/blob/main/deploy/mecak8s-kind/README.md).
 
 
+:::warning[Broker mode is not yet a multi-replica mecak8s deployment]
+
+`mecak8s` defaults `mcp.mode` to `broker`, but the Stage 3 broker proof is one
+process and one replica only. Runtime grants, transports, browser transactions,
+and callback state are process-local; a non-holder of a live session lease fails
+closed and does not route, recheck, interrupt, or execute on the holder's behalf.
+The command-root evidence is loopback TLS only. Do not use the chart's normal
+two-replica topology for broker mode yet: select `mcp.mode: global` for that
+topology, or run an explicitly single-replica local proof. A real SaaS/ingress,
+sidecar, Helm/Kind, and external-callback broker deployment remains Stage 5.
+
+:::
+
 ---
 
 ## How mecak8s differs from mecated

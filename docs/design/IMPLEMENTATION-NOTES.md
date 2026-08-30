@@ -85,7 +85,7 @@ a future Kubernetes Secret `resourceVersion` CAS backend. See
 
 ---
 
-## Session-scoped vMCP broker (ADR 0237, Stage 2 proof)
+## Session-scoped vMCP broker (ADR 0237, Stage 3 command-root proof)
 
 `internal/adapter/vmcpbroker.Runtime` is root-internal, process-lifetime
 ToolHive/vMCP composition. It owns immutable `Route` values, the embedded ToolHive
@@ -103,24 +103,35 @@ composition-private `Connect(sessionID, backendID)` succeeds. `Disconnect`, call
 and refresh work operate only on an opened non-delegation parent session. Closing a
 `SessionTools` tombstones it, rejects new calls, drains its calls and transport, then
 forgets it. `Runtime.Close` rejects new work, cancels and joins per-session work,
-closes transports, then closes the shared ToolHive resources. None of this state
-persists: process restart requires a new Runtime and a new explicit connection.
+closes transports, then closes the shared ToolHive resources. Runtime grants,
+transports, browser transactions, and refresh state do not persist: process restart
+builds a new Runtime and requires a new explicit connection.
 
-The proof is deliberately separate from direct MCP OAuth: it does not reuse
+`app.Build` constructs the optional Runtime and returns its complete
+`vmcpbroker.HandlerBundle`. Only `mecated` and `mecak8s` mount that bundle, before
+their authenticated API fallback, on their existing primary HTTP mux and listener.
+The fixed authorization, token, discovery, vMCP, and exact configured callback routes
+remain distinct from application controls and health/drain/readiness routes; no second
+listener or duplicate route table is introduced. A remotely reachable broker control
+plane requires verified caller identity. Only mecated's explicit loopback single-user
+composition may permit ownerless controls; mecak8s never does. The Stage 3 proof is
+single-process/single-replica: a non-holder of a live session lease fails closed and
+does not route, recheck, interrupt, or execute on the holder's behalf.
+
+The proof deliberately remains separate from direct MCP OAuth: it does not reuse
 `mcp.OAuthController`, `mcp/oauthlogin`, `LoginMCP`, Ozz lifecycle, or the global MCP
-manager's credential lifecycle. ToolHive v0.40.0 owns the sole upstream OAuth path;
+manager's credential lifecycle. ToolHive v0.45.0 owns the sole upstream OAuth path;
 its default upstream HTTP client is accepted as-is because no mecatl injection seam
 exists. Accordingly, this proof does not claim proxy, DNS-pinning, or redirect
 controls for upstream OAuth. ToolHive likewise lacks targeted
 `ConnectUpstream(existingAuthSession, upstream)`, so only one protected upstream
 lineage is supported and reconnect after disconnect is an explicit typed limitation.
-
-There is no `app.Build`, server wire, or mecatui wiring yet: the package is a
-hermetic in-process runtime proof, not an operator-accessible broker deployment.
-Stage 3 may add the agent-loop parking and exact-call continuation around this existing
-private `Connect` primitive; it must not add a second OAuth implementation. See
-[ADR 0237](../adr/0237-session-scoped-vmcp-broker.md) and
-[`STAGE2-RESULTS.md`](../../STAGE2-RESULTS.md).
+The final reuse review also records that ToolHive has no public PKCE-client
+registration lifecycle API, so the isolated Fosite client registration remains
+necessary. Production sidecar exposure, ingress/Helm/Kind topology, and external
+callback deployment remain Stage 5. See [ADR 0237](../adr/0237-session-scoped-vmcp-broker.md),
+[ADR 0238](../adr/0238-configured-resumable-mcp-authorization.md), and
+[`STAGE3-RESULTS.md`](../../STAGE3-RESULTS.md).
 
 ---
 

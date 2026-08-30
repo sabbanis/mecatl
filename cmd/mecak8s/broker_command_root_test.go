@@ -141,6 +141,13 @@ func TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical(t *testin
 			t.Fatalf("mounted broker route %s returned 404", path)
 		}
 	}
+
+	// The broker mount must not shadow the k8s drain control on the same listener.
+	drain := mustGet(t, client, base+"/drain", "")
+	drain.Body.Close()
+	if drain.StatusCode != http.StatusOK {
+		t.Fatalf("/drain status = %d, want existing drain control", drain.StatusCode)
+	}
 }
 
 type testPrincipalValidator struct{}
