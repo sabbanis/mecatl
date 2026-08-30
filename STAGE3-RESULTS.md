@@ -19,17 +19,21 @@ from a non-holder to a holder. One protected backend is supported; protected-bac
 reconnect is an explicit limitation. Runtime grants, transports, pending browser
 transactions, refresh operations, and downstream tokens are process-local and reset
 on restart; only the opaque enrollment identity and pending session continuation are
-durable. The event log records the normal continuation, not OAuth material. ToolHive
-owns upstream OAuth and its upstream HTTP client has no mecatl proxy, DNS-pinning, or
-redirect-policy injection seam.
+durable. The event log records the normal continuation, not OAuth material.
+`engine/adapter/eventsource` cannot reconstruct an unresolved private broker
+authorization: it returns `eventsource.ErrPrivateStateRequired`, so recovery requires
+the authoritative session snapshot. ToolHive owns upstream OAuth and its upstream HTTP
+client has no mecatl proxy, DNS-pinning, or redirect-policy injection seam.
 
 ## ToolHive reuse review
 
 The final Stage 3 mounting path reuses `EmbeddedAuthServer`, the ToolHive vMCP server
 handler, incoming-auth middleware, aggregator, session factory, and `HandlerBundle.Mount`.
 It adds no OAuth server or vMCP protocol implementation and no second listener or route
-literals. The remaining limitation identified in `TOOLHIVE-REUSE-REVIEW.md` remains:
-ToolHive has no public public-PKCE client registration lifecycle API, so the isolated
-Fosite client registration stays necessary. The command-root evidence is a loopback-TLS fixture only; it is not a real SaaS,
-sidecar, ingress, Helm/Kind, or external-callback deployment proof. Production sidecar,
+literals. The remaining ToolHive reuse limitations identified in
+`TOOLHIVE-REUSE-REVIEW.md` are: ToolHive has no public PKCE-client registration
+lifecycle API, so the isolated Fosite client registration stays necessary; and its
+residual `httprc` goroutines have no goleak suppression in mecatl. The command-root
+evidence is a loopback-TLS fixture only; it is not a real SaaS, sidecar, ingress,
+Helm/Kind, or external-callback deployment proof. Production sidecar,
 ingress/Helm/Kind external-callback topology remains Stage 5.

@@ -220,6 +220,21 @@ type HandlerBundle struct {
 	Callback          http.Handler
 }
 
+// ValidateCallbackPath rejects callback registrations that can shadow a command
+// root's fallback or reserved routes. A reserved path ending in / reserves its
+// whole subtree.
+func ValidateCallbackPath(callbackPath string, reservedPaths ...string) error {
+	if callbackPath == "/" || strings.HasSuffix(callbackPath, "/") {
+		return fmt.Errorf("vmcpbroker: callback path %q must be an exact non-root path", callbackPath)
+	}
+	for _, reserved := range reservedPaths {
+		if callbackPath == reserved || strings.HasSuffix(reserved, "/") && strings.HasPrefix(callbackPath, reserved) {
+			return fmt.Errorf("vmcpbroker: callback path %q conflicts with reserved route %q", callbackPath, reserved)
+		}
+	}
+	return nil
+}
+
 // Mount registers the broker's complete fixed route table and the configured
 // callback path. The callback path is supplied by the composition root from
 // the canonical public callback URL; it must not overlap a broker route.

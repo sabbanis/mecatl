@@ -2011,6 +2011,9 @@ func mountBrokerHandlers(mux *http.ServeMux, handlers vmcpbroker.HandlerBundle, 
 	if handlers.VMCP == nil && handlers.Callback == nil {
 		return nil
 	}
+	if err := vmcpbroker.ValidateCallbackPath(callbackPath, "/healthz", "/readyz", "/v1", "/v1/"); err != nil {
+		return err
+	}
 	return handlers.Mount(mux, callbackPath)
 }
 

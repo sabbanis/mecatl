@@ -36,4 +36,12 @@ func TestMecatedBrokerHandlerMounting(t *testing.T) {
 	if err := prepareBrokerHTTP(collision, "127.0.0.1:8081", false, bundle, "/exact/callback"); err == nil {
 		t.Fatal("callback collision must fail startup")
 	}
+
+	for _, callbackPath := range []string{"/", "/v1/sessions", "/callback/"} {
+		t.Run("rejects callback "+callbackPath, func(t *testing.T) {
+			if err := prepareBrokerHTTP(http.NewServeMux(), "127.0.0.1:8081", false, bundle, callbackPath); err == nil {
+				t.Fatalf("callback path %q must fail before the API fallback is mounted", callbackPath)
+			}
+		})
+	}
 }
