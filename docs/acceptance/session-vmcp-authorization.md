@@ -118,7 +118,7 @@ routes, and construct one process-owned Runtime plus a root-internal HTTP handle
 `app.Built` owns that bundle and its cleanup; supported command roots mount its fixed
 public auth/vMCP/callback routes separately from owner-authenticated application controls.
 Broker profiles never enter the global credential lifecycle
-([`architecture.md` — session-scoped broker](../architecture.md#session-scoped-vmcp-broker-stage-2-integration-proof)).
+([`architecture.md` — session-scoped broker](../architecture.md#session-scoped-vmcp-broker-stage-3-command-root-proof)).
 
 **Acceptance:**
 - AC2.1: A real operator settings file flows through `Resolver.OperatorMCP()` and the

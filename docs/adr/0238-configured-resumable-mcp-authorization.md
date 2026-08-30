@@ -303,5 +303,5 @@ remain an upstream limitation rather than a test exclusion.
 - [ADR 0113 — operator-configured MCP authentication profiles](./0113-operator-mcp-auth-profiles.md)
 - [ADR 0027 — cloud-native resource and fidelity inventory](./0027-cloud-native.md)
 - [ADR 0020 — diagnostics](./0020-diagnostics.md)
-- [Architecture: session-scoped vMCP broker](../architecture.md#session-scoped-vmcp-broker-stage-2-integration-proof)
+- [Architecture: session-scoped vMCP broker](../architecture.md#session-scoped-vmcp-broker-stage-3-command-root-proof)
 - [Extensibility: MCP](../architecture/extensibility.md)
