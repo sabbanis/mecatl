@@ -13,7 +13,7 @@ func TestSessionMCPAuthorization_Scenario3_PersistsBrokerEnrollment(t *testing.T
 	runtime := scenario3Runtime(t)
 	defer func() { _ = runtime.Close() }()
 
-	svc := scenario3Service(t, store, runtime, nil)
+	svc := scenario3Service(t, store, runtime, nil, nil)
 	defer svc.Close()
 	sess, err := svc.CreateSession(context.Background(), "/workspace", session.ModeDefault, session.Limits{})
 	if err != nil {

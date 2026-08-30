@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"path/filepath"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -107,7 +108,10 @@ func driveServiceToAwaiting(t *testing.T, svc *server.Service, id session.Sessio
 // TestSessionMCPAuthorization_Scenario9_PermissionRegression preserves the
 // independent awaiting-approval restart path.
 func TestSessionMCPAuthorization_Scenario9_PermissionRegression(t *testing.T) {
-	dir := t.TempDir()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatalf("resolve jsonl store directory: %v", err)
+	}
 	store1, err := jsonlstore.New(dir)
 	if err != nil {
 		t.Fatalf("jsonlstore: %v", err)

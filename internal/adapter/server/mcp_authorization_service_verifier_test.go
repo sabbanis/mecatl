@@ -111,12 +111,17 @@ func newServiceAuthorizationFixture(t *testing.T) *serviceAuthorizationFixture {
 		t.Fatal(err)
 	}
 	eng := agent.NewEngine(agent.Deps{LLM: mockllm.New(mockllm.TextTurn("continued")), Catalog: catalog, Policy: permpolicy.NewPolicy(nil, nil)})
-	svc, err := NewService(Config{Engine: eng, Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }, VMCPBroker: runtime, SessionLease: memlease.New(wallclock.Clock{}, time.Minute), LeaseRenewInterval: time.Second, SessionEngine: func(context.Context, ProviderSelector, []mcp.ServerConfig, SessionProfile, string, session.PermissionMode) (SessionEngineResult, error) {
+	bindings := vmcpbroker.NewBindingIndex()
+	if err := bindings.Bind(fixture.id, runtime.EnrollmentID()); err != nil {
+		t.Fatal(err)
+	}
+	svc, err := NewService(Config{Engine: eng, Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }, VMCPBroker: runtime, VMCPBrokerGeneration: runtime.EnrollmentID(), VMCPBrokerBindings: bindings, SessionLease: memlease.New(wallclock.Clock{}, time.Minute), LeaseRenewInterval: time.Second, SessionEngine: func(context.Context, ProviderSelector, []mcp.ServerConfig, SessionProfile, string, session.PermissionMode) (SessionEngineResult, error) {
 		return SessionEngineResult{Engine: eng}, nil
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
+	svc.sessionEngines[fixture.id] = &sessionEngine{engine: eng}
 	fixture.svc, fixture.store = svc, store
 	t.Cleanup(svc.Close)
 	return fixture

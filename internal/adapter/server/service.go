@@ -1853,8 +1853,8 @@ func setSessionLabels(sess *session.Session, sel ProviderSelector, profile Sessi
 	return sess.RestoreLabels(owner, authority)
 }
 
-func (s *Service) setPerSessionLabels(sess *session.Session, sel ProviderSelector, profile SessionProfile, owner *session.Principal, opts createSessionOpts, res SessionEngineResult, carried session.Authority, carriedBound bool) error {
-	authority := s.rootAuthority(sess.Kind, carried, carriedBound)
+func (s *Service) setPerSessionLabels(sess *session.Session, sel ProviderSelector, profile SessionProfile, owner *session.Principal, opts createSessionOpts, res SessionEngineResult, carried session.Authority, carriedBound bool, brokerTools []tool.Tool) error {
+	authority := withBrokerAuthority(s.rootAuthority(sess.Kind, carried, carriedBound), brokerTools)
 	if sess.Kind == session.SessionKindDebug {
 		authority.CapabilitySet.Tools = append(authority.CapabilitySet.Tools, res.DebugMCPTools...)
 		sess.DebugMCPServers = append([]string(nil), opts.debugMCPServers...)
@@ -1871,6 +1871,17 @@ func (s *Service) rootAuthority(kind session.SessionKind, carried session.Author
 		return session.Authority{}
 	}
 	return s.cfg.RootAuthority(kind)
+}
+
+func withBrokerAuthority(authority session.Authority, brokerTools []tool.Tool) session.Authority {
+	for _, brokerTool := range brokerTools {
+		name := brokerTool.Spec().Name
+		if authority.CapabilitySet.AllowsTool(name) {
+			continue
+		}
+		authority.CapabilitySet.Tools = append(authority.CapabilitySet.Tools, name)
+	}
+	return authority
 }
 
 // seedCarryover seeds the freshly-created (idle) session with an optional
@@ -2417,6 +2428,7 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 	var res SessionEngineResult
 	var err error
 	var debugTarget *session.Session
+	var brokerTools []tool.Tool
 	var brokerEntry *brokerSession
 	var brokerClose func() error
 	brokerAbort := false
@@ -2440,7 +2452,6 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 		}
 		res, err = s.cfg.DebugSessionEngine(ctx, sel, profile, mode, opts.debugTargetID, session.DebugTargetFingerprint(debugTarget), debugTarget.Owner, opts.debugMCPServers, nil)
 	} else {
-		var brokerTools []tool.Tool
 		brokerTools, brokerEntry, brokerClose, err = s.openBrokerSession(id, true)
 		if err != nil {
 			return nil, err
@@ -2491,7 +2502,7 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 	// creation labels on the aggregate, so a restarted process re-derives the SAME
 	// per-session engine via the factory (rehydrateSession) instead of falling to the
 	// default-provider floor / inferring the profile from the empty-workspace pun.
-	if err := s.setPerSessionLabels(sess, sel, profile, owner, opts, res, carriedAuthority, carriedAuthorityBound); err != nil {
+	if err := s.setPerSessionLabels(sess, sel, profile, owner, opts, res, carriedAuthority, carriedAuthorityBound, brokerTools); err != nil {
 		if closeFn != nil {
 			_ = closeFn()
 		}
@@ -6813,8 +6824,10 @@ func (s *Service) expireMCPAuthorization(id session.SessionID, authorizationID s
 
 func (s *Service) drainMCPAuthorizationContinuation(id session.SessionID, run *agent.Run) {
 	logCtx := context.WithoutCancel(context.Background())
+	recorder := NewRunEventRecorder(logCtx, s, id)
+	defer recorder.Close()
 	for ev := range run.Events() {
-		s.relayEvent(logCtx, id, ev, false, nil)
+		s.relayEvent(context.Background(), id, ev, false, recorder)
 		s.PublishSessionEvent(id, ev)
 	}
 	s.FinishRun(id, run)

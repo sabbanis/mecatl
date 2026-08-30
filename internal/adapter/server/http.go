@@ -764,12 +764,14 @@ func (h *HTTPHandler) relayMCPAuthorizationControlSSE(w http.ResponseWriter, r *
 	}
 	defer h.svc.FinishRun(id, result.Run)
 	logCtx := context.WithoutCancel(r.Context())
+	recorder := NewRunEventRecorder(logCtx, h.svc, id)
+	defer recorder.Close()
 	for event := range result.Run.Events() {
 		if failed {
 			h.svc.appendEvent(logCtx, id, event)
 			continue
 		}
-		if !h.svc.relayEvent(logCtx, id, event, false, nil) {
+		if !h.svc.relayEvent(r.Context(), id, event, false, recorder) {
 			continue
 		}
 		if _, err := w.Write([]byte("data: ")); err != nil {

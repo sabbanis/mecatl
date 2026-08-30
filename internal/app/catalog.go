@@ -228,7 +228,10 @@ func assembleCatalog(ctx context.Context, cfg Config, reg *providerRegistry, sto
 		Rationale: "server-global MCP tools are process-wide configured infrastructure shared by every caller"}, func() {
 		mountGlobalMCP(ctx, cfg, cat, *a, s)
 	})
-	mountBrokerMCP(cat, s.brokerTools)
+	classified.capture(server.ClassificationEntry{Kind: server.KindDerived,
+		Rationale: "broker MCP tools are derived from the already authorized session and cannot select another session"}, func() {
+		mountBrokerMCP(cat, s.brokerTools)
+	})
 	clientBefore := classified.names()
 	clientClose := mountClientMCP(ctx, cfg, cat, s)
 	classified.classifyAdded(clientBefore, server.ClassificationEntry{Kind: server.KindDerived,

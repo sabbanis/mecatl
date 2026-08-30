@@ -1308,12 +1308,18 @@ func (h *HarnessServer) relayMCPAuthorizationControl(req *mecatlv1.MCPAuthorizat
 	}
 	defer h.svc.FinishRun(id, result.Run)
 	logCtx := context.WithoutCancel(stream.Context())
+	recorder := NewRunEventRecorder(logCtx, h.svc, id)
+	defer recorder.Close()
 	failed := false
 	for ev := range result.Run.Events() {
 		// Match the normal durable relay: append before attempting a send, and
 		// continue draining after the first client failure.
-		forward := h.svc.relayEvent(logCtx, id, ev, false, nil)
-		if failed || !forward {
+		if failed {
+			recorder.Observe(ev)
+			continue
+		}
+		forward := h.svc.relayEvent(stream.Context(), id, ev, false, recorder)
+		if !forward {
 			continue
 		}
 		if err := stream.Send(toProto(ev)); err != nil {

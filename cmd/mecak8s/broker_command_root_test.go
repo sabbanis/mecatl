@@ -229,7 +229,7 @@ func newCommandRootClient(serverPEM []byte) *http.Client {
 
 func createCommandRootSession(t *testing.T, client *http.Client, base string) string {
 	t.Helper()
-	response := mustPost(t, client, base+"/v1/sessions", `{"workspace":"`+t.TempDir()+`"}`)
+	response := mustPost(t, client, base+"/v1/sessions", `{}`)
 	defer response.Body.Close()
 	var body struct {
 		SessionID string `json:"session_id"`

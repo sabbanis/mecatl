@@ -90,7 +90,8 @@ func (s *Service) DropSessionEngineForTest(id session.SessionID) {
 // issue-#102 widened trigger) to external tests so the worktree/default/cloud
 // cases can be pinned directly without driving a full run.
 func (s *Service) NeedsRehydrationForTest(sess *session.Session) bool {
-	return s.needsRehydration(sess)
+	brokerBound, _ := s.brokerEnabled(sess.ID)
+	return s.needsRehydration(sess, brokerBound)
 }
 
 // TrackSteerMessageIDForTest appends one client-minted id to the session's

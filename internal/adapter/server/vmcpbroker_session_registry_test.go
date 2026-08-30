@@ -54,7 +54,9 @@ func TestSessionMCPAuthorization_Scenario3_BrokerOwnerCommitSemantics(t *testing
 		}
 		return brokerRegistryEngine(), nil
 	})
-	t.Cleanup(retryService.Close)
+	if err := brokerRegistryBind(retryService, retrySession.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := retryService.buildAndRegisterSessionEngine(context.Background(), retrySession, ProviderSelector{}, nil, ProfileDefault, session.ModeDefault, false); err == nil {
 		t.Fatal("failed rehydration factory succeeded")
 	}
@@ -80,6 +82,9 @@ func TestSessionMCPAuthorization_Scenario3_BrokerOwnerReloadAfterClose(t *testin
 	}
 	svc := brokerRegistryService(t, store, runtime, nil)
 	t.Cleanup(svc.Close)
+	if err := brokerRegistryBind(svc, sess.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := svc.buildAndRegisterSessionEngine(context.Background(), sess, ProviderSelector{}, nil, ProfileDefault, session.ModeDefault, false); err != nil {
 		t.Fatalf("first load: %v", err)
@@ -153,6 +158,9 @@ func TestInvariant_broker_finalization_is_attempt_scoped(t *testing.T) {
 		return brokerRegistryEngine(), nil
 	})
 	defer svc.Close()
+	if err := brokerRegistryBind(svc, sess.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	var wg sync.WaitGroup
 	for range 2 {
@@ -203,6 +211,9 @@ func TestSessionMCPAuthorization_Scenario3_BrokerSessionCloseOwnership(t *testin
 		t.Fatal(err)
 	}
 	svc := brokerRegistryService(t, store, runtime, nil)
+	if err := brokerRegistryBind(svc, first.ID, second.ID); err != nil {
+		t.Fatal(err)
+	}
 
 	if _, err := svc.buildAndRegisterSessionEngine(context.Background(), first, ProviderSelector{}, nil, ProfileDefault, session.ModeDefault, false); err != nil {
 		t.Fatal(err)
@@ -224,6 +235,9 @@ func TestSessionMCPAuthorization_Scenario3_BrokerSessionCloseOwnership(t *testin
 	failing := brokerRegistryService(t, store, runtime, func(context.Context, ProviderSelector, []mcp.ServerConfig, SessionProfile, string, session.PermissionMode) (SessionEngineResult, error) {
 		return SessionEngineResult{}, context.Canceled
 	})
+	if err := brokerRegistryBind(failing, second.ID); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := failing.buildAndRegisterSessionEngine(context.Background(), second, ProviderSelector{}, nil, ProfileDefault, session.ModeDefault, false); err == nil {
 		t.Fatal("factory failure succeeded")
 	}
@@ -255,6 +269,15 @@ func brokerRegistrySession(t *testing.T, r *vmcpbroker.Runtime, id session.Sessi
 func brokerRegistryEngine() SessionEngineResult {
 	return SessionEngineResult{Engine: agent.NewEngine(agent.Deps{LLM: mockllm.New(mockllm.TextTurn("done")), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)})}
 }
+func brokerRegistryBind(s *Service, ids ...session.SessionID) error {
+	for _, id := range ids {
+		if err := s.cfg.VMCPBrokerBindings.Bind(id, s.cfg.VMCPBrokerGeneration); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
 func brokerRegistryService(t *testing.T, store *memstore.Store, r *vmcpbroker.Runtime, f SessionEngineFactory) *Service {
 	return brokerRegistryServiceWithStore(t, store, r, f)
 }
@@ -266,7 +289,7 @@ func brokerRegistryServiceWithStore(t *testing.T, store port.SessionStore, r *vm
 			return brokerRegistryEngine(), nil
 		}
 	}
-	s, err := NewService(Config{Engine: brokerRegistryEngine().Engine, Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }, SessionEngine: f, VMCPBroker: r})
+	s, err := NewService(Config{Engine: brokerRegistryEngine().Engine, Store: store, Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }, SessionEngine: f, VMCPBroker: r, VMCPBrokerGeneration: r.EnrollmentID(), VMCPBrokerBindings: vmcpbroker.NewBindingIndex()})
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -250,7 +250,7 @@ func TestInvariant_mcp_presentation_owner_checked_before_runtime(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Load: %v", err)
 	}
-	if err := sess.RestoreLabels(owner, ""); err != nil {
+	if err := sess.RestoreLabels(owner, session.Authority{}); err != nil {
 		t.Fatalf("RestoreLabels: %v", err)
 	}
 	if err := fixture.store.Save(context.Background(), sess); err != nil {

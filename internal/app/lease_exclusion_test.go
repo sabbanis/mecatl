@@ -26,6 +26,10 @@ import (
 // TTL-EXPIRY takeover leg has its own config (see TestCrossProcessLeaseExpiryTakeover).
 func leaseBaseCfg(t *testing.T, storeDir, leaseDir, workspace, memoryDir string) Config {
 	t.Helper()
+	storeDir, err := filepath.EvalSymlinks(storeDir)
+	if err != nil {
+		t.Fatalf("resolve store directory: %v", err)
+	}
 	return Config{
 		Workspace:           workspace,
 		NoSoul:              true,

@@ -51,11 +51,13 @@ func TestSessionMCPAuthorization_Scenario3_ReserveBeforeOpen(t *testing.T) {
 		}, nil
 	}
 	svc, err := server.NewService(server.Config{
-		Engine:        agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}),
-		Store:         memstore.New(),
-		Workspaces:    func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
-		SessionEngine: factory,
-		VMCPBroker:    runtime,
+		Engine:               agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}),
+		Store:                memstore.New(),
+		Workspaces:           func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		SessionEngine:        factory,
+		VMCPBroker:           runtime,
+		VMCPBrokerGeneration: runtime.EnrollmentID(),
+		VMCPBrokerBindings:   vmcpbroker.NewBindingIndex(),
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -128,12 +130,15 @@ func TestSessionVMCPBroker_Scenario1_ClosesResourcesOnCreateFailure(t *testing.T
 					Close:  func() error { closedFactory = true; return nil },
 				}, nil
 			}
+			runtime := createRuntime(t)
 			svc, err := server.NewService(server.Config{
-				Engine:        agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}),
-				Store:         test.store,
-				Workspaces:    func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
-				SessionEngine: factory,
-				VMCPBroker:    createRuntime(t),
+				Engine:               agent.NewEngine(agent.Deps{LLM: mockllm.New(), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}),
+				Store:                test.store,
+				Workspaces:           func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+				SessionEngine:        factory,
+				VMCPBroker:           runtime,
+				VMCPBrokerGeneration: runtime.EnrollmentID(),
+				VMCPBrokerBindings:   vmcpbroker.NewBindingIndex(),
 			})
 			if err != nil {
 				t.Fatalf("NewService: %v", err)

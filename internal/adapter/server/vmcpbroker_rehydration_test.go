@@ -56,12 +56,16 @@ func TestSessionMCPAuthorization_Scenario3_BrokerSessionOwnership(t *testing.T) 
 	runtime := scenario3Runtime(t)
 	defer func() { _ = runtime.Close() }()
 
-	first := scenario3Service(t, store, runtime, nil)
+	bindings := vmcpbroker.NewBindingIndex()
+	first := scenario3Service(t, store, runtime, nil, bindings)
 	sess, err := first.CreateSession(context.Background(), "/workspace", session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	first.Close()
+	if err := bindings.Bind(sess.ID, runtime.EnrollmentID()); err != nil {
+		t.Fatal(err)
+	}
 	if err := runtime.Close(); err != nil {
 		t.Fatalf("close first runtime: %v", err)
 	}
@@ -77,7 +81,7 @@ func TestSessionMCPAuthorization_Scenario3_BrokerSessionOwnership(t *testing.T) 
 			t.Fatalf("restored factory broker tools = %#v, want session-local broker wrapper", tools)
 		}
 		return scenario3EngineResult(), nil
-	})
+	}, bindings)
 	defer restored.Close()
 
 	run, err := restored.StartRun(context.Background(), sess.ID, "continue")
@@ -106,19 +110,24 @@ func scenario3Runtime(t *testing.T) *vmcpbroker.Runtime {
 	return runtime
 }
 
-func scenario3Service(t *testing.T, store *memstore.Store, runtime *vmcpbroker.Runtime, factory server.SessionEngineFactory) *server.Service {
+func scenario3Service(t *testing.T, store *memstore.Store, runtime *vmcpbroker.Runtime, factory server.SessionEngineFactory, bindings *vmcpbroker.BindingIndex) *server.Service {
 	t.Helper()
 	if factory == nil {
 		factory = func(context.Context, server.ProviderSelector, []mcp.ServerConfig, server.SessionProfile, string, session.PermissionMode) (server.SessionEngineResult, error) {
 			return scenario3EngineResult(), nil
 		}
 	}
+	if bindings == nil {
+		bindings = vmcpbroker.NewBindingIndex()
+	}
 	svc, err := server.NewService(server.Config{
-		Engine:        scenario3EngineResult().Engine,
-		Store:         store,
-		Workspaces:    func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
-		SessionEngine: factory,
-		VMCPBroker:    runtime,
+		Engine:               scenario3EngineResult().Engine,
+		Store:                store,
+		Workspaces:           func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		SessionEngine:        factory,
+		VMCPBroker:           runtime,
+		VMCPBrokerGeneration: runtime.EnrollmentID(),
+		VMCPBrokerBindings:   bindings,
 	})
 	if err != nil {
 		t.Fatalf("NewService: %v", err)
@@ -143,6 +152,10 @@ func TestSessionMCPAuthorization_Scenario3_LoadWithMCPRetainsBrokerTools(t *test
 		t.Fatalf("Save: %v", err)
 	}
 
+	bindings := vmcpbroker.NewBindingIndex()
+	if err := bindings.Bind(sess.ID, runtime.EnrollmentID()); err != nil {
+		t.Fatal(err)
+	}
 	factoryCalls := 0
 	svc := scenario3Service(t, store, runtime, func(ctx context.Context, _ server.ProviderSelector, _ []mcp.ServerConfig, _ server.SessionProfile, _ string, _ session.PermissionMode) (server.SessionEngineResult, error) {
 		factoryCalls++
@@ -151,7 +164,7 @@ func TestSessionMCPAuthorization_Scenario3_LoadWithMCPRetainsBrokerTools(t *test
 			return server.SessionEngineResult{}, errors.New("broker wrappers were dropped during MCP load")
 		}
 		return scenario3EngineResult(), nil
-	})
+	}, bindings)
 	t.Cleanup(svc.Close)
 
 	if _, err := svc.LoadSessionWithMCP(context.Background(), sess.ID, []mcp.ServerConfig{{Name: "editor"}}); err != nil {
@@ -172,6 +185,10 @@ func TestSessionMCPAuthorization_Scenario3_BrokerReloadRetriesWithoutResurrectio
 		t.Fatalf("Save: %v", err)
 	}
 
+	bindings := vmcpbroker.NewBindingIndex()
+	if err := bindings.Bind(sess.ID, runtime.EnrollmentID()); err != nil {
+		t.Fatal(err)
+	}
 	calls := 0
 	var retained tool.Tool
 	svc := scenario3Service(t, store, runtime, func(ctx context.Context, _ server.ProviderSelector, _ []mcp.ServerConfig, _ server.SessionProfile, _ string, _ session.PermissionMode) (server.SessionEngineResult, error) {
@@ -189,7 +206,7 @@ func TestSessionMCPAuthorization_Scenario3_BrokerReloadRetriesWithoutResurrectio
 			return server.SessionEngineResult{}, errors.New("same-process reload replaced the retained broker owner")
 		}
 		return scenario3EngineResult(), nil
-	})
+	}, bindings)
 	t.Cleanup(svc.Close)
 
 	specs := []mcp.ServerConfig{{Name: "editor"}}
@@ -209,12 +226,16 @@ func TestSessionMCPAuthorization_Scenario3_BrokerReloadRetriesWithoutResurrectio
 func TestInvariant_broker_enrollment_identity_covers_compiled_inventory(t *testing.T) {
 	store := memstore.New()
 	original := scenario3Runtime(t)
-	first := scenario3Service(t, store, original, nil)
+	bindings := vmcpbroker.NewBindingIndex()
+	first := scenario3Service(t, store, original, nil, bindings)
 	sess, err := first.CreateSession(context.Background(), "/workspace", session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
 	first.Close()
+	if err := bindings.Bind(sess.ID, original.EnrollmentID()); err != nil {
+		t.Fatal(err)
+	}
 	_ = original.Close()
 
 	for _, changedRoute := range []vmcpbroker.Route{
@@ -228,7 +249,7 @@ func TestInvariant_broker_enrollment_identity_covers_compiled_inventory(t *testi
 		if err != nil {
 			t.Fatalf("NewRuntime: %v", err)
 		}
-		restored := scenario3Service(t, store, changed, nil)
+		restored := scenario3Service(t, store, changed, nil, bindings)
 		if _, err := restored.StartRun(context.Background(), sess.ID, "continue"); !errors.Is(err, server.ErrFailedPrecondition) {
 			t.Fatalf("StartRun with changed compiled inventory = %v, want ErrFailedPrecondition", err)
 		}
