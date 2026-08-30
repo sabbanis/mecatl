@@ -859,6 +859,10 @@ type Config struct {
 	// session wrappers are not persisted or reattached after restart.
 	VMCPBroker            *vmcpbroker.Runtime
 	VMCPBrokerConstructor func(context.Context, VMCPBrokerDeclarations) (*vmcpbroker.Process, error)
+	// VMCPBrokerHTTPClient supplies the embedded broker's downstream exchange
+	// transport. Command roots leave it nil for the system-trust default; tests
+	// may provide the TLS client for their local callback listener.
+	VMCPBrokerHTTPClient *http.Client
 	// mcpBrokerAuthority prevents all global-manager construction for a resolved
 	// broker configuration. Task 02 consumes declarations to build the Runtime.
 	mcpBrokerAuthority bool
@@ -1556,7 +1560,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		if cfg.VMCPBrokerConstructor != nil {
 			process, err = cfg.VMCPBrokerConstructor(ctx, VMCPBrokerDeclarations{Profiles: declarations.Profiles, CallbackURL: declarations.CallbackURL})
 		} else {
-			process, err = vmcpbroker.NewToolHiveProcess(ctx, declarations.Profiles, declarations.CallbackURL, cfg.diag())
+			process, err = vmcpbroker.NewToolHiveProcess(ctx, declarations.Profiles, declarations.CallbackURL, cfg.diag(), vmcpbroker.WithHTTPClient(cfg.VMCPBrokerHTTPClient))
 		}
 		if err != nil {
 			return nil, fmt.Errorf("construct broker MCP authority: %w", err)

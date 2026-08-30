@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -309,9 +310,26 @@ const (
 	brokerMCPPath               = brokerBasePath + "/mcp"
 )
 
+// ProcessOption configures root-internal process construction.
+type ProcessOption func(*processOptions)
+
+type processOptions struct{ httpClient *http.Client }
+
+// WithHTTPClient supplies the client for the broker's own downstream token exchange.
+// It is useful when a local TLS listener uses a private test CA.
+func WithHTTPClient(client *http.Client) ProcessOption {
+	return func(options *processOptions) { options.httpClient = client }
+}
+
 // NewToolHiveProcess builds the process-owned embedded authorization server and
 // Streamable HTTP vMCP handler. The callback origin is the sole public authority.
-func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProfile, callbackURL string, diag port.Diagnostics) (*Process, error) {
+func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProfile, callbackURL string, diag port.Diagnostics, options ...ProcessOption) (*Process, error) {
+	config := processOptions{}
+	for _, option := range options {
+		if option != nil {
+			option(&config)
+		}
+	}
 	if !hasProtectedProfile(profiles) {
 		return newAnonymousToolHiveProcess(ctx, profiles, diag)
 	}
@@ -324,8 +342,18 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		return nil, err
 	}
 	issuer := callback.Scheme + "://" + callback.Host + brokerBasePath
+	upstreamConfig := &authserver.OIDCUpstreamRunConfig{
+		IssuerURL:          protected.Auth.OAuth.Issuer,
+		ClientID:           brokerClientID(protected),
+		ClientSecretEnvVar: brokerSecretEnv(protected),
+		RedirectURI:        issuer + "/oauth/callback",
+		Scopes:             append([]string(nil), protected.Auth.OAuth.Scopes...),
+	}
+	if localHTTPOrigin(protected.Auth.OAuth.Issuer) {
+		upstreamConfig.InsecureAllowHTTP = true
+	}
 	store := storage.NewMemoryStorage()
-	auth, err := runner.NewEmbeddedAuthServerWithStorage(ctx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: []authserver.UpstreamRunConfig{{Name: protected.Name, Type: authserver.UpstreamProviderTypeOIDC, OIDCConfig: &authserver.OIDCUpstreamRunConfig{IssuerURL: protected.Auth.OAuth.Issuer, ClientID: brokerClientID(protected), ClientSecretEnvVar: brokerSecretEnv(protected), RedirectURI: issuer + "/oauth/callback", Scopes: append([]string(nil), protected.Auth.OAuth.Scopes...)}}}}, store)
+	auth, err := runner.NewEmbeddedAuthServerWithStorage(ctx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: []authserver.UpstreamRunConfig{{Name: protected.Name, Type: authserver.UpstreamProviderTypeOIDC, OIDCConfig: upstreamConfig}}}, store)
 	if err != nil {
 		return nil, fmt.Errorf("vmcpbroker: create embedded auth server: %w", err)
 	}
@@ -369,7 +397,7 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		_ = server.Stop(context.Background())
 		return fail(err)
 	}
-	runtime, err := NewToolHiveStreamingHTTPRuntime(routes, issuer+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: issuer, Resource: issuer, AuthorizationEndpoint: issuer + "/oauth/authorize", TokenEndpoint: issuer + "/oauth/token", CallbackURL: callback.String(), Diagnostics: diag}, 5*time.Minute)
+	runtime, err := NewToolHiveStreamingHTTPRuntime(routes, issuer+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: issuer, Resource: issuer, AuthorizationEndpoint: issuer + "/oauth/authorize", TokenEndpoint: issuer + "/oauth/token", CallbackURL: callback.String(), HTTPClient: config.httpClient, Diagnostics: diag}, 5*time.Minute)
 	if err != nil {
 		_ = server.Stop(context.Background())
 		return fail(err)
@@ -449,6 +477,15 @@ func newAnonymousRuntime(routes []Route, profiles []permconfig.MCPServerProfile)
 		}
 		return session.ToolResult{}, fmt.Errorf("vmcpbroker: anonymous upstream did not expose configured tool %q", route.Tool.Name)
 	})
+}
+
+func localHTTPOrigin(raw string) bool {
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme != "http" {
+		return false
+	}
+	host := u.Hostname()
+	return host == "localhost" || net.ParseIP(host).IsLoopback()
 }
 
 func canonicalCallbackURL(raw string) (*url.URL, error) {
@@ -872,6 +909,10 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 		c.anonymous = server
 	}
 	wrapped, ok := brokerTools(server)[route.Tool.Name]
+	if !ok {
+		name := strings.TrimPrefix(route.Tool.Name, "mcp__"+route.BackendID+"__")
+		wrapped, ok = brokerTools(server)[route.BackendID+"_"+name]
+	}
 	if !ok {
 		return session.ToolResult{}, fmt.Errorf("vmcpbroker: broker did not expose configured tool %q", route.Tool.Name)
 	}
