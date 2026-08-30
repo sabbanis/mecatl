@@ -22,8 +22,44 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/server"
 	"github.com/stacklok/mecatl/internal/adapter/telemetry"
 	"github.com/stacklok/mecatl/internal/adapter/tlsreload"
+	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
+
+func validateBrokerControlOwnership(addr string, verifiedIdentity, ownerlessLoopback bool, handlers vmcpbroker.HandlerBundle) error {
+	if handlers.VMCP == nil && handlers.Callback == nil {
+		return nil
+	}
+	if verifiedIdentity || ownerlessLoopback && cliconfig.IsLoopbackAddr(addr) {
+		return nil
+	}
+	return errors.New("broker controls require verified caller identity unless explicitly single-user loopback")
+}
+
+func mountBrokerHandlers(mux *http.ServeMux, handlers vmcpbroker.HandlerBundle, callbackPath string) error {
+	if handlers.VMCP == nil && handlers.Callback == nil {
+		return nil
+	}
+	return handlers.Mount(mux, callbackPath)
+}
+
+func prepareBrokerHTTP(mux *http.ServeMux, addr string, verifiedIdentity, ownerlessLoopback bool, handlers vmcpbroker.HandlerBundle, callbackPath string) error {
+	if err := validateBrokerControlOwnership(addr, verifiedIdentity, ownerlessLoopback, handlers); err != nil {
+		return err
+	}
+	if handlers.VMCP != nil || handlers.Callback != nil {
+		slog.Warn("vMCP broker mode is single-process/single-replica; a live session lease rejects non-holders without routing")
+	}
+	return mountBrokerHandlers(mux, handlers, callbackPath)
+}
+
+func grpcServerOptions(tlsCfg *tls.Config, auth *server.Authenticator) []grpc.ServerOption {
+	opts := []grpc.ServerOption{grpc.UnaryInterceptor(auth.UnaryInterceptor()), grpc.StreamInterceptor(auth.StreamInterceptor())}
+	if tlsCfg != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+	}
+	return opts
+}
 
 // serve wires the built Service over gRPC + HTTP/SSE with k8s-native
 // operability: a DYNAMIC /readyz (drain-gated + storage-pinged via the SAME
@@ -44,7 +80,7 @@ import (
 // Service serves traffic through (Service.StorageReady type-asserts the store
 // for a Pinger). A non-Redis store (the in-memory fallback) has no ping, so
 // readiness is drain-gated only.
-func serve(ctx context.Context, cfg config, svc *server.Service, obs observability) error {
+func serve(ctx context.Context, cfg config, svc *server.Service, obs observability, brokerHandlers vmcpbroker.HandlerBundle, brokerCallbackPath string) error {
 	tlsCfg, tlsLifecycle, err := buildTLSConfig(cfg)
 	if err != nil {
 		return err
@@ -58,13 +94,7 @@ func serve(ctx context.Context, cfg config, svc *server.Service, obs observabili
 	defer auth.Close()
 
 	// --- gRPC: auth interceptors, standard health service ---
-	grpcOpts := []grpc.ServerOption{
-		grpc.UnaryInterceptor(auth.UnaryInterceptor()),
-		grpc.StreamInterceptor(auth.StreamInterceptor()),
-	}
-	if tlsCfg != nil {
-		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
-	}
+	grpcOpts := grpcServerOptions(tlsCfg, auth)
 	grpcSrv := grpc.NewServer(grpcOpts...)
 	mecatlv1.RegisterHarnessServiceServer(grpcSrv, server.NewHarnessServer(svc))
 	mecatlv1.RegisterScheduleServiceServer(grpcSrv, server.NewScheduleServer(svc))
@@ -105,6 +135,9 @@ func serve(ctx context.Context, cfg config, svc *server.Service, obs observabili
 		w.WriteHeader(http.StatusOK)
 		_, _ = w.Write([]byte("draining\n"))
 	})
+	if err := prepareBrokerHTTP(httpMux, cfg.httpAddr, cfg.oidc.Enabled(), false, brokerHandlers, brokerCallbackPath); err != nil {
+		return err
+	}
 	httpMux.Handle("/", auth.Middleware(server.NewHTTPHandler(svc)))
 	httpSrv := &http.Server{
 		Addr:              cfg.httpAddr,

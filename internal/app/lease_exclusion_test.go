@@ -64,14 +64,14 @@ func (*firstThenBlockingProvider) Capabilities() port.ProviderCapabilities {
 	return port.ProviderCapabilities{}
 }
 
-// TestCrossProcessLeaseExclusion is the cloud-native Phase 4 falsifiable gate: a
-// session leased by one Build (replica) cannot be run by a second Build over the
-// SAME store + lease dir, until the first releases (EndSession) or its lease
-// lapses (TTL).
+// TestSessionMCPAuthorization_Scenario8_NonHolderFailsClosed is the cloud-native
+// Phase 4 falsifiable gate: a session leased by one Build (replica) cannot be run
+// by a second Build over the SAME store + lease dir until the holder releases or
+// its lease lapses. While live it cannot interrupt, recheck, or execute.
 //
-// Mutation-verified: remove the acquireLease call in StartRunContent → Build #2's
-// StartRun succeeds while #1 holds → the exclusion assertion fails.
-func TestCrossProcessLeaseExclusion(t *testing.T) {
+// Mutation-verified: remove acquireLease from StartRunContent and Build #2 enters
+// while Build #1 holds, failing the exclusion assertion.
+func TestSessionMCPAuthorization_Scenario8_NonHolderFailsClosed(t *testing.T) {
 	ctx := context.Background()
 	storeDir := t.TempDir()
 	leaseDir := t.TempDir()

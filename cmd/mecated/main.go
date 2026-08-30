@@ -52,6 +52,7 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/skills"
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
 	"github.com/stacklok/mecatl/internal/adapter/telemetry"
+	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 	"github.com/stacklok/mecatl/internal/adapter/xdgconfig"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/buildinfo"
@@ -962,7 +963,7 @@ func run(mode commandMode, remaining []string) error {
 		return serveACP(ctx, built.Service, cfg.storeDir != "" || cfg.sessionStoreURL != "", diag)
 	}
 
-	return serve(ctx, cfg, built.Service, obs.providers.Registry, obs.recorder, slowTurns)
+	return serve(ctx, cfg, built.Service, obs.providers.Registry, obs.recorder, slowTurns, built.VMCPBrokerHandlers, built.VMCPBrokerCallbackPath)
 }
 
 // observability holds the handles setupObservability returns and run() threads
@@ -1996,6 +1997,41 @@ func readAskReviewerPolicy(path string) (string, error) {
 	return string(b), nil
 }
 
+func validateBrokerControlOwnership(addr string, verifiedIdentity, ownerlessLoopback bool, handlers vmcpbroker.HandlerBundle) error {
+	if handlers.VMCP == nil && handlers.Callback == nil {
+		return nil
+	}
+	if verifiedIdentity || ownerlessLoopback && cliconfig.IsLoopbackAddr(addr) {
+		return nil
+	}
+	return errors.New("broker controls require verified caller identity unless explicitly single-user loopback")
+}
+
+func mountBrokerHandlers(mux *http.ServeMux, handlers vmcpbroker.HandlerBundle, callbackPath string) error {
+	if handlers.VMCP == nil && handlers.Callback == nil {
+		return nil
+	}
+	return handlers.Mount(mux, callbackPath)
+}
+
+func prepareBrokerHTTP(mux *http.ServeMux, addr string, verifiedIdentity, ownerlessLoopback bool, handlers vmcpbroker.HandlerBundle, callbackPath string) error {
+	if err := validateBrokerControlOwnership(addr, verifiedIdentity, ownerlessLoopback, handlers); err != nil {
+		return err
+	}
+	if handlers.VMCP != nil || handlers.Callback != nil {
+		slog.Warn("vMCP broker mode is single-process/single-replica; a live session lease rejects non-holders without routing")
+	}
+	return mountBrokerHandlers(mux, handlers, callbackPath)
+}
+
+func grpcServerOptions(tlsCfg *tls.Config, auth *server.Authenticator) []grpc.ServerOption {
+	opts := []grpc.ServerOption{grpc.UnaryInterceptor(auth.UnaryInterceptor()), grpc.StreamInterceptor(auth.StreamInterceptor())}
+	if tlsCfg != nil {
+		opts = append(opts, grpc.Creds(credentials.NewTLS(tlsCfg)))
+	}
+	return opts
+}
+
 // serve starts the gRPC and HTTP servers (and, when --metrics-addr is set, the
 // loopback admin endpoint — /metrics plus the pprof/expvar/FlightRecorder
 // runtime-introspection surface — on its own listener) concurrently and blocks
@@ -2008,7 +2044,7 @@ func readAskReviewerPolicy(path string) (string, error) {
 // liveness/readiness probes are mounted OUTSIDE the auth/rate-limit layer so
 // orchestrators can probe without credentials. The gRPC health service shares
 // the server-wide interceptors and therefore requires credentials when auth is on.
-func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus.Registry, recorder *telemetry.FlightRecorder, slowTurns *telemetry.SlowTurnBuffer) error {
+func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus.Registry, recorder *telemetry.FlightRecorder, slowTurns *telemetry.SlowTurnBuffer, brokerHandlers vmcpbroker.HandlerBundle, brokerCallbackPath string) error {
 	tlsCfg, auth, corsPolicy, err := buildEdge(ctx, cfg)
 	if err != nil {
 		return err
@@ -2019,13 +2055,7 @@ func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus
 	logSecurityPosture(cfg, tlsCfg)
 
 	// --- gRPC: auth+rate interceptors, standard health service ---
-	grpcOpts := []grpc.ServerOption{
-		grpc.UnaryInterceptor(auth.UnaryInterceptor()),
-		grpc.StreamInterceptor(auth.StreamInterceptor()),
-	}
-	if tlsCfg != nil {
-		grpcOpts = append(grpcOpts, grpc.Creds(credentials.NewTLS(tlsCfg)))
-	}
+	grpcOpts := grpcServerOptions(tlsCfg, auth)
 	grpcSrv := grpc.NewServer(grpcOpts...)
 	mecatlv1.RegisterHarnessServiceServer(grpcSrv, server.NewHarnessServer(svc))
 	mecatlv1.RegisterScheduleServiceServer(grpcSrv, server.NewScheduleServer(svc))
@@ -2049,6 +2079,9 @@ func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus
 	if cfg.httpAddr != "" {
 		httpMux := http.NewServeMux()
 		server.NewHealthHandler(func() bool { return true }).RegisterHealth(httpMux)
+		if err := prepareBrokerHTTP(httpMux, cfg.httpAddr, cfg.oidc.Enabled(), true, brokerHandlers, brokerCallbackPath); err != nil {
+			return err
+		}
 		httpMux.Handle("/", buildAPIHandler(corsPolicy, auth, svc))
 		httpSrv = &http.Server{
 			Addr:              cfg.httpAddr,

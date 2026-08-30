@@ -18,6 +18,7 @@ import (
 
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 	"github.com/stacklok/mecatl/internal/app"
 )
 
@@ -222,7 +223,7 @@ func TestTelemetryMetricsAddrServesPrometheus(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serve(ctx, cfg, built.Service, obs) }()
+	go func() { serveErr <- serve(ctx, cfg, built.Service, obs, vmcpbroker.HandlerBundle{}, "") }()
 
 	// Wait for /metrics to respond, then assert it carries a mecatl series.
 	var body string
@@ -338,7 +339,7 @@ func TestTelemetryPushesRunMetricsOnExit(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	serveErr := make(chan error, 1)
-	go func() { serveErr <- serve(ctx, cfg, built.Service, obs) }()
+	go func() { serveErr <- serve(ctx, cfg, built.Service, obs, vmcpbroker.HandlerBundle{}, "") }()
 	cancel()
 	select {
 	case <-serveErr:

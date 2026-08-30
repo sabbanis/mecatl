@@ -1337,10 +1337,11 @@ type Built struct {
 	Service *server.Service
 	// MCPAuthority is the immutable selected configuration retained for the
 	// broker construction stage. Result accessors return copies of payload data.
-	MCPAuthority       *mcpauthority.Result
-	VMCPBroker         *vmcpbroker.Runtime
-	VMCPBrokerHandlers vmcpbroker.HandlerBundle
-	Close              func()
+	MCPAuthority           *mcpauthority.Result
+	VMCPBroker             *vmcpbroker.Runtime
+	VMCPBrokerHandlers     vmcpbroker.HandlerBundle
+	VMCPBrokerCallbackPath string
+	Close                  func()
 }
 
 // Build assembles the LLM provider, session store, tool catalog, agent engine,
@@ -1364,6 +1365,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	})
 	profilesTransferred := false
 	var brokerProcess *vmcpbroker.Process
+	var brokerCallbackPath string
 	brokerTransferred := false
 	defer func() {
 		if !profilesTransferred {
@@ -1573,8 +1575,14 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 			return nil, fmt.Errorf("broker MCP constructor returned an incomplete process")
 		}
 		cfg.VMCPBroker = brokerProcess.Runtime
+		if declarations.CallbackURL != "" {
+			callback, err := url.Parse(declarations.CallbackURL)
+			if err != nil || callback.Path == "" {
+				return nil, fmt.Errorf("broker MCP callback URL has no path")
+			}
+			brokerCallbackPath = callback.EscapedPath()
+		}
 	}
-
 	// Guardrails operator-tier config (issue #27, decision 3): fold the user-global +
 	// CLI `guardrails:` YAML subtree (the resolver collected it from the OPERATOR
 	// tiers ONLY — a project file's block is ignored with a WARN) onto cfg, BEFORE
@@ -2409,11 +2417,12 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		brokerHandlers = brokerProcess.Handlers
 	}
 	return &Built{
-		Service:            svc,
-		MCPAuthority:       cfg.MCPAuthority,
-		VMCPBroker:         cfg.VMCPBroker,
-		VMCPBrokerHandlers: brokerHandlers,
-		Close:              closeAll,
+		Service:                svc,
+		MCPAuthority:           cfg.MCPAuthority,
+		VMCPBroker:             cfg.VMCPBroker,
+		VMCPBrokerHandlers:     brokerHandlers,
+		VMCPBrokerCallbackPath: brokerCallbackPath,
+		Close:                  closeAll,
 	}, nil
 }
 
