@@ -11,7 +11,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net"
 	"net/http"
 	"net/url"
 	"sort"
@@ -313,7 +312,10 @@ const (
 // ProcessOption configures root-internal process construction.
 type ProcessOption func(*processOptions)
 
-type processOptions struct{ httpClient *http.Client }
+type processOptions struct {
+	httpClient                  *http.Client
+	insecureAllowHTTPForTesting bool
+}
 
 // WithHTTPClient supplies the client for the broker's own downstream token exchange.
 // It is useful when a local TLS listener uses a private test CA.
@@ -342,16 +344,7 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		return nil, err
 	}
 	issuer := callback.Scheme + "://" + callback.Host + brokerBasePath
-	upstreamConfig := &authserver.OIDCUpstreamRunConfig{
-		IssuerURL:          protected.Auth.OAuth.Issuer,
-		ClientID:           brokerClientID(protected),
-		ClientSecretEnvVar: brokerSecretEnv(protected),
-		RedirectURI:        issuer + "/oauth/callback",
-		Scopes:             append([]string(nil), protected.Auth.OAuth.Scopes...),
-	}
-	if localHTTPOrigin(protected.Auth.OAuth.Issuer) {
-		upstreamConfig.InsecureAllowHTTP = true
-	}
+	upstreamConfig := newOIDCUpstreamConfig(protected, issuer, config)
 	store := storage.NewMemoryStorage()
 	auth, err := runner.NewEmbeddedAuthServerWithStorage(ctx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: []authserver.UpstreamRunConfig{{Name: protected.Name, Type: authserver.UpstreamProviderTypeOIDC, OIDCConfig: upstreamConfig}}}, store)
 	if err != nil {
@@ -479,13 +472,15 @@ func newAnonymousRuntime(routes []Route, profiles []permconfig.MCPServerProfile)
 	})
 }
 
-func localHTTPOrigin(raw string) bool {
-	u, err := url.Parse(raw)
-	if err != nil || u.Scheme != "http" {
-		return false
+func newOIDCUpstreamConfig(protected permconfig.MCPServerProfile, issuer string, options processOptions) *authserver.OIDCUpstreamRunConfig {
+	return &authserver.OIDCUpstreamRunConfig{
+		IssuerURL:          protected.Auth.OAuth.Issuer,
+		ClientID:           brokerClientID(protected),
+		ClientSecretEnvVar: brokerSecretEnv(protected),
+		RedirectURI:        issuer + "/oauth/callback",
+		Scopes:             append([]string(nil), protected.Auth.OAuth.Scopes...),
+		InsecureAllowHTTP:  options.insecureAllowHTTPForTesting,
 	}
-	host := u.Hostname()
-	return host == "localhost" || net.ParseIP(host).IsLoopback()
 }
 
 func canonicalCallbackURL(raw string) (*url.URL, error) {

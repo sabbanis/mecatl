@@ -62,3 +62,21 @@ func TestSessionMCPAuthorization_Scenario2_AnonymousProfileServesVMCP(t *testing
 		t.Fatal("anonymous broker vMCP route was not registered")
 	}
 }
+
+func withInsecureHTTPForTesting() ProcessOption {
+	return func(options *processOptions) { options.insecureAllowHTTPForTesting = true }
+}
+
+func TestInvariant_loopback_issuer_keeps_http_disallowed_by_default(t *testing.T) {
+	profile := permconfig.MCPServerProfile{Auth: permconfig.MCPAuthProfile{OAuth: &permconfig.MCPOAuthProfile{Issuer: "http://127.0.0.1:8080"}}}
+
+	if got := newOIDCUpstreamConfig(profile, "https://broker.example/v1/mcp/broker", processOptions{}).InsecureAllowHTTP; got {
+		t.Fatal("a loopback HTTP issuer enabled insecure HTTP without an explicit test-only opt-in")
+	}
+
+	options := processOptions{}
+	withInsecureHTTPForTesting()(&options)
+	if got := newOIDCUpstreamConfig(profile, "https://broker.example/v1/mcp/broker", options).InsecureAllowHTTP; !got {
+		t.Fatal("explicit test-only plaintext issuer opt-in did not enable insecure HTTP")
+	}
+}
