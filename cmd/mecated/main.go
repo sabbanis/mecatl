@@ -2014,8 +2014,8 @@ func mountBrokerHandlers(mux *http.ServeMux, handlers vmcpbroker.HandlerBundle, 
 	return handlers.Mount(mux, callbackPath)
 }
 
-func prepareBrokerHTTP(mux *http.ServeMux, addr string, verifiedIdentity, ownerlessLoopback bool, handlers vmcpbroker.HandlerBundle, callbackPath string) error {
-	if err := validateBrokerControlOwnership(addr, verifiedIdentity, ownerlessLoopback, handlers); err != nil {
+func prepareBrokerHTTP(mux *http.ServeMux, addr string, verifiedIdentity bool, handlers vmcpbroker.HandlerBundle, callbackPath string) error {
+	if err := validateBrokerControlOwnership(addr, verifiedIdentity, true, handlers); err != nil {
 		return err
 	}
 	if handlers.VMCP != nil || handlers.Callback != nil {
@@ -2079,7 +2079,7 @@ func serve(ctx context.Context, cfg config, svc *server.Service, reg *prometheus
 	if cfg.httpAddr != "" {
 		httpMux := http.NewServeMux()
 		server.NewHealthHandler(func() bool { return true }).RegisterHealth(httpMux)
-		if err := prepareBrokerHTTP(httpMux, cfg.httpAddr, cfg.oidc.Enabled(), true, brokerHandlers, brokerCallbackPath); err != nil {
+		if err := prepareBrokerHTTP(httpMux, cfg.httpAddr, cfg.oidc.Enabled(), brokerHandlers, brokerCallbackPath); err != nil {
 			return err
 		}
 		httpMux.Handle("/", buildAPIHandler(corsPolicy, auth, svc))

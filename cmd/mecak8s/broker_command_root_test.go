@@ -7,91 +7,139 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
+	"io"
 	"math/big"
 	"net"
 	"net/http"
+	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
+	"github.com/go-jose/go-jose/v3"
+	"github.com/go-jose/go-jose/v3/jwt"
+	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
+
+	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/server"
-	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
 
+// TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical proves the
+// actual command-root seam: canonical operator settings build the real ToolHive
+// process, its complete bundle mounts on the one TLS listener, and all controls
+// travel over the authenticated HTTP wire. No broker constructor, process,
+// handler bundle, route, or Runtime callback is supplied by the test.
 func TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical(t *testing.T) {
-	cert, key := loopbackTLSFiles(t)
-	cfg := config{httpAddr: freeLoopbackPort(t), grpcAddr: freeLoopbackPort(t), tlsCert: cert, tlsKey: key,
-		oidc: cliconfig.OIDCConfig{Issuer: "https://identity.example", Audience: "mecak8s", NewValidator: func(context.Context, cliconfig.OIDCConfig) (server.PrincipalValidator, error) {
-			return testPrincipalValidator{}, nil
-		}},
+	cert, key, serverPEM := loopbackTLSFiles(t)
+	fixture := newCommandRootScenario10Fixture(t, "scenario10-upstream-token-canary")
+	roots := filepath.Join(t.TempDir(), "roots.pem")
+	if err := os.WriteFile(roots, append(serverPEM, '\n'), 0o600); err != nil {
+		t.Fatalf("write test CA roots: %v", err)
 	}
+	t.Setenv("SSL_CERT_FILE", roots)
+	t.Setenv("MECATL_SCENARIO10_CLIENT_SECRET", "scenario10-client-secret-canary")
+
+	cfg, err := parseFlags([]string{"--mock", "--http-addr", freeLoopbackPort(t), "--grpc-addr", freeLoopbackPort(t), "--tls-cert", cert, "--tls-key", key})
+	if err != nil {
+		t.Fatalf("parse command config: %v", err)
+	}
+	cfg.sessionLeaseK8sNamespace = ""
+	cfg.oidc = cliconfig.OIDCConfig{Issuer: "https://identity.example", Audience: "mecak8s", NewValidator: func(context.Context, cliconfig.OIDCConfig) (server.PrincipalValidator, error) {
+		return testPrincipalValidator{}, nil
+	}}
 	settings := filepath.Join(t.TempDir(), "settings.yaml")
-	t.Setenv("MECATL_SCENARIO10_CLIENT_SECRET", "test-secret")
-	if err := os.WriteFile(settings, []byte("mcp:\n  mode: broker\n  broker:\n    callback_url: https://"+cfg.httpAddr+"/exact/callback\n  servers:\n    - name: protected\n      url: https://mcp.example.invalid/mcp\n      auth:\n        mode: oauth\n        oauth:\n          issuer: https://issuer.example.invalid\n          client:\n            mode: preregistered\n            preregistered:\n              id: scenario10-client\n              secret_env: MECATL_SCENARIO10_CLIENT_SECRET\n          scopes: [openid]\n          network: {}\n"), 0o600); err != nil {
+	if err := os.WriteFile(settings, []byte("mcp:\n  mode: broker\n  broker:\n    callback_url: https://"+cfg.httpAddr+"/exact/callback\n  servers:\n    - name: protected\n      url: "+fixture.backend.URL+"\n      auth:\n        mode: oauth\n        oauth:\n          issuer: "+fixture.gateway.URL+"\n          client:\n            mode: preregistered\n            preregistered:\n              id: scenario10-client\n              secret_env: MECATL_SCENARIO10_CLIENT_SECRET\n          scopes: [openid]\n          network: {}\n"), 0o600); err != nil {
 		t.Fatalf("write broker settings: %v", err)
 	}
-	bundle := vmcpbroker.HandlerBundle{
-		Authorization:     http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
-		Token:             http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
-		UpstreamCallback:  http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
-		Discovery:         http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
-		JWKS:              http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
-		ProtectedResource: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
-		VMCP:              http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
-		Callback:          http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }),
-	}
-	built, err := app.Build(t.Context(), app.Config{
-		Workspace: t.TempDir(), UseMock: true, NoSoul: true, NoUserModel: true,
-		PermissionsConventional: false, AgentsConventional: false, OwnershipEnforced: true,
-		PermissionConfigs: []string{settings}, MCPAuthorityDefault: string(cliconfig.MCPAuthorityBroker), MCPBrokerSupported: true,
-		MCPAuthorityLoader: cliconfig.NewMCPProfileResolver(nil, os.LookupEnv),
-		VMCPBrokerConstructor: func(context.Context, app.VMCPBrokerDeclarations) (*vmcpbroker.Process, error) {
-			runtime, err := vmcpbroker.NewRuntime(nil, func(context.Context, session.SessionID, vmcpbroker.Route, json.RawMessage) (session.ToolResult, error) {
-				return session.ToolResult{}, nil
-			})
-			if err != nil {
-				return nil, err
-			}
-			return &vmcpbroker.Process{Runtime: runtime, Handlers: bundle}, nil
-		},
-	})
+	cfg.permissionConfigs = []string{settings}
+
+	ac := appConfig(cfg, nil, observability{})
+	ac.VMCPBrokerHTTPClient = newCommandRootClient(serverPEM)
+	ac.MockProvider = mockllm.New(
+		mockllm.ToolCallTurn(session.NewToolCall("mcp-call-safe-01", "mcp__protected__protected", json.RawMessage(`{}`))),
+		mockllm.TextTurn("model final"),
+	)
+	ac.NoSoul, ac.NoUserModel, ac.PermissionsConventional, ac.AgentsConventional = true, true, false, false
+	built, err := app.Build(t.Context(), ac)
 	if err != nil {
-		t.Fatalf("Build from broker settings: %v", err)
+		t.Fatalf("default app.Build from canonical broker settings: %v", err)
 	}
 	t.Cleanup(built.Close)
+	if built.VMCPBroker == nil {
+		t.Fatal("default app.Build did not construct the broker runtime")
+	}
 
 	ctx, cancel := context.WithCancel(t.Context())
 	done := make(chan error, 1)
 	go func() {
 		done <- serve(ctx, cfg, built.Service, observability{}, built.VMCPBrokerHandlers, built.VMCPBrokerCallbackPath)
 	}()
-	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{MinVersion: tls.VersionTLS12, InsecureSkipVerify: true}}} //nolint:gosec // test-only loopback certificate
-	for _, path := range []string{"/v1/mcp/broker/oauth/authorize", "/v1/mcp/broker/mcp", "/exact/callback"} {
-		var response *http.Response
-		var requestErr error
-		for deadline := time.Now().Add(time.Second); time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
-			response, requestErr = client.Get("https://" + cfg.httpAddr + path)
-			if requestErr == nil {
-				break
-			}
-		}
-		if requestErr != nil {
-			t.Fatalf("GET %s: %v", path, requestErr)
-		}
-		_ = response.Body.Close()
-		if response.StatusCode != http.StatusNoContent {
-			t.Fatalf("GET %s status = %d", path, response.StatusCode)
+	t.Cleanup(func() { cancel(); <-done })
+	client := newCommandRootClient(serverPEM)
+	base := "https://" + cfg.httpAddr
+	waitForCommandRoot(t, client, base+"/healthz")
+
+	// Health, readiness, and the normal API remain on their existing routes.
+	for _, path := range []string{"/healthz", "/readyz"} {
+		response := mustGet(t, client, base+path, "")
+		response.Body.Close()
+		if response.StatusCode != http.StatusOK {
+			t.Fatalf("%s status = %d, want health route untouched", path, response.StatusCode)
 		}
 	}
-	cancel()
-	if err := <-done; err != nil {
-		t.Fatalf("serve: %v", err)
+	sessionID := createCommandRootSession(t, client, base)
+	parked := postSSE(t, client, base+"/v1/sessions/"+sessionID+"/prompt", `{"text":"read protected data scenario10-private-input"}`)
+	assertCommandRootSafeProjection(t, parked, "scenario10-client-secret-canary", "scenario10-upstream-token-canary", "scenario10-private-input")
+	authorizationID := authorizationIDFromSSE(t, parked)
+
+	presentation := mustGet(t, client, base+"/v1/sessions/"+sessionID+"/mcp-authorizations/"+authorizationID+"/presentation", "")
+	defer presentation.Body.Close()
+	var browser struct {
+		URL string `json:"url"`
+	}
+	if err := json.NewDecoder(presentation.Body).Decode(&browser); err != nil || presentation.StatusCode != http.StatusOK || browser.URL == "" {
+		t.Fatalf("presentation = status %d, url %q, err %v", presentation.StatusCode, browser.URL, err)
+	}
+	if !strings.HasPrefix(browser.URL, base+"/v1/mcp/broker/oauth/authorize?") || strings.Contains(browser.URL, "scenario10-client-secret-canary") {
+		t.Fatalf("safe browser presentation = %q", browser.URL)
+	}
+	response, err := client.Get(browser.URL)
+	if err != nil {
+		t.Fatalf("follow browser redirect chain: %v", err)
+	}
+	response.Body.Close()
+	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Request.URL.String(), base+"/exact/callback?") {
+		t.Fatalf("callback response/request = %d/%q, want exact mounted callback", response.StatusCode, response.Request.URL)
+	}
+
+	continued := postSSE(t, client, base+"/v1/sessions/"+sessionID+"/mcp-authorizations/"+authorizationID+":recheck", "{}")
+	assertCommandRootSafeProjection(t, continued, "scenario10-client-secret-canary", "scenario10-upstream-token-canary", "scenario10-private-input", "scenario10-code-canary")
+	if got := fixture.calls.Load(); got != 1 {
+		t.Fatalf("protected upstream calls = %d, want exactly one", got)
+	}
+	duplicate := mustPost(t, client, base+"/v1/sessions/"+sessionID+"/mcp-authorizations/"+authorizationID+":recheck", "{}")
+	duplicate.Body.Close()
+	if duplicate.StatusCode != http.StatusNotFound || fixture.calls.Load() != 1 {
+		t.Fatalf("duplicate recheck status/calls = %d/%d, want 404 and one call", duplicate.StatusCode, fixture.calls.Load())
+	}
+
+	// The root, not a second listener, owns the complete fixed broker table.
+	for _, path := range []string{"/v1/mcp/broker/oauth/authorize", "/v1/mcp/broker/mcp", "/exact/callback"} {
+		response := mustGet(t, client, base+path, "")
+		response.Body.Close()
+		if response.StatusCode == http.StatusNotFound {
+			t.Fatalf("mounted broker route %s returned 404", path)
+		}
 	}
 }
 
@@ -101,7 +149,167 @@ func (testPrincipalValidator) Validate(context.Context, string) (*session.Princi
 	return &session.Principal{Issuer: "https://identity.example", Subject: "test", GrantType: session.GrantTypeUser}, nil
 }
 
-func loopbackTLSFiles(t *testing.T) (string, string) {
+type commandRootScenario10Fixture struct {
+	gateway, backend *httptest.Server
+	calls            atomic.Int32
+	privateKey       *rsa.PrivateKey
+	nonce            string
+}
+
+func newCommandRootScenario10Fixture(t *testing.T, token string) *commandRootScenario10Fixture {
+	t.Helper()
+	f := &commandRootScenario10Fixture{}
+	protected := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "protected", Version: "test"}, nil)
+	mcpsdk.AddTool(protected, &mcpsdk.Tool{Name: "protected"}, func(context.Context, *mcpsdk.CallToolRequest, struct{}) (*mcpsdk.CallToolResult, struct{}, error) {
+		f.calls.Add(1)
+		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "protected result"}}}, struct{}{}, nil
+	})
+	h := mcpsdk.NewStreamableHTTPHandler(func(*http.Request) *mcpsdk.Server { return protected }, &mcpsdk.StreamableHTTPOptions{Stateless: true, JSONResponse: true})
+	f.backend = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(strings.NewReader(string(body)))
+		if strings.Contains(string(body), `"tools/call"`) && r.Header.Get("Authorization") != "Bearer "+token {
+			http.Error(w, "missing bearer", http.StatusUnauthorized)
+			return
+		}
+		h.ServeHTTP(w, r)
+	}))
+	t.Cleanup(f.backend.Close)
+	var err error
+	f.privateKey, err = rsa.GenerateKey(rand.Reader, 2048)
+	if err != nil {
+		t.Fatal(err)
+	}
+	mux := http.NewServeMux()
+	f.gateway = httptest.NewServer(mux)
+	issuer := f.gateway.URL
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token", "jwks_uri": issuer + "/jwks", "response_types_supported": []string{"code"}, "subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"}})
+	})
+	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
+		f.nonce = r.URL.Query().Get("nonce")
+		http.Redirect(w, r, r.URL.Query().Get("redirect_uri")+"?code=scenario10-code-canary&state="+url.QueryEscape(r.URL.Query().Get("state")), http.StatusFound)
+	})
+	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = io.WriteString(w, `{"access_token":"`+token+`","token_type":"Bearer","id_token":"`+f.idToken(t, "scenario10-client")+`"}`)
+	})
+	mux.HandleFunc("/jwks", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]any{"keys": []map[string]any{{"kty": "RSA", "kid": "scenario10", "use": "sig", "alg": "RS256", "n": base64.RawURLEncoding.EncodeToString(f.privateKey.N.Bytes()), "e": base64.RawURLEncoding.EncodeToString(big.NewInt(int64(f.privateKey.E)).Bytes())}}})
+	})
+	t.Cleanup(f.gateway.Close)
+	return f
+}
+func (f *commandRootScenario10Fixture) idToken(t *testing.T, audience string) string {
+	t.Helper()
+	signer, err := jose.NewSigner(jose.SigningKey{Algorithm: jose.RS256, Key: f.privateKey}, (&jose.SignerOptions{}).WithType("JWT").WithHeader("kid", "scenario10"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	signed, err := jwt.Signed(signer).Claims(map[string]any{"iss": f.gateway.URL, "sub": "scenario10-subject", "aud": audience, "exp": time.Now().Add(time.Hour).Unix(), "iat": time.Now().Unix(), "nonce": f.nonce}).CompactSerialize()
+	if err != nil {
+		t.Fatal(err)
+	}
+	return signed
+}
+func newCommandRootClient(serverPEM []byte) *http.Client {
+	pool := x509.NewCertPool()
+	pool.AppendCertsFromPEM(serverPEM)
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	transport.TLSClientConfig = &tls.Config{MinVersion: tls.VersionTLS12, RootCAs: pool}
+	return &http.Client{Transport: transport}
+}
+
+func createCommandRootSession(t *testing.T, client *http.Client, base string) string {
+	t.Helper()
+	response := mustPost(t, client, base+"/v1/sessions", `{"workspace":"`+t.TempDir()+`"}`)
+	defer response.Body.Close()
+	var body struct {
+		SessionID string `json:"session_id"`
+	}
+	if err := json.NewDecoder(response.Body).Decode(&body); err != nil || response.StatusCode != http.StatusCreated || body.SessionID == "" {
+		t.Fatalf("create session = %d/%q: %v", response.StatusCode, body.SessionID, err)
+	}
+	return body.SessionID
+}
+func mustGet(t *testing.T, client *http.Client, rawURL, bearer string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodGet, rawURL, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bearer == "" {
+		bearer = "test"
+	}
+	request.Header.Set("Authorization", "Bearer "+bearer)
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("GET %s: %v", rawURL, err)
+	}
+	return response
+}
+func mustPost(t *testing.T, client *http.Client, rawURL, body string) *http.Response {
+	t.Helper()
+	request, err := http.NewRequest(http.MethodPost, rawURL, strings.NewReader(body))
+	if err != nil {
+		t.Fatal(err)
+	}
+	request.Header.Set("Content-Type", "application/json")
+	request.Header.Set("Authorization", "Bearer test")
+	response, err := client.Do(request)
+	if err != nil {
+		t.Fatalf("POST %s: %v", rawURL, err)
+	}
+	return response
+}
+func postSSE(t *testing.T, client *http.Client, rawURL, body string) string {
+	t.Helper()
+	response := mustPost(t, client, rawURL, body)
+	defer response.Body.Close()
+	data, err := io.ReadAll(response.Body)
+	if err != nil || response.StatusCode != http.StatusOK {
+		t.Fatalf("SSE %s = %d: %v: %s", rawURL, response.StatusCode, err, data)
+	}
+	return string(data)
+}
+func waitForCommandRoot(t *testing.T, client *http.Client, rawURL string) {
+	t.Helper()
+	deadline := time.Now().Add(3 * time.Second)
+	for time.Now().Before(deadline) {
+		response, err := client.Get(rawURL)
+		if err == nil {
+			response.Body.Close()
+			return
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+	t.Fatalf("command root did not start at %s", rawURL)
+}
+func authorizationIDFromSSE(t *testing.T, s string) string {
+	t.Helper()
+	var frame struct {
+		McpAuthorization struct {
+			AuthorizationID string `json:"authorization_id"`
+		} `json:"mcp_authorization"`
+	}
+	for _, line := range strings.Split(s, "\n") {
+		if strings.HasPrefix(line, "data: ") && json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame) == nil && frame.McpAuthorization.AuthorizationID != "" {
+			return frame.McpAuthorization.AuthorizationID
+		}
+	}
+	t.Fatalf("authorization id absent from SSE: %s", s)
+	return ""
+}
+func assertCommandRootSafeProjection(t *testing.T, s string, forbidden ...string) {
+	t.Helper()
+	for _, value := range forbidden {
+		if strings.Contains(s, value) {
+			t.Fatalf("wire projection leaked %q: %s", value, s)
+		}
+	}
+}
+
+func loopbackTLSFiles(t *testing.T) (string, string, []byte) {
 	t.Helper()
 	key, err := rsa.GenerateKey(rand.Reader, 2048)
 	if err != nil {
@@ -113,11 +321,12 @@ func loopbackTLSFiles(t *testing.T) (string, string) {
 	}
 	dir := t.TempDir()
 	certPath, keyPath := filepath.Join(dir, "cert.pem"), filepath.Join(dir, "key.pem")
-	if err := os.WriteFile(certPath, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der}), 0o600); err != nil {
+	certPEM := pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: der})
+	if err := os.WriteFile(certPath, certPEM, 0o600); err != nil {
 		t.Fatal(err)
 	}
 	if err := os.WriteFile(keyPath, pem.EncodeToMemory(&pem.Block{Type: "RSA PRIVATE KEY", Bytes: x509.MarshalPKCS1PrivateKey(key)}), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	return certPath, keyPath
+	return certPath, keyPath, certPEM
 }
