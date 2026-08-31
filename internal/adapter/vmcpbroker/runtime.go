@@ -457,6 +457,7 @@ func newProtectedToolHiveConstruction(profiles []permconfig.MCPServerProfile, is
 					Name:        "mcp__" + profile.Name + "__" + candidate.Name,
 					Description: candidate.Description,
 					Schema:      append(json.RawMessage(nil), candidate.InputSchema...),
+					ReadOnly:    candidate.ReadOnly,
 				})
 			}
 		} else {

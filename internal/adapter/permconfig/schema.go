@@ -383,7 +383,7 @@ type MCPOAuthProfile struct {
 }
 
 // MCPStaticToolProfile declares one protected-backend tool's stable
-// model-facing shape (name, description, JSON Schema) without requiring a live
+// model-facing shape and read-only classification without requiring a live
 // discovery connection.
 type MCPStaticToolProfile struct {
 	// Name is the exact upstream tool name, e.g. "get_me".
@@ -392,13 +392,15 @@ type MCPStaticToolProfile struct {
 	Description string `yaml:"description"`
 	// InputSchema is the tool's JSON Schema object, verbatim.
 	InputSchema json.RawMessage `yaml:"input_schema"`
+	// ReadOnly preserves the reviewed mutation classification for later catalogue admission.
+	ReadOnly bool `yaml:"read_only"`
 }
 
 // UnmarshalYAML strictly decodes and validates one declared protected-backend tool.
 func (t *MCPStaticToolProfile) UnmarshalYAML(node ast.Node) error {
 	var schema any
 	if err := decodeStrictMapping(node, "mcp.servers[].auth.oauth.tools[]", map[string]any{
-		"name": &t.Name, "description": &t.Description, "input_schema": &schema,
+		"name": &t.Name, "description": &t.Description, "input_schema": &schema, "read_only": &t.ReadOnly,
 	}); err != nil {
 		return err
 	}

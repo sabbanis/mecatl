@@ -102,13 +102,10 @@ func TestBundledWorkspaceEnrollment_Scenario11_ProtectedStartupSkipsAnonymousDis
 	}))
 	t.Cleanup(protected.Close)
 	profile := protectedConstructionProfileWithURL("GitHub_API", protected.URL)
-	profile.Auth.OAuth.Tools = []permconfig.MCPStaticToolProfile{{Name: "reviewed", Description: "reviewed static candidate", InputSchema: []byte(`{"type":"object"}`)}}
-	withoutStatic := protectedConstructionProfileWithURL("Private_API", protected.URL)
 
 	process, err := NewToolHiveProcess(t.Context(), []permconfig.MCPServerProfile{
 		{Name: "public", URL: public.URL, Auth: permconfig.MCPAuthProfile{Mode: "none"}},
 		profile,
-		withoutStatic,
 	}, "https://broker.example/callback", nil)
 	if err != nil {
 		t.Fatalf("NewToolHiveProcess: %v", err)
@@ -118,13 +115,49 @@ func TestBundledWorkspaceEnrollment_Scenario11_ProtectedStartupSkipsAnonymousDis
 		t.Fatal("anonymous profile was not eagerly discovered")
 	}
 	if protectedRequests.Load() != 0 {
-		t.Fatalf("protected startup requests = %d, want zero before enrollment", protectedRequests.Load())
+		t.Fatalf("protected startup requests = %d, want exactly zero", protectedRequests.Load())
+	}
+	if len(process.Runtime.routes) != 1 || process.Runtime.routes[0].BackendID != "public" {
+		t.Fatalf("startup executable routes = %#v, want anonymous route only", process.Runtime.routes)
+	}
+	if len(process.deferredProtectedRoutes) != 0 {
+		t.Fatalf("deferred protected candidates = %#v, want empty without static tools", process.deferredProtectedRoutes)
+	}
+	if got := strings.Join(process.Runtime.protectedBackends, ","); got != "GitHub_API" {
+		t.Fatalf("stable enrollment-provider order = %q, want GitHub_API", got)
+	}
+}
+
+func TestBundledWorkspaceEnrollment_Scenario11_StaticCandidatesRemainDeferred(t *testing.T) {
+	var publicRequests, protectedRequests atomic.Int32
+	public := discoveryTestServer(t, "public", &publicRequests)
+	protected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		protectedRequests.Add(1)
+		http.Error(w, "authorization required", http.StatusUnauthorized)
+	}))
+	t.Cleanup(protected.Close)
+	profile := protectedConstructionProfileWithURL("GitHub_API", protected.URL)
+	profile.Auth.OAuth.Tools = []permconfig.MCPStaticToolProfile{{Name: "reviewed", Description: "reviewed static candidate", InputSchema: []byte(`{"type":"object"}`), ReadOnly: true}}
+
+	process, err := NewToolHiveProcess(t.Context(), []permconfig.MCPServerProfile{
+		{Name: "public", URL: public.URL, Auth: permconfig.MCPAuthProfile{Mode: "none"}},
+		profile,
+	}, "https://broker.example/callback", nil)
+	if err != nil {
+		t.Fatalf("NewToolHiveProcess: %v", err)
+	}
+	t.Cleanup(func() { _ = process.Close() })
+	if publicRequests.Load() == 0 || protectedRequests.Load() != 0 {
+		t.Fatalf("anonymous/protected startup requests = %d/%d, want anonymous eager and protected zero", publicRequests.Load(), protectedRequests.Load())
 	}
 	if len(process.Runtime.routes) != 1 || process.Runtime.routes[0].BackendID != "public" {
 		t.Fatalf("startup executable routes = %#v, want anonymous route only", process.Runtime.routes)
 	}
 	if len(process.deferredProtectedRoutes) != 1 || process.deferredProtectedRoutes[0].Tool.Name != "mcp__GitHub_API__reviewed" {
 		t.Fatalf("deferred protected candidates = %#v, want reviewed candidate retained privately", process.deferredProtectedRoutes)
+	}
+	if !process.deferredProtectedRoutes[0].ReadOnly {
+		t.Fatal("deferred static candidate dropped configured read_only metadata")
 	}
 }
 
