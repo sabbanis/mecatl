@@ -293,8 +293,9 @@ func (b HandlerBundle) Mount(mux *http.ServeMux, callbackPath string) (err error
 
 // Process owns a broker Runtime and its root-internal handlers.
 type Process struct {
-	Runtime  *Runtime
-	Handlers HandlerBundle
+	Runtime                 *Runtime
+	Handlers                HandlerBundle
+	deferredProtectedRoutes []Route
 }
 
 // NewProcess binds the fixed callback handler to an already-built Runtime.
@@ -396,7 +397,7 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		_ = server.Stop(context.Background())
 		return fail(err)
 	}
-	routes, err := discoverRoutes(ctx, profiles, diag)
+	routes, err := discoverAnonymousRoutes(ctx, construction.anonymousProfiles, diag)
 	if err != nil {
 		_ = server.Stop(context.Background())
 		return fail(err)
@@ -409,13 +410,15 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	runtime.authContext = authCtx
 	installToolHiveProcessClosers(runtime, func() error { return server.Stop(context.Background()) }, auth.Close, cancelAuth)
 	embedded := http.StripPrefix(brokerBasePath, auth.Handler())
-	return &Process{Runtime: runtime, Handlers: HandlerBundle{Authorization: embedded, Token: embedded, UpstreamCallback: embedded, Discovery: embedded, JWKS: embedded, ProtectedResource: authInfo, VMCP: vmcpHandler, Callback: CallbackHandler(runtime.Callback)}}, nil
+	return &Process{Runtime: runtime, Handlers: HandlerBundle{Authorization: embedded, Token: embedded, UpstreamCallback: embedded, Discovery: embedded, JWKS: embedded, ProtectedResource: authInfo, VMCP: vmcpHandler, Callback: CallbackHandler(runtime.Callback)}, deferredProtectedRoutes: construction.deferredProtectedRoutes}, nil
 }
 
 type protectedToolHiveConstruction struct {
-	upstreams         []authserver.UpstreamRunConfig
-	backends          []vmcp.Backend
-	protectedBackends []string
+	upstreams               []authserver.UpstreamRunConfig
+	backends                []vmcp.Backend
+	protectedBackends       []string
+	anonymousProfiles       []permconfig.MCPServerProfile
+	deferredProtectedRoutes []Route
 }
 
 // newProtectedToolHiveConstruction preserves configured protected-profile order:
@@ -425,8 +428,11 @@ func newProtectedToolHiveConstruction(profiles []permconfig.MCPServerProfile, is
 		upstreams:         make([]authserver.UpstreamRunConfig, 0),
 		backends:          make([]vmcp.Backend, 0, len(profiles)),
 		protectedBackends: make([]string, 0),
+		anonymousProfiles: make([]permconfig.MCPServerProfile, 0),
 	}
 	providers := make(map[string]string)
+	protectedProfiles := make([]permconfig.MCPServerProfile, 0)
+	staticCandidates := make([]ToolDefinition, 0)
 	for _, profile := range profiles {
 		backend := vmcp.Backend{ID: profile.Name, Name: profile.Name, BaseURL: profile.URL, TransportType: "streamable-http"}
 		if profile.Auth.Mode == profileAuthOAuth {
@@ -441,12 +447,28 @@ func newProtectedToolHiveConstruction(profiles []permconfig.MCPServerProfile, is
 				return protectedToolHiveConstruction{}, fmt.Errorf("%w: protected backends %q and %q map to the same ToolHive provider name", ErrInvalidRoute, prior, profile.Name)
 			}
 			providers[provider] = profile.Name
+			protectedProfiles = append(protectedProfiles, profile)
 			construction.upstreams = append(construction.upstreams, newUpstreamRunConfig(profile, provider, issuer, options))
 			construction.protectedBackends = append(construction.protectedBackends, profile.Name)
 			backend.AuthConfig = &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: provider}}
+			for _, candidate := range profile.Auth.OAuth.Tools {
+				staticCandidates = append(staticCandidates, ToolDefinition{
+					BackendID:   profile.Name,
+					Name:        "mcp__" + profile.Name + "__" + candidate.Name,
+					Description: candidate.Description,
+					Schema:      append(json.RawMessage(nil), candidate.InputSchema...),
+				})
+			}
+		} else {
+			construction.anonymousProfiles = append(construction.anonymousProfiles, profile)
 		}
 		construction.backends = append(construction.backends, backend)
 	}
+	deferred, err := CompileProfiles(protectedProfiles, staticCandidates)
+	if err != nil {
+		return protectedToolHiveConstruction{}, fmt.Errorf("vmcpbroker: compile deferred protected tools: %w", err)
+	}
+	construction.deferredProtectedRoutes = deferred
 	return construction, nil
 }
 
@@ -481,7 +503,7 @@ func hasProtectedProfile(profiles []permconfig.MCPServerProfile) bool {
 }
 
 func newAnonymousToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProfile, diag port.Diagnostics) (*Process, error) {
-	routes, err := discoverRoutes(ctx, profiles, diag)
+	routes, err := discoverAnonymousRoutes(ctx, profiles, diag)
 	if err != nil {
 		return nil, err
 	}
@@ -603,39 +625,29 @@ func brokerSecretEnv(p permconfig.MCPServerProfile) string {
 	return ""
 }
 
-// discoverRoutes builds the model-facing route catalog. A profile that
-// declares Auth.OAuth.Tools statically (permconfig.MCPOAuthProfile.Tools)
-// skips live discovery entirely — some protected backends (e.g. GitHub's
-// remote MCP server) reject an unauthenticated `initialize` outright, so no
-// live connection can ever succeed before a user grant exists. Every other
-// profile is discovered live exactly as before.
-func discoverRoutes(ctx context.Context, profiles []permconfig.MCPServerProfile, diag port.Diagnostics) ([]Route, error) {
-	live := make([]permconfig.MCPServerProfile, 0, len(profiles))
-	defs := make([]ToolDefinition, 0)
-	for _, p := range profiles {
-		if p.Auth.Mode == profileAuthOAuth {
-			// Protected discovery, including configured static declarations, is not
-			// exposed before the complete workspace bundle enrolls. Authenticated
-			// discovery and catalogue freezing are the next stage.
-			continue
+// discoverAnonymousRoutes eagerly discovers only profiles whose auth mode is none.
+// Rejecting any other mode here makes the startup trust boundary auditable at the
+// caller and prevents this helper from silently growing protected discovery.
+func discoverAnonymousRoutes(ctx context.Context, profiles []permconfig.MCPServerProfile, diag port.Diagnostics) ([]Route, error) {
+	configs := make([]mcp.ServerConfig, 0, len(profiles))
+	for _, profile := range profiles {
+		if profile.Auth.Mode != "none" {
+			return nil, fmt.Errorf("%w: eager discovery requires an anonymous profile, got %q", ErrInvalidRoute, profile.Name)
 		}
-		live = append(live, p)
+		configs = append(configs, mcp.ServerConfig{Name: profile.Name, URL: profile.URL})
 	}
-	if len(live) > 0 {
-		configs := make([]mcp.ServerConfig, 0, len(live))
-		for _, p := range live {
-			configs = append(configs, mcp.ServerConfig{Name: p.Name, URL: p.URL})
-		}
+	defs := make([]ToolDefinition, 0)
+	if len(configs) > 0 {
 		manager, err := mcp.NewManager(ctx, configs, nil, diag)
 		if err != nil {
-			return nil, fmt.Errorf("vmcpbroker: discover configured tools: %w", err)
+			return nil, fmt.Errorf("vmcpbroker: discover configured anonymous tools: %w", err)
 		}
 		defer func() { _ = manager.Close() }()
 		for _, wrapped := range manager.Tools() {
 			spec := wrapped.Spec()
-			for _, p := range live {
-				if strings.HasPrefix(spec.Name, "mcp__"+p.Name+"__") {
-					defs = append(defs, ToolDefinition{BackendID: p.Name, Name: spec.Name, Description: spec.Description, Schema: spec.Schema, ReadOnly: wrapped.ReadOnly()})
+			for _, profile := range profiles {
+				if strings.HasPrefix(spec.Name, "mcp__"+profile.Name+"__") {
+					defs = append(defs, ToolDefinition{BackendID: profile.Name, Name: spec.Name, Description: spec.Description, Schema: spec.Schema, ReadOnly: wrapped.ReadOnly()})
 					break
 				}
 			}

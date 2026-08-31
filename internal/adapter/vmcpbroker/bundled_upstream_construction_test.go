@@ -47,6 +47,9 @@ func TestBundledWorkspaceEnrollment_Scenario11_MultiUpstreamConstruction(t *test
 	if got := strings.Join(process.Runtime.protectedBackends, ","); got != "GitHub_Cloud,Calendar_API" {
 		t.Fatalf("running protected backend order = %q, want configured protected order", got)
 	}
+	if len(process.Runtime.routes) != 0 || len(process.deferredProtectedRoutes) != 0 {
+		t.Fatalf("protected profiles without static tools produced startup routes: executable=%#v deferred=%#v", process.Runtime.routes, process.deferredProtectedRoutes)
+	}
 	if err := process.Close(); err != nil {
 		t.Fatalf("Process.Close: %v", err)
 	}
@@ -93,26 +96,35 @@ func TestBundledWorkspaceEnrollment_Scenario11_ProviderNameMapping(t *testing.T)
 func TestBundledWorkspaceEnrollment_Scenario11_ProtectedStartupSkipsAnonymousDiscovery(t *testing.T) {
 	var publicRequests, protectedRequests atomic.Int32
 	public := discoveryTestServer(t, "public", &publicRequests)
-	protected := discoveryTestServer(t, "protected", &protectedRequests)
-	profiles := []permconfig.MCPServerProfile{
-		{Name: "public", URL: public.URL, Auth: permconfig.MCPAuthProfile{Mode: "none"}},
-		protectedConstructionProfileWithURL("GitHub_API", protected.URL),
-	}
+	protected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		protectedRequests.Add(1)
+		http.Error(w, "authorization required", http.StatusUnauthorized)
+	}))
+	t.Cleanup(protected.Close)
+	profile := protectedConstructionProfileWithURL("GitHub_API", protected.URL)
+	profile.Auth.OAuth.Tools = []permconfig.MCPStaticToolProfile{{Name: "reviewed", Description: "reviewed static candidate", InputSchema: []byte(`{"type":"object"}`)}}
+	withoutStatic := protectedConstructionProfileWithURL("Private_API", protected.URL)
 
-	routes, err := discoverRoutes(t.Context(), profiles, nil)
+	process, err := NewToolHiveProcess(t.Context(), []permconfig.MCPServerProfile{
+		{Name: "public", URL: public.URL, Auth: permconfig.MCPAuthProfile{Mode: "none"}},
+		profile,
+		withoutStatic,
+	}, "https://broker.example/callback", nil)
 	if err != nil {
-		t.Fatalf("discoverRoutes: %v", err)
+		t.Fatalf("NewToolHiveProcess: %v", err)
 	}
+	t.Cleanup(func() { _ = process.Close() })
 	if publicRequests.Load() == 0 {
 		t.Fatal("anonymous profile was not eagerly discovered")
 	}
 	if protectedRequests.Load() != 0 {
 		t.Fatalf("protected startup requests = %d, want zero before enrollment", protectedRequests.Load())
 	}
-	for _, route := range routes {
-		if route.BackendID == "GitHub_API" {
-			t.Fatalf("protected route admitted before authenticated discovery: %#v", route)
-		}
+	if len(process.Runtime.routes) != 1 || process.Runtime.routes[0].BackendID != "public" {
+		t.Fatalf("startup executable routes = %#v, want anonymous route only", process.Runtime.routes)
+	}
+	if len(process.deferredProtectedRoutes) != 1 || process.deferredProtectedRoutes[0].Tool.Name != "mcp__GitHub_API__reviewed" {
+		t.Fatalf("deferred protected candidates = %#v, want reviewed candidate retained privately", process.deferredProtectedRoutes)
 	}
 }
 
@@ -173,9 +185,9 @@ func TestBundledWorkspaceEnrollment_Scenario11_AuthContextStopsOnProcessClose(t 
 func TestBundledWorkspaceEnrollment_Scenario11_AnonymousCompatibility(t *testing.T) {
 	var requests atomic.Int32
 	server := discoveryTestServer(t, "status", &requests)
-	routes, err := discoverRoutes(t.Context(), []permconfig.MCPServerProfile{{Name: "Public_API", URL: server.URL, Auth: permconfig.MCPAuthProfile{Mode: "none"}}}, nil)
+	routes, err := discoverAnonymousRoutes(t.Context(), []permconfig.MCPServerProfile{{Name: "Public_API", URL: server.URL, Auth: permconfig.MCPAuthProfile{Mode: "none"}}}, nil)
 	if err != nil {
-		t.Fatalf("discoverRoutes: %v", err)
+		t.Fatalf("discoverAnonymousRoutes: %v", err)
 	}
 	if requests.Load() == 0 || len(routes) != 1 || routes[0].Tool.Name != "mcp__Public_API__status" {
 		t.Fatalf("anonymous discovery requests/routes = %d/%#v", requests.Load(), routes)
