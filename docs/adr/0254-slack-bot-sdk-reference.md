@@ -166,8 +166,7 @@ if they differ once the tree exists.
   sub-task, blocked on #821.
 - [Issue #821](https://github.com/stacklok/mecatl/issues/821) — the
   `@stacklok/mecatl` TypeScript SDK this bot consumes.
-- [Issue #872](https://github.com/stacklok/mecatl/issues/872) — the SDK mocking
-  testkit (ADR 0253, PR #875 as of this writing, not yet merged); the `mecated
+- [ADR 0253](./0253-sdk-mocking-testkit.md) — the mocking testkit; the `mecated
   --mock` development sequencing here follows the same offline-first discipline.
 - [ADR 0232](./0232-steer-while-running.md) — steer-while-running, relevant if the
   manual-approval/steer experiment extends to mid-run Slack replies.
