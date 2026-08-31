@@ -424,7 +424,9 @@ data:
           "serviceAccountsEnabled": false,
           "standardFlowEnabled": true,
           "surrogateAuthRequired": false,
-          "webOrigins": []
+          "webOrigins": [
+            "http://127.0.0.1:18473"
+          ]
         }
       ],
       "enabled": true,

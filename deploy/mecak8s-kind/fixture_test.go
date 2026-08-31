@@ -530,6 +530,9 @@ func TestMecak8sKindFixture_Scenario3_OptionalClientScopes(t *testing.T) {
 		`"access.token.claim": "true"`, `"id.token.claim": "false"`,
 		`"clientId": "mecatui-kind"`, `"pkce.code.challenge.method": "S256"`,
 		`"publicClient": true`, `"standardFlowEnabled": true`,
+		`"webOrigins": [
+            "http://127.0.0.1:18473"
+          ]`,
 		"\"optionalClientScopes\": [\n            \"mecak8s:access\",\n            \"offline_access\"",
 	} {
 		if !strings.Contains(text, want) {
