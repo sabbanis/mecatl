@@ -2,7 +2,7 @@
 id: 11-bundled-enrollment-authenticated-discovery
 title: Bundled enrollment and authenticated discovery
 blocked_by: [10a-toolhive-bundled-upstream-construction-repair]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""

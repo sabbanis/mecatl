@@ -2,8 +2,8 @@
 id: 10a-toolhive-bundled-upstream-construction-repair
 title: ToolHive bundled upstream construction repair
 blocked_by: [10-bundled-workspace-enrollment-domain-and-toolhive-chain]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-session-vmcp-authorization/10a-toolhive-bundled-upstream-construction-repair"
 worktree: ""
 issue: ""
 retries: 0
