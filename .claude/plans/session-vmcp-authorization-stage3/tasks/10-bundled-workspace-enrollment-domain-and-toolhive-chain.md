@@ -2,7 +2,7 @@
 id: 10-bundled-workspace-enrollment-domain-and-toolhive-chain
 title: Bundled protected workspace enrollment
 blocked_by: [08-command-root-https-vertical-and-documentation]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
