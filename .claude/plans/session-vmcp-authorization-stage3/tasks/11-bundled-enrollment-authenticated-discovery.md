@@ -2,8 +2,8 @@
 id: 11-bundled-enrollment-authenticated-discovery
 title: Bundled enrollment and authenticated discovery
 blocked_by: [10a-toolhive-bundled-upstream-construction-repair]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-session-vmcp-authorization/11-bundled-enrollment-authenticated-discovery"
 worktree: ""
 issue: ""
 retries: 0

@@ -2,7 +2,7 @@
 id: 12-mecatui-enrollment-controls-and-multi-backend-vertical
 title: Mecatui workspace enrollment and multi-backend vertical
 blocked_by: [11-bundled-enrollment-authenticated-discovery]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
