@@ -168,10 +168,16 @@ type recordingCapabilityQuerier struct {
 	backends    []string
 	description string
 	err         error
+	beforeQuery func(string) error
 }
 
 func (r *recordingCapabilityQuerier) QueryCapabilities(ctx context.Context, backend vmcp.Backend) (*aggregator.BackendCapabilities, error) {
 	r.backends = append(r.backends, backend.ID)
+	if r.beforeQuery != nil {
+		if err := r.beforeQuery(backend.ID); err != nil {
+			return nil, err
+		}
+	}
 	if r.err != nil {
 		return nil, r.err
 	}

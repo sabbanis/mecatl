@@ -15,23 +15,50 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
-func TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedDiscovery(t *testing.T) {
+func TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedQueryCapabilities(t *testing.T) {
 	runtime, opened := catalogueTestRuntime(t, nil, nil, "backend-a", "backend-b")
 	tokens := &recordingUpstreamTokens{credentials: map[string]upstreamtoken.UpstreamCredential{
-		"auth-session/provider-a": {AccessToken: "credential-a"},
-		"auth-session/provider-b": {AccessToken: "credential-b"},
+		"auth-session-a/provider-a": {AccessToken: "credential-a"},
+		"auth-session-b/provider-b": {AccessToken: "credential-b"},
 	}}
 	queries := &recordingCapabilityQuerier{wantTokens: map[string]string{"backend-a": "credential-a", "backend-b": "credential-b"}}
+	queries.beforeQuery = func(backend string) error {
+		if runtime.ProtectedCatalogueReady("session") || len(opened.Tools()) != 0 {
+			return errors.New("protected catalogue admitted before every provider-scoped query succeeded")
+		}
+		return nil
+	}
 	process := discoveryTestProcess(tokens, queries)
+	// Runtime retains only Process.QueryAuthenticatedCapabilities. Its capability
+	// dependency is the provider-scoped interface; this concrete proof double has
+	// no QueryAllCapabilities method available for the implementation to invoke.
+	if _, available := reflect.TypeOf(queries).MethodByName("QueryAllCapabilities"); available {
+		t.Fatal("provider-scoped capability seam unexpectedly exposes QueryAllCapabilities")
+	}
 	runtime.configureAuthenticatedDiscovery(process.QueryAuthenticatedCapabilities, nil)
-	grantCatalogueBundle(runtime, "session", "auth-session", "backend-a", "backend-b")
 
+	grantCatalogueBackend(runtime, "session", "backend-a", "auth-session-a")
+	if _, err := runtime.ConnectWorkspaceServices(t.Context(), "session"); err == nil {
+		t.Fatal("partial bundle connection started discovery")
+	}
+	if len(tokens.calls) != 0 || len(queries.backends) != 0 || runtime.ProtectedCatalogueReady("session") || len(opened.Tools()) != 0 {
+		t.Fatalf("partial bundle reached discovery/admission: token calls %v, queries %v, ready %t, tools %v", tokens.calls, queries.backends, runtime.ProtectedCatalogueReady("session"), namesOfCatalogue(opened.Tools()))
+	}
+
+	grantCatalogueBackend(runtime, "session", "backend-a", "auth-session-a")
+	grantCatalogueBackend(runtime, "session", "backend-b", "auth-session-b")
 	result, err := runtime.ConnectWorkspaceServices(t.Context(), "session")
 	if err != nil {
 		t.Fatalf("ConnectWorkspaceServices: %v", err)
 	}
 	if result.Status != ConnectionConnected || !runtime.ProtectedCatalogueReady("session") {
 		t.Fatalf("connected result/ready = %+v/%t", result, runtime.ProtectedCatalogueReady("session"))
+	}
+	if got, want := tokens.calls, []string{"auth-session-a/provider-a", "auth-session-b/provider-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("provider-scoped credential lookups = %v, want %v", got, want)
+	}
+	if got, want := queries.backends, []string{"backend-a", "backend-b"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("provider-scoped QueryCapabilities calls = %v, want %v", got, want)
 	}
 	tools := opened.Tools()
 	if got, want := namesOfCatalogue(tools), []string{"mcp__backend-a__status", "mcp__backend-b__status"}; !reflect.DeepEqual(got, want) {
@@ -41,14 +68,11 @@ func TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedDiscovery(t *testing
 	if err != nil || resultCall.IsError || resultCall.Content != "ok" {
 		t.Fatalf("authenticated frozen route execution = %+v, %v", resultCall, err)
 	}
-	if got := queries.backends; !reflect.DeepEqual(got, []string{"backend-a", "backend-b"}) {
-		t.Fatalf("provider-scoped QueryCapabilities calls = %v", got)
-	}
 
 	if _, err := runtime.ConnectWorkspaceServices(t.Context(), "session"); err != nil {
 		t.Fatalf("repeat ConnectWorkspaceServices: %v", err)
 	}
-	if got := queries.backends; !reflect.DeepEqual(got, []string{"backend-a", "backend-b"}) {
+	if got, want := queries.backends, []string{"backend-a", "backend-b"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("frozen catalogue refreshed within session: %v", got)
 	}
 }
@@ -201,6 +225,12 @@ func grantCatalogueBundle(runtime *Runtime, id session.SessionID, authSession To
 	for _, backend := range backends {
 		runtime.grants[controlTarget{sessionID: id, backendID: backend}] = downstreamGrant{accessToken: "broker-token", authSession: authSession}
 	}
+}
+
+func grantCatalogueBackend(runtime *Runtime, id session.SessionID, backend string, authSession ToolHiveAuthSessionID) {
+	runtime.mu.Lock()
+	defer runtime.mu.Unlock()
+	runtime.grants[controlTarget{sessionID: id, backendID: backend}] = downstreamGrant{accessToken: "broker-token", authSession: authSession}
 }
 
 func validAuthenticatedCandidate(backend, name string) *AuthenticatedCapabilities {
