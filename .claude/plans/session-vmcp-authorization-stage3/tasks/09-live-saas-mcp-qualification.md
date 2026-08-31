@@ -1,7 +1,7 @@
 ---
 id: 09-live-saas-mcp-qualification
 title: Manual real-SaaS MCP qualification
-blocked_by: [08-command-root-https-vertical-and-documentation, 12-mecatui-enrollment-controls-and-multi-backend-vertical]
+blocked_by: [08-command-root-https-vertical-and-documentation, 13-toolhive-reuse-consolidation]
 status: pending
 branch: ""
 worktree: ""

@@ -24,10 +24,8 @@ following dependency order:
 4. `12-mecatui-enrollment-controls-and-multi-backend-vertical` — blocked by Task 11; owns
    AC11.12–AC11.14 (non-permission mecatui controls, prompt gating, and a deterministic
    two-backend vertical over the real ToolHive chain and provider-scoped discovery path).
-5. `09-live-saas-mcp-qualification` Mode B — blocked by Task 12 in addition to its existing
-   Task 08 dependency; one-provider live GitHub qualification. Mode A's recorded evidence
-   remains valid, while the prior GitHub result predates Scenario 11 and does not prove
-   bundled enrollment.
-6. `13-toolhive-reuse-consolidation` — blocked by Task 09; reviews the qualified final path
-   against ToolHive public APIs, removes only genuine duplicated behavior, and records
-   remaining upstream limitations.
+5. `13-toolhive-reuse-consolidation` — blocked by Task 12; reviews the complete deterministic path against ToolHive public APIs, removes only genuine duplicated behavior, and records remaining upstream limitations.
+6. `09-live-saas-mcp-qualification` Mode B — blocked by Task 13 in addition to its existing
+   Task 08 dependency; one-provider live GitHub qualification against the consolidated path.
+   Mode A's recorded evidence remains valid, while the prior GitHub result predates Scenario 11
+   and does not prove bundled enrollment.

@@ -1,8 +1,8 @@
 ---
 id: 13-toolhive-reuse-consolidation
 title: ToolHive reuse consolidation
-blocked_by: [09-live-saas-mcp-qualification]
-status: pending
+blocked_by: [12-mecatui-enrollment-controls-and-multi-backend-vertical]
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""
