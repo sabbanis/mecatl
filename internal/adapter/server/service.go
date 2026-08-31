@@ -4385,6 +4385,9 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	if err := admitRunPurpose(sess, purpose); err != nil {
 		return nil, err
 	}
+	if s.cfg.VMCPBroker != nil && s.cfg.VMCPBroker.WorkspaceEnrollmentRequired() && !s.cfg.VMCPBroker.ProtectedCatalogueReady(id) {
+		return nil, fmt.Errorf("%w: workspace services must be connected before prompting", ErrFailedPrecondition)
+	}
 	if _, _, pending := sess.FailedStepRetryPending(); pending {
 		return nil, fmt.Errorf("%w: session %q has a pending failed-step retry", ErrFailedPrecondition, id)
 	}

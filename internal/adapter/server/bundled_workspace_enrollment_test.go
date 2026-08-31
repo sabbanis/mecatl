@@ -43,6 +43,16 @@ func TestBundledWorkspaceEnrollment_Scenario11_ConnectRequiresOwner(t *testing.T
 	if err != nil {
 		t.Fatalf("owner ConnectWorkspaceServices: %v", err)
 	}
+	repeated, err := svc.ConnectWorkspaceServices(aliceCtx, sess.ID)
+	if err != nil {
+		t.Fatalf("observe ConnectWorkspaceServices: %v", err)
+	}
+	if repeated.ID != presentation.ID {
+		t.Fatalf("repeat enrollment id = %q, want %q", repeated.ID, presentation.ID)
+	}
+	if _, err := svc.StartRunContent(aliceCtx, sess.ID, "run before admission", nil); !errors.Is(err, server.ErrFailedPrecondition) {
+		t.Fatalf("StartRunContent before catalogue admission = %v, want ErrFailedPrecondition", err)
+	}
 	if !reflect.DeepEqual(presentation.Backends, []string{"github", "slack"}) || presentation.Status != vmcpbroker.ConnectionPending {
 		t.Fatalf("presentation = %+v", presentation)
 	}
@@ -114,6 +124,43 @@ func TestBundledWorkspaceEnrollment_Scenario11_AllOrNothing(t *testing.T) {
 	t.Cleanup(func() { _ = reopened.Close() })
 	if restarted.ProtectedCatalogueReady("bundle") || len(reopened.Tools()) != 0 {
 		t.Fatal("restart/process loss restored a partial protected catalogue")
+	}
+}
+
+func TestBundledWorkspaceEnrollment_Scenario11_ServiceRestartRequiresEnrollment(t *testing.T) {
+	store := memstore.New()
+	alice := &session.Principal{Issuer: "https://idp.example", Subject: "alice", GrantType: session.GrantTypeUser}
+	ctx := session.WithPrincipal(context.Background(), alice)
+	firstRuntime := bundledEnrollmentRuntime(t, []string{"github"})
+	firstService := bundledEnrollmentService(t, store, firstRuntime)
+	sess, err := firstService.CreateSession(ctx, "/workspace", session.ModeDefault, session.Limits{})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	first, err := firstService.ConnectWorkspaceServices(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("first ConnectWorkspaceServices: %v", err)
+	}
+
+	restartedRuntime := bundledEnrollmentRuntime(t, []string{"github"})
+	restartedService := bundledEnrollmentService(t, store, restartedRuntime)
+	fresh, err := restartedService.ConnectWorkspaceServices(ctx, sess.ID)
+	if err != nil {
+		t.Fatalf("restart ConnectWorkspaceServices: %v", err)
+	}
+	if fresh.ID == "" || fresh.ID == first.ID || fresh.Status != vmcpbroker.ConnectionPending {
+		t.Fatalf("restart enrollment = %+v, prior id %q", fresh, first.ID)
+	}
+	persisted, err := store.Load(t.Context(), sess.ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	enrollment, ok := persisted.WorkspaceEnrollment()
+	if !ok || enrollment.ID != fresh.ID {
+		t.Fatalf("restart persisted enrollment = %+v, %t", enrollment, ok)
+	}
+	if restartedRuntime.ProtectedCatalogueReady(sess.ID) {
+		t.Fatal("restart replayed protected catalogue admission")
 	}
 }
 

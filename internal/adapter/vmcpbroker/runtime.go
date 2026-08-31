@@ -18,6 +18,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/golang-jwt/jwt/v5"
 	"github.com/ory/fosite"
 	toolhiveauth "github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
@@ -360,7 +361,10 @@ func (p *Process) QueryAuthenticatedCapabilities(ctx context.Context, authSessio
 		return AuthenticatedCapabilities{}, ErrAuthenticatedDiscovery
 	}
 	result := AuthenticatedCapabilities{BackendID: backendID, SupportsLogging: capabilities.SupportsLogging, SupportsSampling: capabilities.SupportsSampling, Tools: make([]ToolDefinition, 0, len(capabilities.Tools))}
-	privateValues := []string{providerName, string(authSession), credential.AccessToken, credential.IDToken}
+	privateValues := []string{string(authSession), credential.AccessToken, credential.IDToken}
+	if providerName != backendID {
+		privateValues = append(privateValues, providerName)
+	}
 	for _, candidate := range capabilities.Tools {
 		if containsPrivateCapabilityMaterial(candidate, privateValues) {
 			return AuthenticatedCapabilities{}, ErrAuthenticatedDiscovery
@@ -373,6 +377,16 @@ func (p *Process) QueryAuthenticatedCapabilities(ctx context.Context, authSessio
 		result.Tools = append(result.Tools, ToolDefinition{BackendID: backendID, Name: "mcp__" + backendID + "__" + candidate.Name, Description: candidate.Description, Schema: schema, ReadOnly: readOnly})
 	}
 	return result, nil
+}
+
+func (r *Runtime) configureAuthenticatedDiscovery(query func(context.Context, ToolHiveAuthSessionID, string) (AuthenticatedCapabilities, error), static []Route) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.authenticatedQuery = query
+	r.protectedStatic = make([]Route, len(static))
+	for i, route := range static {
+		r.protectedStatic[i] = copyRoute(route)
+	}
 }
 
 func containsPrivateCapabilityMaterial(candidate vmcp.Tool, privateValues []string) bool {
@@ -525,12 +539,14 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	runtime.authContext = authCtx
 	installToolHiveProcessClosers(runtime, func() error { return server.Stop(context.Background()) }, auth.Close, cancelAuth)
 	embedded := http.StripPrefix(brokerBasePath, auth.Handler())
-	return &Process{
+	process := &Process{
 		Runtime:                 runtime,
 		Handlers:                HandlerBundle{Authorization: embedded, Token: embedded, UpstreamCallback: embedded, Discovery: embedded, JWKS: embedded, ProtectedResource: authInfo, VMCP: vmcpHandler, Callback: CallbackHandler(runtime.Callback)},
 		deferredProtectedRoutes: construction.deferredProtectedRoutes,
 		discovery:               &authenticatedDiscovery{capabilities: capabilityAggregator, backends: backendRegistry, tokens: reader, providerNames: construction.providerNames},
-	}, nil
+	}
+	runtime.configureAuthenticatedDiscovery(process.QueryAuthenticatedCapabilities, construction.deferredProtectedRoutes)
+	return process, nil
 }
 
 type protectedToolHiveConstruction struct {
@@ -790,36 +806,38 @@ func (p *Process) Close() error {
 
 // Runtime owns the stable catalogue and opens session-local executable wrappers.
 type Runtime struct {
-	mu                sync.RWMutex
-	routes            []Route
-	caller            Caller
-	opener            sessionOpener
-	sessions          map[session.SessionID]*SessionTools
-	lifecycles        map[session.SessionID]*sessionLifecycle
-	tombstones        map[session.SessionID]struct{}
-	authorizeEndpoint string
-	callbackURL       string
-	transactionTTL    time.Duration
-	transactions      map[controlTarget]authorizationTransaction
-	authorizations    map[controlTarget]string
-	grants            map[controlTarget]downstreamGrant
-	disconnected      map[controlTarget]struct{}
-	refreshes         map[controlTarget]*refreshOperation
-	oauthBackend      string
-	protectedBackends []string
-	clientID          string
-	httpClient        *http.Client
-	tokenEndpoint     string
-	resource          string
-	diagnostics       port.Diagnostics
-	now               func() time.Time
-	lifecycleCtx      context.Context
-	cancelLifecycle   context.CancelFunc
-	sharedClosers     []namedCloser
-	authContext       context.Context
-	closeOnce         sync.Once
-	closeErr          error
-	closed            bool
+	mu                 sync.RWMutex
+	routes             []Route
+	caller             Caller
+	opener             sessionOpener
+	sessions           map[session.SessionID]*SessionTools
+	lifecycles         map[session.SessionID]*sessionLifecycle
+	tombstones         map[session.SessionID]struct{}
+	authorizeEndpoint  string
+	callbackURL        string
+	transactionTTL     time.Duration
+	transactions       map[controlTarget]authorizationTransaction
+	authorizations     map[controlTarget]string
+	grants             map[controlTarget]downstreamGrant
+	disconnected       map[controlTarget]struct{}
+	refreshes          map[controlTarget]*refreshOperation
+	oauthBackend       string
+	protectedBackends  []string
+	protectedStatic    []Route
+	authenticatedQuery func(context.Context, ToolHiveAuthSessionID, string) (AuthenticatedCapabilities, error)
+	clientID           string
+	httpClient         *http.Client
+	tokenEndpoint      string
+	resource           string
+	diagnostics        port.Diagnostics
+	now                func() time.Time
+	lifecycleCtx       context.Context
+	cancelLifecycle    context.CancelFunc
+	sharedClosers      []namedCloser
+	authContext        context.Context
+	closeOnce          sync.Once
+	closeErr           error
+	closed             bool
 }
 
 // ToolHiveRuntimeConfig binds the broker to its already-composed embedded
@@ -878,6 +896,7 @@ type downstreamGrant struct {
 	token        *oauth2.Token
 	accessToken  string
 	refreshToken string
+	authSession  ToolHiveAuthSessionID
 }
 
 type refreshOperation struct {
@@ -1296,7 +1315,7 @@ func (r *Runtime) OpenSession(id session.SessionID) (*SessionTools, error) {
 			return nil, err
 		}
 	}
-	opened := &SessionTools{sessionID: id, closeFunc: closeFunc, runtime: r}
+	opened := &SessionTools{sessionID: id, closeFunc: closeFunc, caller: caller, runtime: r}
 	tools := make([]tool.Tool, len(routes))
 	for i, route := range routes {
 		base := &sessionTool{sessionID: id, route: route, caller: caller, owner: opened}
@@ -1638,7 +1657,25 @@ func (r *Runtime) exchangeDownstreamCode(ctx context.Context, code, verifier str
 	if err != nil || !validBearerToken(token) {
 		return downstreamGrant{}, ErrInvalidControlTarget
 	}
-	return newDownstreamGrant(token), nil
+	grant := newDownstreamGrant(token)
+	authSession, err := toolHiveAuthSessionFromToken(token.AccessToken)
+	if err != nil {
+		return downstreamGrant{}, ErrInvalidControlTarget
+	}
+	grant.authSession = authSession
+	return grant, nil
+}
+
+func toolHiveAuthSessionFromToken(accessToken string) (ToolHiveAuthSessionID, error) {
+	claims := jwt.MapClaims{}
+	if _, _, err := new(jwt.Parser).ParseUnverified(accessToken, claims); err != nil {
+		return "", err
+	}
+	raw, ok := claims[upstreamtoken.TokenSessionIDClaimKey].(string)
+	if !ok || raw == "" {
+		return "", errors.New("missing ToolHive token session")
+	}
+	return ToolHiveAuthSessionID(raw), nil
 }
 
 // validBearerToken admits only an OAuth bearer credential. Empty TokenType is
@@ -1753,7 +1790,13 @@ func (r *Runtime) refreshDownstreamGrant(ctx context.Context, target controlTarg
 		}
 	} else if errors.Is(err, errDownstreamRefreshRejected) {
 		if current, ok := r.grants[target]; ok && current == expected {
-			delete(r.grants, target)
+			// A terminal provider refresh failure revokes the whole executable
+			// bundle. The already-admitted model catalogue remains frozen: the
+			// Service refuses reenrollment after prompting, and retained wrappers
+			// fail their grant check rather than changing a running catalogue.
+			for _, backend := range r.protectedBackends {
+				delete(r.grants, controlTarget{sessionID: target.sessionID, backendID: backend})
+			}
 		}
 	}
 	operation.err = err
@@ -1779,7 +1822,9 @@ func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, grant downstrea
 	if err != nil || !validBearerToken(refreshed) {
 		return downstreamGrant{}, errDownstreamRefreshRejected
 	}
-	return newDownstreamGrant(refreshed), nil
+	refreshedGrant := newDownstreamGrant(refreshed)
+	refreshedGrant.authSession = grant.authSession
+	return refreshedGrant, nil
 }
 
 // ForgetSession tombstones a canonical session, cancels its login and refresh
@@ -2012,16 +2057,18 @@ func (r *Runtime) Close() error {
 
 // SessionTools owns the wrappers for one session.
 type SessionTools struct {
-	mu             sync.RWMutex
-	tools          []tool.Tool
-	closed         bool
-	calls          sync.WaitGroup
-	closeOnce      sync.Once
-	ownedCloseOnce sync.Once
-	closeErr       error
-	sessionID      session.SessionID
-	closeFunc      func() error
-	runtime        *Runtime
+	mu              sync.RWMutex
+	tools           []tool.Tool
+	closed          bool
+	calls           sync.WaitGroup
+	closeOnce       sync.Once
+	ownedCloseOnce  sync.Once
+	closeErr        error
+	sessionID       session.SessionID
+	closeFunc       func() error
+	caller          Caller
+	protectedFrozen bool
+	runtime         *Runtime
 }
 
 // Tools returns a copy of the stable model-facing wrapper list.
