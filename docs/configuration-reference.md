@@ -225,7 +225,7 @@ OPERATOR-TIER OpenRouter downstream-provider routing (issue #480): a per-model p
 
 Tier: **operator**
 
-Strict OPERATOR-TIER Streamable HTTP MCP authority configuration. Command roots default to broker for mecak8s and global for mecated, embedded mecatui, and mecatequi (which rejects broker mode); existing mecak8s deployments must set mode: global to preserve direct profiles. Broker mode permits anonymous backends and at most one OAuth backend, whose broker.callback_url is required exactly when it is present. Authentication is a closed none/static_bearer/oauth union; OAuth supports preregistered or CIMD clients and local or environment credentials. All secret-shaped values are MECATL_* environment references, never values in YAML. Project mcp blocks are ignored with a value-free warning.
+Strict OPERATOR-TIER Streamable HTTP MCP authority configuration. Command roots default to broker for mecak8s and global for mecated, embedded mecatui, and mecatequi (which rejects broker mode); existing mecak8s deployments must set mode: global to preserve direct profiles. Broker mode permits anonymous backends and at most one OAuth backend, whose broker.callback_url is required exactly when it is present. Broker OAuth defaults to OIDC discovery; its explicit generic OAuth2 variant is broker-only, requires exact HTTPS authorization/token endpoints, and rejects ToolHive-unenforceable additional/private origin and redirect controls. Authentication is a closed none/static_bearer/oauth union. All secret-shaped values are MECATL_* environment references, never values in YAML. Project mcp blocks are ignored with a value-free warning.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -242,7 +242,12 @@ Strict OPERATOR-TIER Streamable HTTP MCP authority configuration. Command roots 
 | `mcp.servers[].auth.oauth` | `mcpoauthprofile` | `(absent)` | OAuth declares the OAuth identity, client, credentials, scopes, and network policy. |
 | `mcp.servers[].auth.oauth.profile` | `string` | `(empty)` | Profile is the required operator-defined credential identity profile. |
 | `mcp.servers[].auth.oauth.principal` | `string` | `(empty)` | Principal is the required operator-defined credential identity principal. |
-| `mcp.servers[].auth.oauth.issuer` | `string` | `(empty)` | Issuer is the required canonical exact HTTP(S) origin of the authorization server. |
+| `mcp.servers[].auth.oauth.issuer` | `string` | `(empty)` | Issuer is the required canonical exact HTTP(S) origin of the authorization server for OIDC upstreams. |
+| `mcp.servers[].auth.oauth.upstream` | `mcpoauthupstreamprofile` | `(absent)` | Upstream optionally selects OIDC discovery or explicit generic OAuth2 endpoints. Omitted preserves OIDC discovery. |
+| `mcp.servers[].auth.oauth.upstream.mode` | `string` | `(empty)` | Mode is exactly oidc or oauth2. |
+| `mcp.servers[].auth.oauth.upstream.oauth2` | `mcpoauth2upstreamprofile` | `(absent)` | OAuth2 contains the explicit endpoint configuration required by generic OAuth2. |
+| `mcp.servers[].auth.oauth.upstream.oauth2.authorization_endpoint` | `string` | `(empty)` |  |
+| `mcp.servers[].auth.oauth.upstream.oauth2.token_endpoint` | `string` | `(empty)` |  |
 | `mcp.servers[].auth.oauth.client` | `mcpoauthclientprofile` | `(absent)` | Client selects exactly one preregistered or CIMD client declaration. |
 | `mcp.servers[].auth.oauth.client.mode` | `string` | `(empty)` | Mode is exactly preregistered or cimd. |
 | `mcp.servers[].auth.oauth.client.preregistered` | `mcppreregisteredclientprofile` | `(absent)` | Preregistered declares a confidential client registered with the issuer. |
@@ -264,6 +269,7 @@ Strict OPERATOR-TIER Streamable HTTP MCP authority configuration. Command roots 
 | `mcp.servers[].auth.oauth.network.additional_origins` | `[]string` | `(absent)` | AdditionalOrigins lists canonical exact origins additionally allowed for OAuth traffic. |
 | `mcp.servers[].auth.oauth.network.private_origins` | `[]string` | `(absent)` | PrivateOrigins lists allowed origins that may resolve only to RFC1918 IPv4 or ULA IPv6 addresses. Loopback, link-local, metadata, unspecified, multicast, mapped, public, and other special addresses remain denied. |
 | `mcp.servers[].auth.oauth.network.max_redirects` | `int` | `0` | MaxRedirects is the redirect bound, from zero through five. |
+| `mcp.servers[].auth.oauth.tools` | `[]mcpstatictoolprofile` | `(absent)` | Tools declares this backend's model-facing tool catalog statically, bypassing live discovery for this backend. It is optional: a backend that tolerates an anonymous discovery connection can leave it empty and keep today's live-discovery behavior. Declare it when the upstream rejects an unauthenticated discovery call outright (e.g. GitHub's remote MCP server 401s on `initialize` itself), so the broker cannot discover its tools live before any grant exists. The operator is the source of truth for accuracy; a stale declaration surfaces as an ordinary failed tool call against the real upstream at execution time, never a broker construction failure. |
 
 ## Flag- / file-configured features (NOT in `settings.yaml`)
 

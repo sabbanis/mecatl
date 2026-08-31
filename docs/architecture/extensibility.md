@@ -95,8 +95,10 @@ for controller ownership, [ADR 0112](../adr/0112-mcp-oauth-loopback-runtime.md) 
 opt-in host runtime, and [ADR 0113](../adr/0113-operator-mcp-auth-profiles.md) for profile
 and command wiring.
 
-**Session-scoped vMCP broker (Stage 2 proof)** (`internal/adapter/vmcpbroker`) is
-not another `mcp.OAuthController` and is not a general MCP configuration route. It
+**Session-scoped vMCP broker (Stage 3 command-root proof)** (`internal/adapter/vmcpbroker`) is
+not another `mcp.OAuthController`. It consumes the same strict operator MCP block only when
+`mcp.mode` resolves exclusively to `broker`; global/direct MCP remains a separate,
+unchanged authority path. It
 keeps a configured, immutable broker catalogue and opens session-local ordinary-tool
 wrappers only after the host has reserved a canonical parent session ID. The private
 route (`BackendID`) stays in the wrapper; the model sees neither it nor broker tokens,
@@ -107,17 +109,29 @@ use the standard streaming-HTTP client. There is no stdio transport.
 
 The runtime owns the embedded ToolHive authserver/vMCP composition and process-wide
 close; each `SessionTools` owns its client transport, drains it, and then forgets only
-its session. It has no `engine/`/`engine/port` seam, snapshot field, public RPC, or
-mecatui command, and is not yet wired by `app.Build`; it is currently exercised only
-by hermetic in-process proofs. It does not reuse the direct-MCP controller, the
+its session. It remains root-internal and has no `engine/`/`engine/port` seam. Supported
+command roots build it through `app.Build`, mount its fixed handlers on the existing
+primary HTTP listener, and rehydrate enrolled sessions through the broker-aware factory.
+It does not reuse the direct-MCP controller, the
 `mcp/oauthlogin` loopback runtime, `LoginMCP`, Ozz lifecycle, or global manager
-credential lifecycle. One protected upstream lineage is supported. A second protected
-backend, or reconnect after disconnect, returns the explicit ToolHive
-`ConnectUpstream` limitation rather than creating another lineage. ToolHive v0.40.0
-owns upstream OAuth through its built-in default upstream client; no mecatl injection
-seam was found, so the broker path makes no claim to enforce proxy, DNS-pinning, or
-redirect policy. See [ADR 0237](../adr/0237-session-scoped-vmcp-broker.md) and
-[`STAGE2-RESULTS.md`](../../STAGE2-RESULTS.md).
+credential lifecycle. One protected upstream lineage is supported. Protected profiles use
+OIDC discovery by default. A broker-only `upstream.mode: oauth2` variant supports providers
+such as GitHub remote MCP by requiring exact HTTPS authorization and token endpoints and
+forbidding an issuer. It is rejected on the global/direct path. Existing preregistered
+client-secret environment references are reused; no secret value enters YAML.
+
+ToolHive v0.45.0 owns upstream OAuth through its built-in default upstream client; no
+mecatl injection seam is available. Generic OAuth2 therefore rejects non-empty
+`additional_origins` or `private_origins` and non-zero `max_redirects` rather than
+pretending those controls are enforced. The broker makes no claim to enforce proxy,
+DNS-pinning, additional/private origins, or redirect policy on that ToolHive request path.
+A second protected backend, or reconnect after disconnect, returns the explicit ToolHive
+`ConnectUpstream` limitation rather than creating another lineage. Transactions, grants,
+and transports are process-local. See
+[ADR 0245](../adr/0245-session-scoped-vmcp-broker.md),
+[ADR 0247](../adr/0247-broker-generic-oauth2-upstreams.md),
+[`STAGE2-RESULTS.md`](../../STAGE2-RESULTS.md), and
+[`STAGE3-RESULTS.md`](../../STAGE3-RESULTS.md).
 
 **Progressive tool disclosure** (pattern 9) — a tool may optionally implement
 `tool.Disclosable`; the built-in `tool.Search` tool (catalog name `ToolSearch`,

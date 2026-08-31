@@ -1,4 +1,4 @@
-# ADR 0238 — Configured resumable MCP authorization
+# ADR 0246 — Configured resumable MCP authorization
 
 - Status: Proposed
 - Date: 2026-08-27
@@ -8,7 +8,7 @@
 
 ## Context
 
-ADR 0237 established a root-internal ToolHive/vMCP Runtime with a fixed catalogue,
+ADR 0245 established a root-internal ToolHive/vMCP Runtime with a fixed catalogue,
 session-local wrappers, one protected upstream lineage, broker-owned credentials, and
 explicit process/session lifecycle. Its Stage 2 proof deliberately stopped before
 operator configuration, public controls, agent-loop suspension, durable pending state,
@@ -299,7 +299,7 @@ remain an upstream limitation rather than a test exclusion.
 ## See also
 
 - [Configured resumable MCP authorization acceptance plan](../acceptance/session-vmcp-authorization.md)
-- [ADR 0237 — session-scoped vMCP broker](./0237-session-scoped-vmcp-broker.md)
+- [ADR 0245 — session-scoped vMCP broker](./0245-session-scoped-vmcp-broker.md)
 - [ADR 0113 — operator-configured MCP authentication profiles](./0113-operator-mcp-auth-profiles.md)
 - [ADR 0027 — cloud-native resource and fidelity inventory](./0027-cloud-native.md)
 - [ADR 0020 — diagnostics](./0020-diagnostics.md)

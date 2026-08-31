@@ -85,7 +85,7 @@ a future Kubernetes Secret `resourceVersion` CAS backend. See
 
 ---
 
-## Session-scoped vMCP broker (ADR 0237, Stage 3 command-root proof)
+## Session-scoped vMCP broker (ADR 0245, Stage 3 command-root proof)
 
 `internal/adapter/vmcpbroker.Runtime` is root-internal, process-lifetime
 ToolHive/vMCP composition. It owns immutable `Route` values, the embedded ToolHive
@@ -120,17 +120,27 @@ does not route, recheck, interrupt, or execute on the holder's behalf.
 
 The proof deliberately remains separate from direct MCP OAuth: it does not reuse
 `mcp.OAuthController`, `mcp/oauthlogin`, `LoginMCP`, Ozz lifecycle, or the global MCP
-manager's credential lifecycle. ToolHive v0.45.0 owns the sole upstream OAuth path;
+manager's credential lifecycle. OIDC discovery remains the protected-upstream default.
+The broker-only generic OAuth2 variant requires exact canonical HTTPS authorization and
+token endpoints, forbids `issuer`, and exists primarily for GitHub remote MCP interop.
+Global/direct MCP rejects that selector and retains its established behavior. Both variants
+reuse only existing client declarations and client-secret environment references; no
+client-secret value belongs in settings.
+
+ToolHive v0.45.0 owns the sole upstream OAuth path;
 its default upstream HTTP client is accepted as-is because no mecatl injection seam
-exists. Accordingly, this proof does not claim proxy, DNS-pinning, or redirect
-controls for upstream OAuth. ToolHive likewise lacks targeted
+exists. Generic OAuth2 therefore requires `network: {}` and validation rejects non-empty
+`additional_origins`, non-empty `private_origins`, and non-zero `max_redirects` rather than
+accepting inert policy. Accordingly, this path does not claim proxy, DNS-pinning,
+additional/private-origin, or redirect enforcement for upstream OAuth. ToolHive likewise lacks targeted
 `ConnectUpstream(existingAuthSession, upstream)`, so only one protected upstream
 lineage is supported and reconnect after disconnect is an explicit typed limitation.
 The final reuse review also records that ToolHive has no public PKCE-client
 registration lifecycle API, so the isolated Fosite client registration remains
 necessary. Production sidecar exposure, ingress/Helm/Kind topology, and external
-callback deployment remain Stage 5. See [ADR 0237](../adr/0237-session-scoped-vmcp-broker.md),
-[ADR 0238](../adr/0238-configured-resumable-mcp-authorization.md), and
+callback deployment remain Stage 5. See [ADR 0245](../adr/0245-session-scoped-vmcp-broker.md),
+[ADR 0246](../adr/0246-configured-resumable-mcp-authorization.md),
+[ADR 0247](../adr/0247-broker-generic-oauth2-upstreams.md), and
 [`STAGE3-RESULTS.md`](../../STAGE3-RESULTS.md).
 
 ---

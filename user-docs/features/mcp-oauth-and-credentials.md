@@ -19,9 +19,10 @@ available profile modes are `none`, `static_bearer`, and `oauth`.
 ## Availability
 
 Global MCP authentication profiles are supported by `mecated`, `mecatequi`,
-`mecak8s`, and mecatui's embedded server. They are operator configuration, not
-project configuration. A project `.mecatl/settings.yaml` cannot install or
-weaken an MCP credential profile.
+`mecak8s`, and mecatui's embedded server. The separate session broker is supported by
+`mecated` and `mecak8s`; mecak8s defaults to broker authority, while the other roots
+default to global authority. Both are operator configuration, not project configuration.
+A project `.mecatl/settings.yaml` cannot install or weaken an MCP credential profile.
 
 A server configured with `--mcp-server name=URL` can also use the legacy
 `MCP_<NAME>_TOKEN` bearer-token convention. Operator `mcp.servers` profiles are
@@ -74,6 +75,55 @@ export MECATL_MCP_CREDENTIAL_KEY="$(cat "$HOME/.local/state/mecatl-mcp.key")"
 
 Do not put the key, client secret, access token, or refresh token in source
 control, a command argument, `settings.yaml`, or a prompt.
+
+## Session broker and generic OAuth2
+
+Broker profiles keep OAuth grants scoped to the mecatl session. They default to OIDC
+discovery from `issuer`. For a provider without compatible OIDC discovery, broker mode can
+instead use exact generic OAuth2 endpoints. GitHub remote MCP is the motivating example:
+
+```yaml
+mcp:
+  mode: broker
+  broker:
+    callback_url: https://agent.example/v1/mcp/authorization/callback
+  servers:
+    - name: github
+      url: https://api.githubcopilot.com/mcp/
+      auth:
+        mode: oauth
+        oauth:
+          upstream:
+            mode: oauth2
+            oauth2:
+              authorization_endpoint: https://github.com/login/oauth/authorize
+              token_endpoint: https://github.com/login/oauth/access_token
+          client:
+            mode: preregistered
+            preregistered:
+              id: mecatl-github-mcp
+              secret_env: MECATL_GITHUB_MCP_CLIENT_SECRET
+          scopes: [repo]
+          network: {}
+```
+
+Register the exact public HTTPS `callback_url` with the OAuth application. Replace the
+illustrative client ID and scopes with least-privilege operator values, and inject the
+referenced client secret through the process environment or deployment Secret—never put
+the value in YAML. Confirm GitHub's endpoints and remote MCP URL against current provider
+documentation before deployment.
+
+The explicit `oauth2` selector is broker-only. It requires both exact HTTPS endpoints,
+forbids `issuer`, and performs no OIDC discovery. Global/direct profiles reject it and keep
+their existing OAuth behavior. ToolHive does not expose the upstream HTTP seam needed to
+enforce mecatl's additional-origin, private-origin, or redirect controls, so generic OAuth2
+requires `network: {}`; configuring any of those controls fails startup instead of silently
+accepting an unenforced policy.
+
+The broker supports at most one protected backend and keeps authorization transactions,
+grants, and transports in one process. Run one replica while an authorization is active;
+a restart or another replica cannot continue it. Mecak8s operators preserving existing
+direct/global profiles must set `mcp.mode: global` explicitly.
 
 ## Authorize a local OAuth profile
 
@@ -134,8 +184,9 @@ environment-variable name.
 - DCR and ACP cannot provide OAuth profiles or install/drive authorization. After
   an operator authorizes a global profile, ACP sessions may invoke its shared
   tools under ordinary permissions.
-- Per-session MCP, inline agent MCP servers, and discovered ToolHive servers do
-  not support OAuth profiles in the current deployment.
+- Per-session and inline agent MCP servers do not use global OAuth profiles. The
+  separately configured session broker supports broker-owned OAuth for its fixed operator
+  catalogue; discovered ToolHive servers remain outside this profile path.
 - A configured profile that is unreachable or malformed is a deployment error;
   it does not silently become an unauthenticated server.
 - OAuth credentials authenticate the MCP connection. They do not grant the

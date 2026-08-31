@@ -1,4 +1,4 @@
-# ADR 0237 — Session-scoped vMCP broker for protected MCP backends
+# ADR 0245 — Session-scoped vMCP broker for protected MCP backends
 
 - Status: Proposed
 - Date: 2026-08-26

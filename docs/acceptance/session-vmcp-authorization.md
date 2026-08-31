@@ -2,7 +2,7 @@
 
 **Phase:** capability — operator-configured session broker and resumable MCP authorization
 **Status:** in-progress, 2026-08-27. Synthesized from the Stage 3 handover, the accepted configuration discussion, and the completed five-axis `StateAuthorizing` review.
-**ADR:** [ADR-0238](../adr/0238-configured-resumable-mcp-authorization.md) — one MCP authority mode, durable authorizing state, and exact continuation.
+**ADR:** [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) — one MCP authority mode, durable authorizing state, and exact continuation; [ADR-0247](../adr/0247-broker-generic-oauth2-upstreams.md) — broker-only explicit generic OAuth2 upstreams.
 **Accumulator branch:** `acc/session-vmcp-authorization` (off `acc/session-vmcp-broker`).
 
 The smallest set of work that lets an administrator configure MCP once, lets
@@ -27,7 +27,7 @@ demonstrate, not which packages happen to exist.
 - [ADR-0113](../adr/0113-operator-mcp-auth-profiles.md) already establishes one strict,
   operator-tier MCP configuration and one canonical loader. Broker mode extends that
   route; it does not add a second profile file or parser.
-- [ADR-0237](../adr/0237-session-scoped-vmcp-broker.md) fixes the Stage 2 boundary:
+- [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) fixes the Stage 2 boundary:
   stable session-local tools, one protected lineage, broker-owned credentials, and no
   ToolHive/OAuth types in the engine.
 - [ADR-0027](../adr/0027-cloud-native.md) requires every process/session resource and
@@ -63,7 +63,42 @@ mcp:
 `mcp.broker` contains broker-only options; its presence does not enable the broker.
 `callback_url` is the exact trusted HTTPS redirect URI and is required only when broker
 mode contains an OAuth profile. Runtime transaction expiry uses a fixed documented
-value rather than another operator knob.
+value rather than another operator knob. Protected upstreams default to OIDC discovery.
+A broker-only generic OAuth2 upstream instead supplies exact HTTPS authorization and token
+endpoints and forbids `issuer`; global/direct MCP rejects this selector and remains
+unchanged. For example, GitHub remote MCP uses the following protocol shape (the client ID,
+scopes, and registered callback remain operator-specific):
+
+```yaml
+mcp:
+  mode: broker
+  broker:
+    callback_url: https://agent.example/v1/mcp/authorization/callback
+  servers:
+    - name: github
+      url: https://api.githubcopilot.com/mcp/
+      auth:
+        mode: oauth
+        oauth:
+          upstream:
+            mode: oauth2
+            oauth2:
+              authorization_endpoint: https://github.com/login/oauth/authorize
+              token_endpoint: https://github.com/login/oauth/access_token
+          client:
+            mode: preregistered
+            preregistered:
+              id: mecatl-github-mcp
+              secret_env: MECATL_GITHUB_MCP_CLIENT_SECRET
+          scopes: [repo]
+          network: {}
+```
+
+Explicit OAuth2 accepts only `network: {}`: non-empty `additional_origins` or
+`private_origins`, and non-zero `max_redirects`, are rejected because ToolHive's upstream
+client cannot enforce them. This fail-closed rejection replaces any claim that those
+controls apply. OIDC remains the default, and both variants retain the one-protected-backend
+and process-local broker limits ([ADR-0247](../adr/0247-broker-generic-oauth2-upstreams.md)).
 
 **Acceptance:**
 - AC1.1: An omitted `mcp.mode` resolves to `broker` in `mecak8s` and `global` in
@@ -78,12 +113,14 @@ value rather than another operator knob.
   profiles plus at most one OAuth profile, rejects `static_bearer`, and never constructs
   a global MCP manager or direct `OAuthController` for those profiles.
   - verify: `TestSessionMCPAuthorization_Scenario1_BrokerModeIsExclusive`
-- AC1.4: Broker OAuth reuses and validates issuer, client, scopes, refresh intent, and
-  network-policy vocabulary where the Runtime can apply it, while global credential
-  identity/source fields (`profile`, `principal`, and `credentials`) are rejected in
-  broker mode and remain required in global OAuth mode. Configuration and docs do not
-  claim that mecatl enforces egress controls inside ToolHive's non-injectable upstream
-  OAuth client.
+- AC1.4: Broker OAuth defaults to OIDC discovery and reuses the existing client, scopes,
+  refresh-intent, and network-policy vocabulary where the Runtime can apply it. Broker-only
+  generic OAuth2 requires exact HTTPS authorization/token endpoints, forbids `issuer`, and
+  rejects non-empty additional/private origins or non-zero redirect limits because ToolHive
+  cannot enforce them. Global/direct MCP rejects the upstream selector and remains unchanged.
+  Global credential identity/source fields (`profile`, `principal`, and `credentials`) are
+  rejected in broker mode and remain required in global OAuth mode. Configuration and docs
+  never claim enforcement inside ToolHive's non-injectable upstream OAuth client.
   - verify: `TestSessionMCPAuthorization_Scenario1_ModeSpecificOAuthSchema`
 - AC1.5: `mcp.broker.callback_url` is required exactly when broker mode has an OAuth
   backend, must be an absolute HTTPS URL without userinfo/query/fragment, and is rejected
@@ -171,7 +208,7 @@ The server reserves the canonical session ID before opening broker state, then m
 session-local wrappers through the existing `assembleCatalog` path. A durable non-secret
 broker enrollment/configuration identity makes restored sessions rebuild the same class
 of per-session catalogue or fail loudly; shared/global fallback is forbidden
-([ADR-0237](../adr/0237-session-scoped-vmcp-broker.md)).
+([ADR-0245](../adr/0245-session-scoped-vmcp-broker.md)).
 
 **Acceptance:**
 - AC3.1: Session ID reservation precedes `Runtime.OpenSession`, and create/save/factory
@@ -333,7 +370,7 @@ not a permission verdict. The public operation is **cancel** only—there is no 
 OAuth `deny` vocabulary. Cancellation resolves with status `cancelled` and permits a
 later fresh attempt. The client cannot assert OAuth success. Runtime callback completion
 remains broker-owned, and only a subsequent `Connect == connected` observation may start
-the continuation ([ADR-0238](../adr/0238-configured-resumable-mcp-authorization.md)).
+the continuation ([ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md)).
 
 The service linearization is: owner authorization, keyed `runEntryMu`, acquire/confirm the
 session lease, reload and validate the snapshot, perform the bounded Runtime state check,
@@ -546,14 +583,14 @@ new reviewed ADR explicitly accepts the break.
 
 | Item | Defer-to | ADR / decision |
 |---|---|---|
-| Durable/shared multi-replica broker transactions and credentials | distributed broker stage | [ADR-0238](../adr/0238-configured-resumable-mcp-authorization.md) |
-| Remote sidecar broker protocol and authentication | deployment/sidecar stage | [ADR-0237](../adr/0237-session-scoped-vmcp-broker.md) |
-| Second protected backend and reconnect after permanent `Disconnect` | ToolHive `ConnectUpstream` capability | [ADR-0237](../adr/0237-session-scoped-vmcp-broker.md) |
-| Required Kind/Helm qualification and browser ingress journey | optional deployment qualification / production deployment stage | [ADR-0238](../adr/0238-configured-resumable-mcp-authorization.md) |
-| Production ingress, DNS, certificate, and Secret rotation qualification | production deployment stage | [ADR-0238](../adr/0238-configured-resumable-mcp-authorization.md) |
-| Broad external-provider interoperability matrix | provider qualification stage | [ADR-0238](../adr/0238-configured-resumable-mcp-authorization.md) |
-| ToolHive residual `httprc` goroutine remediation | upstream ToolHive | [ADR-0237](../adr/0237-session-scoped-vmcp-broker.md) |
-| Another OAuth client/controller | excluded | [ADR-0237](../adr/0237-session-scoped-vmcp-broker.md) |
+| Durable/shared multi-replica broker transactions and credentials | distributed broker stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
+| Remote sidecar broker protocol and authentication | deployment/sidecar stage | [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) |
+| Second protected backend and reconnect after permanent `Disconnect` | ToolHive `ConnectUpstream` capability | [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) |
+| Required Kind/Helm qualification and browser ingress journey | optional deployment qualification / production deployment stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
+| Production ingress, DNS, certificate, and Secret rotation qualification | production deployment stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
+| Broad external-provider interoperability matrix | provider qualification stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
+| ToolHive residual `httprc` goroutine remediation | upstream ToolHive | [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) |
+| Another OAuth client/controller | excluded | [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) |
 
 ## Sequencing recommendation
 
