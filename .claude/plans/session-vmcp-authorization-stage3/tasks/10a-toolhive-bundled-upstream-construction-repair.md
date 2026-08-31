@@ -2,12 +2,12 @@
 id: 10a-toolhive-bundled-upstream-construction-repair
 title: ToolHive bundled upstream construction repair
 blocked_by: [10-bundled-workspace-enrollment-domain-and-toolhive-chain]
-status: done
-branch: "plan-session-vmcp-authorization/10a-toolhive-bundled-upstream-construction-repair"
+status: in-progress
+branch: ""
 worktree: ""
 issue: ""
 retries: 0
-last_error: ""
+last_error: "Task 11 found the composed ToolHive provider-scoped QueryCapabilities seam was not retained"
 accumulator: acc/session-vmcp-authorization
 ---
 
