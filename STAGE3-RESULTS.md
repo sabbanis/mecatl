@@ -27,16 +27,41 @@ client has no mecatl proxy, DNS-pinning, or redirect-policy injection seam.
 
 ## ToolHive reuse review
 
-The final Stage 3 mounting path reuses `EmbeddedAuthServer`, the ToolHive vMCP server
-handler, incoming-auth middleware, aggregator, session factory, and `HandlerBundle.Mount`.
-It adds no OAuth server or vMCP protocol implementation and no second listener or route
-literals. The remaining ToolHive reuse limitations identified in
-`TOOLHIVE-REUSE-REVIEW.md` are: ToolHive has no public PKCE-client registration
-lifecycle API, so the isolated Fosite client registration stays necessary; and its
-residual `httprc` goroutines have no goleak suppression in mecatl. The command-root
-evidence is a loopback-TLS fixture only; it is not a real SaaS, sidecar, ingress,
-Helm/Kind, or external-callback deployment proof. Production sidecar,
-ingress/Helm/Kind external-callback topology remains Stage 5.
+The final review found no additional safe consolidation through ToolHive v0.45.0's
+public APIs. `NewToolHiveProcess` (`internal/adapter/vmcpbroker/runtime.go`) already
+composes the exact ToolHive `EmbeddedAuthServer`, ordered `UpstreamRunConfig` list,
+incoming-auth middleware, `InProcessService`, outgoing `UpstreamInject` strategy,
+immutable registry, HTTP backend client, aggregator, session factory, and vMCP server
+handler. `QueryAuthenticatedCapabilities` retains provider-scoped
+`Aggregator.QueryCapabilities`; `QueryAllCapabilities` is documented as continuing after
+backend failures and cannot satisfy fail-closed atomic catalogue admission.
+
+The earlier Stage 2 duplication findings are resolved. `exchangeDownstreamCode` and
+`exchangeDownstreamRefresh` use `x/oauth2` and retain complete token state;
+`scopedGrantTokenSource` refreshes before dispatch, so no tool-result authorization
+classifier or ambiguous MCP-call replay remains. This is the downstream public-PKCE
+client of ToolHive's embedded server; ToolHive remains the sole upstream OAuth,
+consent-chain, credential-storage/refresh, and bearer-injection authority.
+
+The mecatl-owned residuals are necessary boundaries: `newProtectedToolHiveConstruction`
+and `toolHiveProviderName` provide collision-checked private provider mapping and
+`UpstreamInject.ProviderName` binding; `Service.ConnectWorkspaceServices`
+(`internal/adapter/server/workspace_enrollment.go`) enforces owner admission before Runtime
+provides canonical parent-session correlation;
+`freezeProtectedCatalogue` (`internal/adapter/vmcpbroker/workspace_enrollment.go`) stages
+and validates every provider result before one session-local freeze; and `Runtime.Close`
+preserves session-drain, vMCP, authserver, then context shutdown ordering. ToolHive still
+has no targeted `ConnectUpstream`, public PKCE-client registration lease/removal API,
+upstream OAuth HTTP-client injection seam, fail-closed all-backend capability query, or
+aggregate lifecycle owner for this in-process graph. Its residual `httprc` goroutines
+still have no goleak suppression in mecatl.
+
+The deterministic Scenario 11 proof is the offline two-protected-backend TLS fixture
+`TestBundledWorkspaceEnrollment_Scenario11_TwoBackendVertical`; it is not a live GitHub
+qualification. The Task 09 Mode B run below used one protected backend and a static
+catalogue and remains separate evidence. Production sidecar and ingress/Helm/Kind
+external-callback topology remain Stage 5. Full API/symbol evidence is in
+`TOOLHIVE-REUSE-REVIEW.md`.
 
 ## Qualification run — 2026-08-30
 
