@@ -24,7 +24,12 @@ can use anything. Fabric's position is that most of what an agent needs
 from a remote service is already expressible as filesystem operations,
 and that the operations which aren't (invoking behavior, subscribing
 to change) can be modeled *as* file operations rather than as a
-separate protocol layered on top.
+separate protocol layered on top. What MCP calls a "tool call" is, in
+an agent-driven context, an ordinary `call` (§6) on a `callable` path —
+a **remote tool call** in that specific context, though `call` itself
+is deliberately not agent-specific vocabulary (see Goal 9): the same
+op serves a human via a FUSE mount, a workflow trigger, or any other
+non-agent caller identically.
 
 ### Goals
 
@@ -42,7 +47,7 @@ separate protocol layered on top.
 5. Support knowledge-work use cases beyond development — a bundle of
    markdown, a support ticket queue, a customer knowledge base, a
    design spec — as first-class citizens, not just source trees. Git
-   is one possible backing store among several (see §15 for the OKF
+   is one possible backing store among several (see §16 for the OKF
    mapping), never assumed.
 6. Support **project-scoped** work: a session's root need not be a
    server's whole namespace. A client can be handed a mount rooted at
@@ -159,7 +164,7 @@ support for basic correctness.
 | `write` | `PUT /files/{path}` | `If-Match` (ETag) for CAS; ignored offset if `append_only` |
 | `create` | `POST /files/{path}` | |
 | `remove` | `DELETE /files/{path}` | |
-| `call` | `POST /files/{path}` on a `callable` path | See §6 |
+| `call` | `POST /call/{path}` on a `callable` path | See §6; distinct from `create`'s `POST /files/{path}` |
 | `walk` | implicit in path resolution | Servers MAY expose batch-walk for round-trip efficiency |
 
 Only `stat` and `readdir` are mandatory for every server. All others
@@ -183,6 +188,24 @@ GET /files/{path}/?range=entries=0-99   # head
 GET /files/{path}/?range=entries=-50    # tail (requires known total)
 ```
 
+### 4.3 Control endpoints (non-resource)
+
+Session establishment, subscriptions, and exclusive locking are not
+resource-shaped reads/writes — they manage the SESSION or a HANDLE,
+not a path's content — and live in their own small table rather than
+crowding the resource-shaped ops above:
+
+| Op | HTTP mapping | Notes |
+|---|---|---|
+| `session` | `POST /session` | Establishes a session/zone; see §9.2 |
+| `watch` | `POST /watch/{path}` | Subscribes to change; see §10 |
+| `lock` | `POST /lock/{path}` | Acquires an `exclusive` handle's lease. `Timeout` header, returns a lease id. `DELETE /lock/{path}` releases early. See §5 |
+
+This table is still the WIRE floor. An app consuming Fabric through a
+client library, or through a proxy that already speaks Fabric on one
+side, does not usually hand-implement any of these three itself — see
+§14, Implementation Layers.
+
 ---
 
 ## 5. Handle Kinds
@@ -190,9 +213,13 @@ GET /files/{path}/?range=entries=-50    # tail (requires known total)
 Declared per-path via flags; a client checks before assuming a mode is
 available.
 
-- **Exclusive** (`exclusive` flag) — one open handle at a time. Must
-  carry a lease/timeout (analogous to WebDAV `LOCK`'s `Timeout`
-  header) so a crashed holder doesn't wedge the lock forever.
+- **Exclusive** (`exclusive` flag) — one open handle at a time,
+  acquired and released via the `/lock/{path}` control endpoint
+  (§4.3): `POST /lock/{path}` with a `Timeout` header returns a lease
+  id; `DELETE /lock/{path}` releases it early. The `Timeout` is
+  mandatory — analogous to WebDAV `LOCK`'s `Timeout` header — so a
+  crashed holder doesn't wedge the lock forever; an unrenewed lease
+  simply expires. Contention returns `423` (§11).
 - **CAS** (implicit wherever `stat` returns an ETag) — `write` requires
   `If-Match`; mismatch → `409`. This is standard HTTP conditional
   request semantics, not a bespoke mechanism.
@@ -209,8 +236,9 @@ available.
 
 ## 6. Calls
 
-A `callable` path responds to `call` (`POST` to its own path) and
-`stat` describes its schema:
+A `callable` path responds to `call` (`POST /call/{path}`, distinct
+from `create`'s `POST /files/{path}` — see §4) and `stat` describes
+its schema:
 
 ```json
 // GET /stat/tools/resize_image
@@ -219,6 +247,8 @@ A `callable` path responds to `call` (`POST` to its own path) and
   "input_schema": { ... },
   "output_schema": { ... }
 }
+
+// POST /call/tools/resize_image
 ```
 
 ### 6.1 Synchronous vs. long-running
@@ -237,8 +267,22 @@ timeout-then-retry doesn't double-execute.
 
 A callable file MAY, instead of executing server-side, return its own
 contents with a single-use, request-bound credential injected — the
-descriptor is a fully-parameterized, ready-to-fire HTTP request. See
-§9 for the security model this requires.
+descriptor is a fully-parameterized, ready-to-fire HTTP request:
+
+```json
+{
+  "method": "POST",
+  "url": "https://api.example.com/resize?token=...",
+  "headers": { "Authorization": "Bearer <execution-token>" },
+  "body": { "width": 800, "height": 600 }
+}
+```
+
+The execution token rides an ordinary `Authorization: Bearer` header —
+the same shape as a zone token (§9.1) — so firing the descriptor
+requires no protocol-specific client code: a generic HTTP client
+executes exactly the request it was handed. See §9 for the security
+model this requires.
 
 ---
 
@@ -248,6 +292,7 @@ A server MAY expose `/prot/bin/shell` (or any callable path) accepting
 a recursive, tagged node grammar:
 
 ```json
+// POST /call/prot/bin/shell
 {
   "version": 1,
   "type": "pipeline",
@@ -276,9 +321,17 @@ a recursive, tagged node grammar:
   descriptive metadata — silently skipping an unrecognized stage
   (e.g. a future authorization-check node type) must never be treated
   as a no-op.
-- **Depth/recursion limits are mandatory** given the grammar is
-  genuinely recursive (`parallel`, `conditional`, nested `pipeline`
-  nodes).
+- **Depth/recursion limits are mandatory** given nested `pipeline`
+  stages are already part of the core grammar, and any future
+  recursive node type (below) will compound this.
+- **`parallel` and `conditional` node types are RESERVED, not yet
+  specified.** They are named here as the shape of what recursion in
+  this grammar implies, but real control-flow semantics — fan-out
+  concurrency limits, partial-failure handling, branch selection —
+  deserve their own design pass, not a name with no schema. A server
+  MUST reject them today via the unknown-`type` fail-closed rule
+  above; a client MUST NOT assume they exist until a future minor
+  version defines them.
 
 ### 7.2 Standard commands
 
@@ -288,6 +341,30 @@ is interoperable with any client's expectations of it. A command
 graduates to "standard" only when clients benefit from assuming a
 fixed schema without per-server discovery; domain-specific behavior
 stays an ordinary capability instead.
+
+Per §7.1, a standard command's "fixed schema" is its **argv
+contract** — the flags and positional arguments a client may assume it
+accepts — not a JSON schema object; the command is invoked as an
+ordinary `exec` stage (or directly via `POST /call/prot/bin/{name}`)
+with `argv` set accordingly.
+
+- **`grep`** — `argv: ["grep", "-r"?, "-i"?, "-n"?, <pattern>, <path>]`.
+  `-r` recurses `<path>` (a directory); `-i` is case-insensitive; `-n`
+  prefixes each match with its line number (meaningless, and safely
+  ignorable, on a binary/virtual path). `<pattern>` is a plain regular
+  expression — no server-specific dialect extensions. Output: one
+  match per line, `<path>:<line>:<content>` when `-n` is set, else
+  `<path>:<content>`.
+- **`find`** — `argv: ["find", <path>, "-name"?, <glob>, "-type"?, "f"|"d"]`.
+  `<path>` is the subtree root; `-name` filters by a glob against the
+  basename; `-type f`/`-type d` restricts to files or directories.
+  Neither flag is required — `find <path>` alone lists the whole
+  subtree. Output: one matching path per line.
+
+Both commands are read-only by definition and never mutate a path. A
+server declaring support for one MUST implement exactly this
+contract, not a superset or subset of it — that is what "fixed
+schema" buys a client that skips per-server discovery.
 
 ---
 
@@ -569,11 +646,15 @@ whittled down by permission checks after the fact.
 
 Distinct from the zone token: a single-use, request-bound,
 audience-bound credential minted for exactly one pre-built call (§6.3).
-Not a general bearer credential — possessing it authorizes exactly the
-request it was signed over (method + URL + body hash), nothing else.
-Requires both single-use enforcement *and* a short TTL — single-use
-alone does not protect an unfired, leaked token from sitting live
-indefinitely.
+It travels as an ordinary `Authorization: Bearer <token>` header on the
+descriptor's own request — the same header shape as a zone token
+(§9.1), so a client never needs protocol-specific code to know it is
+holding a different kind of credential. Not a general bearer
+credential despite the header name — possessing it authorizes exactly
+the request it was signed over (method + URL + body hash), nothing
+else. Requires both single-use enforcement *and* a short TTL —
+single-use alone does not protect an unfired, leaked token from
+sitting live indefinitely.
 
 ### 9.4 Zone vs. execution token propagation
 
@@ -732,7 +813,42 @@ MUST check before assuming.
 
 ---
 
-## 14. Versioning
+## 14. Implementation Layers
+
+§13's conformance floor (`stat` + `readdir`, honest flags, fail-closed
+unknowns) is the WIRE minimum — what any server must expose, however
+it is built. It is not a claim about how much code an individual
+implementer has to write, and the two should not be conflated.
+
+In practice, three layers absorb the wire mechanics so a participant's
+own code rarely touches raw HTTP/JSON at all:
+
+- **A client library** — encodes/decodes the JSON envelopes, retries a
+  CAS write on `409`, injects the zone/execution token's
+  `Authorization` header, and exposes an ordinary function-call API
+  (`read(path)`, `call(path, args)`) to the app using it.
+- **A server library** — the mirror image: routes incoming requests to
+  a backend's `stat`/`readdir`/`read`/... implementation and enforces
+  the auth model (§9), so a server implementer writes a handful of
+  backend-specific methods, not a router.
+- **A proxy** — a Fabric server on one side that is itself a Fabric
+  *client* (or a client of some other API) on the other, translating
+  between the two. A proxy is not a third kind of complexity to design
+  for: it is typically built from the SAME client and/or server
+  library as any other participant, just wired to a different
+  backend (§16.4's git-forge adapter, and the case studies in §17,
+  are all proxies in this sense).
+
+None of this is normative — a server that hand-rolls its own HTTP
+routing is exactly as conformant as one built on a library. The point
+is that the app-level minimum to participate is usually SMALLER than
+the wire-level control-endpoints table in §4.3, not larger: an app
+using a client library never implements `session`/`watch`/`lock`
+itself, because the library already speaks them.
+
+---
+
+## 15. Versioning
 
 Versioned `<major>.<minor>`. Minor versions add optional fields,
 flags, or standard commands. Major versions may change reserved paths
@@ -743,7 +859,7 @@ consistent with the flags-based discovery model throughout.
 
 ---
 
-## 15. Appendix: Serving OKF knowledge bundles
+## 16. Appendix: Serving OKF knowledge bundles
 
 The [Open Knowledge Format](https://github.com/GoogleCloudPlatform/knowledge-catalog)
 (OKF) is a markdown-and-frontmatter convention for portable knowledge
@@ -754,7 +870,7 @@ documents the mapping because it exercises Goal 5 (knowledge work
 beyond git-backed development) end to end without adding protocol
 surface.
 
-### 15.1 Direct mappings
+### 16.1 Direct mappings
 
 | OKF concept | Fabric equivalent |
 |---|---|
@@ -765,7 +881,7 @@ surface.
 | `log.md` update history | Natural subscription target (§10) |
 | Declared `okf_version` | SHOULD be surfaced in `readdir`/`stat` metadata so a client can identify a bundle without first reading and parsing `index.md` |
 
-### 15.2 Shared design posture
+### 16.2 Shared design posture
 
 OKF's consumption rules — do not reject a bundle for missing optional
 frontmatter, unknown `type` values, unknown additional keys, broken
@@ -780,7 +896,7 @@ trust: both are attacker-controllable prose an agent reads and acts on,
 and both are informational-only (§8.2). Serving an OKF bundle does not
 change that boundary.
 
-### 15.3 What Fabric adds to a bundle
+### 16.3 What Fabric adds to a bundle
 
 A bundle served over a plain file share supports only reading. The same
 bundle served over Fabric additionally gains, with no change to the
@@ -797,7 +913,7 @@ bundle itself:
 - **Curated discovery** — `/prot/capabilities/` (§8.1) MAY be defined
   as an OKF-conformant index rather than a bespoke manifest format.
 
-### 15.4 Reference adapter: a git host as a Fabric server
+### 16.4 Reference adapter: a git host as a Fabric server
 
 A read-only adapter over a git forge's contents API is close to
 mechanical, and demonstrates that a Fabric server need not be a
@@ -827,6 +943,89 @@ Practical notes for such an adapter:
 - **The adapter holds its own forge credential** and never exposes it
   to the calling session — the delegation posture of §9.6, applied to
   a non-Fabric backend.
+
+---
+
+## 17. Appendix: Proof-of-Concept Case Studies
+
+Three deliberately small implementation exercises, each chosen to
+stress a different part of the spec. None require inventing new wire
+behavior beyond what's already specified above — the point is to
+prove the existing surface is sufficient, not to extend it.
+
+### 17.1 Local filesystem as a Fabric server (mecatl)
+
+The minimal server: wrap an existing local filesystem abstraction as
+a Fabric server, backed entirely by in-process function calls.
+mecatl's `tool.Workspace` port (`engine/tool`) is used here as a
+concrete, already-hardened target rather than a toy — its
+`Read`/`Stat`/`Glob` map onto `read`/`stat`/`readdir` directly, and its
+content-hash `FileVersion` (from `ReadVersion`/`ReplaceFile`) IS
+already an ETag/CAS token by another name, so `write`'s `If-Match`
+semantics (§4) require no new concept, only a rename at the wire
+boundary. Here, mecatl's Subagent/tool-calling loop is exactly the
+"remote tool call" case named in §1.
+
+What this stresses:
+
+- Whether `readdir`'s metadata-inlining (§4.1) is worth its cost when
+  the backend already has cheap per-entry stat — it should be, since
+  the marginal cost here is zero, which validates the DESIGN choice,
+  not just the mechanism.
+- Whether Fabric's `write` (whole-file PUT, §4) is a sufficient
+  primitive given mecatl's own Edit tool is read-before-edit +
+  exact-match + uniqueness (a partial-content operation) — it should
+  be: a remote partial edit is read + local modification + `write`
+  under CAS, never a new wire op. If this case study finds that
+  insufficient in practice, that is a real finding about §4, not an
+  implementation detail.
+- The `/lock/{path}` mechanism (§4.3, §5) against a real
+  concurrent-write scenario, since mecatl's own osfs adapter already
+  serializes same-target mutations process-wide — a good check for
+  whether Fabric's lease model is redundant with, or a genuine
+  addition over, what a real backend already guarantees itself.
+
+This case study is explicitly a validation exercise for the protocol,
+not a statement that mecatl adopts Fabric as its own interface —
+mecatl's own architecture decisions live in mecatl's own
+documentation, not here.
+
+### 17.2 Read-only proxy over a remote git host
+
+Generalizes §16.4 from a written adapter table into a running proxy:
+`stat`+`readdir`+`read` (no `write`, no `call`) translated to a real
+git forge's contents API, ETag = blob SHA, cached by commit SHA.
+
+What this stresses:
+
+- §4.2's range-addressing assumption of a "known total" against a
+  forge API that paginates and can report a tree as truncated — a
+  real edge case for very large repositories, worth resolving
+  concretely rather than leaving implicit.
+- How a `project_id` (§9.2.1) maps onto "this org/repo" when the
+  upstream API has no concept of a Fabric project token at all — the
+  spec deliberately leaves this to the implementer; this case study
+  picks one convention and documents it as an example, not a rule.
+- §16.4's "the adapter holds its own forge credential, never exposes
+  it to the calling session" (§9.6's delegation posture) against a
+  real OAuth-shaped upstream credential.
+
+### 17.3 Standalone Fabric server in a container
+
+A from-scratch reference server with no relationship to mecatl at
+all — proof that Fabric is a protocol, not a mecatl-specific
+convention. Backed by SQLite (a version/`updated_at` column serves as
+the CAS token), exposing `stat`/`readdir`/`read`/`write`/`create`, one
+`callable` path (e.g. a `search` action, to exercise §6 end to end),
+and `/lock/{path}` (§4.3) implemented as a real row-level lease with a
+TTL — a concrete implementation of the mechanism §5's `exclusive` flag
+has never had one of before.
+
+This is also the cloud-deployment walkthrough: the server ships as a
+container image, one instance per tenant/session, holding its own
+service credential and never the caller's zone token directly (§9.6)
+— the same hosting shape a remote sandboxed execution environment
+would use if fronted by Fabric instead of a bespoke transport.
 
 ---
 
