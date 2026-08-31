@@ -567,57 +567,85 @@ called, it does not reuse `PendingMCPAuthorization` or `StateAuthorizing`. ToolH
 configured protected backends as one deterministic bundled consent sequence
 ([ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md)).
 
-Every protected backend must connect before authenticated discovery starts. Denial,
-cancellation, expiry, restart, process loss, a backend failure, malformed discovery, or a
-tool-name collision admits no partial protected catalogue or executable protected route.
-After the complete bundle succeeds, authenticated discovery validates every protected
-backend and freezes one session-local multi-backend catalogue before prompting is enabled;
-that catalogue does not change within the session. A restart replays neither grants nor the
-catalogue and requires fresh bundled enrollment.
+Every protected backend must connect before authenticated discovery starts. The broker builds
+one ToolHive `UpstreamRunConfig` per protected profile in configured order; the first
+protected provider is ToolHive's bundle identity anchor. Adapter-private DNS-label provider
+keys are collision-checked and bind each vMCP backend's `UpstreamInject.ProviderName` to its
+own credential without changing model-visible tool names. Anonymous routes remain eagerly
+discovered, while a protected backend with no reviewed static catalogue is not contacted
+anonymously and its route remains deferred.
 
-Independent per-backend connect, retry, and cancel remain deferred because ToolHive exposes
-only the bundled chain. Static protected `tools:` remains an optional curated compatibility
-fallback; a bootstrap-discovery CLI is deferred. The supported Stage 3 deployment remains
-one process and one replica. Task 09 Mode A remains valid. Its Mode B becomes a one-provider
-live qualification of this scenario only after Task 12; the already-recorded GitHub run
-predates Scenario 11 and is not evidence that bundled enrollment passed.
+After the complete consent chain succeeds, the broker calls ToolHive's provider-scoped
+`QueryCapabilities(ctx, backend)` separately for every protected backend. It never uses
+`QueryAllCapabilities`, whose partial-failure behavior cannot prove all-or-nothing admission.
+All candidate definitions are staged, validated, and collision-checked before one
+session-local multi-backend catalogue is atomically admitted and frozen. Denial, cancellation,
+expiry, restart, process loss, refresh failure, malformed discovery, or a tool-name collision
+admits no partial protected catalogue or executable protected route. A restart replays neither
+grants nor the catalogue and requires fresh bundled enrollment.
+
+A process-owned cancelable context bounds ToolHive incoming-auth/JWKS work and is cancelled
+only after vMCP and authserver shutdown. Independent per-backend connect, retry, and cancel
+remain deferred because ToolHive exposes only the bundled chain. Static protected `tools:`
+remains an optional reviewed definition source, never permission to expose tools before the
+bundle succeeds; a bootstrap-discovery CLI is deferred. The supported Stage 3 deployment
+remains one process and one replica. Task 09 Mode A remains valid. Its Mode B becomes a
+one-provider live qualification of this scenario only after Task 12; the already-recorded
+GitHub run predates Scenario 11 and is not evidence that bundled enrollment passed.
 
 **Acceptance:**
 - AC11.1: Before the first tool-enabled prompt, only the authenticated session owner can
-  start the single **Connect workspace services** operation. The operation is not exposed as
-  permission approval or a model-callable tool and creates neither `PendingMCPAuthorization`
-  nor `StateAuthorizing`.
+  start the single **Connect workspace services** operation. The operation is rejected unless
+  the session is idle and unprompted with no run, pending enrollment, permission approval, or
+  tool authorization; it creates neither `PendingMCPAuthorization` nor `StateAuthorizing`.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_ConnectRequiresOwner`
-- AC11.2: Protected providers are presented in one stable configured order, authenticated
-  discovery begins only after all are connected, and denial, cancellation, expiry, restart,
-  process loss, or any backend failure leaves no protected catalogue or executable route.
+- AC11.2: One owner-bound bundled operation has one terminal outcome. Denial, bundle-wide
+  cancellation, expiry, process loss, refresh failure, or failure from any protected backend
+  clears all protected admission state and leaves no visible or executable protected route.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_AllOrNothing`
-- AC11.3: Anonymous backends continue eager startup discovery without enrollment. A static
-  protected `tools:` declaration remains an optional curated fallback, while no
-  bootstrap-discovery CLI or independent per-backend control is exposed.
+- AC11.3: Every configured protected profile produces one ToolHive
+  `authserver.UpstreamRunConfig` in stable configured order, with the first protected provider
+  documented and tested as the bundle identity anchor.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_MultiUpstreamConstruction`
+- AC11.4: Every profile maps to a collision-checked adapter-private DNS-label ToolHive
+  provider key, and each backend's `UpstreamInject.ProviderName` selects only its matching
+  credential while model-visible namespaces remain unchanged.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_ProviderNameMapping`
+- AC11.5: Broker startup performs no anonymous `initialize` or `tools/list` against a
+  protected backend without a reviewed static catalogue; a 401-capable protected upstream
+  therefore cannot prevent process startup, and its route stays deferred.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_ProtectedStartupSkipsAnonymousDiscovery`
+- AC11.6: ToolHive incoming-auth/JWKS work uses one process-owned cancelable context; process
+  close stops vMCP, closes authserver, then cancels that context without a goleak exclusion.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_AuthContextStopsOnProcessClose`
+- AC11.7: Anonymous backends retain eager startup discovery and executable routes unchanged
+  while protected routes remain deferred until bundled enrollment succeeds.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_AnonymousCompatibility`
-- AC11.4: After every protected backend connects, authenticated `initialize` and
-  `tools/list` use each backend's matching authenticated transport; safe definitions are
-  validated and one session-local catalogue is frozen before prompt input is enabled, with
-  no within-session refresh or mutation.
-  - verify: `TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedDiscovery`
-- AC11.5: A malformed discovery response, duplicate or colliding tool name, or failure from
-  any protected backend rejects the complete protected catalogue; no successfully
-  discovered subset becomes visible or executable.
+- AC11.8: After ToolHive reports the complete chain connected, each protected backend is
+  queried separately through provider-scoped authenticated `QueryCapabilities(ctx, backend)`;
+  `QueryAllCapabilities` is never used.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedQueryCapabilities`
+- AC11.9: Tool name, schema, description, and read-only metadata are validated for every
+  candidate; collision or malformed/failing discovery against any protected, anonymous, or
+  global tool rejects the complete protected candidate set.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_DiscoveryFailsClosed`
-- AC11.6: After process loss or restart, a session exposes no prior protected grant,
-  catalogue, or executable route and requires a fresh complete bundled enrollment before
-  authenticated discovery.
+- AC11.10: After process loss or restart, a session exposes no prior protected grant,
+  catalogue, or executable route and requires fresh complete bundled enrollment.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_RestartRequiresEnrollment`
-- AC11.7: Mecatui renders workspace enrollment separately from permission approval, offers
+- AC11.11: A reviewed static protected `tools:` declaration may supply definitions, but no
+  static or discovered protected subset becomes visible or executable before the complete
+  bundle succeeds and the whole catalogue is atomically admitted.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_NoPartialStaticCatalogue`
+- AC11.12: Mecatui renders workspace enrollment separately from permission approval, offers
   no Allow/Always/Deny controls for it, and exposes no OAuth secret, browser URL, callback
-  data, code, state, verifier, token, or private user data.
+  data, code, state, verifier, token, backend-private provider key, or private user data.
   - verify: `TestInvariant_mecatui_workspace_enrollment_is_not_permission_approval`
-- AC11.8: In a deterministic two-protected-backend vertical on one process/replica, both
-  bundled consents complete in configured order, both authenticated catalogues validate and
-  freeze, and one safe tool from each backend executes only after enrollment completes.
+- AC11.13: In a deterministic two-protected-backend vertical on one process/replica, the real
+  ToolHive bundled chain completes in configured order, provider-scoped
+  `QueryCapabilities` discovers both candidates, the complete catalogue freezes, and one
+  safe tool from each backend executes only afterward.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_TwoBackendVertical`
-- AC11.9: Prompt input remains unavailable throughout incomplete enrollment; duplicate,
+- AC11.14: Prompt input remains unavailable throughout incomplete enrollment; duplicate,
   stale, foreign-owner, and independently targeted backend controls fail closed without
   admitting a partial catalogue or selecting a different backend.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_ClientControlsFailClosed`
