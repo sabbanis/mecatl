@@ -91,6 +91,8 @@ type mcpState struct {
 
 	deps surfaceDeps // the shared ambient base (incl. ctx), set once at Open
 	mcp  client.MCP  // the surface-specific RPC client, set once at Open
+
+	intent surfaceIntent
 }
 
 // argField is one required-argument input in the prompt-args sub-state.
@@ -362,18 +364,14 @@ func (*mcpState) HandleWheel(tea.MouseWheelMsg) (cmd tea.Cmd, handled bool) {
 func (s *mcpState) HandleMsg(msg tea.Msg) (cmd tea.Cmd, handled bool, closed bool) {
 	switch msg := msg.(type) {
 	case mcpAuthorizationEventMsg:
-		mm, cmd := m.updateStreamEvent(msg.msg)
-		updated := mm.(Model)
-		if updated.authorizationEvents != nil {
-			return updated, tea.Batch(cmd, updated.waitMCPAuthorizationEvent()), true
-		}
-		return updated, cmd, true
+		s.intent = mcpAuthorizationEventIntent{msg: msg.msg}
+		return nil, true, false
 	case mcpAuthorizationStreamClosedMsg:
-		m.authorizationEvents = nil
-		return m, nil, true
+		s.intent = mcpAuthorizationStreamClosedIntent{}
+		return nil, true, false
 	case mcpAuthorizationStreamMsg:
-		mm, cmd := m.updateMCPAuthorizationStream(msg)
-		return mm, cmd, true
+		s.intent = mcpAuthorizationStreamIntent{msg: msg}
+		return nil, true, false
 	case client.MCPSourcesMsg:
 		s.loading = false
 		if s.refreshing {
@@ -437,6 +435,12 @@ func (s *mcpState) HandleMsg(msg tea.Msg) (cmd tea.Cmd, handled bool, closed boo
 }
 
 func (*mcpState) Close() {}
+
+func (s *mcpState) takeSurfaceIntent() surfaceIntent {
+	intent := s.intent
+	s.intent = nil
+	return intent
+}
 
 // updateMCPMsg handles insertion messages that require Model-owned textarea mutation.
 func (m Model) updateMCPMsg(msg tea.Msg) (tea.Model, tea.Cmd, bool) {

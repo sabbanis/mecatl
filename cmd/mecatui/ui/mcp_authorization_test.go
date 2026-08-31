@@ -48,11 +48,12 @@ func TestSessionMCPAuthorization_Scenario9_MecatuiControlStreamCleanup(t *testin
 	close(ch)
 	m.authorizationEvents = ch
 
+	m.modal = &mcpState{}
 	msg := m.waitMCPAuthorizationEvent()()
-	mm, _, handled := m.updateMCPMsg(msg)
+	mm, _ := m.Update(msg)
 	updated := mm.(Model)
-	if !handled || updated.authorizationEvents != nil {
-		t.Fatalf("closed authorization stream handled=%t events=%v, want handled cleanup", handled, updated.authorizationEvents)
+	if updated.authorizationEvents != nil {
+		t.Fatal("authorization event channel was not cleared")
 	}
 }
 

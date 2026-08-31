@@ -1953,6 +1953,9 @@ func (m Model) applySurfaceIntent(intent surfaceIntent) (model tea.Model, cmd te
 	if model, cmd, handled, stopSurfaceDispatch := m.applyApprovalSurfaceIntent(intent); handled {
 		return model, cmd, stopSurfaceDispatch
 	}
+	if model, cmd, handled, stopSurfaceDispatch := m.applyMCPSurfaceIntent(intent); handled {
+		return model, cmd, stopSurfaceDispatch
+	}
 	if model, cmd, handled, stopSurfaceDispatch := m.applyModelsSurfaceIntent(intent); handled {
 		return model, cmd, stopSurfaceDispatch
 	}

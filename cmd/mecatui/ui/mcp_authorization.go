@@ -90,6 +90,37 @@ type mcpAuthorizationStreamMsg struct{ stream *client.EventStream }
 type mcpAuthorizationEventMsg struct{ msg tea.Msg }
 type mcpAuthorizationStreamClosedMsg struct{}
 
+// MCP authorization stream state belongs to Model, not the MCP modal. The modal
+// transfers these messages through the sealed surface intent protocol because it
+// intercepts non-input messages before Model's generic reducer.
+type mcpAuthorizationEventIntent struct{ msg tea.Msg }
+type mcpAuthorizationStreamClosedIntent struct{}
+type mcpAuthorizationStreamIntent struct{ msg mcpAuthorizationStreamMsg }
+
+func (mcpAuthorizationEventIntent) isSurfaceIntent()        {}
+func (mcpAuthorizationStreamClosedIntent) isSurfaceIntent() {}
+func (mcpAuthorizationStreamIntent) isSurfaceIntent()       {}
+
+func (m Model) applyMCPSurfaceIntent(intent surfaceIntent) (model tea.Model, cmd tea.Cmd, handled bool, stopSurfaceDispatch bool) {
+	switch intent := intent.(type) {
+	case mcpAuthorizationEventIntent:
+		mm, eventCmd := m.updateStreamEvent(intent.msg)
+		m = mm.(Model)
+		if m.authorizationEvents != nil {
+			eventCmd = tea.Batch(eventCmd, m.waitMCPAuthorizationEvent())
+		}
+		return m, eventCmd, true, false
+	case mcpAuthorizationStreamClosedIntent:
+		m.authorizationEvents = nil
+		return m, nil, true, false
+	case mcpAuthorizationStreamIntent:
+		model, cmd = m.updateMCPAuthorizationStream(intent.msg)
+		return model, cmd, true, false
+	default:
+		return m, nil, false, false
+	}
+}
+
 func (m Model) updateMCPAuthorizationStream(msg mcpAuthorizationStreamMsg) (tea.Model, tea.Cmd) {
 	if msg.stream == nil {
 		return m, nil
