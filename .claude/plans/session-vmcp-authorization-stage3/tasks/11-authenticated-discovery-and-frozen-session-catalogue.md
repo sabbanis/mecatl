@@ -2,7 +2,7 @@
 id: 11-authenticated-discovery-and-frozen-session-catalogue
 title: Authenticated discovery and frozen session catalogue
 blocked_by: [10-bundled-workspace-enrollment-domain-and-toolhive-chain]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: ""

@@ -2,8 +2,8 @@
 id: 10-bundled-workspace-enrollment-domain-and-toolhive-chain
 title: Bundled protected workspace enrollment
 blocked_by: [08-command-root-https-vertical-and-documentation]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-session-vmcp-authorization/10-bundled-workspace-enrollment-domain-and-toolhive-chain"
 worktree: ""
 issue: ""
 retries: 0
