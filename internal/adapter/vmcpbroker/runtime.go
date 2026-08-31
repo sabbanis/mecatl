@@ -19,6 +19,7 @@ import (
 	"time"
 
 	"github.com/ory/fosite"
+	toolhiveauth "github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
 	"github.com/stacklok/toolhive/pkg/authserver"
 	"github.com/stacklok/toolhive/pkg/authserver/runner"
@@ -291,11 +292,123 @@ func (b HandlerBundle) Mount(mux *http.ServeMux, callbackPath string) (err error
 	return nil
 }
 
+// ErrAuthenticatedDiscovery reports a provider-scoped discovery failure without
+// exposing the auth session, private provider key, or credential state.
+var ErrAuthenticatedDiscovery = errors.New("vmcpbroker: authenticated capability discovery failed")
+
+// ToolHiveAuthSessionID is the adapter-private ToolHive token-session handle.
+// It is process-local input to authenticated discovery and is never persisted or projected.
+type ToolHiveAuthSessionID string
+
+// AuthenticatedCapabilities is the neutral candidate output from one protected backend.
+type AuthenticatedCapabilities struct {
+	BackendID        string
+	Tools            []ToolDefinition
+	SupportsLogging  bool
+	SupportsSampling bool
+}
+
+type upstreamCredentialReader interface {
+	GetValidTokens(context.Context, string, string) (*upstreamtoken.UpstreamCredential, error)
+}
+
+type capabilityQuerier interface {
+	QueryCapabilities(context.Context, vmcp.Backend) (*aggregator.BackendCapabilities, error)
+}
+
+type authenticatedDiscovery struct {
+	capabilities  capabilityQuerier
+	backends      vmcp.BackendRegistry
+	tokens        upstreamCredentialReader
+	providerNames map[string]string
+}
+
 // Process owns a broker Runtime and its root-internal handlers.
 type Process struct {
 	Runtime                 *Runtime
 	Handlers                HandlerBundle
 	deferredProtectedRoutes []Route
+	discovery               *authenticatedDiscovery
+}
+
+// QueryAuthenticatedCapabilities performs exactly one provider-scoped ToolHive
+// capability query. Provider names and credentials stay inside this adapter.
+func (p *Process) QueryAuthenticatedCapabilities(ctx context.Context, authSession ToolHiveAuthSessionID, backendID string) (AuthenticatedCapabilities, error) {
+	if p == nil || p.discovery == nil || authSession == "" || backendID == "" {
+		return AuthenticatedCapabilities{}, ErrInvalidControlTarget
+	}
+	discovery := p.discovery
+	if discovery.capabilities == nil || discovery.backends == nil || discovery.tokens == nil {
+		return AuthenticatedCapabilities{}, ErrInvalidControlTarget
+	}
+	providerName, protected := discovery.providerNames[backendID]
+	backend := discovery.backends.Get(ctx, backendID)
+	if !protected || providerName == "" || backend == nil || backend.AuthConfig == nil || backend.AuthConfig.UpstreamInject == nil || backend.AuthConfig.UpstreamInject.ProviderName != providerName {
+		return AuthenticatedCapabilities{}, ErrInvalidControlTarget
+	}
+	credential, err := discovery.tokens.GetValidTokens(ctx, string(authSession), providerName)
+	if err != nil || credential == nil || credential.AccessToken == "" {
+		return AuthenticatedCapabilities{}, ErrAuthenticatedDiscovery
+	}
+	queryCtx := toolhiveauth.WithIdentity(ctx, &toolhiveauth.Identity{
+		PrincipalInfo:  toolhiveauth.PrincipalInfo{Subject: "vmcpbroker-authenticated-discovery"},
+		TokenType:      "Bearer",
+		UpstreamTokens: map[string]string{providerName: credential.AccessToken},
+	})
+	capabilities, err := discovery.capabilities.QueryCapabilities(queryCtx, *backend)
+	if err != nil || capabilities == nil || capabilities.BackendID != "" && capabilities.BackendID != backendID {
+		return AuthenticatedCapabilities{}, ErrAuthenticatedDiscovery
+	}
+	result := AuthenticatedCapabilities{BackendID: backendID, SupportsLogging: capabilities.SupportsLogging, SupportsSampling: capabilities.SupportsSampling, Tools: make([]ToolDefinition, 0, len(capabilities.Tools))}
+	privateValues := []string{providerName, string(authSession), credential.AccessToken, credential.IDToken}
+	for _, candidate := range capabilities.Tools {
+		if containsPrivateCapabilityMaterial(candidate, privateValues) {
+			return AuthenticatedCapabilities{}, ErrAuthenticatedDiscovery
+		}
+		schema, err := json.Marshal(candidate.InputSchema)
+		if err != nil {
+			return AuthenticatedCapabilities{}, ErrAuthenticatedDiscovery
+		}
+		readOnly := candidate.Annotations != nil && candidate.Annotations.ReadOnlyHint != nil && *candidate.Annotations.ReadOnlyHint
+		result.Tools = append(result.Tools, ToolDefinition{BackendID: backendID, Name: "mcp__" + backendID + "__" + candidate.Name, Description: candidate.Description, Schema: schema, ReadOnly: readOnly})
+	}
+	return result, nil
+}
+
+func containsPrivateCapabilityMaterial(candidate vmcp.Tool, privateValues []string) bool {
+	if containsPrivateString(candidate.Name, privateValues) || containsPrivateString(candidate.Description, privateValues) {
+		return true
+	}
+	return containsPrivateValue(candidate.InputSchema, privateValues)
+}
+
+func containsPrivateValue(value any, privateValues []string) bool {
+	switch typed := value.(type) {
+	case string:
+		return containsPrivateString(typed, privateValues)
+	case []any:
+		for _, item := range typed {
+			if containsPrivateValue(item, privateValues) {
+				return true
+			}
+		}
+	case map[string]any:
+		for key, item := range typed {
+			if containsPrivateString(key, privateValues) || containsPrivateValue(item, privateValues) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+func containsPrivateString(value string, privateValues []string) bool {
+	for _, private := range privateValues {
+		if private != "" && strings.Contains(value, private) {
+			return true
+		}
+	}
+	return false
 }
 
 // NewProcess binds the fixed callback handler to an already-built Runtime.
@@ -388,7 +501,9 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	if err != nil {
 		return fail(err)
 	}
-	server, err := vmcpserver.New(authCtx, &vmcpserver.Config{Name: "mecatl-broker", Version: "v1", EndpointPath: brokerMCPPath, AuthMiddleware: incoming, AuthInfoHandler: authInfo, AuthServer: auth, Aggregator: aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil), SessionFactory: vmcpsession.NewSessionFactory(outgoing)}, router.NewSessionRouter(&vmcp.RoutingTable{}), backendClient, vmcp.NewImmutableRegistry(construction.backends), nil)
+	capabilityAggregator := aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil)
+	backendRegistry := vmcp.NewImmutableRegistry(construction.backends)
+	server, err := vmcpserver.New(authCtx, &vmcpserver.Config{Name: "mecatl-broker", Version: "v1", EndpointPath: brokerMCPPath, AuthMiddleware: incoming, AuthInfoHandler: authInfo, AuthServer: auth, Aggregator: capabilityAggregator, SessionFactory: vmcpsession.NewSessionFactory(outgoing)}, router.NewSessionRouter(&vmcp.RoutingTable{}), backendClient, backendRegistry, nil)
 	if err != nil {
 		return fail(err)
 	}
@@ -410,13 +525,19 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	runtime.authContext = authCtx
 	installToolHiveProcessClosers(runtime, func() error { return server.Stop(context.Background()) }, auth.Close, cancelAuth)
 	embedded := http.StripPrefix(brokerBasePath, auth.Handler())
-	return &Process{Runtime: runtime, Handlers: HandlerBundle{Authorization: embedded, Token: embedded, UpstreamCallback: embedded, Discovery: embedded, JWKS: embedded, ProtectedResource: authInfo, VMCP: vmcpHandler, Callback: CallbackHandler(runtime.Callback)}, deferredProtectedRoutes: construction.deferredProtectedRoutes}, nil
+	return &Process{
+		Runtime:                 runtime,
+		Handlers:                HandlerBundle{Authorization: embedded, Token: embedded, UpstreamCallback: embedded, Discovery: embedded, JWKS: embedded, ProtectedResource: authInfo, VMCP: vmcpHandler, Callback: CallbackHandler(runtime.Callback)},
+		deferredProtectedRoutes: construction.deferredProtectedRoutes,
+		discovery:               &authenticatedDiscovery{capabilities: capabilityAggregator, backends: backendRegistry, tokens: reader, providerNames: construction.providerNames},
+	}, nil
 }
 
 type protectedToolHiveConstruction struct {
 	upstreams               []authserver.UpstreamRunConfig
 	backends                []vmcp.Backend
 	protectedBackends       []string
+	providerNames           map[string]string
 	anonymousProfiles       []permconfig.MCPServerProfile
 	deferredProtectedRoutes []Route
 }
@@ -428,6 +549,7 @@ func newProtectedToolHiveConstruction(profiles []permconfig.MCPServerProfile, is
 		upstreams:         make([]authserver.UpstreamRunConfig, 0),
 		backends:          make([]vmcp.Backend, 0, len(profiles)),
 		protectedBackends: make([]string, 0),
+		providerNames:     make(map[string]string),
 		anonymousProfiles: make([]permconfig.MCPServerProfile, 0),
 	}
 	providers := make(map[string]string)
@@ -447,6 +569,7 @@ func newProtectedToolHiveConstruction(profiles []permconfig.MCPServerProfile, is
 				return protectedToolHiveConstruction{}, fmt.Errorf("%w: protected backends %q and %q map to the same ToolHive provider name", ErrInvalidRoute, prior, profile.Name)
 			}
 			providers[provider] = profile.Name
+			construction.providerNames[profile.Name] = provider
 			protectedProfiles = append(protectedProfiles, profile)
 			construction.upstreams = append(construction.upstreams, newUpstreamRunConfig(profile, provider, issuer, options))
 			construction.protectedBackends = append(construction.protectedBackends, profile.Name)

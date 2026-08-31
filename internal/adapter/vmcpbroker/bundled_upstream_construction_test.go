@@ -50,6 +50,12 @@ func TestBundledWorkspaceEnrollment_Scenario11_MultiUpstreamConstruction(t *test
 	if len(process.Runtime.routes) != 0 || len(process.deferredProtectedRoutes) != 0 {
 		t.Fatalf("protected profiles without static tools produced startup routes: executable=%#v deferred=%#v", process.Runtime.routes, process.deferredProtectedRoutes)
 	}
+	if process.discovery == nil || process.discovery.capabilities == nil || process.discovery.tokens == nil || process.discovery.backends.Count() != 2 {
+		t.Fatal("constructed process discarded ToolHive discovery authority")
+	}
+	if process.discovery.providerNames["GitHub_Cloud"] != "github-cloud" || process.discovery.providerNames["Calendar_API"] != "calendar-api" {
+		t.Fatalf("retained provider mapping = %#v", process.discovery.providerNames)
+	}
 	if err := process.Close(); err != nil {
 		t.Fatalf("Process.Close: %v", err)
 	}
