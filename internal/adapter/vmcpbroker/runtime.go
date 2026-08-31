@@ -453,6 +453,7 @@ type ProcessOption func(*processOptions)
 type processOptions struct {
 	httpClient                  *http.Client
 	insecureAllowHTTPForTesting bool
+	caBundlePathForTesting      string
 }
 
 // WithHTTPClient supplies the client for the broker's own downstream token exchange.
@@ -499,7 +500,7 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		return nil, err
 	}
 	reader := upstreamtoken.NewInProcessService(auth.IDPTokenStorage(), auth.UpstreamTokenRefresher())
-	incoming, _, authInfo, err := factory.NewIncomingAuthMiddleware(authCtx, &vmcpconfig.IncomingAuthConfig{Type: "oidc", OIDC: &vmcpconfig.OIDCConfig{Issuer: issuer, Audience: issuer, Resource: issuer, JWKSURL: issuer + "/.well-known/jwks.json"}}, "mecatl-broker", nil, reader, auth.KeyProvider())
+	incoming, _, authInfo, err := factory.NewIncomingAuthMiddleware(authCtx, &vmcpconfig.IncomingAuthConfig{Type: "oidc", OIDC: &vmcpconfig.OIDCConfig{Issuer: issuer, Audience: issuer, Resource: issuer, JWKSURL: issuer + "/.well-known/jwks.json", CABundlePath: config.caBundlePathForTesting}}, "mecatl-broker", nil, reader, auth.KeyProvider())
 	if err != nil {
 		return fail(err)
 	}
@@ -1166,14 +1167,14 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 	defer c.mu.Unlock()
 	server := c.anonymous
 	if route.Protected {
-		grant, ok := c.runtime.grant(c.sessionID, route.BackendID)
+		_, ok := c.runtime.grant(c.sessionID, route.BackendID)
 		if !ok {
 			return session.NewToolError("", "authorization required for this broker tool"), nil
 		}
 		server = c.protected
 		if server == nil {
 			var err error
-			server, err = c.connectProtected(ctx, route.BackendID, grant)
+			server, err = c.connectProtected(ctx)
 			if err != nil {
 				return session.ToolResult{}, err
 			}
@@ -1201,7 +1202,15 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 	return result, err
 }
 
-func (c *streamingCaller) connectProtected(ctx context.Context, backendID string, grant downstreamGrant) (*mcp.Server, error) {
+func (c *streamingCaller) connectProtected(ctx context.Context) (*mcp.Server, error) {
+	// ToolHive's first protected upstream is the bundle identity anchor. The
+	// broker transport therefore always authenticates with that one downstream
+	// grant; provider-specific grants are used only for backend token injection.
+	backendID := c.runtime.oauthBackend
+	grant, ok := c.runtime.grant(c.sessionID, backendID)
+	if !ok {
+		return nil, ErrInvalidControlTarget
+	}
 	server, err := c.connectWithTokenSource(ctx, backendID)
 	if err == nil {
 		return server, nil

@@ -105,8 +105,7 @@ func (s *Service) ConnectWorkspaceServices(ctx context.Context, id session.Sessi
 }
 
 func (s *Service) ensureWorkspaceBrokerSession(ctx context.Context, id session.SessionID, sess *session.Session) error {
-	generation, bound := s.cfg.VMCPBrokerBindings.Generation(id)
-	if bound && generation != s.cfg.VMCPBrokerGeneration {
+	if sess.BrokerEnrollmentID != "" && sess.BrokerEnrollmentID != s.brokerEnrollmentID() {
 		return fmt.Errorf("%w: broker configuration changed", ErrFailedPrecondition)
 	}
 	s.mu.Lock()
@@ -153,4 +152,55 @@ func (s *Service) installWorkspaceCatalogue(ctx context.Context, sess *session.S
 	sel := ProviderSelector{ProviderID: sess.ProviderID, ModelID: sess.ModelID, ReasoningEffort: sess.ReasoningEffort}
 	_, err := s.buildAndRegisterSessionEngine(ctx, sess, sel, nil, profileForSession(sess), sess.Mode, replace)
 	return err
+}
+
+// CancelWorkspaceEnrollment cancels exactly one caller-owned pending bundle.
+// The enrollment ID is bundle correlation, never a backend selector.
+func (s *Service) CancelWorkspaceEnrollment(ctx context.Context, id session.SessionID, enrollmentID string) (vmcpbroker.WorkspaceEnrollmentPresentation, error) {
+	if err := s.clearWorkspaceEnrollment(ctx, id, enrollmentID, vmcpbroker.WorkspaceEnrollmentCancelled); err != nil {
+		return vmcpbroker.WorkspaceEnrollmentPresentation{}, err
+	}
+	return vmcpbroker.WorkspaceEnrollmentPresentation{ID: enrollmentID, Status: vmcpbroker.ConnectionStatus(vmcpbroker.WorkspaceEnrollmentCancelled)}, nil
+}
+
+// RetryWorkspaceEnrollment invalidates the exact pending bundle before starting
+// a fresh complete ToolHive consent chain. It never retries one backend.
+func (s *Service) RetryWorkspaceEnrollment(ctx context.Context, id session.SessionID, enrollmentID string) (vmcpbroker.WorkspaceEnrollmentPresentation, error) {
+	if err := s.clearWorkspaceEnrollment(ctx, id, enrollmentID, vmcpbroker.WorkspaceEnrollmentFailed); err != nil {
+		return vmcpbroker.WorkspaceEnrollmentPresentation{}, err
+	}
+	return s.ConnectWorkspaceServices(ctx, id)
+}
+
+func (s *Service) clearWorkspaceEnrollment(ctx context.Context, id session.SessionID, enrollmentID string, outcome vmcpbroker.WorkspaceEnrollmentOutcome) error {
+	if enrollmentID == "" {
+		return fmt.Errorf("%w: workspace enrollment id is required", ErrFailedPrecondition)
+	}
+	if _, err := s.GetSession(ctx, id); err != nil {
+		return ErrNotFound
+	}
+	unlock := s.runEntryMu.lock(id)
+	defer unlock()
+	sess, err := s.cfg.Store.Load(ctx, id)
+	if err != nil || sess == nil || sess.ID != id || s.authorizeSession(ctx, sess) != nil {
+		return ErrNotFound
+	}
+	principal := session.PrincipalFromContext(ctx)
+	if sess.Owner == nil || !sess.Owner.SameIdentity(principal) {
+		return ErrNotFound
+	}
+	enrollment, ok := sess.WorkspaceEnrollment()
+	if !ok || enrollment.ID != enrollmentID || s.cfg.VMCPBroker == nil {
+		return fmt.Errorf("%w: stale workspace enrollment", ErrFailedPrecondition)
+	}
+	if s.cfg.VMCPBroker.WorkspaceEnrollmentLive(id, enrollmentID) {
+		if err := s.cfg.VMCPBroker.AbortWorkspaceEnrollment(id, enrollmentID, outcome); err != nil {
+			return fmt.Errorf("%w: workspace enrollment is no longer active", ErrFailedPrecondition)
+		}
+	}
+	sess.ClearWorkspaceEnrollment()
+	if err := s.cfg.Store.Save(ctx, sess); err != nil {
+		return fmt.Errorf("%w: persist workspace enrollment control", ErrInternal)
+	}
+	return nil
 }

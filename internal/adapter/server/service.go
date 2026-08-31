@@ -2662,8 +2662,10 @@ func (s *Service) capabilities() *mecatlv1.ServerCapabilities {
 		// Manual compaction uses the configured engine, or a per-session engine
 		// derived under the same service construction semantics.
 		ManualCompaction: s.cfg.Engine != nil,
-		SessionDebug:     s.cfg.DebugSessionEngine != nil,
-		DebugMcp:         s.cfg.DebugMCP,
+		SessionDebug: s.cfg.DebugSessionEngine != nil,
+		DebugMcp:     s.cfg.DebugMCP,
+		WorkspaceEnrollment: s.cfg.VMCPBroker != nil &&
+			s.cfg.VMCPBroker.WorkspaceEnrollmentRequired(),
 	}
 }
 
@@ -2781,6 +2783,12 @@ func (s *Service) ClientMCPFromWire(servers []mcp.ClientServer) (ClientMCPGrant,
 		return ClientMCPGrant{}, fmt.Errorf("%w: this API surface is reachable over TCP; client-provided MCP servers require a UNIX-socket listener with HTTP disabled", ErrClientMCPUnsupported)
 	}
 	return ClientMCPGrant{specs: specs}, nil
+}
+
+func (s *Service) capabilitiesForSession(id session.SessionID) *mecatlv1.ServerCapabilities {
+	capabilities := s.capabilities()
+	capabilities.WorkspaceEnrollment = capabilities.WorkspaceEnrollment && !s.cfg.VMCPBroker.ProtectedCatalogueReady(id)
+	return capabilities
 }
 
 // CreateSessionWithMCP creates a session that mounts the client-provided

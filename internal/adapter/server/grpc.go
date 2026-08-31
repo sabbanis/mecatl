@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/mcp"
+	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 )
 
 // HarnessServer implements the generated mecatlv1.HarnessServiceServer over the
@@ -91,7 +92,7 @@ func (h *HarnessServer) CreateSession(ctx context.Context, req *mecatlv1.CreateS
 	// passthrough id. Same single-source discipline as session_capabilities.
 	return &mecatlv1.CreateSessionResponse{
 		SessionId:    string(sess.ID),
-		Capabilities: h.svc.capabilities(),
+		Capabilities: h.svc.capabilitiesForSession(sess.ID),
 		SessionCapabilities: &mecatlv1.SessionCapabilities{
 			Image: scaps.Image,
 			Audio: scaps.Audio,
@@ -139,7 +140,7 @@ func (h *HarnessServer) GetSession(ctx context.Context, req *mecatlv1.GetSession
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	proto := toProtoSession(sess, h.svc.ResolvedModel(sess.ID), h.svc.capabilities())
+	proto := toProtoSession(sess, h.svc.ResolvedModel(sess.ID), h.svc.capabilitiesForSession(sess.ID))
 	// Lazy display-time fallback: a session whose snapshot Title was never seeded
 	// (or is empty) gets a derived label so GetSession shows one without a
 	// write-on-read — sess.Title is NOT mutated.
@@ -170,7 +171,7 @@ func (h *HarnessServer) SetMode(ctx context.Context, req *mecatlv1.SetModeReques
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &mecatlv1.SetModeResponse{Session: toProtoSession(sess, h.svc.ResolvedModel(sess.ID), h.svc.capabilities())}, nil
+	return &mecatlv1.SetModeResponse{Session: toProtoSession(sess, h.svc.ResolvedModel(sess.ID), h.svc.capabilitiesForSession(sess.ID))}, nil
 }
 
 // CloseSession ends a session and releases its server-side resources. It returns
@@ -196,7 +197,7 @@ func (h *HarnessServer) RenameSession(ctx context.Context, req *mecatlv1.RenameS
 	if err != nil {
 		return nil, toStatus(err)
 	}
-	return &mecatlv1.RenameSessionResponse{Session: toProtoSession(sess, h.svc.ResolvedModel(sess.ID), h.svc.capabilities())}, nil
+	return &mecatlv1.RenameSessionResponse{Session: toProtoSession(sess, h.svc.ResolvedModel(sess.ID), h.svc.capabilitiesForSession(sess.ID))}, nil
 }
 
 // DeleteSession physically removes an idle main session and store-managed sidecars.
@@ -287,7 +288,7 @@ func (h *HarnessServer) AdoptSession(ctx context.Context, req *mecatlv1.AdoptSes
 		return nil, toStatus(err)
 	}
 	caps := h.svc.SessionCapabilities(sess.ID)
-	return &mecatlv1.AdoptSessionResponse{SessionId: string(sess.ID), SourceSessionId: string(adoptionSourceID(sess)), Capabilities: h.svc.capabilities(), SessionCapabilities: &mecatlv1.SessionCapabilities{Image: caps.Image, Audio: caps.Audio}, ResolvedModel: resolvedModelToProto(h.svc.ResolvedModel(sess.ID))}, nil
+	return &mecatlv1.AdoptSessionResponse{SessionId: string(sess.ID), SourceSessionId: string(adoptionSourceID(sess)), Capabilities: h.svc.capabilitiesForSession(sess.ID), SessionCapabilities: &mecatlv1.SessionCapabilities{Image: caps.Image, Audio: caps.Audio}, ResolvedModel: resolvedModelToProto(h.svc.ResolvedModel(sess.ID))}, nil
 }
 
 // Converse drives one run over a bidi stream. The first frame MUST be a Prompt
@@ -1286,6 +1287,50 @@ func (h *HarnessServer) RecheckMCPAuthorization(req *mecatlv1.MCPAuthorizationCo
 
 func (h *HarnessServer) CancelMCPAuthorization(req *mecatlv1.MCPAuthorizationControlRequest, stream grpc.ServerStreamingServer[mecatlv1.Event]) error {
 	return h.relayMCPAuthorizationControl(req, stream, true)
+}
+
+// ConnectWorkspaceServices starts or observes one complete caller-owned bundle.
+func (h *HarnessServer) ConnectWorkspaceServices(ctx context.Context, req *mecatlv1.WorkspaceEnrollmentConnectRequest) (*mecatlv1.WorkspaceEnrollment, error) {
+	if req.GetSessionId() == "" {
+		return nil, status.Error(codes.InvalidArgument, ErrInvalidArgument.Error())
+	}
+	result, err := h.svc.ConnectWorkspaceServices(ctx, session.SessionID(req.GetSessionId()))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return workspaceEnrollmentToProto(result), nil
+}
+
+// RetryWorkspaceEnrollment invalidates the exact bundle before restarting the
+// complete consent chain.
+func (h *HarnessServer) RetryWorkspaceEnrollment(ctx context.Context, req *mecatlv1.WorkspaceEnrollmentControlRequest) (*mecatlv1.WorkspaceEnrollment, error) {
+	if req.GetSessionId() == "" || req.GetEnrollmentId() == "" {
+		return nil, status.Error(codes.InvalidArgument, ErrInvalidArgument.Error())
+	}
+	result, err := h.svc.RetryWorkspaceEnrollment(ctx, session.SessionID(req.GetSessionId()), req.GetEnrollmentId())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return workspaceEnrollmentToProto(result), nil
+}
+
+// CancelWorkspaceEnrollment resolves only the exact whole bundle.
+func (h *HarnessServer) CancelWorkspaceEnrollment(ctx context.Context, req *mecatlv1.WorkspaceEnrollmentControlRequest) (*mecatlv1.WorkspaceEnrollment, error) {
+	if req.GetSessionId() == "" || req.GetEnrollmentId() == "" {
+		return nil, status.Error(codes.InvalidArgument, ErrInvalidArgument.Error())
+	}
+	result, err := h.svc.CancelWorkspaceEnrollment(ctx, session.SessionID(req.GetSessionId()), req.GetEnrollmentId())
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return workspaceEnrollmentToProto(result), nil
+}
+
+func workspaceEnrollmentToProto(result vmcpbroker.WorkspaceEnrollmentPresentation) *mecatlv1.WorkspaceEnrollment {
+	return &mecatlv1.WorkspaceEnrollment{
+		EnrollmentId: result.ID, Status: valid(string(result.Status)),
+		RequiredServices: uint32(len(result.Backends)), PresentationUrl: valid(result.BrowserURL),
+	}
 }
 
 func (h *HarnessServer) relayMCPAuthorizationControl(req *mecatlv1.MCPAuthorizationControlRequest, stream grpc.ServerStreamingServer[mecatlv1.Event], cancel bool) error {
