@@ -43,10 +43,15 @@ func TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical(t *testin
 	cert, key, serverPEM := loopbackTLSFiles(t)
 	fixture := newCommandRootScenario10Fixture(t, "scenario10-upstream-token-canary")
 	roots := filepath.Join(t.TempDir(), "roots.pem")
-	if err := os.WriteFile(roots, append(serverPEM, '\n'), 0o600); err != nil {
+	rootPEM := append(append(serverPEM, '\n'), pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: fixture.gateway.Certificate().Raw})...)
+	if err := os.WriteFile(roots, rootPEM, 0o600); err != nil {
 		t.Fatalf("write test CA roots: %v", err)
 	}
 	t.Setenv("SSL_CERT_FILE", roots)
+	t.Setenv("GODEBUG", "x509usefallbackroots=1")
+	fallbackRoots := x509.NewCertPool()
+	fallbackRoots.AppendCertsFromPEM(rootPEM)
+	x509.SetFallbackRoots(fallbackRoots)
 	t.Setenv("MECATL_SCENARIO10_CLIENT_SECRET", "scenario10-client-secret-canary")
 
 	cfg, err := parseFlags([]string{"--mock", "--http-addr", freeLoopbackPort(t), "--grpc-addr", freeLoopbackPort(t), "--tls-cert", cert, "--tls-key", key})
@@ -58,15 +63,15 @@ func TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical(t *testin
 		return testPrincipalValidator{}, nil
 	}}
 	settings := filepath.Join(t.TempDir(), "settings.yaml")
-	if err := os.WriteFile(settings, []byte("mcp:\n  mode: broker\n  broker:\n    callback_url: https://"+cfg.httpAddr+"/exact/callback\n  servers:\n    - name: protected\n      url: "+fixture.backend.URL+"\n      auth:\n        mode: oauth\n        oauth:\n          issuer: "+fixture.gateway.URL+"\n          client:\n            mode: preregistered\n            preregistered:\n              id: scenario10-client\n              secret_env: MECATL_SCENARIO10_CLIENT_SECRET\n          scopes: [openid]\n          network: {}\n"), 0o600); err != nil {
+	if err := os.WriteFile(settings, []byte("mcp:\n  mode: broker\n  broker:\n    callback_url: https://"+cfg.httpAddr+"/exact/callback\n  servers:\n    - name: protected\n      url: "+fixture.backend.URL+"\n      auth:\n        mode: oauth\n        oauth:\n          upstream:\n            mode: oauth2\n            oauth2:\n              authorization_endpoint: "+fixture.gateway.URL+"/authorize\n              token_endpoint: "+fixture.gateway.URL+"/token\n          client:\n            mode: preregistered\n            preregistered:\n              id: scenario10-client\n              secret_env: MECATL_SCENARIO10_CLIENT_SECRET\n          scopes: [openid]\n          network: {}\n"), 0o600); err != nil {
 		t.Fatalf("write broker settings: %v", err)
 	}
 	cfg.permissionConfigs = []string{settings}
 
 	ac := appConfig(cfg, nil, observability{})
-	ac.VMCPBrokerHTTPClient = newCommandRootClient(serverPEM)
+	ac.VMCPBrokerHTTPClient = newCommandRootClient(rootPEM)
 	ac.MockProvider = mockllm.New(
-		mockllm.ToolCallTurn(session.NewToolCall("mcp-call-safe-01", "mcp__protected__protected", json.RawMessage(`{}`))),
+		mockllm.ToolCallTurn(session.NewToolCall("mcp-call-safe-01", "mcp__protected__protected", json.RawMessage(`{"path":"scenario10-private-arguments"}`))),
 		mockllm.TextTurn("model final"),
 	)
 	ac.NoSoul, ac.NoUserModel, ac.PermissionsConventional, ac.AgentsConventional = true, true, false, false
@@ -85,7 +90,7 @@ func TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical(t *testin
 		done <- serve(ctx, cfg, built.Service, observability{}, built.VMCPBrokerHandlers, built.VMCPBrokerCallbackPath)
 	}()
 	t.Cleanup(func() { cancel(); <-done })
-	client := newCommandRootClient(serverPEM)
+	client := newCommandRootClient(rootPEM)
 	base := "https://" + cfg.httpAddr
 	waitForCommandRoot(t, client, base+"/healthz")
 
@@ -99,8 +104,14 @@ func TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical(t *testin
 	}
 	sessionID := createCommandRootSession(t, client, base)
 	parked := postSSE(t, client, base+"/v1/sessions/"+sessionID+"/prompt", `{"text":"read protected data scenario10-private-input"}`)
-	assertCommandRootSafeProjection(t, parked, "scenario10-client-secret-canary", "scenario10-upstream-token-canary", "scenario10-private-input")
+	assertCommandRootSafeProjection(t, parked, "scenario10-client-secret-canary", "scenario10-upstream-token-canary", "scenario10-private-input", "scenario10-private-arguments")
+	if got := fixture.calls.Load(); got != 0 {
+		t.Fatalf("protected upstream calls before callback = %d, want 0", got)
+	}
 	authorizationID := authorizationIDFromSSE(t, parked)
+	if got := fixture.discoveryCalls.Load(); got != 0 {
+		t.Fatalf("OIDC discovery calls before presentation = %d, want 0", got)
+	}
 
 	presentation := mustGet(t, client, base+"/v1/sessions/"+sessionID+"/mcp-authorizations/"+authorizationID+"/presentation", "")
 	defer presentation.Body.Close()
@@ -121,11 +132,20 @@ func TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical(t *testin
 	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Request.URL.String(), base+"/exact/callback?") {
 		t.Fatalf("callback response/request = %d/%q, want exact mounted callback", response.StatusCode, response.Request.URL)
 	}
+	if got := fixture.calls.Load(); got != 0 {
+		t.Fatalf("protected upstream calls after callback but before recheck = %d, want 0", got)
+	}
+	if fixture.state == "" || fixture.verifier == "" {
+		t.Fatalf("generic OAuth2 state/verifier = %q/%q, want both present", fixture.state, fixture.verifier)
+	}
 
 	continued := postSSE(t, client, base+"/v1/sessions/"+sessionID+"/mcp-authorizations/"+authorizationID+":recheck", "{}")
-	assertCommandRootSafeProjection(t, continued, "scenario10-client-secret-canary", "scenario10-upstream-token-canary", "scenario10-private-input", "scenario10-code-canary")
+	assertCommandRootSafeProjection(t, continued, "scenario10-client-secret-canary", "scenario10-upstream-token-canary", "scenario10-private-input", "scenario10-private-arguments", "scenario10-code-canary", fixture.state, fixture.verifier, browser.URL)
 	if got := fixture.calls.Load(); got != 1 {
 		t.Fatalf("protected upstream calls = %d, want exactly one", got)
+	}
+	if got := fixture.discoveryCalls.Load(); got != 0 {
+		t.Fatalf("OIDC discovery calls = %d, want 0 for configured OAuth2", got)
 	}
 	duplicate := mustPost(t, client, base+"/v1/sessions/"+sessionID+"/mcp-authorizations/"+authorizationID+":recheck", "{}")
 	duplicate.Body.Close()
@@ -159,15 +179,18 @@ func (testPrincipalValidator) Validate(context.Context, string) (*session.Princi
 type commandRootScenario10Fixture struct {
 	gateway, backend *httptest.Server
 	calls            atomic.Int32
+	discoveryCalls   atomic.Int32
 	privateKey       *rsa.PrivateKey
 	nonce            string
+	state            string
+	verifier         string
 }
 
 func newCommandRootScenario10Fixture(t *testing.T, token string) *commandRootScenario10Fixture {
 	t.Helper()
 	f := &commandRootScenario10Fixture{}
 	protected := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "protected", Version: "test"}, nil)
-	mcpsdk.AddTool(protected, &mcpsdk.Tool{Name: "protected"}, func(context.Context, *mcpsdk.CallToolRequest, struct{}) (*mcpsdk.CallToolResult, struct{}, error) {
+	mcpsdk.AddTool(protected, &mcpsdk.Tool{Name: "protected"}, func(context.Context, *mcpsdk.CallToolRequest, map[string]any) (*mcpsdk.CallToolResult, struct{}, error) {
 		f.calls.Add(1)
 		return &mcpsdk.CallToolResult{Content: []mcpsdk.Content{&mcpsdk.TextContent{Text: "protected result"}}}, struct{}{}, nil
 	})
@@ -188,16 +211,19 @@ func newCommandRootScenario10Fixture(t *testing.T, token string) *commandRootSce
 		t.Fatal(err)
 	}
 	mux := http.NewServeMux()
-	f.gateway = httptest.NewServer(mux)
-	issuer := f.gateway.URL
+	f.gateway = httptest.NewUnstartedServer(mux)
+	f.gateway.StartTLS()
 	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
-		_ = json.NewEncoder(w).Encode(map[string]any{"issuer": issuer, "authorization_endpoint": issuer + "/authorize", "token_endpoint": issuer + "/token", "jwks_uri": issuer + "/jwks", "response_types_supported": []string{"code"}, "subject_types_supported": []string{"public"}, "id_token_signing_alg_values_supported": []string{"RS256"}})
+		f.discoveryCalls.Add(1)
+		http.Error(w, "OIDC discovery must not be contacted for configured OAuth2", http.StatusInternalServerError)
 	})
 	mux.HandleFunc("/authorize", func(w http.ResponseWriter, r *http.Request) {
 		f.nonce = r.URL.Query().Get("nonce")
+		f.state = r.URL.Query().Get("state")
 		http.Redirect(w, r, r.URL.Query().Get("redirect_uri")+"?code=scenario10-code-canary&state="+url.QueryEscape(r.URL.Query().Get("state")), http.StatusFound)
 	})
-	mux.HandleFunc("/token", func(w http.ResponseWriter, _ *http.Request) {
+	mux.HandleFunc("/token", func(w http.ResponseWriter, r *http.Request) {
+		f.verifier = r.FormValue("code_verifier")
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = io.WriteString(w, `{"access_token":"`+token+`","token_type":"Bearer","id_token":"`+f.idToken(t, "scenario10-client")+`"}`)
 	})

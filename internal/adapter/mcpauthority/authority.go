@@ -71,6 +71,14 @@ func cloneProfiles(in []permconfig.MCPServerProfile) []permconfig.MCPServerProfi
 		}
 		o := *a.OAuth
 		a.OAuth = &o
+		if o.Upstream != nil {
+			u := *o.Upstream
+			o.Upstream = &u
+			if u.OAuth2 != nil {
+				v := *u.OAuth2
+				u.OAuth2 = &v
+			}
+		}
 		o.Scopes = append([]string(nil), o.Scopes...)
 		if o.Network != nil {
 			n := *o.Network

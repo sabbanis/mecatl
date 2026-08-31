@@ -359,9 +359,9 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		return nil, err
 	}
 	issuer := callback.Scheme + "://" + callback.Host + brokerBasePath
-	upstreamConfig := newOIDCUpstreamConfig(protected, issuer, config)
+	upstreamConfig := newUpstreamRunConfig(protected, issuer, config)
 	store := storage.NewMemoryStorage()
-	auth, err := runner.NewEmbeddedAuthServerWithStorage(ctx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: []authserver.UpstreamRunConfig{{Name: protected.Name, Type: authserver.UpstreamProviderTypeOIDC, OIDCConfig: upstreamConfig}}}, store)
+	auth, err := runner.NewEmbeddedAuthServerWithStorage(ctx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: []authserver.UpstreamRunConfig{upstreamConfig}}, store)
 	if err != nil {
 		return nil, fmt.Errorf("vmcpbroker: create embedded auth server: %w", err)
 	}
@@ -487,6 +487,22 @@ func newAnonymousRuntime(routes []Route, profiles []permconfig.MCPServerProfile)
 	})
 }
 
+func newUpstreamRunConfig(protected permconfig.MCPServerProfile, issuer string, options processOptions) authserver.UpstreamRunConfig {
+	oauth := protected.Auth.OAuth
+	if oauth.Upstream != nil && oauth.Upstream.Mode == "oauth2" {
+		return authserver.UpstreamRunConfig{Name: protected.Name, Type: authserver.UpstreamProviderTypeOAuth2, OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+			AuthorizationEndpoint: oauth.Upstream.OAuth2.AuthorizationEndpoint,
+			TokenEndpoint:         oauth.Upstream.OAuth2.TokenEndpoint,
+			ClientID:              brokerClientID(protected),
+			ClientSecretEnvVar:    brokerSecretEnv(protected),
+			RedirectURI:           issuer + "/oauth/callback",
+			Scopes:                append([]string(nil), oauth.Scopes...),
+			InsecureAllowHTTP:     options.insecureAllowHTTPForTesting,
+		}}
+	}
+	return authserver.UpstreamRunConfig{Name: protected.Name, Type: authserver.UpstreamProviderTypeOIDC, OIDCConfig: newOIDCUpstreamConfig(protected, issuer, options)}
+}
+
 func newOIDCUpstreamConfig(protected permconfig.MCPServerProfile, issuer string, options processOptions) *authserver.OIDCUpstreamRunConfig {
 	return &authserver.OIDCUpstreamRunConfig{
 		IssuerURL:          protected.Auth.OAuth.Issuer,
@@ -536,23 +552,46 @@ func brokerSecretEnv(p permconfig.MCPServerProfile) string {
 	}
 	return ""
 }
+// discoverRoutes builds the model-facing route catalog. A profile that
+// declares Auth.OAuth.Tools statically (permconfig.MCPOAuthProfile.Tools)
+// skips live discovery entirely — some protected backends (e.g. GitHub's
+// remote MCP server) reject an unauthenticated `initialize` outright, so no
+// live connection can ever succeed before a user grant exists. Every other
+// profile is discovered live exactly as before.
 func discoverRoutes(ctx context.Context, profiles []permconfig.MCPServerProfile, diag port.Diagnostics) ([]Route, error) {
-	configs := make([]mcp.ServerConfig, 0, len(profiles))
-	for _, p := range profiles {
-		configs = append(configs, mcp.ServerConfig{Name: p.Name, URL: p.URL})
-	}
-	manager, err := mcp.NewManager(ctx, configs, nil, diag)
-	if err != nil {
-		return nil, fmt.Errorf("vmcpbroker: discover configured tools: %w", err)
-	}
-	defer func() { _ = manager.Close() }()
+	live := make([]permconfig.MCPServerProfile, 0, len(profiles))
 	defs := make([]ToolDefinition, 0)
-	for _, wrapped := range manager.Tools() {
-		spec := wrapped.Spec()
-		for _, p := range profiles {
-			if strings.HasPrefix(spec.Name, "mcp__"+p.Name+"__") {
-				defs = append(defs, ToolDefinition{BackendID: p.Name, Name: spec.Name, Description: spec.Description, Schema: spec.Schema, ReadOnly: wrapped.ReadOnly()})
-				break
+	for _, p := range profiles {
+		if p.Auth.Mode == profileAuthOAuth && p.Auth.OAuth != nil && len(p.Auth.OAuth.Tools) > 0 {
+			for _, t := range p.Auth.OAuth.Tools {
+				defs = append(defs, ToolDefinition{
+					BackendID:   p.Name,
+					Name:        "mcp__" + p.Name + "__" + t.Name,
+					Description: t.Description,
+					Schema:      append(json.RawMessage(nil), t.InputSchema...),
+				})
+			}
+			continue
+		}
+		live = append(live, p)
+	}
+	if len(live) > 0 {
+		configs := make([]mcp.ServerConfig, 0, len(live))
+		for _, p := range live {
+			configs = append(configs, mcp.ServerConfig{Name: p.Name, URL: p.URL})
+		}
+		manager, err := mcp.NewManager(ctx, configs, nil, diag)
+		if err != nil {
+			return nil, fmt.Errorf("vmcpbroker: discover configured tools: %w", err)
+		}
+		defer func() { _ = manager.Close() }()
+		for _, wrapped := range manager.Tools() {
+			spec := wrapped.Spec()
+			for _, p := range live {
+				if strings.HasPrefix(spec.Name, "mcp__"+p.Name+"__") {
+					defs = append(defs, ToolDefinition{BackendID: p.Name, Name: spec.Name, Description: spec.Description, Schema: spec.Schema, ReadOnly: wrapped.ReadOnly()})
+					break
+				}
 			}
 		}
 	}

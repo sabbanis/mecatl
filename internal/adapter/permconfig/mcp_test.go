@@ -304,3 +304,31 @@ func TestSessionMCPAuthorization_Scenario1_OperatorTierOnly(t *testing.T) {
 		}
 	}
 }
+
+func TestMCPOAuthUpstreamStrictUnion(t *testing.T) {
+	legacy := `mcp: {servers: [{name: svc, url: https://mcp.example/mcp, auth: {mode: oauth, oauth: {issuer: https://issuer.example, client: {mode: preregistered, preregistered: {id: client, secret_env: MECATL_CLIENT_SECRET}}, scopes: [read], network: {}}}}]}`
+	oauth2 := `mcp: {servers: [{name: svc, url: https://mcp.example/mcp, auth: {mode: oauth, oauth: {upstream: {mode: oauth2, oauth2: {authorization_endpoint: https://auth.example/authorize, token_endpoint: https://auth.example/token}}, client: {mode: preregistered, preregistered: {id: client, secret_env: MECATL_CLIENT_SECRET}}, scopes: [read], network: {}}}}]}`
+	for name, body := range map[string]string{
+		"legacy oidc remains valid":      legacy,
+		"explicit oidc remains valid":    strings.Replace(legacy, "issuer: https://issuer.example", "issuer: https://issuer.example, upstream: {mode: oidc}", 1),
+		"oauth2 endpoints valid":         oauth2,
+		"oauth2 rejects issuer":          strings.Replace(oauth2, "upstream:", "issuer: https://issuer.example, upstream:", 1),
+		"oauth2 rejects null issuer":     strings.Replace(oauth2, "upstream:", "issuer: null, upstream:", 1),
+		"oauth2 requires token endpoint": strings.Replace(oauth2, ", token_endpoint: https://auth.example/token", "", 1),
+		"oauth2 requires https":          strings.Replace(oauth2, "https://auth.example/authorize", "http://auth.example/authorize", 1),
+		"oidc rejects oauth2 payload":    strings.Replace(legacy, "issuer: https://issuer.example", "issuer: https://issuer.example, upstream: {mode: oidc, oauth2: {authorization_endpoint: https://auth.example/authorize, token_endpoint: https://auth.example/token}}", 1),
+	} {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseYAML([]byte(body))
+			if strings.Contains(name, "valid") {
+				if err != nil {
+					t.Fatalf("parse: %v", err)
+				}
+				return
+			}
+			if err == nil {
+				t.Fatal("parse succeeded; want strict validation error")
+			}
+		})
+	}
+}

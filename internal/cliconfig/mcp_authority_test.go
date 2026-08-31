@@ -145,3 +145,38 @@ func TestInvariant_mcp_authority_mode_is_single_construction_branch(t *testing.T
 		t.Fatalf("broker result aliases input or carries global state: %#v", selected)
 	}
 }
+
+func TestMCPAuthorityRejectsOAuth2OutsideBroker(t *testing.T) {
+	oauth2 := &permconfig.MCPOAuthProfile{
+		Upstream: &permconfig.MCPOAuthUpstreamProfile{Mode: "oauth2", OAuth2: &permconfig.MCPOAuth2UpstreamProfile{AuthorizationEndpoint: "https://auth.example/authorize", TokenEndpoint: "https://auth.example/token"}},
+		Client:   permconfig.MCPOAuthClientProfile{Mode: "preregistered", Preregistered: &permconfig.MCPPreregisteredClientProfile{ID: "client", SecretEnv: "MECATL_CLIENT_SECRET"}},
+		Scopes:   []string{"read"}, Network: &permconfig.MCPOAuthNetworkProfile{},
+	}
+	section := &permconfig.MCPSection{Mode: "global", Servers: []permconfig.MCPServerProfile{{Name: "svc", URL: "https://mcp.example/mcp", Auth: permconfig.MCPAuthProfile{Mode: "oauth", OAuth: oauth2}}}}
+	if _, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: section, DefaultMode: MCPAuthorityGlobal}); !errors.Is(err, ErrMCPProfileInvalid) {
+		t.Fatalf("global OAuth2 error = %v, want invalid profile", err)
+	}
+	section.Mode = "broker"
+	section.Broker.CallbackURL = "https://agent.example/callback"
+	if _, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: section, DefaultMode: MCPAuthorityGlobal, BrokerSupported: true}); err != nil {
+		t.Fatalf("broker OAuth2: %v", err)
+	}
+	section.Servers[0].Auth.OAuth.Network.AdditionalOrigins = []string{"https://un-enforced.example"}
+	if _, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: section, DefaultMode: MCPAuthorityGlobal, BrokerSupported: true}); !errors.Is(err, ErrMCPProfileInvalid) {
+		t.Fatalf("broker OAuth2 unsupported network control error = %v, want invalid profile", err)
+	}
+}
+
+func TestMCPAuthorityBrokerLegacyOIDCPreservesNetworkFields(t *testing.T) {
+	section := &permconfig.MCPSection{Mode: "broker", Broker: permconfig.MCPBrokerProfile{CallbackURL: "https://agent.example/callback"}, Servers: []permconfig.MCPServerProfile{{
+		Name: "svc", URL: "https://mcp.example/mcp", Auth: permconfig.MCPAuthProfile{Mode: "oauth", OAuth: &permconfig.MCPOAuthProfile{
+			Issuer:  "https://issuer.example",
+			Client:  permconfig.MCPOAuthClientProfile{Mode: "preregistered", Preregistered: &permconfig.MCPPreregisteredClientProfile{ID: "client", SecretEnv: "MECATL_CLIENT_SECRET"}},
+			Scopes:  []string{"read"},
+			Network: &permconfig.MCPOAuthNetworkProfile{AdditionalOrigins: []string{"https://tokens.example"}, PrivateOrigins: []string{"https://issuer.example"}, MaxRedirects: 2},
+		}},
+	}}}
+	if _, err := ResolveMCPAuthority(MCPAuthorityOptions{Operator: section, DefaultMode: MCPAuthorityGlobal, BrokerSupported: true}); err != nil {
+		t.Fatalf("legacy broker OIDC with network controls: %v", err)
+	}
+}

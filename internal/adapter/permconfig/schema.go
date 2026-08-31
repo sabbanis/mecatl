@@ -34,6 +34,7 @@ package permconfig
 
 import (
 	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -354,8 +355,10 @@ type MCPOAuthProfile struct {
 	Profile string `yaml:"profile"`
 	// Principal is the required operator-defined credential identity principal.
 	Principal string `yaml:"principal"`
-	// Issuer is the required canonical exact HTTP(S) origin of the authorization server.
+	// Issuer is the required canonical exact HTTP(S) origin of the authorization server for OIDC upstreams.
 	Issuer string `yaml:"issuer"`
+	// Upstream optionally selects OIDC discovery or explicit generic OAuth2 endpoints. Omitted preserves OIDC discovery.
+	Upstream *MCPOAuthUpstreamProfile `yaml:"upstream"`
 	// Client selects exactly one preregistered or CIMD client declaration.
 	Client MCPOAuthClientProfile `yaml:"client"`
 	// Scopes is the non-empty allowlist of OAuth scopes the client may request.
@@ -366,6 +369,68 @@ type MCPOAuthProfile struct {
 	Credentials MCPOAuthCredentialProfile `yaml:"credentials"`
 	// Network is required and declares immutable exact-origin egress policy.
 	Network *MCPOAuthNetworkProfile `yaml:"network"`
+	// Tools declares this backend's model-facing tool catalog statically,
+	// bypassing live discovery for this backend. It is optional: a backend that
+	// tolerates an anonymous discovery connection can leave it empty and keep
+	// today's live-discovery behavior. Declare it when the upstream rejects an
+	// unauthenticated discovery call outright (e.g. GitHub's remote MCP server
+	// 401s on `initialize` itself), so the broker cannot discover its tools
+	// live before any grant exists. The operator is the source of truth for
+	// accuracy; a stale declaration surfaces as an ordinary failed tool call
+	// against the real upstream at execution time, never a broker construction
+	// failure.
+	Tools []MCPStaticToolProfile `yaml:"tools"`
+}
+
+// MCPStaticToolProfile declares one protected-backend tool's stable
+// model-facing shape (name, description, JSON Schema) without requiring a live
+// discovery connection.
+type MCPStaticToolProfile struct {
+	// Name is the exact upstream tool name, e.g. "get_me".
+	Name string `yaml:"name"`
+	// Description is the model-facing tool description.
+	Description string `yaml:"description"`
+	// InputSchema is the tool's JSON Schema object, verbatim.
+	InputSchema json.RawMessage `yaml:"input_schema"`
+}
+
+// UnmarshalYAML strictly decodes and validates one declared protected-backend tool.
+func (t *MCPStaticToolProfile) UnmarshalYAML(node ast.Node) error {
+	var schema any
+	if err := decodeStrictMapping(node, "mcp.servers[].auth.oauth.tools[]", map[string]any{
+		"name": &t.Name, "description": &t.Description, "input_schema": &schema,
+	}); err != nil {
+		return err
+	}
+	if err := validateMCPSafeValue("mcp.servers[].auth.oauth.tools[].name", t.Name); err != nil {
+		return err
+	}
+	if err := validateMCPSafeValue("mcp.servers[].auth.oauth.tools[].description", t.Description); err != nil {
+		return err
+	}
+	if schema == nil {
+		return errors.New("mcp.servers[].auth.oauth.tools[].input_schema is required")
+	}
+	raw, err := json.Marshal(schema)
+	if err != nil {
+		return fmt.Errorf("mcp.servers[].auth.oauth.tools[].input_schema: %w", err)
+	}
+	t.InputSchema = raw
+	return nil
+}
+
+// MCPOAuthUpstreamProfile is a strict OIDC/OAuth2 tagged union. Omitted means OIDC for legacy compatibility.
+type MCPOAuthUpstreamProfile struct {
+	// Mode is exactly oidc or oauth2.
+	Mode string `yaml:"mode"`
+	// OAuth2 contains the explicit endpoint configuration required by generic OAuth2.
+	OAuth2 *MCPOAuth2UpstreamProfile `yaml:"oauth2"`
+}
+
+// MCPOAuth2UpstreamProfile contains the trusted explicit generic OAuth2 endpoints.
+type MCPOAuth2UpstreamProfile struct {
+	AuthorizationEndpoint string `yaml:"authorization_endpoint"`
+	TokenEndpoint         string `yaml:"token_endpoint"`
 }
 
 // MCPOAuthClientProfile is a closed preregistered/CIMD tagged union. DCR is unsupported.
@@ -488,7 +553,10 @@ func (s *MCPServerProfile) UnmarshalYAML(node ast.Node) error {
 		return errors.New("mcp.servers[].url must use https for authenticated profiles except loopback http")
 	}
 	if s.Auth.OAuth != nil && s.Auth.OAuth.Network != nil {
-		allowed := map[string]struct{}{mcpURLOrigin(u): {}, s.Auth.OAuth.Issuer: {}}
+		allowed := map[string]struct{}{mcpURLOrigin(u): {}}
+		for _, origin := range s.Auth.OAuth.upstreamOrigins() {
+			allowed[origin] = struct{}{}
+		}
 		for _, origin := range s.Auth.OAuth.Network.AdditionalOrigins {
 			allowed[origin] = struct{}{}
 		}
@@ -548,7 +616,7 @@ func (s *MCPStaticBearerProfile) UnmarshalYAML(node ast.Node) error {
 }
 
 func (o *MCPOAuthProfile) strictFields() map[string]any {
-	return map[string]any{"profile": &o.Profile, "principal": &o.Principal, "issuer": &o.Issuer, "client": &o.Client, "scopes": &o.Scopes, "request_refresh_token": &o.RequestRefreshToken, "credentials": &o.Credentials, "network": newPermconfigNodePointer(&o.Network)}
+	return map[string]any{"profile": &o.Profile, "principal": &o.Principal, "issuer": &o.Issuer, "upstream": newPermconfigNodePointer(&o.Upstream), "client": &o.Client, "scopes": &o.Scopes, "request_refresh_token": &o.RequestRefreshToken, "credentials": &o.Credentials, "network": newPermconfigNodePointer(&o.Network), "tools": &o.Tools}
 }
 
 // UnmarshalYAML strictly decodes and validates OAuth profile metadata.
@@ -558,6 +626,16 @@ func (o *MCPOAuthProfile) UnmarshalYAML(node ast.Node) error {
 	}
 	if !mappingHasKey(node, "client") {
 		return errors.New("mcp.servers[].auth.oauth.client is required")
+	}
+	seenTools := make(map[string]struct{}, len(o.Tools))
+	for _, t := range o.Tools {
+		if _, dup := seenTools[t.Name]; dup {
+			return fmt.Errorf("mcp.servers[].auth.oauth.tools[]: duplicate tool %q", t.Name)
+		}
+		seenTools[t.Name] = struct{}{}
+	}
+	if o.Upstream != nil && o.Upstream.Mode == "oauth2" && mappingHasKey(node, "issuer") {
+		return errors.New("mcp.servers[].auth.oauth.issuer is forbidden for oauth2 upstream")
 	}
 	if o.Profile != "" {
 		if err := validateMCPSafeValue("mcp.servers[].auth.oauth.profile", o.Profile); err != nil {
@@ -578,6 +656,57 @@ func (o *MCPOAuthProfile) UnmarshalYAML(node ast.Node) error {
 		if err := validateMCPSafeValue("mcp.servers[].auth.oauth.scopes[]", scope); err != nil {
 			return err
 		}
+	}
+	return nil
+}
+
+func (o *MCPOAuthProfile) upstreamOrigins() []string {
+	if o.Upstream != nil && o.Upstream.Mode == "oauth2" && o.Upstream.OAuth2 != nil {
+		authorize, _ := url.Parse(o.Upstream.OAuth2.AuthorizationEndpoint)
+		token, _ := url.Parse(o.Upstream.OAuth2.TokenEndpoint)
+		return []string{mcpURLOrigin(authorize), mcpURLOrigin(token)}
+	}
+	return []string{o.Issuer}
+}
+
+func (u *MCPOAuthUpstreamProfile) strictFields() map[string]any {
+	return map[string]any{modeKey: &u.Mode, "oauth2": &u.OAuth2}
+}
+
+// UnmarshalYAML strictly decodes an optional upstream protocol selector.
+func (u *MCPOAuthUpstreamProfile) UnmarshalYAML(node ast.Node) error {
+	if err := decodeStrictMapping(node, "mcp.servers[].auth.oauth.upstream", u.strictFields()); err != nil {
+		return err
+	}
+	switch u.Mode {
+	case "oidc":
+		if mappingHasKey(node, "oauth2") {
+			return errors.New("mcp.servers[].auth.oauth.upstream: oidc must not contain an oauth2 payload")
+		}
+	case "oauth2":
+		if u.OAuth2 == nil {
+			return errors.New("mcp.servers[].auth.oauth.upstream: oauth2 requires only oauth2 payload")
+		}
+	default:
+		return errors.New("mcp.servers[].auth.oauth.upstream.mode must be exactly oidc or oauth2")
+	}
+	return nil
+}
+
+func (u *MCPOAuth2UpstreamProfile) strictFields() map[string]any {
+	return map[string]any{"authorization_endpoint": &u.AuthorizationEndpoint, "token_endpoint": &u.TokenEndpoint}
+}
+
+// UnmarshalYAML strictly decodes explicit generic OAuth2 endpoints.
+func (u *MCPOAuth2UpstreamProfile) UnmarshalYAML(node ast.Node) error {
+	if err := decodeStrictMapping(node, "mcp.servers[].auth.oauth.upstream.oauth2", u.strictFields()); err != nil {
+		return err
+	}
+	if _, err := validateMCPHTTPURL("mcp.servers[].auth.oauth.upstream.oauth2.authorization_endpoint", u.AuthorizationEndpoint, true); err != nil {
+		return err
+	}
+	if _, err := validateMCPHTTPURL("mcp.servers[].auth.oauth.upstream.oauth2.token_endpoint", u.TokenEndpoint, true); err != nil {
+		return err
 	}
 	return nil
 }

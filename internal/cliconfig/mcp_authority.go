@@ -62,6 +62,13 @@ func ResolveMCPAuthority(opts MCPAuthorityOptions) (MCPAuthority, error) {
 	if opts.Operator != nil && opts.Operator.Broker.CallbackURL != "" {
 		return MCPAuthority{}, fmt.Errorf("%w: mcp.broker.callback_url is inert in global mode", ErrMCPProfileInvalid)
 	}
+	if opts.Operator != nil {
+		for _, profile := range opts.Operator.Servers {
+			if profile.Auth.OAuth != nil && profile.Auth.OAuth.Upstream != nil {
+				return MCPAuthority{}, fmt.Errorf("%w: MCP server %q: oauth upstream selection is broker-only", ErrMCPProfileInvalid, profile.Name)
+			}
+		}
+	}
 	profiles, err := LoadMCPProfiles(MCPProfileLoadOptions{Operator: opts.Operator, Legacy: opts.Legacy, LookupEnv: opts.LookupEnv})
 	if err != nil {
 		return MCPAuthority{}, err
@@ -105,8 +112,18 @@ func resolveBrokerAuthority(section *permconfig.MCPSection) (MCPAuthority, error
 
 func validateBrokerOAuth(profile permconfig.MCPServerProfile) error {
 	oauth := profile.Auth.OAuth
-	if oauth == nil || oauth.Issuer == "" || len(oauth.Scopes) == 0 || oauth.Network == nil || oauth.Client.Mode == "" {
-		return fmt.Errorf("%w: MCP server %q: broker OAuth requires issuer, client, scopes, and network", ErrMCPProfileInvalid, profile.Name)
+	if oauth == nil || len(oauth.Scopes) == 0 || oauth.Network == nil || oauth.Client.Mode == "" {
+		return fmt.Errorf("%w: MCP server %q: broker OAuth requires client, scopes, and network", ErrMCPProfileInvalid, profile.Name)
+	}
+	if oauth.Upstream == nil || oauth.Upstream.Mode == "oidc" {
+		if oauth.Issuer == "" {
+			return fmt.Errorf("%w: MCP server %q: broker OIDC requires issuer", ErrMCPProfileInvalid, profile.Name)
+		}
+	} else if oauth.Upstream.Mode != "oauth2" || oauth.Upstream.OAuth2 == nil || oauth.Upstream.OAuth2.AuthorizationEndpoint == "" || oauth.Upstream.OAuth2.TokenEndpoint == "" || oauth.Issuer != "" {
+		return fmt.Errorf("%w: MCP server %q: broker OAuth2 requires explicit endpoints and forbids issuer", ErrMCPProfileInvalid, profile.Name)
+	}
+	if oauth.Upstream != nil && oauth.Upstream.Mode == "oauth2" && (len(oauth.Network.AdditionalOrigins) != 0 || len(oauth.Network.PrivateOrigins) != 0 || oauth.Network.MaxRedirects != 0) {
+		return fmt.Errorf("%w: MCP server %q: broker OAuth network controls are unsupported by ToolHive", ErrMCPProfileInvalid, profile.Name)
 	}
 	if oauth.Profile != "" || oauth.Principal != "" || oauth.Credentials.Mode != "" || oauth.Credentials.Local != nil || oauth.Credentials.Environment != nil {
 		return fmt.Errorf("%w: MCP server %q: broker OAuth forbids profile, principal, and credentials", ErrMCPProfileInvalid, profile.Name)
