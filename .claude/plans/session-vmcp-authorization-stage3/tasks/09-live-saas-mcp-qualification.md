@@ -1,8 +1,8 @@
 ---
 id: 09-live-saas-mcp-qualification
 title: Manual real-SaaS MCP qualification
-blocked_by: [08-command-root-https-vertical-and-documentation]
-status: done
+blocked_by: [08-command-root-https-vertical-and-documentation, 12-mecatui-enrollment-controls-and-multi-backend-vertical]
+status: pending
 branch: ""
 worktree: ""
 issue: ""
@@ -13,7 +13,7 @@ accumulator: acc/session-vmcp-authorization
 
 # Task brief
 
-Perform the terminal human-operated qualification after the deterministic command-root proof is green. This task is intentionally OUTSIDE `task test`: it makes real network requests, needs operator-provided credentials and a browser, and must never run automatically. It is successful only when `STAGE3-RESULTS.md` records an honest PASS, FAIL, or BLOCKED result for both modes. Do not claim the Stage 3 broker works against SaaS until Mode B passes.
+Perform the terminal human-operated qualification after the deterministic command-root proof is green. Mode A's already-recorded anonymous-backend evidence remains valid. The amended Mode B is blocked until Task 12 proves Scenario 11's client-owned enrollment controls and two-backend deterministic vertical; the prior GitHub run predates Scenario 11 and must not be reported as proof that bundled enrollment passed. This task is intentionally OUTSIDE `task test`: it makes real network requests, needs operator-provided credentials and a browser, and must never run automatically. The amended task is successful only when `STAGE3-RESULTS.md` records an honest PASS, FAIL, or BLOCKED result for Scenario 11 Mode B without altering the existing Mode A evidence.
 
 Use one mecak8s replica for every active qualification run. Do not restart, roll, or scale it while an authorization is pending: broker transactions, grants, and transports are process-local. An active lease on a second service must fail closed, never route a recheck or continuation to the holder.
 
@@ -74,15 +74,17 @@ Acceptance:
 
 Mode A validates the session-scoped wrapper/catalogue, real Streamable HTTP transport, public ingress, mecak8s command root, and ordinary completion. It does NOT prove protected authorization.
 
-## Mode B — GitHub remote OAuth-protected MCP server
+## Mode B — one-provider live qualification of Scenario 11
 
-Use broker mode with exactly one OAuth-protected GitHub remote MCP backend. GitHub is
-now a supported generic OAuth2 qualification target; do not require it to provide OIDC
-discovery. This manual journey requires exactly one ready mecak8s replica and a publicly
-reachable exact HTTPS callback registered on the GitHub OAuth application; a loopback-only
-callback or multi-replica rollout cannot qualify it. Retain Mode A's docs backend only if a
-mixed anonymous-plus-one-protected catalogue is useful; never configure a second protected
-backend.
+Only after Task 12 is green, use broker mode with exactly one OAuth-protected GitHub remote
+MCP backend as a live one-provider qualification of Scenario 11. This does not qualify
+ToolHive's multi-provider behavior; the deterministic two-backend proof belongs to Task 12.
+GitHub is a supported generic OAuth2 target and need not provide OIDC discovery. This manual
+journey requires exactly one ready mecak8s replica and a publicly reachable exact HTTPS
+callback registered on the GitHub OAuth application; a loopback-only callback or
+multi-replica rollout cannot qualify it. Retain Mode A's docs backend only if mixed anonymous
+and protected catalogue behavior is useful. Do not claim the already-recorded prompt-triggered
+GitHub authorization run passed this amended mode.
 
 Before execution, the operator must provide or approve current official GitHub values:
 
@@ -130,33 +132,55 @@ through the deployment Secret/environment only, never as YAML or retained eviden
 
 Run the exact sequence as the same authenticated owner:
 
-1. Create a session through the attached mecatui or authenticated API.
-2. Prompt a single harmless read-only GitHub MCP tool call against the designated test target.
-3. Confirm the session parks with `mcp.authorization.required`, retaining only safe correlation data.
-4. Confirm there is zero protected GitHub operation before authorization.
-5. Fetch presentation as the same owner and open the URL in a controlled browser profile. Do not record the URL.
-6. Complete provider consent. Confirm the browser reaches the exact configured callback route and receives the fixed success response; do not retain query material.
-7. Recheck exactly the emitted authorization ID as the same owner.
-8. Confirm a normal result/completed session and exactly one GitHub-side protected read operation.
-9. Recheck again. It must return NotFound/404 and must not generate another protected operation.
+1. Create a session through the attached mecatui or authenticated API and confirm prompt
+   input is unavailable while protected enrollment is incomplete.
+2. Invoke the client-owned **Connect workspace services** operation. Confirm it is separate
+   from permission approval, creates no model-selected `ToolCall`, and retains only safe
+   correlation data.
+3. Fetch the live enrollment presentation as the same owner and open it in a controlled
+   browser profile. Do not record the URL.
+4. Complete provider consent. Confirm the browser reaches the exact configured callback
+   route and receives the fixed success response; do not retain query material.
+5. Recheck the same enrollment as the same owner until the complete one-provider bundle is
+   connected. Confirm zero protected GitHub operations occurred before completion.
+6. Confirm authenticated discovery succeeds, freezes the session catalogue, and only then
+   enables prompt input.
+7. Prompt one harmless read-only GitHub MCP tool call against the designated test target and
+   confirm exactly one GitHub-side protected read operation.
+8. Confirm duplicate, stale, and foreign-owner enrollment controls fail closed without
+   changing the frozen catalogue or generating another protected operation.
 
 Acceptance:
 
-- real browser authorization, public callback, and service recheck complete through mecak8s;
-- one and only one harmless protected GitHub operation occurs after the recheck;
-- no protected operation occurs before callback/recheck;
-- the duplicate continuation fails closed;
-- safe events/UI/control responses/evidence contain no client secret, token, code, state, verifier, browser URL, private route ID, or effective arguments;
-- no broker transaction is resumed after a pod restart; a restart is recorded as the expected interrupted limitation, not retried.
+- real browser enrollment, public callback, and owner controls complete through mecak8s;
+- authenticated discovery occurs only after the complete bundle connects and freezes the
+  one-provider protected catalogue before prompting;
+- one and only one harmless protected GitHub operation occurs after enrollment and discovery;
+- no protected operation occurs before enrollment completes;
+- duplicate, stale, and foreign-owner controls fail closed;
+- safe events/UI/control responses/evidence contain no client secret, token, code, state,
+  verifier, browser URL, private route ID, effective arguments, or user data;
+- no grant or catalogue is replayed after pod restart; a fresh bundled enrollment is required.
 
 ## Evidence and failure classification
 
-Append a sanitized result for each mode to `STAGE3-RESULTS.md` containing deployment revision, one-replica proof, public hostname (if permitted by the operator), session ID, backend label, tool name, safe authorization ID, timestamp, terminal status, and provider-side request-count evidence. State whether a result is PASS, FAIL, or BLOCKED.
+Preserve the existing sanitized Mode A result. Append a new sanitized Scenario 11 Mode B
+result to `STAGE3-RESULTS.md` containing deployment revision, one-replica proof, public
+hostname (if permitted by the operator), session ID, backend label, tool name, safe enrollment
+correlation, timestamp, terminal status, and provider-side request-count evidence. State
+whether the amended Mode B result is PASS, FAIL, or BLOCKED.
 
-- **BLOCKED:** provider endpoint/client/redirect registration, public DNS/TLS/routing, OIDC caller identity, or operator credentials are unavailable.
-- **FAIL — pre-authorization:** configuration, discovery, mounting, ownership, or callback-reachability failure; zero protected request is expected.
-- **FAIL — authorization:** provider rejects consent/client/scope/callback; cancel or let the transaction expire, then start a fresh attempt.
-- **FAIL — post-connected tool:** authorization resolved connected but the ordinary GitHub MCP operation failed. Record it separately; do not rewrite it as an authorization failure.
-- **EXPECTED LIMITATION:** duplicate recheck NotFound/404, active non-holder lease rejection, or restart interruption.
+- **BLOCKED:** Task 12 is not green, or provider endpoint/client/redirect registration,
+  public DNS/TLS/routing, OIDC caller identity, or operator credentials are unavailable.
+- **FAIL — pre-enrollment:** configuration, ownership, or callback-reachability failure;
+  zero protected request is expected.
+- **FAIL — enrollment:** provider rejects consent/client/scope/callback, the bundled chain
+  fails, or enrollment is cancelled/expired; start a fresh complete bundle.
+- **FAIL — authenticated discovery:** enrollment connected but authenticated discovery,
+  validation, or catalogue freezing failed; no partial protected catalogue is admitted.
+- **FAIL — post-enrollment tool:** the catalogue froze but the ordinary GitHub MCP operation
+  failed. Record it separately; do not rewrite it as an enrollment failure.
+- **EXPECTED LIMITATION:** duplicate/stale/foreign controls fail closed, active non-holder
+  lease rejection, or restart requiring fresh enrollment.
 
 After both modes have an honest result, repeat the ToolHive authserver/vMCP reuse-and-deduplication review against the final Stage 3 diff. Compare it to `TOOLHIVE-REUSE-REVIEW.md`; record remaining upstream API/lifecycle limitations without suppression.

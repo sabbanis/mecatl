@@ -1,8 +1,8 @@
 # Configured resumable MCP authorization — acceptance plan
 
 **Phase:** capability — operator-configured session broker and resumable MCP authorization
-**Status:** in-progress, 2026-08-27. Synthesized from the Stage 3 handover, the accepted configuration discussion, and the completed five-axis `StateAuthorizing` review.
-**ADR:** [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) — one MCP authority mode, durable authorizing state, and exact continuation; [ADR-0247](../adr/0247-broker-generic-oauth2-upstreams.md) — broker-only explicit generic OAuth2 upstreams.
+**Status:** in-progress, 2026-08-31. Synthesized from the Stage 3 handover, the accepted configuration discussion, the completed five-axis `StateAuthorizing` review, and the bundled workspace-enrollment amendment.
+**ADR:** [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) — one MCP authority mode, durable authorizing state, and exact continuation; [ADR-0247](../adr/0247-broker-generic-oauth2-upstreams.md) — broker-only explicit generic OAuth2 upstreams; [ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md) — pre-prompt bundled enrollment and authenticated frozen catalogues.
 **Accumulator branch:** `acc/session-vmcp-authorization` (off `acc/session-vmcp-broker`).
 
 The smallest set of work that lets an administrator configure MCP once, lets
@@ -27,9 +27,10 @@ demonstrate, not which packages happen to exist.
 - [ADR-0113](../adr/0113-operator-mcp-auth-profiles.md) already establishes one strict,
   operator-tier MCP configuration and one canonical loader. Broker mode extends that
   route; it does not add a second profile file or parser.
-- [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) fixes the Stage 2 boundary:
-  stable session-local tools, one protected lineage, broker-owned credentials, and no
-  ToolHive/OAuth types in the engine.
+- [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) fixes the original Stage 2
+  boundary: stable session-local tools, one protected lineage, broker-owned credentials, and
+  no ToolHive/OAuth types in the engine. ADR 0248 extends protected-backend cardinality only
+  through all-or-nothing pre-prompt bundled enrollment.
 - [ADR-0027](../adr/0027-cloud-native.md) requires every process/session resource and
   restart-fidelity decision to be inventoried. The browser transaction and expiry
   worker are process-local; the exact pending call is snapshot state.
@@ -37,7 +38,7 @@ demonstrate, not which packages happen to exist.
   event-log persistence at the relay, explicit run-entry recovery, read-parallel /
   mutate-serial dispatch, and engine API compatibility accounting.
 
-## In scope — 10 scenarios, in implementation order
+## In scope — 11 scenarios, in implementation order
 
 ### Scenario 1 — Canonical configuration selects one MCP authority model
 
@@ -97,8 +98,10 @@ mcp:
 Explicit OAuth2 accepts only `network: {}`: non-empty `additional_origins` or
 `private_origins`, and non-zero `max_redirects`, are rejected because ToolHive's upstream
 client cannot enforce them. This fail-closed rejection replaces any claim that those
-controls apply. OIDC remains the default, and both variants retain the one-protected-backend
-and process-local broker limits ([ADR-0247](../adr/0247-broker-generic-oauth2-upstreams.md)).
+controls apply. OIDC remains the default and the process-local broker limit remains. The
+original proof admitted one protected backend; Scenario 11 replaces that cardinality limit
+with ToolHive's deterministic all-or-nothing bundled chain
+([ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md)).
 
 **Acceptance:**
 - AC1.1: An omitted `mcp.mode` resolves to `broker` in `mecak8s` and `global` in
@@ -109,9 +112,10 @@ and process-local broker limits ([ADR-0247](../adr/0247-broker-generic-oauth2-up
 - AC1.2: Global mode preserves byte-compatible `none`, `static_bearer`, OAuth
   credential, and `mecated mcp login` behavior, and constructs no broker Runtime.
   - verify: `TestSessionMCPAuthorization_Scenario1_GlobalModeCompatibility`
-- AC1.3: Broker mode consumes the whole server list exclusively, accepts anonymous
-  profiles plus at most one OAuth profile, rejects `static_bearer`, and never constructs
-  a global MCP manager or direct `OAuthController` for those profiles.
+- AC1.3: Broker mode consumes the whole server list exclusively, accepts anonymous and
+  OAuth profiles, rejects `static_bearer`, and never constructs a global MCP manager or
+  direct `OAuthController` for those profiles. Multiple OAuth profiles are admitted only
+  through Scenario 11's bundled pre-prompt enrollment contract.
   - verify: `TestSessionMCPAuthorization_Scenario1_BrokerModeIsExclusive`
 - AC1.4: Broker OAuth defaults to OIDC discovery and reuses the existing client, scopes,
   refresh-intent, and network-policy vocabulary where the Runtime can apply it. Broker-only
@@ -133,10 +137,10 @@ and process-local broker limits ([ADR-0247](../adr/0247-broker-generic-oauth2-up
 - AC1.7: Legacy `--mcp-server`/`MCP_<NAME>_TOKEN` stays global-only and conflicts with
   broker mode instead of overriding, appending to, or dual-mounting broker profiles.
   - verify: `TestSessionMCPAuthorization_Scenario1_LegacyGlobalConflict`
-- AC1.8: The generated settings skeleton, configuration reference, usage guide, and
-  user documentation show the root defaults, callback condition, single protected
-  backend limit, and the explicit `mcp.mode: global` migration for existing mecak8s
-  deployments.
+- AC1.8: The generated settings skeleton, configuration reference, usage guide, and user
+  documentation show the root defaults, callback condition, bundled protected enrollment,
+  one-process/one-replica limit, and the explicit `mcp.mode: global` migration for existing
+  mecak8s deployments.
   - verify: inspection — generated configuration and migration prose require a documentation review
 - AC1.9: The canonical loader parses one lossless strict MCP syntax value, resolves the
   root default, then applies exactly one global-or-broker validation pass. Its typed result
@@ -150,11 +154,13 @@ and process-local broker limits ([ADR-0247](../adr/0247-broker-generic-oauth2-up
 ### Scenario 2 — Real operator settings construct one process-owned broker
 
 The canonical loader validates one mode-specific result. In broker mode, `app.Build`
-uses the declarations to discover the fixed ToolHive tool catalogue, compile private
-routes, and construct one process-owned Runtime plus a root-internal HTTP handler bundle.
-`app.Built` owns that bundle and its cleanup; supported command roots mount its fixed
-public auth/vMCP/callback routes separately from owner-authenticated application controls.
-Broker profiles never enter the global credential lifecycle
+uses the declarations to discover anonymous and curated static ToolHive definitions,
+compile private routes, and construct one process-owned Runtime plus a root-internal HTTP
+handler bundle. Protected backends without curated static definitions enter Scenario 11's
+authenticated discovery only after complete bundled enrollment. `app.Built` owns that bundle
+and its cleanup; supported command roots mount its fixed public auth/vMCP/callback routes
+separately from owner-authenticated application controls. Broker profiles never enter the
+global credential lifecycle
 ([`architecture.md` — session-scoped broker](../architecture.md#session-scoped-vmcp-broker-stage-3-command-root-proof)).
 
 **Acceptance:**
@@ -162,10 +168,11 @@ Broker profiles never enter the global credential lifecycle
   canonical profile loader into one broker construction; no package reparses YAML or
   reads project configuration for broker authority.
   - verify: `TestSessionMCPAuthorization_Scenario2_SettingsConstructBroker`
-- AC2.2: Startup discovers every configured backend's stable ToolHive tool definitions,
-  compiles private backend routes, and fails before serving on an unconfigured discovery
-  result, duplicate tool, unsupported auth mode, second protected backend, or failed
-  pre-authorization discovery.
+- AC2.2: Startup eagerly discovers anonymous backends and validates curated static
+  protected definitions, compiles private backend routes, and fails before serving on an
+  unconfigured discovery result, duplicate tool, unsupported auth mode, or failed eager
+  discovery. Protected backends requiring authenticated discovery remain unavailable until
+  Scenario 11 completes.
   - verify: `TestSessionMCPAuthorization_Scenario2_CompilesDiscoveredRoutes`
 - AC2.3: `app.Build` returns one owned broker handler bundle; `mecated` and `mecak8s`
   mount its fixed authorization, token, vMCP, and callback routes without overlapping
@@ -544,8 +551,76 @@ layers rather than substitutes for deterministic race coverage.
   - verify: `TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical`
 - AC10.3: `STAGE3-RESULTS.md` records deterministic and command-root evidence and the
   one-protected-backend, reconnect, process-local, single-replica, event-source, upstream
-  egress, and ToolHive lifecycle limitations without suppression.
+  egress, and ToolHive lifecycle limitations of the original Scenario 10 proof without
+  suppression. It does not qualify the later bundled-enrollment amendment.
   - verify: inspection — result claims and known limitations require review
+
+---
+
+### Scenario 11 — Bundled protected workspace enrollment
+
+Anonymous MCP backends retain the existing eager startup discovery path. When a session has
+multiple OAuth-protected backends, its owner uses one client-owned **Connect workspace
+services** operation before prompt input is available. This enrollment is neither permission
+approval nor a model-selected `ToolCall`; because no protected tool has been discovered or
+called, it does not reuse `PendingMCPAuthorization` or `StateAuthorizing`. ToolHive drives all
+configured protected backends as one deterministic bundled consent sequence
+([ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md)).
+
+Every protected backend must connect before authenticated discovery starts. Denial,
+cancellation, expiry, restart, process loss, a backend failure, malformed discovery, or a
+tool-name collision admits no partial protected catalogue or executable protected route.
+After the complete bundle succeeds, authenticated discovery validates every protected
+backend and freezes one session-local multi-backend catalogue before prompting is enabled;
+that catalogue does not change within the session. A restart replays neither grants nor the
+catalogue and requires fresh bundled enrollment.
+
+Independent per-backend connect, retry, and cancel remain deferred because ToolHive exposes
+only the bundled chain. Static protected `tools:` remains an optional curated compatibility
+fallback; a bootstrap-discovery CLI is deferred. The supported Stage 3 deployment remains
+one process and one replica. Task 09 Mode A remains valid. Its Mode B becomes a one-provider
+live qualification of this scenario only after Task 12; the already-recorded GitHub run
+predates Scenario 11 and is not evidence that bundled enrollment passed.
+
+**Acceptance:**
+- AC11.1: Before the first tool-enabled prompt, only the authenticated session owner can
+  start the single **Connect workspace services** operation. The operation is not exposed as
+  permission approval or a model-callable tool and creates neither `PendingMCPAuthorization`
+  nor `StateAuthorizing`.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_ConnectRequiresOwner`
+- AC11.2: Protected providers are presented in one stable configured order, authenticated
+  discovery begins only after all are connected, and denial, cancellation, expiry, restart,
+  process loss, or any backend failure leaves no protected catalogue or executable route.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_AllOrNothing`
+- AC11.3: Anonymous backends continue eager startup discovery without enrollment. A static
+  protected `tools:` declaration remains an optional curated fallback, while no
+  bootstrap-discovery CLI or independent per-backend control is exposed.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_AnonymousCompatibility`
+- AC11.4: After every protected backend connects, authenticated `initialize` and
+  `tools/list` use each backend's matching authenticated transport; safe definitions are
+  validated and one session-local catalogue is frozen before prompt input is enabled, with
+  no within-session refresh or mutation.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedDiscovery`
+- AC11.5: A malformed discovery response, duplicate or colliding tool name, or failure from
+  any protected backend rejects the complete protected catalogue; no successfully
+  discovered subset becomes visible or executable.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_DiscoveryFailsClosed`
+- AC11.6: After process loss or restart, a session exposes no prior protected grant,
+  catalogue, or executable route and requires a fresh complete bundled enrollment before
+  authenticated discovery.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_RestartRequiresEnrollment`
+- AC11.7: Mecatui renders workspace enrollment separately from permission approval, offers
+  no Allow/Always/Deny controls for it, and exposes no OAuth secret, browser URL, callback
+  data, code, state, verifier, token, or private user data.
+  - verify: `TestInvariant_mecatui_workspace_enrollment_is_not_permission_approval`
+- AC11.8: In a deterministic two-protected-backend vertical on one process/replica, both
+  bundled consents complete in configured order, both authenticated catalogues validate and
+  freeze, and one safe tool from each backend executes only after enrollment completes.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_TwoBackendVertical`
+- AC11.9: Prompt input remains unavailable throughout incomplete enrollment; duplicate,
+  stale, foreign-owner, and independently targeted backend controls fail closed without
+  admitting a partial catalogue or selecting a different backend.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_ClientControlsFailClosed`
 
 ## Optional deployment qualification
 
@@ -585,7 +660,8 @@ new reviewed ADR explicitly accepts the break.
 |---|---|---|
 | Durable/shared multi-replica broker transactions and credentials | distributed broker stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
 | Remote sidecar broker protocol and authentication | deployment/sidecar stage | [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) |
-| Second protected backend and reconnect after permanent `Disconnect` | ToolHive `ConnectUpstream` capability | [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) |
+| Independent per-backend connect, retry, and cancel; reconnect after permanent `Disconnect` | targeted ToolHive upstream controls | [ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md) |
+| Bootstrap-discovery CLI for generating curated static protected `tools:` | later operator tooling | [ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md) |
 | Required Kind/Helm qualification and browser ingress journey | optional deployment qualification / production deployment stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
 | Production ingress, DNS, certificate, and Secret rotation qualification | production deployment stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
 | Broad external-provider interoperability matrix | provider qualification stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
@@ -597,9 +673,11 @@ new reviewed ADR explicitly accepts the break.
 Settle configuration parsing and Runtime construction before the aggregate/dispatch work,
 because every later vertical must begin from real administrator input. Land the complete
 `StateAuthorizing` aggregate and snapshot contract before exposing controls. Then add the
-dispatch park, resolution linearization, wire/client surfaces, and finally the aggregate
-command-root evidence. Optional Kind qualification follows only after the required plan is
-green. Task decomposition remains `/plan-orchestrate`'s job.
+dispatch park, resolution linearization, wire/client surfaces, and the aggregate
+command-root evidence. Then land bundled enrollment, authenticated frozen discovery, and the
+mecatui two-backend vertical in that dependency order. Optional Kind qualification follows
+only after the relevant deterministic plan is green. Task decomposition remains
+`/plan-orchestrate`'s job.
 
 ## Definition of done
 
@@ -619,8 +697,10 @@ green. Task decomposition remains `/plan-orchestrate`'s job.
    limitations; ADR 0027 inventories every new long-lived resource.
 10. `STAGE3-RESULTS.md` records required deterministic/command-root evidence and any
     optional Kind/external attempt with honest PASS/FAIL/BLOCKED outcomes.
-11. The real configured vertical reaches exactly one protected HTTP MCP request after
+11. The original configured vertical reaches exactly one protected HTTP MCP request after
     authorization and reaches zero for the restart-interrupted action.
+12. Scenario 11's two-backend vertical admits and freezes the complete protected catalogue
+    only after bundled enrollment, then executes one safe tool from each backend.
 
 ## Deferred decisions and known risks
 
