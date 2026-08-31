@@ -30,10 +30,9 @@ func TestSessionMCPAuthorization_Scenario2_CompilesDiscoveredRoutes(t *testing.T
 		discovered []ToolDefinition
 		wantErr    string
 	}{
-		"unconfigured discovery":   {profiles: profiles, discovered: []ToolDefinition{{BackendID: "other", Name: "mcp__other__list"}}},
-		"duplicate tool":           {profiles: profiles, discovered: []ToolDefinition{{BackendID: "public", Name: "same"}, {BackendID: "calendar", Name: "same"}}},
-		"unsupported auth":         {profiles: []permconfig.MCPServerProfile{{Name: "x", Auth: permconfig.MCPAuthProfile{Mode: "static_bearer"}}}, discovered: discovered},
-		"second protected backend": {profiles: []permconfig.MCPServerProfile{{Name: "a", Auth: permconfig.MCPAuthProfile{Mode: "oauth"}}, {Name: "b", Auth: permconfig.MCPAuthProfile{Mode: "oauth"}}}, discovered: []ToolDefinition{{BackendID: "a", Name: "mcp__a__list"}, {BackendID: "b", Name: "mcp__b__list"}}, wantErr: "only one protected backend"},
+		"unconfigured discovery": {profiles: profiles, discovered: []ToolDefinition{{BackendID: "other", Name: "mcp__other__list"}}},
+		"duplicate tool":         {profiles: profiles, discovered: []ToolDefinition{{BackendID: "public", Name: "same"}, {BackendID: "calendar", Name: "same"}}},
+		"unsupported auth":       {profiles: []permconfig.MCPServerProfile{{Name: "x", Auth: permconfig.MCPAuthProfile{Mode: "static_bearer"}}}, discovered: discovered},
 	} {
 		t.Run(name, func(t *testing.T) {
 			_, err := CompileProfiles(testCase.profiles, testCase.discovered)

@@ -143,7 +143,6 @@ type ToolDefinition struct {
 // configure, preventing a backend route from being invented at execution time.
 func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDefinition) ([]Route, error) {
 	configured := make(map[string]string, len(profiles))
-	protectedProfiles := 0
 	for _, profile := range profiles {
 		name := strings.ToLower(profile.Name)
 		if name == "" {
@@ -157,10 +156,6 @@ func CompileProfiles(profiles []permconfig.MCPServerProfile, discovered []ToolDe
 			configured[name] = profile.Name
 		case profileAuthOAuth:
 			configured[name] = profile.Name
-			protectedProfiles++
-			if protectedProfiles > 1 {
-				return nil, fmt.Errorf("%w: only one protected backend is supported", ErrInvalidRoute)
-			}
 		default:
 			return nil, fmt.Errorf("%w: unsupported auth mode %q for backend %q", ErrInvalidRoute, profile.Auth.Mode, profile.Name)
 		}
@@ -354,14 +349,19 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	if err != nil {
 		return nil, err
 	}
-	protected, err := protectedProfile(profiles)
-	if err != nil {
-		return nil, err
+	protected := protectedProfiles(profiles)
+	if len(protected) == 0 {
+		return nil, fmt.Errorf("%w: one protected backend is required", ErrInvalidRoute)
 	}
 	issuer := callback.Scheme + "://" + callback.Host + brokerBasePath
-	upstreamConfig := newUpstreamRunConfig(protected, issuer, config)
+	upstreamConfigs := make([]authserver.UpstreamRunConfig, 0, len(protected))
+	protectedNames := make([]string, 0, len(protected))
+	for _, profile := range protected {
+		upstreamConfigs = append(upstreamConfigs, newUpstreamRunConfig(profile, issuer, config))
+		protectedNames = append(protectedNames, profile.Name)
+	}
 	store := storage.NewMemoryStorage()
-	auth, err := runner.NewEmbeddedAuthServerWithStorage(ctx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: []authserver.UpstreamRunConfig{upstreamConfig}}, store)
+	auth, err := runner.NewEmbeddedAuthServerWithStorage(ctx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: upstreamConfigs}, store)
 	if err != nil {
 		return nil, fmt.Errorf("vmcpbroker: create embedded auth server: %w", err)
 	}
@@ -387,7 +387,7 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	for _, p := range profiles {
 		b := vmcp.Backend{ID: p.Name, Name: p.Name, BaseURL: p.URL, TransportType: "streamable-http"}
 		if p.Auth.Mode == profileAuthOAuth {
-			b.AuthConfig = &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: protected.Name}}
+			b.AuthConfig = &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: p.Name}}
 		}
 		backends = append(backends, b)
 	}
@@ -405,7 +405,7 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		_ = server.Stop(context.Background())
 		return fail(err)
 	}
-	runtime, err := NewToolHiveStreamingHTTPRuntime(routes, issuer+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: issuer, Resource: issuer, AuthorizationEndpoint: issuer + "/oauth/authorize", TokenEndpoint: issuer + "/oauth/token", CallbackURL: callback.String(), HTTPClient: config.httpClient, Diagnostics: diag}, 5*time.Minute)
+	runtime, err := NewToolHiveStreamingHTTPRuntime(routes, issuer+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: issuer, Resource: issuer, AuthorizationEndpoint: issuer + "/oauth/authorize", TokenEndpoint: issuer + "/oauth/token", CallbackURL: callback.String(), ProtectedBackends: protectedNames, HTTPClient: config.httpClient, Diagnostics: diag}, 5*time.Minute)
 	if err != nil {
 		_ = server.Stop(context.Background())
 		return fail(err)
@@ -522,20 +522,14 @@ func canonicalCallbackURL(raw string) (*url.URL, error) {
 	return u, nil
 }
 
-func protectedProfile(profiles []permconfig.MCPServerProfile) (permconfig.MCPServerProfile, error) {
-	var result *permconfig.MCPServerProfile
-	for i := range profiles {
-		if profiles[i].Auth.Mode == profileAuthOAuth {
-			if result != nil {
-				return permconfig.MCPServerProfile{}, fmt.Errorf("%w: only one protected backend is supported", ErrInvalidRoute)
-			}
-			result = &profiles[i]
+func protectedProfiles(profiles []permconfig.MCPServerProfile) []permconfig.MCPServerProfile {
+	result := make([]permconfig.MCPServerProfile, 0)
+	for _, profile := range profiles {
+		if profile.Auth.Mode == profileAuthOAuth && profile.Auth.OAuth != nil {
+			result = append(result, profile)
 		}
 	}
-	if result == nil || result.Auth.OAuth == nil {
-		return permconfig.MCPServerProfile{}, fmt.Errorf("%w: one protected backend is required", ErrInvalidRoute)
-	}
-	return *result, nil
+	return result
 }
 func brokerClientID(p permconfig.MCPServerProfile) string {
 	if c := p.Auth.OAuth.Client.Preregistered; c != nil {
@@ -552,6 +546,7 @@ func brokerSecretEnv(p permconfig.MCPServerProfile) string {
 	}
 	return ""
 }
+
 // discoverRoutes builds the model-facing route catalog. A profile that
 // declares Auth.OAuth.Tools statically (permconfig.MCPOAuthProfile.Tools)
 // skips live discovery entirely — some protected backends (e.g. GitHub's
@@ -562,15 +557,10 @@ func discoverRoutes(ctx context.Context, profiles []permconfig.MCPServerProfile,
 	live := make([]permconfig.MCPServerProfile, 0, len(profiles))
 	defs := make([]ToolDefinition, 0)
 	for _, p := range profiles {
-		if p.Auth.Mode == profileAuthOAuth && p.Auth.OAuth != nil && len(p.Auth.OAuth.Tools) > 0 {
-			for _, t := range p.Auth.OAuth.Tools {
-				defs = append(defs, ToolDefinition{
-					BackendID:   p.Name,
-					Name:        "mcp__" + p.Name + "__" + t.Name,
-					Description: t.Description,
-					Schema:      append(json.RawMessage(nil), t.InputSchema...),
-				})
-			}
+		if p.Auth.Mode == profileAuthOAuth {
+			// Protected discovery, including configured static declarations, is not
+			// exposed before the complete workspace bundle enrolls. Authenticated
+			// discovery and catalogue freezing are the next stage.
 			continue
 		}
 		live = append(live, p)
@@ -624,6 +614,7 @@ type Runtime struct {
 	disconnected      map[controlTarget]struct{}
 	refreshes         map[controlTarget]*refreshOperation
 	oauthBackend      string
+	protectedBackends []string
 	clientID          string
 	httpClient        *http.Client
 	tokenEndpoint     string
@@ -653,8 +644,12 @@ type ToolHiveRuntimeConfig struct {
 	CallbackURL           string
 	// HTTPClient is used only for the embedded ToolHive downstream token exchange.
 	// It must be configured by composition when the embedded server uses a private CA.
-	HTTPClient  *http.Client
-	Diagnostics port.Diagnostics
+	// ProtectedBackends is the configured protected-provider order for the one
+	// client-owned workspace enrollment chain. It is independent of routes because
+	// protected discovery happens only after the complete bundle connects.
+	ProtectedBackends []string
+	HTTPClient        *http.Client
+	Diagnostics       port.Diagnostics
 }
 
 // ConnectionStatus describes the authorization state of a broker connection.
@@ -676,6 +671,7 @@ type authorizationTransaction struct {
 	verifier   string
 	browserURL string
 	expiresAt  time.Time
+	backends   []string
 	// cancel stops the exact callback token exchange. Cancellation owns this
 	// transaction, not the whole session lifecycle, so a loser cannot install a
 	// grant after cancel, expiry, or close won.
@@ -737,6 +733,8 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 	copied := make([]Route, len(routes))
 	seen := make(map[string]struct{}, len(routes))
 	var oauthBackend string
+	protectedBackends := make([]string, 0)
+	protectedSeen := make(map[string]struct{})
 	for i, route := range routes {
 		if route.BackendID == "" || route.Tool.Name == "" {
 			return nil, fmt.Errorf("%w: backend id and tool name are required", ErrInvalidRoute)
@@ -744,8 +742,14 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 		if _, ok := seen[route.Tool.Name]; ok {
 			return nil, fmt.Errorf("%w: duplicate tool %q", ErrInvalidRoute, route.Tool.Name)
 		}
-		if route.Protected && oauthBackend == "" {
-			oauthBackend = route.BackendID
+		if route.Protected {
+			if oauthBackend == "" {
+				oauthBackend = route.BackendID
+			}
+			if _, ok := protectedSeen[route.BackendID]; !ok {
+				protectedSeen[route.BackendID] = struct{}{}
+				protectedBackends = append(protectedBackends, route.BackendID)
+			}
 		}
 		seen[route.Tool.Name] = struct{}{}
 		copied[i] = copyRoute(route)
@@ -753,21 +757,22 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 	sort.Slice(copied, func(i, j int) bool { return copied[i].Tool.Name < copied[j].Tool.Name })
 	lifecycleCtx, cancelLifecycle := context.WithCancel(context.Background())
 	return &Runtime{
-		routes:          copied,
-		caller:          caller,
-		sessions:        make(map[session.SessionID]*SessionTools),
-		lifecycles:      make(map[session.SessionID]*sessionLifecycle),
-		tombstones:      make(map[session.SessionID]struct{}),
-		transactions:    make(map[controlTarget]authorizationTransaction),
-		authorizations:  make(map[controlTarget]string),
-		grants:          make(map[controlTarget]downstreamGrant),
-		disconnected:    make(map[controlTarget]struct{}),
-		refreshes:       make(map[controlTarget]*refreshOperation),
-		oauthBackend:    oauthBackend,
-		diagnostics:     port.NopDiagnostics{},
-		now:             time.Now,
-		lifecycleCtx:    lifecycleCtx,
-		cancelLifecycle: cancelLifecycle,
+		routes:            copied,
+		caller:            caller,
+		sessions:          make(map[session.SessionID]*SessionTools),
+		lifecycles:        make(map[session.SessionID]*sessionLifecycle),
+		tombstones:        make(map[session.SessionID]struct{}),
+		transactions:      make(map[controlTarget]authorizationTransaction),
+		authorizations:    make(map[controlTarget]string),
+		grants:            make(map[controlTarget]downstreamGrant),
+		disconnected:      make(map[controlTarget]struct{}),
+		refreshes:         make(map[controlTarget]*refreshOperation),
+		oauthBackend:      oauthBackend,
+		protectedBackends: protectedBackends,
+		diagnostics:       port.NopDiagnostics{},
+		now:               time.Now,
+		lifecycleCtx:      lifecycleCtx,
+		cancelLifecycle:   cancelLifecycle,
 	}, nil
 }
 
@@ -797,6 +802,15 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 		return nil, fmt.Errorf("%w: callback URL must be HTTPS", ErrInvalidRoute)
 	}
 	protected := make(map[string]struct{})
+	for _, backend := range config.ProtectedBackends {
+		if backend == "" {
+			return nil, fmt.Errorf("%w: protected backend name is required", ErrInvalidRoute)
+		}
+		if _, exists := protected[backend]; exists {
+			return nil, fmt.Errorf("%w: duplicate protected backend %q", ErrInvalidRoute, backend)
+		}
+		protected[backend] = struct{}{}
+	}
 	for _, route := range routes {
 		if route.Protected {
 			protected[route.BackendID] = struct{}{}
@@ -808,6 +822,10 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 	runtime, err := NewRuntime(routes, caller)
 	if err != nil {
 		return nil, err
+	}
+	if len(config.ProtectedBackends) > 0 {
+		runtime.protectedBackends = append([]string(nil), config.ProtectedBackends...)
+		runtime.oauthBackend = runtime.protectedBackends[0]
 	}
 	clientID, err := newOpaqueHandle()
 	if err != nil {
@@ -1134,6 +1152,9 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	if !r.openSessionLocked(sessionID) || !r.protectedBackendLocked(backendID) {
 		return ConnectResult{}, ErrInvalidControlTarget
 	}
+	if _, connected := r.grants[target]; connected {
+		return ConnectResult{Status: ConnectionConnected}, nil
+	}
 	if backendID != r.oauthBackend {
 		return ConnectResult{}, ErrUnsupportedCapability
 	}
@@ -1142,9 +1163,6 @@ func (r *Runtime) Connect(_ context.Context, sessionID session.SessionID, backen
 	}
 	if _, disconnected := r.disconnected[target]; disconnected {
 		return ConnectResult{}, fmt.Errorf("%w: reconnect requires ToolHive ConnectUpstream", ErrUnsupportedCapability)
-	}
-	if _, connected := r.grants[target]; connected {
-		return ConnectResult{Status: ConnectionConnected}, nil
 	}
 	if transaction, ok := r.transactions[target]; ok {
 		return authorizationResult(transaction), nil
@@ -1341,7 +1359,11 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 	defer done()
 	grant, err := r.exchangeDownstreamCode(opCtx, code, transaction.verifier)
 	if err != nil {
-		r.restoreTransaction(target, transaction)
+		if len(transaction.backends) == 0 {
+			r.restoreTransaction(target, transaction)
+		} else {
+			r.failWorkspaceEnrollment(target, transaction)
+		}
 		return err
 	}
 
@@ -1357,7 +1379,13 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 		return ErrInvalidControlTarget
 	}
 	delete(r.transactions, target)
-	r.grants[target] = grant
+	backends := transaction.backends
+	if len(backends) == 0 {
+		backends = []string{target.backendID}
+	}
+	for _, backend := range backends {
+		r.grants[controlTarget{sessionID: target.sessionID, backendID: backend}] = grant
+	}
 	return nil
 }
 
@@ -1654,6 +1682,9 @@ func (r *Runtime) openSessionLocked(id session.SessionID) bool {
 }
 
 func (r *Runtime) knownBackendLocked(backendID string) bool {
+	if r.protectedBackendLocked(backendID) {
+		return true
+	}
 	for _, route := range r.routes {
 		if route.BackendID == backendID {
 			return true
@@ -1665,6 +1696,11 @@ func (r *Runtime) knownBackendLocked(backendID string) bool {
 func (r *Runtime) protectedBackendLocked(backendID string) bool {
 	if backendID == "" {
 		return false
+	}
+	for _, configured := range r.protectedBackends {
+		if configured == backendID {
+			return true
+		}
 	}
 	for _, route := range r.routes {
 		if route.BackendID == backendID && route.Protected {

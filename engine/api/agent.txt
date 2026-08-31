@@ -18,8 +18,8 @@
     method func (*Engine).PrepareAfterMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *PreparedRun
     method func (*Engine).PrepareMCPAuthorizationContinuation(ctx context.Context, sess *session.Session, env tool.Environment, pending session.PendingMCPAuthorization) *PreparedRun
     method func (*Engine).ResumeApproval(ctx context.Context, sess *session.Session, env tool.Environment, askID string, verdict session.ApprovalVerdict) *Run
-    method func (*Engine).RetryFailedStep(ctx context.Context, sess *session.Session, env tool.Environment) *Run
     method func (*Engine).ResumeApprovalWithPresentation(ctx context.Context, sess *session.Session, env tool.Environment, askID string, verdict session.ApprovalVerdict, authorizationPresentation bool) *Run
+    method func (*Engine).RetryFailedStep(ctx context.Context, sess *session.Session, env tool.Environment) *Run
     method func (*Engine).Run(ctx context.Context, sess *session.Session, env tool.Environment, req RunRequest) *Run
     method func (*Engine).SteerEnabled() bool
     method func (*EvidenceReflector).Reflect(ctx context.Context, in learning.Input) (learning.Outcome, error)

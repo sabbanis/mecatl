@@ -44,7 +44,10 @@ type Snapshot struct {
 	// PendingMCPAuthorization is snapshot-only private continuation state. It is
 	// present iff StateAuthorizing; the aggregate validates it before mutation.
 	PendingMCPAuthorization *session.PendingMCPAuthorization `json:"pending_mcp_authorization,omitempty"`
-	StopReason              session.StopReason               `json:"stop_reason,omitempty"`
+	// WorkspaceEnrollment persists only safe bundle correlation. Browser URLs,
+	// credentials, grants, and discovered catalogues are process-local.
+	WorkspaceEnrollment *session.WorkspaceEnrollmentState `json:"workspace_enrollment,omitempty"`
+	StopReason          session.StopReason                `json:"stop_reason,omitempty"`
 	// Kind and Relationship are the validated producer taxonomy from ADR 0217.
 	// A missing kind is legacy data and restores as unknown (fail-closed).
 	Kind         session.SessionKind         `json:"kind,omitempty"`
@@ -255,6 +258,10 @@ func Of(s *session.Session) (Snapshot, error) {
 		p := pending
 		snap.PendingMCPAuthorization = &p
 	}
+	if enrollment, ok := s.WorkspaceEnrollment(); ok {
+		e := enrollment
+		snap.WorkspaceEnrollment = &e
+	}
 	// Capture the recorded terminal reason faithfully (no limit derivation) so a
 	// terminal session round-trips through the matching transition on restore.
 	if r, ok := s.RecordedStopReason(); ok {
@@ -312,6 +319,11 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 	}
 	if err := s.RestoreIncarnation(snap.Incarnation); err != nil {
 		return nil, fmt.Errorf("sessnap: restore incarnation: %w", err)
+	}
+	if snap.WorkspaceEnrollment != nil {
+		if err := s.StartWorkspaceEnrollment(*snap.WorkspaceEnrollment); err != nil {
+			return nil, fmt.Errorf("sessnap: restore workspace enrollment: %w", err)
+		}
 	}
 
 	// The cumulative usage to seed (a nil pointer => the zero Usage, the pre-Usage

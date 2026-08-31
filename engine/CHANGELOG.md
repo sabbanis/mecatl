@@ -150,6 +150,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   unusable when precise cancellation cannot confirm removal, so a failed durable
   parking transition cannot orphan a reusable broker transaction. Added (minor).
 
+- **Bundled workspace-enrollment domain state** ([ADR 0248](../docs/adr/0248-bundled-mcp-workspace-enrollment.md)) — `session.WorkspaceEnrollmentState`, its status vocabulary, and the `Session` start/read/clear methods persist only safe pre-prompt bundle correlation without reusing permission or MCP tool-call authorization state. Added (minor).
+
 - **Prepared post-resolution MCP continuation** —
   `agent.Engine.PrepareAfterMCPAuthorization` lets the Service register a
   cancellation or expiry continuation before releasing its execution goroutine.

@@ -12,6 +12,7 @@
     method func (*Session).BoundAuthority() (Authority, bool)
     method func (*Session).Cancel() error
     method func (*Session).ClaimMCPAuthorization() (PendingMCPAuthorization, error)
+    method func (*Session).ClearWorkspaceEnrollment()
     method func (*Session).Complete() error
     method func (*Session).Fail() error
     method func (*Session).FailedStepRetryPending() (RetryDisposition, StreamProgress, bool)
@@ -52,9 +53,11 @@
     method func (*Session).SeedHistory(messages []Message) error
     method func (*Session).SetMode(mode PermissionMode) error
     method func (*Session).SetTitle(text string)
+    method func (*Session).StartWorkspaceEnrollment(enrollment WorkspaceEnrollmentState) error
     method func (*Session).Stop(reason StopReason) error
     method func (*Session).StopReason() (StopReason, bool)
     method func (*Session).ValidateMCPAuthorizationState() error
+    method func (*Session).WorkspaceEnrollment() (WorkspaceEnrollmentState, bool)
     method func (Authority).Clone() Authority
     method func (Authority).Valid() bool
     method func (GrantType).Valid() bool
@@ -68,6 +71,7 @@
     method func (Usage).Add(other Usage) Usage
     method func (Usage).CacheHitRate() float64
     method func (Usage).TotalTokens() int
+    method func (WorkspaceEnrollmentState).Clone() WorkspaceEnrollmentState
 const AskOriginHook AskOrigin = 1
 const AskOriginNone AskOrigin = 0
 const AskOriginPlan AskOrigin = 2
@@ -223,6 +227,12 @@ const VerdictDeny ApprovalVerdict = 0
 const VerdictStringAllowAlways untyped string = "allow_always"
 const VerdictStringAllowOnce untyped string = "allow_once"
 const VerdictStringDeny untyped string = "deny"
+const WorkspaceEnrollmentCancelled WorkspaceEnrollmentStatus = "cancelled"
+const WorkspaceEnrollmentConnected WorkspaceEnrollmentStatus = "connected"
+const WorkspaceEnrollmentDenied WorkspaceEnrollmentStatus = "denied"
+const WorkspaceEnrollmentExpired WorkspaceEnrollmentStatus = "expired"
+const WorkspaceEnrollmentFailed WorkspaceEnrollmentStatus = "failed"
+const WorkspaceEnrollmentPending WorkspaceEnrollmentStatus = "pending"
 func CanonicalNetworkAttempt(in NetworkAttemptPayload, id SessionID, runSerial int64, turn int) (NetworkAttemptPayload, bool)
 func ClampTitle(s string) string
 func CloneMessages(msgs []Message) []Message
@@ -337,6 +347,8 @@ type Turn struct{Index int; Assistant Message; Results []ToolResult; Usage Usage
 type TurnEndPayload struct{Usage Usage; Estimated bool; DurationMs int64; TTFTMs int64; InterTokenMeanMs int64; InterTokenMaxMs int64}
 type Usage struct{InputTokens int; OutputTokens int; CacheReadTokens int; CacheWriteTokens int; ReasoningTokens int}
 type UserPromptPayload struct{Text string; Parts []Content}
+type WorkspaceEnrollmentState struct{ID string; Backends []string; Status WorkspaceEnrollmentStatus; ExpiresAt time.Time}
+type WorkspaceEnrollmentStatus string
 var ErrIllegalTransition error
 var ErrInvalidContent error
 var ErrInvalidMediaURL error

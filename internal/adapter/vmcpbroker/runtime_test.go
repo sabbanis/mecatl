@@ -100,13 +100,6 @@ func TestCompileProfiles_RejectsUnsupportedOrAmbiguousProfiles(t *testing.T) {
 			profiles: []permconfig.MCPServerProfile{{Auth: permconfig.MCPAuthProfile{Mode: "none"}}},
 		},
 		{
-			name: "second protected backend",
-			profiles: []permconfig.MCPServerProfile{
-				{Name: "github", Auth: permconfig.MCPAuthProfile{Mode: "oauth"}},
-				{Name: "calendar", Auth: permconfig.MCPAuthProfile{Mode: "oauth"}},
-			},
-		},
-		{
 			name:       "discovered unconfigured backend",
 			profiles:   []permconfig.MCPServerProfile{{Name: "calendar", Auth: permconfig.MCPAuthProfile{Mode: "none"}}},
 			discovered: []ToolDefinition{{BackendID: "github", Name: "mcp__github__list_issues"}},

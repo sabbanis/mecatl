@@ -479,6 +479,9 @@ type Session struct {
 	pending *PendingAsk
 	// pendingMCPAuthorization is set iff State == StateAuthorizing.
 	pendingMCPAuthorization *PendingMCPAuthorization
+	// workspaceEnrollment is safe pre-prompt bundle correlation. It is
+	// independent of the agent-loop lifecycle and contains no OAuth material.
+	workspaceEnrollment *WorkspaceEnrollmentState
 	// stop holds the terminal stop reason once the session has stopped.
 	stop StopReason
 	// permanent is the compatibility projection of failureDisposition==Permanent.
