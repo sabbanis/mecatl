@@ -37,3 +37,86 @@ residual `httprc` goroutines have no goleak suppression in mecatl. The command-r
 evidence is a loopback-TLS fixture only; it is not a real SaaS, sidecar, ingress,
 Helm/Kind, or external-callback deployment proof. Production sidecar,
 ingress/Helm/Kind external-callback topology remains Stage 5.
+
+## Qualification run — 2026-08-30
+
+### Public-ingress preflight
+
+- **PASS:** A fresh single-replica Kind deployment was exposed through an ngrok Gateway
+  to the existing mecak8s primary HTTPS listener. The Gateway and its ngrok-managed
+  domain reached `Accepted=True`, `Programmed=True`, and `Ready=True`; public
+  `/healthz` and `/readyz` each returned `200`.
+- **PASS:** The ngrok upstream was explicitly configured as HTTPS for the existing
+  TLS-enabled HTTP Service. No second mecak8s listener was introduced.
+- **PASS:** The public Model Context Protocol documentation server accepted a
+  Streamable HTTP `initialize` request and identified itself as `Model Context Protocol`
+  using protocol version `2025-06-18`. This check retained no session material.
+
+### Mode A — public documentation MCP
+
+**PASS (2026-08-30T20:47:41Z):** An OIDC owner-bound session was created through the
+public ngrok route. With a real provider configured through the fixture Secret, the
+broker completed exactly one harmless call to
+`mcp__docs__search_model_context_protocol`; its tool result was non-error and the
+session ended normally (`end_turn`). No `mcp.authorization.required` event, OAuth
+presentation, or callback occurred. Retained evidence is limited to the session ID,
+backend label, tool name, terminal status, and sanitized result length; it excludes the
+prompt arguments, result text, bearer token, and provider credential.
+
+### Mode B — GitHub OAuth-protected MCP
+
+**PASS (2026-08-31T10:32Z):** A single-replica `mecak8s-mecak8s` deployment (Helm
+revision 7, image `ko.local/mecak8s:dev`) exposed through the same public ngrok
+route completed the full Mode B journey against GitHub's real remote MCP server
+(`https://api.githubcopilot.com/mcp/`) using generic OAuth2 (ADR 0247) with an
+operator-declared static tool catalogue (`permconfig.MCPOAuthProfile.Tools`) for
+`get_me` (`read:user`).
+
+- Session `48a9a5ae01584379c0da41a47b0f7d04` (OIDC owner-bound, real provider).
+- The first `mcp__github__get_me` call parked with `mcp.authorization.required`
+  (authorization ID `yxlt-Tclih9VRS40ZHCAv-RlzDjqnhomPOwpj1ondCo`) and recorded
+  **zero** GitHub-side operations; its transaction expired before browser
+  consent completed (config-fix delay) and its recheck correctly failed closed
+  with a transcript-recorded `is_error` tool result (`"MCP authorization
+  expired"`) — no GitHub contact.
+- A fresh call (authorization ID `AQyOt9ZMcym2YxXyiZUv_v52B9tFPNEzo7SdWccmyf0`)
+  completed real GitHub browser consent through the public ngrok callback, and
+  one recheck resolved it (`status: connected`) and returned exactly **one**
+  successful protected GitHub read (the authenticated user's public profile).
+- The duplicate recheck returned `404`/`session not found` and added no further
+  transcript entries — the backend-visible request count stayed at one.
+- Session transcript confirms totals across both attempts: exactly one `is_error`
+  expired result, exactly one successful GitHub-backed result, zero others.
+
+**Two pre-existing bugs surfaced and fixed during this run** (unrelated to the
+broker's OAuth2/session-authorization logic itself):
+
+1. `discoverRoutes` (`internal/adapter/vmcpbroker/runtime.go`) unconditionally
+   attempted a live, anonymous `initialize` against every configured backend,
+   including protected ones — fatal for any upstream (like GitHub) that 401s on
+   an unauthenticated `initialize`. Fixed with an optional static tool
+   declaration (`permconfig.MCPOAuthProfile.Tools`) that lets an operator
+   declare a protected backend's tool catalogue instead of requiring live
+   discovery; backends without a declaration keep the old live-discovery
+   behavior unchanged. A follow-up design for an *authenticated* discovery
+   bootstrap (removing the hand-transcription step) is written up at
+   `.scratch/task09/AUTHENTICATED-DISCOVERY-BOOTSTRAP-HANDOVER.md`.
+2. The GitHub App callback path documented in the original task handover
+   (`/v1/mcp/authorization/callback`) collided with mecak8s's own reserved
+   `/v1/` route prefix (`cmd/mecak8s/serve.go`'s `ValidateCallbackPath` call),
+   crashing broker construction. The operator-facing `callback_url` was moved
+   to `/mcp/authorization/callback`. Separately, the actual upstream-facing
+   GitHub redirect URI is a *different*, non-configurable, always-mounted path
+   (`/v1/mcp/broker/oauth/callback`, derived in `newUpstreamRunConfig`) — the
+   handover's instruction to register `callback_url`'s value with GitHub was
+   itself incorrect; the GitHub App must register the fixed upstream path
+   instead. Both values are now correct and documented in
+   `.scratch/task09/GITHUB-OAUTH2-TEST-HANDOVER.md`.
+3. (Fixture-only, not mecatl) `deploy/mecak8s-kind/keycloak.yaml`'s `mecatui-kind`
+   client was missing `offline_access` from its optional client scopes, and its
+   fixture users (`alice`/`bob`) had no `realmRoles` granting it — both fixed.
+
+## Related documents
+
+- [Session vMCP authorization acceptance](docs/acceptance/session-vmcp-authorization.md)
+- [ADR 0247 — Broker-only explicit generic OAuth2 upstreams](docs/adr/0247-broker-generic-oauth2-upstreams.md)

@@ -2,7 +2,7 @@
 id: 09-live-saas-mcp-qualification
 title: Manual real-SaaS MCP qualification
 blocked_by: [08-command-root-https-vertical-and-documentation]
-status: pending
+status: done
 branch: ""
 worktree: ""
 issue: ""
@@ -17,11 +17,24 @@ Perform the terminal human-operated qualification after the deterministic comman
 
 Use one mecak8s replica for every active qualification run. Do not restart, roll, or scale it while an authorization is pending: broker transactions, grants, and transports are process-local. An active lease on a second service must fail closed, never route a recheck or continuation to the holder.
 
+## Fresh Kind-cluster bootstrap
+
+Create a new isolated Kind cluster from the **rebased** `origin/main` fixture at `deploy/mecak8s-kind/`; do not reuse a prior Stage 2/3 cluster. Use its dedicated cluster name/context/kubeconfig conventions. Begin in the fixture's mock-provider mode and prove chart rendering, image loading, trusted configuration mounting, one-replica readiness, `/healthz`, and `/readyz` before supplying any real-provider or SaaS secret.
+
+Then layer only the required ToolHive/public-exposure components onto that known-good substrate:
+
+1. Reuse the ToolHive operator/Redis/vMCP lifecycle sequencing from `deploy/mecak8s-vmcp/` where it applies; Yardstick and Keycloak are deterministic topology evidence, not substitutes for either SaaS mode.
+2. Before creating public routes, inspect and delete stale ngrok endpoints for the intended reserved domains. Install Gateway API CRDs, the ngrok operator, and the explicit `ngrok` GatewayClass, then wait for the operator and Gateway resources to become healthy.
+3. Publish the existing mecak8s **primary HTTP Service** through one public HTTPS hostname. Route `/v1/mcp/broker/...`, the exact callback path, authenticated application control endpoints, `/healthz`, and `/readyz` to that same Service. Do not add a second broker listener and do not derive callback authority from request headers.
+4. The ToolHive demonstration's usual two-domain topology is not automatically this feature's topology: this broker derives its authorization/vMCP routes and exact callback from one canonical configured callback origin. Add a second domain only if current SaaS/OAuth-provider requirements demonstrably require it.
+
+`NGROK_API_KEY`, `NGROK_AUTHTOKEN`, reserved-domain details, cloud endpoint identifiers, and all provider credentials are operator secrets. Supply them only through the operator environment/Secret mechanism; never commit, print, or include them in the qualification evidence.
+
 ## Shared prerequisites
 
 Before either mode, obtain from the operator:
 
-1. A target cluster/namespace and one-replica mecak8s deployment.
+1. A fresh `deploy/mecak8s-kind/` cluster/namespace and one-replica mecak8s deployment whose mock-mode bootstrap has passed.
 2. A public HTTPS hostname/path which routes to mecak8s's primary HTTP listener without rewriting the configured callback path.
 3. OIDC caller identity for the mecatl API/control surface and an operator credential accepted by it. Mecak8s has no ownerless broker-control mode.
 4. A dedicated low-privilege test identity and a harmless read-only operation for each backend.
@@ -63,19 +76,26 @@ Mode A validates the session-scoped wrapper/catalogue, real Streamable HTTP tran
 
 ## Mode B — GitHub remote OAuth-protected MCP server
 
-Use broker mode with exactly one OAuth-protected GitHub remote MCP backend. Retain Mode A's docs backend only if a mixed anonymous-plus-one-protected catalogue is useful; never configure a second protected backend.
+Use broker mode with exactly one OAuth-protected GitHub remote MCP backend. GitHub is
+now a supported generic OAuth2 qualification target; do not require it to provide OIDC
+discovery. This manual journey requires exactly one ready mecak8s replica and a publicly
+reachable exact HTTPS callback registered on the GitHub OAuth application; a loopback-only
+callback or multi-replica rollout cannot qualify it. Retain Mode A's docs backend only if a
+mixed anonymous-plus-one-protected catalogue is useful; never configure a second protected
+backend.
 
 Before execution, the operator must provide or approve current official GitHub values:
 
-- remote Streamable HTTP MCP endpoint;
-- OAuth/OIDC issuer/discovery compatibility;
+- remote Streamable HTTP MCP endpoint (`https://api.githubcopilot.com/mcp/` at the time of qualification; confirm it remains current);
+- generic OAuth2 authorization and token endpoints (`https://github.com/login/oauth/authorize` and `https://github.com/login/oauth/access_token`; confirm both remain current);
 - registered client form (preregistered client or CIMD) and the exact allowed redirect URI;
 - secret reference (never a secret value in YAML);
 - least-privilege scope(s), organization/SSO consent conditions, and a harmless tool name;
 - a dedicated low-privilege GitHub identity and disposable/test repository or other non-production target;
 - any GitHub-side audit/request evidence available for the selected operation.
 
-Template only — replace placeholders from current official GitHub documentation:
+Configuration shape — confirm the public endpoints against current GitHub documentation,
+then replace only the operator-specific callback, client ID, and least-privilege scopes:
 
 ```yaml
 mcp:
@@ -84,11 +104,15 @@ mcp:
     callback_url: https://<public-host>/<exact-callback-path>
   servers:
     - name: github
-      url: <current-github-remote-mcp-streamable-http-url>
+      url: https://api.githubcopilot.com/mcp/
       auth:
         mode: oauth
         oauth:
-          issuer: <current-github-oauth-or-oidc-issuer>
+          upstream:
+            mode: oauth2
+            oauth2:
+              authorization_endpoint: https://github.com/login/oauth/authorize
+              token_endpoint: https://github.com/login/oauth/access_token
           client:
             mode: preregistered
             preregistered:
@@ -97,6 +121,12 @@ mcp:
           scopes: [<minimum-read-only-scope>]
           network: {}
 ```
+
+Do not add `issuer`: generic OAuth2 uses the two explicit endpoints and performs no OIDC
+discovery. Keep `network: {}` exactly empty. Additional/private origins and non-zero
+redirect limits are rejected because ToolHive cannot enforce those controls on this
+upstream path; qualification must not claim otherwise. Supply the referenced client secret
+through the deployment Secret/environment only, never as YAML or retained evidence.
 
 Run the exact sequence as the same authenticated owner:
 
