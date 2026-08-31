@@ -354,20 +354,24 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		return nil, fmt.Errorf("%w: one protected backend is required", ErrInvalidRoute)
 	}
 	issuer := callback.Scheme + "://" + callback.Host + brokerBasePath
-	upstreamConfigs := make([]authserver.UpstreamRunConfig, 0, len(protected))
-	protectedNames := make([]string, 0, len(protected))
-	for _, profile := range protected {
-		upstreamConfigs = append(upstreamConfigs, newUpstreamRunConfig(profile, issuer, config))
-		protectedNames = append(protectedNames, profile.Name)
+	construction, err := newProtectedToolHiveConstruction(profiles, issuer, config)
+	if err != nil {
+		return nil, err
 	}
 	store := storage.NewMemoryStorage()
-	auth, err := runner.NewEmbeddedAuthServerWithStorage(ctx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: upstreamConfigs}, store)
+	authCtx, cancelAuth := context.WithCancel(context.Background())
+	auth, err := runner.NewEmbeddedAuthServerWithStorage(authCtx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: construction.upstreams}, store)
 	if err != nil {
+		cancelAuth()
 		return nil, fmt.Errorf("vmcpbroker: create embedded auth server: %w", err)
 	}
-	fail := func(err error) (*Process, error) { _ = auth.Close(); return nil, err }
+	fail := func(err error) (*Process, error) {
+		_ = auth.Close()
+		cancelAuth()
+		return nil, err
+	}
 	reader := upstreamtoken.NewInProcessService(auth.IDPTokenStorage(), auth.UpstreamTokenRefresher())
-	incoming, _, authInfo, err := factory.NewIncomingAuthMiddleware(ctx, &vmcpconfig.IncomingAuthConfig{Type: "oidc", OIDC: &vmcpconfig.OIDCConfig{Issuer: issuer, Audience: issuer, Resource: issuer, JWKSURL: issuer + "/.well-known/jwks.json"}}, "mecatl-broker", nil, reader, auth.KeyProvider())
+	incoming, _, authInfo, err := factory.NewIncomingAuthMiddleware(authCtx, &vmcpconfig.IncomingAuthConfig{Type: "oidc", OIDC: &vmcpconfig.OIDCConfig{Issuer: issuer, Audience: issuer, Resource: issuer, JWKSURL: issuer + "/.well-known/jwks.json"}}, "mecatl-broker", nil, reader, auth.KeyProvider())
 	if err != nil {
 		return fail(err)
 	}
@@ -383,19 +387,11 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	if err != nil {
 		return fail(err)
 	}
-	backends := make([]vmcp.Backend, 0, len(profiles))
-	for _, p := range profiles {
-		b := vmcp.Backend{ID: p.Name, Name: p.Name, BaseURL: p.URL, TransportType: "streamable-http"}
-		if p.Auth.Mode == profileAuthOAuth {
-			b.AuthConfig = &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: p.Name}}
-		}
-		backends = append(backends, b)
-	}
-	server, err := vmcpserver.New(ctx, &vmcpserver.Config{Name: "mecatl-broker", Version: "v1", EndpointPath: brokerMCPPath, AuthMiddleware: incoming, AuthInfoHandler: authInfo, AuthServer: auth, Aggregator: aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil), SessionFactory: vmcpsession.NewSessionFactory(outgoing)}, router.NewSessionRouter(&vmcp.RoutingTable{}), backendClient, vmcp.NewImmutableRegistry(backends), nil)
+	server, err := vmcpserver.New(authCtx, &vmcpserver.Config{Name: "mecatl-broker", Version: "v1", EndpointPath: brokerMCPPath, AuthMiddleware: incoming, AuthInfoHandler: authInfo, AuthServer: auth, Aggregator: aggregator.NewDefaultAggregator(backendClient, resolver, nil, nil), SessionFactory: vmcpsession.NewSessionFactory(outgoing)}, router.NewSessionRouter(&vmcp.RoutingTable{}), backendClient, vmcp.NewImmutableRegistry(construction.backends), nil)
 	if err != nil {
 		return fail(err)
 	}
-	vmcpHandler, err := server.Handler(ctx)
+	vmcpHandler, err := server.Handler(authCtx)
 	if err != nil {
 		_ = server.Stop(context.Background())
 		return fail(err)
@@ -405,14 +401,74 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		_ = server.Stop(context.Background())
 		return fail(err)
 	}
-	runtime, err := NewToolHiveStreamingHTTPRuntime(routes, issuer+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: issuer, Resource: issuer, AuthorizationEndpoint: issuer + "/oauth/authorize", TokenEndpoint: issuer + "/oauth/token", CallbackURL: callback.String(), ProtectedBackends: protectedNames, HTTPClient: config.httpClient, Diagnostics: diag}, 5*time.Minute)
+	runtime, err := NewToolHiveStreamingHTTPRuntime(routes, issuer+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: issuer, Resource: issuer, AuthorizationEndpoint: issuer + "/oauth/authorize", TokenEndpoint: issuer + "/oauth/token", CallbackURL: callback.String(), ProtectedBackends: construction.protectedBackends, HTTPClient: config.httpClient, Diagnostics: diag}, 5*time.Minute)
 	if err != nil {
 		_ = server.Stop(context.Background())
 		return fail(err)
 	}
-	runtime.sharedClosers = append(runtime.sharedClosers, namedCloser{name: "vmcp", close: func() error { return server.Stop(context.Background()) }}, namedCloser{name: "authserver", close: auth.Close})
+	runtime.authContext = authCtx
+	installToolHiveProcessClosers(runtime, func() error { return server.Stop(context.Background()) }, auth.Close, cancelAuth)
 	embedded := http.StripPrefix(brokerBasePath, auth.Handler())
 	return &Process{Runtime: runtime, Handlers: HandlerBundle{Authorization: embedded, Token: embedded, UpstreamCallback: embedded, Discovery: embedded, JWKS: embedded, ProtectedResource: authInfo, VMCP: vmcpHandler, Callback: CallbackHandler(runtime.Callback)}}, nil
+}
+
+type protectedToolHiveConstruction struct {
+	upstreams         []authserver.UpstreamRunConfig
+	backends          []vmcp.Backend
+	protectedBackends []string
+}
+
+// newProtectedToolHiveConstruction preserves configured protected-profile order:
+// ToolHive uses the first upstream as the bundled authorization identity anchor.
+func newProtectedToolHiveConstruction(profiles []permconfig.MCPServerProfile, issuer string, options processOptions) (protectedToolHiveConstruction, error) {
+	construction := protectedToolHiveConstruction{
+		upstreams:         make([]authserver.UpstreamRunConfig, 0),
+		backends:          make([]vmcp.Backend, 0, len(profiles)),
+		protectedBackends: make([]string, 0),
+	}
+	providers := make(map[string]string)
+	for _, profile := range profiles {
+		backend := vmcp.Backend{ID: profile.Name, Name: profile.Name, BaseURL: profile.URL, TransportType: "streamable-http"}
+		if profile.Auth.Mode == profileAuthOAuth {
+			if profile.Auth.OAuth == nil {
+				return protectedToolHiveConstruction{}, fmt.Errorf("%w: protected backend %q requires OAuth configuration", ErrInvalidRoute, profile.Name)
+			}
+			provider, err := toolHiveProviderName(profile.Name)
+			if err != nil {
+				return protectedToolHiveConstruction{}, err
+			}
+			if prior, exists := providers[provider]; exists {
+				return protectedToolHiveConstruction{}, fmt.Errorf("%w: protected backends %q and %q map to the same ToolHive provider name", ErrInvalidRoute, prior, profile.Name)
+			}
+			providers[provider] = profile.Name
+			construction.upstreams = append(construction.upstreams, newUpstreamRunConfig(profile, provider, issuer, options))
+			construction.protectedBackends = append(construction.protectedBackends, profile.Name)
+			backend.AuthConfig = &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: provider}}
+		}
+		construction.backends = append(construction.backends, backend)
+	}
+	return construction, nil
+}
+
+func toolHiveProviderName(profile string) (string, error) {
+	provider := strings.Trim(strings.ReplaceAll(strings.ToLower(profile), "_", "-"), "-")
+	if provider == "" || len(provider) > 63 {
+		return "", fmt.Errorf("%w: profile %q cannot map to a ToolHive DNS-label provider name", ErrInvalidRoute, profile)
+	}
+	for _, r := range provider {
+		if (r < 'a' || r > 'z') && (r < '0' || r > '9') && r != '-' {
+			return "", fmt.Errorf("%w: profile %q cannot map to a ToolHive DNS-label provider name", ErrInvalidRoute, profile)
+		}
+	}
+	return provider, nil
+}
+
+func installToolHiveProcessClosers(runtime *Runtime, stopVMCP, closeAuth func() error, cancelAuth context.CancelFunc) {
+	runtime.sharedClosers = append(runtime.sharedClosers,
+		namedCloser{name: "vmcp", close: stopVMCP},
+		namedCloser{name: "authserver", close: closeAuth},
+		namedCloser{name: "auth-context", close: func() error { cancelAuth(); return nil }},
+	)
 }
 
 func hasProtectedProfile(profiles []permconfig.MCPServerProfile) bool {
@@ -487,10 +543,10 @@ func newAnonymousRuntime(routes []Route, profiles []permconfig.MCPServerProfile)
 	})
 }
 
-func newUpstreamRunConfig(protected permconfig.MCPServerProfile, issuer string, options processOptions) authserver.UpstreamRunConfig {
+func newUpstreamRunConfig(protected permconfig.MCPServerProfile, providerName, issuer string, options processOptions) authserver.UpstreamRunConfig {
 	oauth := protected.Auth.OAuth
 	if oauth.Upstream != nil && oauth.Upstream.Mode == "oauth2" {
-		return authserver.UpstreamRunConfig{Name: protected.Name, Type: authserver.UpstreamProviderTypeOAuth2, OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
+		return authserver.UpstreamRunConfig{Name: providerName, Type: authserver.UpstreamProviderTypeOAuth2, OAuth2Config: &authserver.OAuth2UpstreamRunConfig{
 			AuthorizationEndpoint: oauth.Upstream.OAuth2.AuthorizationEndpoint,
 			TokenEndpoint:         oauth.Upstream.OAuth2.TokenEndpoint,
 			ClientID:              brokerClientID(protected),
@@ -500,7 +556,7 @@ func newUpstreamRunConfig(protected permconfig.MCPServerProfile, issuer string, 
 			InsecureAllowHTTP:     options.insecureAllowHTTPForTesting,
 		}}
 	}
-	return authserver.UpstreamRunConfig{Name: protected.Name, Type: authserver.UpstreamProviderTypeOIDC, OIDCConfig: newOIDCUpstreamConfig(protected, issuer, options)}
+	return authserver.UpstreamRunConfig{Name: providerName, Type: authserver.UpstreamProviderTypeOIDC, OIDCConfig: newOIDCUpstreamConfig(protected, issuer, options)}
 }
 
 func newOIDCUpstreamConfig(protected permconfig.MCPServerProfile, issuer string, options processOptions) *authserver.OIDCUpstreamRunConfig {
@@ -624,6 +680,7 @@ type Runtime struct {
 	lifecycleCtx      context.Context
 	cancelLifecycle   context.CancelFunc
 	sharedClosers     []namedCloser
+	authContext       context.Context
 	closeOnce         sync.Once
 	closeErr          error
 	closed            bool

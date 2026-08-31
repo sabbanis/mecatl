@@ -19,7 +19,7 @@ func TestNewUpstreamRunConfigSelectsConfiguredOAuth2Endpoints(t *testing.T) {
 		Scopes: []string{"read"},
 	}}}
 
-	got := newUpstreamRunConfig(profile, "https://broker.example/v1/mcp", processOptions{})
+	got := newUpstreamRunConfig(profile, "upstream", "https://broker.example/v1/mcp", processOptions{})
 	if got.Type != authserver.UpstreamProviderTypeOAuth2 || got.OAuth2Config == nil || got.OIDCConfig != nil {
 		t.Fatalf("generic upstream = %#v; want OAuth2 without OIDC discovery", got)
 	}
@@ -38,7 +38,7 @@ func TestNewUpstreamRunConfigPreservesLegacyOIDCDiscovery(t *testing.T) {
 		Scopes: []string{"read"},
 	}}}
 
-	got := newUpstreamRunConfig(profile, "https://broker.example/v1/mcp", processOptions{})
+	got := newUpstreamRunConfig(profile, "upstream", "https://broker.example/v1/mcp", processOptions{})
 	if got.Type != authserver.UpstreamProviderTypeOIDC || got.OIDCConfig == nil || got.OAuth2Config != nil {
 		t.Fatalf("legacy upstream = %#v; want OIDC discovery", got)
 	}
