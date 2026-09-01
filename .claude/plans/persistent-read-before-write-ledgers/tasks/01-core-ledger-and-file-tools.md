@@ -2,8 +2,8 @@
 id: 01-core-ledger-and-file-tools
 title: Storage-independent ledger contract and fail-closed file tools
 blocked_by: []
-status: in-progress
-branch: ""
+status: done
+branch: "plan-persistent-read-before-write-ledgers/01-core-ledger-and-file-tools"
 worktree: ""
 issue: "888"
 retries: 0

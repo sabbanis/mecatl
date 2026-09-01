@@ -2,7 +2,7 @@
 id: 02-fork-ledger-isolation
 title: Fresh child-session ledgers for every fork
 blocked_by: [01-core-ledger-and-file-tools]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "888"

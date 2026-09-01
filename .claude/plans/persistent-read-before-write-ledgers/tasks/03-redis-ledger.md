@@ -2,7 +2,7 @@
 id: 03-redis-ledger
 title: Durable session-scoped Redis ledger proof
 blocked_by: [01-core-ledger-and-file-tools]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "888"
