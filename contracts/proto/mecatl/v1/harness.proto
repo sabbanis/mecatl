@@ -5,7 +5,7 @@
 //
 // HarnessService is the network surface over the WP8 agent loop. The
 // primary RPC is the bidi `Converse` stream: the client sends a mandatory
-// first `Prompt` frame, then zero or more `ResumeApproval` / `Cancel`
+// first `Prompt` or `RetryStart` frame, then zero or more `ResumeApproval` / `Cancel`
 // control frames, while the server streams typed `Event` envelopes for the
 // lifetime of the run, terminating in a `result` event.
 //
@@ -31,8 +31,33 @@ import "google/protobuf/timestamp.proto";
 // HarnessService is the mecatl API: unary session setup/inspection plus
 // the bidi Converse stream that drives one agent run.
 service HarnessService {
+  // GetCompatibilityInfo returns the deployment's compatibility descriptor: the
+  // API major, the operator-enabled ServerCapabilities, the build's supported
+  // feature identifiers, and an optional operator-set deployment label. It is
+  // the FIRST call a client makes — it answers "what may I do with this
+  // server?" WITHOUT creating a probe session (the ServerCapabilities echo
+  // otherwise rides CreateSessionResponse only).
+  //
+  // DISTINCT FROM GetServerInfo below, deliberately. That RPC answers "which
+  // BUILD is this?" and ADR 0245 draws an explicit privacy boundary around it:
+  // its response must never carry capabilities, configuration, or auth details.
+  // This one is exactly those things — negotiation input, not identity — so
+  // folding the two would either breach that boundary or overload one message
+  // with two audiences. Build identity therefore lives ONLY on GetServerInfo,
+  // and a client that wants both makes both calls.
+  //
+  // A server that does not implement this RPC (UNIMPLEMENTED) is below the
+  // SDK compatibility floor; a client fails loudly rather than inferring a
+  // legacy mode. Authenticated like every other RPC, so UNAUTHENTICATED and
+  // UNIMPLEMENTED stay distinguishable. See ADR 0248.
+  rpc GetCompatibilityInfo(GetCompatibilityInfoRequest) returns (GetCompatibilityInfoResponse);
+
   // CreateSession allocates a new server-side session and returns its id.
   rpc CreateSession(CreateSessionRequest) returns (CreateSessionResponse);
+
+  // GetServerInfo returns only the composed server build identity. It is authenticated
+  // like every HarnessService operation and does not inspect configuration or state.
+  rpc GetServerInfo(GetServerInfoRequest) returns (GetServerInfoResponse);
 
   // GetSession returns a snapshot of an existing session.
   rpc GetSession(GetSessionRequest) returns (GetSessionResponse);
@@ -57,6 +82,10 @@ service HarnessService {
 
   // DeleteSession physically removes an idle main session and its sidecars.
   rpc DeleteSession(DeleteSessionRequest) returns (DeleteSessionResponse);
+
+  // CompactSession applies one manual compaction pass to an owned main-chat
+  // session at a turn boundary. It creates no model turn.
+  rpc CompactSession(CompactSessionRequest) returns (CompactSessionResponse);
 
   // ForkSession creates a new peer session whose conversation history is a
   // snapshot of an existing session's, inheriting the source's mode, workspace,
@@ -190,6 +219,69 @@ service HarnessService {
   // (absence is data — a never-created id is indistinguishable from a session
   // with no live events yet).
   rpc StreamSessionLive(StreamSessionLiveRequest) returns (stream Event);
+
+  // WatchSessionEvents is the DURABLE replay-then-follow stream: one operation
+  // that replays a session's durable event log from a position, transitions to
+  // live, and keeps following as the run appends (issue #821, ADR 0250).
+  //
+  // It exists because neither existing read path can do this. StreamSessionEvents
+  // is a complete, ordered replay with NO position and NO follow — it reads the
+  // whole log and stops, so a client that wants to catch up and then watch must
+  // read everything and THEN subscribe, and any event appended between those two
+  // steps is silently lost. StreamSessionLive is live but process-local,
+  // in-memory, and non-durable: a second replica sees nothing, a reconnecting tab
+  // sees nothing that happened while it was away, and a slow subscriber has its
+  // events DROPPED. Both remain, unchanged, for the callers that want exactly
+  // their semantics.
+  //
+  // CURSOR. `cursor` is an OPAQUE resume token meaning "I have durably received
+  // everything up to here". Treat it as bytes to hand back — never parse, build,
+  // or edit one. An EMPTY cursor means THE BEGINNING OF THE LOG, which is a real
+  // value and the common case (a client attaching for the first time wants
+  // replay-then-follow). A cursor from a superseded log generation returns
+  // `cursor_expired` (the log was deleted and recreated); one that cannot be
+  // decoded returns `cursor_malformed`. Neither is ever coerced to a position:
+  // resuming from approximately the right place is indistinguishable from
+  // resuming from the right place until data is already lost.
+  //
+  // PHASE is an OPEN STRING, not an enum — `replay`, `live`, `gap` today, and a
+  // client must tolerate a value it does not know (the same discipline the event
+  // `type`/`stop` fields already carry). `replay` records were already durable
+  // when the watch attached; `live` records arrived after it caught up. Exactly
+  // one PHASE-ONLY `live` frame (no `event`, cursor set) marks the replay to live
+  // boundary, so a client can render the transcript and then show a live view
+  // WITHOUT waiting for the next event to arrive — on an idle session that event
+  // may never come. `gap` marks a position where a durable append is KNOWN to
+  // have failed; it too carries no `event`, because a gap is a fact about
+  // DELIVERY rather than something that happened in the run (ADR 0250 decision
+  // 5 — this is why neither `session.Event` nor the `Event` message gains a gap
+  // field).
+  //
+  // RELAY DISCIPLINE mirrors StreamSessionEvents, NOT the live wire: this is the
+  // READ-BACK of the durable log, so it relays ALL events including the three
+  // log-only kinds (`approval`/`compaction_archive`/`user_prompt`) — a client
+  // replaying a session wants the verdicts and prompts, as they ARE the
+  // transcript. They are metadata-only/redacted by construction.
+  //
+  // `run_id` optionally narrows delivery to ONE run (ADR 0249). Gap frames are
+  // delivered regardless of the filter: a failed append leaves nothing to
+  // attribute to a run, so suppressing it would hide a real gap.
+  //
+  // TERMINATION. A watch ends when the client cancels, or with an error that says
+  // what to do next. A client that falls too far behind is TERMINATED with
+  // `watch_lagging` rather than having its events dropped — the cursor exists
+  // precisely so that termination is recoverable: reconnect with the last cursor
+  // received and nothing is lost. A durable append failure terminates the
+  // watchers in that process with `activity_gap` and never advances their cursor.
+  // In BOTH cases the run continues normally: a broken or slow watch must never
+  // break a live run, and a watcher never backpressures one.
+  //
+  // A server with no durable EventLog returns `no_event_log`; one whose log does
+  // not implement the cursor seam returns `watch_unsupported` — never a silent
+  // degrade to replaying the whole transcript, because a client asking to resume
+  // from a position and being handed everything is a correctness problem dressed
+  // as a performance one. Ownership is enforced exactly as on GetSession.
+  rpc WatchSessionEvents(WatchSessionEventsRequest) returns (stream WatchSessionEventsResponse);
 
   // ListSessions returns the stored-session inventory — the picker metadata a
   // client renders to let an operator open an EXISTING session by id (issue #245
@@ -469,6 +561,132 @@ message CreateSessionRequest {
   // is rejected with FailedPrecondition. Empty means no carryover
   // (byte-identical default).
   string source_session_id = 8;
+
+  // debug_target_session_id creates a separate diagnostic session bound to the
+  // named target. It requires profile "no-fs" and an empty workspace, cannot be
+  // combined with source_session_id, and never copies or mutates target history.
+  // Missing and foreign-owned targets are both reported as NotFound.
+  string debug_target_session_id = 9;
+
+  // debug_mcp_servers explicitly selects already-configured server-global
+  // streaming-HTTP MCP servers for this debug session. Legal only with a debug
+  // target; names are bounded and unique. No URL, header, or inline MCP config is
+  // accepted, and selection never implies publication authority.
+  repeated string debug_mcp_servers = 10;
+
+  // mcp_servers are CLIENT-PROVIDED streaming-HTTP MCP servers to mount for the
+  // lifetime of this session, via a per-session engine. Empty (the default) is
+  // byte-identical to today: the session takes the shared-engine path.
+  //
+  // LISTENER-SCOPED (ADR 0237 / ADR 0248): accepting an MCP endpoint plus its
+  // auth headers from an API caller combines a remote principal with the
+  // server's ambient outbound network authority, so it is a DEPLOYMENT policy,
+  // not an inference from the request. A deployment whose API listeners are all
+  // local (a UNIX socket, a disabled HTTP listener) permits this field; a
+  // deployment with any network-facing API listener refuses every non-empty
+  // value with the typed `client_mcp_unsupported` error (UNIMPLEMENTED / 501)
+  // rather than mounting it. The refusal is the SERVER's, so it holds against a
+  // client that never checked. A client discovers whether the field is usable
+  // from `mcp_servers_on_create` in GetCompatibilityInfo.features.
+  //
+  // Transport is streaming-HTTP ONLY, on EVERY listener and regardless of that
+  // policy: a stdio entry and an sse entry are hard-rejected as such (AGENTS.md:
+  // "No stdio MCP, ever" — mecatl never spawns an MCP server process).
+  repeated McpServerSpec mcp_servers = 11;
+}
+
+// McpServerSpec is one client-provided MCP server on CreateSessionRequest. It
+// mirrors the ACP session/new mcpServers entry shape so both surfaces classify
+// through the same validator.
+message McpServerSpec {
+  // name is the short, stable identifier that becomes the <server> segment of
+  // every wrapped tool's namespaced name.
+  string name = 1;
+  // url is the server's streaming-HTTP endpoint. It must be absolute with a
+  // host, and https — or http only to an explicit loopback host.
+  string url = 2;
+  // type is the transport discriminant: "http" (or empty with a url) is the only
+  // accepted value. "stdio" and "sse" are hard-rejected on every listener.
+  string type = 3;
+  // command is carried ONLY so a command-shaped entry is classified as stdio and
+  // rejected AS stdio. It is never executed — mecatl spawns no MCP process.
+  string command = 4;
+  // headers are extra HTTP headers sent to this server, typically an
+  // Authorization bearer. Values are SECRET-SHAPED: the server never logs them,
+  // never projects them into an event, and never includes them in an error.
+  map<string, string> headers = 5;
+}
+
+// GetServerInfoRequest asks for the sanitized diagnostic display endpoint of the
+// caller's already-known active provider. An absent or unknown provider_id leaves
+// llm_provider_display_endpoint unavailable; the server never infers it from a
+// default or session state.
+message GetServerInfoRequest {
+  string provider_id = 1;
+}
+
+// GetServerInfoResponse contains server build/composition identities and sanitized
+// diagnostic display projections, never connection instructions.
+message GetServerInfoResponse {
+  string build_id = 1;
+  // server_implementation is the stable composition family only (for example,
+  // "mecated"). It never identifies an instance, deployment, topology,
+  // configuration, capabilities, or authentication.
+  string server_implementation = 2;
+  // llm_provider_display_endpoint is sanitized diagnostic display data for the
+  // requested provider_id only when that provider is already known to composition.
+  // It is never connection configuration or a connection instruction. It contains
+  // only scheme, host, optional port, and an escaped clean path; userinfo, query,
+  // fragment, controls, and invalid or oversized values are omitted.
+  string llm_provider_display_endpoint = 3;
+}
+
+// GetCompatibilityInfoRequest is empty: the descriptor is deployment-wide and
+// identical for every caller. It exists so the RPC can grow request fields
+// additively without a signature change.
+message GetCompatibilityInfoRequest {}
+
+// GetCompatibilityInfoResponse is the deployment's compatibility descriptor (ADR 0248).
+//
+// It deliberately carries TWO different vocabularies side by side, because they
+// answer different questions and conflating them is a bug:
+//
+//   - `capabilities` answers "what has this OPERATOR enabled?" — it changes with
+//     operator config. `bash: false` means the operator ran --no-bash.
+//   - `features` answers "what does this BUILD implement?" — it changes when
+//     mecatl is upgraded.
+//
+// A client that reads a disabled capability as version skew will reject a
+// correctly-configured deployment; a client that infers protocol support from an
+// operator toggle will call an RPC the server has never heard of.
+message GetCompatibilityInfoResponse {
+  // api_major is the wire-contract major version. It starts at 1 and bumps ONLY
+  // on a genuine break; additive changes are announced through `features`
+  // instead. A client gates on api_major + feature identifiers, NEVER on a
+  // server/package semver comparison.
+  int32 api_major = 1;
+  // capabilities is the SAME ServerCapabilities projection CreateSessionResponse
+  // echoes — the operator-enabled feature set — served here so a client can read
+  // it without creating a probe session. Media (image/audio) here is a
+  // SERVER-WIDE hint for UI chrome only: the per-session
+  // CreateSessionResponse.session_capabilities echo remains authoritative for
+  // whether a given session may send media.
+  ServerCapabilities capabilities = 2;
+  // features are the build's supported feature identifiers as OPEN STRINGS, not
+  // an enum — the EvNoProgress/StopBudget string-passthrough discipline. An
+  // unrecognised identifier is ignored by an older client; a new one is a minor
+  // release, never a wire-compat event. Identifiers are stable once published.
+  //
+  // A feature that is only reachable on some listeners is advertised only on a
+  // listener that permits it, so this set is "what this build implements AND
+  // this listener permits" (see ADR 0237 / ADR 0248).
+  repeated string features = 3;
+  // deployment is an OPTIONAL, opaque, bounded, operator-set label for this
+  // deployment. It is empty by default and is NEVER derived from hostname, pod
+  // name, or environment — infrastructure topology is not something an
+  // authenticated caller is owed, and a label the operator did not choose is a
+  // leak with no consenting author. Set via mecated --deployment-id.
+  string deployment = 4;
 }
 
 // ServerCapabilities reports which optional features this server has ENABLED,
@@ -568,14 +786,23 @@ message ServerCapabilities {
   // health and this deployment has a management authorizer.
   bool storage_health = 23;
   // steer is true when the server's engines arm the mid-run steer inbox
-  // (steer-while-running, issue #512): a client may then send `steer` /
-  // `steer_cancel` frames on the live Converse stream and render the EvSteer
-  // drain echo. When false (an older server, or steer disabled in
-  // composition), the client keeps its local merge-queue behaviour — a steer
-  // frame sent to such a server is promoted to a fresh follow-up run (the
-  // engine reports too_late on its disarmed inbox), never silently dropped.
-  // Additive: an older server leaves it false.
+  // (steer-while-running, issue #512): a client may then send multimodal
+  // `steer` / `steer_cancel` frames on the live Converse stream and render the
+  // EvSteer drain echo. When false because steer is disabled in composition,
+  // the client keeps its local merge-queue behaviour — a steer frame sent to
+  // such a server is promoted to a fresh follow-up run (the engine reports
+  // too_late on its disarmed inbox), never silently dropped.
   bool steer = 24;
+  // manual_compaction is true when the server can apply an out-of-band
+  // session compaction pass to an idle owned session. Gates the client's
+  // /compact action.
+  bool manual_compaction = 25;
+  // session_debug is true when this server can create and rehydrate dedicated
+  // no-filesystem debug sessions.
+  bool session_debug = 26;
+  // debug_mcp is true when debug sessions may explicitly borrow selected direct
+  // tools from configured server-global streaming-HTTP MCP servers.
+  bool debug_mcp = 27;
 }
 
 // CreateSessionResponse carries the newly-allocated session id.
@@ -714,6 +941,60 @@ message StreamSessionLiveRequest {
   string session_id = 1 [(buf.validate.field).string.min_len = 1];
 }
 
+// WatchSessionEventsRequest opens a durable replay-then-follow watch (ADR 0250).
+message WatchSessionEventsRequest {
+  // session_id is the id of the session to watch. An unknown id yields a watch
+  // that replays nothing and then follows — absence is data, and a session
+  // created a moment from now is indistinguishable from one that never existed.
+  string session_id = 1 [(buf.validate.field).string.min_len = 1];
+
+  // cursor is an OPAQUE resume token from a previous response. EMPTY means the
+  // beginning of the log, which is the normal first attachment rather than an
+  // edge case.
+  //
+  // Hand back a value the server issued, verbatim. The encoding is stateless and
+  // therefore inspectable, but it is not a contract: a decoded, hand-edited
+  // cursor gets `cursor_expired` or `cursor_malformed`, never silently wrong
+  // data.
+  string cursor = 2;
+
+  // run_id, when set, narrows delivery to the events one run emitted (ADR 0249).
+  // Empty delivers every run's events. Gap frames are delivered either way.
+  //
+  // A cursor is SCOPED to the run_id it was issued under: resume with the same
+  // value you watched with. Changing it — or dropping it — replays from a
+  // position that already advanced past the other runs' records, which skips
+  // them silently.
+  string run_id = 3;
+}
+
+// WatchSessionEventsResponse is ONE delivery envelope: what happened, where the
+// client now is, and which phase of the watch it arrived in.
+message WatchSessionEventsResponse {
+  // event is the recorded event. It is ABSENT on a phase-only frame — the single
+  // replay-to-live transition marker, and every gap frame.
+  Event event = 1;
+
+  // cursor is the OPAQUE resume token positioned AFTER this envelope. A client
+  // that persists it once per processed envelope gets at-least-once delivery
+  // across a reconnect: hand the last one back and the watch continues from
+  // exactly the next record.
+  //
+  // That guarantee is scoped to the run_id the cursor was issued under. Under a
+  // run filter the watch's position advances over the records it dropped, so the
+  // cursor sits past events another filter would have delivered; resuming with a
+  // different run_id, or none, skips them with no signal. Resume with the same
+  // filter, or start from the beginning.
+  string cursor = 2;
+
+  // phase is an OPEN STRING: `replay` (already durable when the watch attached),
+  // `live` (appended while the watch was following), or `gap` (a position whose
+  // append is known to have failed). Tolerate an unknown value rather than
+  // treating it as an error — this is deliberately not an enum, so that adding a
+  // phase is a minor SDK release rather than a wire-compat event.
+  string phase = 3;
+}
+
 // ListSessionsRequest asks for one bounded keyset page of stored-session inventory.
 message ListSessionsRequest {
   // page_size is clamped by the server. Zero selects the server default.
@@ -800,6 +1081,7 @@ message SessionRelationship {
   string origin_session_id = 5;
   string team_id = 6;
   string member_name = 7;
+  string debug_target_session_id = 8;
 }
 
 // SessionInventoryCapabilities is the picker-safe action posture for one row.
@@ -874,6 +1156,18 @@ message GetStorageHealthResponse {
   bool next_sweep_available = 20;
   string active_job = 21;
   string last_failure = 22;
+
+  // Content-free ownerless-record preflight for enabling caller ownership.
+  bool ownerless_sessions_available = 23;
+  string ownerless_sessions_unavailable_reason = 24;
+  int64 ownerless_session_count = 25;
+  repeated string ownerless_session_ids = 26;
+  bool ownerless_session_ids_truncated = 27;
+  bool ownerless_schedules_available = 28;
+  string ownerless_schedules_unavailable_reason = 29;
+  int64 ownerless_schedule_count = 30;
+  repeated string ownerless_schedule_names = 31;
+  bool ownerless_schedule_names_truncated = 32;
 }
 
 message PlanSessionMigrationRequest {}
@@ -1122,15 +1416,24 @@ message Session {
   // adoption_source_session_id is the immutable audit relationship on a main
   // session created by explicit legacy adoption.
   string adoption_source_session_id = 13;
+  // kind and relationship preserve the durable trusted-producer identity.
+  string kind = 14;
+  SessionRelationship relationship = 15;
+  // Selected global server names and the exact creation-time direct-tool ceiling.
+  // These contain no URLs, headers, credentials, or inline MCP configuration.
+  repeated string debug_mcp_servers = 16;
+  repeated string debug_mcp_tools = 17;
 }
 
 // ConverseRequest is a client-to-server frame on the Converse stream. The
-// first frame MUST be `prompt`. Field numbers 1-9 are reserved for the
+// first frame MUST be `prompt` or `retry`. Field numbers 1-9 are reserved for the
 // start family; 10+ for the gate/cancellation family.
 message ConverseRequest {
   oneof kind {
-    // prompt is the mandatory first frame; it names the session and the text.
+    // prompt starts a normal run with a new user message.
     Prompt prompt = 1;
+    // retry starts a prompt-free retry of an eligible failed model step.
+    RetryStart retry = 2;
     // resume_approval resolves a paused permission.ask.
     ResumeApproval resume_approval = 10;
     // cancel aborts the in-flight run.
@@ -1231,7 +1534,12 @@ message ContentBlock {
   string last_modified = 12;
 }
 
-// Prompt is the mandatory first Converse frame. It names the session the run
+message RetryStart {
+  // session_id is the failed session whose exact model step should be retried.
+  string session_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+// Prompt is a normal Converse start frame. It names the session the run
 // executes against and the user prompt to process. The prompt is text and/or
 // media: at least one of text/parts must be non-empty. The "text or parts
 // non-empty" rule is a CROSS-FIELD constraint enforced by the server (the proto
@@ -1261,6 +1569,21 @@ message ResumeApproval {
   // always (which additionally LEARNS a per-session allow rule for the matching
   // tool + exact pattern). Preferred over `allow`; UNSPECIFIED falls back to it.
   ApprovalVerdict verdict = 3;
+  // expected_run_id, when set, scopes this control to ONE run: the server
+  // refuses it if the session's current run is a different one, and the newer
+  // run is left untouched.
+  //
+  // It closes a real race, not a hypothetical one. Controls are addressed at a
+  // SESSION, so a control still in flight when a run ends would otherwise land
+  // on whatever run started next — approving a tool call the user never saw, or
+  // cancelling work they did not ask to stop. `seq` cannot distinguish the two
+  // runs (it restarts each run), so before run ids there was no way to express
+  // "this one".
+  //
+  // EMPTY is the legacy behaviour exactly: the control applies to whatever run
+  // is current. Existing clients are unaffected; a client that knows the run id
+  // it is acting on should always send it.
+  string expected_run_id = 4;
 }
 
 // ApprovalVerdict is the client's three-way resolution of a permission.ask,
@@ -1283,7 +1606,15 @@ enum ApprovalVerdict {
 
 // Cancel aborts the in-flight run. The loop observes the cancellation and
 // terminates with a result carrying stop = "cancelled".
-message Cancel {}
+message Cancel {
+  // expected_run_id, when set, scopes the cancel to ONE run: the server refuses
+  // it if the session's current run is a different one. Cancelling the wrong run
+  // is the most costly stale-control outcome — it destroys work rather than
+  // merely permitting it — so a client that knows which run it is stopping
+  // should always send this. Empty keeps the legacy "cancel whatever is running"
+  // behaviour.
+  string expected_run_id = 1;
+}
 
 // CancelChild cancels ONE child of the in-flight run, addressed by its child
 // SESSION id — the same handle the model reads on the Subagent result's
@@ -1311,8 +1642,9 @@ message CancelChild {
 // behind the client's "still running" belief) the text is PROMOTED to a fresh
 // follow-up run, never silently dropped.
 message Steer {
-  // text is the operator instruction to inject at the next turn boundary.
-  string text = 1 [(buf.validate.field).string.min_len = 1];
+  // text and parts form the operator instruction to inject at the next turn
+  // boundary. At least one must be non-empty.
+  string text = 1;
   // message_id is the CLIENT-MINTED correlation key for THIS frame (unique per
   // send; empty means uncorrelated). The server echoes the frame's own id
   // verbatim on its steer.outcome ack. On the EvSteer drain echo it carries a
@@ -1321,6 +1653,29 @@ message Steer {
   // after it are still pending, so the client splits its ordered queue on it.
   // text is NOT a safe correlation key (two sends can carry the same text).
   string message_id = 2;
+  // parts carries image/audio content alongside text, using the same validated
+  // wire shape as Prompt.parts. A media-only steer is valid.
+  repeated Content parts = 3;
+  // expected_run_id, when set, scopes this control to ONE run: the server
+  // refuses it if the session's current run is a different one, and the newer
+  // run is left untouched.
+  //
+  // It closes a real race, not a hypothetical one. Controls are addressed at a
+  // SESSION, so a control still in flight when a run ends would otherwise land
+  // on whatever run started next — approving a tool call the user never saw, or
+  // cancelling work they did not ask to stop. `seq` cannot distinguish the two
+  // runs (it restarts each run), so before run ids there was no way to express
+  // "this one".
+  //
+  // EMPTY is the legacy behaviour exactly: the control applies to whatever run
+  // is current. Existing clients are unaffected; a client that knows the run id
+  // it is acting on should always send it.
+  //
+  // On a steer it is additionally STRICT: supplying it means "steer this run or
+  // nothing". A steer that loses the terminal race is normally PROMOTED into a
+  // fresh follow-up run; with expected_run_id set it is refused instead, because
+  // a caller naming a specific run did not ask to start a different one.
+  string expected_run_id = 4;
 }
 
 // SteerCancel retracts the run's PENDING (un-drained) steer, if any. It is
@@ -1331,6 +1686,21 @@ message SteerCancel {
   // message_id is the CLIENT-MINTED correlation key, echoed verbatim on the
   // steer.outcome ack (same contract as Steer.message_id).
   string message_id = 1;
+  // expected_run_id, when set, scopes this control to ONE run: the server
+  // refuses it if the session's current run is a different one, and the newer
+  // run is left untouched.
+  //
+  // It closes a real race, not a hypothetical one. Controls are addressed at a
+  // SESSION, so a control still in flight when a run ends would otherwise land
+  // on whatever run started next — approving a tool call the user never saw, or
+  // cancelling work they did not ask to stop. `seq` cannot distinguish the two
+  // runs (it restarts each run), so before run ids there was no way to express
+  // "this one".
+  //
+  // EMPTY is the legacy behaviour exactly: the control applies to whatever run
+  // is current. Existing clients are unaffected; a client that knows the run id
+  // it is acting on should always send it.
+  string expected_run_id = 2;
 }
 
 // SteerOutcome is the AUTHORITATIVE result of a steer inbox transition,
@@ -1448,6 +1818,32 @@ message Event {
   // accepted / appended / retracted / none_pending / too_late). CLIENT-VISIBLE, one per
   // steer frame, sequenced in send order.
   SteerAck steer_outcome = 20;
+  // model_retry carries the typed failed terminal consumed by a model.retry
+  // lifecycle boundary. Clients and event-source hosts must not parse text.
+  ModelRetry model_retry = 21;
+  // run_id is the opaque, server-minted identity of the run that emitted this
+  // event (ADR 0249). It is stamped by the agent loop, so every event a run
+  // emits carries it on both the gRPC and HTTP/SSE surfaces.
+  //
+  // It is OPAQUE: it encodes nothing and exists only to be compared for
+  // equality. A client uses it to know which run an event belongs to — `seq` is
+  // monotonic WITHIN a run and restarts each run, so it cannot distinguish two
+  // runs of one session — and to address controls at a specific run rather than
+  // "whatever is running now".
+  //
+  // EMPTY IS MEANINGFUL, not missing: it means the event is SESSION-scoped
+  // rather than run-scoped. The schedule.* lifecycle events are emitted outside
+  // any run and legitimately carry no id. A client following one run filters on
+  // an exact match and so never sees them; a client showing a session timeline
+  // includes them.
+  string run_id = 22;
+
+}
+
+// ModelRetry identifies the failed-step retry intent being driven.
+message ModelRetry {
+  RetryDisposition retry_disposition = 1;
+  StreamProgress stream_progress = 2;
 }
 
 // SteerEcho is the proto projection of session.SteerPayload (EvSteer): the
@@ -1462,6 +1858,9 @@ message SteerEcho {
   // on it: sends up to and including the watermark drained (they land in
   // context here), sends after it are still pending.
   string message_id = 2;
+  // parts is the committed media bundle, byte-identical to the user message
+  // recorded into history and replayed to the model.
+  repeated Content parts = 3;
 }
 
 // SteerAck is the proto projection of a steer-frame outcome: the server's
@@ -2011,6 +2410,25 @@ message PermissionAsk {
   string reason = 4;
 }
 
+// RetryDisposition is the neutral causal retry classification of a failed model
+// stream. UNKNOWN is an explicit conservative classification, distinct from an
+// absent optional field sent by an older server.
+enum RetryDisposition {
+  RETRY_DISPOSITION_UNSPECIFIED = 0;
+  RETRY_DISPOSITION_UNKNOWN = 1;
+  RETRY_DISPOSITION_RETRYABLE = 2;
+  RETRY_DISPOSITION_PERMANENT = 3;
+}
+
+// StreamProgress records the semantic commit boundary reached by a model stream.
+enum StreamProgress {
+  STREAM_PROGRESS_UNSPECIFIED = 0;
+  STREAM_PROGRESS_UNKNOWN = 1;
+  STREAM_PROGRESS_PRECOMMIT = 2;
+  STREAM_PROGRESS_VISIBLE = 3;
+  STREAM_PROGRESS_COMPLETE = 4;
+}
+
 // Result is the terminal payload carried by a result event. Mirrors
 // session.ResultPayload.
 message Result {
@@ -2026,6 +2444,11 @@ message Result {
   // replaying the identical request cannot succeed (e.g. a 4xx other than
   // 408/429). Absent/false means transient or unclassified (fail-open).
   bool permanent = 5;
+  // retry_disposition is always present on terminal results from new servers;
+  // absence identifies an older server, while explicit UNKNOWN is conservative.
+  optional RetryDisposition retry_disposition = 6;
+  // stream_progress is presence-aware for the same old-server distinction.
+  optional StreamProgress stream_progress = 7;
 }
 
 // TurnEnd is the payload carried by a turn.end event. Mirrors
@@ -3115,4 +3538,14 @@ message DreamReceipt {
   int32 conflicted_source_count = 6;
   int32 skipped_source_count = 7;
   int32 failed_source_count = 8;
+}
+
+// CompactSessionRequest identifies the owned main-chat session to compact.
+message CompactSessionRequest {
+  string session_id = 1 [(buf.validate.field).string.min_len = 1];
+}
+
+// CompactSessionResponse reports whether the compactor reduced model history.
+message CompactSessionResponse {
+  bool compacted = 1;
 }

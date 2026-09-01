@@ -150,7 +150,7 @@ func TestSessionStorageContinuity_Scenario1_V1PromotionFidelity(t *testing.T) {
 	id := session.SessionID("parallel-fidelity")
 	want, err := session.NewParallelBranch(id, session.ModePlan, "/workspace", session.Limits{
 		MaxTurns: 9, MaxToolCalls: 13, MaxConsecutiveFailures: 3,
-	}, time.Unix(1700000000, 123).UTC(), "parent-1", "call-1", 2)
+	}, time.Unix(1700000000, 123).UTC(), "parent-1", session.NewIncarnationID(), "call-1", 2)
 	if err != nil {
 		t.Fatalf("NewParallelBranch: %v", err)
 	}
@@ -161,7 +161,7 @@ func TestSessionStorageContinuity_Scenario1_V1PromotionFidelity(t *testing.T) {
 	want.EnvironmentRef = session.EnvironmentRef{Kind: session.EnvironmentKind("remote"), ID: "worker-7"}
 	want.SetTitle("durable title")
 	owner := &session.Principal{Issuer: "https://issuer.example", Subject: "subject-7", Name: "Owner"}
-	if err := want.RestoreLabels(owner, session.Authority("operator")); err != nil {
+	if err := want.RestoreLabels(owner, session.Authority{}); err != nil {
 		t.Fatalf("RestoreLabels: %v", err)
 	}
 	if err := want.BeginTurn(); err != nil {

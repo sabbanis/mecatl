@@ -11,13 +11,16 @@ import (
 	"errors"
 
 	"charm.land/bubbles/v2/spinner"
-	"charm.land/bubbles/v2/textarea"
 	"charm.land/bubbles/v2/textinput"
 	"charm.land/bubbles/v2/viewport"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
+	statusline "github.com/stacklok/mecatl/cmd/mecatui/statusline"
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
+	"github.com/stacklok/mecatl/cmd/mecatui/ui/platform"
+	"github.com/stacklok/mecatl/cmd/mecatui/ui/prompttextarea"
+	"github.com/stacklok/mecatl/cmd/mecatui/ui/welcome"
 )
 
 // SessionCreator creates a server-side session and returns its id together with
@@ -108,16 +111,22 @@ type LearningSettings interface {
 // imports client + theme only — never contracts/gen or any internal/... package;
 // all proto contact happens behind Converser/SessionCreator.
 type Deps struct {
-	Session     SessionCreator
-	Conv        Converser
-	MCP         client.MCP              // MCP/ToolHive inventory + resources/prompts; nil disables the overlay
-	Cmds        client.Commander        // slash-command discovery for the input palette; nil disables it
+	Session SessionCreator
+	Conv    Converser
+	MCP     client.MCP       // MCP/ToolHive inventory + resources/prompts; nil disables the overlay
+	Cmds    client.Commander // slash-command discovery for the input palette; nil disables it
+	// ServerInfo reads the safe build and composition identities when /diagnostics is invoked against a remote server.
+	ServerInfo ServerInfoGetter
+	// ServerImpl is the locally-known embedded server family. It is used without
+	// an RPC when Embedded is true.
+	ServerImpl  string
 	Skills      client.SkillLister      // skills-inventory discovery for the /skills panel; nil disables it
 	Agents      client.AgentLister      // agent-definition discovery for the /agents panel; nil disables it
 	Soul        client.SoulFetcher      // soul (persona) inspection for the /soul panel; nil disables it
 	UserModel   client.UserModelLister  // user-model inspection for the /usermodel panel; nil disables it
 	Reflections client.ReflectionClient // proposal review and explicit reflection; nil disables it
 	Dream       client.DreamClient      // manual memory consolidation review; nil disables /dream
+	Compactor   client.SessionCompactor // out-of-band session compaction; nil disables /compact
 	Models      client.ModelLister      // selectable-model discovery for the /models picker; nil disables it
 	Worktrees   client.WorktreeLister   // worktree discovery for the /worktrees overlay (issue #102); nil disables it
 	// Sched is the schedule discovery + management surface for the /schedule overlay
@@ -164,6 +173,21 @@ type Deps struct {
 	// (the pick still applies to the next create this run, just isn't remembered).
 	SelectionStore SelectionStore
 	Learning       LearningSettings // operator mecatl settings.yaml; nil disables /learning
+	// Connect lists public saved remote-target metadata. It cannot authenticate,
+	// launch a browser, or expose credentials; selection exits via ConnectRestartIntent.
+	Connect ConnectController
+	// ConnectOpen reopens /connect after a host-side login/dial failure. ConnectError
+	// is host-sanitized display text only.
+	ConnectOpen  bool
+	ConnectError string
+	// ConnectReason controls the auth-recovery affordance without exposing a
+	// transport error or credential to the renderer.
+	ConnectReason          client.AuthReason
+	ConnectTarget          string
+	ConnectResumeSessionID string
+	// BearerBacked records credential provenance for classifying server auth
+	// responses. It contains no credential material.
+	BearerBacked bool
 	// InitialModel is the persisted selection loaded at launch (composition-side,
 	// from the state file). The picker seeds its active selection from it (the ●
 	// marker) and the startup CreateSession carries it — AFTER the connect-time
@@ -187,12 +211,27 @@ type Deps struct {
 	// main.go populates it with client.NewClipboard().
 	Clipboard client.Clipboard
 	Theme     theme.Theme
+	// StatusSource is composed outside ui. The UI only submits display facts and
+	// consumes semantic snapshots through one Bubble Tea listener.
+	StatusSource statusline.Source
+
+	// Presentation capability probes are package-private test seams. New replaces
+	// nil values with the production environment detectors.
+	emojiCapable      func() bool
+	kittyCapable      func() bool
+	scrollKeysMarking func() string
+
+	// ClientBuild is the local mecatui build identity and Embedded selects the
+	// local server identity path for /diagnostics.
+	ClientBuild string
+	Embedded    bool
 
 	// Display-only context for the header bar.
-	Server    string
-	Workspace string
-	Mode      string
-	Model     string
+	Server         string
+	ConnectionMode string
+	Workspace      string
+	Mode           string
+	Model          string
 	// Resume is a statically validated existing chat selected before Bubble Tea
 	// starts. Its authoritative transcript is adopted without CreateSession; nil
 	// preserves the new-session default.
@@ -207,10 +246,13 @@ type Deps struct {
 	// /models restart or /clear never re-submits it. Populated by main.go from
 	// -p/--prompt + --prompt-file.
 	InitialPrompt string
+	// DebugTarget is immutable launch metadata for a dedicated analysis session.
+	// It is presentation/control state only; the client adapter owns wire projection.
+	DebugTarget string
 
 	// Version is the mecatui build version, shown on the first-run welcome splash
 	// (e.g. "v0.3.1" or "dev"). Threaded from the shared
-	// internal/buildinfo.Version (ldflags-set); "" omits the version line.
+	// internal/buildinfo.BuildID (ldflags-set); "" omits the version line.
 	// Display-only.
 	Version string
 
@@ -333,11 +375,6 @@ const (
 	// steerPromoted: the server acked too_late+promoted — the run had already gone
 	// terminal, so the text was auto-promoted to a fresh follow-up run.
 	steerPromoted
-	// steerFailed: the server acked too_late WITHOUT promoted — the promotion
-	// failed (routing / run-entry / lease / funnel error) and the text was NOT
-	// delivered. Distinct from promoted so the ui does NOT report a successful
-	// follow-up. The text is preserved (it may be re-sent or dropped explicitly).
-	steerFailed
 	// steerRetracted: a steer_cancel won — the pending steer was retracted before
 	// it drained (the run drains nothing for it).
 	steerRetracted
@@ -349,8 +386,12 @@ const (
 // "still pending after it" on each drain echo, instead of collapsing everything
 // into one re-minted bundle (the duplication bug the append model exposed).
 type steerQueuedSend struct {
-	ID   string
-	Text string
+	ID     string
+	Text   string
+	Draft  string
+	Media  client.MediaResult
+	Staged map[string]stagedAttachment
+	Pastes map[string]string
 }
 
 // steerState is the ONE-ELEMENT steer-mode mid-run state: the pending bundle —
@@ -397,27 +438,20 @@ const (
 // current phase (renderFooter's phaseRunning/phaseConnecting arms — keep in sync).
 // It gates the spinner.TickMsg handler: a tick in any other phase is dropped,
 // which terminates the self-perpetuating tick chain; every transition INTO a
-// visible phase must re-arm m.sp.Tick.
+// visible phase must re-arm m.sp.Tick. Session transcript loading is owned and
+// rendered by sessionsState; it does not depend on the Model spinner.
 func (m Model) spinnerVisible() bool {
-	if m.phase == phaseRunning || m.phase == phaseConnecting {
-		return true
-	}
-	// In phaseReplay the spinner shows while the replay is still loading (the first
-	// replay msg is pending or the stream has not yet closed). Once the transcript
-	// is loaded the spinner idles to zero. Slice 3a's loading card is the visible
-	// affordance; Slice 3b's transcript render will key off the same loading flag.
-	if m.phase == phaseReplay {
-		return m.sessions.loading || (!m.sessions.replayClosed && m.sessions.receivedMsgs == 0)
-	}
-	return false
+	return m.phase == phaseRunning || m.phase == phaseConnecting
 }
 
 // Model is the root Elm model. It owns the conversation, the bubbles widgets, the
 // renderer (glamour cache), the active run stream, and the per-run cancel func.
 type Model struct {
-	deps Deps
-	keys keyMap
-	rend *renderer
+	deps    Deps
+	keys    keyMap
+	rend    *renderer
+	hits    *hitRegions // reference state shared with value-receiver View copies
+	metrics *renderedSurfaceMetrics
 
 	phase     phase
 	sessionID string
@@ -426,7 +460,12 @@ type Model struct {
 	// selection cannot race the startup ListModels result.
 	browsingStartupSessions bool
 	modelsReconciled        bool
-	sessionsPageSeq         uint64
+	// sessionsTranscriptRequestToken identifies a transcript request across the entire
+	// modal lifecycle. Unlike the surface-local request token, it never resets when
+	// a fresh sessionsState is created after closing the modal.
+	sessionsTranscriptRequestToken uint64
+	sessionsPageRequestToken       uint64
+	sessionsActionRequestToken     uint64
 	// Maintenance job handles outlive the Sessions overlay. Reopening uses them
 	// only to refetch server-owned durable progress; the UI owns no job state.
 	maintenanceMigrationJobID string
@@ -446,9 +485,13 @@ type Model struct {
 	// already set a title this client never saw. Cleared by resetSession (a
 	// /clear wipes the session-derived state, including the label). The render
 	// path clamps + sanitizes it; this field holds the raw adopted title.
-	sessionTitle string
-	statusMsg    string
-	fatalErr     string
+	sessionTitle        string
+	statusMsg           string
+	generatedStatusLine statusline.Result
+	fatalErr            string
+
+	compactPending      bool
+	compactRequestToken uint64
 
 	width  int
 	height int
@@ -456,20 +499,14 @@ type Model struct {
 	conv conversation
 	vp   viewport.Model
 
-	// approval is the approval modal's whole state cluster (issue #555 Phase 1):
-	// the visible ask, the FIFO queue behind it, the answered-set dedupe, and the
-	// scrollable surfaces (plan-review viewport, full-screen ask-args view,
-	// in-card args mini-viewport). Its field docs live on approvalState in
-	// approval_state.go.
-	approval approvalState
-
+	// approval state is dynamic: the surface owns it only while an ask is open.
 	// debugAskCycle rotates the /debug-ask built-in (Deps.DebugAsk) through its
 	// canned long-args payloads so repeated invocations exercise the different
 	// wrap shapes (one long line, a compound pipeline, a heredoc).
 	debugAskCycle int
 
-	ta textarea.Model
-	sp spinner.Model
+	prompt prompttextarea.Editor
+	sp     spinner.Model
 	// stuck is true while the viewport auto-follows the bottom (tails streaming
 	// output). It is no longer hardcoded: syncStuck re-derives it from
 	// m.vp.AtBottom() after every scroll/wheel/nav so a scroll-up unsticks (and
@@ -494,60 +531,66 @@ type Model struct {
 	// thus its known ~1/3 -race flake — no worse than before.
 	tickArmed bool
 
-	activeTool      string         // tool name in flight, shown beside the spinner
-	toolProgress    string         // transient progress line for the in-flight tool (cleared on result/turn boundary)
-	mcp             mcpState       // MCP overlay state (view==mcpNone when closed)
-	skills          skillsState    // skills-inventory overlay state (view==skillsNone when closed)
-	skillsEpoch     uint64         // model-lifetime monotonic request epoch; never reset on close
-	skillChangeLast string         // newest bounded lifecycle receipt already announced
-	palette         paletteState   // slash-command palette (open when the input starts with "/")
-	mention         mentionState   // @-file-mention completion menu (open when the trailing word is an "@token"); mutually exclusive with palette
-	queued          []string       // follow-up prompts staged while a run streams; MERGED into one prompt and drained on a clean/transient stop (see drainQueue)
-	queuePaused     string         // non-empty when a run ended on a non-clean stop with a non-empty queue: the stop reason holding the queue (see drainQueue/renderQueue)
-	team            teamState      // unified ctrl+a agents overlay: container open flag + Teams-tab state (view==teamNone when closed)
-	agentsTab       agentsTab      // active tab in the unified agents overlay (Subagents | Parallel | Teams)
-	subagents       subagentState  // Subagents-tab state of the unified agents overlay (roster | focus)
-	parallel        parallelState  // Parallel-tab state of the unified agents overlay (roster | group focus)
-	agentsInv       agentsInvState // agent-definition inventory overlay state (view==agentsInvNone when closed)
-	soul            soulState      // soul (persona) inspection overlay state (view==soulNone when closed)
-	userModel       userModelState // user-model inspection overlay state (view==userModelNone when closed)
-	userModelGen    uint64         // monotonic request generation; invalidates delayed detail/index responses
-	reflections     reflectionsState
-	reflectionsGen  uint64
-	dream           dreamState
-	dreamGen        uint64
-	dreamRequest    uint64
+	activeTool                   string             // tool name in flight, shown beside the spinner
+	toolProgress                 string             // transient progress line for the in-flight tool (cleared on result/turn boundary)
+	skillsEpoch                  uint64             // model-lifetime monotonic /skills request epoch; never reset on close (the surface mints via its nextEpoch closure)
+	skillChangeLast              string             // newest bounded lifecycle receipt already announced
+	palette                      paletteState       // slash-command palette (open when the input starts with "/")
+	mention                      mentionState       // @-file-mention completion menu (open when the trailing word is an "@token"); mutually exclusive with palette
+	queued                       []string           // follow-up prompts staged while a run streams; MERGED into one prompt and drained on a healthy stop (see drainQueue)
+	queuedMedia                  client.MediaResult // media owned by the local merge queue; sent with the merged follow-up
+	pendingPromptMedia           client.MediaResult // prepared queue media handed to submitPrompt without reconstructing markers
+	queuePaused                  string             // non-empty when a run ended on a non-clean stop with a non-empty queue: the stop reason holding the queue (see drainQueue/renderQueue)
+	failedStepRetryTried         bool               // one-shot guard for automatic typed precommit retry; reset by a genuine prompt or session replacement
+	failedStepRetryRun           bool               // current Converse stream was opened with RetryStart
+	failedStepRetryAuthoritative bool               // current retry emitted turn.start and therefore called the model
+	team                         teamState          // unified ctrl+a agents overlay: container open flag + Teams-tab state (view==teamNone when closed)
+	agentsTab                    agentsTab          // active tab in the unified agents overlay (Subagents | Parallel | Teams)
+	subagents                    subagentState      // Subagents-tab state of the unified agents overlay (roster | focus)
+	parallel                     parallelState      // Parallel-tab state of the unified agents overlay (roster | group focus)
+	agentsInv                    agentsInvState     // agent-definition inventory overlay state (view==agentsInvNone when closed)
+	userModel                    userModelState     // user-model inspection overlay state (view==userModelNone when closed)
+	userModelGen                 uint64             // monotonic request generation; invalidates delayed detail/index responses
+	reflections                  reflectionsState
+	reflectionsGen               uint64
+	dream                        dreamState
+	dreamGen                     uint64
+	dreamRequest                 uint64
 	// steer is the steer-mode (Capabilities.Steer) mid-run state: ONE bundle (the
 	// merged operator steer text + its client-minted message_id) with its
 	// AUTHORITATIVE lifecycle — idle → pending (sent, un-acked) → sent (acked,
 	// awaiting drain) → promoted (too_late; the server auto-started a follow-up
-	// run) → failed (too_late without promoted) → retracted (steer_cancel won). nil
+	// run) → retracted (steer_cancel won). A non-promoted too_late removes only
+	// the correlated send and restores its draft/attachments for retry. nil
 	// when no steer is in flight (the common case) OR steer is disabled (the #228
 	// local merge-queue then owns mid-run input, byte-identical). A ONE-BUNDLE
 	// state — the client-side merge collapses staged lines into ONE text BEFORE
 	// send, so the engine's single-slot inbox only ever has one bundle outstanding.
-	steer     *steerState
-	steerSeq  int            // session-scoped message-id serial (1-based; "steer-%04d")
-	models    modelsState    // /models picker overlay state (view==modelsNone when closed)
-	effort    effortState    // /effort picker overlay state (view==effortNone when closed) — ADR 0055
-	worktrees worktreesState // /worktrees overlay state (view==worktreesNone when closed) — issue #102
-	schedule  scheduleState  // /schedule overlay state (view==scheduleNone when closed) — issue #234
-	sessions  sessionsState  // /sessions overlay state (view==sessionsNone when closed) — issue #245
-	// activeModel is the currently-selected (provider, model) the NEXT CreateSession
-	// will carry (apply-on-next-create). Seeded from Deps.InitialModel, updated by the
-	// picker, and reconciled-to-default at connect when its provider is unavailable. It
-	// is the SOURCE of truth for the create selection; m.models.active mirrors it for
-	// the picker's ● marker. The header model display reads from it once non-zero.
-	activeModel client.ModelSelection
-	// effectiveModel is the EFFECTIVE provider+model the SERVER resolved THIS session
-	// to, echoed verbatim on SessionReadyMsg (the create response). The header shows
-	// its id from turn zero. DISTINCT from activeModel: activeModel is what the NEXT
-	// create will REQUEST (and may be the zero/empty default selection), whereas
-	// effectiveModel is what the CURRENT session actually RESOLVED to (server-owned).
-	// The header reads effectiveModel for the live model display, never resolving a
-	// default itself. Zero value (empty ids) until SessionReadyMsg and for an older
-	// server → the header shows no model segment. The model is FIXED per session.
-	effectiveModel client.ResolvedModel
+	steer    *steerState
+	steerSeq int // session-scoped message-id serial (1-based; "steer-%04d")
+	// modelCatalogRequestToken is the Model-lifetime sequence for durable catalog
+	// requests. It never resets when the picker closes, so an older result cannot
+	// overwrite root state or a reopened picker.
+	modelCatalogRequestToken uint64
+	modelCatalog             modelCatalog          // root-owned inventory, statuses, defaults, and selection reconciliation
+	effort                   effortState           // /effort picker overlay state (view==effortNone when closed) — ADR 0055
+	worktrees                worktreesState        // /worktrees overlay state (view==worktreesNone when closed) — issue #102
+	schedule                 scheduleState         // /schedule overlay state (view==scheduleNone when closed) — issue #234
+	connect                  connectState          // /connect saved-target picker (tombstone overlay)
+	connectLoadGeneration    uint64                // monotonic across overlay close/reopen; stale async loads are ignored
+	connectIntent            *ConnectRestartIntent // set only immediately before tea.Quit
+	// modal is the ONE open modal overlay (nil = none). Stack/tiling/focus-tree
+	// is later; the field carries the one migrated surface. A surface's state is
+	// created at Open and lives ONLY inside this interface field — never a
+	// pre-declared tombstone field (surface.go).
+	modal surface
+	// modelSwitchRequestToken correlates the asynchronous create-and-hydrate handoff.
+	// A stale result must not replace a session selected by a later lifecycle action.
+	modelSwitchRequestToken uint64
+	// createModelSelection is the client selection for future CreateSession calls. Zero uses the server default.
+	createModelSelection client.ModelSelection
+	// resolvedSessionModel is the server-resolved model for the bound session.
+	resolvedSessionModel client.ResolvedModel
 	// providerRoute is the DOWNSTREAM provider the serving provider routed the LATEST
 	// turn to (issue #480; today only the openrouter entry produces it, as a display
 	// name like "Google"). Updated on each ProviderRouteMsg; the header appends it to
@@ -647,8 +690,8 @@ type Model struct {
 	// header hot path by postureBadge to pick the yolo badge's glyph variant (emoji
 	// "⚡️" with VS16 vs width-stable text "⚡"), so it must NOT call os.Environ() per
 	// render — seeding it here keeps the detection off the hot path. A bool field (not a
-	// sync.Once over a process global) so a test can override it on the Model after New
-	// and so t.Setenv-driven tests still drive the pure detectEmoji directly.
+	// sync.Once over a process global) keeps each Model independently injectable while
+	// pure detectEmoji tests continue to cover the production environment contract.
 	emojiOK bool
 
 	// kittyActive is true once the terminal is detected Kitty-graphics-capable AND the
@@ -676,8 +719,7 @@ type Model struct {
 
 	// pendingModelSwitchNote is the transient status note armed by chooseModel when the
 	// user picks a model — surfaced on the SessionReadyMsg rebind as "switched to
-	// <model> — conversation kept" (or, for a cross-provider switch, the honest caveat
-	// that the prior model's reasoning cache was stripped). It is a one-shot: a single
+	// <model> — conversation kept". It is a one-shot: a single
 	// non-empty value is consumed by applySessionReady and cleared, so a later
 	// connect/reconnect that happens to pass through applySessionReady (e.g. the
 	// startup create) never echoes a stale model-switch note. Empty ⇒ the rebind falls
@@ -708,7 +750,7 @@ type Model struct {
 	// app. While set, enter on an empty prompt re-fires restartOnModelCmd (NEVER
 	// createSessionCmd — its issue-#41 fallback leg would clear the user's EXPLICIT
 	// pick on a rejection; see onIdleSubmit) with the selection still in
-	// m.activeModel. Cleared the moment a session is (re)established
+	// m.createModelSelection. Cleared the moment a session is (re)established
 	// (SessionReadyMsg) or a retry is fired.
 	restartFailed bool
 
@@ -764,8 +806,8 @@ type Model struct {
 	// next run boundary regardless of how many readers leaked.
 	streamGen uint64
 
-	// liveCh is the live session event feed's reader channel (LiveStreamCmd /
-	// LiveReplayStreamCmd); WaitForMsg drains it. Armed when the active session
+	// liveCh is the live session event feed's reader channel (LiveStreamCmd);
+	// WaitForMsg drains it. Armed when the active session
 	// settles (session create / run end) and torn down on session switch / reset.
 	liveCh    chan tea.Msg
 	liveStop  func() // idempotent teardown (context.CancelFunc via sync.Once)
@@ -789,7 +831,11 @@ type Model struct {
 	liveReconGen         uint64
 	liveReconnecting     bool
 	liveReconnectAttempt int
-	liveReconnectErr     string
+	// liveContinuityAttempt is the per-session reader-failure sequence. It is
+	// independent of the current reconnect footer attempt: probes and catch-up
+	// do not reset it; only a real event from the current live reader does.
+	liveContinuityAttempt int
+	liveReconnectErr      string
 
 	// seenFireIDs is the per-session delivery-note dedup set (issue #387): a
 	// fire-result delivery note that arrives BOTH via the durable catch-up AND the
@@ -831,7 +877,6 @@ type Model struct {
 	// refreshView). Active only on the alt screen; an overlay/modal/help blocks a new
 	// selection and clears an active one.
 	sel selection
-
 	// mouseDebug is the last formatted mouse-diagnostic line (see mouseDebugLine),
 	// rendered in the footer only when Deps.DebugMouse is set. Set at the top of
 	// onMousePress/onMouseMotion when the diagnostic is enabled; empty otherwise.
@@ -868,21 +913,23 @@ func New(deps Deps) Model {
 	if deps.Ctx == nil {
 		deps.Ctx = context.Background()
 	}
+	if deps.emojiCapable == nil {
+		deps.emojiCapable = emojiCapable
+	}
+	if deps.kittyCapable == nil {
+		deps.kittyCapable = welcome.KittyCapable
+	}
+	if deps.scrollKeysMarking == nil {
+		deps.scrollKeysMarking = platform.ScrollKeysMarking
+	}
 	th := deps.Theme
 	keys := applyKeyOverrides(defaultKeys(), deps.KeyOverrides)
-	hk := keyMarkings(keys)
+	hk := keyMarkingsWithScroll(keys, deps.scrollKeysMarking())
 
-	ta := textarea.New()
-	// The mode-coloured rail border (renderInputRail) is the SINGLE vertical accent cue,
-	// so suppress the textarea's own inner prompt bar (U+2503) and line-number gutter to
-	// avoid a redundant second bar (issue #161). Both MUST be set before any SetWidth —
-	// bubbles' textarea computes its inner gutter width in SetWidth from Prompt +
-	// ShowLineNumbers — which covers both New()'s internal SetWidth and the later onResize.
-	ta.Prompt = ""
-	ta.ShowLineNumbers = false
-	ta.Placeholder = "Ask mecatl to do something…  (" + hk.submit + " to send · " + hk.newlineFirst + " for newline · " + hk.help + " for help)"
-	ta.SetHeight(3)
-	ta.Focus()
+	prompt := prompttextarea.New(prompttextarea.Config{
+		Placeholder: "Ask mecatl to do something…  (" + hk.submit + " to send · " + hk.newlineFirst + " for newline · " + hk.help + " for help)",
+		SelectAll:   keys.SelectAll,
+	})
 
 	sp := spinner.New(spinner.WithSpinner(spinner.Dot), spinner.WithStyle(th.Style("spinner")))
 
@@ -899,14 +946,16 @@ func New(deps Deps) Model {
 	// themes alike — styleSelection reads it via m.deps.Theme.Style("selection").
 
 	m := Model{
-		deps:  deps,
-		keys:  keys,
-		rend:  newRenderer(th, keyMarkings(keys)),
-		phase: phaseConnecting,
-		ta:    ta,
-		sp:    sp,
-		vp:    vp,
-		stuck: true,
+		deps:    deps,
+		keys:    keys,
+		rend:    newRenderer(th, hk),
+		hits:    &hitRegions{},
+		metrics: &renderedSurfaceMetrics{},
+		phase:   phaseConnecting,
+		prompt:  prompt,
+		sp:      sp,
+		vp:      vp,
+		stuck:   true,
 		// Seed the active selection from the persisted last-used (composition loads it
 		// from the state file). The connect-time ListModels reconcile clears it to the
 		// server default if its PROVIDER is no longer available, BEFORE the create that
@@ -914,29 +963,41 @@ func New(deps Deps) Model {
 		// A model merely absent from the snapshot is kept (issue #41); if the server then
 		// rejects the create, createSessionCmd's fallback leg retries on the default and
 		// surfaces a loud warning (connectFallbackMsg) — connect still completes.
-		activeModel:     deps.InitialModel,
-		activeMode:      client.ModeString(client.ModeFromString(deps.Mode)),
-		models:          modelsState{active: deps.InitialModel, globalDefault: deps.GlobalDefault},
-		activeWorkspace: deps.Workspace,
+		createModelSelection: deps.InitialModel,
+		activeMode:           client.ModeString(client.ModeFromString(deps.Mode)),
+		modelCatalog:         modelCatalog{active: deps.InitialModel, globalDefault: deps.GlobalDefault},
+		activeWorkspace:      deps.Workspace,
 		// Seed the CLI-supplied seed prompt (-p/--prompt + --prompt-file) for
 		// one-shot auto-submit on the FIRST session ready.
 		pendingInitialPrompt: deps.InitialPrompt,
 		// Detect emoji-presentation capability ONCE at construction (conservative,
 		// env-based) so the header hot path reads a bool, never os.Environ().
-		emojiOK: emojiCapable(),
+		emojiOK: deps.emojiCapable(),
+	}
+	// Recovery-only startup has no session creator by design. Start directly in the
+	// connect surface so Init cannot fall through to createSessionCmd.
+	if deps.ConnectOpen && deps.Session == nil {
+		m.phase = phaseIdle
+		m.connectLoadGeneration = 1
+		m.connect = connectState{open: true, loading: true, err: deps.ConnectError, reason: deps.ConnectReason, failedTarget: deps.ConnectTarget, resumeSessionID: deps.ConnectResumeSessionID}
+		m.prompt.Blur()
+	}
+	// Init issues token 1 for the startup catalog request. Resume skips that
+	// request, so its first picker request starts at 1 instead.
+	if deps.Models != nil && deps.Resume == nil {
+		m.modelCatalogRequestToken = 1
 	}
 	if deps.BrowseSessions {
 		m.phase = phaseIdle
 		m.browsingStartupSessions = true
 		m.modelsReconciled = deps.Models == nil
-		m.sessions = newSessionsPanelState()
-		m.sessions.startup = true
-		m = m.beginSessionPagination()
-		m.ta.Blur()
+		state := m.newSessionsSurface(true)
+		_ = state.beginPage("")
+		m.prompt.Blur()
 		if deps.Sessions == nil {
-			m.sessions.loading = false
-			m.sessions.loadState = sessionsInitialPageError
-			m.sessions.err = errors.New("session inventory unavailable")
+			state.loading = false
+			state.loadState = sessionsInitialPageError
+			state.err = errors.New("session inventory unavailable")
 		}
 	}
 	if resume := deps.Resume; resume != nil {
@@ -948,7 +1009,7 @@ func New(deps Deps) Model {
 		m.sessionModifiedAt = resume.Row.ModifiedAt
 		m.activeWorkspace = resume.Snapshot.Workspace
 		m.activeMode = client.ModeString(client.ModeFromString(resume.Snapshot.Mode))
-		m.effectiveModel = resume.Snapshot.ResolvedModel
+		(&m).setResolvedSessionModel(resume.Snapshot.ResolvedModel)
 		m.caps = resume.Snapshot.Capabilities
 		m.conv = conversationFromTranscript(resume.Transcript.Messages)
 		m.startupAdopted = true
@@ -985,42 +1046,15 @@ func (m *Model) recordFileChange(path string) {
 // it zeroes (see the Model struct above) so that ANY future session-derived field
 // added there has an obvious, single place to be reset — keeping /clear honest
 // without each call site re-listing fields.
-//
-// It deliberately does NOT touch the per-RUN transport teardown (stream /
-// streamCh / cancelRun / phase / textarea focus) — that is endRun's concern and
-// its semantics are relied on by the idle-guard. The only overlap is the in-flight
-// tool affordances (activeTool/toolProgress), which are genuinely both
-// "session-derived display state" and "cleared at run end"; resetSession owns
-// them here, endRun continues to clear activeTool on its own teardown path. The
-// caller is responsible for re-rendering (refreshView) after calling this.
-//
-// It also drops any staged follow-up prompts (queued): /clear wipes the
-// session-derived state, and a queue of as-yet-unsent follow-ups is part of that
-// state — leaving them to drain into a freshly-cleared transcript would surprise.
-//
-// It deliberately does NOT clear the picker/inventory overlay state (models/
-// worktrees/schedule/sessions) — those are transport/compose state like
-// activeModel/caps, NOT session-derived transcript state, so a /clear or a
-// session switch must not dismiss an open picker. The /sessions replay-derived
-// fields (replayCh/replayStop/transcript) are cleared by closeSessionsTranscript
-// on the esc-teardown path from phaseReplay, NOT here — resetSession is called on
-// the switchToSession handoff BEFORE those are set, and closeSessionsTranscript
-// owns their teardown. Only the transcript conversation (m.conv) is session-
-// derived; the sessionsState's replay-transcript field (sessions.transcript) is a
-// SEPARATE conversation the replay projects into, cleared by closeSessionsTranscript.
 func (m Model) resetSession() Model {
 	m.conv = conversation{}
-	// Drop the renderer's per-block caches (blockCache AND blockMD) alongside the
-	// conversation: both key on the block's conversation INDEX, and the rebuilt
-	// conversation reuses indices 0..n for entirely different blocks whose
-	// rev/src could coincidentally match a stale entry — which would alias an old
-	// block's render onto the new transcript. Covers /clear and the /models
-	// restart-now handoff (both funnel through here).
+	return m.resetSessionDerived()
+}
+
+func (m Model) resetSessionDerived() Model {
+	// Drop renderer caches before installing the target's authoritative transcript.
 	m.rend.resetBlockCaches()
-	// An empty conversation is at-bottom by definition, so auto-follow must be
-	// re-armed: without this a /clear issued while scrolled up (stuck=false) would
-	// strand stuck false, and refreshView (re-pins only if stuck) would silently
-	// fail to tail the NEXT run's streaming deltas until the user manually hit End.
+	// Reset auto-follow for the next session's transcript.
 	m.stuck = true
 	m.filesChanged = nil
 	m.filesSeen = nil
@@ -1030,8 +1064,8 @@ func (m Model) resetSession() Model {
 	m.toolProgress = ""
 	m.providerRoute = ""
 	// Drop the session title: it is session-derived (seeded from the first prompt
-	// / adopted from the stored session on a switch), so a /clear or a /models
-	// restart-now must not leave a stale label on the freshly-cleared session.
+	// / adopted from the stored session), so a /clear or fresh /models restart
+	// must not leave a stale label on its new session.
 	m.sessionTitle = ""
 	// Drop any pending permission modal — and the FIFO queue behind it plus the
 	// answered-set dedupe: an ask is session-derived in-flight state (its AskID
@@ -1041,9 +1075,14 @@ func (m Model) resetSession() Model {
 	// "owns all session-derived state" invariant honest — and the restart-now
 	// handoff goes through here. The plan-review viewport is cleared alongside (a
 	// plan ask may have been open), as is the full-screen ask-args view.
-	m.approval.reset()
+	m.closeModal()
 	m.queued = nil
+	m.queuedMedia = client.MediaResult{}
+	m.pendingPromptMedia = client.MediaResult{}
 	m.queuePaused = ""
+	m.failedStepRetryTried = false
+	m.failedStepRetryRun = false
+	m.failedStepRetryAuthoritative = false
 	// Drop staged-but-unsent media attachments: /clear wipes the session-derived
 	// state, and pasted-but-unsent images are part of that compose state.
 	m.stagedMedia = nil
@@ -1079,6 +1118,7 @@ func (m Model) resetSession() Model {
 	// "reconnecting" for a session that no longer exists.
 	m.liveReconnecting = false
 	m.liveReconnectAttempt = 0
+	m.liveContinuityAttempt = 0
 	m.liveReconnectErr = ""
 	return m
 }
@@ -1099,24 +1139,34 @@ type startupResumeReadyMsg struct{}
 // fallback leg. With no lister wired (old server / persistence off) it fires
 // CreateSession directly (the historical path, with an empty selection).
 func (m Model) Init() tea.Cmd {
+	if m.deps.ConnectOpen && m.deps.Session == nil {
+		if m.deps.Connect == nil {
+			return nil
+		}
+		deps := m.deps
+		return func() tea.Msg {
+			targets, err := deps.Connect.ListConnectTargets(deps.Ctx)
+			return connectTargetsMsg{generation: m.connectLoadGeneration, targets: targets, err: err}
+		}
+	}
 	if m.deps.BrowseSessions {
-		cmds := []tea.Cmd{m.sp.Tick}
+		cmds := []tea.Cmd{m.sp.Tick, m.statusLineWaitCmd()}
 		if m.deps.Models != nil {
-			cmds = append(cmds, client.ListModelsCmd(m.deps.Ctx, m.deps.Models))
+			cmds = append(cmds, client.ListModelsCmd(m.deps.Ctx, m.deps.Models, m.modelCatalogRequestToken))
 		}
 		if m.deps.Sessions != nil {
-			cmds = append(cmds, m.sessionPageCmd(), textinput.Blink)
+			cmds = append(cmds, sessionsSurface(&m).pageCmd(), textinput.Blink)
 		}
 		return tea.Batch(cmds...)
 	}
 	if m.deps.Resume != nil {
-		return tea.Batch(m.sp.Tick, func() tea.Msg { return startupResumeReadyMsg{} })
+		return tea.Batch(m.sp.Tick, func() tea.Msg { return startupResumeReadyMsg{} }, m.statusLineWaitCmd())
 	}
 	if m.deps.Models != nil {
-		return tea.Batch(m.sp.Tick, client.ListModelsCmd(m.deps.Ctx, m.deps.Models))
+		return tea.Batch(m.sp.Tick, client.ListModelsCmd(m.deps.Ctx, m.deps.Models, m.modelCatalogRequestToken), m.statusLineWaitCmd())
 	}
 	// No-lister / old-server path: with no model lister wired there is nothing to
 	// reconcile, so fire CreateSession directly (with the empty selection) — do NOT
 	// wait on a ListModels that will never arrive, which would strand at "connecting…".
-	return tea.Batch(m.sp.Tick, m.createSessionCmd())
+	return tea.Batch(m.sp.Tick, m.createSessionCmd(), m.statusLineWaitCmd())
 }

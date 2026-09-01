@@ -7,8 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"os"
+	pathpkg "path"
 	"strings"
+	"time"
+	"unicode"
+	"unicode/utf8"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
@@ -24,19 +29,29 @@ import (
 // unauthenticated plaintext by default; non-loopback may need a token and/or
 // TLS/mTLS.
 type DialConfig struct {
-	Server    string // host:port, e.g. 127.0.0.1:8080
-	AuthToken string // optional bearer; sent as "authorization: Bearer <tok>"
-	UseTLS    bool   // enable transport TLS
-	TLSCAFile string // optional custom CA bundle for server verification
-	Insecure  bool   // skip TLS verification (testing only; with UseTLS)
+	Server      string      // host:port, e.g. 127.0.0.1:8080
+	AuthToken   string      // optional static bearer; sent as "authorization: Bearer <tok>"
+	TokenSource TokenSource // optional dynamic bearer source, evaluated once per RPC
+	UseTLS      bool        // enable transport TLS
+	TLSCAFile   string      // optional custom CA bundle for server verification
+	Insecure    bool        // skip TLS verification (testing only; with UseTLS)
+}
+
+// TokenSource supplies a current bearer token for an RPC. Dial must not invoke it.
+type TokenSource interface {
+	Token(context.Context) (string, error)
 }
 
 // Client is a connected mecated gRPC client: the dialled conn plus the generated
 // service stub. Close it on shutdown.
 type Client struct {
-	conn        *grpc.ClientConn
-	svc         mecatlv1.HarnessServiceClient
-	scheduleSvc mecatlv1.ScheduleServiceClient
+	conn         *grpc.ClientConn
+	svc          mecatlv1.HarnessServiceClient
+	scheduleSvc  mecatlv1.ScheduleServiceClient
+	bearerBacked bool
+	// displayServerEndpoint is a sanitized diagnostic projection of the configured
+	// connection target, never a reconnect target, server response, or TLS/auth setting.
+	displayServerEndpoint string
 }
 
 // Dial connects to mecated per cfg. It uses grpc.NewClient (not the deprecated
@@ -47,13 +62,13 @@ type Client struct {
 func Dial(cfg DialConfig) (*Client, error) {
 	var opts []grpc.DialOption
 
-	loopback := isLoopbackHost(cfg.Server)
+	loopback := IsLoopbackHost(cfg.Server)
 
 	// Refuse to leak a bearer token in cleartext to a non-loopback server. The
 	// per-RPC credential's RequireTransportSecurity() also blocks this at send
 	// time, but a hard pre-dial guard gives the operator a clear, actionable
 	// error instead of an opaque RPC failure later.
-	if cfg.AuthToken != "" && !cfg.UseTLS && !loopback {
+	if (cfg.AuthToken != "" || cfg.TokenSource != nil) && !cfg.UseTLS && !loopback {
 		return nil, fmt.Errorf(
 			"refusing to send auth token in cleartext to non-loopback %q: use --tls", cfg.Server)
 	}
@@ -75,19 +90,142 @@ func Dial(cfg DialConfig) (*Client, error) {
 	}
 
 	if cfg.AuthToken != "" {
-		// The credential requires transport security UNLESS the target is
-		// loopback (the documented plaintext single-user default). For any
-		// non-loopback target it demands TLS even when --tls is unset, so the
-		// token can never ride a cleartext wire to a remote host.
 		creds := bearerCreds{token: cfg.AuthToken, allowInsecure: loopback}
 		opts = append(opts, grpc.WithPerRPCCredentials(creds))
+	} else if cfg.TokenSource != nil {
+		opts = append(opts,
+			grpc.WithPerRPCCredentials(bearerCreds{source: cfg.TokenSource, allowInsecure: loopback}),
+			grpc.WithChainUnaryInterceptor(tokenSourceUnary(cfg.TokenSource)),
+			grpc.WithChainStreamInterceptor(tokenSourceStream(cfg.TokenSource)),
+		)
+	} else {
+		// Dialling with no credential at all is legitimate: a mecated with no OIDC
+		// configured needs none, so a missing saved credential cannot be an error
+		// here. It becomes actionable only when the server actually demands one,
+		// which is where these interceptors add the enrolment hint.
+		opts = append(opts,
+			grpc.WithChainUnaryInterceptor(anonymousUnaryHint(cfg.Server)),
+			grpc.WithChainStreamInterceptor(anonymousStreamHint(cfg.Server)),
+		)
 	}
 
 	conn, err := grpc.NewClient(cfg.Server, opts...)
 	if err != nil {
 		return nil, fmt.Errorf("dial %q: %w", cfg.Server, err)
 	}
-	return &Client{conn: conn, svc: mecatlv1.NewHarnessServiceClient(conn), scheduleSvc: mecatlv1.NewScheduleServiceClient(conn)}, nil
+	return &Client{
+		conn:                  conn,
+		svc:                   mecatlv1.NewHarnessServiceClient(conn),
+		scheduleSvc:           mecatlv1.NewScheduleServiceClient(conn),
+		bearerBacked:          cfg.AuthToken != "" || cfg.TokenSource != nil,
+		displayServerEndpoint: displayServerEndpoint(cfg),
+	}, nil
+}
+
+// anonymousDialHint annotates a server Unauthenticated rejection received by a
+// client that carried no bearer credential. Without it the operator sees only the
+// far side's "missing or invalid bearer token" and no indication that the local
+// cause is an unenrolled target. Wrapping preserves the gRPC status, so
+// status.Code classification elsewhere is unaffected.
+func anonymousDialHint(server string, err error) error {
+	if status.Code(err) != codes.Unauthenticated {
+		return err
+	}
+	return fmt.Errorf("%w (no saved credential for %s; run 'mecatui login %s')", err, server, server)
+}
+
+func anonymousUnaryHint(server string) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		return anonymousDialHint(server, invoker(ctx, method, req, reply, cc, opts...))
+	}
+}
+
+func anonymousStreamHint(server string) grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		stream, err := streamer(ctx, desc, cc, method, opts...)
+		if err != nil {
+			return nil, anonymousDialHint(server, err)
+		}
+		// Server-side auth rejects before the handler runs, and gRPC surfaces that
+		// on the first Recv rather than at stream creation, so the hint has to
+		// cover RecvMsg too.
+		return hintingStream{ClientStream: stream, server: server}, nil
+	}
+}
+
+type hintingStream struct {
+	grpc.ClientStream
+	server string
+}
+
+func (s hintingStream) RecvMsg(m any) error {
+	return anonymousDialHint(s.server, s.ClientStream.RecvMsg(m))
+}
+
+type tokenContextKey struct{}
+type tokenContextValue struct {
+	token string
+}
+
+func tokenSourceUnary(source TokenSource) grpc.UnaryClientInterceptor {
+	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
+		token, err := source.Token(ctx)
+		if err != nil {
+			return err
+		}
+		ctx = context.WithValue(ctx, tokenContextKey{}, tokenContextValue{token: token})
+		return invoker(ctx, method, req, reply, cc, opts...)
+	}
+}
+
+func tokenSourceStream(source TokenSource) grpc.StreamClientInterceptor {
+	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
+		token, err := source.Token(ctx)
+		if err != nil {
+			return nil, err
+		}
+		ctx = context.WithValue(ctx, tokenContextKey{}, tokenContextValue{token: token})
+		return streamer(ctx, desc, cc, method, opts...)
+	}
+}
+
+const maxDiagnosticEndpointBytes = 2048
+
+// displayServerEndpoint projects the configured connection target as sanitized
+// diagnostic display data, never as a reconnect target or connection instruction.
+func displayServerEndpoint(cfg DialConfig) string {
+	scheme := "http"
+	if cfg.UseTLS {
+		scheme = "https"
+	}
+	return sanitizeDiagnosticEndpoint(scheme + "://" + cfg.Server)
+}
+
+// sanitizeDiagnosticEndpoint accepts only an absolute URL and retains its
+// scheme, host/port, and escaped clean path. Invalid input becomes unavailable.
+func sanitizeDiagnosticEndpoint(raw string) string {
+	if raw == "" || len(raw) > maxDiagnosticEndpointBytes || !utf8.ValidString(raw) {
+		return ""
+	}
+	for _, r := range raw {
+		if unicode.IsControl(r) {
+			return ""
+		}
+	}
+	u, err := url.Parse(raw)
+	if err != nil || u.Scheme == "" || u.Host == "" || u.Hostname() == "" || strings.ContainsAny(u.Host, "\\/?#@") {
+		return ""
+	}
+	escapedPath := u.EscapedPath()
+	if escapedPath == "" {
+		escapedPath = "/"
+	} else {
+		escapedPath = pathpkg.Clean(escapedPath)
+		if !strings.HasPrefix(escapedPath, "/") {
+			escapedPath = "/" + escapedPath
+		}
+	}
+	return strings.ToLower(u.Scheme) + "://" + u.Host + escapedPath
 }
 
 // Close releases the underlying connection.
@@ -117,6 +255,85 @@ func (c *Client) CreateSession(ctx context.Context, workspace string, mode mecat
 		ModelId:         sel.ModelID,
 		ReasoningEffort: sel.ReasoningEffort,
 	})
+}
+
+// SessionIDDisplayWidth is the one session-ID width used by the TUI header and
+// by debug-target prefix resolution.
+const SessionIDDisplayWidth = 12
+
+// DisplaySessionID returns the session ID exactly as shown in the TUI header.
+func DisplaySessionID(id string) string {
+	if len(id) <= SessionIDDisplayWidth {
+		return id
+	}
+	return id[:SessionIDDisplayWidth]
+}
+
+// CreateDebugSession creates a separate no-filesystem analysis session bound to
+// targetID. A target written exactly as the TUI's 12-character header ID is
+// resolved against the caller-visible session inventory; the server still receives
+// and authorizes only an exact ID. Capability absence is detected from the create
+// response (the first common response carrying ServerCapabilities); an older server
+// may ignore the new target field, so that accidentally-created ordinary session is
+// closed before this method fails closed.
+func (c *Client) CreateDebugSession(ctx context.Context, targetID string, mode mecatlv1.PermissionMode, sel ModelSelection, debugMCP ...string) (string, string, Capabilities, ResolvedModel, error) {
+	resolvedTarget, err := c.resolveDebugTarget(ctx, targetID)
+	if err != nil {
+		return "", "", Capabilities{}, ResolvedModel{}, err
+	}
+	id, caps, resolved, err := c.createSession(ctx, &mecatlv1.CreateSessionRequest{
+		Profile:              "no-fs",
+		Mode:                 mode,
+		ProviderId:           sel.ProviderID,
+		ModelId:              sel.ModelID,
+		ReasoningEffort:      sel.ReasoningEffort,
+		DebugTargetSessionId: resolvedTarget,
+		DebugMcpServers:      append([]string(nil), debugMCP...),
+	})
+	if err != nil {
+		return "", resolvedTarget, Capabilities{}, ResolvedModel{}, err
+	}
+	if !caps.SessionDebug || len(debugMCP) > 0 && !caps.DebugMCP {
+		cleanupCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), 5*time.Second)
+		defer cancel()
+		_ = c.CloseSession(cleanupCtx, id)
+		if len(debugMCP) > 0 && !caps.DebugMCP {
+			return "", resolvedTarget, Capabilities{}, ResolvedModel{}, errors.New("server does not support selected MCP tools in debug sessions")
+		}
+		return "", resolvedTarget, Capabilities{}, ResolvedModel{}, errors.New("server does not support dedicated session debugging")
+	}
+	return id, resolvedTarget, caps, resolved, nil
+}
+
+func (c *Client) resolveDebugTarget(ctx context.Context, targetID string) (string, error) {
+	if len(targetID) != SessionIDDisplayWidth {
+		return targetID, nil
+	}
+	sessions, err := c.ListSessions(ctx)
+	if err != nil {
+		return "", fmt.Errorf("resolve debug target: list sessions: %w", err)
+	}
+	for _, item := range sessions {
+		if item.ID == targetID {
+			return targetID, nil
+		}
+	}
+	match := ""
+	for _, item := range sessions {
+		if !strings.HasPrefix(item.ID, targetID) {
+			continue
+		}
+		if match != "" {
+			return "", fmt.Errorf("session ID prefix %q is ambiguous; use the full session ID", targetID)
+		}
+		match = item.ID
+	}
+	if match != "" {
+		return match, nil
+	}
+	// Preserve the server's ordinary not-found posture. The caller-filtered
+	// inventory is only a convenience resolver; the server remains authoritative.
+	return targetID, nil
 }
 
 // CreateSessionWithCarryover is CreateSession seeded with the source session's
@@ -182,18 +399,17 @@ func (c *Client) ForkSession(ctx context.Context, srcID, title, reasoningEffort 
 // transient failure (unavailable, deadline) keeps the fatal path with the
 // original error, never a dishonest "rejected" warning. Nil → false (codes.OK);
 // a non-status error → false (codes.Unknown).
-func IsInvalidArgument(err error) bool {
-	return status.Code(err) == codes.InvalidArgument
-}
+func IsInvalidArgument(err error) bool { return status.Code(err) == codes.InvalidArgument }
 
-// transientVocab is the shared, case-insensitive vocabulary that marks a terminal
-// error as TRANSIENT — a failure the run is likely to survive on a plain retry (an
-// idle/stalled stream, an overloaded/unavailable backend, a rate limit, a transient
-// upstream 5xx). It is deliberately kept in the client package (the ONLY mecatui
-// layer with gRPC/proto access): the ui reads only the derived Transient bool on
-// ResultMsg/StreamErrMsg, never classifies. Deliberately EXCLUDES the bare
-// "server_error" token — OpenRouter reuses that string for non-transient upstream
-// faults too, so auto-resuming on it would fight a genuinely broken run.
+// IsNotFound reports the server's privacy-preserving absent-session result.
+func IsNotFound(err error) bool { return status.Code(err) == codes.NotFound }
+
+// transientVocab is the shared, case-insensitive legacy presentation vocabulary.
+// It is deliberately kept in the client package (the ONLY mecatui layer with
+// gRPC/proto access): the ui reads only the derived Transient bool on ResultMsg/
+// StreamErrMsg, never classifies and never uses it to authorize replay. The bare
+// "server_error" token is excluded because OpenRouter also uses it for permanent
+// upstream faults.
 //
 // The word entries are matched as substrings (they are alphabetic, so they land
 // word-bounded in real error text). The numeric HTTP status codes in transientCodes
@@ -247,12 +463,10 @@ func containsBoundedCode(s, code string) bool {
 
 func isDigitByte(b byte) bool { return b >= '0' && b <= '9' }
 
-// TransientStreamErr classifies a Converse stream Recv error as transient (safe to
-// auto-resume a paused queue against) vs a hard failure. The gRPC status code is the
-// primary signal — Unavailable / DeadlineExceeded / ResourceExhausted are the classic
-// retryable trio; a context deadline is transient too — with the status message and the
-// raw error text as a vocabulary fallback for servers that fold a transient upstream
-// condition into a generic code. A nil error is never transient.
+// TransientStreamErr classifies a Converse stream Recv error for presentation and
+// compatibility only. A stream error has no semantic commit fact, so the TUI never
+// uses this signal to authorize automatic replay or queue draining. The gRPC status
+// code is the primary signal, with vocabulary fallback for older servers.
 func TransientStreamErr(err error) bool {
 	if err == nil {
 		return false
@@ -301,7 +515,7 @@ func (c *Client) OpenConverse(ctx context.Context) (*Stream, error) {
 	if err != nil {
 		return nil, fmt.Errorf("open converse: %w", err)
 	}
-	return NewStream(bidi, bidi), nil
+	return newAuthenticatedStream(bidi, bidi, c.bearerBacked), nil
 }
 
 // ModeDefaultString is the canonical CLI/UI spelling for default permission mode.
@@ -369,20 +583,36 @@ func loadCAPool(path string) (*x509.CertPool, error) {
 // returns true, so grpc-go refuses to send the token over a cleartext wire.
 type bearerCreds struct {
 	token         string
+	source        TokenSource
 	allowInsecure bool // true only for loopback targets
 }
 
-func (b bearerCreds) GetRequestMetadata(_ context.Context, _ ...string) (map[string]string, error) {
-	return map[string]string{"authorization": "Bearer " + b.token}, nil
+func (b bearerCreds) GetRequestMetadata(ctx context.Context, _ ...string) (map[string]string, error) {
+	token := b.token
+	if b.source != nil {
+		if cached, ok := ctx.Value(tokenContextKey{}).(tokenContextValue); ok {
+			token = cached.token
+		} else {
+			var err error
+			token, err = b.source.Token(ctx)
+			if err != nil {
+				return nil, err
+			}
+		}
+	}
+	if token == "" {
+		return nil, errors.New("empty bearer token")
+	}
+	return map[string]string{"authorization": "Bearer " + token}, nil
 }
 
 func (b bearerCreds) RequireTransportSecurity() bool { return !b.allowInsecure }
 
-// isLoopbackHost reports whether the host part of a "host:port" (or bare host)
+// IsLoopbackHost reports whether the host part of a "host:port" (or bare host)
 // target is loopback: an IP in 127.0.0.0/8, ::1, or the name "localhost".
 // A target with no resolvable/parseable host is treated as NON-loopback (fail
 // safe — we'd rather demand TLS than leak a token).
-func isLoopbackHost(server string) bool {
+func IsLoopbackHost(server string) bool {
 	host := server
 	if h, _, err := net.SplitHostPort(server); err == nil {
 		host = h

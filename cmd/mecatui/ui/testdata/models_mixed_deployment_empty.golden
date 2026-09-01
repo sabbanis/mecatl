@@ -6,20 +6,21 @@
 ┃  current: GPT-5 (server default)                                                                    ┃
 ┃  > filter models…                                                                                   ┃
 ┃                                                                                                     ┃
+┃  Switching models is expensive as it clears caches.                                                 ┃
+┃                                                                                                     ┃
 ┃  ╭────────────────────────────────────────╮                                                         ┃
 ┃  │  › ●  openai · GPT-5  img reason 200K  │                                                         ┃
 ┃  ╰────────────────────────────────────────╯                                                         ┃
 ┃       openai · GPT-5 mini  reason 128K                                                              ┃
 ┃       openai · text-embed                                                                           ┃
 ┃       openrouter · Claude  img reason 1M                                                            ┃
-┃  toolhive: credential lists no models — ask your platform admin or re-run `thv llm setup`           ┃
+┃  toolhive: credential lists no models — ask your platform admin or re-run `mecatui llm login`       ┃
 ┃                                                                                                     ┃
 ┃  type to filter · ↑/↓/pgup move · enter use · ctrl+g set global default · esc clear filter / close  ┃
 ┃  ● current  ★ global default                                                                        ┃
 ┃  reason = emits reasoning · set its effort tier with /effort                                        ┃
 ┃                                                                                                     ┃
 ┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛
-
 
 │
 │ Ask mecatl to do something…  (enter to send · shift+enter for newline · ? for help)

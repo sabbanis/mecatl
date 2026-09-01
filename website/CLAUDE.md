@@ -39,9 +39,9 @@ slug renames, render correctly in GitHub's markdown preview, and are portable if
 ### Pattern
 
 ```markdown
-[The agent loop](/what-you-get/agent-loop.md)
-[Overview](/extension-points/index.md)
-[Cloud-native kit](/cloud-native-kit.md)
+[The agent loop](/building/what-you-get/agent-loop.md)
+[Overview](/building/extension-points/index.md)
+[Cloud-native kit](/building/cloud-native-kit.md)
 ```
 
 The leading `/` resolves from the docs content root (`user-docs/`), not the site root.
@@ -58,9 +58,9 @@ Docusaurus strips the `.md` extension when building URLs.
 
 | Pattern | Problem |
 |---------|---------|
-| `/docs/what-you-get/agent-loop` | Site-root absolute — breaks if `routeBasePath` changes; `.md` omitted so GitHub can't preview |
-| `../what-you-get/agent-loop.md` | Cross-section relative paths have a known Docusaurus v3 resolution bug with `index.md` files; use content-root-relative instead |
-| `what-you-get/agent-loop.md` (no leading `/`) | Resolves relative to current file — fine within a section, fragile across sections |
+| `/docs/building/what-you-get/agent-loop` | Site-root absolute — breaks if `routeBasePath` changes; `.md` omitted so GitHub can't preview |
+| `../building/what-you-get/agent-loop.md` | Cross-section relative paths have a known Docusaurus v3 resolution bug with `index.md` files; use content-root-relative instead |
+| `building/what-you-get/agent-loop.md` (no leading `/`) | Resolves relative to current file — fine within a section, fragile across sections |
 
 ### Why cross-section relative paths break
 
@@ -126,3 +126,33 @@ When authoring new pages in `user-docs/`, the primary source material is:
 Do not write from `AGENTS.md` / `CLAUDE.md` directly — those are internal contracts
 with dense implementation detail. Synthesize from the architecture and usage docs,
 which are already written at the right level of abstraction.
+
+### Feature-page contract
+
+A feature page explains a user journey, not an implementation inventory. Start
+with the outcome a user gets, then use this order when it applies:
+
+1. What the feature helps the user do.
+2. Availability and prerequisites: deployment, model, trust, storage, or
+   configuration gates.
+3. A short happy-path usage example.
+4. Configuration and permissions.
+5. Limits and deployment boundaries.
+6. Next steps and related pages.
+
+Keep shared-core behavior on feature pages. Put operational differences between
+`mecated`, `mecak8s`, and embedded mecatui in the deployment pages and the
+[capability matrix](/features/capability-matrix.md). `mecatui` is a terminal
+skin over an embedded or connected server, not a separate agent implementation.
+`mecak8s` is storage-free locally by design: its durable state is externalized
+rather than absent.
+
+Every availability claim needs current evidence from the composition and public
+surface that actually ships it: flags/configuration, capability advertisement,
+wire handlers, and deployed adapters. A port, proto, or constructor alone does
+not prove a feature is available. Describe a current omission as a gap only when
+there is evidence it is not an intentional product boundary; otherwise state the
+observable behavior without speculating.
+
+Do not put working plans, authoring ledgers, or internal implementation queues in
+`user-docs/`. Track them in issues, project planning, or an acceptance plan.

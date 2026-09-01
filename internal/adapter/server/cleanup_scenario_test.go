@@ -189,7 +189,7 @@ func TestMaintenanceMutationCapabilityRequiresProvenExclusion(t *testing.T) {
 func saveCleanupSession(t *testing.T, store port.SessionStore, id session.SessionID, owner *session.Principal, kind session.SessionKind) {
 	t.Helper()
 	s := session.New(id, session.ModeDefault, "/ws", session.Limits{}, time.Unix(1, 0))
-	if err := s.RestoreLabels(owner, ""); err != nil {
+	if err := s.RestoreLabels(owner, session.Authority{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.RestoreSessionMetadata(kind, session.SessionRelationship{}); err != nil {
@@ -224,6 +224,30 @@ func TestSessionStorageContinuity_Scenario5_CleanupDryRunIsReadOnly(t *testing.T
 	}
 	if plan.Token == "" {
 		t.Fatal("dry-run omitted confirmation token")
+	}
+}
+
+func TestCleanupOwnershipCutoverExcludesOwnerlessSessions(t *testing.T) {
+	now := time.Date(2026, 8, 18, 12, 0, 0, 0, time.UTC)
+	stamp := now.Add(-48 * time.Hour)
+	store := memstore.New(memstore.WithNow(func() time.Time { return stamp }))
+	saveCleanupSession(t, store, "legacy-ownerless", nil, session.SessionKindMain)
+	saveCleanupSession(t, store, "alice-owned", cleanupAlice, session.SessionKindMain)
+	svc := newCleanupService(t, store, func() time.Time { return now }, RetentionPolicy{MainMaxAge: 24 * time.Hour}, func(context.Context) bool { return true })
+
+	plan, err := svc.PlanSessionCleanup(cleanupContext(cleanupAlice), CleanupScope{})
+	if err != nil {
+		t.Fatalf("PlanSessionCleanup: %v", err)
+	}
+	if len(plan.Eligible) != 1 || plan.Eligible[0].ID != "alice-owned" {
+		t.Fatalf("cleanup eligible = %+v, want only owned session", plan.Eligible)
+	}
+	job, err := svc.ApplySessionCleanup(cleanupContext(cleanupAlice), plan.Token)
+	if err != nil || job.Deleted != 1 {
+		t.Fatalf("ApplySessionCleanup = (%+v, %v), want one owned deletion", job, err)
+	}
+	if _, err := store.Load(context.Background(), "legacy-ownerless"); err != nil {
+		t.Fatalf("ownerless session changed during cleanup: %v", err)
 	}
 }
 

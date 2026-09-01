@@ -52,7 +52,7 @@ func (m Model) openWorktrees() (tea.Model, tea.Cmd) {
 	if m.phase != phaseIdle || m.deps.Worktrees == nil {
 		return m, nil
 	}
-	m.ta.Blur() // overlay owns the keyboard while open
+	m.prompt.Blur() // overlay owns the keyboard while open
 	m.worktrees.view = worktreesPanel
 	m.worktrees.loading = true
 	m.worktrees.err = nil
@@ -71,7 +71,7 @@ func (m Model) closeWorktrees() (tea.Model, tea.Cmd) {
 	m.worktrees.view = worktreesNone
 	m.worktrees.filter = textinput.Model{}
 	m.worktrees.filtered = nil
-	cmd := m.ta.Focus()
+	cmd := m.prompt.Focus()
 	return m, cmd
 }
 
@@ -165,7 +165,7 @@ func (m Model) onWorktreesConfirmKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd, b
 // it tears down ALL per-session client state bound to the OLD session, resets the
 // conversation transcript, drives the phase back to phaseConnecting, and fires
 // restartOnWorkspaceCmd (CloseSession(old) → CreateSessionInWorkspace(new, path)).
-// The new header/caps/effectiveModel all arrive on the resulting SessionReadyMsg,
+// The new header/caps/resolvedSessionModel all arrive on the resulting SessionReadyMsg,
 // so the UI rebinds entirely from the NEW session. Mirrors restartOnModel
 // (models.go) but passes the worktree PATH as the new-session workspace.
 func (m Model) switchToWorktree(wt client.Worktree) (tea.Model, tea.Cmd, bool) {
@@ -180,7 +180,7 @@ func (m Model) switchToWorktree(wt client.Worktree) (tea.Model, tea.Cmd, bool) {
 	m = m.resetSession()
 
 	m = m.bindSessionID("")
-	m.effectiveModel = client.ResolvedModel{}
+	m.resolvedSessionModel = client.ResolvedModel{}
 	m.caps = client.Capabilities{}
 	m.restartFailed = false
 	m.restartFailedForkID = ""
@@ -208,46 +208,12 @@ func (m Model) restartOnWorkspaceCmd(oldID, workspace string) tea.Cmd {
 		if oldID != "" {
 			_ = deps.Session.CloseSession(deps.Ctx, oldID)
 		}
-		id, caps, resolved, err := deps.Session.CreateSessionInWorkspace(deps.Ctx, workspace, m.activeModel, m.desiredMode())
+		id, caps, resolved, err := deps.Session.CreateSessionInWorkspace(deps.Ctx, workspace, m.createModelSelection, m.desiredMode())
 		if err != nil {
 			return restartFailedMsg{err: err, model: workspace}
 		}
 		return client.SessionReadyMsg{SessionID: id, Capabilities: caps, ResolvedModel: resolved, Mode: m.desiredMode()}
 	}
-}
-
-// updateInventoryMsgs dispatches the inventory-overlay msgs (agentsInv, soul,
-// userModel, /worktrees, /schedule) in one fall-through chain, so update() stays
-// under the cyclomatic cap as overlays accrue. Each helper returns handled=false
-// for a non-matching msg, so at most one consumes. Most are no-follow-up-command
-// (the cmd slot is nil); /schedule's ScheduleActionMsg re-lists on success, so
-// the cmd is propagated. Returns (model, nil, false) when no inventory msg matched.
-func (m Model) updateInventoryMsgs(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
-	if mm, handled := m.updateAgentsInvMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, handled := m.updateSoulMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, handled := m.updateUserModelMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, handled := m.updateReflectionsMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, handled := m.updateDreamMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, handled := m.updateWorktreesMsg(msg); handled {
-		return mm, nil, true
-	}
-	if mm, cmd, handled := m.updateScheduleMsg(msg); handled {
-		return mm, cmd, true
-	}
-	if mm, cmd, handled := m.updateSessionsMsg(msg); handled {
-		return mm, cmd, true
-	}
-	return m, nil, false
 }
 
 // updateWorktreesMsg reduces a client.WorktreesMsg (the ListWorktrees RPC result):

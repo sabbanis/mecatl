@@ -40,6 +40,16 @@ the operation is never replayed automatically. See
 snapshots (lazily re-listed on the next read); live catalog refresh is
 deferred to a later phase — see [ADR 0057](../adr/0057-mcp-server-notifications.md).
 
+A dedicated debug session can borrow only direct tools from explicitly named, already
+connected server-global MCP servers. It persists the names and the exact initial tool-name
+ceiling, excludes resource/query meta-tools and all inline/client configuration, and fails
+closed if the current direct tool set differs at all on restart. Every selected call,
+including an outbound read and a tool marked read-only, requires a fresh interactive approval;
+deny remains absolute, headless denies, and approval is never learned. This is the hardened
+GitHub-like draft-then-publish boundary in
+[ADR 0257](../adr/0257-session-debugger-hardening.md), not a general MCP permission
+exception.
+
 The adapter optionally owns an authorization-code `OAuthController` when an embedding
 supplies `ServerConfig.OAuth`. One official SDK handler, durable credential source,
 authorization singleflight, and dedicated hardened HTTP client live for the whole
@@ -192,7 +202,7 @@ style **known paths** (`skills.ResolveSources`): project-level
 `$XDG_CONFIG_HOME/mecatl/skills` (or `~/.config/mecatl/skills`) and `~/.claude/skills`,
 with precedence **explicit > project > user**. With neither flag set, the resolver
 yields no sources and nothing is read. Discovery (reading files, YAML parsing via
-`go.yaml.in/yaml/v3`) is an adapter concern; nothing in this package is imported
+`github.com/goccy/go-yaml`) is an adapter concern; nothing in this package is imported
 by a domain package — it merely implements the domain `tool.Tool` interface.
 
 ### The engine as an embeddable library
@@ -201,7 +211,7 @@ The extensibility story is not only "swap an adapter inside mecatl" — `engine/
 is **its own Go module** (`github.com/stacklok/mecatl/engine`), so an external
 consumer can import the loop, the domain, and the ports directly without pulling
 in mecatl's full dependency cone. The engine module's standalone closure is
-deliberately tiny — `doublestar` + `robfig/cron` + `go.yaml.in/yaml/v3` +
+deliberately tiny — `doublestar` + `robfig/cron` + `github.com/goccy/go-yaml` +
 `x/sync` (+ test-only `goleak`) — versus the
 toolhive/k8s/OTel/gRPC cone the root module carries; an embedding host brings its
 own adapters. The exported identifiers of the **seven core packages** (`session`,
@@ -236,7 +246,7 @@ changes when one is swapped:
 | `tool.MemoryStore` | `engine/tool/tool.go` (impl `memory`; conformance `engine/adapter/memconformance`) | cross-session memory + `dream` consolidation |
 | `tool.EnvironmentForker` | `engine/tool/isolation.go` (impl `forker`) | fork-join isolated branches (returns a complete child `Environment`) |
 | `tool.Catalog` | `engine/tool/catalog.go` | core tools + MCP (streaming-HTTP) |
-| `mcpperf.Deps` (perf MCP server) | `internal/adapter/mcpperf` | opt-in `--perf-mcp`; a read-only MCP `http.Handler` mounted at `/mcp` on the loopback admin listener (both composition roots: `cmd/mecated` and `cmd/mecatui/embed`). Built by DI — `Snapshot`/`Gatherer`/`Profiler` from `telemetry`, a slow-turn ring buffer (`telemetry.SlowTurnBuffer`) bridged at the cmd boundary to the `mcpperf.SlowTurnSource` seam (telemetry never imports mcpperf — the dependency points inward). Fail-closed to loopback (unauthenticated) |
+| `mcpperf.Deps` (perf MCP server) | `internal/adapter/mcpperf` | opt-in `--perf-mcp`; a read-only streaming-HTTP MCP `http.Handler` mounted at `/mcp`. `mecated` serves it on its loopback admin listener; embedded mecatui with no explicit `--perf-addr` chooses ephemeral loopback TCP because streaming HTTP needs a URL (plain `--perf` instead defaults to a private per-instance UNIX socket). Built by DI — `Snapshot`/`Gatherer`/`Profiler` from `telemetry`, a slow-turn ring buffer (`telemetry.SlowTurnBuffer`) bridged at the cmd boundary to the `mcpperf.SlowTurnSource` seam (telemetry never imports mcpperf — the dependency points inward). Explicit TCP is fail-closed to loopback (unauthenticated); no stdio transport |
 | `SessionStore` + AGENTS.md/CLAUDE.md discovery | `port` + `engine/prompt/builder.go` | file-as-memory; AGENTS.md wins over CLAUDE.md, injected as a **user** message, never system |
 
 **Remaining non-goals / deliberate deferrals**: an **OS-level sandbox**

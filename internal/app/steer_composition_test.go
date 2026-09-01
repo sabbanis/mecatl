@@ -103,12 +103,15 @@ func TestSteer_EnabledByDefaultEndToEnd(t *testing.T) {
 	// dispatch auto-approves (Interactive is false; an ask would park the run
 	// headless instead of holding it mid-dispatch the way this test needs).
 	built, err := Build(ctx, Config{
-		Workspace:           t.TempDir(),
-		Model:               "mock",
-		NoSoul:              true,
-		MockProvider:        llm,
-		AllowAllTools:       true,
-		extraCoreTools:      []tool.Tool{block},
+		Workspace:      t.TempDir(),
+		Model:          "mock",
+		NoSoul:         true,
+		MockProvider:   llm,
+		AllowAllTools:  true,
+		extraCoreTools: []tool.Tool{block},
+		extraCoreToolClassifications: map[string]server.ClassificationEntry{
+			"SteerBlock": {Kind: server.KindDerived, Rationale: "test tool is contained within the current authorized run"},
+		},
 		envDetector:         fakeEnv(map[string]string{"OPENAI_API_KEY": "sk-openai"}),
 		liveModelHTTPClient: offlineHTTPClient(),
 	})
@@ -135,7 +138,7 @@ func TestSteer_EnabledByDefaultEndToEnd(t *testing.T) {
 	steered := make(chan agent.SteerOutcome, 1)
 	go func() {
 		<-block.started
-		outcome, promoted, promotedRun, err := built.Service.Steer(ctx, sess.ID, "also check b.go", "")
+		outcome, promoted, promotedRun, err := built.Service.Steer(ctx, sess.ID, "also check b.go", nil, "", "")
 		if err != nil {
 			t.Errorf("Steer: %v", err)
 		}
@@ -226,7 +229,7 @@ func TestSteer_DisabledCompositionInert(t *testing.T) {
 	// The inbox is inert: a steer for the (now-terminal) session reports too_late
 	// and PROMOTES to a follow-up run through the run-entry funnel — never silently
 	// dropped, never drained into the finished run.
-	outcome, promoted, promotedRun, err := built.Service.Steer(ctx, sess.ID, "aftermath", "")
+	outcome, promoted, promotedRun, err := built.Service.Steer(ctx, sess.ID, "aftermath", nil, "", "")
 	if err != nil {
 		t.Fatalf("Steer: %v", err)
 	}

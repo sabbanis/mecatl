@@ -176,6 +176,10 @@ type parentCaps struct {
 	// OWNERLESS parent (the no-auth path), which yields an ownerless child: never
 	// a fabricated one, and never a rejection.
 	owner *session.Principal
+	// authority is the PARENT aggregate's carried capability set. Delegation must
+	// attenuate this value before it creates child runtime resources.
+	authority      session.Authority
+	authorityBound bool
 	// parentSessionID is the PARENT session's own SessionID (review finding 2,
 	// issue #368), handed down so every derived child/branch/member session id
 	// is namespaced under it. A durable delegation id previously derived ONLY
@@ -189,7 +193,8 @@ type parentCaps struct {
 	// authorization ever runs. Empty for a caps-less drive (plain
 	// Execute/ExecuteObserved, no parent session threaded) — the legacy
 	// call-id-only id, unaffected outside real dispatch.
-	parentSessionID session.SessionID
+	parentSessionID   session.SessionID
+	parentIncarnation session.IncarnationID
 }
 
 // inheritOwner stamps the parent session's owner onto a freshly-minted child
@@ -212,7 +217,7 @@ func (c parentCaps) inheritOwner(child *session.Session) {
 	// (issue #368) refuses a resume whose loaded owner differs from the caller
 	// before this is ever reached, so the DIFFERENT-owner error case above is
 	// unreachable via the resume path.
-	_ = child.RestoreLabels(c.owner, "")
+	_ = child.RestoreLabels(c.owner, session.Authority{})
 }
 
 // registerChildRun is the nil-safe registration wrapper a spawning tool calls: a
@@ -460,6 +465,10 @@ type subagentArgs struct {
 	// read-only behaviour, unchanged.
 	Mode string `json:"mode,omitempty"`
 
+	// Authority optionally tightens this child's carried authority. Every field is
+	// tighten-only: requests outside the derived child authority are refused.
+	Authority *DelegationTightening `json:"authority,omitempty"`
+
 	// Fork seeds this child from a DEEP COPY of the PARENT conversation (issue #34)
 	// instead of an empty context, so it "continues THIS exact investigation with my
 	// full context". The copied history is carried VERBATIM, not re-fenced — the fork
@@ -482,6 +491,15 @@ type subagentArgs struct {
 	Fork bool `json:"fork,omitempty"`
 }
 
+// DelegationTightening is the optional per-call capability reduction requested
+// for a Subagent. Nil fields inherit the already-derived value.
+type DelegationTightening struct {
+	Tools                    []string `json:"tools,omitempty"`
+	RemainingDelegationDepth *int     `json:"remaining_delegation_depth,omitempty"`
+	FileSystem               *bool    `json:"filesystem,omitempty"`
+	DirectWrite              *bool    `json:"direct_write,omitempty"`
+}
+
 // AgentMeta is the plain (name, description) summary of one registered agent
 // definition, surfaced in the Subagent tool's Spec().Description for progressive
 // disclosure. It is a layering-clean value type: the composition root translates
@@ -500,6 +518,13 @@ type AgentMeta struct {
 	// explorer. A zero Limits value is treated as "no per-def override" — Execute
 	// then uses the Subagent tool's default limits, exactly as the no-`agent` path does.
 	Limits session.Limits
+	// AuthorityCeiling is the resolved read-only definition tool ceiling. It is
+	// honoured only when Managed is true; lower tiers can never establish a ceiling.
+	AuthorityCeiling governance.CapabilitySet
+	// WritableAuthorityCeiling is the corresponding direct-write ceiling used only
+	// for a fresh mode:"read-write" delegation to this definition.
+	WritableAuthorityCeiling governance.CapabilitySet
+	Managed                  bool
 }
 
 // subagentSchema is the JSON schema the model sees for the Subagent tool's arguments. The
@@ -557,6 +582,16 @@ var subagentSchema = json.RawMessage(`{
     "background": {
       "type": "boolean",
       "description": "Run the subagent in the BACKGROUND: this call returns immediately with its agentId and the subagent keeps working while you continue (a note tells you when it finishes). Use it for long investigations whose result you do not need before your next steps. Collect the result with SubagentStatus (pass the agentId; use wait_ms to wait on it). A background subagent still running when this run ends is CANCELLED (its transcript persists and is resumable). Omit (default false) to wait for the result inline."
+    },
+    "authority": {
+      "type": "object",
+      "description": "Optional authority tightening for this child: tools, remaining_delegation_depth, filesystem, and direct_write may only reduce your derived authority. A request that would add a tool, hop, or execution posture is refused.",
+      "properties": {
+        "tools": {"type": "array", "items": {"type": "string"}},
+        "remaining_delegation_depth": {"type": "integer"},
+        "filesystem": {"type": "boolean"},
+        "direct_write": {"type": "boolean"}
+      }
     },
     "fork": {
       "type": "boolean",
@@ -629,6 +664,12 @@ type SubagentTool struct {
 	// name absent from the map (or a zero Limits) means "use t.limits" — the same
 	// default the no-`agent` explorer path uses.
 	agentLimits map[string]session.Limits
+	// agentCeilings and writableAgentCeilings are populated only from
+	// operator-managed definitions. A missing entry deliberately means no specialist
+	// ceiling. Keeping the modes separate prevents a read-only child from persisting
+	// mutating authority that a later writable resume could activate.
+	agentCeilings         map[string]governance.CapabilitySet
+	writableAgentCeilings map[string]governance.CapabilitySet
 
 	// limits bound a single child run. Defaults to defaultChildLimits.
 	limits session.Limits
@@ -711,9 +752,10 @@ type SubagentTool struct {
 
 	// routableAgents is the composition-computed SET of agent-def names that expressed NO
 	// model intent (absent `model:` — issue #286) and are therefore eligible for the OPT-IN
-	// model router: an `agent`-named delegation to one of these, read-only and with the
-	// agent+model factory wired, is CLASSIFIED and the def's SCOPED engine is rebuilt on the
-	// routed model (via agentModelFactory), fail-soft to the pre-built def engine on a miss.
+	// model router: an `agent`-named delegation to one of these, with the applicable routed
+	// factory wired, is CLASSIFIED and the def's SCOPED engine is rebuilt on the routed model
+	// (via agentModelFactory for read-only or agentWritableModelFactory for writable), fail-soft
+	// to the pre-built read-only def engine or freshly-built ordinary writable specialist.
 	// A def that expressed model intent (ANY def.Model — `inherit`, a built-in alias, an
 	// unknown alias, a concrete id) is PINNED and NEVER in this set. Composition ALSO
 	// excludes a def whose `provider:` switches away from the parent (routed ids are
@@ -729,6 +771,12 @@ type SubagentTool struct {
 	// routableAgents: provider-switched and inline-MCP defs are also unroutable, but
 	// they did not pin a model and must not be attributed as if they had.
 	pinnedAgents map[string]struct{}
+
+	// agentWritableModelFactory is agentWritableFactory's routed-model sibling. For an
+	// unpinned writable named specialist, it rebuilds the same writable scoped engine on
+	// the router-selected model. A decline falls back to agentWritableFactory; the router
+	// remains fail-soft and reconcileRoutedModel reports the unavailable target truthfully.
+	agentWritableModelFactory func(agentName, model string) (*Engine, bool)
 
 	// agentWritableFactory, when non-nil, mints a WRITABLE child engine for a
 	// mode:"read-write"+`agent` call: the named specialist's scoped engine
@@ -1164,13 +1212,23 @@ func WithAgentModelEngineFactory(f func(agentName, model string) (*Engine, bool)
 //
 // nil (the default, and ALWAYS on the no-FS path) leaves Subagent without writable-
 // specialist support: a mode:"read-write"+`agent` call then errors with a clear "not
-// supported in this deployment" message from validateMode. read-write+`agent`+`model`
-// together is OUT OF SCOPE for v1 (validateMode rejects it before this factory is ever
-// consulted — a writable specialist runs on its own resolved model). It is layering-
+// supported in this deployment" message from validateMode. Explicit read-write+`agent`+
+// `model` arguments together are OUT OF SCOPE for v1 (validateMode rejects them before this
+// factory is ever consulted); a router-selected model is handled by the separate
+// WithAgentWritableModelEngineFactory. It is layering-
 // clean: the closure takes a string and returns *Engine — both agent-layer types —
 // and no adapter/proto/server type crosses (same shape as WithAgentModelEngineFactory).
 func WithAgentWritableEngineFactory(f func(agentName string) (*Engine, bool)) SubagentOption {
 	return func(t *SubagentTool) { t.agentWritableFactory = f }
+}
+
+// WithAgentWritableModelEngineFactory injects the composition-supplied factory that
+// rebuilds a WRITABLE named specialist on a router-selected model. It is distinct from
+// WithAgentModelEngineFactory because the resulting engine retains mutating tools and
+// runs directly in the parent environment. A declined routed target falls back to the
+// ordinary writable specialist minted by WithAgentWritableEngineFactory.
+func WithAgentWritableModelEngineFactory(f func(agentName, model string) (*Engine, bool)) SubagentOption {
+	return func(t *SubagentTool) { t.agentWritableModelFactory = f }
 }
 
 // WithWritableChildEngine injects the child *Engine a mode:"read-write" Subagent
@@ -1230,7 +1288,17 @@ func WithAgentEngines(engines map[string]*Engine, meta []AgentMeta) SubagentOpti
 		// agent is selected. A zero Limits is skipped — the name then falls back to
 		// t.limits in Execute, identical to the no-`agent` path.
 		t.agentLimits = nil
+		t.agentCeilings = nil
+		t.writableAgentCeilings = nil
 		for _, m := range meta {
+			if m.Managed {
+				if t.agentCeilings == nil {
+					t.agentCeilings = make(map[string]governance.CapabilitySet, len(meta))
+					t.writableAgentCeilings = make(map[string]governance.CapabilitySet, len(meta))
+				}
+				t.agentCeilings[m.Name] = m.AuthorityCeiling
+				t.writableAgentCeilings[m.Name] = m.WritableAuthorityCeiling
+			}
 			if m.Limits == (session.Limits{}) {
 				continue
 			}
@@ -1240,6 +1308,21 @@ func WithAgentEngines(engines map[string]*Engine, meta []AgentMeta) SubagentOpti
 			t.agentLimits[m.Name] = m.Limits
 		}
 	}
+}
+
+func (t *SubagentTool) agentCeiling(name string, writable bool) (*governance.CapabilitySet, bool) {
+	ceilings := t.agentCeilings
+	if writable {
+		ceilings = t.writableAgentCeilings
+	}
+	if name == "" || ceilings == nil {
+		return nil, false
+	}
+	ceiling, ok := ceilings[name]
+	if !ok {
+		return nil, false
+	}
+	return &ceiling, true
 }
 
 // WithRoutableAgents injects the composition-computed SET of agent-def names eligible for
@@ -1370,22 +1453,26 @@ func (t *SubagentTool) Spec() tool.ToolSpec {
 	if t.shellDisabledNote != "" {
 		shellClause = "By default the subagent is READ-ONLY — " + t.shellDisabledNote + " — with no Edit/Write"
 	}
-	desc := "Delegate a focused, self-contained task to a subagent with its own fresh context: " +
+	desc := "Delegate ONE focused, self-contained task to a subagent with its own fresh context. " +
+		"For two or more independent READ-ONLY tasks, prefer one Subagent call per task in the SAME " +
+		"assistant turn; eligible calls execute concurrently and return separate results. Do not wait " +
+		"for one before launching the next unless a later task depends on an earlier result. Use it for " +
 		"a multi-step investigation ('search → summarize', 'trace this code path'), build/test/git " +
 		"work ('run the tests and report failures', 'bisect the history'), or an implementation task " +
 		"('implement this fix and edit the files'). " +
 		shellClause + ". " +
 		"Set mode:\"read-write\" to let it edit and write files DIRECTLY in your workspace — exactly " +
 		"as you do — so its edits land immediately, with no copy or merge step. This is how you " +
-		"delegate an implementation task and have the edits LAND. It runs serially (never alongside " +
-		"your other tools) so it cannot race you; there is no isolation, so review its result with " +
-		"`git diff`/`git status` and undo with `git checkout`/`git stash` if needed. " +
+		"delegate an implementation task and have the edits LAND. Serial execution applies only to a " +
+		"mode:\"read-write\" call (it never runs alongside your other tools), so it cannot race you; " +
+		"there is no isolation, so review its result with `git diff`/`git status` and undo with " +
+		"`git checkout`/`git stash` if needed. " +
 		"The subagent cannot delegate further. " +
 		"The subagent's FINAL MESSAGE is its deliverable — you receive only that " +
 		"(see `prompt`; with `background: true` the call instead returns at once and you collect the " +
-		"result later). You may issue several Subagent calls in ONE turn. Do NOT use it when you need " +
-		"the intermediate outputs in this conversation (do the work yourself) or when workers must " +
-		"coordinate (use Team) — and don't delegate a single quick read you can do with Read/Grep." +
+		"result later). Do NOT use it when you need the intermediate outputs in this conversation " +
+		"(do the work yourself) or when workers must coordinate (use Team) — and don't delegate a " +
+		"single quick read you can do with Read/Grep." +
 		" Inline context you already hold (e.g. a diff, file contents, prior findings) directly in " +
 		"`prompt` rather than making the subagent re-fetch it — that saves its limited turn/tool " +
 		"budget for the actual task." +
@@ -1416,16 +1503,18 @@ func (t *SubagentTool) Spec() tool.ToolSpec {
 // enumerating any would advertise specialists the `agent` arg cannot honestly
 // serve in this session.
 func (*SubagentTool) noFSDescription() string {
-	desc := "Delegate a focused, self-contained task to a subagent with its own fresh context: " +
+	desc := "Delegate ONE focused, self-contained task to a subagent with its own fresh context. " +
+		"For two or more independent READ-ONLY tasks, prefer one Subagent call per task in the SAME " +
+		"assistant turn; eligible calls execute concurrently and return separate results. Do not wait " +
+		"for one before launching the next unless a later task depends on an earlier result. Use it for " +
 		"a multi-step investigation it can complete WITHOUT any file access ('fetch and cross-check " +
 		"these sources → summarize', 'search memory and report what is already known'). This session " +
 		"has NO filesystem: the subagent has NO file tools and NO shell — it works through MCP tools, " +
 		"memory, and web fetch only, and it cannot delegate further. Delegate only file-free " +
 		"investigations. The subagent's FINAL MESSAGE is its deliverable — you receive only that " +
 		"(see `prompt`; with `background: true` the call instead returns at once and you collect the " +
-		"result later). You may issue several Subagent calls in ONE turn. Do NOT use it when you need " +
-		"the intermediate outputs in this conversation (do the work yourself), or when workers must " +
-		"coordinate (use Team)." +
+		"result later). Do NOT use it when you need the intermediate outputs in this conversation " +
+		"(do the work yourself), or when workers must coordinate (use Team)." +
 		" Inline context you already hold (e.g. prior findings, fetched content) directly in " +
 		"`prompt` rather than making the subagent re-fetch it — that saves its limited turn/tool " +
 		"budget for the actual task." +
@@ -1563,13 +1652,9 @@ func (t *SubagentTool) ExecuteWithParent(ctx context.Context, call session.ToolC
 //     unknown agent or an unroutable model are model-addressable errors. (Unreachable
 //     with writable=true — validateMode rejects read-write+agent+model first.)
 //   - `agent` only + writable: routes through agentWritableFactory (a WRITABLE
-//     specialist, ADR 0058 — the def's scoped engine is rebuilt with allowMutating=true
-//     on the def's resolved model, using the MAIN runner for direct-write parity). The
-//     pre-built agentEngines map is read for the name-truth check only; a fresh engine
-//     is minted per call, never inserted. Without a wired factory the combination is
-//     "not supported in this deployment" (validateMode catches this first, but the
-//     defensive guard here is belt-and-suspenders); an inline-MCP def is a v1 scope
-//     limit (the factory returns (nil,false) and a model-addressable error surfaces).
+//     specialist, ADR 0058) on its resolved model, or through agentWritableModelFactory
+//     when the OPT-IN router selects a model for an unpinned def. A routed construction
+//     decline falls back to agentWritableFactory; per-def limits remain untouched.
 //   - `agent` only (read-only): routes to the pre-built specialist engine (agentEngines)
 //     via selectReadOnlyAgentEngine — which, for a ROUTABLE def (issue #286), applies the
 //     OPT-IN router's routedModel by rebuilding the def's scoped engine on it (fail-soft to
@@ -1622,8 +1707,7 @@ func (t *SubagentTool) selectChildEngine(callID session.ToolCallID, args subagen
 	// those helpers; it never silently falls back to the wrong scope/prompt.
 	if wantAgent != "" {
 		if writable {
-			eng, lim, errRes, found := t.selectWritableSpecialistEngine(callID, wantAgent)
-			return eng, lim, errRes, false, found
+			return t.selectWritableSpecialistEngine(callID, wantAgent, routedModel)
 		}
 		return t.selectReadOnlyAgentEngine(callID, wantAgent, routedModel)
 	}
@@ -1746,36 +1830,35 @@ func (t *SubagentTool) selectWritableExplorerEngine(callID session.ToolCallID, w
 }
 
 // selectWritableSpecialistEngine resolves a mode:"read-write"+`agent` call to a WRITABLE
-// specialist engine via agentWritableFactory (ADR 0058): the def's scoped engine is REBUILT
-// with allowMutating=true (Edit/Write survive scoping) on the def's resolved model, using
-// the MAIN session's command runner (direct-write parity — no fork, no merge-back; the child
-// mutates the real parent tree in place, dispatch-serial via MutatesParent). The name-truth
-// check fires BEFORE the factory (an unknown name is the same model-addressable error the
-// read-only path returns, never a factory call). validateMode already rejected the unwired
-// case (agentWritableFactory==nil), so reaching here with a nil factory is a defensive
-// belt-and-suspenders "not supported in this deployment" error. The pre-built agentEngines
-// map is read for the name-truth check ONLY; a fresh engine is minted per call, never
-// inserted (no map reuse — a writable specialist never accidentally runs the read-only
-// pre-built engine). An inline-MCP def is a v1 scope limit: the factory returns (nil,false)
-// and a model-addressable error surfaces. Per-def limits still bind.
-func (t *SubagentTool) selectWritableSpecialistEngine(callID session.ToolCallID, wantAgent string) (*Engine, session.Limits, session.ToolResult, bool) {
+// specialist. A router-selected model first mints through agentWritableModelFactory; when
+// that target is unavailable it falls back to agentWritableFactory, keeping routing
+// fail-soft while allowing reconcileRoutedModel to expose truthful fallback metadata. Both
+// factories rebuild the def's scoped engine with allowMutating=true and the MAIN session's
+// runner, so the child mutates the parent environment directly. The name-truth check fires
+// before either factory, and the def's limits bind whichever engine is selected.
+func (t *SubagentTool) selectWritableSpecialistEngine(callID session.ToolCallID, wantAgent, routedModel string) (*Engine, session.Limits, session.ToolResult, bool, bool) {
 	if t.agentWritableFactory == nil {
 		return nil, session.Limits{}, session.NewToolError(callID,
-			"Subagent: mode:\"read-write\" with `agent` is not supported in this deployment"), false
+			"Subagent: mode:\"read-write\" with `agent` is not supported in this deployment"), false, false
 	}
 	if _, found := t.agentEngines[wantAgent]; !found {
-		return nil, session.Limits{}, session.NewToolError(callID, "Subagent: "+t.unknownAgentHint(wantAgent)), false
-	}
-	eng, found := t.agentWritableFactory(wantAgent)
-	if !found || eng == nil {
-		return nil, session.Limits{}, session.NewToolError(callID,
-			fmt.Sprintf("Subagent: writable specialist %q is unavailable (the def may have inline MCP servers, a v1 scope limit); omit `mode` to run it read-only, or omit `agent` for a writable explorer", wantAgent)), false
+		return nil, session.Limits{}, session.NewToolError(callID, "Subagent: "+t.unknownAgentHint(wantAgent)), false, false
 	}
 	limits := t.limits
 	if l, found := t.agentLimits[wantAgent]; found {
 		limits = l
 	}
-	return eng, limits, session.ToolResult{}, true
+	if routedModel != "" && t.agentWritableModelFactory != nil {
+		if eng, found := t.agentWritableModelFactory(wantAgent, routedModel); found && eng != nil {
+			return eng, limits, session.ToolResult{}, true, true
+		}
+	}
+	eng, found := t.agentWritableFactory(wantAgent)
+	if !found || eng == nil {
+		return nil, session.Limits{}, session.NewToolError(callID,
+			fmt.Sprintf("Subagent: writable specialist %q is unavailable (the def may have inline MCP servers, a v1 scope limit); omit `mode` to run it read-only, or omit `agent` for a writable explorer", wantAgent)), false, false
+	}
+	return eng, limits, session.ToolResult{}, false, true
 }
 
 // resolveMaxRunTokens resolves the per-call cumulative token budget from the two aliases:
@@ -2046,12 +2129,11 @@ func (t *SubagentTool) validatePreconditions(callID session.ToolCallID, args sub
 //     selectChildEngine's writable arm, so don't spend the classifier). That gate reports
 //     RoutingReasonRouterDisabled: the pick could not be consumed, as if no router existed.
 //   - a NAMED `agent` (issue #286): routes ONLY a ROUTABLE def — one that expressed NO model
-//     intent (composition put it in t.routableAgents) — and only READ-ONLY with the
-//     agent+model factory wired (the pick is consumed by rebuilding the def's SCOPED engine
-//     on the routed model). A pinned def (ANY def.Model, incl. explicit `inherit`) reports
-//     RoutingReasonAgentDefPinned; a routable def that is writable or whose agent+model
-//     factory is unwired reports RoutingReasonRouterDisabled (the pick could not be
-//     consumed — as good as no router — NOT a def-pinned model the def never expressed).
+//     intent (composition put it in t.routableAgents) — with the applicable model factory
+//     wired. A writable named def additionally requires agentWritableFactory as its fail-soft
+//     fallback. A pinned def (ANY def.Model, incl. explicit `inherit`) reports
+//     RoutingReasonAgentDefPinned; an incomplete factory set reports
+//     RoutingReasonRouterDisabled (the pick could not be consumed — as good as no router).
 //
 // It is a method (not a free func) to read t.writableEngineFactory / t.agentModelFactory /
 // t.routableAgents. The ctx is the run's ctx, threaded to routeTask so a Run.Cancel
@@ -2071,18 +2153,20 @@ func (t *SubagentTool) maybeRouteModel(ctx context.Context, args subagentArgs, r
 		return "", "", session.RoutingReasonPinnedModel
 	}
 	if wantAgent := strings.TrimSpace(args.Agent); wantAgent != "" {
-		// A NAMED agent: a def that expressed model intent (recorded explicitly in pinnedAgents)
-		// attributes to its own gate. A ROUTABLE def (no model intent) that still cannot be
-		// routed — writable, or the agent+model factory unwired — attributes to
-		// router-disabled: the pick could not be consumed, as good as no router, and the def
-		// never pinned a model. Only then does the router-absent gate apply.
+		// A NAMED agent: a def that expressed model intent attributes to its own gate. A
+		// ROUTABLE def needs the applicable routed factory plus its ordinary writable
+		// fallback when writable; an incomplete factory set cannot consume a pick.
 		if _, pinned := t.pinnedAgents[wantAgent]; pinned {
 			return "", "", session.RoutingReasonAgentDefPinned
 		}
 		if _, routable := t.routableAgents[wantAgent]; !routable {
 			return "", "", session.RoutingReasonRouterDisabled
 		}
-		if writable || t.agentModelFactory == nil {
+		if writable {
+			if t.agentWritableFactory == nil || t.agentWritableModelFactory == nil {
+				return "", "", session.RoutingReasonRouterDisabled
+			}
+		} else if t.agentModelFactory == nil {
 			return "", "", session.RoutingReasonRouterDisabled
 		}
 	} else if writable && t.writableEngineFactory == nil {
@@ -2186,7 +2270,7 @@ func (t *SubagentTool) resolveEngineAndLimits(callID session.ToolCallID, args su
 // still on disk — because this is the only place that sees the resumed session's
 // PERSISTED workspace before buildChildSession re-homes it. See editsSurvived's
 // doc-comment on the named result below and resumeWritableNote.
-func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.ToolCall, env tool.Environment, args subagentArgs, resuming, writable bool, childID, parentID session.SessionID, limits session.Limits, forkHistory []session.Message) (child *session.Session, runEnv tool.Environment, cleanup func() error, advisory string, editsSurvived bool, errResult session.ToolResult, ok bool) {
+func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.ToolCall, env tool.Environment, args subagentArgs, resuming, writable bool, childID, parentID session.SessionID, parentIncarnation session.IncarnationID, limits session.Limits, forkHistory []session.Message) (child *session.Session, runEnv tool.Environment, cleanup func() error, advisory string, editsSurvived bool, errResult session.ToolResult, ok bool) {
 	noop := func() error { return nil }
 	var resumedChild *session.Session
 	// priorWorkspace is the resumed child's PERSISTED workspace root, captured here
@@ -2227,7 +2311,7 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 	// otherwise is the exact falsehood resumeWritableNote exists to prevent, inverted.
 	// The path comparison is the honest test and needs no new persisted field.
 	editsSurvived = writable && priorWorkspace != "" && priorWorkspace == env.Workspace().Root()
-	child, errRes, bok := t.buildChildSession(call.ID, childID, parentID, resumedChild, runEnv.Workspace().Root(), limits, forkHistory)
+	child, errRes, bok := t.buildChildSession(call.ID, childID, parentID, parentIncarnation, resumedChild, runEnv.Workspace().Root(), limits, forkHistory)
 	if !bok {
 		_ = cleanupWS()
 		return nil, tool.Environment{}, noop, "", false, errRes, false
@@ -2245,7 +2329,7 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 	return child, runEnv, cleanupWS, advisory, editsSurvived, session.ToolResult{}, true
 }
 
-//nolint:gocyclo // lifecycle validation is intentionally linear; distributed lease admission adds one fail-safe branch.
+//nolint:gocyclo // Delegation validation order is security-significant and intentionally explicit.
 func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.Environment, emit func(session.Event), caps parentCaps) (session.ToolResult, error) {
 	var args subagentArgs
 	if msg, ok := session.ParseArgs(call, &args); !ok {
@@ -2254,6 +2338,10 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	if strings.TrimSpace(args.Prompt) == "" {
 		return session.NewToolError(call.ID, "Subagent: 'prompt' is required and must be non-empty"), nil
 	}
+	// Agent selection, limits, routing, and managed authority ceilings all use the
+	// same canonical lookup key. Normalize once so whitespace cannot select an
+	// engine while bypassing its authority ceiling or changing its identity.
+	args.Agent = strings.TrimSpace(args.Agent)
 
 	// max_run_tokens / max_tokens are the SAME cumulative run budget (the latter is the
 	// deprecated, misleadingly-named alias). Supplying both with different positive values
@@ -2277,6 +2365,33 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	}
 
 	resuming := strings.TrimSpace(args.Resume) != ""
+	if resuming && caps.authorityBound {
+		persisted, resumeResult, loaded := t.loadOwnedResumeSession(ctx, call.ID, session.SessionID(args.Resume))
+		if !loaded {
+			return resumeResult, nil
+		}
+		persistedAuthority, bound := persisted.BoundAuthority()
+		if writable && bound && !persistedAuthority.CapabilitySet.DirectWrite {
+			return session.NewToolError(call.ID, "Subagent: resume authority refused: persisted child authority does not permit direct write"), nil
+		}
+		if authorityErr := validateResumedAuthority(caps.authority, persistedAuthority, bound); authorityErr != nil {
+			return session.NewToolError(call.ID, "Subagent: resume authority refused: "+authorityErr.Error()), nil
+		}
+	}
+	var delegatedAuthority session.Authority
+	if !resuming && caps.authorityBound {
+		candidate := caps.authority.CapabilitySet
+		candidate.DirectWrite = writable
+		ceiling, managed := t.agentCeiling(args.Agent, writable)
+		var authorityErr error
+		delegatedAuthority, authorityErr = deriveDelegatedAuthority(caps.authority, candidate, ceiling, args.Authority)
+		if authorityErr != nil {
+			return session.NewToolError(call.ID, "Subagent: delegation authority refused: "+authorityErr.Error()), nil
+		}
+		if managed {
+			delegatedAuthority.DefinitionIdentity = "explicit:" + args.Agent
+		}
+	}
 
 	// OPT-IN semantic model router (ADR 0031): for a PLAIN default delegation, classify
 	// the task and mint the child on the routed model via the per-call factory path. The
@@ -2362,7 +2477,7 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	if args.Background {
 		return t.startBackground(ctx, backgroundChild{
 			call: call, env: env, emit: emit, caps: caps, args: args,
-			engine: engine, limits: limits, resuming: resuming, childID: childID,
+			engine: engine, limits: limits, resuming: resuming, childID: childID, authority: delegatedAuthority,
 			forkHistory:    forkHistory,
 			routedCategory: routedCategory, routedModel: routedModel, routingReason: routingReason,
 			timeoutCtx: timeoutCtx, cancelCall: cancelCall, cancelTimeout: cancelTimeout,
@@ -2413,12 +2528,38 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	// Resume load + fork + session build (see prepareChildSession). The cleanup is
 	// always non-nil and tears the worktree down after the child fully drains (the
 	// run is drained below in this call), so a deferred cleanup is correct.
-	child, runEnv, cleanupWS, forkAdvisory, editsSurvived, errResult, ok := t.prepareChildSession(ctx, call, env, args, resuming, writable, childID, caps.parentSessionID, limits, forkHistory)
+	child, runEnv, cleanupWS, forkAdvisory, editsSurvived, errResult, ok := t.prepareChildSession(ctx, call, env, args, resuming, writable, childID, caps.parentSessionID, caps.parentIncarnation, limits, forkHistory)
 	if !ok {
 		return errResult, nil
 	}
-	// The child is attributed to the PARENT session's owner (ADR 0204 decision 4).
-	caps.inheritOwner(child)
+	// The child is attributed to the PARENT session's owner (ADR 0204 decision 4),
+	// or carries delegated authority when the parent run is authority-bound.
+	if resuming && caps.authorityBound {
+		persisted, bound := child.BoundAuthority()
+		if authorityErr := validateResumedAuthority(caps.authority, persisted, bound); authorityErr != nil {
+			_ = cleanupWS()
+			return session.NewToolError(call.ID, "Subagent: resume authority refused: "+authorityErr.Error()), nil
+		}
+		caps.inheritOwner(child)
+	} else if resuming {
+		caps.inheritOwner(child)
+	} else if caps.authorityBound {
+		if authorityErr := stampDelegatedLabels(child, caps.owner, delegatedAuthority); authorityErr != nil {
+			_ = cleanupWS()
+			return session.NewToolError(call.ID, "Subagent: failed to stamp delegated authority: "+authorityErr.Error()), nil
+		}
+	} else {
+		caps.inheritOwner(child)
+	}
+	// A FRESH child is published create-only: its id derives from a provider
+	// tool-call id, so an overwrite would clobber another owner's transcript. A
+	// resume loads an existing snapshot and must not be re-created.
+	if !resuming {
+		if err := createSessionIfSupported(ctx, t.store, child); err != nil {
+			_ = cleanupWS()
+			return session.NewToolError(call.ID, fmt.Sprintf("Subagent: durable child session could not be created: %v", err)), nil
+		}
+	}
 	// Tear down the run workspace after the child fully drains. For a writable
 	// (direct-write) child this is a no-op — cleanupWS is the no-op returned by
 	// forkChildEnvironment for a nil forker (the child ran against the parent ws, which
@@ -2431,13 +2572,14 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 	// UI). No child content.
 	if emit != nil {
 		emit(session.Event{Type: session.EvSubagentStart, Subagent: &session.SubagentPayload{
-			ParentCallID:   string(call.ID),
-			ChildID:        string(childID),
-			Goal:           subagentGoal(args),
-			RoutedCategory: routedCategory,
-			RoutedModel:    routedModel,
-			RoutingReason:  routingReasonPayload(routingReason),
-			Model:          engine.Model(),
+			ParentCallID:     string(call.ID),
+			ChildID:          string(childID),
+			ChildIncarnation: child.Incarnation(),
+			Goal:             subagentGoal(args),
+			RoutedCategory:   routedCategory,
+			RoutedModel:      routedModel,
+			RoutingReason:    routingReasonPayload(routingReason),
+			Model:            engine.Model(),
 		}})
 	}
 
@@ -2493,7 +2635,7 @@ func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.
 
 	if emit != nil {
 		emit(subagentEndEvent(call.ID, childID, stop, cause, subagentEndMetrics{
-			toolCount: toolCount, usage: usage, durationMs: engine.now().Sub(start).Milliseconds(),
+			incarnation: child.Incarnation(), toolCount: toolCount, usage: usage, durationMs: engine.now().Sub(start).Milliseconds(),
 		}))
 	}
 
@@ -2624,6 +2766,7 @@ type backgroundChild struct {
 	routedModel    string
 	routingReason  string
 	childID        session.SessionID
+	authority      session.Authority
 	// timeoutCtx is non-nil iff a per-call timeout_ms deadline applies (the
 	// DeadlineExceeded disambiguation read, same as the foreground path).
 	timeoutCtx    context.Context //nolint:containedctx // deadline-disambiguation handle, mirrors run()'s timeoutCtx local
@@ -2671,6 +2814,14 @@ func (t *SubagentTool) startBackground(ctx context.Context, b backgroundChild) s
 			return errResult
 		}
 		b.resumed = loaded
+		if b.caps.authorityBound {
+			persisted, bound := loaded.BoundAuthority()
+			if authorityErr := validateResumedAuthority(b.caps.authority, persisted, bound); authorityErr != nil {
+				b.release()
+				abort()
+				return session.NewToolError(b.call.ID, "Subagent: resume authority refused: "+authorityErr.Error())
+			}
+		}
 	}
 	b.caps.startChildRun(b.childID)
 	// A5: the start event is emitted SYNCHRONOUSLY before the goroutine spawns, so
@@ -2748,13 +2899,25 @@ func (t *SubagentTool) driveBackground(ctx context.Context, b backgroundChild) {
 		return
 	}
 	defer func() { _ = cleanupWS() }()
-	child, errResult, ok := t.buildChildSession(b.call.ID, b.childID, b.caps.parentSessionID, b.resumed, runEnv.Workspace().Root(), b.limits, b.forkHistory)
+	child, errResult, ok := t.buildChildSession(b.call.ID, b.childID, b.caps.parentSessionID, b.caps.parentIncarnation, b.resumed, runEnv.Workspace().Root(), b.limits, b.forkHistory)
 	if !ok {
 		endOnError(errResult)
 		return
 	}
-	// The child is attributed to the PARENT session's owner (ADR 0204 decision 4).
-	b.caps.inheritOwner(child)
+	if b.resuming || !b.caps.authorityBound {
+		b.caps.inheritOwner(child)
+	} else if authorityErr := stampDelegatedLabels(child, b.caps.owner, b.authority); authorityErr != nil {
+		endOnError(session.NewToolError(b.call.ID, "Subagent: failed to stamp delegated authority: "+authorityErr.Error()))
+		return
+	}
+	// Create-only for a fresh background child, same reason as the foreground path.
+	if !b.resuming {
+		if err := createSessionIfSupported(ctx, t.store, child); err != nil {
+			endOnError(session.NewToolError(b.call.ID,
+				fmt.Sprintf("Subagent: durable child session could not be created: %v", err)))
+			return
+		}
+	}
 	// RESUME-START persist, mirroring prepareChildSession: refresh the resumed
 	// snapshot's last-modified time so the child-session GC's age pass never
 	// deletes an in-flight resumed child (best-effort, failures swallowed).
@@ -2791,7 +2954,7 @@ func (t *SubagentTool) driveBackground(ctx context.Context, b backgroundChild) {
 
 	if b.emit != nil {
 		b.emit(subagentEndEvent(b.call.ID, b.childID, st, cause, subagentEndMetrics{
-			toolCount: toolCount, usage: usage, durationMs: b.engine.now().Sub(start).Milliseconds(),
+			incarnation: child.Incarnation(), toolCount: toolCount, usage: usage, durationMs: b.engine.now().Sub(start).Milliseconds(),
 		}))
 	}
 	t.fireSubagentStop(ctx, child)
@@ -2967,9 +3130,10 @@ func routingReasonPayload(reason string) string {
 // measurements, as opposed to the outcome. The background PRE-RUN failure site has none of
 // them (nothing ran), which is the only difference between the three emit sites.
 type subagentEndMetrics struct {
-	toolCount  int
-	usage      session.Usage
-	durationMs int64
+	incarnation session.IncarnationID
+	toolCount   int
+	usage       session.Usage
+	durationMs  int64
 }
 
 // subagentEndEvent builds the EvSubagentEnd event. It exists so that setting
@@ -2981,13 +3145,14 @@ type subagentEndMetrics struct {
 // status line with no test firing.
 func subagentEndEvent(parentCallID session.ToolCallID, childID session.SessionID, stop session.StopReason, cause string, m subagentEndMetrics) session.Event {
 	return session.Event{Type: session.EvSubagentEnd, Subagent: &session.SubagentPayload{
-		ParentCallID: string(parentCallID),
-		ChildID:      string(childID),
-		ToolCount:    m.toolCount,
-		Usage:        m.usage,
-		Stop:         stop,
-		Cause:        subagentCausePayload(cause),
-		DurationMs:   m.durationMs,
+		ParentCallID:     string(parentCallID),
+		ChildID:          string(childID),
+		ChildIncarnation: m.incarnation,
+		ToolCount:        m.toolCount,
+		Usage:            m.usage,
+		Stop:             stop,
+		Cause:            subagentCausePayload(cause),
+		DurationMs:       m.durationMs,
 	}}
 }
 
@@ -3180,7 +3345,7 @@ func subagentTimeoutNote(writable, resumable bool) string {
 //
 // Both open with "[the subagent " so framingHeader already recognises them: they are
 // harness imperatives sitting next to child-authored text, so a forged copy has to be
-// redactable (TestFramingHeaderCoversTheHarnessNoteFamily pins that).
+// redactable (TestDelegationResultNeutralisationCoversHarnessNoteFamily pins that).
 //
 // The gate is the same `resumable` one subagentResumeHint and subagentTimeoutNote use — a
 // store-less deployment must not advertise a resume validateResume will refuse — but unlike
@@ -3944,7 +4109,7 @@ func (t *SubagentTool) forkChildEnvironment(ctx context.Context, callID session.
 // torn down, and without the re-home the re-persisted snapshot would record a dead
 // path. (The child's prompt cwd is independently sourced from the engine's PromptConfig
 // and is NOT affected by this field.)
-func (t *SubagentTool) buildChildSession(callID session.ToolCallID, childID, parentID session.SessionID, resumedChild *session.Session, root string, limits session.Limits, forkHistory []session.Message) (*session.Session, session.ToolResult, bool) {
+func (t *SubagentTool) buildChildSession(callID session.ToolCallID, childID, parentID session.SessionID, parentIncarnation session.IncarnationID, resumedChild *session.Session, root string, limits session.Limits, forkHistory []session.Message) (*session.Session, session.ToolResult, bool) {
 	if resumedChild == nil {
 		// When a named agent def pins limits, the child runs under THOSE; otherwise it uses
 		// the Subagent tool's default limits.
@@ -3956,7 +4121,7 @@ func (t *SubagentTool) buildChildSession(callID session.ToolCallID, childID, par
 			child = session.New(childID, t.childMode, root, limits, t.childEngine.now())
 			err = child.RestoreSessionMetadata(session.SessionKindUnknown, session.SessionRelationship{})
 		} else {
-			child, err = session.NewSubagent(childID, t.childMode, root, limits, t.childEngine.now(), parentID, callID)
+			child, err = session.NewSubagent(childID, t.childMode, root, limits, t.childEngine.now(), parentID, parentIncarnation, callID)
 		}
 		if err != nil {
 			return nil, session.NewToolError(callID,
@@ -4441,6 +4606,17 @@ func recordChildCauseOnSnapshot(child *session.Session, stop session.StopReason,
 	if stop == session.StopError && cause != "" {
 		_ = child.RecordLastError(cause)
 	}
+}
+
+func createSessionIfSupported(ctx context.Context, store port.SessionStore, sess *session.Session) error {
+	if store == nil {
+		return nil
+	}
+	creator, ok := store.(port.SessionCreator)
+	if !ok {
+		return nil
+	}
+	return creator.Create(ctx, sess)
 }
 
 func (t *SubagentTool) persistChild(ctx context.Context, child *session.Session) {

@@ -333,28 +333,29 @@ func NewParallelTool(childEngine *Engine, forker tool.EnvironmentForker, opts ..
 func (*ParallelTool) Spec() tool.ToolSpec {
 	return tool.ToolSpec{
 		Name: parallelToolName,
-		Description: "Fan out several independent tasks (up to 16) to run in PARALLEL, each in " +
-			"its own isolated forked workspace and fresh context, then join their results into " +
-			"one summary. Use to explore multiple approaches at once or to split independent " +
-			"work. For a single task just do it yourself or use Subagent; for work where the " +
-			"branches must coordinate or share state, use Team — Parallel branches are fully " +
-			"independent and never communicate. " +
+		Description: "Run a managed fork-join group for one or more isolated writable or competing " +
+			"branches (up to 16), each with its own forked workspace and fresh context, with built-in " +
+			"'all', 'first', or 'judge'/'best' result selection. Do NOT use Parallel merely for " +
+			"independent READ-ONLY investigations; prefer one Subagent call per task in the SAME assistant " +
+			"turn so eligible calls execute concurrently and return separate results. For a direct-write " +
+			"single task, prefer Subagent with mode:\"read-write\". A one-branch Parallel call remains " +
+			"appropriate when implementation must stay isolated until successful selection and conditional " +
+			"merge. For work where branches must coordinate or share state, use Team — Parallel branches " +
+			"are fully independent and never communicate. " +
 			"Each branch runs in an isolated fork, so a branch may IMPLEMENT by editing, " +
 			"writing files, and running shell commands (Bash), not just explore — its changes " +
 			"land in its own fork and never touch this workspace (Bash runs with the fork as its " +
 			"working directory). " +
 			"Each branch cannot see this conversation or the other branches, so make every " +
 			"task in `tasks` self-contained (use `shared` for common context). " +
-			"`join` controls the result: 'all' (default) returns every branch summary so YOU " +
-			"pick — every branch's fork is torn down after the join, so copy any changes you " +
-			"need into your reply before the call returns; 'first' returns the first branch that " +
+			"`join` controls the result: 'all' (default) returns every branch summary, then destroys " +
+			"every branch fork — files cannot later be inspected, copied, or merged, so each branch must " +
+			"include any needed patch or details in its summary; 'first' returns the first branch that " +
 			"SUCCEEDS, cancels the rest, and keeps the winner's fork (path reported); 'judge'/'best' " +
 			"has an LLM pick the single best branch against `criteria` and keeps the winner's fork " +
-			"(path reported). To land a single task's edits, use Subagent with mode:\"read-write\" — " +
-			"Parallel is for running 2+ independent or competing branches; multi-branch runs never " +
-			"auto-merge (inspect a preserved winner's fork path yourself if you need to). " +
-			"Each branch reports a `branch id:` line you can pass to InspectSubagent to pull " +
-			"that branch's bounded transcript (e.g. to debug a failed or not-selected branch).",
+			"(path reported). Multi-branch runs never auto-merge (inspect a preserved winner's fork path " +
+			"yourself if needed). Each branch reports a `branch id:` line you can pass to InspectSubagent " +
+			"to pull that branch's bounded transcript (e.g. to debug a failed or not-selected branch).",
 		Schema: parallelSchema,
 	}
 }
@@ -447,7 +448,8 @@ type branchResult struct {
 	// WithParallelStore persists under — one id scheme (childSessionID), no divergence.
 	// Empty only in the zero-value-emitter unit tests, which never persist. Not a content
 	// field: it is prefix+callID+index, never any branch summary/output (gauntlet #7).
-	childID string
+	childID          string
+	childIncarnation session.IncarnationID
 
 	// usage is the branch child run's cumulative token accounting, captured for the
 	// run-total carried on parallel.end. Not serialized into the result text;
@@ -582,16 +584,17 @@ func (e branchEmitter) branchEnd(res branchResult, stop session.StopReason, usag
 		return
 	}
 	e.emit(session.Event{Type: session.EvParallelBranch, Parallel: &session.ParallelPayload{
-		ParentCallID: e.parentCallID,
-		Kind:         session.ParallelBranchEnd,
-		BranchIndex:  res.index,
-		ChildID:      e.branchChildID(res.index),
-		ToolCount:    toolCount,
-		Failed:       res.failed,
-		Workspace:    res.childRoot,
-		Stop:         stop,
-		Usage:        usage,
-		DurationMs:   dur.Milliseconds(),
+		ParentCallID:     e.parentCallID,
+		Kind:             session.ParallelBranchEnd,
+		BranchIndex:      res.index,
+		ChildID:          e.branchChildID(res.index),
+		ChildIncarnation: res.childIncarnation,
+		ToolCount:        toolCount,
+		Failed:           res.failed,
+		Workspace:        res.childRoot,
+		Stop:             stop,
+		Usage:            usage,
+		DurationMs:       dur.Milliseconds(),
 	}})
 }
 
@@ -1006,6 +1009,18 @@ func (t *ParallelTool) runBranch(ctx context.Context, callID session.ToolCallID,
 	// routeTask closure holds the per-run breaker mutex, so the concurrent branch
 	// classifications + the classifier-usage fold into the parent session are serialised.
 	prompt := composePrompt(shared, task)
+	var delegatedAuthority session.Authority
+	if caps.authorityBound {
+		var authorityErr error
+		candidate := caps.authority.CapabilitySet
+		candidate.DirectWrite = false
+		delegatedAuthority, authorityErr = deriveDelegatedAuthority(caps.authority, candidate, nil, nil)
+		if authorityErr != nil {
+			res.failed = true
+			res.failReason = "delegation authority refused: " + authorityErr.Error()
+			return res, session.StopError
+		}
+	}
 	routedCategory, routedModel, routingReason := t.maybeRouteBranchModel(ctx, caps, prompt)
 	branchEngine := t.childEngine
 	routedAccepted := false
@@ -1060,7 +1075,7 @@ func (t *ParallelTool) runBranch(ctx context.Context, callID session.ToolCallID,
 		childSess, err = session.NewParallelBranch(
 			t.childSessionID(caps.parentSessionID, callID, i), t.childMode,
 			childEnv.Workspace().Root(), t.limits, branchEngine.now(),
-			caps.parentSessionID, callID, i)
+			caps.parentSessionID, caps.parentIncarnation, callID, i)
 	}
 	if err != nil {
 		res.failed = true
@@ -1068,8 +1083,27 @@ func (t *ParallelTool) runBranch(ctx context.Context, callID session.ToolCallID,
 		be.branchEnd(res, session.StopError, session.Usage{}, 0, branchEngine.now().Sub(start))
 		return res, session.StopError
 	}
-	// The branch is attributed to the PARENT session's owner (ADR 0204 decision 4).
-	caps.inheritOwner(childSess)
+	res.childIncarnation = childSess.Incarnation()
+	// The branch is attributed to the PARENT session's owner (ADR 0204 decision 4),
+	// or carries delegated authority when the parent run is authority-bound.
+	if caps.authorityBound {
+		if authorityErr := stampDelegatedLabels(childSess, caps.owner, delegatedAuthority); authorityErr != nil {
+			res.failed = true
+			res.failReason = "failed to stamp delegated authority: " + authorityErr.Error()
+			be.branchEnd(res, session.StopError, session.Usage{}, 0, branchEngine.now().Sub(start))
+			return res, session.StopError
+		}
+	} else {
+		caps.inheritOwner(childSess)
+	}
+	// Publish create-only: a branch id derived from a provider tool-call id must
+	// never overwrite an existing owner's durable transcript.
+	if err := createSessionIfSupported(ctx, t.store, childSess); err != nil {
+		res.failed = true
+		res.failReason = neutraliseChildText(fmt.Sprintf("durable branch session could not be created: %v", err))
+		be.branchEnd(res, session.StopError, session.Usage{}, 0, branchEngine.now().Sub(start))
+		return res, session.StopError
+	}
 
 	run := branchEngine.Run(ctx, childSess, childEnv, RunRequest{Text: prompt})
 	// A Parallel branch always runs in its OWN isolated fork, so its Bash asks are eligible

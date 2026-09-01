@@ -28,7 +28,7 @@ func startupSelection(id, state string) *client.ResumeSelection {
 
 func startupResumeUI(t *testing.T, conv *fakeConv, seed string, state string) Model {
 	t.Helper()
-	return New(Deps{
+	return newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: testTheme(), Ctx: t.Context(), Workspace: "/launch",
 		Resume: startupSelection("existing", state), InitialPrompt: seed,
 	})
@@ -52,8 +52,8 @@ func TestSessionContinuityUX_Scenario6_NoThrowawaySession(t *testing.T) {
 	if conv.createCount != 0 {
 		t.Fatalf("startup adoption called CreateSession %d times", conv.createCount)
 	}
-	if m.sessionID != "existing" || m.sessionTitle != "Prior chat" || m.activeWorkspace != "/prior" || m.phase != phaseIdle || len(m.conv.blocks) == 0 || !m.ta.Focused() {
-		t.Fatalf("adopted model incomplete: id=%q title=%q workspace=%q phase=%v blocks=%d focused=%v", m.sessionID, m.sessionTitle, m.activeWorkspace, m.phase, len(m.conv.blocks), m.ta.Focused())
+	if m.sessionID != "existing" || m.sessionTitle != "Prior chat" || m.activeWorkspace != "/prior" || m.phase != phaseIdle || len(m.conv.blocks) == 0 || !m.prompt.Focused() {
+		t.Fatalf("adopted model incomplete: id=%q title=%q workspace=%q phase=%v blocks=%d focused=%v", m.sessionID, m.sessionTitle, m.activeWorkspace, m.phase, len(m.conv.blocks), m.prompt.Focused())
 	}
 }
 
@@ -73,7 +73,7 @@ func TestADR_0108_FirstPromptRevalidatesAtomically(t *testing.T) {
 		sender := &fakeSender{}
 		conv := &fakeConv{recv: &fakeRecver{}, send: sender}
 		m := startupResumeUI(t, conv, "", "running")
-		m.ta.SetValue("retry this turn")
+		m.prompt.Rewrite("retry this turn")
 		mm, cmd := m.submitPrompt()
 		m = mm.(Model)
 		runStartupCommands(cmd)
@@ -86,8 +86,8 @@ func TestADR_0108_FirstPromptRevalidatesAtomically(t *testing.T) {
 
 	t.Run("failure stays closed", func(t *testing.T) {
 		m, conv, _ := newFailedModel()
-		if m.phase != phaseReplay || m.sessionID != "existing" || m.ta.Focused() || conv.createCount != 0 {
-			t.Fatalf("run-entry failure did not leave adopted transcript read-only: phase=%v id=%q focused=%v creates=%d", m.phase, m.sessionID, m.ta.Focused(), conv.createCount)
+		if m.phase != phaseReplay || m.sessionID != "existing" || m.prompt.Focused() || conv.createCount != 0 {
+			t.Fatalf("run-entry failure did not leave adopted transcript read-only: phase=%v id=%q focused=%v creates=%d", m.phase, m.sessionID, m.prompt.Focused(), conv.createCount)
 		}
 		view := stripANSIstr(m.View().Content)
 		if !strings.Contains(view, "Retry") || !strings.Contains(view, "Back") || strings.Contains(view, "tenant path") {
@@ -113,11 +113,11 @@ func TestADR_0108_FirstPromptRevalidatesAtomically(t *testing.T) {
 		m, conv, sender := newFailedModel()
 		mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEsc})
 		m = mm.(Model)
-		if m.phase != phaseIdle || m.sessionID != "existing" || !m.ta.Focused() || m.startupRunEntryFailed || conv.createCount != 0 {
-			t.Fatalf("back state: phase=%v id=%q focused=%v failed=%v creates=%d", m.phase, m.sessionID, m.ta.Focused(), m.startupRunEntryFailed, conv.createCount)
+		if m.phase != phaseIdle || m.sessionID != "existing" || !m.prompt.Focused() || m.startupRunEntryFailed || conv.createCount != 0 {
+			t.Fatalf("back state: phase=%v id=%q focused=%v failed=%v creates=%d", m.phase, m.sessionID, m.prompt.Focused(), m.startupRunEntryFailed, conv.createCount)
 		}
-		if m.ta.Value() != "retry this turn" || len(sender.frames()) != 1 || len(m.conv.blocks) == 0 {
-			t.Fatalf("back lost prompt or transcript: prompt=%q frames=%d blocks=%d", m.ta.Value(), len(sender.frames()), len(m.conv.blocks))
+		if m.prompt.Value() != "retry this turn" || len(sender.frames()) != 1 || len(m.conv.blocks) == 0 {
+			t.Fatalf("back lost prompt or transcript: prompt=%q frames=%d blocks=%d", m.prompt.Value(), len(sender.frames()), len(m.conv.blocks))
 		}
 	})
 }
@@ -141,7 +141,7 @@ func TestSessionContinuityUX_Scenario6_SeedAfterAdoption(t *testing.T) {
 
 func TestSessionContinuityUX_Scenario6_DefaultRemainsNew(t *testing.T) {
 	conv := &fakeConv{}
-	m := New(Deps{Session: conv, Conv: conv, Theme: testTheme(), Ctx: t.Context(), Workspace: "/launch"})
+	m := newTestModelFromDeps(Deps{Session: conv, Conv: conv, Theme: testTheme(), Ctx: t.Context(), Workspace: "/launch"})
 	runStartupCommands(m.Init())
 	if conv.createCount != 1 {
 		t.Fatalf("bare default CreateSession calls = %d, want 1", conv.createCount)

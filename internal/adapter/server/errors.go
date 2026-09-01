@@ -34,6 +34,18 @@ var (
 	ErrCleanupUnsupported = errors.New("server: session cleanup is unsupported")
 	// ErrCleanupBackend is the sanitized stable maintenance failure.
 	ErrCleanupBackend = errors.New("server: storage maintenance failed")
+	// ErrStaleRunControl is returned when a control (approve / cancel / steer)
+	// carries an expected_run_id that does NOT name the run it would affect
+	// (ADR 0249). The control is refused and the current run is left untouched.
+	//
+	// It is a PRECONDITION-class failure, not a bad request: the request is
+	// well-formed and the caller's belief was simply overtaken by events — the run
+	// they meant to act on has already ended and another has begun. Adapters map
+	// it to Aborted / HTTP 409 Conflict, alongside the other
+	// you-lost-a-race sentinels (ErrMigrationConflict, ErrProposalConflict), so a
+	// client can distinguish "retry against the current run" from "fix your
+	// arguments".
+	ErrStaleRunControl = errors.New("server: control targets a run that is no longer current")
 	// ErrInvalidArgument signals a malformed or missing required field.
 	ErrInvalidArgument = errors.New("server: invalid argument")
 	// ErrNotFound signals an unknown session id.
@@ -56,6 +68,10 @@ var (
 	// provider (ReadMcpResource / GetMcpPrompt) was called but no MCP provider
 	// is configured. Adapters map it to FailedPrecondition / HTTP 412.
 	ErrNoMCPProvider = errors.New("server: no MCP provider configured")
+	// ErrFailedStepRetryIneligible is the stable precondition sentinel returned when a
+	// session cannot retry its failed model step from persisted conversation state.
+	// Eligibility is based only on typed persisted state.
+	ErrFailedStepRetryIneligible = fmt.Errorf("%w: failed-step retry is not eligible", ErrFailedPrecondition)
 	// ErrFailedPrecondition signals the request is well-formed but the server is
 	// in a state that forbids it — typically a server-side misconfiguration the
 	// client cannot fix by changing its arguments (e.g. spawning a Mutating team
@@ -130,6 +146,28 @@ var (
 	// than pretending an unknown id. ListSessions does NOT use it (it degrades to
 	// an empty list via PrunableStore instead).
 	ErrNoEventLog = errors.New("server: no durable event log configured")
+	// ErrClientMCPUnsupported means this DEPLOYMENT does not accept
+	// client-provided MCP servers on session creation (ADR 0237's listener-scoped
+	// authority, applied to outbound MCP). It is the deployment's refusal, not the
+	// build's: the RPC and the field exist, this deployment just does not offer
+	// them, exactly as ErrNoEventLog reports a wired-storage fact one level up.
+	// Both map to UNIMPLEMENTED / 501 for that reason, and a client that wants to
+	// know BEFORE it asks reads mcp_servers_on_create from GetCompatibilityInfo.
+	ErrClientMCPUnsupported = errors.New("server: client-provided MCP servers are not accepted on this deployment")
+	// ErrClientMCPUnreachable means the deployment DID accept the request but at
+	// least one requested MCP server could not be connected, so the session was
+	// not created. It is the counterpart of ErrClientMCPUnsupported and a
+	// deliberately DIFFERENT code: "this deployment refuses the field" is
+	// permanent and a client should stop asking, while "your server did not
+	// answer" is transient and retryable once the client's own endpoint is up.
+	// Collapsing them into one code would make an SDK unable to tell a
+	// misconfigured deployment from a sleeping sidecar.
+	//
+	// Creation is ALL-OR-NOTHING on the wire for the reason this sentinel exists:
+	// a partially-mounted session is one the client cannot detect, since the
+	// unreachable-server WARN goes to the operator's log and the create otherwise
+	// returns a perfectly ordinary session id.
+	ErrClientMCPUnreachable = errors.New("server: a requested client-provided MCP server could not be connected")
 	// ErrSessionDeleteUnsupported means the configured store cannot physically
 	// remove snapshots and their sidecars.
 	ErrSessionDeleteUnsupported = errors.New("server: session deletion is not supported by the configured store")

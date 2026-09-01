@@ -4,15 +4,286 @@
   "additionalProperties": false,
   "required": ["image", "redis"],
   "properties": {
-    "image": {"type": "object", "additionalProperties": false, "required": ["repository", "digest", "tag", "pullPolicy"], "properties": {"repository": {"type": "string", "minLength": 1}, "digest": {"type": "string"}, "tag": {"type": "string"}, "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}}},
-    "redis": {"type": "object", "additionalProperties": false, "required": ["endpoint", "credentialsSecret", "passwordKey", "caKey", "usernameKey", "local"], "properties": {"endpoint": {"type": "string"}, "credentialsSecret": {"type": "string"}, "passwordKey": {"type": "string"}, "caKey": {"type": "string"}, "usernameKey": {"type": "string"}, "local": {"type": "object", "additionalProperties": false, "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}}},
-    "oidc": {"type": "object", "additionalProperties": false, "required": ["enabled", "issuer", "audience", "jwksURI", "maxJWKSStaleness"], "properties": {"enabled": {"type": "boolean"}, "issuer": {"type": "string"}, "audience": {"type": "string"}, "jwksURI": {"type": "string"}, "maxJWKSStaleness": {"type": "string"}}},
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["repository", "digest", "tag", "pullPolicy"],
+      "properties": {
+        "repository": {"type": "string", "minLength": 1},
+        "digest": {"type": "string"},
+        "tag": {"type": "string"},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "redis": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["endpoint", "credentialsSecret", "passwordKey", "caKey", "usernameKey", "local"],
+      "properties": {
+        "endpoint": {"type": "string"},
+        "credentialsSecret": {"type": "string"},
+        "passwordKey": {"type": "string"},
+        "caKey": {"type": "string"},
+        "usernameKey": {"type": "string"},
+        "local": {"type": "object", "additionalProperties": false, "required": ["enabled"], "properties": {"enabled": {"type": "boolean"}}}
+      }
+    },
+    "oidc": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "issuer", "audience", "jwksURI", "maxJWKSStaleness", "allowPrivateHTTPSIssuer", "caSecret", "caKey"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "issuer": {"type": "string"},
+        "audience": {"type": "string"},
+        "jwksURI": {"type": "string"},
+        "maxJWKSStaleness": {"type": "string"},
+        "allowPrivateHTTPSIssuer": {"type": "boolean"},
+        "caSecret": {"type": "string"},
+        "caKey": {"type": "string"}
+      }
+    },
+    "tls": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["enabled", "secretName", "certKey", "keyKey"],
+      "properties": {
+        "enabled": {"type": "boolean"},
+        "secretName": {"type": "string"},
+        "certKey": {"type": "string"},
+        "keyKey": {"type": "string"}
+      }
+    },
+    "security": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["allowUnsafeRealProvider"],
+      "properties": {
+        "allowUnsafeRealProvider": {"type": "boolean"},
+        "tlsTerminatedUpstream": {"type": "boolean"}
+      }
+    },
     "replicaCount": {"type": "integer", "minimum": 2},
     "mockProvider": {"type": "boolean"},
+    "defaultProvider": {"type": "string", "enum": ["", "openai", "openai-codex", "openrouter", "anthropic", "opencode", "toolhive"]},
+    "model": {
+      "type": "string",
+      "anyOf": [
+        {"const": ""},
+        {"pattern": "^\\S(?:.*\\S)?$"}
+      ]
+    },
+    "maxRunTokens": {"type": ["integer", "null"], "minimum": 1},
+    "maxTeamTokens": {"type": ["integer", "null"], "minimum": 1},
+    "workspace": {"type": "string"},
+    "imagePullSecrets": {"type": "array", "items": {"type": "object", "additionalProperties": false, "required": ["name"], "properties": {"name": {"type": "string", "minLength": 1}}}},
+    "extraEnv": {"type": "array", "items": {"type": "object"}},
+    "extraArgs": {"type": "array", "items": {"type": "string", "minLength": 1}},
+    "extraVolumeMounts": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name", "mountPath"],
+        "properties": {
+          "name": {"$ref": "#/definitions/volumeName"},
+          "mountPath": {"type": "string", "minLength": 1, "pattern": "^/"},
+          "readOnly": {"type": "boolean"},
+          "subPath": {"type": "string"},
+          "subPathExpr": {"type": "string"},
+          "recursiveReadOnly": {"type": "string", "enum": ["Disabled", "IfPossible", "Enabled"]}
+        },
+        "allOf": [{"not": {"required": ["subPath", "subPathExpr"]}}]
+      }
+    },
+    "extraVolumes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": ["name"],
+        "properties": {
+          "name": {"$ref": "#/definitions/volumeName"},
+          "configMap": {"$ref": "#/definitions/configMapVolumeSource"},
+          "image": {"$ref": "#/definitions/imageVolumeSource"},
+          "secret": {"$ref": "#/definitions/kubernetesVolumeSource"},
+          "projected": {"$ref": "#/definitions/kubernetesVolumeSource"},
+          "downwardAPI": {"$ref": "#/definitions/kubernetesVolumeSource"},
+          "emptyDir": {"$ref": "#/definitions/kubernetesVolumeSource"},
+          "persistentVolumeClaim": {"$ref": "#/definitions/kubernetesVolumeSource"},
+          "ephemeral": {"$ref": "#/definitions/kubernetesVolumeSource"},
+          "csi": {"$ref": "#/definitions/kubernetesVolumeSource"}
+        },
+        "oneOf": [
+          {"required": ["configMap"]},
+          {"required": ["image"]},
+          {"required": ["secret"]},
+          {"required": ["projected"]},
+          {"required": ["downwardAPI"]},
+          {"required": ["emptyDir"]},
+          {"required": ["persistentVolumeClaim"]},
+          {"required": ["ephemeral"]},
+          {"required": ["csi"]}
+        ]
+      }
+    },
+    "skills": {"type": "object", "additionalProperties": false, "required": ["autoDiscover"], "properties": {"autoDiscover": {"type": "boolean"}}},
     "resources": {"type": "object"},
-    "service": {"type": "object"},
+    "topologySpreadConstraints": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["maxSkew", "topologyKey", "whenUnsatisfiable"],
+        "properties": {
+          "maxSkew": {"type": "integer", "minimum": 1},
+          "topologyKey": {"type": "string", "minLength": 1},
+          "whenUnsatisfiable": {"type": "string", "enum": ["DoNotSchedule", "ScheduleAnyway"]},
+          "labelSelector": {"type": "object"},
+          "minDomains": {"type": "integer", "minimum": 1},
+          "nodeAffinityPolicy": {"type": "string", "enum": ["Honor", "Ignore"]},
+          "nodeTaintsPolicy": {"type": "string", "enum": ["Honor", "Ignore"]},
+          "matchLabelKeys": {"type": "array", "items": {"type": "string"}}
+        },
+        "additionalProperties": true
+      }
+    },
+    "affinity": {"type": "object"},
+    "nodeSelector": {"type": "object", "additionalProperties": {"type": "string"}},
+    "tolerations": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "properties": {
+          "key": {"type": "string"},
+          "operator": {"type": "string", "enum": ["Exists", "Equal"]},
+          "value": {"type": "string"},
+          "effect": {"type": "string", "enum": ["", "NoSchedule", "PreferNoSchedule", "NoExecute"]},
+          "tolerationSeconds": {"type": "integer", "minimum": 0}
+        },
+        "additionalProperties": true
+      }
+    },
+    "service": {"type": "object", "additionalProperties": false, "required": ["type", "grpcPort", "httpPort", "nodePorts"], "properties": {"type": {"type": "string", "enum": ["ClusterIP", "NodePort", "LoadBalancer"]}, "grpcPort": {"type": "integer", "minimum": 1, "maximum": 65535}, "httpPort": {"type": "integer", "minimum": 1, "maximum": 65535}, "nodePorts": {"type": "object", "additionalProperties": false, "properties": {"grpc": {"type": "integer", "minimum": 30000, "maximum": 32767}, "http": {"type": "integer", "minimum": 30000, "maximum": 32767}}}}},
     "nameOverride": {"type": "string"},
     "fullnameOverride": {"type": "string"},
     "podAnnotations": {"type": "object"}
+  },
+  "allOf": [
+    {
+      "if": {
+        "required": ["mockProvider"],
+        "properties": {"mockProvider": {"const": true}}
+      },
+      "then": {
+        "properties": {
+          "security": {
+            "properties": {"tlsTerminatedUpstream": {"const": false}}
+          }
+        }
+      }
+    },
+    {
+      "if": {
+        "required": ["mockProvider", "security"],
+        "properties": {
+          "mockProvider": {"const": false},
+          "security": {
+            "required": ["allowUnsafeRealProvider"],
+            "properties": {"allowUnsafeRealProvider": {"const": false}}
+          }
+        }
+      },
+      "then": {
+        "required": ["oidc", "tls", "security"],
+        "properties": {
+          "oidc": {
+            "required": ["enabled"],
+            "properties": {"enabled": {"const": true}}
+          }
+        },
+        "anyOf": [
+          {
+            "properties": {
+              "tls": {
+                "required": ["enabled"],
+                "properties": {"enabled": {"const": true}}
+              }
+            }
+          },
+          {
+            "properties": {
+              "security": {
+                "required": ["tlsTerminatedUpstream"],
+                "properties": {"tlsTerminatedUpstream": {"const": true}}
+              }
+            }
+          }
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": ["mockProvider", "security", "tls"],
+        "properties": {
+          "mockProvider": {"const": false},
+          "security": {
+            "required": ["allowUnsafeRealProvider", "tlsTerminatedUpstream"],
+            "properties": {
+              "allowUnsafeRealProvider": {"const": false},
+              "tlsTerminatedUpstream": {"const": true}
+            }
+          },
+          "tls": {
+            "required": ["enabled"],
+            "properties": {"enabled": {"const": false}}
+          }
+        }
+      },
+      "then": {
+        "required": ["service"],
+        "properties": {
+          "service": {
+            "required": ["type"],
+            "properties": {"type": {"const": "ClusterIP"}}
+          }
+        }
+      }
+    }
+  ],
+  "definitions": {
+    "volumeName": {"type": "string", "minLength": 1, "maxLength": 63, "pattern": "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$"},
+    "kubernetesVolumeSource": {"type": "object"},
+    "imageVolumeSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["reference"],
+      "properties": {
+        "reference": {"type": "string", "minLength": 1},
+        "pullPolicy": {"type": "string", "enum": ["Always", "IfNotPresent", "Never"]}
+      }
+    },
+    "configMapVolumeSource": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name"],
+      "properties": {
+        "name": {"type": "string", "minLength": 1},
+        "optional": {"type": "boolean"},
+        "defaultMode": {"type": "integer", "minimum": 0, "maximum": 511},
+        "items": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": ["key", "path"],
+            "properties": {
+              "key": {"type": "string", "minLength": 1},
+              "path": {"type": "string", "minLength": 1},
+              "mode": {"type": "integer", "minimum": 0, "maximum": 511}
+            }
+          }
+        }
+      }
+    }
   }
 }

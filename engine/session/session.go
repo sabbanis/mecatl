@@ -413,6 +413,16 @@ type Session struct {
 	// the factory instead of falling to the operator default. Write-once creation
 	// label set by the composition root after New (no mutator).
 	ReasoningEffort string
+	// DebugMCPServers and DebugMCPTools are inert, durable labels for a debug
+	// session's explicitly selected server-global MCP mount. DebugMCPTools is the
+	// exact creation-time tool-name ceiling; rehydration requires exact equality
+	// with the selected servers' current direct tool set.
+	DebugMCPServers []string
+	DebugMCPTools   []string
+	// DebugTargetFingerprint binds a debug session to the target incarnation that
+	// was authorized at creation. It is internal evidence only and is never
+	// projected to clients or the model.
+	DebugTargetFingerprint string
 	// Title is a human-readable session label seeded ONCE from the first genuine
 	// user prompt (via SetTitle, called from the loop's recordPrompt), clamped to
 	// maxTitleRunes (120) runes. Subsequent prompts do NOT overwrite it (set-once).
@@ -432,10 +442,9 @@ type Session struct {
 	// (ADR 0204 decision 4). The aggregate STORES it and never interprets it: no
 	// enforcement, no filtering, display + audit only.
 	Owner *Principal
-	// Authority is Track C's label, shipped INERT here so the contended
-	// engine/api/*.txt + CHANGELOG regeneration is paid once (ADR 0204
-	// consequences). Nothing in this plan reads or writes it beyond the snapshot
-	// round-trip; the zero value means "unset". Stamped through RestoreLabels.
+	// Authority is the derived authority payload stamped through BindAuthority
+	// before the first runnable state. The private marker distinguishes a bound
+	// empty capability set from a genuinely pre-feature legacy session.
 	Authority Authority
 	// Kind classifies the trusted producer and continuation posture. New creates
 	// main sessions; delegated/scheduled producers use the validated constructors.
@@ -449,15 +458,31 @@ type Session struct {
 	// CreatedAt is the creation timestamp.
 	CreatedAt time.Time
 
+	// incarnation is minted once by New and replaced only while idle during
+	// restoration of persisted creation metadata.
+	incarnation IncarnationID
+
+	// authorityBound records that Authority was stamped through BindAuthority.
+	// A zero Authority with this marker is impossible: BindAuthority validates the
+	// payload before setting either field.
+	authorityBound bool
 	// pending is set iff State == StateAwaiting.
 	pending *PendingAsk
 	// stop holds the terminal stop reason once the session has stopped.
 	stop StopReason
-	// permanent records whether the failure that landed this session in StateFailed
-	// is permanent (unrecoverable). It is meaningful ONLY when State==StateFailed;
-	// any transition out (resetToIdle via Recover/Reopen/Interrupt) clears it so a
-	// healed session never keeps a stale permanence flag.
+	// permanent is the compatibility projection of failureDisposition==Permanent.
 	permanent bool
+	// failureDisposition and failureProgress retain the typed terminal facts needed
+	// to decide failed-step retry eligibility after restart. They are meaningful only in
+	// StateFailed and are cleared by resetToIdle.
+	failureDisposition RetryDisposition
+	failureProgress    StreamProgress
+	// retryPending records a durably-prepared exact model-step retry. It is
+	// meaningful while idle or running and prevents a new user prompt from
+	// bypassing the failed step after a process crash.
+	retryPending     bool
+	retryDisposition RetryDisposition
+	retryProgress    StreamProgress
 	// lastError records the terminal failure CAUSE (the loop's
 	// session.ResultPayload.Error) when this session is in StateFailed. It is the
 	// Permanent-analog for the failure detail itself: persisted on the snapshot so a
@@ -467,6 +492,19 @@ type Session struct {
 	// meaningful ONLY when State==StateFailed; resetToIdle clears it so a recovered
 	// session never keeps a stale cause.
 	lastError string
+	// runID is the opaque, host-minted identity of the run this session is
+	// CURRENTLY driving, or most recently drove (ADR 0249). It is persisted on the
+	// snapshot, which is what makes an awaiting-approval resume continue THE SAME
+	// run across a process restart: the resume path reads this value back and
+	// reuses it instead of minting a new one, discharging ADR 0044's "stable
+	// across processes for the same attempt" obligation mechanically.
+	//
+	// It is an inert stored label, like Profile: the aggregate never interprets
+	// it, never validates its shape beyond emptiness, and no transition depends on
+	// it. Deliberately NOT cleared by resetToIdle — the id of the run that just
+	// ended stays readable until the next run replaces it, which is what lets a
+	// terminal-state session still answer "which run was that?".
+	runID string
 }
 
 // maxSnapshotErrorRunes caps how many runes of a StateFailed session's terminal
@@ -508,6 +546,7 @@ func New(id SessionID, mode PermissionMode, workspace string, limits Limits, cre
 		Workspace:    workspace,
 		Kind:         SessionKindMain,
 		CreatedAt:    createdAt,
+		incarnation:  NewIncarnationID(),
 	}
 }
 
@@ -613,7 +652,7 @@ func (s *Session) RecordUserPrompt(text string, instructions []Message) error {
 // difference is the recorded user message carries Parts. It is legal from any
 // non-terminal state.
 func (s *Session) RecordUserPromptWithParts(text string, parts []Content, instructions []Message) error {
-	if s.State.IsTerminal() {
+	if s.State.IsTerminal() || (s.retryPending && s.State == StateIdle) {
 		return fmt.Errorf("%w: RecordUserPrompt from %q", ErrIllegalTransition, s.State)
 	}
 	for _, m := range instructions {
@@ -640,6 +679,26 @@ func (s *Session) ReplaceHistory(messages []Message) error {
 	}
 	if err := ValidateToolPairing(messages); err != nil {
 		return fmt.Errorf("ReplaceHistory: %w", err)
+	}
+	s.Conversation.Messages = messages
+	return nil
+}
+
+// ReplaceHistoryAtBoundary atomically replaces conversation history while no
+// turn is in flight. It is the manual-compaction seam: legal from idle and all
+// terminal states, and rejected from running or awaiting so an out-of-band
+// rewrite cannot race a model turn or invalidate a pending approval. It changes
+// only Conversation.Messages; lifecycle state and all other aggregate metadata
+// are preserved.
+//
+// The replacement must satisfy ValidateToolPairing so the resulting history is
+// provider-replayable in both directions.
+func (s *Session) ReplaceHistoryAtBoundary(messages []Message) error {
+	if s.State == StateRunning || s.State == StateAwaiting {
+		return fmt.Errorf("%w: ReplaceHistoryAtBoundary from %q", ErrIllegalTransition, s.State)
+	}
+	if err := ValidateToolPairing(messages); err != nil {
+		return fmt.Errorf("ReplaceHistoryAtBoundary: %w", err)
 	}
 	s.Conversation.Messages = messages
 	return nil
@@ -720,6 +779,7 @@ func (s *Session) Complete() error {
 	}
 	s.State = StateCompleted
 	s.pending = nil
+	s.clearRetryIntent()
 	return nil
 }
 
@@ -732,6 +792,7 @@ func (s *Session) Stop(reason StopReason) error {
 	s.stop = reason
 	s.State = StateCompleted
 	s.pending = nil
+	s.clearRetryIntent()
 	return nil
 }
 
@@ -744,6 +805,7 @@ func (s *Session) Cancel() error {
 	s.stop = StopCancelled
 	s.State = StateCancelled
 	s.pending = nil
+	s.clearRetryIntent()
 	return nil
 }
 
@@ -755,11 +817,86 @@ func (s *Session) Cancel() error {
 // of StateFailed (resetToIdle via Recover/Interrupt/Reopen), so a healed session
 // never keeps a stale permanence marker.
 func (s *Session) RecordFailurePermanence(permanent bool) error {
+	if permanent {
+		return s.RecordFailureMetadata(RetryDispositionPermanent, s.failureProgress)
+	}
 	if s.State != StateFailed {
 		return fmt.Errorf("%w: RecordFailurePermanence from %q", ErrIllegalTransition, s.State)
 	}
-	s.permanent = permanent
+	s.permanent = false
+	if s.failureDisposition == RetryDispositionPermanent {
+		s.failureDisposition = RetryDispositionUnknown
+	}
 	return nil
+}
+
+// RecordFailureMetadata stamps typed provider retry facts on a failed session.
+func (s *Session) RecordFailureMetadata(disposition RetryDisposition, progress StreamProgress) error {
+	if s.State != StateFailed {
+		return fmt.Errorf("%w: RecordFailureMetadata from %q", ErrIllegalTransition, s.State)
+	}
+	if !disposition.Valid() || !progress.Valid() {
+		return fmt.Errorf("%w: invalid failure metadata disposition=%d progress=%d", ErrIllegalTransition, disposition, progress)
+	}
+	s.failureDisposition = disposition
+	s.failureProgress = progress
+	s.permanent = disposition == RetryDispositionPermanent
+	return nil
+}
+
+// FailureMetadata returns typed terminal facts only while the session is failed.
+func (s *Session) FailureMetadata() (RetryDisposition, StreamProgress) {
+	if s.State != StateFailed {
+		return RetryDispositionUnknown, StreamProgressUnknown
+	}
+	return s.failureDisposition, s.failureProgress
+}
+
+// PrepareFailedStepRetry consumes an eligible failed attempt into a durable,
+// prompt-free retry intent. It repairs any interrupted tool-call tail and resets
+// per-run counters while preserving the failed attempt's typed retry facts.
+// Calling it again on an already-prepared idle session is idempotent.
+func (s *Session) PrepareFailedStepRetry() error {
+	if s.retryPending && s.State == StateIdle {
+		return nil
+	}
+	if s.State != StateFailed || !s.failureDisposition.Valid() || !s.failureProgress.Valid() ||
+		s.failureDisposition != RetryDispositionRetryable ||
+		(s.failureProgress != StreamProgressPrecommit && s.failureProgress != StreamProgressVisible) {
+		return fmt.Errorf("%w: PrepareFailedStepRetry from %q", ErrIllegalTransition, s.State)
+	}
+	disposition, progress := s.failureDisposition, s.failureProgress
+	s.closeOutInterruptedTurn(recoverCloseOutMessage)
+	s.resetToIdle()
+	s.retryPending = true
+	s.retryDisposition = disposition
+	s.retryProgress = progress
+	return nil
+}
+
+// RestoreFailedStepRetryPending restores additive snapshot retry intent without
+// widening sessnap.RestoreState. It is legal only on an idle or running aggregate.
+func (s *Session) RestoreFailedStepRetryPending(disposition RetryDisposition, progress StreamProgress) error {
+	if (s.State != StateIdle && s.State != StateRunning) || disposition != RetryDispositionRetryable ||
+		(progress != StreamProgressPrecommit && progress != StreamProgressVisible) {
+		return fmt.Errorf("%w: RestoreFailedStepRetryPending from %q", ErrIllegalTransition, s.State)
+	}
+	s.retryPending = true
+	s.retryDisposition = disposition
+	s.retryProgress = progress
+	return nil
+}
+
+// FailedStepRetryPending reports the durable retry intent and its original failure
+// facts. The marker remains set while the retry model step is running.
+func (s *Session) FailedStepRetryPending() (RetryDisposition, StreamProgress, bool) {
+	return s.retryDisposition, s.retryProgress, s.retryPending
+}
+
+func (s *Session) clearRetryIntent() {
+	s.retryPending = false
+	s.retryDisposition = RetryDispositionUnknown
+	s.retryProgress = StreamProgressUnknown
 }
 
 // FailurePermanence reports whether the failure that landed this session in
@@ -798,6 +935,30 @@ func (s *Session) LastError() string {
 	return s.lastError
 }
 
+// BeginRun stamps the opaque, host-minted identity of the run this session is
+// about to drive (ADR 0249).
+//
+// It is an UNGUARDED setter by design. Every other run-scoped mutator on this
+// aggregate guards on State because it changes lifecycle meaning; this one
+// changes only a label, and the run-entry seams that call it legitimately do so
+// from several states (idle after a Reopen/Recover/Interrupt, or awaiting on the
+// cross-process resume path). Guarding it would force each seam to re-derive a
+// state check it has already done, for no invariant.
+//
+// An EMPTY id is accepted and clears the stamp: a host that mints no run id (an
+// in-memory embedder, a test) is byte-identical to the behaviour before ADR 0249.
+func (s *Session) BeginRun(runID string) {
+	s.runID = runID
+}
+
+// RunID reports the run identity stamped by BeginRun, or "" if none was.
+//
+// The awaiting-resume path reads it to CONTINUE a run rather than start a new
+// one; that reuse is the whole reason the value is persisted.
+func (s *Session) RunID() string {
+	return s.runID
+}
+
 // Fail transitions the session to StateFailed with StopError. It is legal from
 // any non-terminal state.
 //
@@ -815,6 +976,13 @@ func (s *Session) Fail() error {
 	s.stop = StopError
 	s.State = StateFailed
 	s.pending = nil
+	// A new failure supersedes the prepared retry's facts. terminate stamps the
+	// new attempt's typed metadata immediately after this transition.
+	s.clearRetryIntent()
+	s.failureDisposition = RetryDispositionUnknown
+	s.failureProgress = StreamProgressUnknown
+	s.permanent = false
+	s.lastError = ""
 	return nil
 }
 
@@ -856,7 +1024,10 @@ func (s *Session) resetToIdle() {
 	s.stop = StopNone
 	s.pending = nil
 	s.permanent = false
+	s.failureDisposition = RetryDispositionUnknown
+	s.failureProgress = StreamProgressUnknown
 	s.lastError = ""
+	s.clearRetryIntent()
 	s.Counters = Counters{}
 	// CRITICAL: Usage is DELIBERATELY NOT cleared here (the divergence from
 	// Counters). The MaxRunTokens budget (StopBudget) is evaluated against the
@@ -997,8 +1168,16 @@ func (s *Session) Abandon() error {
 	if s.State != StateRunning {
 		return fmt.Errorf("%w: Abandon from %q", ErrIllegalTransition, s.State)
 	}
+	pending, disposition, progress := s.retryPending, s.retryDisposition, s.retryProgress
 	s.closeOutInterruptedTurn(abandonCloseOutMessage)
 	s.resetToIdle()
+	// Exact retry is the one Abandon carve-out: a crash after durable preparation
+	// must return to idle-but-pending, not become an ordinary promptable session.
+	if pending {
+		s.retryPending = true
+		s.retryDisposition = disposition
+		s.retryProgress = progress
+	}
 	return nil
 }
 

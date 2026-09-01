@@ -10,8 +10,20 @@ import (
 	"time"
 
 	"github.com/stacklok/mecatl/internal/app"
+	"github.com/stacklok/mecatl/internal/buildinfo"
 	"github.com/stacklok/mecatl/internal/testutil/codextest"
 )
+
+func TestVersionInvocationIsExact(t *testing.T) {
+	if !buildinfo.IsVersion([]string{"mecatequi", "--version"}) {
+		t.Fatal("exact --version was not recognized")
+	}
+	for _, args := range [][]string{{"--version", "--mock"}, {"-version"}} {
+		if _, err := parseFlags(args); err == nil {
+			t.Errorf("parseFlags(%v) accepted a non-exact version invocation", args)
+		}
+	}
+}
 
 func TestOpenAICodexCommandRootReusesResolvedSnapshot(t *testing.T) {
 	for _, envName := range []string{"OPENAI_API_KEY", "OPENROUTER_API_KEY", "ANTHROPIC_API_KEY", "OPENCODE_API_KEY"} {
@@ -428,8 +440,8 @@ func TestAppConfigMapping(t *testing.T) {
 		if cfg.OpenAIKey != "sk-oai" || cfg.OpenRouterKey != "sk-or" || cfg.AnthropicKey != "sk-ant" {
 			t.Errorf("all three keys must be read: %q / %q / %q", cfg.OpenAIKey, cfg.OpenRouterKey, cfg.AnthropicKey)
 		}
-		if cfg.OpenAIBaseURL != "https://oai.example" || cfg.OpenRouterBaseURL != "https://or.example" || cfg.AnthropicBaseURL != "https://ant.example" {
-			t.Errorf("all three base-urls must map: %q / %q / %q", cfg.OpenAIBaseURL, cfg.OpenRouterBaseURL, cfg.AnthropicBaseURL)
+		if cfg.ProviderOverrides["openai"].BaseURL != "https://oai.example" || cfg.ProviderOverrides["openrouter"].BaseURL != "https://or.example" || cfg.ProviderOverrides["anthropic"].BaseURL != "https://ant.example" {
+			t.Errorf("all three endpoint overrides must map: %#v", cfg.ProviderOverrides)
 		}
 		if cfg.DefaultProvider != "anthropic" {
 			t.Errorf("DefaultProvider = %q, want anthropic (mecatequi can now run Anthropic explicitly)", cfg.DefaultProvider)

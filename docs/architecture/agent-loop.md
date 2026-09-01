@@ -50,12 +50,19 @@ immediately and drives the loop in a background goroutine; the `Run` exposes:
    `sess.StopReason()` trips, `ctx` is cancelled, or the run **token budget**
    is crossed (below), terminate.
 4. `BeginTurn`, emit `turn.start`.
-5. **Maybe compact** (`maybeCompact`).
-6. **Run the turn** (`runTurn`): build the `LLMRequest`, call `LLM.Stream`,
-   consume chunks, emit `message.delta` for text, accumulate reasoning, collect
-   tool calls and usage, capture the stop reason; assemble one assistant
-   `Message`. While building each request, an optional `OperatorProfileSource` is
-   re-read and its last-good active facts are placed only in the volatile system
+5. **Maybe compact** (`engine/agent/loop.go` (`maybeCompact`)): estimate the
+   already-built complete request, including rendered system text, ephemeral
+   fragments, messages, typed tool results, and advertised tool schemas. At the
+   default 0.8 ratio, compact only persisted conversation history and rebuild only
+   the request's message suffix. Fixed system, fragment, and tool-schema overhead
+   cannot be reduced. A client can request the separate threshold-independent
+   `Engine.CompactSession` operation only outside a run; see
+   [context & compaction](context-and-compaction.md).
+6. **Run the turn** (`runTurn`): send the already-built `LLMRequest`, call
+   `LLM.Stream`, consume chunks, emit `message.delta` for text, accumulate
+   reasoning, collect tool calls and usage, capture the stop reason; assemble one
+   assistant `Message`. While `buildRequest` assembles each request, an optional
+   `OperatorProfileSource` is re-read and its last-good active facts are placed only in the volatile system
    suffix. A read fault warns once and reuses the run-local last-good snapshot;
    profile bytes are never persisted as conversation messages. `ctx` cancellation
    mid-stream surfaces as a cancellation.
@@ -105,6 +112,7 @@ sequenceDiagram
   E->>D: dispatch([Read])
   D->>D: Policy.Evaluate → Allow
   D->>D: PreToolUse hook
+  D->>D: AuthorityEvaluator → Allow
   D-->>C: tool.call
   D->>T: Execute(call, ws)
   T-->>D: ToolResult
@@ -132,6 +140,51 @@ A `cancelled` flag propagates from `dispatch` so the loop terminates as
 `StopCancelled` if `ctx` was cancelled mid-await or mid-execution. A
 harness-level tool error becomes an error `ToolResult` (the loop never aborts on
 one tool failure); a genuinely unknown tool yields an error result too.
+
+### Authority evaluation at execution
+
+Permission policy, session ownership, and delegated authority are independent
+checks. Permission policy answers whether a call needs approval; ownership
+answers who may access a session; authority answers whether this particular run
+was delegated the capability at all. A bound root session starts with the tool
+capabilities assembled in its composed catalog. Its authority set also records
+whether it has a filesystem, whether it may write directly, and how many child
+delegations remain.
+
+Before creating a Subagent, Parallel branch, or Team member, the harness derives
+the child's set by intersecting the parent's set with the child's actual runtime
+posture, any eligible managed-specialist ceiling, and an optional per-call
+tightening. It then consumes one delegation hop. Derivation happens before the
+harness creates the child engine, workspace, runner, or worktree, so a refused
+request allocates no child runtime resource. The child persists its derived set;
+a later resume checks it is still contained by the current parent's set without
+spending another hop.
+
+Tool disclosure is only guidance for the model. The security boundary is the
+execution path: after the ordinary permission and pre-tool-hook gates clear, the
+loop asks the configured authority evaluator about the actual capability being
+spent. A denied capability, an unavailable evaluator, or an ambiguous target
+returns an error ToolResult and does not invoke the tool body. For normal tools
+the capability is the tool name. `CallMcpWithQuery` is instead checked against
+its addressed `mcp__<server>__<tool>` capability, while MCP resource operations
+spend a per-server resource capability and retain their operation as the action.
+
+The evaluator receives the carried set, the selected capability, action,
+delegation depth, non-secret identity attribution, and—for recognized local-file
+calls—a normalized physical workspace target. It never receives raw tool
+arguments or credentials. Composition chooses one evaluator at startup:
+
+| Evaluator | What it decides |
+| --- | --- |
+| `local` (default) | Permits an exact capability only when it appears in the carried set. |
+| `noop` (explicit) | Disables authority enforcement for deployments that deliberately choose that posture; it is never the fallback for a missing evaluator. |
+| `cedar` (opt-in) | First requires the carried set to allow the capability, then applies one static operator-owned policy that can add denials such as a workspace path boundary. A missing or invalid policy prevents startup. |
+
+A Cedar policy cannot grant a capability absent from the carried set. An
+unavailable evaluator is a distinct fail-closed execution error, not an implicit
+switch to `noop`. See [ADR 0234](../adr/0234-authority-evaluator-port.md) for
+the decision; operator configuration is documented in the public permissions
+guide.
 
 ## Permission pause / resume
 
@@ -259,24 +312,30 @@ never mid-stream, never aborting an in-flight model call — and rides the gRPC
 - **The run-scoped mutex inbox** (`engine/agent/steer.go` (`steerInbox`)). Each
   `Run` carries a single-slot pending-steer box guarded by one mutex
   (`{closed, pending, has}`); every transition is one critical section.
-  `engine/agent/steer.go` (`Run.EnqueueSteer`) parks the steer when the slot is
-  empty (`accepted`), and **appends** into the pending bundle when one is already
-  pending (`appended` — `pending += "\n\n" + text`, merged with a blank-line
-  separator; the merged bundle still drains as ONE user message). Replacing a
-  pending bundle is an explicit `Run.CancelSteer`-then-resend. The inbox reports
-  `too_late` once it closes at run terminal. Steer text is repaired to valid
-  UTF-8 at ingress (`session.ToValidUTF8`) so recorded history, the echo, and
-  the model view stay byte-identical. The outcome is the closed enum
+  `engine/agent/steer.go` (`Run.EnqueueSteer`) parks text and/or validated
+  `session.Content` media when the slot is empty (`accepted`), and **appends** into
+  the pending bundle when one is already pending (`appended`): a blank-line
+  separator is added only when both text fragments are non-empty, while parts
+  append in fragment order. The combined media bundle is validated atomically.
+  Replacing a pending bundle is an explicit `Run.CancelSteer`-then-resend. The
+  inbox reports `too_late` once it closes at run terminal. Steer text is repaired
+  to valid UTF-8 at ingress (`session.ToValidUTF8`) so recorded history, the echo,
+  and the model view stay byte-identical. The outcome is the closed enum
   `engine/agent/steer.go` (`SteerOutcome`): `accepted` / `appended` /
   `retracted` / `none_pending` / `too_late`.
 - **The Step 2a drain** (`engine/agent/steer.go` (`drainPendingSteer`)) runs in
   `runBoundaryInjections` (step 3 above), the same provider-legal seam as the
   background-completion notice and the delivery drain — history there always
   ends on a user prompt / tool result / nudge, never inside a `tool_use` pair.
-  The drained steer is recorded as an ordinary harness-authored user
-  continuation (`recordContinuation`: `RecordUserPrompt` + the log-only
-  `EvUserPrompt`), persisted, then echoed to the client as `EvSteer` carrying
-  the committed text — the engine is the sole authority on what landed.
+  The drained steer is recorded as an ordinary user continuation through
+  `RecordUserPromptWithParts` (plus the log-only `EvUserPrompt`), persisted, then
+  echoed to the client as `EvSteer` carrying the committed text and media parts —
+  the engine is the sole authority on what landed. This multimodal extension is
+  specified by [ADR 0251](../adr/0251-multimodal-steer.md).
+- **Capability gate.** `ServerCapabilities.steer` says the multimodal inbox is
+  enabled. Mecatui uses native steer when it is true and otherwise retains all
+  mid-run text and media in its local merge queue; this supports runtime feature
+  disabling without duplicating capability state.
 - **The clean-exit continue-run rule** (`engine/agent/loop.go`
   (`finishTurnNoTools`)). A would-be clean end (meaningful text, benign stop)
   while a steer is still parked does NOT terminate: the loop re-enters step 2
@@ -311,7 +370,7 @@ never mid-stream, never aborting an in-flight model call — and rides the gRPC
   (`promoted=true`) — never an orphaned relay, never an ack after close.
 - **The `message_id` watermark correlation.** Steer frames carry a
   client-minted `message_id` (`contracts/proto/mecatl/v1/harness.proto`). The
-  engine inbox parks text only, so the Service keeps a small per-session FIFO
+  engine inbox parks text plus media while the Service keeps a small per-session FIFO
   (`internal/adapter/server/service.go` (`trackSteerMessageID`)) of the ordered
   frame ids appended into the pending bundle. On drain, the relay pops the
   whole list and stamps the `EvSteer` echo with the LATEST (tail) id — the

@@ -16,13 +16,13 @@ import (
 // context window is configured, plus the session usage facets.
 func TestFooterContextMeterWithWindow(t *testing.T) {
 	th := theme.New("aztec", theme.AztecPalette())
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Theme: th,
 		Model: "mock-model",
 	})
 	// The footer denominator is the SERVER-echoed per-model window (resolve-at-use,
 	// live-first server-side); set it as the test would receive it on SessionReady.
-	m.effectiveModel = client.ResolvedModel{ContextWindow: 200000}
+	m.resolvedSessionModel = client.ResolvedModel{ContextWindow: 200000}
 	m = applyAll(m, tea.WindowSizeMsg{Width: 120, Height: 30})
 	// The meter's numerator comes from the per-turn TurnEndMsg (current
 	// occupancy); the facets come from the cumulative ResultMsg total.
@@ -53,7 +53,7 @@ func TestFooterContextMeterWithWindow(t *testing.T) {
 // TestFooterContextMeterUnknownWindow asserts the meter degrades to just the
 // current size when no window is known.
 func TestFooterContextMeterUnknownWindow(t *testing.T) {
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 120, Height: 30})
 	m = applyAll(m, client.TurnEndMsg{Turn: 1, Usage: client.Usage{InputTokens: 7903}})
 
@@ -73,8 +73,8 @@ func TestFooterContextMeterUnknownWindow(t *testing.T) {
 // with the run's cumulative input, and a TurnEndMsg must never inflate the
 // session totals (adding both would double-count).
 func TestContextMeterTracksLatestTurnNotCumulative(t *testing.T) {
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
-	m.effectiveModel = client.ResolvedModel{ContextWindow: 200000}
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
+	m.resolvedSessionModel = client.ResolvedModel{ContextWindow: 200000}
 	m = applyAll(m, tea.WindowSizeMsg{Width: 120, Height: 30})
 
 	// Two turns: the meter shows the LATEST turn's prompt size, not the sum.
@@ -117,8 +117,8 @@ func TestContextMeterTracksLatestTurnNotCumulative(t *testing.T) {
 // survive in every tier where anything fits beside the left status.
 func TestFooterNarrowWidthTiers(t *testing.T) {
 	th := theme.New("aztec", theme.AztecPalette())
-	m := New(Deps{Theme: th})
-	m.effectiveModel = client.ResolvedModel{ContextWindow: 200000}
+	m := newTestModelFromDeps(Deps{Theme: th})
+	m.resolvedSessionModel = client.ResolvedModel{ContextWindow: 200000}
 	m = applyAll(m, client.TurnEndMsg{Turn: 1, Usage: client.Usage{InputTokens: 140000, OutputTokens: 345}})
 	m = applyAll(m, client.ResultMsg{
 		Stop:  "end_turn",
@@ -162,8 +162,8 @@ func TestFooterNarrowWidthTiers(t *testing.T) {
 // FIRST thing dropped under width pressure while the context % survives longest.
 func TestFooterTeamSegmentTiers(t *testing.T) {
 	th := theme.New("aztec", theme.AztecPalette())
-	m := New(Deps{Theme: th})
-	m.effectiveModel = client.ResolvedModel{ContextWindow: 200000}
+	m := newTestModelFromDeps(Deps{Theme: th})
+	m.resolvedSessionModel = client.ResolvedModel{ContextWindow: 200000}
 	m = applyAll(m, tea.WindowSizeMsg{Width: 200, Height: 30})
 	m = applyAll(m, client.TurnEndMsg{Turn: 1, Usage: client.Usage{InputTokens: 140000, OutputTokens: 345}})
 	m = applyAll(m, client.ResultMsg{
@@ -212,8 +212,8 @@ func TestFooterTeamSegmentTiers(t *testing.T) {
 // path: with no team seeded the footer carries no team glyph and no "team-" id.
 func TestFooterNoTeamSegment(t *testing.T) {
 	th := theme.New("aztec", theme.AztecPalette())
-	m := New(Deps{Theme: th})
-	m.effectiveModel = client.ResolvedModel{ContextWindow: 200000}
+	m := newTestModelFromDeps(Deps{Theme: th})
+	m.resolvedSessionModel = client.ResolvedModel{ContextWindow: 200000}
 	m = applyAll(m, client.ResultMsg{
 		Stop:  "end_turn",
 		Usage: client.Usage{InputTokens: 140000, OutputTokens: 345},
@@ -230,8 +230,8 @@ func TestFooterNoTeamSegment(t *testing.T) {
 // opens on the last-seen team (done or not) to review a finished roster.
 func TestFooterTeamDoneDropsSegment(t *testing.T) {
 	th := theme.New("aztec", theme.AztecPalette())
-	m := New(Deps{Theme: th})
-	m.effectiveModel = client.ResolvedModel{ContextWindow: 200000}
+	m := newTestModelFromDeps(Deps{Theme: th})
+	m.resolvedSessionModel = client.ResolvedModel{ContextWindow: 200000}
 	m = applyAll(m, client.ResultMsg{
 		Stop:  "end_turn",
 		Usage: client.Usage{InputTokens: 140000},
@@ -298,8 +298,8 @@ func TestSoulSlashCommandEndToEnd(t *testing.T) {
 	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = feedCmd(t, mm.(Model), cmd)
 
-	if m.soul.view != soulPanel {
-		t.Fatalf("/soul+enter should open the persona panel, view=%v", m.soul.view)
+	if s := soulActive(m); s == nil || s.view != soulPanel {
+		t.Fatalf("/soul+enter should open the persona panel (modal), got %+v", m.modal)
 	}
 	if fs.calls != 1 {
 		t.Errorf("GetSoul calls = %d, want 1 (the /soul built-in fired the RPC)", fs.calls)
@@ -377,7 +377,7 @@ func TestHeaderTruncatesLongModel(t *testing.T) {
 	long := "anthropic/claude-opus-4-8-with-a-really-long-suffix-2026"
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{},
 		resolvedModel: client.ResolvedModel{ProviderID: "anthropic", ModelID: long}}
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette()), Session: conv, Conv: conv, Ctx: context.Background()})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette()), Session: conv, Conv: conv, Ctx: context.Background()})
 	m = applyAll(m,
 		tea.WindowSizeMsg{Width: 200, Height: 30},
 		client.SessionReadyMsg{SessionID: "sess-test-0001", ResolvedModel: client.ResolvedModel{ProviderID: "anthropic", ModelID: long}},
@@ -398,7 +398,7 @@ func TestHeaderTruncatesLongModel(t *testing.T) {
 // conversation and asserts the rendered viewport shows a red/green diff (not raw
 // JSON args).
 func TestEditCardRendersDiffInConversation(t *testing.T) {
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.phase = phaseRunning
 	m = applyAll(m,
@@ -415,7 +415,7 @@ func TestEditCardRendersDiffInConversation(t *testing.T) {
 
 // TestExpandToolsToggle asserts ctrl+t flips the global expand flag.
 func TestExpandToolsToggle(t *testing.T) {
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	if m.expandTools {
 		t.Fatal("expandTools should start false")
@@ -445,7 +445,7 @@ func TestExpandToolsToggle(t *testing.T) {
 // a lossy-summary caveat. It also asserts the reasoning renders ABOVE the
 // assistant answer of the same turn.
 func TestReasoningBlockCollapsedThenExpanded(t *testing.T) {
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.phase = phaseRunning
 	m = applyAll(m,
@@ -488,7 +488,7 @@ func TestReasoningBlockCollapsedThenExpanded(t *testing.T) {
 // multiple stacked reasoning blocks. This is the correctness fix: reasoning is
 // an attribute of the turn's assistant block, not a reordered sibling.
 func TestReasoningInterleavedRendersOnce(t *testing.T) {
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.phase = phaseRunning
 	m = applyAll(m,
@@ -534,7 +534,7 @@ func TestReasoningInterleavedRendersOnce(t *testing.T) {
 // answer text has arrived, the collapsed header reads "reasoning…", flipping to
 // the static expandable form once answer text begins.
 func TestReasoningLiveAffordance(t *testing.T) {
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.phase = phaseRunning
 	m = applyAll(m,
@@ -564,7 +564,7 @@ func TestReasoningLiveAffordance(t *testing.T) {
 // stat line that leads with cost (tokens) then time, carries no turn index, and
 // omits the duration segment when no clock reported one.
 func TestTurnEndStatLine(t *testing.T) {
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.phase = phaseRunning
 
@@ -592,7 +592,7 @@ func TestTurnEndStatLine(t *testing.T) {
 // TestTurnEndTrivialSuppressed asserts a near-empty turn (tiny tokens, sub-second
 // or no duration) produces NO stat line, so a long run isn't littered.
 func TestTurnEndTrivialSuppressed(t *testing.T) {
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette())})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.phase = phaseRunning
 

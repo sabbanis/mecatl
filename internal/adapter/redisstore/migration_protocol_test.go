@@ -15,6 +15,16 @@ import (
 	"github.com/stacklok/mecatl/engine/session"
 )
 
+func testRebuildGeneration(t *testing.T, st *Store) (int64, error) {
+	t.Helper()
+	client, release, err := st.clients.acquire()
+	if err != nil {
+		return 0, err
+	}
+	defer release()
+	return rebuildGeneration(context.Background(), client)
+}
+
 func TestMigrationLockRenewsPastOriginalExpiry(t *testing.T) {
 	mr, err := miniredis.Run()
 	if err != nil {
@@ -157,7 +167,7 @@ func TestMigrationFamilyCASRejectsLossBetweenPrecheckAndLuaWithoutSideEffects(t 
 	if got := mr.HGet(sessionKey(sess.ID), fieldMetadataEntry); got != "" {
 		t.Fatalf("stale mutation installed metadata %q", got)
 	}
-	if got := st.client.ZCard(context.Background(), metadataGlobalIndexKey).Val(); got != 0 {
+	if got := st.testClient().ZCard(context.Background(), metadataGlobalIndexKey).Val(); got != 0 {
 		t.Fatalf("stale mutation changed global index cardinality to %d", got)
 	}
 }
@@ -217,7 +227,7 @@ func TestInspectionRepairsMissingCoverageDespiteEqualOrphanCardinality(t *testin
 	if err != nil {
 		t.Fatal(err)
 	}
-	if inspection.V2Families != 1 || len(inspection.Families) != 1 || st.client.ZCard(context.Background(), metadataGlobalIndexKey).Val() != 1 {
+	if inspection.V2Families != 1 || len(inspection.Families) != 1 || st.testClient().ZCard(context.Background(), metadataGlobalIndexKey).Val() != 1 {
 		t.Fatalf("equal-cardinality drift was not a repair candidate: %+v", inspection)
 	}
 	ctx, release, err := st.AcquireSessionMigrationJob(context.Background(), strings.Repeat("1", 32))
@@ -280,14 +290,14 @@ func TestFinalizeSessionMigrationUsesBoundedCoverageProofAndConstantWorkCAS(t *t
 	owner := &session.Principal{Issuer: "https://issuer.example", Subject: "owner"}
 	for i := range 250 {
 		sess := session.New(session.SessionID("covered-"+strconv.Itoa(i)), session.ModeAccept, "/work", session.Limits{}, time.Unix(1, 0))
-		if err := sess.RestoreLabels(owner, ""); err != nil {
+		if err := sess.RestoreLabels(owner, session.Authority{}); err != nil {
 			t.Fatal(err)
 		}
 		if err := st.Save(context.Background(), sess); err != nil {
 			t.Fatal(err)
 		}
 	}
-	generation, err := st.rebuildGeneration(context.Background())
+	generation, err := testRebuildGeneration(t, st)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -354,29 +364,29 @@ func TestFinalizeRejectsUnmatchedOwnerMembershipsAndPublishesOnlyHealthyPaging(t
 				owner *session.Principal
 			}{{"alice", alice}, {"bob", bob}} {
 				sess := session.New(fixture.id, session.ModeAccept, "/work", session.Limits{}, time.Unix(1, 0))
-				if err := sess.RestoreLabels(fixture.owner, ""); err != nil {
+				if err := sess.RestoreLabels(fixture.owner, session.Authority{}); err != nil {
 					t.Fatal(err)
 				}
 				if err := st.Save(context.Background(), sess); err != nil {
 					t.Fatal(err)
 				}
 			}
-			generation, err := st.rebuildGeneration(context.Background())
+			generation, err := testRebuildGeneration(t, st)
 			if err != nil {
 				t.Fatal(err)
 			}
 			ownerKey := metadataOwnerIndexBase + metadataOwnerScope(alice)
 			tc.orphan(mr, ownerKey)
-			if got := st.client.ZCard(context.Background(), metadataGlobalIndexKey).Val(); got != 2 {
+			if got := st.testClient().ZCard(context.Background(), metadataGlobalIndexKey).Val(); got != 2 {
 				t.Fatalf("global cardinality = %d, want equal snapshot count despite owner orphan", got)
 			}
 			mr.Set(metadataIndexStateKey, metadataIndexStale)
-			ownerCount := st.client.ZCard(context.Background(), ownerKey).Val()
+			ownerCount := st.testClient().ZCard(context.Background(), ownerKey).Val()
 			inspection, err := st.InspectSessionMigration(context.Background())
 			if err != nil {
 				t.Fatal(err)
 			}
-			if len(inspection.Families) != 0 || st.client.ZCard(context.Background(), ownerKey).Val() != ownerCount {
+			if len(inspection.Families) != 0 || st.testClient().ZCard(context.Background(), ownerKey).Val() != ownerCount {
 				t.Fatalf("read-only inspection mutated or misclassified owner orphan: %+v", inspection)
 			}
 			ctx, release, err := st.AcquireSessionMigrationJob(context.Background(), strings.Repeat("9", 32))
@@ -414,7 +424,7 @@ func TestFinalizeRejectsGenerationDriftAfterExactCoverageProof(t *testing.T) {
 	if err := st.Save(context.Background(), sess); err != nil {
 		t.Fatal(err)
 	}
-	generation, err := st.rebuildGeneration(context.Background())
+	generation, err := testRebuildGeneration(t, st)
 	if err != nil {
 		t.Fatal(err)
 	}

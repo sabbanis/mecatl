@@ -186,8 +186,8 @@ func TestSpinnerRearmedOnEveryVisibleTransition(t *testing.T) {
 		m, _ := newQueueModel(t)
 		m.stream = client.NewStream(&fakeRecver{}, &fakeSender{})
 		m.streamCh = make(chan tea.Msg, 1)
-		m.phase = phaseAwaitingApproval
-		m.approval.ask = pendingAsk{AskID: "ask-1", Tool: "Write", focus: 0}
+		m.phase = phaseRunning
+		m = applyAll(m, client.PermissionAskMsg{AskID: "ask-1", Tool: "Write"})
 
 		mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 		got := mm.(Model)
@@ -204,8 +204,8 @@ func TestSpinnerRearmedOnEveryVisibleTransition(t *testing.T) {
 		m, _ := newQueueModel(t)
 		m.streamCh = make(chan tea.Msg, 1)
 		m.streamCh <- client.StreamClosedMsg{} // park a msg so afterEvent's reader leaf resolves
-		m.phase = phaseAwaitingApproval
-		m.approval.ask = pendingAsk{AskID: "ask-1", Tool: "Bash"}
+		m.phase = phaseRunning
+		m = applyAll(m, client.PermissionAskMsg{AskID: "ask-1", Tool: "Bash"})
 
 		mm, cmd := m.Update(client.PermissionRetractMsg{AskID: "ask-1"})
 		got := mm.(Model)
@@ -273,7 +273,7 @@ func TestSpinnerRearmedOnEveryVisibleTransition(t *testing.T) {
 		// connect-phase animation: dropping its m.sp.Tick freezes the spinner from
 		// launch until the first submit.
 		conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-		m := New(Deps{
+		m := newTestModelFromDeps(Deps{
 			Session:     conv,
 			Conv:        conv,
 			Theme:       theme.New("aztec", theme.AztecPalette()),
@@ -293,7 +293,7 @@ func TestSpinnerRearmedOnEveryVisibleTransition(t *testing.T) {
 		// Launch → connecting, no-lister / old-server Init branch (direct
 		// CreateSession). Same sole-starter argument as the lister-wired branch.
 		conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-		m := New(Deps{
+		m := newTestModelFromDeps(Deps{
 			Session:     conv,
 			Conv:        conv,
 			Theme:       theme.New("aztec", theme.AztecPalette()),

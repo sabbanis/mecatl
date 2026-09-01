@@ -95,18 +95,18 @@ func (e *explicitNoRetryTestError) Error() string { return e.err.Error() }
 func (e *explicitNoRetryTestError) Unwrap() error { return e.err }
 func (*explicitNoRetryTestError) Retryable() bool { return false }
 
-func TestExplicitNoRetryDecisionIsNotPromotedToPermanentMidStream(t *testing.T) {
+func TestExplicitNoRetryDecisionRemainsCausallyRetryableMidStream(t *testing.T) {
 	inner := &oai.Error{StatusCode: http.StatusServiceUnavailable, Message: "temporary"}
 	err := &explicitNoRetryTestError{err: inner}
-	p := &resilientProvider{cfg: Config{Classifier: func(error) bool { return false }}}
 
-	got := p.asPermanent(err)
-	if got != err {
-		t.Fatalf("asPermanent returned %T %v, want original explicit-decision error", got, got)
+	got := classifyVisibleError(err)
+	var disposition port.RetryDispositionError
+	if !errors.As(got, &disposition) || disposition.RetryDisposition() != port.RetryDispositionRetryable {
+		t.Fatalf("disposition = %v, want retryable", disposition)
 	}
 	var permanent port.PermanentError
 	if errors.As(got, &permanent) {
-		t.Fatal("explicit no-retry decision was incorrectly promoted to port.PermanentError")
+		t.Fatal("explicit no-retry policy veto was incorrectly promoted to port.PermanentError")
 	}
 }
 
@@ -556,9 +556,14 @@ func TestStreamIdleDisabledSpawnsNoWatchdogGoroutine(t *testing.T) {
 		return sampled
 	}
 
-	// Settle so a prior test's teardown does not leave a stray goroutine in
-	// flight when the disabled sample is taken.
-	waitNoExtraGoroutines(t, runtime.NumGoroutine())
+	// Settle so a prior test's still-unwinding watchdog goroutine (async
+	// teardown after an idle timeout or an abandoned iterator) is not still on
+	// a stack when the disabled sample is taken. waitNoExtraGoroutines is the
+	// wrong tool here: its baseline is runtime.NumGoroutine() sampled at call
+	// time, so a stray watchdog already running gets baked into the baseline
+	// itself and the check passes trivially without ever waiting for it to
+	// exit. Poll the actual witness (the marker) instead.
+	waitNoWatchdogGoroutine(t, watchdogMarker)
 
 	if disabled := sampleRestChunkMarkerCount(0); disabled != 0 {
 		t.Fatalf("disabled config: found %d restSeqIdleBounded stack frame(s), want 0 (no watchdog goroutine when StreamIdleTimeout<=0)", disabled)
@@ -679,6 +684,24 @@ func TestStreamIdleCallerCancelMidStallUnwinds(t *testing.T) {
 		t.Fatalf("inner called %d times, want 1", f.Calls())
 	}
 	waitNoExtraGoroutines(t, runtime.NumGoroutine())
+}
+
+// waitNoWatchdogGoroutine polls goroutineStackMarkerCount(marker) until it
+// reads zero, so a caller never samples the stack while a prior test's
+// watchdog goroutine is still mid-teardown. Unlike waitNoExtraGoroutines, the
+// condition polled is the actual witness rather than a goroutine-count
+// baseline captured at call time (which a still-live watchdog would already
+// be part of).
+func waitNoWatchdogGoroutine(t *testing.T, marker string) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for time.Now().Before(deadline) {
+		if goroutineStackMarkerCount(marker) == 0 {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("a prior test's %s watchdog goroutine did not exit within budget", marker)
 }
 
 // waitNoExtraGoroutines waits (with a short settle budget) until the live
@@ -1197,6 +1220,45 @@ func TestBreakerHalfOpenPermanentErrorStaysOpen(t *testing.T) {
 	}
 	if f.Calls() != 5 {
 		t.Fatalf("post-permanent-trial: inner called %d times, want 5 (trial admitted again)", f.Calls())
+	}
+}
+
+func TestBreakerHalfOpenVisibleOutcomeHealth(t *testing.T) {
+	tests := []struct {
+		name         string
+		trial        step
+		wantOpen     bool
+		wantHalfOpen bool
+		wantFailures int
+		wantErr      bool
+	}{
+		{"clean success closes", step{chunks: textTurn("ok")}, false, false, 0, false},
+		{"visible transient failure reopens", step{chunks: []port.Chunk{{Kind: port.ChunkText, Text: "partial"}}, midErr: apiErr(503)}, true, false, 2, true},
+		{"visible permanent failure stays half-open", step{chunks: []port.Chunk{{Kind: port.ChunkText, Text: "partial"}}, midErr: apiErr(400)}, true, true, 1, true},
+		{"visible cancellation is neutral", step{chunks: []port.Chunk{{Kind: port.ChunkText, Text: "partial"}}, midErr: context.Canceled}, true, true, 1, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			clk := &manualClock{t: time.Unix(1000, 0)}
+			f := &fakeProvider{steps: []step{{outerErr: apiErr(503)}, tc.trial}}
+			wrapped := Wrap(f, Config{MaxAttempts: 1, BreakerThreshold: 1, BreakerCooldown: time.Second, Clock: clk.Now})
+			p := wrapped.(*resilientProvider)
+			_, _ = p.Stream(context.Background(), port.LLMRequest{})
+			clk.Advance(2 * time.Second)
+			seq, err := p.Stream(context.Background(), port.LLMRequest{})
+			if err == nil && seq != nil {
+				_, err = drain(t, seq)
+			}
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("trial err=%v, wantErr=%v", err, tc.wantErr)
+			}
+			p.breaker.mu.Lock()
+			open, halfOpen, failures := p.breaker.open, p.breaker.halfOpen, p.breaker.consecutiveFailures
+			p.breaker.mu.Unlock()
+			if open != tc.wantOpen || halfOpen != tc.wantHalfOpen || failures != tc.wantFailures {
+				t.Fatalf("breaker=(open=%v half=%v failures=%d), want (%v,%v,%d)", open, halfOpen, failures, tc.wantOpen, tc.wantHalfOpen, tc.wantFailures)
+			}
+		})
 	}
 }
 
@@ -1923,24 +1985,26 @@ func lastKind(cs []port.Chunk) any {
 	return cs[len(cs)-1].Kind
 }
 
-// TestIsCommittingPredicate is the table test for the isCommitting predicate
-// over all 7 ChunkKind values.
-func TestIsCommittingPredicate(t *testing.T) {
+// TestAdvancesVisiblePredicate pins the semantic boundary: only meaningful text
+// escapes before clean completion; all current non-text chunks remain tentative.
+func TestAdvancesVisiblePredicate(t *testing.T) {
 	cases := []struct {
-		kind port.ChunkKind
-		want bool
+		chunk port.Chunk
+		want  bool
 	}{
-		{port.ChunkText, true},
-		{port.ChunkReasoning, false},
-		{port.ChunkReasoningItem, false},
-		{port.ChunkToolCall, true},
-		{port.ChunkUsage, true},
-		{port.ChunkDone, true},
-		{port.ChunkPhase, true},
+		{port.Chunk{Kind: port.ChunkText, Text: "answer"}, true},
+		{port.Chunk{Kind: port.ChunkText, Text: " \n\t"}, false},
+		{port.Chunk{Kind: port.ChunkReasoning}, false},
+		{port.Chunk{Kind: port.ChunkReasoningItem}, false},
+		{port.Chunk{Kind: port.ChunkToolCall}, false},
+		{port.Chunk{Kind: port.ChunkUsage}, false},
+		{port.Chunk{Kind: port.ChunkDone}, false},
+		{port.Chunk{Kind: port.ChunkPhase}, false},
+		{port.Chunk{Kind: port.ChunkProviderRoute}, false},
 	}
 	for _, tc := range cases {
-		if got := isCommitting(tc.kind); got != tc.want {
-			t.Errorf("isCommitting(%v) = %v, want %v", tc.kind, got, tc.want)
+		if got := advancesVisible(tc.chunk); got != tc.want {
+			t.Errorf("advancesVisible(%+v) = %v, want %v", tc.chunk, got, tc.want)
 		}
 	}
 }

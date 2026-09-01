@@ -1,21 +1,60 @@
 ## 10. The HTTP / SSE API
 
+This is the detailed operator and wire reference. For the client-integration
+entry point, shared event lifecycle, and gRPC comparison, start with [Drive via
+gRPC / HTTP](https://github.com/stacklok/mecatl/blob/main/user-docs/building/deployment/grpc-http.md).
+
 The HTTP adapter wraps the same service. Every event is emitted as one SSE
-`data:` line carrying the proto `Event` marshalled to JSON — so HTTP and gRPC
-share one event shape.
+`data:` line carrying the generated proto Go value marshalled by `encoding/json`
+— so field names match the gRPC event shape, while protobuf enums are JSON
+numbers rather than protojson enum names.
+
+### Server identity
+
+`GET /v1/info?provider_id=<active-provider>` is a process-wide, state-free identity
+probe. It takes no request body. `provider_id` is optional but must be the caller's
+already-known active provider; it may appear exactly once. Absent, repeated, or
+unknown selectors leave `llm_provider_display_endpoint` unavailable. It returns `200 OK`
+with this JSON object:
+
+```json
+{"build_id":"dev","server_implementation":"mecated","llm_provider_display_endpoint":"https://api.example/v1"}
+```
+
+`build_id` is the opaque linker-stamped build identity (`dev` in an unstamped
+source build). `server_implementation` is the stable composition family only:
+`mecated`, `mecak8s`, or embedded `mecatui`; a generic embedding uses `unknown`.
+It is neither an instance identifier nor a deployment label.
+
+The optional `llm_provider_display_endpoint` is a sanitized diagnostic display projection for the supplied `provider_id`, or absent when unavailable; it is not connection configuration or a connection instruction. It retains only scheme, host, optional port, and escaped clean path; userinfo, query, fragment, invalid/control data, malformed values, and oversized values are omitted. The route does not infer a default or session selection, discover providers, re-read configuration, inspect session state, or list alternatives.
+
+The route is inside the normal API authentication boundary. When `--auth-token`
+(or `MECATL_AUTH_TOKEN`) is configured, send its bearer token exactly as for the
+other HTTP API routes; configured TLS or mTLS requirements also apply. A caller
+without required authentication receives the normal `401` response. The endpoint
+never reads or returns configuration beyond this sanctioned endpoint projection, capabilities, topology, listener or connection details, authentication or TLS material, workspace paths, session or durable state, prompts, credentials, or raw errors.
+
+The route is additive. An older server returns `404`; clients should reduce that
+to their own safe unsupported status rather than display the response body. Clients
+must tolerate an absent or blank `server_implementation` in an otherwise valid
+response as `unknown`, and preserve an unfamiliar non-empty family for forward
+compatibility. `build_id` is not a semantic-version API.
 
 **Sessions & runs:**
 
 | Method & path | Body | Response |
 | --- | --- | --- |
-| `POST /v1/sessions` | `{workspace, mode?, limits?, provider_id?, model_id?, profile?}` | `201` `{session_id}` |
+| `POST /v1/sessions` | `{workspace, mode?, limits?, provider_id?, model_id?, profile?, mcp_servers?}` | `201` `{session_id}`; `501` code `client_mcp_unsupported` when `mcp_servers` is non-empty on a deployment that does not accept it (see below) |
 | `GET /v1/sessions` | — | `200` `{sessions: [...]}` — the stored-session inventory (picker rows: id, timestamps, state, turns, model id; no conversation content), most-recently-active first |
 | `GET /v1/sessions/{id}` | — | `200` session snapshot |
 | `GET /v1/sessions/{id}/events` | — | `200` `text/event-stream` — replay a session's durable event log (full timeline incl. the log-only `approval`/`compaction_archive`/`user_prompt` a live prompt stream skips); empty for an unknown id, `501` when no durable `EventLog` is wired |
+| `GET /v1/sessions/{id}/watch?cursor=&run_id=` | — | `200` `text/event-stream` — **durable replay-then-follow** ([ADR 0250](../adr/0250-durable-cursors-and-watch.md)). Each `data:` frame is `{event, cursor, phase}` (NOT a bare Event like `/events`); `phase` is an open string `replay`/`live`/`gap`. Exactly one event-less `live` frame marks the replay→live boundary; an event-less `gap` frame marks a failed durable append. `cursor` is opaque — empty means the beginning; hand back the last one you PROCESSED to resume. Optional `run_id` narrows delivery to one run; a cursor is **scoped to the `run_id` it was issued under** — resume with the same filter, or from the beginning, since a filtered watch's position advances past the records it dropped. The stream STAYS OPEN (unlike `/events`, which ends). `501` when no durable `EventLog` or no cursor seam, `404` when the caller may not read the session, `400` for a delegation-child session id. A **cursor fault is not a status code on this route**: the cursor is decoded after the `200` is committed, so a malformed or expired cursor arrives as the same terminal frame everything else does (`cursor_malformed` / `cursor_expired`); over gRPC it is a status. A mid-stream fault arrives as a final SSE frame tagged `event: error` whose `data:` line carries `{"code","error"}` — `watch_lagging` is **resumable** (reconnect with your last cursor), `activity_gap` means recorded events are missing |
 | `POST /v1/sessions/{id}/rename` | `{title}` | `200` updated session snapshot with operator title provenance; `412` when kind/state/liveness gates reject the stale action, `409` when another replica holds the session lease |
 | `POST /v1/sessions/{id}/delete` | — | `204` after permanently removing the snapshot and store-managed sidecars; `412` when the target is active, awaiting, or not a main chat, `409` when another replica holds the session lease, `501` when the configured store cannot physically delete |
+| `POST /v1/sessions/{id}/compact` | no body | `200` `{"compacted":true}` when one forced pass saved shorter model history, or `{"compacted":false}` for a successful no-op; `412` for an active/awaiting/non-main session, `409` when another replica holds its lease |
 | `DELETE /v1/sessions/{id}` | — | `204` — close the session, releasing its per-session resources (not physical stored-session deletion) |
-| `POST /v1/sessions/{id}/prompt` | `{text}` | `200` `text/event-stream` of events |
+| `POST /v1/sessions/{id}/prompt` | `{text}` | `200` `text/event-stream` of events; rejected while failed-step retry intent is pending |
+| `POST /v1/sessions/{id}/retry` | no body | `200` `text/event-stream` for a prompt-free failed-step retry; reuses conversation/tool state but re-resolves live instruction sources; `409` unless persisted state is eligible |
 | `POST /v1/sessions/{id}/approve` | `{ask_id, allow}` | `204` |
 | `POST /v1/sessions/{id}/plan:approve` | `{"target_mode": "default" \| "accept_edits" \| "plan", "note": "..."}` | `200` `text/event-stream` — atomically resolve a parked **plan-approval** ask ([ADR 0069](../adr/0069-plan-approval-gate.md)): on `default`/`accept_edits` resume the parked run AND start the continuation run (both streamed); on `plan`/`""` iterate (no continuation). `409` on a precondition failure (live run / not awaiting / not a plan ask), `404` on an unknown session |
 | `POST /v1/sessions/{id}/cancel` | — | `204` |
@@ -25,6 +64,30 @@ share one event shape.
 | `POST /v1/sessions/{id}/fork` | `{"title": "...", "reasoning_effort": "..."}` (both optional; empty/absent inherits the source's) | `201` `{session_id}` — create a peer session from `{id}`'s conversation history snapshot (ADR 0065); same provider/model only, with the ONE optional selector delta a reasoning-effort override (ADR 0068); `412` if `{id}` is not an idle/terminal main chat or is live in this process, `409` when another replica holds its lease |
 | `POST /v1/sessions/{id}/adoption:preflight` | `{workspace, environment_kind, environment_id, provider_id, model_id, profile?}` | `200` `{eligible, reason_code, bindings}`. Requires authenticated caller ownership; absent and foreign IDs are both `404`. Every binding is explicit and unresolved bindings return `binding_unresolved` rather than selecting a default |
 | `POST /v1/sessions/{id}/adopt` | the same explicit bindings plus `idempotency_key` | `201` `{session_id, source_session_id, capabilities, resolved_model}`. Revalidates under the source mutation lease; a retry returns the same complete target. The legacy source is unchanged |
+
+`mcp_servers` mounts client-provided streaming-HTTP MCP servers for the created
+session's lifetime, via a per-session engine. Each entry is
+`{name, url, type?, headers?}` — the HTTP mirror of the gRPC
+`CreateSessionRequest.mcp_servers` field, documented in full in
+[the gRPC API guide](./grpc-api.md). The short version: it is **listener-scoped**
+per [ADR 0237](../adr/0237-listener-scoped-workspace-authority.md) and the scope is
+a deployment property. Only a `--grpc-unix-socket` daemon with `--http-addr ""`
+accepts it — which means the HTTP surface never does, since serving HTTP at all is
+a TCP listener; every other deployment, loopback included, returns `501` /
+`client_mcp_unsupported`. Check `mcp_servers_on_create` in `GET /v1/compatibility`
+`features` first. Mounting is all-or-nothing: a server that does not connect fails
+the create with `503` / `client_mcp_unreachable` rather than returning a session
+quietly missing its tools. A `stdio` or `sse` entry is `400` on every deployment
+(mecatl never spawns an MCP server process); each `name` must be 1-64 chars of
+`[A-Za-z0-9._-]`, contain no `__`, and be unique in the request; a URL carrying
+userinfo credentials is `400` (use `headers`); and header values are never logged,
+evented, or echoed in an error.
+
+**The create body is decoded strictly.** An unrecognized field is `400` naming the
+field, rather than being silently ignored. This matters most for `mcp_servers`: the
+protojson spelling `mcpServers` used to be dropped, returning `201` for a session
+with none of the requested servers. It applies to every field on the body, so a
+client sending stray keys that previously succeeded now gets a `400`.
 
 Adoption is available only when authenticated caller ownership and a per-session engine
 factory are wired (`ServerCapabilities.legacy_adoption`). It accepts no message array or
@@ -148,6 +211,32 @@ $ curl -s http://127.0.0.1:8081/v1/sessions/8867bdea940108c1dd82d13d3fb7fc61
 
 A missing id returns `404` `{"error":"not found: \"...\""}`.
 
+### Compact model history without a turn
+
+Use the bodyless manual operation when the next prompt may not fit or when you want
+to reduce stored model history before continuing:
+
+```console
+$ curl -s -X POST http://127.0.0.1:8081/v1/sessions/<id>/compact
+{"compacted":true}
+```
+
+The server runs the configured compactor once regardless of the automatic 0.8
+trigger. It adds no prompt and starts no model turn, although the cascade strategy
+may make a compaction-slot summarization call. `false` is a successful no-op and
+causes no save or event append. The legal states are idle, completed, cancelled,
+and failed; state is preserved. Running/awaiting, scheduled, child, or same-process
+live sessions return `412`. A lease held by another replica returns `409`. Missing
+and foreign-owned IDs both return `404`; configured HTTP authentication still
+applies before ownership checks.
+
+On change, the compacted snapshot is saved before the existing compaction notice
+and archive are appended. Save failure returns `500` without appending them. An
+event-log append failure after save does not roll back the snapshot or change the
+`200` response, so the log may lack that manual compaction record. Clients can
+check `capabilities.manual_compaction` on session creation; an old server leaves it
+false and returns `404` for the unknown route.
+
 ### Start a run (SSE stream)
 
 ```console
@@ -169,6 +258,35 @@ data: {"type":"result","seq":3,"result":{"stop":"end_turn","text":"Mock provider
 
 Disconnecting the client (closing the curl connection) cancels the run.
 `text` is required — omitting it returns `400` `{"error":"text is required"}`.
+
+### Retry the failed model step
+
+When a terminal result explicitly carries `retry_disposition: 2` (retryable)
+and `stream_progress: 2` (precommit) or `3` (visible), repeat that exact model
+step without submitting another prompt. The concrete SSE mappings are
+`retry_disposition`: `0` unspecified, `1` unknown, `2` retryable, `3` permanent;
+and `stream_progress`: `0` unspecified, `1` unknown, `2` precommit, `3` visible,
+`4` complete. For example, an automatically safe retry result contains
+`"retry_disposition":2,"stream_progress":2`.
+
+```console
+$ curl -s -N -X POST http://127.0.0.1:8081/v1/sessions/<id>/retry
+data: {"type":"session.init","seq":1}
+
+# model events follow, ending with a terminal result
+```
+
+The route has no request body. It persists failed-step retry intent before launch and
+adds no user message. Persisted conversation/tool state is reused while live turn-0
+instructions, operator profile, and system-prompt sources are re-resolved. Normal
+`/prompt` requests are rejected while intent is pending. A clean pre-turn brake leaves
+it pending; cancellation clears it. A `409` means the server rejected eligibility. Retrying after `VISIBLE` output is an
+explicit operator choice; automated clients should use the narrower typed
+`RETRYABLE + PRECOMMIT` case and a finite retry bound.
+
+The terminal Result fields are optional for wire compatibility. Presence with
+`UNKNOWN` is an explicit conservative answer from a new server. Absence means the
+server predates typed semantic retry and is not evidence that replay is safe.
 
 ### Approve / deny a pending ask
 

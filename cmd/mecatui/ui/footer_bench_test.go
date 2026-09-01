@@ -70,10 +70,10 @@ func BenchmarkFooterMeterDegrade(b *testing.B) {
 
 // buildFooterModel builds a connected, sized Model with a non-trivial usage so
 // renderUsageFacets does real work — the realistic per-frame footer input. The
-// window source is chosen by the caller via effectiveModel.ContextWindow.
+// window source is chosen by the caller via resolvedSessionModel.ContextWindow.
 func buildFooterModel(tb testing.TB, window int64) Model {
 	tb.Helper()
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Theme:       benchTheme(),
 		Ctx:         context.Background(),
 		NoAltScreen: true,
@@ -92,7 +92,7 @@ func buildFooterModel(tb testing.TB, window int64) Model {
 		CacheWriteTokens: 4_000,
 	}
 	// The new default source for the denominator: the server-echoed per-model window.
-	m.effectiveModel = client.ResolvedModel{ContextWindow: window}
+	m.resolvedSessionModel = client.ResolvedModel{ContextWindow: window}
 	return m
 }
 

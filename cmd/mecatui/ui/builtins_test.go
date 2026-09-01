@@ -1,6 +1,7 @@
 package ui
 
 import (
+	"fmt"
 	"reflect"
 	"strings"
 	"testing"
@@ -25,12 +26,6 @@ type sessionStateProjection struct {
 	contextTokens int64
 	activeTool    string
 	toolProgress  string
-	// The ask-args surfaces (issue #488): the full-screen view is session-derived
-	// (its ask rides the OLD session's askIDs), so resetSession must close it and
-	// reset the modal's mini-viewport offset.
-	argsViewOpen bool
-	argsVPReady  bool
-	askVPOffset  int
 }
 
 // sessionState projects a Model onto its session-derived fields for comparison.
@@ -45,9 +40,6 @@ func sessionState(m Model) sessionStateProjection {
 		contextTokens: m.contextTokens,
 		activeTool:    m.activeTool,
 		toolProgress:  m.toolProgress,
-		argsViewOpen:  m.approval.argsViewOpen,
-		argsVPReady:   m.approval.argsVPReady,
-		askVPOffset:   m.approval.askVPOffset,
 	}
 }
 
@@ -88,7 +80,7 @@ func builtinNames(caps client.Capabilities, w wiredCollaborators) []string {
 // The fixed order is clear, help, session, mcp, agents, team, skills, soul, usermodel,
 // models, effort, worktrees.
 func TestBuiltinCommandsCapsFilter(t *testing.T) {
-	all := client.Capabilities{MCP: true, Agents: true, Teams: true, Skills: true, Soul: true, UserModel: true, ModelSelection: true, Worktrees: true, Scheduling: true, Posture: "auto"}
+	all := client.Capabilities{MCP: true, Agents: true, Teams: true, Skills: true, Soul: true, UserModel: true, ModelSelection: true, Worktrees: true, Scheduling: true, ManualCompaction: true, Posture: "auto"}
 	cases := []struct {
 		name string
 		caps client.Capabilities
@@ -96,6 +88,9 @@ func TestBuiltinCommandsCapsFilter(t *testing.T) {
 		want []string
 	}{
 		{"bare", client.Capabilities{}, wiredCollaborators{}, []string{"clear", "help"}},
+		{"compact cap but not wired", client.Capabilities{ManualCompaction: true}, wiredCollaborators{}, []string{"clear", "help"}},
+		{"compact wired but no cap", client.Capabilities{}, wiredCollaborators{Compactor: true}, []string{"clear", "help"}},
+		{"compact cap and wired", client.Capabilities{ManualCompaction: true}, wiredCollaborators{Compactor: true}, []string{"clear", "help", "compact"}},
 		{"mcp cap but not wired", client.Capabilities{MCP: true}, wiredCollaborators{}, []string{"clear", "help"}},
 		{"mcp wired but no cap", client.Capabilities{}, wiredCollaborators{MCP: true}, []string{"clear", "help"}},
 		{"mcp cap and wired", client.Capabilities{MCP: true}, wiredCollaborators{MCP: true}, []string{"clear", "help", "mcp"}},
@@ -129,14 +124,14 @@ func TestBuiltinCommandsCapsFilter(t *testing.T) {
 		{
 			"all",
 			all,
-			wiredCollaborators{MCP: true, Agents: true, Skills: true, Soul: true, UserModel: true, Models: true, Worktrees: true, Scheduling: true, Sessions: true},
-			[]string{"clear", "help", "mcp", "agents", "team", "skills", "soul", "usermodel", "models", "effort", "worktrees", "schedule", "sessions", "posture"},
+			wiredCollaborators{MCP: true, Agents: true, Skills: true, Soul: true, UserModel: true, Models: true, Worktrees: true, Scheduling: true, Sessions: true, Compactor: true},
+			[]string{"clear", "help", "compact", "mcp", "agents", "team", "skills", "soul", "usermodel", "models", "effort", "worktrees", "schedule", "sessions", "posture"},
 		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			got := builtinNames(tc.caps, tc.w)
-			want := append([]string{"clear", "help", "session"}, tc.want[2:]...)
+			want := append([]string{"clear", "help", "session", "retry", "diagnostics"}, tc.want[2:]...)
 			if strings.Join(got, ",") != strings.Join(want, ",") {
 				t.Fatalf("builtinCommands order/filter = %v, want %v", got, want)
 			}
@@ -226,10 +221,10 @@ func TestDebugAskInjectsFakeAsk(t *testing.T) {
 		if m.phase != phaseAwaitingApproval {
 			t.Fatalf("invocation %d: /debug-ask must open the modal (even at idle), got phase %v", i, m.phase)
 		}
-		if m.approval.ask.Tool != "Bash" {
-			t.Errorf("invocation %d: the fake ask must be a Bash ask, got %q", i, m.approval.ask.Tool)
+		if approvalSurfaceOf(t, m).ask.Tool != "Bash" {
+			t.Errorf("invocation %d: the fake ask must be a Bash ask, got %q", i, approvalSurfaceOf(t, m).ask.Tool)
 		}
-		seenArgs[m.approval.ask.Args] = true
+		seenArgs[approvalSurfaceOf(t, m).ask.Args] = true
 		// Resolve it (allow once) so the next invocation's ask opens fresh.
 		m, _ = pressKey(m, tea.KeyPressMsg{Code: 'a', Text: "a"})
 		if got := lastNotice(m); got != "permission allowed" {
@@ -238,6 +233,9 @@ func TestDebugAskInjectsFakeAsk(t *testing.T) {
 	}
 	if len(seenArgs) != 3 {
 		t.Errorf("three invocations must cycle through three DISTINCT payloads, got %d", len(seenArgs))
+	}
+	if m.modal != nil {
+		t.Error("/clear should close the approval surface")
 	}
 	if m.phase != phaseIdle {
 		t.Errorf("a /debug-ask opened at idle must RESUME to idle on resolve, got %v", m.phase)
@@ -317,7 +315,7 @@ func builtinDispatchModel(t *testing.T, caps client.Capabilities, wireMCP bool) 
 	if wireMCP {
 		deps.MCP = &fakeMCP{}
 	}
-	m := New(deps)
+	m := newTestModelFromDeps(deps)
 	m = applyAll(m,
 		tea.WindowSizeMsg{Width: 100, Height: 30},
 		client.SessionReadyMsg{SessionID: "sess-test-0001", Capabilities: caps},
@@ -337,21 +335,38 @@ func typeText(t *testing.T, m Model, s string) Model {
 	return m
 }
 
-// pressEnter submits via the Enter key, returning the model and the resulting
-// command (nil for a built-in that opens no stream).
+// pressEnter submits via the Enter key, returning the model and resulting command.
 func pressEnter(t *testing.T, m Model) (Model, tea.Cmd) {
 	t.Helper()
 	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	return mm.(Model), cmd
 }
 
-// TestClearBuiltinResetsState drives a "/clear"+enter and asserts the
-// conversation and all derived session state reset, the status reads "cleared",
-// no stream opens, and no prompt is sent.
-func TestClearBuiltinResetsState(t *testing.T) {
-	m, send := builtinDispatchModel(t, client.Capabilities{}, false)
+// firstBatchLeaf runs only the first leaf of a command batch. Both /clear and a
+// prompt put their externally-observable RPC command first; avoiding the reader
+// and spinner leaves keeps reducer tests synchronous and deterministic.
+func firstBatchLeaf(t *testing.T, cmd tea.Cmd) tea.Msg {
+	t.Helper()
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok || len(batch) == 0 {
+		t.Fatalf("command result = %T, want non-empty tea.BatchMsg", msg)
+	}
+	return batch[0]()
+}
 
-	// Seed some session state as if a turn had run.
+// TestClearBuiltinCreatesThenBindsThenCloses proves the create-first handoff:
+// /clear preserves the old transcript while creation is pending, binds a new empty
+// session through SessionReady, then closes the old session best-effort.
+func TestClearBuiltinCreatesThenBindsThenCloses(t *testing.T) {
+	m, _ := builtinDispatchModel(t, client.Capabilities{}, false)
+	conv := m.deps.Session.(*fakeConv)
+	// builtinDispatchModel binds a ready message directly, so model the startup
+	// create that would already have happened in the real lifecycle.
+	conv.createCount = 1
+	conv.closeErr = fmt.Errorf("close unavailable")
+
+	// Seed state that must remain visible until the replacement exists.
 	m.conv.addUser("earlier prompt")
 	m.conv.addError("some error")
 	m.recordFileChange("note.txt")
@@ -359,71 +374,132 @@ func TestClearBuiltinResetsState(t *testing.T) {
 	m.contextTokens = 1200
 	m.activeTool = "Write"
 	m.toolProgress = "writing"
-	// args-view residue: resetSession (via /clear) must close the args view and
-	// zero the mini-viewport offset.
-	m.approval.argsViewOpen = true
-	m.approval.argsVPReady = true
-	m.approval.askVPOffset = 2
 	// Scrolled up (auto-follow off): /clear must re-arm it, since an empty
 	// conversation is at-bottom and the next run must tail its streaming deltas.
 	m.stuck = false
-	m.refreshView()
-	if m.conv.isEmpty() {
-		t.Fatal("precondition: conversation should be non-empty before /clear")
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: "effective-provider", ModelID: "effective-model", ReasoningEffort: "high"}
+	m.createModelSelection = client.ModelSelection{ProviderID: "stale-provider", ModelID: "stale-model", ReasoningEffort: "low"}
+	m.activeWorkspace = "/current-worktree"
+	oldID := m.sessionID
+
+	m.pendingMode = "plan"
+	mm, clearCmd := m.runClear()
+	m = mm.(Model)
+	if m.phase != phaseConnecting || m.sessionID != oldID || m.conv.isEmpty() {
+		t.Fatalf("pending /clear must retain the old UI/session while blocking input: phase=%v id=%q empty=%v", m.phase, m.sessionID, m.conv.isEmpty())
+	}
+	if got := conv.closed(); len(got) != 0 {
+		t.Fatalf("old session closed before replacement creation: %v", got)
+	}
+	_, promptCmd := pressEnter(t, m)
+	if promptCmd != nil {
+		t.Error("pending /clear must not send a prompt to the old session")
 	}
 
-	m = typeText(t, m, "/clear")
-	m, cmd := pressEnter(t, m)
+	msg := firstBatchLeaf(t, clearCmd)
+	ready, ok := msg.(clearSessionReadyMsg)
+	if !ok {
+		t.Fatalf("clear create message = %T, want clearSessionReadyMsg", msg)
+	}
+	if got := conv.createdWksp; got != "/current-worktree" {
+		t.Errorf("clear workspace = %q, want current worktree", got)
+	}
+	if got := conv.createdSel; got != (client.ModelSelection{ProviderID: "effective-provider", ModelID: "effective-model", ReasoningEffort: "high"}) {
+		t.Errorf("clear selection = %+v, want effective model plus effort", got)
+	}
+	if got := conv.mode; got != m.desiredMode() {
+		t.Errorf("clear mode = %q, want desired mode %q", got, m.desiredMode())
+	}
+	if got := conv.closed(); len(got) != 0 {
+		t.Fatalf("old session closed before successful new-session binding: %v", got)
+	}
 
-	// Drift guard: every session-derived field must match a freshly-zeroed
-	// reference (resetSession of a brand-new model). This compares the WHOLE
-	// session-derived projection, so a future field added to resetSession that
-	// /clear forgets — or a field /clear zeroes but resetSession does not — fails
-	// here without this test re-listing the fields by hand. (sessionState is
-	// defined below; keep it in sync with resetSession in model.go.)
-	zero := New(m.deps).resetSession()
+	mm, closeCmd := m.Update(ready)
+	m = mm.(Model)
+	zero := newTestModelFromDeps(m.deps).resetSession()
 	if !reflect.DeepEqual(sessionState(m), sessionState(zero)) {
-		t.Errorf("/clear must zero ALL session-derived fields (drift?):\n got  %+v\n want %+v",
-			sessionState(m), sessionState(zero))
+		t.Errorf("successful /clear must reset ALL session-derived fields:\n got  %+v\n want %+v", sessionState(m), sessionState(zero))
 	}
-	// Belt-and-braces explicit checks (kept readable; the DeepEqual above is the
-	// drift-proof one). Each line mirrors a field resetSession (model.go) owns.
-	if !m.conv.isEmpty() {
-		t.Error("/clear should empty the conversation")
+	if m.sessionID == oldID || m.sessionID == "" || m.phase != phaseIdle {
+		t.Errorf("successful /clear must bind a new idle session, got id=%q phase=%v", m.sessionID, m.phase)
 	}
-	if !m.stuck {
-		t.Error("/clear should re-arm auto-follow (stuck) — an empty conversation is at-bottom")
+	if m.pendingMode != "" {
+		t.Errorf("successful /clear must settle pending mode, got %q", m.pendingMode)
 	}
-	if m.filesChanged != nil || m.filesSeen != nil {
-		t.Errorf("/clear should reset changed-files: filesChanged=%v filesSeen=%v", m.filesChanged, m.filesSeen)
+	// A delayed mode response for the old session must not alter the replacement.
+	mm, _ = m.Update(client.ModeChangedMsg{SessionID: oldID, Mode: "plan"})
+	m = mm.(Model)
+	if m.activeMode != "plan" {
+		t.Errorf("stale old-session mode update changed replacement mode to %q", m.activeMode)
 	}
-	if m.usage != (client.Usage{}) {
-		t.Errorf("/clear should reset usage, got %+v", m.usage)
+	m.prompt.Rewrite("new prompt")
+	m, promptCmd = pressEnter(t, m)
+	_ = firstBatchLeaf(t, promptCmd)
+	frames := conv.send.frames()
+	if got := frames[len(frames)-1].GetPrompt().GetSessionId(); got != m.sessionID {
+		t.Errorf("post-clear prompt session = %q, want new session %q", got, m.sessionID)
 	}
-	if m.contextTokens != 0 {
-		t.Errorf("/clear should reset contextTokens, got %d", m.contextTokens)
+	if got := conv.closed(); len(got) != 0 {
+		t.Fatalf("old session closed before reducer bound replacement: %v", got)
 	}
-	if m.activeTool != "" || m.toolProgress != "" {
-		t.Errorf("/clear should reset activeTool/toolProgress, got %q/%q", m.activeTool, m.toolProgress)
+	runBatchLeaves(closeCmd)
+	if got := conv.closed(); !reflect.DeepEqual(got, []string{oldID}) {
+		t.Errorf("closed sessions = %v, want old session only after binding", got)
 	}
-	if !strings.Contains(stripANSIstr(m.statusMsg), "cleared") {
-		t.Errorf("status should read 'cleared', got %q", stripANSIstr(m.statusMsg))
+	if got := conv.ops(); !reflect.DeepEqual(got, []string{"create", "close"}) {
+		t.Errorf("session RPC order = %v, want [create close]", got)
 	}
-	if m.ta.Value() != "" {
-		t.Errorf("input should be reset after /clear, got %q", m.ta.Value())
+	if m.sessionID == oldID || m.sessionID == "" {
+		t.Errorf("best-effort close failure must retain new session: id=%q", m.sessionID)
 	}
-	if cmd != nil {
-		t.Error("/clear should open no stream / issue no command")
+}
+
+func TestClearSessionSelectionFallsBackWithoutResolvedModel(t *testing.T) {
+	m, _ := builtinDispatchModel(t, client.Capabilities{}, false)
+	want := client.ModelSelection{ProviderID: "saved-provider", ModelID: "saved-model", ReasoningEffort: "medium"}
+	m.createModelSelection = want
+	m.resolvedSessionModel = client.ResolvedModel{} // older server: no create/session echo
+	if got := m.clearSessionSelection(); got != want {
+		t.Errorf("clear selection without echo = %+v, want %+v", got, want)
 	}
-	if m.phase != phaseIdle {
-		t.Errorf("phase = %v, want idle after /clear", m.phase)
+}
+
+func TestClearBuiltinCreateFailureKeepsOldSession(t *testing.T) {
+	m, _ := builtinDispatchModel(t, client.Capabilities{}, false)
+	conv := m.deps.Session.(*fakeConv)
+	conv.createErr = fmt.Errorf("create unavailable")
+	m.conv.addUser("earlier prompt")
+	m.recordFileChange("note.txt")
+	oldID := m.sessionID
+
+	mm, clearCmd := m.runClear()
+	m = mm.(Model)
+	msg := firstBatchLeaf(t, clearCmd)
+	failed, ok := msg.(clearSessionFailedMsg)
+	if !ok {
+		t.Fatalf("clear create message = %T, want clearSessionFailedMsg", msg)
 	}
-	if len(send.frames()) != 0 {
-		t.Errorf("/clear must send no frames, got %d", len(send.frames()))
+	mm, _ = m.Update(failed)
+	m = mm.(Model)
+
+	if m.sessionID != oldID || m.conv.isEmpty() || m.phase != phaseIdle {
+		t.Errorf("failed /clear must retain old active state: id=%q empty=%v phase=%v", m.sessionID, m.conv.isEmpty(), m.phase)
 	}
-	// The zero-state welcome card reappears.
-	if !strings.Contains(stripANSIstr(m.View().Content), "Welcome to mecatui") {
-		t.Error("zero-state welcome card should reappear after /clear")
+	if m.filesChanged == nil {
+		t.Error("failed /clear must retain old derived UI state")
+	}
+	if got := conv.closed(); len(got) != 0 {
+		t.Errorf("failed /clear must not close old session, got %v", got)
+	}
+	if strings.Contains(stripANSIstr(m.statusMsg), "cleared") {
+		t.Errorf("failed /clear status must not claim cleared: %q", stripANSIstr(m.statusMsg))
+	}
+	m.prompt.Rewrite("retry old session")
+	m, promptCmd := pressEnter(t, m)
+	_ = firstBatchLeaf(t, promptCmd)
+	frames := conv.send.frames()
+	if got := frames[len(frames)-1].GetPrompt().GetSessionId(); got != oldID {
+		t.Errorf("post-failure prompt session = %q, want old session %q", got, oldID)
 	}
 }
 
@@ -459,7 +535,7 @@ func TestHelpBuiltinOpensOverlay(t *testing.T) {
 	if !m.showHelp {
 		t.Error("/help should open the help overlay (showHelp=true)")
 	}
-	if m.ta.Focused() {
+	if m.prompt.Focused() {
 		t.Error("/help should blur the textarea")
 	}
 	if cmd != nil {
@@ -471,8 +547,9 @@ func TestHelpBuiltinOpensOverlay(t *testing.T) {
 }
 
 // TestPaletteEnterRunsBuiltinDirectly asserts that pressing enter on a selected
-// BUILT-IN palette row runs it immediately (clears the conversation) rather than
-// text-completing it into the input.
+// BUILT-IN palette row starts /clear immediately rather than text-completing it
+// into the input; the old conversation remains visible until the replacement is
+// created.
 func TestPaletteEnterRunsBuiltinDirectly(t *testing.T) {
 	m, _ := builtinDispatchModel(t, client.Capabilities{}, false)
 	m.conv.addUser("prior turn")
@@ -490,22 +567,57 @@ func TestPaletteEnterRunsBuiltinDirectly(t *testing.T) {
 	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
 
-	if !m.conv.isEmpty() {
-		t.Error("enter on built-in /clear row should RUN it (clear the conversation), not text-complete")
+	if m.phase != phaseConnecting || m.conv.isEmpty() {
+		t.Error("enter on built-in /clear row should start a create-first handoff, not text-complete")
 	}
 	// Text-completion would have left "/clear " in the input; running clears it.
-	if strings.HasPrefix(m.ta.Value(), "/clear") {
-		t.Errorf("built-in row should not be text-completed into the input, got %q", m.ta.Value())
+	if strings.HasPrefix(m.prompt.Value(), "/clear") {
+		t.Errorf("built-in row should not be text-completed into the input, got %q", m.prompt.Value())
 	}
 	if m.palette.open {
 		t.Error("palette should close after running a built-in")
 	}
 }
 
+// TestBuiltinPaletteAndTypedDispatchAgree proves that selecting a builtin is the
+// same operation as submitting its canonical bare line, including while a run is
+// active. /clear's running warning makes both ingress paths observable.
+func TestBuiltinPaletteAndTypedDispatchAgree(t *testing.T) {
+	for _, phase := range []phase{phaseIdle, phaseRunning} {
+		name := "idle"
+		if phase == phaseRunning {
+			name = "running"
+		}
+		t.Run(name, func(t *testing.T) {
+			typed, _ := builtinDispatchModel(t, client.Capabilities{}, false)
+			typed.phase = phase
+			typed.conv.addUser("prior turn")
+			typed = typeText(t, typed, "/clear")
+			typed, typedCmd := pressEnter(t, typed)
+
+			selected, _ := builtinDispatchModel(t, client.Capabilities{}, false)
+			selected.phase = phase
+			selected.conv.addUser("prior turn")
+			selected = typeText(t, selected, "/")
+			mm, selectedCmd := selected.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+			selected = mm.(Model)
+
+			if (typedCmd == nil) != (selectedCmd == nil) {
+				t.Fatalf("command presence differs: typed nil=%t, palette nil=%t", typedCmd == nil, selectedCmd == nil)
+			}
+			if typed.phase != selected.phase || !reflect.DeepEqual(sessionState(typed), sessionState(selected)) || stripANSIstr(typed.statusMsg) != stripANSIstr(selected.statusMsg) {
+				t.Fatalf("typed and palette builtin outcomes differ: typed phase=%v state=%+v status=%q; palette phase=%v state=%+v status=%q", typed.phase, sessionState(typed), stripANSIstr(typed.statusMsg), selected.phase, sessionState(selected), stripANSIstr(selected.statusMsg))
+			}
+			if typed.palette.open || selected.palette.open || typed.prompt.Value() != "" || selected.prompt.Value() != "" {
+				t.Fatalf("both builtin ingress paths must clear input and close the palette: typed=%q/%t palette=%q/%t", typed.prompt.Value(), typed.palette.open, selected.prompt.Value(), selected.palette.open)
+			}
+		})
+	}
+}
+
 // TestBuiltinSubmitNeverSends pins that a bare built-in line never reaches the
-// model: across /clear and /help, the fakeSender records zero frames AND the
-// submit returns a nil command — so no async stream-open cmd (which a bare
-// Update never executes in this test) can slip through unobserved.
+// model: /clear creates a replacement session, while /help returns nil. Neither
+// can open a Converse stream or send a prompt frame.
 func TestBuiltinSubmitNeverSends(t *testing.T) {
 	for _, name := range []string{"/clear", "/help"} {
 		t.Run(name, func(t *testing.T) {
@@ -515,60 +627,105 @@ func TestBuiltinSubmitNeverSends(t *testing.T) {
 			if len(send.frames()) != 0 {
 				t.Errorf("%s must not send any frame, got %d", name, len(send.frames()))
 			}
-			// A real prompt submit returns batch(send, waitCmd, sp.Tick); a built-in
-			// returns nil (it opens no stream). Asserting nil closes the gap where an
-			// async stream-open cmd could be returned but never executed in-test.
-			if cmd != nil {
-				t.Errorf("%s submit should return a nil command (no stream open), got non-nil", name)
+			// Only /clear legitimately returns a session-create handoff command;
+			// neither built-in may return a Converse stream command.
+			if name == "/help" && cmd != nil {
+				t.Errorf("%s submit should return nil, got non-nil", name)
+			}
+			if name == "/clear" && cmd == nil {
+				t.Errorf("%s submit should start session creation", name)
 			}
 		})
 	}
 }
 
-// TestBuiltinNameWithArgsFallsThrough guards the intercept against matching the
-// FIRST token regardless of trailing args: a built-in NAME followed by a space +
-// args ("/clear now") has a space, so commandPrefix returns false, the
-// submitPrompt built-in intercept does NOT fire, and the line is sent to the
-// model as a normal prompt — NOT swallowed, and the conversation is NOT cleared.
-func TestBuiltinNameWithArgsFallsThrough(t *testing.T) {
+// TestBuiltinNameWithArgsStaysLocal verifies a recognized no-argument builtin
+// keeps its input, warns locally, and never reaches the model.
+func TestBuiltinNameWithArgsStaysLocal(t *testing.T) {
 	m, send := builtinDispatchModel(t, client.Capabilities{}, false)
-
-	// Seed a turn so we can prove /clear's reset did NOT happen.
 	m.conv.addUser("earlier prompt")
 	m.refreshView()
 
 	m = typeText(t, m, "/clear now")
 	m, cmd := pressEnter(t, m)
 
-	// It must have entered the normal send path: a stream opened (non-nil batch
-	// command) and the prompt frame carries the full literal line.
-	if cmd == nil {
-		t.Fatal("'/clear now' should fall through to the normal send (non-nil command), not be intercepted")
+	if cmd != nil {
+		t.Fatal("/clear with arguments must not open a model run")
 	}
-	// Flush the batch's leaf commands so the synchronous SendPrompt closure runs
-	// (the submit returns tea.Batch(send, waitCmd, sp.Tick); running the batch
-	// yields a BatchMsg of leaves, each of which must be invoked).
-	runBatchLeaves(cmd)
-	frames := send.frames()
-	if len(frames) == 0 {
-		t.Fatal("'/clear now' should record a SendPrompt frame (sent, not swallowed)")
+	if len(send.frames()) != 0 {
+		t.Fatalf("/clear with arguments sent %d frames", len(send.frames()))
 	}
-	var sentText string
-	for _, fr := range frames {
-		if p := fr.GetPrompt(); p != nil {
-			sentText = p.GetText()
-		}
+	if m.prompt.Value() != "/clear now" {
+		t.Errorf("input = %q, want unchanged", m.prompt.Value())
 	}
-	if sentText != "/clear now" {
-		t.Errorf("sent prompt = %q, want the literal %q", sentText, "/clear now")
+	if got := stripANSIstr(m.statusMsg); !strings.Contains(got, "does not take arguments") || !strings.Contains(got, "/clear") {
+		t.Errorf("status = %q, want argument warning", got)
 	}
-	// The conversation must NOT have been cleared — the user line is still there,
-	// plus the new "/clear now" user line the normal send appended.
 	if m.conv.isEmpty() {
-		t.Error("'/clear now' must NOT clear the conversation (it is not the bare /clear built-in)")
+		t.Error("/clear with arguments must not clear the conversation")
 	}
-	if m.phase != phaseRunning {
-		t.Errorf("phase = %v, want running after a normal send", m.phase)
+}
+
+// TestDispatchBareBuiltinWhitespace defines a bare invocation as exactly a
+// builtin name after trimming surrounding Unicode whitespace. Recognized builtins
+// with arguments are retained locally for correction; unknown slash commands stay
+// model-facing.
+func TestDispatchBareBuiltinWhitespace(t *testing.T) {
+	for _, tc := range []struct {
+		input   string
+		handled bool
+	}{
+		{"/clear", true},
+		{" \u2003/clear\u00a0", true},
+		{"/clear\n", true},
+		{"/clear now", true},
+		{"/clear\nnow", true},
+		{"/foo", false},
+	} {
+		t.Run(strings.ReplaceAll(tc.input, "\n", "\\n"), func(t *testing.T) {
+			m, _ := builtinDispatchModel(t, client.Capabilities{}, false)
+			_, _, handled := m.dispatchBareBuiltin(tc.input)
+			if handled != tc.handled {
+				t.Fatalf("dispatchBareBuiltin(%q) handled=%t, want %t", tc.input, handled, tc.handled)
+			}
+		})
+	}
+}
+
+// TestDispatchBareBuiltinUnicodeWhitespaceThroughTextarea drives Unicode
+// whitespace through the actual key-by-key textarea ingress, then Enter. The
+// local dispatch must happen before the prompt-opening path.
+func TestDispatchBareBuiltinUnicodeWhitespaceThroughTextarea(t *testing.T) {
+	m, send := builtinDispatchModel(t, client.Capabilities{}, false)
+	m.conv.addUser("prior turn")
+
+	const input = "\u2003/clear\u00a0"
+	m = typeText(t, m, input)
+	if got := m.prompt.Value(); got != input {
+		t.Fatalf("textarea value = %q, want %q", got, input)
+	}
+	m, cmd := pressEnter(t, m)
+
+	if cmd == nil {
+		t.Fatal("Unicode-whitespace /clear must start its local replacement-session handoff")
+	}
+	if m.phase != phaseConnecting || m.conv.isEmpty() {
+		t.Fatalf("pending Unicode-whitespace /clear must retain the old UI while connecting: phase=%v empty=%v", m.phase, m.conv.isEmpty())
+	}
+	ready := firstBatchLeaf(t, cmd)
+	mm, _ := m.Update(ready)
+	m = mm.(Model)
+	if !m.conv.isEmpty() {
+		t.Fatal("Unicode-whitespace /clear must clear the conversation after its local handoff")
+	}
+	if m.phase != phaseIdle {
+		t.Fatalf("Unicode-whitespace /clear phase = %v, want idle", m.phase)
+	}
+	if m.palette.open || m.prompt.Value() != "" {
+		t.Fatalf("Unicode-whitespace /clear must close the palette and clear input, open=%t input=%q", m.palette.open, m.prompt.Value())
+	}
+	if got := promptTexts(send); len(got) != 0 {
+		t.Fatalf("Unicode-whitespace /clear must send no prompt frames, got %v", got)
 	}
 }
 
@@ -576,7 +733,7 @@ func TestBuiltinNameWithArgsFallsThrough(t *testing.T) {
 // from the builtinCommands table AND that an unknown name is false.
 func TestIsKnownBuiltinName(t *testing.T) {
 	known := []string{
-		"clear", "help", "session", "mcp", "agents", "team", "skills", "soul", "usermodel",
+		"clear", "help", "session", "retry", "diagnostics", "compact", "mcp", "agents", "team", "skills", "soul", "usermodel",
 		"models", "effort", "worktrees", "schedule", "sessions", "learning", "learning-sensitivity", "posture",
 		"debug-ask",
 	}
@@ -627,7 +784,7 @@ func TestSlashNoMatchBlocksKnownBuiltins(t *testing.T) {
 		t.Errorf("gated-off /mcp must send no frames, got %d", len(send.frames()))
 	}
 	// The textarea must NOT be cleared (user keeps their input for editing).
-	if m.ta.Value() == "" {
+	if m.prompt.Value() == "" {
 		t.Error("/mcp blocked: textarea should KEEP the input (not clear it)")
 	}
 	// A warning status must be set.
@@ -639,7 +796,7 @@ func TestSlashNoMatchBlocksKnownBuiltins(t *testing.T) {
 
 // TestSlashNoMatchCaseInsensitive asserts that a known builtin with mixed case
 // ("/MODELS") is still blocked when gated off, not sent to the model.
-// interceptSlashCommand normalises to lower-case so the guard works.
+// dispatchBareBuiltin normalises to lower-case so the guard works.
 func TestSlashNoMatchCaseInsensitive(t *testing.T) {
 	// Zero caps → /models is gated off.
 	m, send := builtinDispatchModel(t, client.Capabilities{}, false)
@@ -654,7 +811,7 @@ func TestSlashNoMatchCaseInsensitive(t *testing.T) {
 	if len(send.frames()) != 0 {
 		t.Errorf("/MODELS must send no frames, got %d", len(send.frames()))
 	}
-	if m.ta.Value() == "" {
+	if m.prompt.Value() == "" {
 		t.Error("/MODELS blocked: textarea should KEEP the input")
 	}
 	got := stripANSIstr(m.statusMsg)
@@ -676,8 +833,8 @@ func TestSlashNoMatchUnknownSends(t *testing.T) {
 		t.Fatal("/foo should fall through to the normal send (non-nil cmd), not be blocked")
 	}
 	// The textarea should be cleared by the normal send path.
-	if m.ta.Value() != "" {
-		t.Errorf("/foo: textarea should be cleared by the normal send, got %q", m.ta.Value())
+	if m.prompt.Value() != "" {
+		t.Errorf("/foo: textarea should be cleared by the normal send, got %q", m.prompt.Value())
 	}
 	// Flush the batch so the send frame fires.
 	runBatchLeaves(cmd)
@@ -704,8 +861,8 @@ func TestSlashGatedByCapsStillExecutes(t *testing.T) {
 		t.Errorf("/mcp (registered) must send no frames, got %d", len(send.frames()))
 	}
 	// The textarea should be cleared (the builtin resets it).
-	if strings.HasPrefix(m.ta.Value(), "/mcp") {
-		t.Errorf("/mcp (registered): textarea should be cleared after the builtin runs, got %q", m.ta.Value())
+	if strings.HasPrefix(m.prompt.Value(), "/mcp") {
+		t.Errorf("/mcp (registered): textarea should be cleared after the builtin runs, got %q", m.prompt.Value())
 	}
 	_ = cmd // may be non-nil (to load MCP inventory); that's fine
 }

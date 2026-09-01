@@ -5,7 +5,7 @@
 //
 // HarnessService is the network surface over the WP8 agent loop. The
 // primary RPC is the bidi `Converse` stream: the client sends a mandatory
-// first `Prompt` frame, then zero or more `ResumeApproval` / `Cancel`
+// first `Prompt` or `RetryStart` frame, then zero or more `ResumeApproval` / `Cancel`
 // control frames, while the server streams typed `Event` envelopes for the
 // lifetime of the run, terminating in a `result` event.
 //
@@ -42,13 +42,16 @@ import (
 const _ = grpc.SupportPackageIsVersion9
 
 const (
+	HarnessService_GetCompatibilityInfo_FullMethodName     = "/mecatl.v1.HarnessService/GetCompatibilityInfo"
 	HarnessService_CreateSession_FullMethodName            = "/mecatl.v1.HarnessService/CreateSession"
+	HarnessService_GetServerInfo_FullMethodName            = "/mecatl.v1.HarnessService/GetServerInfo"
 	HarnessService_GetSession_FullMethodName               = "/mecatl.v1.HarnessService/GetSession"
 	HarnessService_GetSessionTranscript_FullMethodName     = "/mecatl.v1.HarnessService/GetSessionTranscript"
 	HarnessService_SetMode_FullMethodName                  = "/mecatl.v1.HarnessService/SetMode"
 	HarnessService_CloseSession_FullMethodName             = "/mecatl.v1.HarnessService/CloseSession"
 	HarnessService_RenameSession_FullMethodName            = "/mecatl.v1.HarnessService/RenameSession"
 	HarnessService_DeleteSession_FullMethodName            = "/mecatl.v1.HarnessService/DeleteSession"
+	HarnessService_CompactSession_FullMethodName           = "/mecatl.v1.HarnessService/CompactSession"
 	HarnessService_ForkSession_FullMethodName              = "/mecatl.v1.HarnessService/ForkSession"
 	HarnessService_PreflightSessionAdoption_FullMethodName = "/mecatl.v1.HarnessService/PreflightSessionAdoption"
 	HarnessService_AdoptSession_FullMethodName             = "/mecatl.v1.HarnessService/AdoptSession"
@@ -64,6 +67,7 @@ const (
 	HarnessService_ListWorktrees_FullMethodName            = "/mecatl.v1.HarnessService/ListWorktrees"
 	HarnessService_StreamSessionEvents_FullMethodName      = "/mecatl.v1.HarnessService/StreamSessionEvents"
 	HarnessService_StreamSessionLive_FullMethodName        = "/mecatl.v1.HarnessService/StreamSessionLive"
+	HarnessService_WatchSessionEvents_FullMethodName       = "/mecatl.v1.HarnessService/WatchSessionEvents"
 	HarnessService_ListSessions_FullMethodName             = "/mecatl.v1.HarnessService/ListSessions"
 	HarnessService_GetStorageHealth_FullMethodName         = "/mecatl.v1.HarnessService/GetStorageHealth"
 	HarnessService_PlanSessionMigration_FullMethodName     = "/mecatl.v1.HarnessService/PlanSessionMigration"
@@ -111,8 +115,31 @@ const (
 // HarnessService is the mecatl API: unary session setup/inspection plus
 // the bidi Converse stream that drives one agent run.
 type HarnessServiceClient interface {
+	// GetCompatibilityInfo returns the deployment's compatibility descriptor: the
+	// API major, the operator-enabled ServerCapabilities, the build's supported
+	// feature identifiers, and an optional operator-set deployment label. It is
+	// the FIRST call a client makes — it answers "what may I do with this
+	// server?" WITHOUT creating a probe session (the ServerCapabilities echo
+	// otherwise rides CreateSessionResponse only).
+	//
+	// DISTINCT FROM GetServerInfo below, deliberately. That RPC answers "which
+	// BUILD is this?" and ADR 0245 draws an explicit privacy boundary around it:
+	// its response must never carry capabilities, configuration, or auth details.
+	// This one is exactly those things — negotiation input, not identity — so
+	// folding the two would either breach that boundary or overload one message
+	// with two audiences. Build identity therefore lives ONLY on GetServerInfo,
+	// and a client that wants both makes both calls.
+	//
+	// A server that does not implement this RPC (UNIMPLEMENTED) is below the
+	// SDK compatibility floor; a client fails loudly rather than inferring a
+	// legacy mode. Authenticated like every other RPC, so UNAUTHENTICATED and
+	// UNIMPLEMENTED stay distinguishable. See ADR 0248.
+	GetCompatibilityInfo(ctx context.Context, in *GetCompatibilityInfoRequest, opts ...grpc.CallOption) (*GetCompatibilityInfoResponse, error)
 	// CreateSession allocates a new server-side session and returns its id.
 	CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error)
+	// GetServerInfo returns only the composed server build identity. It is authenticated
+	// like every HarnessService operation and does not inspect configuration or state.
+	GetServerInfo(ctx context.Context, in *GetServerInfoRequest, opts ...grpc.CallOption) (*GetServerInfoResponse, error)
 	// GetSession returns a snapshot of an existing session.
 	GetSession(ctx context.Context, in *GetSessionRequest, opts ...grpc.CallOption) (*GetSessionResponse, error)
 	// GetSessionTranscript returns the authoritative, snapshot-derived human
@@ -131,6 +158,9 @@ type HarnessServiceClient interface {
 	RenameSession(ctx context.Context, in *RenameSessionRequest, opts ...grpc.CallOption) (*RenameSessionResponse, error)
 	// DeleteSession physically removes an idle main session and its sidecars.
 	DeleteSession(ctx context.Context, in *DeleteSessionRequest, opts ...grpc.CallOption) (*DeleteSessionResponse, error)
+	// CompactSession applies one manual compaction pass to an owned main-chat
+	// session at a turn boundary. It creates no model turn.
+	CompactSession(ctx context.Context, in *CompactSessionRequest, opts ...grpc.CallOption) (*CompactSessionResponse, error)
 	// ForkSession creates a new peer session whose conversation history is a
 	// snapshot of an existing session's, inheriting the source's mode, workspace,
 	// limits, and provider/model/profile labels. Same provider and model only;
@@ -249,6 +279,68 @@ type HarnessServiceClient interface {
 	// (absence is data — a never-created id is indistinguishable from a session
 	// with no live events yet).
 	StreamSessionLive(ctx context.Context, in *StreamSessionLiveRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error)
+	// WatchSessionEvents is the DURABLE replay-then-follow stream: one operation
+	// that replays a session's durable event log from a position, transitions to
+	// live, and keeps following as the run appends (issue #821, ADR 0250).
+	//
+	// It exists because neither existing read path can do this. StreamSessionEvents
+	// is a complete, ordered replay with NO position and NO follow — it reads the
+	// whole log and stops, so a client that wants to catch up and then watch must
+	// read everything and THEN subscribe, and any event appended between those two
+	// steps is silently lost. StreamSessionLive is live but process-local,
+	// in-memory, and non-durable: a second replica sees nothing, a reconnecting tab
+	// sees nothing that happened while it was away, and a slow subscriber has its
+	// events DROPPED. Both remain, unchanged, for the callers that want exactly
+	// their semantics.
+	//
+	// CURSOR. `cursor` is an OPAQUE resume token meaning "I have durably received
+	// everything up to here". Treat it as bytes to hand back — never parse, build,
+	// or edit one. An EMPTY cursor means THE BEGINNING OF THE LOG, which is a real
+	// value and the common case (a client attaching for the first time wants
+	// replay-then-follow). A cursor from a superseded log generation returns
+	// `cursor_expired` (the log was deleted and recreated); one that cannot be
+	// decoded returns `cursor_malformed`. Neither is ever coerced to a position:
+	// resuming from approximately the right place is indistinguishable from
+	// resuming from the right place until data is already lost.
+	//
+	// PHASE is an OPEN STRING, not an enum — `replay`, `live`, `gap` today, and a
+	// client must tolerate a value it does not know (the same discipline the event
+	// `type`/`stop` fields already carry). `replay` records were already durable
+	// when the watch attached; `live` records arrived after it caught up. Exactly
+	// one PHASE-ONLY `live` frame (no `event`, cursor set) marks the replay to live
+	// boundary, so a client can render the transcript and then show a live view
+	// WITHOUT waiting for the next event to arrive — on an idle session that event
+	// may never come. `gap` marks a position where a durable append is KNOWN to
+	// have failed; it too carries no `event`, because a gap is a fact about
+	// DELIVERY rather than something that happened in the run (ADR 0250 decision
+	// 5 — this is why neither `session.Event` nor the `Event` message gains a gap
+	// field).
+	//
+	// RELAY DISCIPLINE mirrors StreamSessionEvents, NOT the live wire: this is the
+	// READ-BACK of the durable log, so it relays ALL events including the three
+	// log-only kinds (`approval`/`compaction_archive`/`user_prompt`) — a client
+	// replaying a session wants the verdicts and prompts, as they ARE the
+	// transcript. They are metadata-only/redacted by construction.
+	//
+	// `run_id` optionally narrows delivery to ONE run (ADR 0249). Gap frames are
+	// delivered regardless of the filter: a failed append leaves nothing to
+	// attribute to a run, so suppressing it would hide a real gap.
+	//
+	// TERMINATION. A watch ends when the client cancels, or with an error that says
+	// what to do next. A client that falls too far behind is TERMINATED with
+	// `watch_lagging` rather than having its events dropped — the cursor exists
+	// precisely so that termination is recoverable: reconnect with the last cursor
+	// received and nothing is lost. A durable append failure terminates the
+	// watchers in that process with `activity_gap` and never advances their cursor.
+	// In BOTH cases the run continues normally: a broken or slow watch must never
+	// break a live run, and a watcher never backpressures one.
+	//
+	// A server with no durable EventLog returns `no_event_log`; one whose log does
+	// not implement the cursor seam returns `watch_unsupported` — never a silent
+	// degrade to replaying the whole transcript, because a client asking to resume
+	// from a position and being handed everything is a correctness problem dressed
+	// as a performance one. Ownership is enforced exactly as on GetSession.
+	WatchSessionEvents(ctx context.Context, in *WatchSessionEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchSessionEventsResponse], error)
 	// ListSessions returns the stored-session inventory — the picker metadata a
 	// client renders to let an operator open an EXISTING session by id (issue #245
 	// Phase 1). It is backed by `port.PrunableStore.List` (type-asserted on the
@@ -399,10 +491,30 @@ func NewHarnessServiceClient(cc grpc.ClientConnInterface) HarnessServiceClient {
 	return &harnessServiceClient{cc}
 }
 
+func (c *harnessServiceClient) GetCompatibilityInfo(ctx context.Context, in *GetCompatibilityInfoRequest, opts ...grpc.CallOption) (*GetCompatibilityInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetCompatibilityInfoResponse)
+	err := c.cc.Invoke(ctx, HarnessService_GetCompatibilityInfo_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
 func (c *harnessServiceClient) CreateSession(ctx context.Context, in *CreateSessionRequest, opts ...grpc.CallOption) (*CreateSessionResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(CreateSessionResponse)
 	err := c.cc.Invoke(ctx, HarnessService_CreateSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) GetServerInfo(ctx context.Context, in *GetServerInfoRequest, opts ...grpc.CallOption) (*GetServerInfoResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(GetServerInfoResponse)
+	err := c.cc.Invoke(ctx, HarnessService_GetServerInfo_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -463,6 +575,16 @@ func (c *harnessServiceClient) DeleteSession(ctx context.Context, in *DeleteSess
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
 	out := new(DeleteSessionResponse)
 	err := c.cc.Invoke(ctx, HarnessService_DeleteSession_FullMethodName, in, out, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	return out, nil
+}
+
+func (c *harnessServiceClient) CompactSession(ctx context.Context, in *CompactSessionRequest, opts ...grpc.CallOption) (*CompactSessionResponse, error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	out := new(CompactSessionResponse)
+	err := c.cc.Invoke(ctx, HarnessService_CompactSession_FullMethodName, in, out, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -639,6 +761,25 @@ func (c *harnessServiceClient) StreamSessionLive(ctx context.Context, in *Stream
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type HarnessService_StreamSessionLiveClient = grpc.ServerStreamingClient[Event]
+
+func (c *harnessServiceClient) WatchSessionEvents(ctx context.Context, in *WatchSessionEventsRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[WatchSessionEventsResponse], error) {
+	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
+	stream, err := c.cc.NewStream(ctx, &HarnessService_ServiceDesc.Streams[3], HarnessService_WatchSessionEvents_FullMethodName, cOpts...)
+	if err != nil {
+		return nil, err
+	}
+	x := &grpc.GenericClientStream[WatchSessionEventsRequest, WatchSessionEventsResponse]{ClientStream: stream}
+	if err := x.ClientStream.SendMsg(in); err != nil {
+		return nil, err
+	}
+	if err := x.ClientStream.CloseSend(); err != nil {
+		return nil, err
+	}
+	return x, nil
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type HarnessService_WatchSessionEventsClient = grpc.ServerStreamingClient[WatchSessionEventsResponse]
 
 func (c *harnessServiceClient) ListSessions(ctx context.Context, in *ListSessionsRequest, opts ...grpc.CallOption) (*ListSessionsResponse, error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
@@ -982,7 +1123,7 @@ func (c *harnessServiceClient) CancelTeammate(ctx context.Context, in *CancelTea
 
 func (c *harnessServiceClient) RunTeam(ctx context.Context, in *RunTeamRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[TeamEvent], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &HarnessService_ServiceDesc.Streams[3], HarnessService_RunTeam_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &HarnessService_ServiceDesc.Streams[4], HarnessService_RunTeam_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1021,7 +1162,7 @@ func (c *harnessServiceClient) CleanupTeam(ctx context.Context, in *CleanupTeamR
 
 func (c *harnessServiceClient) ApprovePlan(ctx context.Context, in *ApprovePlanRequest, opts ...grpc.CallOption) (grpc.ServerStreamingClient[Event], error) {
 	cOpts := append([]grpc.CallOption{grpc.StaticMethod()}, opts...)
-	stream, err := c.cc.NewStream(ctx, &HarnessService_ServiceDesc.Streams[4], HarnessService_ApprovePlan_FullMethodName, cOpts...)
+	stream, err := c.cc.NewStream(ctx, &HarnessService_ServiceDesc.Streams[5], HarnessService_ApprovePlan_FullMethodName, cOpts...)
 	if err != nil {
 		return nil, err
 	}
@@ -1045,8 +1186,31 @@ type HarnessService_ApprovePlanClient = grpc.ServerStreamingClient[Event]
 // HarnessService is the mecatl API: unary session setup/inspection plus
 // the bidi Converse stream that drives one agent run.
 type HarnessServiceServer interface {
+	// GetCompatibilityInfo returns the deployment's compatibility descriptor: the
+	// API major, the operator-enabled ServerCapabilities, the build's supported
+	// feature identifiers, and an optional operator-set deployment label. It is
+	// the FIRST call a client makes — it answers "what may I do with this
+	// server?" WITHOUT creating a probe session (the ServerCapabilities echo
+	// otherwise rides CreateSessionResponse only).
+	//
+	// DISTINCT FROM GetServerInfo below, deliberately. That RPC answers "which
+	// BUILD is this?" and ADR 0245 draws an explicit privacy boundary around it:
+	// its response must never carry capabilities, configuration, or auth details.
+	// This one is exactly those things — negotiation input, not identity — so
+	// folding the two would either breach that boundary or overload one message
+	// with two audiences. Build identity therefore lives ONLY on GetServerInfo,
+	// and a client that wants both makes both calls.
+	//
+	// A server that does not implement this RPC (UNIMPLEMENTED) is below the
+	// SDK compatibility floor; a client fails loudly rather than inferring a
+	// legacy mode. Authenticated like every other RPC, so UNAUTHENTICATED and
+	// UNIMPLEMENTED stay distinguishable. See ADR 0248.
+	GetCompatibilityInfo(context.Context, *GetCompatibilityInfoRequest) (*GetCompatibilityInfoResponse, error)
 	// CreateSession allocates a new server-side session and returns its id.
 	CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error)
+	// GetServerInfo returns only the composed server build identity. It is authenticated
+	// like every HarnessService operation and does not inspect configuration or state.
+	GetServerInfo(context.Context, *GetServerInfoRequest) (*GetServerInfoResponse, error)
 	// GetSession returns a snapshot of an existing session.
 	GetSession(context.Context, *GetSessionRequest) (*GetSessionResponse, error)
 	// GetSessionTranscript returns the authoritative, snapshot-derived human
@@ -1065,6 +1229,9 @@ type HarnessServiceServer interface {
 	RenameSession(context.Context, *RenameSessionRequest) (*RenameSessionResponse, error)
 	// DeleteSession physically removes an idle main session and its sidecars.
 	DeleteSession(context.Context, *DeleteSessionRequest) (*DeleteSessionResponse, error)
+	// CompactSession applies one manual compaction pass to an owned main-chat
+	// session at a turn boundary. It creates no model turn.
+	CompactSession(context.Context, *CompactSessionRequest) (*CompactSessionResponse, error)
 	// ForkSession creates a new peer session whose conversation history is a
 	// snapshot of an existing session's, inheriting the source's mode, workspace,
 	// limits, and provider/model/profile labels. Same provider and model only;
@@ -1183,6 +1350,68 @@ type HarnessServiceServer interface {
 	// (absence is data — a never-created id is indistinguishable from a session
 	// with no live events yet).
 	StreamSessionLive(*StreamSessionLiveRequest, grpc.ServerStreamingServer[Event]) error
+	// WatchSessionEvents is the DURABLE replay-then-follow stream: one operation
+	// that replays a session's durable event log from a position, transitions to
+	// live, and keeps following as the run appends (issue #821, ADR 0250).
+	//
+	// It exists because neither existing read path can do this. StreamSessionEvents
+	// is a complete, ordered replay with NO position and NO follow — it reads the
+	// whole log and stops, so a client that wants to catch up and then watch must
+	// read everything and THEN subscribe, and any event appended between those two
+	// steps is silently lost. StreamSessionLive is live but process-local,
+	// in-memory, and non-durable: a second replica sees nothing, a reconnecting tab
+	// sees nothing that happened while it was away, and a slow subscriber has its
+	// events DROPPED. Both remain, unchanged, for the callers that want exactly
+	// their semantics.
+	//
+	// CURSOR. `cursor` is an OPAQUE resume token meaning "I have durably received
+	// everything up to here". Treat it as bytes to hand back — never parse, build,
+	// or edit one. An EMPTY cursor means THE BEGINNING OF THE LOG, which is a real
+	// value and the common case (a client attaching for the first time wants
+	// replay-then-follow). A cursor from a superseded log generation returns
+	// `cursor_expired` (the log was deleted and recreated); one that cannot be
+	// decoded returns `cursor_malformed`. Neither is ever coerced to a position:
+	// resuming from approximately the right place is indistinguishable from
+	// resuming from the right place until data is already lost.
+	//
+	// PHASE is an OPEN STRING, not an enum — `replay`, `live`, `gap` today, and a
+	// client must tolerate a value it does not know (the same discipline the event
+	// `type`/`stop` fields already carry). `replay` records were already durable
+	// when the watch attached; `live` records arrived after it caught up. Exactly
+	// one PHASE-ONLY `live` frame (no `event`, cursor set) marks the replay to live
+	// boundary, so a client can render the transcript and then show a live view
+	// WITHOUT waiting for the next event to arrive — on an idle session that event
+	// may never come. `gap` marks a position where a durable append is KNOWN to
+	// have failed; it too carries no `event`, because a gap is a fact about
+	// DELIVERY rather than something that happened in the run (ADR 0250 decision
+	// 5 — this is why neither `session.Event` nor the `Event` message gains a gap
+	// field).
+	//
+	// RELAY DISCIPLINE mirrors StreamSessionEvents, NOT the live wire: this is the
+	// READ-BACK of the durable log, so it relays ALL events including the three
+	// log-only kinds (`approval`/`compaction_archive`/`user_prompt`) — a client
+	// replaying a session wants the verdicts and prompts, as they ARE the
+	// transcript. They are metadata-only/redacted by construction.
+	//
+	// `run_id` optionally narrows delivery to ONE run (ADR 0249). Gap frames are
+	// delivered regardless of the filter: a failed append leaves nothing to
+	// attribute to a run, so suppressing it would hide a real gap.
+	//
+	// TERMINATION. A watch ends when the client cancels, or with an error that says
+	// what to do next. A client that falls too far behind is TERMINATED with
+	// `watch_lagging` rather than having its events dropped — the cursor exists
+	// precisely so that termination is recoverable: reconnect with the last cursor
+	// received and nothing is lost. A durable append failure terminates the
+	// watchers in that process with `activity_gap` and never advances their cursor.
+	// In BOTH cases the run continues normally: a broken or slow watch must never
+	// break a live run, and a watcher never backpressures one.
+	//
+	// A server with no durable EventLog returns `no_event_log`; one whose log does
+	// not implement the cursor seam returns `watch_unsupported` — never a silent
+	// degrade to replaying the whole transcript, because a client asking to resume
+	// from a position and being handed everything is a correctness problem dressed
+	// as a performance one. Ownership is enforced exactly as on GetSession.
+	WatchSessionEvents(*WatchSessionEventsRequest, grpc.ServerStreamingServer[WatchSessionEventsResponse]) error
 	// ListSessions returns the stored-session inventory — the picker metadata a
 	// client renders to let an operator open an EXISTING session by id (issue #245
 	// Phase 1). It is backed by `port.PrunableStore.List` (type-asserted on the
@@ -1333,8 +1562,14 @@ type HarnessServiceServer interface {
 // pointer dereference when methods are called.
 type UnimplementedHarnessServiceServer struct{}
 
+func (UnimplementedHarnessServiceServer) GetCompatibilityInfo(context.Context, *GetCompatibilityInfoRequest) (*GetCompatibilityInfoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetCompatibilityInfo not implemented")
+}
 func (UnimplementedHarnessServiceServer) CreateSession(context.Context, *CreateSessionRequest) (*CreateSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method CreateSession not implemented")
+}
+func (UnimplementedHarnessServiceServer) GetServerInfo(context.Context, *GetServerInfoRequest) (*GetServerInfoResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method GetServerInfo not implemented")
 }
 func (UnimplementedHarnessServiceServer) GetSession(context.Context, *GetSessionRequest) (*GetSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method GetSession not implemented")
@@ -1353,6 +1588,9 @@ func (UnimplementedHarnessServiceServer) RenameSession(context.Context, *RenameS
 }
 func (UnimplementedHarnessServiceServer) DeleteSession(context.Context, *DeleteSessionRequest) (*DeleteSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method DeleteSession not implemented")
+}
+func (UnimplementedHarnessServiceServer) CompactSession(context.Context, *CompactSessionRequest) (*CompactSessionResponse, error) {
+	return nil, status.Errorf(codes.Unimplemented, "method CompactSession not implemented")
 }
 func (UnimplementedHarnessServiceServer) ForkSession(context.Context, *ForkSessionRequest) (*ForkSessionResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ForkSession not implemented")
@@ -1398,6 +1636,9 @@ func (UnimplementedHarnessServiceServer) StreamSessionEvents(*StreamSessionEvent
 }
 func (UnimplementedHarnessServiceServer) StreamSessionLive(*StreamSessionLiveRequest, grpc.ServerStreamingServer[Event]) error {
 	return status.Errorf(codes.Unimplemented, "method StreamSessionLive not implemented")
+}
+func (UnimplementedHarnessServiceServer) WatchSessionEvents(*WatchSessionEventsRequest, grpc.ServerStreamingServer[WatchSessionEventsResponse]) error {
+	return status.Errorf(codes.Unimplemented, "method WatchSessionEvents not implemented")
 }
 func (UnimplementedHarnessServiceServer) ListSessions(context.Context, *ListSessionsRequest) (*ListSessionsResponse, error) {
 	return nil, status.Errorf(codes.Unimplemented, "method ListSessions not implemented")
@@ -1534,6 +1775,24 @@ func RegisterHarnessServiceServer(s grpc.ServiceRegistrar, srv HarnessServiceSer
 	s.RegisterService(&HarnessService_ServiceDesc, srv)
 }
 
+func _HarnessService_GetCompatibilityInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetCompatibilityInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).GetCompatibilityInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_GetCompatibilityInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).GetCompatibilityInfo(ctx, req.(*GetCompatibilityInfoRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
 func _HarnessService_CreateSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(CreateSessionRequest)
 	if err := dec(in); err != nil {
@@ -1548,6 +1807,24 @@ func _HarnessService_CreateSession_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HarnessServiceServer).CreateSession(ctx, req.(*CreateSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_GetServerInfo_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(GetServerInfoRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).GetServerInfo(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_GetServerInfo_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).GetServerInfo(ctx, req.(*GetServerInfoRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1656,6 +1933,24 @@ func _HarnessService_DeleteSession_Handler(srv interface{}, ctx context.Context,
 	}
 	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
 		return srv.(HarnessServiceServer).DeleteSession(ctx, req.(*DeleteSessionRequest))
+	}
+	return interceptor(ctx, in, info, handler)
+}
+
+func _HarnessService_CompactSession_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
+	in := new(CompactSessionRequest)
+	if err := dec(in); err != nil {
+		return nil, err
+	}
+	if interceptor == nil {
+		return srv.(HarnessServiceServer).CompactSession(ctx, in)
+	}
+	info := &grpc.UnaryServerInfo{
+		Server:     srv,
+		FullMethod: HarnessService_CompactSession_FullMethodName,
+	}
+	handler := func(ctx context.Context, req interface{}) (interface{}, error) {
+		return srv.(HarnessServiceServer).CompactSession(ctx, req.(*CompactSessionRequest))
 	}
 	return interceptor(ctx, in, info, handler)
 }
@@ -1904,6 +2199,17 @@ func _HarnessService_StreamSessionLive_Handler(srv interface{}, stream grpc.Serv
 
 // This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
 type HarnessService_StreamSessionLiveServer = grpc.ServerStreamingServer[Event]
+
+func _HarnessService_WatchSessionEvents_Handler(srv interface{}, stream grpc.ServerStream) error {
+	m := new(WatchSessionEventsRequest)
+	if err := stream.RecvMsg(m); err != nil {
+		return err
+	}
+	return srv.(HarnessServiceServer).WatchSessionEvents(m, &grpc.GenericServerStream[WatchSessionEventsRequest, WatchSessionEventsResponse]{ServerStream: stream})
+}
+
+// This type alias is provided for backwards compatibility with existing code that references the prior non-generic stream type by name.
+type HarnessService_WatchSessionEventsServer = grpc.ServerStreamingServer[WatchSessionEventsResponse]
 
 func _HarnessService_ListSessions_Handler(srv interface{}, ctx context.Context, dec func(interface{}) error, interceptor grpc.UnaryServerInterceptor) (interface{}, error) {
 	in := new(ListSessionsRequest)
@@ -2583,8 +2889,16 @@ var HarnessService_ServiceDesc = grpc.ServiceDesc{
 	HandlerType: (*HarnessServiceServer)(nil),
 	Methods: []grpc.MethodDesc{
 		{
+			MethodName: "GetCompatibilityInfo",
+			Handler:    _HarnessService_GetCompatibilityInfo_Handler,
+		},
+		{
 			MethodName: "CreateSession",
 			Handler:    _HarnessService_CreateSession_Handler,
+		},
+		{
+			MethodName: "GetServerInfo",
+			Handler:    _HarnessService_GetServerInfo_Handler,
 		},
 		{
 			MethodName: "GetSession",
@@ -2609,6 +2923,10 @@ var HarnessService_ServiceDesc = grpc.ServiceDesc{
 		{
 			MethodName: "DeleteSession",
 			Handler:    _HarnessService_DeleteSession_Handler,
+		},
+		{
+			MethodName: "CompactSession",
+			Handler:    _HarnessService_CompactSession_Handler,
 		},
 		{
 			MethodName: "ForkSession",
@@ -2818,6 +3136,11 @@ var HarnessService_ServiceDesc = grpc.ServiceDesc{
 		{
 			StreamName:    "StreamSessionLive",
 			Handler:       _HarnessService_StreamSessionLive_Handler,
+			ServerStreams: true,
+		},
+		{
+			StreamName:    "WatchSessionEvents",
+			Handler:       _HarnessService_WatchSessionEvents_Handler,
 			ServerStreams: true,
 		},
 		{

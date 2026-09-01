@@ -9,10 +9,12 @@
     method func (*BashStatusTool).ReadOnly() bool
     method func (*BashStatusTool).Spec() tool.ToolSpec
     method func (*Engine).Capabilities() port.ProviderCapabilities
+    method func (*Engine).CompactSession(ctx context.Context, sess *session.Session) (ManualCompactionResult, error)
     method func (*Engine).ContextWindow() int
     method func (*Engine).HasTool(name string) bool
     method func (*Engine).Model() string
     method func (*Engine).ResumeApproval(ctx context.Context, sess *session.Session, env tool.Environment, askID string, verdict session.ApprovalVerdict) *Run
+    method func (*Engine).RetryFailedStep(ctx context.Context, sess *session.Session, env tool.Environment) *Run
     method func (*Engine).Run(ctx context.Context, sess *session.Session, env tool.Environment, req RunRequest) *Run
     method func (*Engine).SteerEnabled() bool
     method func (*EvidenceReflector).Reflect(ctx context.Context, in learning.Input) (learning.Outcome, error)
@@ -34,8 +36,9 @@
     method func (*Run).Cancel()
     method func (*Run).CancelChild(childID string) bool
     method func (*Run).CancelSteer() (SteerOutcome, error)
-    method func (*Run).EnqueueSteer(text string) (SteerOutcome, error)
+    method func (*Run).EnqueueSteer(text string, parts []session.Content) (SteerOutcome, error)
     method func (*Run).Events() <-chan session.Event
+    method func (*Run).RunID() string
     method func (*ScheduleQueryTool).Execute(ctx context.Context, call session.ToolCall, _ tool.Environment) (session.ToolResult, error)
     method func (*ScheduleQueryTool).ReadOnly() bool
     method func (*ScheduleQueryTool).Spec() tool.ToolSpec
@@ -97,13 +100,10 @@ const StopReasonCancelled MemberStopReason = "cancelled"
 const StopReasonError MemberStopReason = "error"
 const SubagentSessionPrefix untyped string = "subagent-"
 const TeamSessionPrefix untyped string = "team-"
-const UntrustedFence untyped string = "<<<UNTRUSTED"
 func DefaultChildLimits() session.Limits
-func FenceUntrusted(body string) string
 func MemberSessionID(teamID string, member string) session.SessionID
 func MemberToolNames() map[string]struct{}
 func MemberTools(t *team.Team, self string, hooks port.HookRunner) []tool.Tool
-func NeutraliseFraming(s string) string
 func NewBashStatusTool() tool.Tool
 func NewBashTool() tool.Tool
 func NewEngine(deps Deps) *Engine
@@ -135,6 +135,7 @@ func TightenTeamTokenBudget(serverBudget int, request int) int
 func WithAgentEngines(engines map[string]*Engine, meta []AgentMeta) SubagentOption
 func WithAgentModelEngineFactory(f func(agentName string, model string) (*Engine, bool)) SubagentOption
 func WithAgentWritableEngineFactory(f func(agentName string) (*Engine, bool)) SubagentOption
+func WithAgentWritableModelEngineFactory(f func(agentName string, model string) (*Engine, bool)) SubagentOption
 func WithAskReviewPolicy(p string) EngineAskReviewerOption
 func WithAutoMerge(m tool.EnvironmentMerger) ParallelOption
 func WithChildForker(f tool.EnvironmentForker) SubagentOption
@@ -162,6 +163,7 @@ func WithParallelStore(store port.SessionStore) ParallelOption
 func WithParallelSubagentStopHook(h port.HookRunner) ParallelOption
 func WithPinnedAgents(names []string) SubagentOption
 func WithReadOnlyForker(f tool.EnvironmentForker) SupervisorOption
+func WithRootAuthority(authority session.Authority) SupervisorOption
 func WithRoutableAgents(names []string) SubagentOption
 func WithSharedChildWorkspace(f func(root string) tool.Workspace) SubagentOption
 func WithSubagentEngineFactory(f func(model string) (*Engine, bool)) SubagentOption
@@ -175,6 +177,7 @@ func WithTeamGoal(goal string) SupervisorOption
 func WithTeamHooks(h port.HookRunner) SupervisorOption
 func WithTeamLimits(l session.Limits) SupervisorOption
 func WithTeamMode(m session.PermissionMode) SupervisorOption
+func WithTeamOwner(owner *session.Principal) SupervisorOption
 func WithTeamSharedBaseWorkspace(f func(root string) tool.Workspace) SupervisorOption
 func WithTeamTokenBudget(n int) SupervisorOption
 func WithTeamToolForker(f tool.EnvironmentForker) TeamOption
@@ -187,8 +190,7 @@ func WithUntrustedGoal(untrusted bool) SupervisorOption
 func WithWinnerReaper(s PreservedForkStore) ParallelOption
 func WithWritableChildEngine(e *Engine) SubagentOption
 func WithWritableEngineFactory(f func(model string) (*Engine, bool)) SubagentOption
-func WriteUntrustedBlock(b *strings.Builder, body string)
-type AgentMeta struct{Name string; Description string; Limits session.Limits}
+type AgentMeta struct{Name string; Description string; Limits session.Limits; AuthorityCeiling governance.CapabilitySet; WritableAuthorityCeiling governance.CapabilitySet; Managed bool}
 type BashStatusTool struct{}
 type BashTool struct{}
 type BranchJudge interface{Judge(ctx context.Context, candidates []BranchSummary, criteria string) (winner int, rationale string, err error)}
@@ -198,7 +200,8 @@ type ChildAskReview struct{Allowed bool; Reason string}
 type ChildAskReviewRequest struct{Ask session.PendingAsk; Isolated bool}
 type ChildAskReviewer interface{Review(ctx context.Context, req ChildAskReviewRequest) (ChildAskReview, error)}
 type Compactor interface{Compact(ctx context.Context, conv *session.Conversation) (compacted []session.Message, summary string, err error)}
-type Deps struct{LLM port.LLMProvider; Catalog *tool.Catalog; Policy port.PermissionPolicy; Hooks port.HookRunner; Store port.SessionStore; SessionLiveness port.SessionLiveness; Clock port.Clock; ToolCallRecorder port.ToolCallRecorder; Sink port.EventSink; Diagnostics port.Diagnostics; LearningMode learning.Mode; LearningObserver learning.Observer; Compactor Compactor; TokenCounter TokenCounter; Instructions prompt.InstructionAssembler; CommandExpander prompt.CommandExpander; PromptConfig prompt.Config; PromptBuilder prompt.Builder; OperatorProfileSource prompt.OperatorProfileSource; Model string; ContextWindow func() int; CompactionRatio float64; Role string; MaxNoProgressNudges int; Interactive bool; PlanModeAutoApprove bool; ChildAskReviewer ChildAskReviewer; ChildAskReviewMaxDenies int; MaxRunTokens int; SubagentModelRouter func(ctx context.Context, taskPrompt string) (category string, model string, usage session.Usage, missReason string, ok bool); ProgressiveTools bool; DeliveryQueue port.DeliveryQueue; EnableSteer bool}
+type DelegationTightening struct{Tools []string "json:\"tools,omitempty\""; RemainingDelegationDepth *int "json:\"remaining_delegation_depth,omitempty\""; FileSystem *bool "json:\"filesystem,omitempty\""; DirectWrite *bool "json:\"direct_write,omitempty\""}
+type Deps struct{LLM port.LLMProvider; Catalog *tool.Catalog; Policy port.PermissionPolicy; AuthorityEvaluator port.AuthorityEvaluator; Hooks port.HookRunner; Store port.SessionStore; SessionLiveness port.SessionLiveness; Clock port.Clock; ToolCallRecorder port.ToolCallRecorder; Sink port.EventSink; EnableDurableEvidence bool; Diagnostics port.Diagnostics; LearningMode learning.Mode; LearningObserver learning.Observer; Compactor Compactor; TokenCounter TokenCounter; Instructions prompt.InstructionAssembler; CommandExpander prompt.CommandExpander; PromptConfig prompt.Config; PromptBuilder prompt.Builder; OperatorProfileSource prompt.OperatorProfileSource; Model string; ContextWindow func() int; CompactionRatio float64; Role string; MaxNoProgressNudges int; Interactive bool; PlanModeAutoApprove bool; ChildAskReviewer ChildAskReviewer; ChildAskReviewMaxDenies int; MaxRunTokens int; SubagentModelRouter func(ctx context.Context, taskPrompt string) (category string, model string, usage session.Usage, missReason string, ok bool); ProgressiveTools bool; DeliveryQueue port.DeliveryQueue; EnableSteer bool}
 type Engine struct{}
 type EngineAskReviewerOption func(*engineAskReviewer)
 type EngineJudgeOption func(*engineJudge)
@@ -208,6 +211,7 @@ type HeuristicTokenCounter struct{CharsPerToken int}
 type InspectMemberTool struct{}
 type InspectSubagentTool struct{}
 type LRUForkReaper struct{}
+type ManualCompactionResult struct{Changed bool; Archive []session.Message; Summary string}
 type MemberBuild struct{Engine *Engine; Mode session.PermissionMode; Limits session.Limits; Close func() error; MCPToolNames []string; IsolateReadOnly bool}
 type MemberDisposition string
 type MemberEngine func(spec MemberSpec, routedModel string) MemberBuild
@@ -221,7 +225,7 @@ type ParallelTool struct{}
 type PreservedForkStore interface{Preserve(root string, cleanup func() error)}
 type ReflectionLimits struct{InputBytes int; Events int; Existing int; Candidates int; EvidencePerCandidate int; OutputBytes int; Tokens int; Timeout time.Duration}
 type Run struct{}
-type RunRequest struct{Text string; Parts []session.Content; MaxRunTokensOverride int; ExtraTools []tool.Tool; AskIDDiscriminator string}
+type RunRequest struct{Text string; Parts []session.Content; MaxRunTokensOverride int; ExtraTools []tool.Tool; RunID string; AskIDDiscriminator string}
 type ScheduleQueryTool struct{}
 type ScheduleTool struct{}
 type SteerOutcome string
@@ -230,7 +234,7 @@ type SubagentStatusTool struct{}
 type SubagentTool struct{}
 type Supervisor struct{}
 type SupervisorOption func(*Supervisor)
-type TeamEvent struct{Member string; MemberSessionID string; Event session.Event; ContextWindow int}
+type TeamEvent struct{Member string; MemberSessionID string; MemberIncarnation session.IncarnationID; Event session.Event; ContextWindow int}
 type TeamMemberArg struct{Name string "json:\"name\""; Role string "json:\"role\""; Mutating bool "json:\"mutating,omitempty\""}
 type TeamMemberEngineFactory func(t *team.Team, spec MemberSpec, routedModel string) MemberBuild
 type TeamOption func(*TeamTool)

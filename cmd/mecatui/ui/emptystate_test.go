@@ -7,10 +7,6 @@ import (
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
 )
 
-// emptyMCPState is an MCP overlay state with a finished (non-loading) empty
-// fetch — the "nothing to show" condition the caps-aware copy disambiguates.
-func emptyMCPState(v mcpView) mcpState { return mcpState{view: v} }
-
 // TestMCPEmptyStateCapsAware is the Option-C payoff: the SAME empty inventory
 // reads "not enabled" when caps.MCP is false and "configured but empty" when
 // caps.MCP is true, across the panel/resources/prompts views.
@@ -31,7 +27,9 @@ func TestMCPEmptyStateCapsAware(t *testing.T) {
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			offOut := stripANSIstr(renderMCPOverlay(th, emptyMCPState(tc.view), off, defaultHelpKeys(), 100, 24))
+			offSt := &mcpState{view: tc.view, deps: surfaceDeps{theme: th, caps: off, marks: defaultHelpKeys()}}
+			offBody, _ := offSt.Render(100, 24)
+			offOut := stripANSIstr(offBody)
 			if !strings.Contains(offOut, tc.offWant) {
 				t.Errorf("MCP off: want %q in:\n%s", tc.offWant, offOut)
 			}
@@ -39,7 +37,9 @@ func TestMCPEmptyStateCapsAware(t *testing.T) {
 			if !strings.Contains(offOut, "Run a full mecated") {
 				t.Errorf("MCP off copy should carry the remedy:\n%s", offOut)
 			}
-			onOut := stripANSIstr(renderMCPOverlay(th, emptyMCPState(tc.view), on, defaultHelpKeys(), 100, 24))
+			onSt := &mcpState{view: tc.view, deps: surfaceDeps{theme: th, caps: on, marks: defaultHelpKeys()}}
+			onBody, _ := onSt.Render(100, 24)
+			onOut := stripANSIstr(onBody)
 			if !strings.Contains(onOut, tc.onWant) {
 				t.Errorf("MCP on-but-empty: want %q in:\n%s", tc.onWant, onOut)
 			}
@@ -57,9 +57,10 @@ func TestSkillsEmptyStateCapsAware(t *testing.T) {
 	th := aztec()
 	off := client.Capabilities{}            // skills off
 	on := client.Capabilities{Skills: true} // skills on, but inventory empty
-	emptyPanel := skillsState{view: skillsPanel}
 
-	offOut := stripANSIstr(renderSkillsOverlay(th, emptyPanel, off, defaultHelpKeys(), 100, 24))
+	offPanel := &skillsState{view: skillsPanel, deps: surfaceDeps{theme: th, caps: off, marks: defaultHelpKeys()}}
+	offBody, _ := offPanel.Render(100, 24)
+	offOut := stripANSIstr(offBody)
 	if !strings.Contains(offOut, "Skills are not enabled on this server") {
 		t.Errorf("skills off: want 'not enabled' copy in:\n%s", offOut)
 	}
@@ -67,7 +68,9 @@ func TestSkillsEmptyStateCapsAware(t *testing.T) {
 		t.Errorf("skills off copy should carry the remedy:\n%s", offOut)
 	}
 
-	onOut := stripANSIstr(renderSkillsOverlay(th, emptyPanel, on, defaultHelpKeys(), 100, 24))
+	onPanel := &skillsState{view: skillsPanel, deps: surfaceDeps{theme: th, caps: on, marks: defaultHelpKeys()}}
+	onBody, _ := onPanel.Render(100, 24)
+	onOut := stripANSIstr(onBody)
 	if !strings.Contains(onOut, "No skills configured on this server") {
 		t.Errorf("skills on-but-empty: want 'none configured' copy in:\n%s", onOut)
 	}

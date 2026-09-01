@@ -1,6 +1,8 @@
 {{- include "mecak8s.validateImage" . -}}
 {{- include "mecak8s.validateRedis" . -}}
 {{- include "mecak8s.validateOIDC" . -}}
+{{- include "mecak8s.validateTLS" . -}}
+{{- include "mecak8s.validateProviderSecurity" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -16,11 +18,51 @@ spec:
   template:
     metadata:
       labels: {{- include "mecak8s.selectorLabels" . | nindent 8 }}
-      annotations: {{- toYaml .Values.podAnnotations | nindent 8 }}
+      {{- $chartAnnotations := dict }}
+      {{- if and (not .Values.mockProvider) .Values.security.allowUnsafeRealProvider }}
+      {{- $_ := set $chartAnnotations "mecatl.stacklok.com/unsafe-real-provider" "true" }}
+      {{- end }}
+      {{- if and (not .Values.mockProvider) (not .Values.security.allowUnsafeRealProvider) .Values.security.tlsTerminatedUpstream }}
+      {{- $_ := set $chartAnnotations "mecatl.stacklok.com/tls-terminated-upstream" "true" }}
+      {{- end }}
+      {{- $userAnnotations := omit (deepCopy .Values.podAnnotations) "mecatl.stacklok.com/unsafe-real-provider" "mecatl.stacklok.com/tls-terminated-upstream" }}
+      {{- if or $userAnnotations $chartAnnotations }}
+      annotations:
+        {{- with $userAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+        {{- with $chartAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- else }}
+      annotations: {}
+      {{- end }}
     spec:
       serviceAccountName: {{ include "mecak8s.fullname" . }}
       automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
       terminationGracePeriodSeconds: 60
+      {{- with .Values.topologySpreadConstraints }}
+      topologySpreadConstraints:
+        {{- range . }}
+        {{- $constraint := deepCopy . }}
+        {{- if not (hasKey $constraint "labelSelector") }}
+        {{- $_ := set $constraint "labelSelector" (dict "matchLabels" (include "mecak8s.selectorLabels" $ | fromYaml)) }}
+        {{- end }}
+        - {{ toYaml $constraint | nindent 10 | trim }}
+        {{- end }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations: {{- toYaml . | nindent 8 }}
+      {{- end }}
       securityContext:
         runAsNonRoot: true
         runAsUser: 65532
@@ -29,15 +71,30 @@ spec:
         seccompProfile: {type: RuntimeDefault}
       containers:
         - name: agent
-          image: {{ if .Values.image.digest }}{{ .Values.image.repository }}@{{ .Values.image.digest }}{{ else }}{{ .Values.image.repository }}:{{ .Values.image.tag }}{{ end }}
+          image: {{ if .Values.image.digest }}{{ .Values.image.repository }}@{{ .Values.image.digest }}{{ else }}{{ .Values.image.repository }}:{{ default (printf "v%s" .Chart.Version) .Values.image.tag }}{{ end }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
           args:
             - --grpc-addr=0.0.0.0:8080
             - --http-addr=0.0.0.0:8081
-            - --redis-url={{ .Values.redis.endpoint }}
-            - --session-lease-k8s-namespace={{ .Release.Namespace }}
+            - {{ printf "--redis-url=%s" .Values.redis.endpoint | quote }}
+            - {{ printf "--session-lease-k8s-namespace=%s" .Release.Namespace | quote }}
             - --headless=true
             - --posture=auto
+            {{- if .Values.defaultProvider }}
+            - {{ printf "--default-provider=%s" .Values.defaultProvider | quote }}
+            {{- end }}
+            {{- if .Values.model }}
+            - {{ printf "--model=%s" .Values.model | quote }}
+            {{- end }}
+            {{- if ne .Values.maxRunTokens nil }}
+            - {{ printf "--max-run-tokens=%v" .Values.maxRunTokens | quote }}
+            {{- end }}
+            {{- if ne .Values.maxTeamTokens nil }}
+            - {{ printf "--max-team-tokens=%v" .Values.maxTeamTokens | quote }}
+            {{- end }}
+            {{- if .Values.workspace }}
+            - {{ printf "--workspace=%s" .Values.workspace | quote }}
+            {{- end }}
             {{- if .Values.mockProvider }}
             - --mock
             {{- end }}
@@ -45,25 +102,44 @@ spec:
             - --redis-allow-plaintext
             {{- else }}
             {{- if .Values.redis.usernameKey }}
-            - --redis-username-file=/var/run/secrets/redis/{{ .Values.redis.usernameKey }}
+            - {{ printf "--redis-username-file=/var/run/secrets/redis/%s" .Values.redis.usernameKey | quote }}
             {{- end }}
             {{- if .Values.redis.passwordKey }}
-            - --redis-password-file=/var/run/secrets/redis/{{ .Values.redis.passwordKey }}
+            - {{ printf "--redis-password-file=/var/run/secrets/redis/%s" .Values.redis.passwordKey | quote }}
             {{- end }}
             {{- if .Values.redis.caKey }}
-            - --redis-tls-ca=/var/run/secrets/redis/{{ .Values.redis.caKey }}
+            - {{ printf "--redis-tls-ca=/var/run/secrets/redis/%s" .Values.redis.caKey | quote }}
             {{- else }}
             - --redis-tls
             {{- end }}
             {{- end }}
             {{- if .Values.oidc.enabled }}
-            - --oidc-issuer={{ .Values.oidc.issuer }}
-            - --oidc-audience={{ .Values.oidc.audience }}
+            - {{ printf "--oidc-issuer=%s" .Values.oidc.issuer | quote }}
+            - {{ printf "--oidc-audience=%s" .Values.oidc.audience | quote }}
             {{- if .Values.oidc.jwksURI }}
-            - --oidc-jwks-uri={{ .Values.oidc.jwksURI }}
+            - {{ printf "--oidc-jwks-uri=%s" .Values.oidc.jwksURI | quote }}
             {{- end }}
-            - --oidc-max-jwks-staleness={{ .Values.oidc.maxJWKSStaleness }}
+            {{- if .Values.oidc.caSecret }}
+            - {{ printf "--oidc-ca-cert-file=/var/run/secrets/oidc-ca/%s" .Values.oidc.caKey | quote }}
             {{- end }}
+            {{- if .Values.oidc.allowPrivateHTTPSIssuer }}
+            - --oidc-allow-private-https-issuer
+            {{- end }}
+            - {{ printf "--oidc-max-jwks-staleness=%s" .Values.oidc.maxJWKSStaleness | quote }}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - {{ printf "--tls-cert=/var/run/secrets/tls/%s" .Values.tls.certKey | quote }}
+            - {{ printf "--tls-key=/var/run/secrets/tls/%s" .Values.tls.keyKey | quote }}
+            {{- end }}
+            {{- if .Values.skills.autoDiscover }}
+            - --skills-conventional=true
+            {{- end }}
+            {{- with .Values.extraArgs }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          {{- with .Values.extraEnv }}
+          env: {{- toYaml . | nindent 12 }}
+          {{- end }}
           ports:
             - {name: grpc, containerPort: 8080}
             - {name: http, containerPort: 8081}
@@ -74,23 +150,44 @@ spec:
             capabilities: {drop: ["ALL"]}
             seccompProfile: {type: RuntimeDefault}
           startupProbe:
-            httpGet: {path: /readyz, port: http}
+            httpGet:
+              scheme: {{ if .Values.tls.enabled }}HTTPS{{ else }}HTTP{{ end }}
+              path: /readyz
+              port: http
             periodSeconds: 5
             failureThreshold: 30
           readinessProbe:
-            httpGet: {path: /readyz, port: http}
+            httpGet:
+              scheme: {{ if .Values.tls.enabled }}HTTPS{{ else }}HTTP{{ end }}
+              path: /readyz
+              port: http
             periodSeconds: 5
           livenessProbe:
-            httpGet: {path: /healthz, port: http}
+            httpGet:
+              scheme: {{ if .Values.tls.enabled }}HTTPS{{ else }}HTTP{{ end }}
+              path: /healthz
+              port: http
             periodSeconds: 20
           lifecycle:
             preStop:
-              httpGet: {path: /drain, port: http}
+              httpGet:
+                scheme: {{ if .Values.tls.enabled }}HTTPS{{ else }}HTTP{{ end }}
+                path: /drain
+                port: http
           resources: {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
             - {name: tmp, mountPath: /tmp}
             {{- if include "mecak8s.redisSecretMounted" . }}
             - {name: redis-credentials, mountPath: /var/run/secrets/redis, readOnly: true}
+            {{- end }}
+            {{- if .Values.tls.enabled }}
+            - {name: tls, mountPath: /var/run/secrets/tls, readOnly: true}
+            {{- end }}
+            {{- if .Values.oidc.caSecret }}
+            - {name: oidc-ca, mountPath: /var/run/secrets/oidc-ca, readOnly: true}
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
         - name: tmp
@@ -110,4 +207,24 @@ spec:
               {{- if .Values.redis.usernameKey }}
               - {key: {{ .Values.redis.usernameKey | quote }}, path: {{ .Values.redis.usernameKey | quote }}}
               {{- end }}
+        {{- end }}
+        {{- if .Values.tls.enabled }}
+        - name: tls
+          secret:
+            secretName: {{ .Values.tls.secretName }}
+            defaultMode: 0440
+            items:
+              - {key: {{ .Values.tls.certKey | quote }}, path: {{ .Values.tls.certKey | quote }}}
+              - {key: {{ .Values.tls.keyKey | quote }}, path: {{ .Values.tls.keyKey | quote }}}
+        {{- end }}
+        {{- if .Values.oidc.caSecret }}
+        - name: oidc-ca
+          secret:
+            secretName: {{ .Values.oidc.caSecret }}
+            defaultMode: 0440
+            items:
+              - {key: {{ .Values.oidc.caKey | quote }}, path: {{ .Values.oidc.caKey | quote }}}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
         {{- end }}

@@ -19,15 +19,30 @@ import (
 	"github.com/stacklok/mecatl/cmd/mecatui/ui"
 )
 
-// resolveTransportMode is a PURE seam (no os.Args, no os.Exit, no I/O), so
-// these tests exercise the REAL production command-resolution logic directly —
-// they do NOT mutate global state, do NOT resolve a transport, and do NOT call
-// os.Exit.
+// resolveInvocation is a PURE seam (no os.Args, no os.Exit, no I/O), so these
+// tests exercise the REAL production invocation-resolution logic directly. They
+// do not mutate global state, prepare a run, or call os.Exit.
 
-// --- Requirement 1: pure resolution seam (mode + remaining + address) -------
+func TestResolveEmptyArgvIsSafeBareInvocation(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+	}{
+		{name: "nil", argv: nil},
+		{name: "empty", argv: []string{}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			res := resolveInvocation(tc.argv)
+			if res.err != nil || res.mode != modeLocal || len(res.remaining) != 0 {
+				t.Fatalf("resolution = %+v, want local with no remaining args", res)
+			}
+		})
+	}
+}
 
 func TestResolveLocalWordIsUnknownCommand(t *testing.T) {
-	res := resolveTransportMode([]string{"mecatui", "local", "--workspace", "/tmp/w"})
+	res := resolveInvocation([]string{"mecatui", "local", "--workspace", "/tmp/w"})
 	if res.err == nil {
 		t.Fatal("the retired 'local' word must fail closed as an unknown command")
 	}
@@ -40,7 +55,7 @@ func TestResolveLocalWordIsUnknownCommand(t *testing.T) {
 }
 
 func TestResolveConnectStripsCommandWordAndAddress(t *testing.T) {
-	res := resolveTransportMode([]string{"mecatui", "connect", "10.0.0.5:8080", "--workspace", "/tmp/w"})
+	res := resolveInvocation([]string{"mecatui", "connect", "10.0.0.5:8080", "--workspace", "/tmp/w"})
 	if res.err != nil {
 		t.Fatalf("connect resolution error: %v", res.err)
 	}
@@ -67,7 +82,7 @@ func TestResolveSessionsLaunchForLocalAndConnect(t *testing.T) {
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res := resolveTransportMode(tt.argv)
+			res := resolveInvocation(tt.argv)
 			if res.err != nil {
 				t.Fatalf("resolve: %v", res.err)
 			}
@@ -133,7 +148,7 @@ func TestSessionsLaunchComposesIntoStartupPickerWithoutCreatingSession(t *testin
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
-			res := resolveTransportMode(tt.argv)
+			res := resolveInvocation(tt.argv)
 			if res.err != nil {
 				t.Fatalf("resolve transport: %v", res.err)
 			}
@@ -183,7 +198,9 @@ func TestSessionsLaunchRejectsSeedAndResumeFlags(t *testing.T) {
 		args []string
 		want string
 	}{
-		{args: []string{"--prompt-file", "task.md"}, want: "--prompt-file"},
+		{
+			args: []string{"--prompt-file", "task.md"}, want: "--prompt-file",
+		},
 		{args: []string{"--resume", "session-id"}, want: "--resume"},
 		{args: []string{"--resume-latest"}, want: "--resume-latest"},
 		{args: []string{"-p", "hello"}, want: "-p/--prompt"},
@@ -230,7 +247,7 @@ func TestSessionsLaunchParserRejectsConflictsBeforePromptFileIO(t *testing.T) {
 }
 
 func TestResolveBareNoArgsIsLocal(t *testing.T) {
-	res := resolveTransportMode([]string{"mecatui"})
+	res := resolveInvocation([]string{"mecatui"})
 	if res.err != nil {
 		t.Fatalf("bare handled=%v, want nil", res.err)
 	}
@@ -243,7 +260,7 @@ func TestResolveBareNoArgsIsLocal(t *testing.T) {
 }
 
 func TestResolveLeadingFlagIsLocal(t *testing.T) {
-	res := resolveTransportMode([]string{"mecatui", "--workspace", "/tmp/w"})
+	res := resolveInvocation([]string{"mecatui", "--workspace", "/tmp/w"})
 	if res.err != nil {
 		t.Fatalf("leading-flag error: %v", res.err)
 	}
@@ -258,7 +275,7 @@ func TestResolveLeadingFlagIsLocal(t *testing.T) {
 // --- Requirement 1: connect requires ADDRESS immediately, fail closed --------
 
 func TestResolveConnectMissingAddressFailsClosed(t *testing.T) {
-	res := resolveTransportMode([]string{"mecatui", "connect"})
+	res := resolveInvocation([]string{"mecatui", "connect"})
 	if res.err == nil {
 		t.Fatal("connect with no ADDRESS must fail closed")
 	}
@@ -268,7 +285,7 @@ func TestResolveConnectMissingAddressFailsClosed(t *testing.T) {
 }
 
 func TestResolveConnectFlagFirstFailsClosed(t *testing.T) {
-	res := resolveTransportMode([]string{"mecatui", "connect", "--workspace", "/tmp/w"})
+	res := resolveInvocation([]string{"mecatui", "connect", "--workspace", "/tmp/w"})
 	if res.err == nil {
 		t.Fatal("connect with a flag-first token must fail closed")
 	}
@@ -280,7 +297,7 @@ func TestResolveConnectFlagFirstFailsClosed(t *testing.T) {
 // connect --help is a help request, not a usage error (the universal --help contract).
 func TestResolveConnectHelpPassesThrough(t *testing.T) {
 	for _, help := range []string{"--help", "-h", "--help-all"} {
-		res := resolveTransportMode([]string{"mecatui", "connect", help})
+		res := resolveInvocation([]string{"mecatui", "connect", help})
 		if res.err != nil {
 			t.Errorf("connect %s must pass through as a help request, got error: %v", help, res.err)
 		}
@@ -294,41 +311,48 @@ func TestResolveConnectHelpPassesThrough(t *testing.T) {
 }
 
 func TestResolveUnknownCommandFailsClosed(t *testing.T) {
-	res := resolveTransportMode([]string{"mecatui", "loal"})
+	res := resolveInvocation([]string{"mecatui", "loal"})
 	if res.err == nil {
 		t.Fatal("unknown command 'loal' must fail closed")
 	}
 	if !strings.Contains(res.err.Error(), "loal") {
 		t.Errorf("error %q does not name the unknown command", res.err)
 	}
-	if !strings.Contains(res.err.Error(), "Available commands") {
+	if !strings.Contains(res.err.Error(), "Available commands:") {
 		t.Errorf("error %q does not list available commands", res.err)
 	}
 }
 
-// TestResolveLoginCommand is AC #8 (issue #265): `mecatui login` resolves to
-// the login transport mode (CLI-only, no ADDRESS), passing the flag tail
-// through. It is the smoke pin that the subcommand parses; the actual OIDC
-// flow is manual-verified (AC #8).
-func TestResolveLoginCommand(t *testing.T) {
-	res := resolveTransportMode([]string{"mecatui", "login", "--skip-browser"})
-	if res.err != nil {
-		t.Fatalf("login must resolve: %v", res.err)
+// TestResolveLoginCommands pins the split login grammar: the top-level login is
+// reserved for remote addresses, while ToolHive login is explicitly nested under
+// llm.
+func TestResolveLoginCommands(t *testing.T) {
+	remote := resolveInvocation([]string{"mecatui", "login", "https://gateway.example"})
+	if remote.err != nil || remote.mode != modeRemoteLogin || remote.address != "https://gateway.example" {
+		t.Fatalf("remote login resolution = %+v, want remote address route", remote)
 	}
-	if res.mode != modeLogin {
-		t.Errorf("mode = %q, want %q", res.mode, modeLogin)
+	if got := resolveInvocation([]string{"mecatui", "login"}); got.err == nil || !strings.Contains(got.err.Error(), "mecatui login ADDRESS") {
+		t.Fatalf("bare login must fail with remote usage, got %+v", got)
 	}
-	if len(res.remaining) != 1 || res.remaining[0] != "--skip-browser" {
-		t.Errorf("remaining = %v, want [--skip-browser]", res.remaining)
+	logout := resolveInvocation([]string{"mecatui", "logout", "gateway.example:443"})
+	if logout.err != nil || logout.mode != modeRemoteLogout || logout.address != "gateway.example:443" {
+		t.Fatalf("remote logout resolution = %+v", logout)
 	}
-
-	// `mecatui login --help` should ALSO resolve (help passes through).
-	resHelp := resolveTransportMode([]string{"mecatui", "login", "--help"})
-	if resHelp.err != nil {
-		t.Fatalf("login --help must resolve: %v", resHelp.err)
+	if got := resolveInvocation([]string{"mecatui", "logout"}); got.err == nil || !strings.Contains(got.err.Error(), "mecatui logout ADDRESS") {
+		t.Fatalf("bare logout must fail with remote usage, got %+v", got)
 	}
-	if resHelp.mode != modeLogin {
-		t.Errorf("login --help mode = %q, want %q", resHelp.mode, modeLogin)
+	if got := resolveInvocation([]string{"mecatui", "logout", "--issuer=x"}); got.err == nil {
+		t.Fatal("logout with a flag-first address must fail closed")
+	}
+	llm := resolveInvocation([]string{"mecatui", "llm", "login", "--skip-browser"})
+	if llm.err != nil || llm.mode != modeLogin || len(llm.remaining) != 1 || llm.remaining[0] != "--skip-browser" {
+		t.Fatalf("llm login resolution = %+v", llm)
+	}
+	if got := resolveInvocation([]string{"mecatui", "llm"}); got.err == nil || !strings.Contains(got.err.Error(), "llm login") {
+		t.Fatalf("bare llm must fail with llm-login usage, got %+v", got)
+	}
+	if got := resolveInvocation([]string{"mecatui", "mcp", "login"}); got.err == nil {
+		t.Fatal("mcp login must remain unknown")
 	}
 }
 
@@ -410,7 +434,8 @@ func TestMecatuiAuthFileOnlyParse(t *testing.T) {
 	if err := cfg.validate(); err != nil {
 		t.Fatalf("validate auth-file credential: %v", err)
 	}
-	if embedded := embeddedConfig(cfg, nil); embedded.AnthropicKey != cfg.anthropicKey {
+	embedded := embeddedConfig(cfg, nil)
+	if embedded.AnthropicKey != cfg.anthropicKey {
 		t.Errorf("embedded AnthropicKey = %q, want resolved auth-file credential", embedded.AnthropicKey)
 	}
 	if cfg.providerKeys.AuthFileWarning != "" {
@@ -835,19 +860,27 @@ func hasFlagHeader(out, name string) bool {
 	return false
 }
 
+func assertCatalogCommandsRendered(t *testing.T, out string) {
+	t.Helper()
+	for _, command := range topLevelCommands {
+		for _, want := range []string{command.synopsis, "mecatui " + command.name + " --help"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("rendered output omitted catalog command %q detail %q:\n%s", command.name, want, out)
+			}
+		}
+	}
+}
+
 func TestTopLevelHelpRealRendererContainsCommands(t *testing.T) {
 	var buf strings.Builder
 	writeTopLevelHelp(&buf)
 	out := buf.String()
-	for _, want := range []string{
-		"Usage: mecatui <command> [flags]",
-		"connect ADDRESS   dial a running mecated",
-		"hosts an embedded mecated",
-	} {
+	for _, want := range []string{"Usage: mecatui [flags]", "mecatui <command> [flags]", "hosts an embedded mecated"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("top-level help (real renderer) missing %q\n--- output ---\n%s", want, out)
 		}
 	}
+	assertCatalogCommandsRendered(t, out)
 	// The retired `local` subcommand and the deprecation/compat prose are gone.
 	for _, unwanted := range []string{"local ", "deprecated", "Compatibility", "--server"} {
 		if strings.Contains(out, unwanted) {
@@ -856,14 +889,15 @@ func TestTopLevelHelpRealRendererContainsCommands(t *testing.T) {
 	}
 }
 
-func TestBareHelpRealRendererShowsCommonFlags(t *testing.T) {
-	out := helpRenderOut(t, modeLocal, []string{"--help"})
-	if !strings.Contains(out, "Usage: mecatui [flags]") {
-		t.Errorf("bare help missing 'Usage: mecatui [flags]':\n%s", out)
+func TestBareHelpFlagsRealRendererShowsCommonFlags(t *testing.T) {
+	out := helpRenderOut(t, modeLocal, []string{"--help-flags"})
+	if !strings.Contains(out, "Usage: mecatui --help-flags") {
+		t.Errorf("bare help-flags missing usage:\n%s", out)
 	}
 	if !strings.Contains(out, "NEVER probes loopback") {
 		t.Errorf("bare help missing the no-probe note:\n%s", out)
 	}
+	assertCatalogCommandsRendered(t, out)
 	// Embedded flags appear in the bare common help (--mock is common+local).
 	if !hasFlagHeader(out, "mock") {
 		t.Errorf("bare help missing the embedded --mock common flag header:\n%s", out)
@@ -931,6 +965,7 @@ func TestBareHelpAllRendersFullRealFlagSet(t *testing.T) {
 	if !strings.Contains(out, "Usage: mecatui [flags]") {
 		t.Errorf("bare --help-all missing usage:\n%s", out)
 	}
+	assertCatalogCommandsRendered(t, out)
 	// A representative advanced embedded flag appears in --help-all.
 	if !hasFlagHeader(out, "perf-goroutine-warn-threshold") {
 		t.Errorf("bare --help-all missing an advanced flag header:\n%s", out)
@@ -954,14 +989,42 @@ func TestConnectHelpAllExcludesEmbeddedFlags(t *testing.T) {
 	}
 }
 
-// --- Requirement 1: top-level help is command-oriented (not flag-dump) ------
+// --- Requirement 1: top-level help is a command index (not a flag dump) ------
 
 func TestBareHelpIsNotRawFlagDump(t *testing.T) {
-	out := helpRenderOut(t, modeLocal, []string{"--help"})
-	// The bare --help must NOT be a raw flag dump (no "Usage of mecatui:" header);
-	// it renders the grouped common-flag help.
-	if strings.Contains(out, "Usage of mecatui:") {
-		t.Errorf("bare help must be the grouped common help, not a flag dump:\n%s", out)
+	out := runHelpCase(t, []string{"mecatui", "--help"}, "Commands:")
+	if strings.Contains(out, "Usage of mecatui:") || hasFlagHeader(out, "mock") {
+		t.Errorf("bare help must be the concise command index, not a flag dump:\n%s", out)
+	}
+}
+
+func TestCommandSummaryUsesIndentedWrappedDescriptions(t *testing.T) {
+	var out strings.Builder
+	writeCommandSummary(&out)
+	summary := out.String()
+
+	for _, want := range []string{
+		"  sessions\n    browse stored sessions before creating or continuing a chat\n",
+		"  debug SESSION_ID [flags]\n    diagnose a stored session by full ID or its 12-character header ID in a\n    separate no-filesystem analysis session; ambiguous header IDs require the\n    full ID\n",
+		"  connect ADDRESS [sessions | debug SESSION_ID] [flags]\n    dial a running mecated at ADDRESS (host:port), optionally browsing or\n    debugging a stored session\n",
+		"  login ADDRESS\n    log in to a remote mecated at ADDRESS using OIDC\n",
+		"  llm login [--skip-browser]\n    run the ToolHive LLM gateway OIDC browser flow (no session)\n",
+	} {
+		if !strings.Contains(summary, want) {
+			t.Errorf("command summary missing indented, wrapped description %q:\n%s", want, summary)
+		}
+	}
+	if strings.Contains(summary, "connect ADDRESS [sessions] dial a running") {
+		t.Errorf("command summary put the connect description on its synopsis line:\n%s", summary)
+	}
+	unknown := unknownCommandError("unknown").Error()
+	if !strings.Contains(unknown, "  connect ADDRESS [sessions | debug SESSION_ID] [flags]\n    dial a running mecated at ADDRESS (host:port), optionally browsing or\n    debugging a stored session\n") {
+		t.Errorf("unknown-command output did not reuse the indented, wrapped command summary:\n%s", unknown)
+	}
+	for _, line := range strings.Split(strings.TrimSuffix(summary, "\n"), "\n") {
+		if len(line) > 80 {
+			t.Errorf("command summary line exceeds the 80-column help width (%d): %q", len(line), line)
+		}
 	}
 }
 
@@ -994,7 +1057,7 @@ func TestHelpReturnsErrHelp(t *testing.T) {
 // request returns from parseTransportFlags before any transport resolution. The
 // argv includes the program name (run() reads argv, not os.Args), matching the
 // production main() call shape.
-func runHelpCase(t *testing.T, argv []string, wantSubstring string) {
+func runHelpCase(t *testing.T, argv []string, wantSubstring string) string {
 	t.Helper()
 	// Capture stderr by swapping os.Stderr for the duration of run(). run()
 	// threads os.Stderr into parseTransportFlags as the help output writer, so
@@ -1032,6 +1095,123 @@ func runHelpCase(t *testing.T, argv []string, wantSubstring string) {
 	if strings.HasPrefix(out, "mecatui:") {
 		t.Errorf("run(%v) stderr starts with the error line \"mecatui:\" — help must be a clean success:\n%s", argv, out)
 	}
+	return out
+}
+
+func TestRunBareHelpShowsOnlyCommandIndex(t *testing.T) {
+	out := runHelpCase(t, []string{"mecatui", "--help"}, "Usage: mecatui [flags]")
+	assertCatalogCommandsRendered(t, out)
+	if !strings.Contains(out, "mecatui --version prints the build version and exits") {
+		t.Errorf("run bare help omitted the global version action:\n%s", out)
+	}
+	for _, group := range []string{"Session:", "UI:", "Provider:", "Permissions:"} {
+		if strings.Contains(out, group) {
+			t.Errorf("run bare help included flag group %q:\n%s", group, out)
+		}
+	}
+	if hasFlagHeader(out, "mock") {
+		t.Errorf("run bare help included flag entries:\n%s", out)
+	}
+}
+
+func TestRunTopLevelHelpSpellingsRenderSameIndex(t *testing.T) {
+	want := runHelpCase(t, []string{"mecatui", "--help"}, "Commands:")
+	for _, argv := range [][]string{
+		{"mecatui", "-h"},
+		{"mecatui", "help"},
+		{"mecatui", "--workspace", "/tmp", "--help"},
+		{"mecatui", "--quiet", "-h"},
+	} {
+		if got := runHelpCase(t, argv, "Commands:"); got != want {
+			t.Errorf("run(%v) rendered a different top-level index:\n%s", argv, got)
+		}
+	}
+}
+
+func TestRunHelpCommandAliasesMatchDirectHelp(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		direct []string
+		alias  []string
+		want   string
+	}{
+		{"sessions", []string{"mecatui", "sessions", "--help"}, []string{"mecatui", "help", "sessions"}, "Usage: mecatui sessions [flags]"},
+		{"connect", []string{"mecatui", "connect", "--help"}, []string{"mecatui", "help", "connect"}, "Usage: mecatui connect ADDRESS [flags]"},
+		{"login", []string{"mecatui", "login", "--help"}, []string{"mecatui", "help", "login"}, "Usage: mecatui login ADDRESS"},
+		{"logout", []string{"mecatui", "logout", "--help"}, []string{"mecatui", "help", "logout"}, "Usage: mecatui logout ADDRESS"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			want := runHelpCase(t, tc.direct, tc.want)
+			if got := runHelpCase(t, tc.alias, tc.want); got != want {
+				t.Errorf("help alias %v differs from direct help %v:\n%s", tc.alias, tc.direct, got)
+			}
+		})
+	}
+}
+
+func TestRunHelpFlagsShowsEmbeddedCommonFlags(t *testing.T) {
+	out := runHelpCase(t, []string{"mecatui", "--help-flags"}, "Usage: mecatui --help-flags")
+	if !hasFlagHeader(out, "mock") {
+		t.Errorf("help-flags omitted local --mock:\n%s", out)
+	}
+	if hasFlagHeader(out, "auth-token") {
+		t.Errorf("help-flags leaked remote --auth-token:\n%s", out)
+	}
+	_, _, err := parseTransportFlags(modeConnect, io.Discard, []string{"--help-flags"})
+	if err == nil || errors.Is(err, flag.ErrHelp) || !strings.Contains(err.Error(), "bare") {
+		t.Errorf("connect --help-flags error = %v, want bare-only rejection", err)
+	}
+}
+
+func TestResolveHelpRejectsInvalidTargetsAndExtraOperands(t *testing.T) {
+	for _, argv := range [][]string{
+		{"mecatui", "help", "unknown"},
+		{"mecatui", "help", "sessions", "extra"},
+		{"mecatui", "--help", "extra"},
+		{"mecatui", "--help-flags", "extra"},
+		{"mecatui", "--help-all", "extra"},
+		{"mecatui", "sessions", "--help", "extra"},
+		{"mecatui", "connect", "127.0.0.1:8080", "--help", "extra"},
+	} {
+		res := resolveInvocation(argv)
+		if res.err == nil || !strings.Contains(res.err.Error(), "mecatui help") {
+			t.Errorf("resolveInvocation(%v) error = %v, want command-index guidance", argv, res.err)
+		}
+	}
+}
+
+func TestRunInvalidHelpFormsReturnUsageErrorTrailer(t *testing.T) {
+	cases := []struct {
+		name string
+		argv []string
+	}{
+		{"unknown target", []string{"mecatui", "help", "unknown"}},
+		{"extra help target operand", []string{"mecatui", "help", "sessions", "extra"}},
+		{"long help extra operand", []string{"mecatui", "--help", "extra"}},
+		{"short help extra operand", []string{"mecatui", "-h", "extra"}},
+		{"help flags extra operand", []string{"mecatui", "--help-flags", "extra"}},
+		{"help all extra operand", []string{"mecatui", "--help-all", "extra"}},
+		{"sessions help extra operand", []string{"mecatui", "sessions", "--help", "extra"}},
+		{"connect help extra operand", []string{"mecatui", "connect", "127.0.0.1:8080", "--help", "extra"}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := run(tc.argv)
+			if err == nil {
+				t.Fatal("run() error = nil, want usage error")
+			}
+			if errors.Is(err, flag.ErrHelp) {
+				t.Fatalf("run() error = flag.ErrHelp, want non-help usage error: %v", err)
+			}
+			var trailer *usageErrorTrailer
+			if !errors.As(err, &trailer) {
+				t.Fatalf("run() error is not a usageErrorTrailer: %v", err)
+			}
+			if !strings.Contains(err.Error(), "mecatui help") {
+				t.Errorf("run() error %q missing recovery guidance", err)
+			}
+		})
+	}
 }
 
 // TestRunHelpReturnsErrHelpAndWritesHelp exercises run() (the function main
@@ -1049,6 +1229,8 @@ func TestRunHelpReturnsErrHelpAndWritesHelp(t *testing.T) {
 		{"bare", []string{"mecatui", "--help"}, "Usage: mecatui [flags]"},
 		{"connect-no-addr", []string{"mecatui", "connect", "--help"}, "Usage: mecatui connect ADDRESS [flags]"},
 		{"connect-with-addr", []string{"mecatui", "connect", "127.0.0.1:8080", "--help"}, "Usage: mecatui connect ADDRESS [flags]"},
+		{"sessions", []string{"mecatui", "sessions", "--help"}, "Usage: mecatui sessions [flags]"},
+		{"login", []string{"mecatui", "login", "--help"}, "Usage: mecatui login ADDRESS"},
 		{"short-h", []string{"mecatui", "-h"}, "Usage: mecatui [flags]"},
 	}
 	for _, tc := range cases {
@@ -1077,14 +1259,29 @@ func TestRunHelpAllReturnsErrHelpAndWritesHelp(t *testing.T) {
 	}
 }
 
-// TestRunUnknownCommandReturnsNonHelpError asserts the non-help failure path:
-// an unknown leading command returns a NON-ErrHelp error (so main() prints
-// "mecatui: <err>" and exits 1), distinguishing a help success from a usage
-// failure at the run() seam. resolveTransportMode is PURE (no I/O), so run()
-// returns the usage error before touching stderr. The error is wrapped in
-// usageErrorTrailer so main's printer ALSO appends the top-level command
-// summary beneath the error line (mirroring mecated's errBareInvocation arm);
-// errors.Is/As traverses the wrapper, and %v prints the inner message.
+// TestRunRemoteSessionsHelpUsesLaunchGrammarAndApplicableFlags exercises the real
+// run() path for both remote session-browser help forms.
+func TestRunRemoteSessionsHelpUsesLaunchGrammarAndApplicableFlags(t *testing.T) {
+	for _, help := range []string{"--help", "--help-all"} {
+		t.Run(help, func(t *testing.T) {
+			out := runHelpCase(t, []string{"mecatui", "connect", "127.0.0.1:8080", "sessions", help}, "Usage: mecatui connect ADDRESS sessions [flags]")
+			if help == "--help" && !strings.Contains(out, "without creating a session") {
+				t.Errorf("remote sessions %s missing launch contract:\n%s", help, out)
+			}
+			if !hasFlagHeader(out, "auth-token") {
+				t.Errorf("remote sessions %s missing applicable --auth-token:\n%s", help, out)
+			}
+			for _, inapplicable := range []string{"mock", "prompt", "p", "prompt-file", "resume", "resume-latest"} {
+				if hasFlagHeader(out, inapplicable) {
+					t.Errorf("remote sessions %s includes inapplicable --%s:\n%s", help, inapplicable, out)
+				}
+			}
+		})
+	}
+}
+
+// TestRunUnknownCommandReturnsNonHelpError distinguishes a usage failure from a
+// successful help request at the real run() seam.
 func TestRunUnknownCommandReturnsNonHelpError(t *testing.T) {
 	err := run([]string{"mecatui", "bogus-command"})
 	if err == nil {
@@ -1128,15 +1325,13 @@ func TestUsageErrorTrailerMarkers(t *testing.T) {
 	}
 }
 
-// TestUnknownCommandErrorFooterIsBareHelpOrConnectHelp pins the rewritten error
-// footer: the retired "Run 'mecatui <command> --help'" phrasing (which named
-// no real command) is replaced by the two REAL help spellings.
-func TestUnknownCommandErrorFooterIsBareHelpOrConnectHelp(t *testing.T) {
+// TestUnknownCommandErrorListsCatalogHelpRoutes ensures unknown-command guidance
+// stays derived from the same catalog as resolution and top-level help.
+func TestUnknownCommandErrorListsCatalogHelpRoutes(t *testing.T) {
 	err := unknownCommandError("local")
-	if !strings.Contains(err.Error(), "Run 'mecatui --help' or 'mecatui connect --help'") {
-		t.Errorf("unknown-command error missing the rewritten footer: %v", err)
-	}
-	if strings.Contains(err.Error(), "for command-specific flags") {
-		t.Errorf("unknown-command error still carries the retired footer: %v", err)
+	for _, command := range topLevelCommands {
+		if !strings.Contains(err.Error(), "mecatui "+command.name+" --help") {
+			t.Errorf("unknown-command error missing %q help route: %v", command.name, err)
+		}
 	}
 }

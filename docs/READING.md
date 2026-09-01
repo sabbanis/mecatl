@@ -42,6 +42,7 @@ is listed, and its follow-on reading is noted. Read any that cover your area.
 
 ### After the architecture pages
 
+- [Agent Fabric Protocol](agent-fabric-protocol.md) — draft protocol proposal for remote agent capabilities over HTTP/JSON; not a shipped mecatl surface.
 - [Implementation notes](design/IMPLEMENTATION-NOTES.md) — the dense per-subsystem companion to the architecture pages (a reference, not a narrative).
 - [ADR index](adr/README.md) — the frozen *why* archive; reach for it on demand to understand a decision's rationale.
 - [Production readiness tracker](design/PRODUCTION-READINESS.md) — the live shipped/deferred status ledger.
@@ -64,7 +65,7 @@ is listed, and its follow-on reading is noted. Read any that cover your area.
 
 | Step | Page |
 | --- | --- |
-| 1 | [User docs intro](https://github.com/stacklok/mecatl/blob/main/user-docs/intro.md) |
+| 1 | [Building on mecatl](https://github.com/stacklok/mecatl/blob/main/user-docs/building/index.md) |
 | 2 | [`engine/session`](../engine/session) — the domain entry point |
-| 3 | [Extension points](https://github.com/stacklok/mecatl/blob/main/user-docs/extension-points/index.md) |
+| 3 | [Extension points](https://github.com/stacklok/mecatl/blob/main/user-docs/building/extension-points/index.md) |
 | 4 | [`engine/COMPATIBILITY.md`](../engine/COMPATIBILITY.md) — the stability contract |

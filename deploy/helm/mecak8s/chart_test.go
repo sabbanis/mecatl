@@ -1,11 +1,21 @@
 package mecak8s_test
 
 import (
+	"encoding/json"
+	"fmt"
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
+	"regexp"
+	"slices"
 	"strings"
 	"testing"
+
+	"github.com/google/jsonschema-go/jsonschema"
+	appsv1 "k8s.io/api/apps/v1"
+	corev1 "k8s.io/api/core/v1"
+	"sigs.k8s.io/yaml"
 )
 
 func chartDir(t *testing.T) string {
@@ -24,8 +34,469 @@ func helm(t *testing.T, args ...string) (string, error) {
 	return string(out), err
 }
 
+func serviceFromRender(t *testing.T, rendered string) *corev1.Service {
+	t.Helper()
+	for _, document := range strings.Split(rendered, "\n---") {
+		var meta struct {
+			Kind string `yaml:"kind"`
+		}
+		if err := yaml.Unmarshal([]byte(document), &meta); err != nil || meta.Kind != "Service" {
+			continue
+		}
+		var service corev1.Service
+		if err := yaml.Unmarshal([]byte(document), &service); err != nil {
+			t.Fatal(err)
+		}
+		return &service
+	}
+	t.Fatal("rendered chart has no Service")
+	return nil
+}
+
+func deploymentFromRender(t *testing.T, rendered string) *appsv1.Deployment {
+	t.Helper()
+	for _, document := range strings.Split(rendered, "\n---") {
+		var meta struct {
+			Kind string `yaml:"kind"`
+		}
+		if err := yaml.Unmarshal([]byte(document), &meta); err != nil || meta.Kind != "Deployment" {
+			continue
+		}
+		var deployment appsv1.Deployment
+		if err := yaml.Unmarshal([]byte(document), &deployment); err != nil {
+			t.Fatal(err)
+		}
+		return &deployment
+	}
+	t.Fatal("rendered chart has no Deployment")
+	return nil
+}
+
 func productionArgs() []string {
-	return []string{"template", "production", ".", "--set", "image.tag=v0.0.0", "--set", "redis.endpoint=redis.example.internal:6380", "--set", "redis.credentialsSecret=redis-credentials"}
+	return []string{"template", "production", ".", "--set", "image.tag=v0.0.0", "--set", "redis.endpoint=redis.example.internal:6380", "--set", "redis.credentialsSecret=redis-credentials", "--set", "security.allowUnsafeRealProvider=true"}
+}
+
+func secureProductionArgs() []string {
+	return []string{"template", "production", ".", "--set", "image.tag=v0.0.0", "--set", "redis.endpoint=redis.example.internal:6380", "--set", "redis.credentialsSecret=redis-credentials", "--set", "tls.enabled=true,tls.secretName=mecak8s-tls", "--set", "oidc.enabled=true,oidc.issuer=https://idp.example.com,oidc.audience=mecatl"}
+}
+
+// kindVMCPArgs renders the Kind profile with the mecak8s-vmcp fixture's own
+// OIDC/TLS overlay layered on top — the shape deploy/mecak8s-vmcp/Taskfile.yml
+// actually installs. Never pass values-kind-vmcp.yaml alone or without
+// values-kind.yaml first: e2e/k8s's suite installs values-kind.yaml ALONE and
+// must stay free of secrets that overlay assumes exist (fixture-ca,
+// mecak8s-tls) — see values-kind.yaml's own comment.
+func kindVMCPArgs() []string {
+	return []string{"template", "kind", ".", "-f", "values-kind.yaml", "-f", "values-kind-vmcp.yaml"}
+}
+
+// TestMecak8sHelmChart_KindProfileAloneHasNoSecretDependency pins the exact
+// shape e2e/k8s's Ginkgo suite installs: `helm ... --values values-kind.yaml
+// --wait`, with no other overrides and no Secrets/ConfigMaps created beyond
+// the namespace. values-kind.yaml alone must render with OIDC/TLS off and no
+// NodePort — any of those pull in a Secret (mecak8s-tls, fixture-ca) that
+// only the mecak8s-vmcp fixture's own setup creates, and the e2e pod would
+// hang mounting a missing volume until the install times out (the regression
+// this test exists to catch).
+func TestMecak8sHelmChart_KindProfileAloneHasNoSecretDependency(t *testing.T) {
+	values, err := os.ReadFile("values-kind.yaml")
+	if err != nil {
+		t.Fatalf("read Kind values: %v", err)
+	}
+	for _, want := range []string{
+		"mockProvider: true", "endpoint: redis:6379", "credentialsSecret: \"\"",
+		"enabled: true", "workspace: /tmp",
+	} {
+		if !strings.Contains(string(values), want) {
+			t.Fatalf("Kind values missing %q", want)
+		}
+	}
+
+	e2eFiles, err := filepath.Glob(filepath.Join("..", "..", "..", "e2e", "k8s", "*.go"))
+	if err != nil {
+		t.Fatalf("list e2e files: %v", err)
+	}
+	e2eText := ""
+	for _, path := range e2eFiles {
+		body, readErr := os.ReadFile(path)
+		if readErr != nil {
+			t.Fatalf("read e2e file %s: %v", path, readErr)
+		}
+		e2eText += string(body)
+	}
+	if !strings.Contains(e2eText, "values-kind.yaml") || strings.Contains(e2eText, "values-kind-vmcp.yaml") {
+		t.Fatal("e2e/k8s must install values-kind.yaml directly, without an operator-fixture overlay")
+	}
+
+	rendered, err := helm(t, "template", "kind", ".", "-f", "values-kind.yaml")
+	if err != nil {
+		t.Fatalf("render Kind profile: %v", err)
+	}
+	for _, forbidden := range []string{"--oidc-issuer", "--tls-cert", "--tls-key", "mecak8s-tls", "fixture-ca", "secretName:", "type: NodePort", "nodePort:"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("bare Kind render (no fixture overlay) unexpectedly contains %q — e2e/k8s's suite creates no matching Secret and would hang", forbidden)
+		}
+	}
+	for _, want := range []string{"replicas: 2", "- --mock", "--redis-url=redis:6379", "--workspace=/tmp", "type: ClusterIP"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("bare Kind render missing %q", want)
+		}
+	}
+}
+
+func TestMecak8sHelmChart_EdgeTerminatedTLS(t *testing.T) {
+	rendered, err := helm(t, "template", "production", ".", "-f", "ci/production-edge-tls-values.yaml")
+	if err != nil {
+		t.Fatalf("render edge TLS fixture: %v", err)
+	}
+	deployment := deploymentFromRender(t, rendered)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	for _, want := range []string{"--oidc-issuer=https://idp.example.com", "--oidc-audience=mecatl", "--oidc-max-jwks-staleness=1h"} {
+		if !slices.Contains(container.Args, want) {
+			t.Fatalf("edge TLS args missing %q: %q", want, container.Args)
+		}
+	}
+	for _, absent := range []string{"--tls-cert=", "--tls-key="} {
+		if slices.ContainsFunc(container.Args, func(arg string) bool { return strings.HasPrefix(arg, absent) }) {
+			t.Fatalf("edge TLS args unexpectedly contain %q: %q", absent, container.Args)
+		}
+	}
+	if deployment.Spec.Template.Annotations["mecatl.stacklok.com/tls-terminated-upstream"] != "true" || len(deployment.Spec.Template.Annotations) != 1 {
+		t.Fatalf("edge TLS annotations = %#v", deployment.Spec.Template.Annotations)
+	}
+	if _, ok := deployment.Spec.Template.Annotations["mecatl.stacklok.com/unsafe-real-provider"]; ok {
+		t.Fatal("edge TLS render carries unsafe annotation")
+	}
+	if slices.ContainsFunc(deployment.Spec.Template.Spec.Volumes, func(volume corev1.Volume) bool { return volume.Name == "tls" }) {
+		t.Fatal("edge TLS render includes a pod TLS Secret volume")
+	}
+	if slices.ContainsFunc(container.VolumeMounts, func(mount corev1.VolumeMount) bool { return mount.Name == "tls" }) {
+		t.Fatal("edge TLS render includes a pod TLS Secret volume mount")
+	}
+	for _, probe := range []*corev1.Probe{container.StartupProbe, container.ReadinessProbe, container.LivenessProbe} {
+		if probe == nil || probe.HTTPGet == nil || probe.HTTPGet.Scheme != corev1.URISchemeHTTP {
+			t.Fatalf("edge TLS probe = %#v, want HTTP", probe)
+		}
+	}
+	if container.Lifecycle == nil || container.Lifecycle.PreStop == nil || container.Lifecycle.PreStop.HTTPGet == nil || container.Lifecycle.PreStop.HTTPGet.Scheme != corev1.URISchemeHTTP {
+		t.Fatalf("edge TLS preStop = %#v, want HTTP", container.Lifecycle)
+	}
+	service := serviceFromRender(t, rendered)
+	if service.Spec.Type != corev1.ServiceTypeClusterIP {
+		t.Fatalf("edge TLS Service type = %q, want ClusterIP", service.Spec.Type)
+	}
+	for _, port := range service.Spec.Ports {
+		if port.Name == "grpc" {
+			if port.AppProtocol == nil || *port.AppProtocol != "kubernetes.io/h2c" {
+				t.Fatalf("edge TLS gRPC Service port = %#v, want kubernetes.io/h2c", port)
+			}
+			continue
+		}
+		if port.AppProtocol != nil {
+			t.Fatalf("edge TLS non-gRPC Service port %q has appProtocol %q", port.Name, *port.AppProtocol)
+		}
+	}
+}
+
+func TestMecak8sHelmChart_EdgeFixtureRendersNoExternalBoundaryResources(t *testing.T) {
+	rendered, err := helm(t, "template", "production", ".", "-f", "ci/production-edge-tls-values.yaml")
+	if err != nil {
+		t.Fatalf("render edge TLS fixture: %v", err)
+	}
+	for _, document := range strings.Split(rendered, "\n---") {
+		var meta struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(document), &meta); err != nil {
+			t.Fatal(err)
+		}
+		switch meta.Kind {
+		case "Gateway", "HTTPRoute", "GRPCRoute", "TLSRoute", "Route", "Certificate":
+			t.Fatalf("edge fixture unexpectedly renders platform-owned %s", meta.Kind)
+		case "NetworkPolicy":
+			if !strings.HasSuffix(meta.Metadata.Name, "-raw-driver") {
+				t.Fatalf("edge fixture unexpectedly renders general NetworkPolicy %q", meta.Metadata.Name)
+			}
+		}
+	}
+}
+
+func TestMecak8sHelmChart_ChartOwnedAnnotationsCannotBeOverridden(t *testing.T) {
+	base := []string{"template", "production", ".", "--set", "image.tag=v0.0.0", "--set", "redis.endpoint=redis.example.internal:6380", "--set", "redis.credentialsSecret=redis-credentials"}
+	for _, tc := range []struct {
+		name string
+		set  string
+		want string
+	}{
+		{"edge", "security.tlsTerminatedUpstream=true,oidc.enabled=true,oidc.issuer=https://idp.example.com,oidc.audience=mecatl,podAnnotations.example\\.com/kept=value,podAnnotations.mecatl\\.stacklok\\.com/tls-terminated-upstream=false,podAnnotations.mecatl\\.stacklok\\.com/unsafe-real-provider=false", "mecatl.stacklok.com/tls-terminated-upstream"},
+		{"edge re-encryption", "security.tlsTerminatedUpstream=true,tls.enabled=true,tls.secretName=mecak8s-tls,oidc.enabled=true,oidc.issuer=https://idp.example.com,oidc.audience=mecatl,podAnnotations.example\\.com/kept=value,podAnnotations.mecatl\\.stacklok\\.com/tls-terminated-upstream=false", "mecatl.stacklok.com/tls-terminated-upstream"},
+		{"unsafe", "security.allowUnsafeRealProvider=true,podAnnotations.example\\.com/kept=value,podAnnotations.mecatl\\.stacklok\\.com/tls-terminated-upstream=true,podAnnotations.mecatl\\.stacklok\\.com/unsafe-real-provider=false", "mecatl.stacklok.com/unsafe-real-provider"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rendered, err := helm(t, append(base, "--set", tc.set)...)
+			if err != nil {
+				t.Fatal(err)
+			}
+			annotations := deploymentFromRender(t, rendered).Spec.Template.Annotations
+			if annotations[tc.want] != "true" || annotations["example.com/kept"] != "value" || len(annotations) != 2 {
+				t.Fatalf("chart-owned annotations = %#v", annotations)
+			}
+		})
+	}
+}
+
+func TestMecak8sHelmChart_RuntimeArgsAreOptIn(t *testing.T) {
+	rendered, err := helm(t, productionArgs()...)
+	if err != nil {
+		t.Fatalf("render defaults: %v", err)
+	}
+	for _, absent := range []string{"--default-provider=", "--model=", "--max-run-tokens=", "--max-team-tokens="} {
+		if strings.Contains(rendered, absent) {
+			t.Fatalf("default render unexpectedly contains %q", absent)
+		}
+	}
+
+	args := append(secureProductionArgs(), "--set", "defaultProvider=openrouter,model=anthropic/claude-sonnet-4-6,maxRunTokens=1000,maxTeamTokens=4000")
+	rendered, err = helm(t, args...)
+	if err != nil {
+		t.Fatalf("render runtime selections: %v", err)
+	}
+	for _, want := range []string{"--default-provider=openrouter", "--model=anthropic/claude-sonnet-4-6", "--max-run-tokens=1000", "--max-team-tokens=4000"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("runtime render missing %q", want)
+		}
+	}
+}
+
+func TestMecak8sHelmChart_OpaqueModelArgumentIsYAMLSafe(t *testing.T) {
+	model := "vendor/model: tier #stable"
+	args := append(secureProductionArgs(), "--set", "defaultProvider=openrouter", "--set-string", "model="+model)
+	rendered, err := helm(t, args...)
+	if err != nil {
+		t.Fatalf("render opaque model: %v", err)
+	}
+	deployment := deploymentFromRender(t, rendered)
+	if got := deployment.Spec.Template.Spec.Containers[0].Args; !slices.Contains(got, "--model="+model) || !slices.Contains(got, "--default-provider=openrouter") {
+		t.Fatalf("decoded args lost opaque values: %q", got)
+	}
+}
+
+func TestMecak8sHelmChart_ValueDerivedArgumentsAreYAMLSafe(t *testing.T) {
+	audience := "api:agents # primary"
+	workspace := "/workspaces/team: alpha #1"
+	args := append(secureProductionArgs(),
+		"--set-string", "oidc.audience="+audience,
+		"--set-string", "workspace="+workspace,
+	)
+	rendered, err := helm(t, args...)
+	if err != nil {
+		t.Fatalf("render opaque arguments: %v", err)
+	}
+	got := deploymentFromRender(t, rendered).Spec.Template.Spec.Containers[0].Args
+	for _, want := range []string{"--oidc-audience=" + audience, "--workspace=" + workspace} {
+		if !slices.Contains(got, want) {
+			t.Fatalf("decoded args lost %q: %q", want, got)
+		}
+	}
+}
+
+func TestMecak8sHelmChart_DeployCheckProductionFixtureRuntimeAndSpread(t *testing.T) {
+	// Match task deploy:check exactly: no explicit release name is supplied.
+	rendered, err := helm(t, "template", ".", "-f", "ci/production-values.yaml")
+	if err != nil {
+		t.Fatalf("render production fixture: %v", err)
+	}
+	deployment := deploymentFromRender(t, rendered)
+	wantArgs := []string{
+		"--grpc-addr=0.0.0.0:8080",
+		"--http-addr=0.0.0.0:8081",
+		"--redis-url=redis.example.internal:6379",
+		"--session-lease-k8s-namespace=default",
+		"--headless=true",
+		"--posture=auto",
+		"--default-provider=openrouter",
+		"--model=anthropic/claude-sonnet-4-6",
+		"--max-run-tokens=200000",
+		"--max-team-tokens=800000",
+		"--redis-tls-ca=/var/run/secrets/redis/ca.pem",
+		"--oidc-issuer=https://idp.example.com",
+		"--oidc-audience=mecatl",
+		"--oidc-max-jwks-staleness=1h",
+		"--tls-cert=/var/run/secrets/tls/tls.crt",
+		"--tls-key=/var/run/secrets/tls/tls.key",
+	}
+	if got := deployment.Spec.Template.Spec.Containers[0].Args; !reflect.DeepEqual(got, wantArgs) {
+		t.Fatalf("production args = %#v, want %#v", got, wantArgs)
+	}
+	constraints := deployment.Spec.Template.Spec.TopologySpreadConstraints
+	if len(constraints) != 1 {
+		t.Fatalf("topology spread constraints = %d, want 1", len(constraints))
+	}
+	constraint := constraints[0]
+	if constraint.MaxSkew != 1 || constraint.TopologyKey != "kubernetes.io/hostname" || constraint.WhenUnsatisfiable != "DoNotSchedule" {
+		t.Fatalf("unexpected production topology spread: %+v", constraint)
+	}
+	wantLabels := map[string]string{
+		"app.kubernetes.io/name":      "mecak8s",
+		"app.kubernetes.io/instance":  "release-name",
+		"app.kubernetes.io/component": "agent",
+	}
+	if constraint.LabelSelector == nil || !reflect.DeepEqual(constraint.LabelSelector.MatchLabels, wantLabels) {
+		t.Fatalf("spread selector = %#v, want %#v", constraint.LabelSelector, wantLabels)
+	}
+	for key, value := range constraint.LabelSelector.MatchLabels {
+		if deployment.Spec.Template.Labels[key] != value {
+			t.Fatalf("spread selector %s=%s does not match pod labels %#v", key, value, deployment.Spec.Template.Labels)
+		}
+	}
+}
+
+func TestMecak8sHelmChart_ProductionFixturesReferenceProviderCredential(t *testing.T) {
+	for _, fixture := range []string{"ci/production-values.yaml", "ci/production-oidc-values.yaml", "ci/production-edge-tls-values.yaml"} {
+		t.Run(fixture, func(t *testing.T) {
+			rendered, err := helm(t, "template", ".", "-f", fixture)
+			if err != nil {
+				t.Fatalf("render production fixture: %v", err)
+			}
+			container := deploymentFromRender(t, rendered).Spec.Template.Spec.Containers[0]
+			if !slices.Contains(container.Args, "--default-provider=openrouter") || !slices.Contains(container.Args, "--model=anthropic/claude-sonnet-4-6") {
+				t.Fatalf("production provider selection = %q", container.Args)
+			}
+			if len(container.Env) != 1 {
+				t.Fatalf("provider environment = %#v, want one SecretKeyRef", container.Env)
+			}
+			env := container.Env[0]
+			if env.Name != "OPENROUTER_API_KEY" || env.ValueFrom == nil || env.ValueFrom.SecretKeyRef == nil || env.ValueFrom.SecretKeyRef.Name != "provider-credentials" || env.ValueFrom.SecretKeyRef.Key != "openrouter-api-key" {
+				t.Fatalf("provider environment = %#v", env)
+			}
+		})
+	}
+}
+
+// providerSecurityCase is one point in the real-provider gate's input space. The gate is
+// enforced twice and independently — values.schema.json and the
+// mecak8s.validateProviderSecurity helper — so both enforcement tests iterate THIS table
+// against THIS oracle. Keeping the rule in one place is the point: a divergence between
+// the two enforcement paths must fail as a disagreement with the shared oracle, never be
+// papered over by editing one test's private copy of the rule.
+type providerSecurityCase struct {
+	serviceType                   string
+	mock, unsafe, tls, edge, oidc bool
+}
+
+func (c providerSecurityCase) name() string {
+	return fmt.Sprintf("service=%s/mock=%t/unsafe=%t/tls=%t/edge=%t/oidc=%t", c.serviceType, c.mock, c.unsafe, c.tls, c.edge, c.oidc)
+}
+
+// wantAccepted is the ADR 0278 gate: a mock provider or the explicit unsafe bypass is
+// always accepted; a secure real provider needs OIDC plus either in-pod TLS or an
+// upstream-TLS attestation on a ClusterIP-only h2c backend. The upstream attestation is
+// meaningless without a real provider, so mockProvider=true rejects it outright rather
+// than accepting a value it would silently ignore.
+func (c providerSecurityCase) wantAccepted() bool {
+	if c.mock {
+		return !c.edge
+	}
+	return c.unsafe || (c.oidc && (c.tls || (c.edge && c.serviceType == "ClusterIP")))
+}
+
+func providerSecurityCases() []providerSecurityCase {
+	var cases []providerSecurityCase
+	for _, serviceType := range []string{"ClusterIP", "NodePort", "LoadBalancer"} {
+		for _, mock := range []bool{false, true} {
+			for _, unsafe := range []bool{false, true} {
+				for _, tls := range []bool{false, true} {
+					for _, edge := range []bool{false, true} {
+						for _, oidc := range []bool{false, true} {
+							cases = append(cases, providerSecurityCase{serviceType, mock, unsafe, tls, edge, oidc})
+						}
+					}
+				}
+			}
+		}
+	}
+	return cases
+}
+
+func TestMecak8sValuesSchemaIndependentlyEnforcesProviderSecurity(t *testing.T) {
+	schemaJSON, err := os.ReadFile("values.schema.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var schema jsonschema.Schema
+	if err := json.Unmarshal(schemaJSON, &schema); err != nil {
+		t.Fatal(err)
+	}
+	resolved, err := schema.Resolve(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	valuesYAML, err := os.ReadFile("values.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	valuesJSON, err := yaml.YAMLToJSON(valuesYAML)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, tc := range providerSecurityCases() {
+		t.Run(tc.name(), func(t *testing.T) {
+			var values map[string]any
+			if err := json.Unmarshal(valuesJSON, &values); err != nil {
+				t.Fatal(err)
+			}
+			values["mockProvider"] = tc.mock
+			values["security"].(map[string]any)["allowUnsafeRealProvider"] = tc.unsafe
+			values["security"].(map[string]any)["tlsTerminatedUpstream"] = tc.edge
+			values["tls"].(map[string]any)["enabled"] = tc.tls
+			values["oidc"].(map[string]any)["enabled"] = tc.oidc
+			values["service"].(map[string]any)["type"] = tc.serviceType
+			if err := resolved.Validate(values); (err == nil) != tc.wantAccepted() {
+				t.Fatalf("schema acceptance = %t, want %t: %v", err == nil, tc.wantAccepted(), err)
+			}
+		})
+	}
+
+	var legacyPodTLS map[string]any
+	if err := json.Unmarshal(valuesJSON, &legacyPodTLS); err != nil {
+		t.Fatal(err)
+	}
+	legacyPodTLS["mockProvider"] = false
+	delete(legacyPodTLS["security"].(map[string]any), "tlsTerminatedUpstream")
+	legacyPodTLS["tls"].(map[string]any)["enabled"] = true
+	legacyPodTLS["tls"].(map[string]any)["secretName"] = "mecak8s-tls"
+	legacyPodTLS["oidc"].(map[string]any)["enabled"] = true
+	if err := resolved.Validate(legacyPodTLS); err != nil {
+		t.Fatalf("schema rejected chart-0.2-shaped pod TLS + OIDC values: %v", err)
+	}
+}
+
+func TestMecak8sHelmHelperMatchesProviderSecuritySchema(t *testing.T) {
+	help, err := helm(t, "template", "--help")
+	if err != nil || !strings.Contains(help, "--skip-schema-validation") {
+		t.Fatalf("Helm must support --skip-schema-validation for helper-independence coverage: %v", err)
+	}
+	base := []string{"template", "production", ".", "--skip-schema-validation", "--set", "image.tag=v0.0.0", "--set", "redis.endpoint=redis.example.internal:6380", "--set", "redis.credentialsSecret=redis-credentials"}
+	for _, tc := range providerSecurityCases() {
+		t.Run(tc.name(), func(t *testing.T) {
+			args := append([]string{}, base...)
+			args = append(args, "--set", fmt.Sprintf("mockProvider=%t,security.allowUnsafeRealProvider=%t,security.tlsTerminatedUpstream=%t,tls.enabled=%t,oidc.enabled=%t,service.type=%s", tc.mock, tc.unsafe, tc.edge, tc.tls, tc.oidc, tc.serviceType))
+			if tc.tls {
+				args = append(args, "--set", "tls.secretName=mecak8s-tls")
+			}
+			if tc.oidc {
+				args = append(args, "--set", "oidc.issuer=https://idp.example.com,oidc.audience=mecatl")
+			}
+			_, err := helm(t, args...)
+			if (err == nil) != tc.wantAccepted() {
+				t.Fatalf("helper acceptance = %t, want %t: %v", err == nil, tc.wantAccepted(), err)
+			}
+		})
+	}
 }
 
 func TestMecak8sHelmChart_Scenario1_ProductionValuesRequireExternalRedis(t *testing.T) {
@@ -52,8 +523,12 @@ func TestMecak8sHelmChart_Scenario1_ProductionValuesRequireExternalRedis(t *test
 		t.Fatal("production render did not use the configured digest image")
 	}
 	args = append(productionArgs(), "--set", "image.digest=,image.tag=")
-	if _, err := helm(t, args...); err == nil {
-		t.Fatal("production render accepted an image without a tag or digest")
+	rendered, err = helm(t, args...)
+	if err != nil {
+		t.Fatalf("render chart-version image: %v", err)
+	}
+	if !strings.Contains(rendered, "ghcr.io/stacklok/mecatl/mecak8s:v0.3.0") {
+		t.Fatal("production render did not default the image tag from the chart version")
 	}
 	args = append(productionArgs(), "--set", "image.digest=sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef")
 	if _, err := helm(t, args...); err == nil {
@@ -119,7 +594,7 @@ func TestMecak8sHelmChart_SecureRedisModes(t *testing.T) {
 	}
 
 	// System-trust TLS without ACL credentials needs no Secret at all.
-	publicTLS := []string{"template", "production", ".", "--set", "image.tag=v0.0.0", "--set", "redis.endpoint=redis.example.internal:6380", "--set", "redis.caKey="}
+	publicTLS := []string{"template", "production", ".", "--set", "image.tag=v0.0.0", "--set", "redis.endpoint=redis.example.internal:6380", "--set", "redis.caKey=", "--set", "security.allowUnsafeRealProvider=true"}
 	rendered, err := helm(t, publicTLS...)
 	if err != nil {
 		t.Fatalf("render system-trust TLS without Secret: %v", err)
@@ -183,7 +658,7 @@ func TestMecak8sHelmChart_LocalPlaintextIsExplicitAndExternalIsTLSOnly(t *testin
 	if !strings.Contains(local, "--redis-allow-plaintext") {
 		t.Fatal("local Kind profile does not explicitly opt in to plaintext Redis")
 	}
-	for _, forbidden := range []string{"--redis-tls-ca", "redis-credentials", "defaultMode: 0440"} {
+	for _, forbidden := range []string{"--redis-tls-ca", "redis-credentials"} {
 		if strings.Contains(local, forbidden) {
 			t.Fatalf("local Kind profile contains external Redis material %q", forbidden)
 		}
@@ -252,13 +727,74 @@ func TestMecak8sHelmChart_Scenario1_LeastPrivilegeLease(t *testing.T) {
 	}
 }
 
+// taskBlockRe matches a top-level Taskfile task header (2-space indent under
+// `tasks:`, e.g. "  kind-setup:"). Not a full YAML parser — this Taskfile only
+// nests task bodies one level deeper than their header.
+var taskBlockRe = regexp.MustCompile(`(?m)^  ([a-zA-Z][a-zA-Z0-9_-]*):\s*$`)
+
+// taskFileClosure splits a Taskfile's `tasks:` section into named blocks and
+// returns the concatenated text of `roots` plus every task transitively
+// reachable from them via `task: <name>` references.
+func taskFileClosure(t *testing.T, text string, roots ...string) string {
+	t.Helper()
+	tasksIdx := strings.Index(text, "\ntasks:\n")
+	if tasksIdx < 0 {
+		t.Fatal("Taskfile has no tasks: section")
+	}
+	body := text[tasksIdx:]
+	headers := taskBlockRe.FindAllStringSubmatchIndex(body, -1)
+	blocks := make(map[string]string, len(headers))
+	for i, h := range headers {
+		name := body[h[2]:h[3]]
+		end := len(body)
+		if i+1 < len(headers) {
+			end = headers[i+1][0]
+		}
+		blocks[name] = body[h[0]:end]
+	}
+	refRe := regexp.MustCompile(`task:\s*([a-zA-Z][a-zA-Z0-9_-]*)`)
+	visited := map[string]bool{}
+	var visit func(name string)
+	visit = func(name string) {
+		if visited[name] {
+			return
+		}
+		block, ok := blocks[name]
+		if !ok {
+			t.Fatalf("Taskfile references unknown task %q", name)
+		}
+		visited[name] = true
+		for _, m := range refRe.FindAllStringSubmatch(block, -1) {
+			visit(m[1])
+		}
+	}
+	for _, root := range roots {
+		visit(root)
+	}
+	var out strings.Builder
+	for _, name := range roots {
+		out.WriteString(blocks[name])
+	}
+	for name, block := range blocks {
+		if visited[name] && !slices.Contains(roots, name) {
+			out.WriteString(block)
+		}
+	}
+	return out.String()
+}
+
 func TestMecak8sHelmChart_Scenario1_KindLifecycleUsesNamedCluster(t *testing.T) {
-	path := filepath.Join("..", "..", "mecak8s-vmcp", "Taskfile.yml")
+	path := filepath.Join("..", "..", "mecak8s-kind", "Taskfile.yml")
 	body, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	text := string(body)
+	// Scope the guard to the base disposable Kind lifecycle (bootstrap +
+	// teardown) reachable from kind-setup/kind-destroy, not the whole file:
+	// the vMCP integration phase (vmcp-setup -> toolhive-install) legitimately
+	// installs ToolHive from an OCI registry, and lives in sibling tasks this
+	// guard was never meant to cover.
+	text := taskFileClosure(t, string(body), "kind-setup", "kind-destroy")
 	for _, want := range []string{"reset-state:", "cluster-ready:", "--kubeconfig={{.KUBECONFIG}}", "--context={{.CONTEXT}}", "kind delete cluster --name={{.CLUSTER}}", "kind-destroy"} {
 		if !strings.Contains(text, want) {
 			t.Fatalf("lifecycle guard missing %q", want)
@@ -276,7 +812,7 @@ func TestMecak8sHelmChart_OIDC_DisabledByDefault(t *testing.T) {
 	if err != nil {
 		t.Fatalf("render production values: %v", err)
 	}
-	for _, forbidden := range []string{"--oidc-issuer", "--oidc-audience", "--oidc-jwks-uri", "kind: NetworkPolicy", "raw-driver"} {
+	for _, forbidden := range []string{"--oidc-issuer", "--oidc-audience", "--oidc-jwks-uri", "--oidc-ca-cert-file", "--oidc-allow-private-https-issuer", "kind: NetworkPolicy", "raw-driver"} {
 		if strings.Contains(rendered, forbidden) {
 			t.Fatalf("default render (oidc disabled) unexpectedly contains %q", forbidden)
 		}
@@ -322,6 +858,148 @@ func TestMecak8sHelmChart_OIDC_EnabledWithoutIssuerFails(t *testing.T) {
 		t.Fatal("render accepted oidc.enabled=true with no oidc.issuer")
 	}
 }
+func TestMecak8sHelmChart_OIDC_PrivateHTTPSIssuer(t *testing.T) {
+	base := append(productionArgs(), "--set", "oidc.enabled=true", "--set", "oidc.issuer=https://idp.example.internal", "--set", "oidc.audience=mecatl", "--set", "oidc.allowPrivateHTTPSIssuer=true", "--set", "oidc.caSecret=issuer-ca", "--set", "oidc.caKey=ca.pem")
+	rendered, err := helm(t, base...)
+	if err != nil {
+		t.Fatalf("render private HTTPS issuer: %v", err)
+	}
+	for _, want := range []string{"--oidc-allow-private-https-issuer", "--oidc-ca-cert-file=/var/run/secrets/oidc-ca/ca.pem", "secretName: issuer-ca"} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("private HTTPS issuer render missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{"--oidc-insecure-allow-private-issuer", "SSL_CERT_FILE"} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("private HTTPS issuer render contains %q", forbidden)
+		}
+	}
+	for _, set := range []string{"oidc.issuer=http://idp.example.internal", "oidc.caSecret=", "oidc.caKey=", "oidc.enabled=false"} {
+		args := append(append([]string{}, base...), "--set", set)
+		if _, err := helm(t, args...); err == nil {
+			t.Fatalf("private HTTPS issuer render accepted %q", set)
+		}
+	}
+}
+
+func TestMecak8sHelmChart_ServerTLS(t *testing.T) {
+	base := productionArgs()
+	defaultRender, err := helm(t, base...)
+	if err != nil {
+		t.Fatalf("render default production values: %v", err)
+	}
+	falseRender, err := helm(t, append(append([]string{}, base...), "--set", "tls.enabled=false")...)
+	if err != nil {
+		t.Fatalf("render tls.enabled=false production values: %v", err)
+	}
+	if defaultRender != falseRender {
+		t.Fatal("tls.enabled=false changed the default production render")
+	}
+	for _, forbidden := range []string{"--tls-cert", "--tls-key", "/var/run/secrets/tls", "name: tls", "scheme: HTTPS"} {
+		if strings.Contains(defaultRender, forbidden) {
+			t.Fatalf("default production render unexpectedly contains %q", forbidden)
+		}
+	}
+	for _, want := range []string{
+		"startupProbe:\n            httpGet:\n              scheme: HTTP\n              path: /readyz\n              port: http",
+		"readinessProbe:\n            httpGet:\n              scheme: HTTP\n              path: /readyz\n              port: http",
+		"livenessProbe:\n            httpGet:\n              scheme: HTTP\n              path: /healthz\n              port: http",
+		"preStop:\n              httpGet:\n                scheme: HTTP\n                path: /drain\n                port: http",
+	} {
+		if !strings.Contains(defaultRender, want) {
+			t.Fatalf("default production render missing HTTP endpoint block %q", want)
+		}
+	}
+
+	fixtureArgs := []string{"template", "production", ".", "-f", "ci/production-tls-values.yaml"}
+	rendered, err := helm(t, fixtureArgs...)
+	if err != nil {
+		t.Fatalf("render TLS production fixture: %v", err)
+	}
+	for _, want := range []string{
+		"--tls-cert=/var/run/secrets/tls/tls.crt",
+		"--tls-key=/var/run/secrets/tls/tls.key",
+		"- {name: tls, mountPath: /var/run/secrets/tls, readOnly: true}",
+		"- name: tls\n          secret:\n            secretName: mecak8s-tls\n            defaultMode: 0440\n            items:\n              - {key: \"tls.crt\", path: \"tls.crt\"}\n              - {key: \"tls.key\", path: \"tls.key\"}",
+		"startupProbe:\n            httpGet:\n              scheme: HTTPS\n              path: /readyz\n              port: http",
+		"readinessProbe:\n            httpGet:\n              scheme: HTTPS\n              path: /readyz\n              port: http",
+		"livenessProbe:\n            httpGet:\n              scheme: HTTPS\n              path: /healthz\n              port: http",
+		"preStop:\n              httpGet:\n                scheme: HTTPS\n                path: /drain\n                port: http",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("TLS production fixture missing %q", want)
+		}
+	}
+
+	service := serviceFromRender(t, rendered)
+	for _, port := range service.Spec.Ports {
+		if port.AppProtocol != nil && *port.AppProtocol == "kubernetes.io/h2c" {
+			t.Fatalf("pod TLS Service port %q has h2c appProtocol", port.Name)
+		}
+	}
+
+	enabled := append(append([]string{}, base...), "--set", "tls.enabled=true,tls.secretName=mecak8s-tls")
+	customKeys := append(append([]string{}, enabled...), "--set", "tls.certKey=server.crt,tls.keyKey=server.key")
+	rendered, err = helm(t, customKeys...)
+	if err != nil {
+		t.Fatalf("render TLS production values with custom keys: %v", err)
+	}
+	for _, want := range []string{
+		"--tls-cert=/var/run/secrets/tls/server.crt",
+		"--tls-key=/var/run/secrets/tls/server.key",
+		"- name: tls\n          secret:\n            secretName: mecak8s-tls\n            defaultMode: 0440\n            items:\n              - {key: \"server.crt\", path: \"server.crt\"}\n              - {key: \"server.key\", path: \"server.key\"}",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("TLS custom-key render missing %q", want)
+		}
+	}
+	for _, forbidden := range []string{`- {key: "tls.crt", path: "tls.crt"}`, `- {key: "tls.key", path: "tls.key"}`} {
+		if strings.Contains(rendered, forbidden) {
+			t.Fatalf("TLS custom-key render unexpectedly retained %q", forbidden)
+		}
+	}
+
+	for _, set := range []string{"tls.secretName=", "tls.certKey=", "tls.keyKey=", "tls.clientCA=ca.pem"} {
+		args := append(append([]string{}, enabled...), "--set", set)
+		if _, err := helm(t, args...); err == nil {
+			t.Fatalf("render accepted invalid TLS configuration %q", set)
+		}
+	}
+}
+
+func TestMecak8sVMCPPOC_Scenario3_ChartTLSContract(t *testing.T) {
+	args := kindVMCPArgs()
+	rendered, err := helm(t, args...)
+	if err != nil {
+		t.Fatalf("render Kind TLS profile: %v", err)
+	}
+	for _, want := range []string{
+		"--tls-cert=/var/run/secrets/tls/tls.crt",
+		"--tls-key=/var/run/secrets/tls/tls.key",
+		"name: tls",
+		"mountPath: /var/run/secrets/tls",
+		"readOnly: true",
+		"secretName: mecak8s-tls",
+		`- {key: "tls.crt", path: "tls.crt"}`,
+		`- {key: "tls.key", path: "tls.key"}`,
+		"name: oidc-ca",
+		"mountPath: /var/run/secrets/oidc-ca",
+		"secretName: fixture-ca",
+		`- {key: "tls.crt", path: "tls.crt"}`,
+		"--oidc-ca-cert-file=/var/run/secrets/oidc-ca/tls.crt",
+		"--oidc-allow-private-https-issuer",
+		"scheme: HTTPS",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("Kind TLS render missing %q", want)
+		}
+	}
+	for _, missing := range []string{"tls.certKey=", "tls.keyKey=", "tls.secretName="} {
+		if _, err := helm(t, append(append([]string{}, args...), "--set", missing)...); err == nil {
+			t.Fatalf("render accepted incomplete TLS configuration %q", missing)
+		}
+	}
+}
 
 func TestMecak8sHelmChart_OIDC_RawDriverNetworkPolicyShape(t *testing.T) {
 	args := append(productionArgs(), "--set", "oidc.enabled=true", "--set", "oidc.issuer=https://idp.example.com", "--set", "oidc.audience=mecatl")
@@ -340,5 +1018,204 @@ func TestMecak8sHelmChart_OIDC_RawDriverNetworkPolicyShape(t *testing.T) {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("raw-driver NetworkPolicy render missing %q", want)
 		}
+	}
+}
+
+func TestMecak8sHelmChart_ImagePullSecrets(t *testing.T) {
+	rendered, err := helm(t, productionArgs()...)
+	if err != nil {
+		t.Fatalf("render production values: %v", err)
+	}
+	if strings.Contains(rendered, "imagePullSecrets:") {
+		t.Fatal("default render (imagePullSecrets unset) unexpectedly contains imagePullSecrets")
+	}
+
+	args := append(productionArgs(), "--set", "imagePullSecrets[0].name=ghcr-pull-secret")
+	rendered, err = helm(t, args...)
+	if err != nil {
+		t.Fatalf("render with imagePullSecrets: %v", err)
+	}
+	if !strings.Contains(rendered, "imagePullSecrets:") || !strings.Contains(rendered, "- name: ghcr-pull-secret") {
+		t.Fatal("render with imagePullSecrets set missing the projected pull secret")
+	}
+}
+
+func TestMecak8sHelmChart_KindLiveProviderDisablesMock(t *testing.T) {
+	args := append(kindVMCPArgs(),
+		"--set", "mockProvider=false",
+		"--set", "security.allowUnsafeRealProvider=true",
+		"--set", "extraEnv[0].name=OPENROUTER_API_KEY",
+		"--set", "extraEnv[0].valueFrom.secretKeyRef.name=mecak8s-live-provider",
+		"--set", "extraEnv[0].valueFrom.secretKeyRef.key=OPENROUTER_API_KEY",
+	)
+	rendered, err := helm(t, args...)
+	if err != nil {
+		t.Fatalf("render Kind live-provider profile: %v", err)
+	}
+	container := deploymentFromRender(t, rendered).Spec.Template.Spec.Containers[0]
+	if slices.Contains(container.Args, "--mock") {
+		t.Fatal("Kind live-provider profile retained --mock")
+	}
+	if len(container.Env) != 1 || container.Env[0].Name != "OPENROUTER_API_KEY" || container.Env[0].ValueFrom == nil || container.Env[0].ValueFrom.SecretKeyRef == nil || container.Env[0].ValueFrom.SecretKeyRef.Name != "mecak8s-live-provider" {
+		t.Fatalf("Kind live-provider environment = %#v", container.Env)
+	}
+}
+
+func TestMecak8sHelmChart_ExtraEnv(t *testing.T) {
+	rendered, err := helm(t, productionArgs()...)
+	if err != nil {
+		t.Fatalf("render production values: %v", err)
+	}
+	if strings.Contains(rendered, "\n          env:") {
+		t.Fatal("default render (extraEnv unset) unexpectedly contains an env: block")
+	}
+
+	args := append(productionArgs(),
+		"--set", "extraEnv[0].name=OPENROUTER_API_KEY",
+		"--set", "extraEnv[0].valueFrom.secretKeyRef.name=openrouter-key",
+		"--set", "extraEnv[0].valueFrom.secretKeyRef.key=api-key",
+	)
+	rendered, err = helm(t, args...)
+	if err != nil {
+		t.Fatalf("render with extraEnv: %v", err)
+	}
+	for _, want := range []string{
+		"name: OPENROUTER_API_KEY",
+		"name: openrouter-key",
+		"key: api-key",
+	} {
+		if !strings.Contains(rendered, want) {
+			t.Fatalf("render with extraEnv set missing %q", want)
+		}
+	}
+}
+
+func TestMecak8sHelmChart_ConfigMountDefaultsAreEmpty(t *testing.T) {
+	rendered, err := helm(t, productionArgs()...)
+	if err != nil {
+		t.Fatalf("render production values: %v", err)
+	}
+	deployment := deploymentFromRender(t, rendered)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if slices.Contains(container.Args, "--skills-conventional=true") || slices.Contains(container.Args, "--no-user-model") {
+		t.Fatal("default render unexpectedly enables mounted configuration")
+	}
+	for _, env := range container.Env {
+		if env.Name == "XDG_CONFIG_HOME" {
+			t.Fatal("default render unexpectedly sets XDG_CONFIG_HOME")
+		}
+	}
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == "mecatl-config" || mount.MountPath == "/etc/mecatl-config" {
+			t.Fatal("default render unexpectedly mounts mecatl configuration")
+		}
+	}
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name == "mecatl-config" {
+			t.Fatal("default render unexpectedly defines a mecatl configuration volume")
+		}
+	}
+}
+
+func TestMecak8sHelmChart_SkillsAutoDiscover(t *testing.T) {
+	args := append(productionArgs(), "--set", "skills.autoDiscover=true")
+	rendered, err := helm(t, args...)
+	if err != nil {
+		t.Fatalf("render with skill auto-discovery: %v", err)
+	}
+	container := deploymentFromRender(t, rendered).Spec.Template.Spec.Containers[0]
+	if !slices.Contains(container.Args, "--skills-conventional=true") {
+		t.Fatal("skills.autoDiscover did not render --skills-conventional=true")
+	}
+}
+
+func TestMecak8sHelmChart_XDGConfigMapMount(t *testing.T) {
+	rendered, err := helm(t, "template", "production", ".", "-f", "ci/config-mount-values.yaml")
+	if err != nil {
+		t.Fatalf("render XDG ConfigMap mount fixture: %v", err)
+	}
+
+	deployment := deploymentFromRender(t, rendered)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	for _, want := range []string{"--skills-conventional=true", "--no-user-model"} {
+		if !slices.Contains(container.Args, want) {
+			t.Fatalf("agent args missing %q", want)
+		}
+	}
+	if !slices.ContainsFunc(container.Env, func(env corev1.EnvVar) bool {
+		return env.Name == "XDG_CONFIG_HOME" && env.Value == "/etc/mecatl-config"
+	}) {
+		t.Fatal("agent env missing XDG_CONFIG_HOME=/etc/mecatl-config")
+	}
+	if !slices.ContainsFunc(container.VolumeMounts, func(mount corev1.VolumeMount) bool {
+		return mount.Name == "mecatl-config" && mount.MountPath == "/etc/mecatl-config" && mount.ReadOnly
+	}) {
+		t.Fatal("agent volume mounts missing read-only mecatl configuration mount")
+	}
+	if !slices.ContainsFunc(deployment.Spec.Template.Spec.Volumes, func(volume corev1.Volume) bool {
+		if volume.Name != "mecatl-config" || volume.ConfigMap == nil || volume.ConfigMap.Name != "mecatl-config-v1" {
+			return false
+		}
+		return slices.ContainsFunc(volume.ConfigMap.Items, func(item corev1.KeyToPath) bool {
+			return item.Key == "review-skill" && item.Path == "mecatl/skills/review/SKILL.md" && item.Mode != nil && *item.Mode == 0o444
+		})
+	}) {
+		t.Fatal("pod volumes missing projected review skill")
+	}
+}
+
+func TestMecak8sHelmChart_XDGImageVolumeSkillMount(t *testing.T) {
+	rendered, err := helm(t, "template", "production", ".", "-f", "ci/config-mount-values.yaml")
+	if err != nil {
+		t.Fatalf("render XDG image volume fixture: %v", err)
+	}
+
+	deployment := deploymentFromRender(t, rendered)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if !slices.ContainsFunc(container.VolumeMounts, func(mount corev1.VolumeMount) bool {
+		return mount.Name == "toolhive-review-skill" &&
+			mount.MountPath == "/etc/mecatl-config/mecatl/skills/toolhive-review" && mount.ReadOnly
+	}) {
+		t.Fatal("agent volume mounts missing read-only ToolHive skill mount")
+	}
+	if !slices.ContainsFunc(deployment.Spec.Template.Spec.Volumes, func(volume corev1.Volume) bool {
+		return volume.Name == "toolhive-review-skill" && volume.Image != nil &&
+			volume.Image.Reference == "ghcr.io/example/toolhive-review-skill@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef" &&
+			volume.Image.PullPolicy == corev1.PullIfNotPresent
+	}) {
+		t.Fatal("pod volumes missing digest-pinned ToolHive skill image")
+	}
+}
+
+func TestMecak8sHelmChart_NewValuesAreSchemaValidated(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		set  string
+	}{
+		{name: "unknown root key", set: "unknownConfigMountValue=true"},
+		{name: "extraArgs scalar", set: "extraArgs=--no-user-model"},
+		{name: "skills auto-discover string", set: "skills.autoDiscover=not-a-bool"},
+		{name: "unknown skills setting", set: "skills.unknown=true"},
+		{name: "removed skillsConventional setting", set: "skillsConventional=true"},
+		{name: "volume mount missing path", set: "extraVolumeMounts[0].name=mecatl-config"},
+		{name: "volume name wrong type", set: "extraVolumes[0].name=true"},
+		{name: "volume hostPath source", set: "extraVolumes[0].name=unsafe,extraVolumes[0].hostPath.path=/tmp"},
+		{name: "volume unknown source", set: "extraVolumes[0].name=unknown,extraVolumes[0].unknown.name=value"},
+		{name: "volume without source", set: "extraVolumes[0].name=missing-source"},
+		{name: "volume with multiple sources", set: "extraVolumes[0].name=multiple,extraVolumes[0].configMap.name=config,extraVolumes[0].secret.secretName=secret"},
+		{name: "image volume missing reference", set: "extraVolumes[0].name=skill,extraVolumes[0].image.pullPolicy=Always"},
+		{name: "image volume empty reference", set: "extraVolumes[0].name=skill,extraVolumes[0].image.reference="},
+		{name: "image volume invalid pull policy", set: "extraVolumes[0].name=skill,extraVolumes[0].image.reference=registry.example/skill@sha256:abc,extraVolumes[0].image.pullPolicy=Sometimes"},
+		{name: "image volume unknown field", set: "extraVolumes[0].name=skill,extraVolumes[0].image.reference=registry.example/skill@sha256:abc,extraVolumes[0].image.unknown=true"},
+		{name: "image volume with another source", set: "extraVolumes[0].name=multiple,extraVolumes[0].image.reference=registry.example/skill@sha256:abc,extraVolumes[0].configMap.name=config"},
+		{name: "unsafe mount propagation", set: "extraVolumeMounts[0].name=config,extraVolumeMounts[0].mountPath=/config,extraVolumeMounts[0].mountPropagation=Bidirectional"},
+		{name: "mount subpath and expression", set: "extraVolumeMounts[0].name=config,extraVolumeMounts[0].mountPath=/config,extraVolumeMounts[0].subPath=one,extraVolumeMounts[0].subPathExpr=$(VALUE)"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append(productionArgs(), "--set", tc.set)
+			if _, err := helm(t, args...); err == nil {
+				t.Fatalf("render accepted malformed value %q", tc.set)
+			}
+		})
 	}
 }

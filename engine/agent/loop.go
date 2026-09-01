@@ -31,7 +31,12 @@ import (
 
 // defaultCompactionRatio is the fraction of the context window at which the loop
 // triggers compaction when Deps.CompactionRatio is unset.
-const defaultCompactionRatio = 0.8
+const (
+	defaultCompactionRatio = 0.8
+	// compactionTargetRatio is the complete-request size the automatic cascade
+	// reduces toward after subtracting request-local irreducible overhead.
+	compactionTargetRatio = 0.6
+)
 
 // defaultNoProgressNudges is the safety-net cap applied in NewEngine when
 // Deps.MaxNoProgressNudges is zero (unset). It bounds how many continuation nudges
@@ -162,6 +167,10 @@ type Deps struct {
 	Catalog *tool.Catalog
 	// Policy evaluates each tool call (deny → ask → allow).
 	Policy port.PermissionPolicy
+	// AuthorityEvaluator authorizes executions for sessions carrying a derived
+	// authority set. Bound sessions require an evaluator; composition selects either
+	// enforcement or the explicit noop evaluator when it mints bound sessions.
+	AuthorityEvaluator port.AuthorityEvaluator
 	// Hooks runs the PreToolUse / PostToolUse lifecycle hooks.
 	Hooks port.HookRunner
 	// Store persists session state (optional; nil disables persistence).
@@ -180,6 +189,12 @@ type Deps struct {
 	// Sink, when non-nil, also receives every Event the loop emits, in addition
 	// to the Run.Events() channel which is always the primary surface.
 	Sink port.EventSink
+	// EnableDurableEvidence emits debugger-only request manifests and accepts
+	// sanitized provider-attempt observations. It is opt-in because constructing
+	// that evidence requires hashing/counting, contexts, maps, and slices; hosts
+	// should enable it only when their relay persists events to a durable EventLog
+	// for later inspection. Sink presence is not a durability signal.
+	EnableDurableEvidence bool
 	// Diagnostics is the general-purpose operational logging seam (optional; nil →
 	// port.NopDiagnostics, applied in NewEngine, so the engine never nil-panics and
 	// stays silent when no sink is injected). It is DISTINCT from ToolCallRecorder
@@ -590,6 +605,9 @@ type Run struct {
 	// colon-free) value, else the process-global "r<serial>" fallback. Resolved
 	// once in startRun. See newAskID + RunRequest.AskIDDiscriminator + ADR-0044.
 	askDiscriminator string
+	// runID is the host-minted identity stamped onto every event this run emits
+	// (ADR 0249). Read ONLY by emit/emitOrAbort; the loop never branches on it.
+	runID string
 	// ctx is the run's context, captured at Engine.Run. Engine.emit forwards it
 	// to the injected EventSink so telemetry adapters can read a trace span from
 	// it and correlate spans/metrics to the originating request. Each run (including
@@ -694,6 +712,7 @@ type Run struct {
 	// written once (under fragmentsOnce) and read on every turn of the SAME goroutine
 	// (the run loop is single-goroutine for buildRequest), so the Once is belt-and-braces.
 	fragments             []session.Message
+	fragmentManifest      []prompt.InstructionManifest
 	fragmentsOnce         sync.Once
 	operatorProfile       []tool.MemoryEntry
 	operatorProfileLoaded bool
@@ -763,6 +782,30 @@ type RunRequest struct {
 	// read-parallel path); a structured-output SubmitResult records into a per-run sink
 	// and performs no workspace mutation, so it is read-only.
 	ExtraTools []tool.Tool
+	// RunID is the opaque, host-minted identity of THIS run (ADR 0249).
+	//
+	// It does two things and nothing else. Every event this run emits is stamped
+	// with it at Run.emit/emitOrAbort, beside the existing Seq stamp, so no relay,
+	// transport, or persistence path downstream can omit it. And when
+	// AskIDDiscriminator is empty it also SUPPLIES the ask discriminator, which
+	// is what ADR 0044 always meant by "a durable host passes its own RunID" —
+	// so a durable host sets ONE field, not two carrying the same value.
+	//
+	// HOST CONTRACT (inherited from AskIDDiscriminator, because it feeds it): the
+	// value must be UNIQUE per run-ATTEMPT and STABLE across processes for the
+	// SAME attempt, or the CWE-863 askID replay guard weakens. It should be
+	// colon-free; a colon-bearing value still stamps events fine but cannot serve
+	// as an ask discriminator (the askID grammar would be ambiguous), so the run
+	// falls back to the process-global serial for asks and logs a WARN.
+	//
+	// Empty (the zero value) is the legacy behaviour exactly: events carry an
+	// empty RunID and asks use the process-global serial. mecatui, mecademo, and
+	// tests pass nothing and are unaffected.
+	//
+	// The loop's licence over this value is deliberately narrow: STAMP it, and
+	// DERIVE the ask discriminator from it. It must never be branched on, logged,
+	// sent to a provider, or used to reach storage — see ADR 0249's consequences.
+	RunID string
 	// AskIDDiscriminator, when non-empty, REPLACES the trailing process-global
 	// "r<serial>" component of every askID minted this run (see agent.newAskID),
 	// making the askID reconstructable across processes from persisted state. The
@@ -787,6 +830,17 @@ type RunRequest struct {
 	// bypass the colon/empty fallback.
 	AskIDDiscriminator string
 }
+
+// RunID reports the opaque, host-minted identity of this run (ADR 0249), or ""
+// when the host supplied none.
+//
+// It exists so a caller holding a *Run can ASK which run it holds, rather than
+// inferring it from the session aggregate. That distinction matters for stale
+// controls: a control addressed at a specific run must be compared against the
+// run it would actually affect, and a session's aggregate is a step removed from
+// that (it names the session's CURRENT run, which after a terminal race may not
+// be the one the caller is holding).
+func (r *Run) RunID() string { return r.runID }
 
 // Events returns the channel of domain Events for this run. It is closed when the
 // run ends (after the terminal result Event has been delivered).
@@ -934,6 +988,30 @@ func (e *Engine) Run(ctx context.Context, sess *session.Session, env tool.Enviro
 	})
 }
 
+// RetryFailedStep resumes the failed model step without submitting another user
+// prompt. Persisted conversation and tool state are reused, while live turn-0
+// instructions and system prompt inputs are re-resolved by the normal request builder.
+// sess must carry durable failed-step retry intent prepared by the host.
+func (e *Engine) RetryFailedStep(ctx context.Context, sess *session.Session, env tool.Environment) *Run {
+	return e.startRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
+		e.emit(r, session.Event{Type: session.EvSessionInit})
+		disposition, progress, pending := sess.FailedStepRetryPending()
+		if !pending {
+			e.terminate(ctx, r, sess, session.StopError, "", session.Usage{}, errors.New("agent: failed-step retry intent is not prepared"), false)
+			return
+		}
+		retryText := "The failed model step is being retried without adding another user prompt."
+		if progress == session.StreamProgressVisible {
+			retryText = "The prior partial model output failed and is superseded; the failed model step is being retried."
+		}
+		e.emit(r, session.Event{Type: session.EvModelRetry, Text: retryText, ModelRetry: &session.ModelRetryPayload{
+			Disposition: disposition,
+			Progress:    progress,
+		}})
+		e.runLoop(ctx, r, sess, env, session.Usage{}, "", true)
+	})
+}
+
 // ResumeApproval is the FOURTH, awaiting-ONLY run-entry seam (cloud-native Phase
 // 2): it re-enters the loop AT a parked permission ask on a session that is in
 // StateAwaiting (typically loaded fresh from a snapshot after the process that
@@ -960,9 +1038,47 @@ func (e *Engine) Run(ctx context.Context, sess *session.Session, env tool.Enviro
 // terminal — it never silently completes. The pending tool executes EXACTLY ONCE on
 // the allow path and NOT AT ALL on a precondition failure or a deny.
 func (e *Engine) ResumeApproval(ctx context.Context, sess *session.Session, env tool.Environment, askID string, verdict session.ApprovalVerdict) *Run {
-	return e.startRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
+	// The resumed run CONTINUES the run that parked awaiting this ask — it is not
+	// a new one — so it carries that run's identity forward, read from the session
+	// the host restored it onto (ADR 0249). This is what makes a cross-process
+	// Approve after a restart the SAME run to every observer.
+	//
+	// The fallback is deliberately confined to THIS seam. A prompt entry must
+	// never read the id off the session: a reused session still carries the id of
+	// the run that just ended, and inheriting it would silently attribute a brand
+	// new run's events to the previous one.
+	return e.startRun(ctx, sess, RunRequest{RunID: sess.RunID()}, func(ctx context.Context, r *Run) {
 		e.driveFromAwaiting(ctx, r, sess, env, askID, verdict)
 	})
+}
+
+// askDiscriminatorFor resolves the trailing askID component for a run, and
+// reports whether a supplied value was REJECTED for containing a colon.
+//
+// Precedence: an explicit AskIDDiscriminator wins; otherwise RunID supplies it
+// (ADR 0249 decision 2), which is what lets a durable host set ONE field and get
+// both a stamped run identity and reconstructable askIDs — the arrangement ADR
+// 0044 described as "a durable host passes its own RunID". The derivation is a
+// DEFAULT, not a constraint: a caller needing a discriminator that is NOT the run
+// id still sets the field directly.
+//
+// A colon is REJECTED rather than sanitised. The askID grammar is
+// "<sessionID>:<n>:<callID>:<discriminator>", so a colon makes it ambiguous — and
+// stripping one could collapse two distinct host ids onto a single askID,
+// re-opening the CWE-863 replay collision the discriminator exists to close.
+// Falling back to the process-global serial is the safe answer.
+//
+// It is a free function, not a method, precisely so the precedence is testable
+// without launching a run goroutine.
+func askDiscriminatorFor(req RunRequest, serial int64) (value string, colonRejected bool) {
+	d := req.AskIDDiscriminator
+	if d == "" {
+		d = req.RunID
+	}
+	if d != "" && !strings.Contains(d, ":") {
+		return d, false
+	}
+	return fmt.Sprintf("r%d", serial), d != ""
 }
 
 // startRun mints a Run with the full concurrency preamble (events buffer, ask
@@ -973,7 +1089,8 @@ func (e *Engine) ResumeApproval(ctx context.Context, sess *session.Session, env 
 // entry seams cannot drift in their concurrency setup.
 func (e *Engine) startRun(ctx context.Context, sess *session.Session, req RunRequest, body func(context.Context, *Run)) *Run {
 	ctx, cancel := context.WithCancel(ctx)
-	ctx = port.WithSessionID(ctx, sess.ID)
+	serial := runSerial.Add(1)
+	ctx = port.WithRunAttemptContext(ctx, sess.ID, serial)
 	ctx = withSessionOrigin(ctx, sess.ID)
 	attribution, _ := tool.MemoryAttributionFromContext(ctx)
 	if attribution.Writer == "" {
@@ -993,7 +1110,7 @@ func (e *Engine) startRun(ctx context.Context, sess *session.Session, req RunReq
 		ctx:       ctx,
 		req:       req,
 		hardAbort: make(chan struct{}),
-		serial:    runSerial.Add(1),
+		serial:    serial,
 		// Bind the run-scoped diagnostics ONCE here, where the live session is in
 		// scope: correlate every emitted line to this session id, and (for a child
 		// engine, Role != "") to its agent role too. The main engine has Role=="" so
@@ -1001,20 +1118,14 @@ func (e *Engine) startRun(ctx context.Context, sess *session.Session, req RunReq
 		// engine with no injected sink stays silent.
 		diag: e.bindRunDiag(sess.ID),
 	}
-	// Resolve the trailing askID discriminator once (ADR-0044): a host-supplied,
-	// colon-free value makes the run's askIDs reconstructable across processes;
-	// otherwise fall back to the process-global serial. A colon would make the
-	// askID grammar ambiguous, so it is rejected (fall back) with a WARN rather
-	// than minted — sanitizing by stripping could collapse two distinct host ids
-	// onto one askID and re-open the CWE-863 replay collision.
-	if d := req.AskIDDiscriminator; d != "" && !strings.Contains(d, ":") {
-		r.askDiscriminator = d
-	} else {
-		if d != "" {
-			r.diag.Log(ctx, port.LevelWarn, "ask-id discriminator contains a colon; falling back to run serial", "session", string(sess.ID))
-		}
-		r.askDiscriminator = fmt.Sprintf("r%d", r.serial)
+	// Resolve the trailing askID discriminator once (ADR-0044 / ADR-0249); see
+	// askDiscriminatorFor for the precedence and the colon rule.
+	r.runID = req.RunID
+	resolved, colonRejected := askDiscriminatorFor(req, r.serial)
+	if colonRejected {
+		r.diag.Log(ctx, port.LevelWarn, "ask-id discriminator contains a colon; falling back to run serial", "session", string(sess.ID))
 	}
+	r.askDiscriminator = resolved
 	// An interactive engine's run installs the child-ask router so a subagent's
 	// surfaced ask can be routed back through this (parent) Run.Approve. A headless or
 	// child engine leaves it nil (no human to surface to; a child never surfaces
@@ -1132,7 +1243,7 @@ func (e *Engine) drive(ctx context.Context, r *Run, sess *session.Session, env t
 	// brake is evaluated against the AGGREGATE's cumulative Usage (sess.Usage) instead
 	// — which RecordUsage below keeps in lock-step and which the snapshot persists —
 	// so the budget survives reopen/restart while EvResult.Usage stays per-run.
-	e.runLoop(ctx, r, sess, env, session.Usage{}, "")
+	e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
 }
 
 // runLoop is the SHARED turn-loop body driven by both the prompt entry (drive,
@@ -1146,8 +1257,10 @@ func (e *Engine) drive(ctx context.Context, r *Run, sess *session.Session, env t
 // already-spent-this-re-entry delta for driveFromAwaiting, so the EvResult figure
 // the team supervisor sums stays accurate). lastText seeds the last meaningful
 // assistant text. The budget brake reads sess.Usage directly (persisted spend is
-// honoured), independent of total.
-func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, total session.Usage, lastText string) {
+// honoured), independent of total. skipFirstBoundaryInjections is used only by
+// failed-step retry reuses conversation state; live instruction sources are re-resolved.
+// while every later iteration resumes the ordinary boundary drains.
+func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, total session.Usage, lastText string, skipFirstBoundaryInjections bool) {
 	// no-progress nudge accounting (Workstream A). noProgressNudges counts the
 	// continuation messages injected this run; nudgeCap is the budget (defaulted in
 	// NewEngine to defaultNoProgressNudges; a negative cap DISABLES nudging).
@@ -1157,6 +1270,7 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 	// per run, mirroring the noProgressNudges accounting; it is consumed only in
 	// finishTurnNoTools' real-clean-end branch.
 	var bgPendingNudged bool
+	firstIteration := true
 
 	for {
 		// Plan-approval gate (issue #206): terminate immediately if a plan verdict
@@ -1182,10 +1296,13 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 		// STILL durable history (the run then terminates StopMaxTurns / StopBudget
 		// normally; the recorded message is addressed by the next run). See
 		// runBoundaryInjections.
-		if err := e.runBoundaryInjections(ctx, r, sess); err != nil {
-			e.terminate(ctx, r, sess, session.StopError, lastText, total, err, false)
-			return
+		if shouldRunBoundaryInjections(firstIteration, skipFirstBoundaryInjections) {
+			if err := e.runBoundaryInjections(ctx, r, sess); err != nil {
+				e.terminate(ctx, r, sess, session.StopError, lastText, total, err, false)
+				return
+			}
 		}
+		firstIteration = false
 
 		// Step 2: stop conditions BEFORE the model call (limit / cancellation / token
 		// budget). preTurnTerminal owns the precedence and the matching terminate call;
@@ -1199,6 +1316,7 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 			return
 		}
 		turnIdx := sess.Counters.Turns - 1
+		port.SetAttemptTurnIndex(ctx, turnIdx)
 		e.emit(r, session.Event{Type: session.EvTurnStart, Turn: turnIdx})
 
 		// Snapshot the turn start for the turn.end elapsed measurement. When no
@@ -1208,14 +1326,26 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 			turnStart = e.deps.Clock.Now()
 		}
 
-		// Step 3: compaction seam (mutates history in place when it triggers).
-		e.maybeCompact(ctx, r, sess, turnIdx)
+		// Step 3: assemble the complete provider request once, then compact against
+		// exactly that model-visible shape. On a successful replacement maybeCompact
+		// updates only the request's persisted-history suffix.
+		req := e.buildRequest(ctx, r, sess, env)
+		e.maybeCompact(ctx, r, sess, turnIdx, &req)
 
-		// Step 4: build the request and consume the model stream.
-		asst, usage, streamStop, timing, err := e.runTurn(ctx, r, sess, env, turnIdx)
+		// Step 4: when durable evidence is configured, emit the content-safe
+		// structural manifest immediately before the provider receives this exact
+		// final request. The helper keeps the gate outside requestManifest: the
+		// disabled/default path must not pay for hashing, counting, maps, or slices.
+		e.emitRequestManifest(r, sess, env, req, turnIdx)
+		asst, usage, streamStop, timing, err := e.runTurn(ctx, r, req, turnIdx)
+		// Provider-reported usage is spend, not semantic visibility. Record it even
+		// when the stream fails so retries, cumulative budgets, and EvResult remain
+		// honest without retaining failed-attempt content.
+		total = total.Add(usage)
+		_ = sess.RecordUsage(usage)
 		if err != nil {
 			if errors.Is(err, context.Canceled) || ctx.Err() != nil {
-				e.terminate(ctx, r, sess, session.StopCancelled, lastText, total, nil, false)
+				e.terminate(ctx, r, sess, session.StopCancelled, lastText, total, err, false)
 				return
 			}
 			e.terminate(ctx, r, sess, session.StopError, lastText, total, err, permanentCause(err))
@@ -1240,18 +1370,8 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 			emitUsage.InputTokens = est
 			estimated = est > 0 // a zero estimate is no estimate worth flagging
 		}
-		total = total.Add(usage)
-		// Accumulate this turn's usage onto the aggregate's CUMULATIVE Usage. This is
-		// the value the budget brake reads (budgetExhausted(r, sess.Usage)) and the
-		// snapshot persists, so the budget survives reopen/restart — there is NO loop
-		// seed; the brake reads sess.Usage directly. `total` is the separate zero-based
-		// per-run delta the EvResult carries (the figure the team supervisor sums per
-		// round). The session is StateRunning here (BeginTurn succeeded), so the
-		// running-only RecordUsage guard is satisfied. A guard error is impossible on
-		// this path but would only mean the aggregate misses one turn's usage (a
-		// best-effort budget undercount, never a correctness fault), so it is
-		// deliberately not promoted to a terminal error.
-		_ = sess.RecordUsage(usage)
+		// Cumulative and per-run usage were recorded immediately after runTurn so the
+		// same accounting applies to both successful and failed streams.
 		if asst.Text != "" {
 			lastText = asst.Text
 		}
@@ -1314,6 +1434,10 @@ func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env
 			return
 		}
 	}
+}
+
+func shouldRunBoundaryInjections(firstIteration, skipFirst bool) bool {
+	return !firstIteration || !skipFirst
 }
 
 // runBoundaryInjections runs the Step 2a turn-boundary injection drains, in
@@ -1653,15 +1777,24 @@ func (e *Engine) lookupTool(r *Run, name string) (tool.Tool, bool) {
 //     completes (no mid-stream abort → no-replay-after-first-chunk holds).
 func (e *Engine) preTurnTerminal(ctx context.Context, r *Run, sess *session.Session, lastText string, total session.Usage) bool {
 	if reason, stopped := sess.StopReason(); stopped {
-		e.terminate(ctx, r, sess, reason, lastText, total, nil, false)
+		if _, _, pending := sess.FailedStepRetryPending(); pending && sess.State == session.StateIdle {
+			e.deferFailedStepRetry(ctx, r, sess, reason, lastText, total)
+		} else {
+			e.terminate(ctx, r, sess, reason, lastText, total, nil, false)
+		}
 		return true
 	}
 	if ctx.Err() != nil {
+		// Cancellation explicitly abandons retry intent through Session.Cancel.
 		e.terminate(ctx, r, sess, session.StopCancelled, lastText, total, nil, false)
 		return true
 	}
 	if e.budgetExhausted(r, sess.Usage) {
-		e.terminateComplete(ctx, r, sess, session.StopBudget, lastText, total, "")
+		if _, _, pending := sess.FailedStepRetryPending(); pending && sess.State == session.StateIdle {
+			e.deferFailedStepRetry(ctx, r, sess, session.StopBudget, lastText, total)
+		} else {
+			e.terminateComplete(ctx, r, sess, session.StopBudget, lastText, total, "")
+		}
 		return true
 	}
 	return false
@@ -1849,9 +1982,9 @@ func (l *turnLatency) summary() turnTiming {
 	return l.timing
 }
 
-// runTurn builds the LLMRequest, calls Stream, and assembles the chunk sequence
-// into a single assistant Message. It emits message.delta events for text. It
-// honours ctx cancellation mid-stream by returning context.Canceled.
+// runTurn sends an already-assembled LLMRequest and folds the model stream into
+// a single assistant Message. It emits message.delta events for text. It honours
+// ctx cancellation mid-stream by returning context.Canceled.
 //
 // It also measures, via the injected Clock (never time.Now directly, so tests
 // drive it with a fake clock): TTFT — the elapsed time from the start of the
@@ -1865,8 +1998,20 @@ func (l *turnLatency) summary() turnTiming {
 // but is NOT a streamed token, so it never pollutes the gap series. A turn with
 // no observable output at all reports no TTFT; a turn with fewer than two
 // streaming content deltas reports no inter-token summary (there is no gap).
-func (e *Engine) runTurn(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int) (session.Message, session.Usage, session.StopReason, turnTiming, error) {
-	req := e.buildRequest(ctx, r, sess, env)
+func (e *Engine) runTurn(ctx context.Context, r *Run, req port.LLMRequest, turnIdx int) (session.Message, session.Usage, session.StopReason, turnTiming, error) {
+	if e.deps.EnableDurableEvidence {
+		ctx = port.WithAttemptObserver(ctx, func(observation session.NetworkAttemptPayload) {
+			id, ok := port.SessionIDFromContext(r.ctx)
+			if !ok {
+				return
+			}
+			canonical, ok := session.CanonicalNetworkAttempt(observation, id, r.serial, turnIdx)
+			if !ok {
+				return
+			}
+			e.emit(r, session.Event{Type: session.EvNetworkAttempt, Turn: turnIdx, NetworkAttempt: &canonical})
+		})
+	}
 	seq, err := e.deps.LLM.Stream(ctx, req)
 	if err != nil {
 		return session.Message{}, session.Usage{}, session.StopNone, turnTiming{}, fmt.Errorf("agent: start stream: %w", err)
@@ -2006,26 +2151,15 @@ func (e *Engine) buildRequest(ctx context.Context, r *Run, sess *session.Session
 	} else {
 		cfg.Tools = e.deps.Catalog.Specs(sess.Mode)
 	}
+	authority, authorityBound := sess.BoundAuthority()
+	cfg.Tools = authoritySpecs(cfg.Tools, authority.CapabilitySet, authorityBound)
 	// Run-scoped extra tools (RunRequest.ExtraTools) are advertised this run only,
 	// after the catalog specs, so a structured-output SubmitResult (or any per-run
 	// tool) is visible to the model without being registered into the shared catalog.
 	// A name already present in cfg.Tools is REPLACED by the extra's spec (the overlay
 	// wins, matching lookupTool's overlay-first resolution) so the advertised set and
 	// the dispatch resolution never disagree.
-	for _, xt := range r.req.ExtraTools {
-		spec := xt.Spec()
-		replaced := false
-		for i := range cfg.Tools {
-			if cfg.Tools[i].Name == spec.Name {
-				cfg.Tools[i] = spec
-				replaced = true
-				break
-			}
-		}
-		if !replaced {
-			cfg.Tools = append(cfg.Tools, spec)
-		}
-	}
+	cfg.Tools = authorityOverlaySpecs(cfg.Tools, r.req.ExtraTools)
 	// Shell-less Environment (issue #462 review): the CAPABILITY TRUTH for whether
 	// this turn has a shell is the LIVE tool.Environment handed to Run, NOT the
 	// shared Engine's catalog/prompt (which were built once from server config and
@@ -2079,7 +2213,15 @@ func (e *Engine) buildRequest(ctx context.Context, r *Run, sess *session.Session
 		if e.deps.Instructions == nil {
 			return
 		}
-		discovered, aerr := e.deps.Instructions.Assemble(ctx, env.Workspace())
+		var (
+			discovered []session.Message
+			aerr       error
+		)
+		if e.deps.EnableDurableEvidence {
+			discovered, r.fragmentManifest, aerr = prompt.AssembleWithManifest(ctx, env.Workspace(), e.deps.Instructions)
+		} else {
+			discovered, aerr = e.deps.Instructions.Assemble(ctx, env.Workspace())
+		}
 		if aerr != nil {
 			r.diag.Log(ctx, port.LevelWarn, "instruction-fragment assembly failed; continuing without turn-0 fragments", "error", aerr)
 			return
@@ -2088,12 +2230,7 @@ func (e *Engine) buildRequest(ctx context.Context, r *Run, sess *session.Session
 	})
 	// Build a NEW slice — fragments first, then the persisted conversation — so
 	// Conversation.Messages is never mutated and the prefix is byte-stable per run.
-	msgs := sess.Conversation.Messages
-	if len(r.fragments) > 0 {
-		msgs = make([]session.Message, 0, len(r.fragments)+len(sess.Conversation.Messages))
-		msgs = append(msgs, r.fragments...)
-		msgs = append(msgs, sess.Conversation.Messages...)
-	}
+	msgs := requestMessages(r.fragments, sess.Conversation.Messages)
 	system := build(cfg)
 	// Append the shell-less posture clause to the VOLATILE suffix (issue #462
 	// review) ONLY when the loop owns the system prompt — i.e. the DEFAULT builder
@@ -2119,6 +2256,15 @@ func (e *Engine) buildRequest(ctx context.Context, r *Run, sess *session.Session
 	}
 }
 
+func requestMessages(fragments, persisted []session.Message) []session.Message {
+	if len(fragments) == 0 {
+		return persisted
+	}
+	msgs := make([]session.Message, 0, len(fragments)+len(persisted))
+	msgs = append(msgs, fragments...)
+	return append(msgs, persisted...)
+}
+
 func (e *Engine) refreshOperatorProfile(ctx context.Context, r *Run, cfg *prompt.Config) {
 	if e.deps.OperatorProfileSource == nil {
 		return
@@ -2140,10 +2286,22 @@ func (e *Engine) refreshOperatorProfile(ctx context.Context, r *Run, cfg *prompt
 	}
 }
 
-// maybeCompact runs the Compactor when the estimated history token count crosses
-// the threshold. It replaces the conversation in place and emits a compaction
-// Event. It reports whether compaction ran.
-func (e *Engine) maybeCompact(ctx context.Context, r *Run, sess *session.Session, turnIdx int) bool {
+func estimateRequestTokens(counter TokenCounter, req port.LLMRequest) int {
+	total := countLayered(counter, req.System) + counter.CountMessages(req.Messages)
+	for _, spec := range req.Tools {
+		total += perToolSpecOverhead
+		total += counter.Count(spec.Name)
+		total += counter.Count(spec.Description)
+		total += countBytes(counter, spec.Schema)
+	}
+	return total
+}
+
+// maybeCompact runs the Compactor when the estimated complete provider request
+// crosses the threshold. It replaces the conversation in place, updates only the
+// request's message suffix, and emits a compaction Event. It reports whether
+// compaction ran.
+func (e *Engine) maybeCompact(ctx context.Context, r *Run, sess *session.Session, turnIdx int, req *port.LLMRequest) bool {
 	// Resolve the window LIVE here (the self-correction point): a live-catalog
 	// refresh after construction is observed on this next check without an engine
 	// rebuild. A nil resolver or a <=0 return disables compaction (zero disables).
@@ -2155,10 +2313,25 @@ func (e *Engine) maybeCompact(ctx context.Context, r *Run, sess *session.Session
 		return false
 	}
 	threshold := int(float64(window) * e.deps.CompactionRatio)
-	if e.deps.TokenCounter.CountMessages(sess.Conversation.Messages) < threshold {
+	requestTokens := estimateRequestTokens(e.deps.TokenCounter, *req)
+	if requestTokens < threshold {
 		return false
 	}
-	compacted, summary, err := e.deps.Compactor.Compact(ctx, sess.Conversation)
+	// Derive the cascade target from the same complete-request measurement. System
+	// text, ephemeral fragments, and tool schemas are irreducible here, so only the
+	// remaining budget is available to persisted history. A floor of one keeps the
+	// budget meaningful when overhead alone is already above the target; candidate
+	// admission below still requires reduction.
+	persistedTokens := e.deps.TokenCounter.CountMessages(sess.Conversation.Messages)
+	irreducible := requestTokens - persistedTokens
+	if irreducible < 0 {
+		irreducible = 0
+	}
+	budget := int(float64(window)*compactionTargetRatio) - irreducible
+	if budget < 1 {
+		budget = 1
+	}
+	result, compacted, err := e.compactionCandidate(ctx, sess.Conversation, budget)
 	if err != nil {
 		// Compaction is best-effort: a failure must not abort the run. Keep the
 		// existing history and continue — but no longer SILENTLY: surface the
@@ -2171,12 +2344,7 @@ func (e *Engine) maybeCompact(ctx context.Context, r *Run, sess *session.Session
 		r.diag.Log(ctx, port.LevelWarn, "compaction failed; continuing without compaction", "error", err)
 		return false
 	}
-	// Last line of defense: never hand the session a history that would orphan a
-	// tool result. A compactor SHOULD have caught this and returned the sentinel,
-	// but validate again before ReplaceHistory and degrade-and-continue (same
-	// branch, same WARN) rather than risk a provider HTTP 400 that bricks the run.
-	if err := session.ValidateToolPairing(compacted); err != nil {
-		r.diag.Log(ctx, port.LevelWarn, "compaction failed; continuing without compaction", "error", err)
+	if !result.Changed {
 		return false
 	}
 	// Capture the pre-compaction history BEFORE ReplaceHistory mutates it (cloud-native
@@ -2193,7 +2361,11 @@ func (e *Engine) maybeCompact(ctx context.Context, r *Run, sess *session.Session
 		r.diag.Log(ctx, port.LevelWarn, "compaction produced history the session rejected; continuing without compaction", "error", err)
 		return false
 	}
-	e.emit(r, session.Event{Type: session.EvCompaction, Turn: turnIdx, Text: summary})
+	// The system prompt, advertised tools, and ephemeral prefix were already
+	// assembled and measured. Preserve them byte-for-byte and replace only the
+	// persisted-history suffix that compaction changed.
+	req.Messages = requestMessages(r.fragments, sess.Conversation.Messages)
+	e.emit(r, session.Event{Type: session.EvCompaction, Turn: turnIdx, Text: result.Summary})
 	// Emit the durable non-destructive archive of the span the replace just dropped.
 	// The loop only EMITS it; the server relay Appends it to port.EventLog (the loop
 	// stays storage-agnostic — it never imports the log port). No-leak: `archived` is
@@ -2231,6 +2403,13 @@ func (e *Engine) bindRunDiag(id session.SessionID) port.Diagnostics {
 // contract — and is still returned for sink mirroring.
 func (r *Run) emit(ev session.Event) session.Event {
 	ev.Seq = r.seq.Add(1)
+	// The run labels its own events with run-scoped identity. Seq answers "where
+	// in this run", RunID answers "which run" — Seq restarts every run, so it
+	// cannot distinguish two runs of one session. Stamping here rather than at a
+	// relay is ADR 0249 decision 4: there is no single downstream chokepoint that
+	// feeds BOTH the durable log and the client wire, so any other placement means
+	// stamping at ~9 sites by hand. Empty when the host minted no id.
+	ev.RunID = r.runID
 	select {
 	case r.events <- ev:
 		return ev
@@ -2269,6 +2448,9 @@ func (r *Run) emit(ev session.Event) session.Event {
 // arms only ever claim a send that would genuinely park.
 func (r *Run) emitOrAbort(ev session.Event, abort <-chan struct{}) bool {
 	ev.Seq = r.seq.Add(1)
+	// Same stamp as emit — see the note there. These two are the ONLY sites a run
+	// hands an event outward, which is what makes the guarantee structural.
+	ev.RunID = r.runID
 	select {
 	case r.events <- ev:
 		return true
@@ -2389,11 +2571,26 @@ func joinChildren(joins []backgroundJoin, d time.Duration) []backgroundJoin {
 	return pending
 }
 
+// deferFailedStepRetry closes a retry Run that reached a clean pre-turn brake
+// before BeginTurn/provider invocation. Unlike ordinary clean termination it leaves
+// the aggregate idle with durable retry intent, so no queued prompt may overtake it.
+func (e *Engine) deferFailedStepRetry(ctx context.Context, r *Run, sess *session.Session, reason session.StopReason, text string, usage session.Usage) {
+	e.closeSteerDrained(ctx, r, sess)
+	e.drainChildren(ctx, r)
+	e.fireStop(ctx, r, sess, reason)
+	e.emitResult(r, sess, reason, text, usage, "", session.RetryDispositionUnknown, session.StreamProgressUnknown)
+	e.save(ctx, r, sess)
+}
+
 // terminate ends the run with a non-success terminal state. It moves the session
 // to the matching terminal state (Cancel for cancelled, Fail for error, Stop for
 // a tripped limit) and emits the terminal result Event. permanent records whether
 // a StopError failure is permanent (unrecoverable; retry will fail again).
 func (e *Engine) terminate(ctx context.Context, r *Run, sess *session.Session, reason session.StopReason, text string, usage session.Usage, cause error, permanent bool) {
+	disposition, progress := failureFacts(cause)
+	if disposition == session.RetryDispositionUnknown && permanent {
+		disposition = session.RetryDispositionPermanent
+	}
 	e.closeSteerDrained(ctx, r, sess)
 	e.drainChildren(ctx, r)
 	switch reason {
@@ -2401,18 +2598,18 @@ func (e *Engine) terminate(ctx context.Context, r *Run, sess *session.Session, r
 		_ = sess.Cancel()
 	case session.StopError:
 		_ = sess.Fail()
-		_ = sess.RecordFailurePermanence(permanent)
+		_ = sess.RecordFailureMetadata(disposition, progress)
 	default:
 		if !sess.State.IsTerminal() {
 			_ = sess.Stop(reason)
 		}
 	}
 	var errMsg string
-	if cause != nil {
+	if cause != nil && reason != session.StopCancelled {
 		errMsg = cause.Error()
 	}
 	e.fireStop(ctx, r, sess, reason)
-	e.emitResult(r, sess, reason, text, usage, errMsg, permanent)
+	e.emitResult(r, sess, reason, text, usage, errMsg, disposition, progress)
 	e.save(ctx, r, sess)
 }
 
@@ -2473,7 +2670,7 @@ func (e *Engine) terminateComplete(ctx context.Context, r *Run, sess *session.Se
 	// terminateComplete has no Go error to classify (the provider relays a stop
 	// CHUNK, not an error), so the permanence bit is always false here — honest
 	// fail-open. Only the error terminate() path carries a real classified cause.
-	e.emitResult(r, sess, reason, text, usage, errMsg, false)
+	e.emitResult(r, sess, reason, text, usage, errMsg, session.RetryDispositionUnknown, session.StreamProgressComplete)
 }
 
 // observeCompletion invokes the optional host observer after the aggregate has
@@ -2522,11 +2719,38 @@ func (e *Engine) observeCompletion(ctx context.Context, r *Run, sess *session.Se
 // returns "" for a benign stop (end_turn / a clean limit), where a cause would
 // be noise — StopBudget/StopMaxTurns/StopNoProgress already carry their own
 // honest notes.
+// failureFacts extracts neutral typed metadata from a terminal provider error.
+// Missing interfaces remain conservative unknown values; no text inference occurs.
+func failureFacts(err error) (session.RetryDisposition, session.StreamProgress) {
+	var disposition session.RetryDisposition
+	var classified port.RetryDispositionError
+	if errors.As(err, &classified) {
+		disposition = classified.RetryDisposition()
+		if !disposition.Valid() {
+			disposition = session.RetryDispositionUnknown
+		}
+	} else {
+		var pe port.PermanentError
+		if errors.As(err, &pe) && pe.Permanent() {
+			disposition = session.RetryDispositionPermanent
+		}
+	}
+	var progress session.StreamProgress
+	var progressed port.StreamProgressError
+	if errors.As(err, &progressed) {
+		progress = progressed.StreamProgress()
+		if !progress.Valid() {
+			progress = session.StreamProgressUnknown
+		}
+	}
+	return disposition, progress
+}
+
 // permanentCause reports whether err is a permanent provider rejection that will
 // fail again on retry (fail-open: an unclassifiable error returns false).
 func permanentCause(err error) bool {
-	var pe port.PermanentError
-	return errors.As(err, &pe) && pe.Permanent()
+	disposition, _ := failureFacts(err)
+	return disposition == session.RetryDispositionPermanent
 }
 
 func stopTerminalCause(stop session.StopReason, text string) string {
@@ -2542,16 +2766,18 @@ func stopTerminalCause(stop session.StopReason, text string) string {
 // emitResult publishes the single terminal result Event. errMsg carries the
 // failure detail on an error termination (empty for success/limit/cancel).
 // permanent records whether a StopError failure is permanent (unrecoverable).
-func (e *Engine) emitResult(r *Run, _ *session.Session, reason session.StopReason, text string, usage session.Usage, errMsg string, permanent bool) {
+func (e *Engine) emitResult(r *Run, _ *session.Session, reason session.StopReason, text string, usage session.Usage, errMsg string, disposition session.RetryDisposition, progress session.StreamProgress) {
 	u := usage
 	e.emit(r, session.Event{
 		Type: session.EvResult,
 		Result: &session.ResultPayload{
-			Stop:      reason,
-			Text:      text,
-			Usage:     usage,
-			Error:     errMsg,
-			Permanent: permanent,
+			Stop:        reason,
+			Text:        text,
+			Usage:       usage,
+			Error:       errMsg,
+			Permanent:   disposition == session.RetryDispositionPermanent,
+			Disposition: disposition,
+			Progress:    progress,
 		},
 		Usage: &u,
 	})

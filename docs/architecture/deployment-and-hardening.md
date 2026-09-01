@@ -15,7 +15,19 @@ and `cmd/mecated` wires the knobs:
   constant-time compared) enforced by a gRPC interceptor + HTTP middleware
   (`internal/adapter/server/authn.go`); optional **TLS / mTLS** (`--tls-cert` / `--tls-key` /
   `--client-ca`). The server still **warns loudly** if it binds a non-loopback
-  address with no auth configured.
+  address with no auth configured. `mecak8s` watches the parent directories of
+  its server cert/key paths so Kubernetes projected-Secret `..data` swaps are
+  observed. It publishes only a fully parsed, matching pair through
+  `tls.Config.GetCertificate`; a bad rotation retains the last valid pair, while
+  the client CA remains restart-required ([ADR 0240](../adr/0240-mecak8s-credential-reload-and-chart-security.md)).
+- **Redis credential reload** — when mecak8s receives any Redis CA, username, or
+  password file, it watches the lexical parent directories and transactionally re-reads
+  the complete configured set. A bounded single-flight worker constructs and probes a
+  candidate through the normal verified toolhive-core Redis path, then atomically publishes
+  it. Every store/schedule/migration operation leases one client generation, so displaced
+  clients close only after in-flight work and migration locks release them. Invalid
+  candidates retain the last valid generation; no configured files means no watcher or
+  reload goroutine ([ADR 0240](../adr/0240-mecak8s-credential-reload-and-chart-security.md)).
 - **Rate limiting** — per-client + global token-bucket (`--rate-limit` /
   `--rate-burst`), bounded and idle-evicting. With OIDC enabled, a separate
   pre-validation rejected-token bucket protects JWT/JWKS validation. It is keyed
@@ -24,6 +36,13 @@ and `cmd/mecated` wires the knobs:
   the unchanged post-validation `(issuer, subject)` limiter.
 - **Health** — HTTP `/healthz` (liveness) + `/readyz` (readiness) mounted outside
   auth/rate-limit, plus standard `grpc_health_v1` `SERVING` (`internal/adapter/server/health.go`).
+- **mecak8s secure real-provider transport** — three postures: in-pod TLS + OIDC,
+  edge-terminated TLS + OIDC (`security.tlsTerminatedUpstream=true`, ClusterIP-only h2c),
+  and the explicit unsafe bypass. The upstream value is an operator attestation the chart
+  cannot verify, and edge mode puts caller bearer tokens on the pod network in cleartext:
+  restricting backend reachability to the gateway or mesh is the load-bearing control,
+  and the chart ships no NetworkPolicy to do it. Full operator contract in
+  [ADR 0278](../adr/0278-mecak8s-edge-terminated-tls.md).
 - **Graceful shutdown** — gRPC `GracefulStop` + HTTP `Shutdown`.
 - **Daemon config file (`daemon.yaml`, ADR 0088)** — the serve-time topology
   slice (gRPC/HTTP/metrics listen addresses, TLS cert/key/CA paths,
@@ -56,6 +75,40 @@ under `pipefail` so a broken scan cannot pass vacuously). **`dependabot`**
 (`.github/dependabot.yml`) tracks both Go modules independently plus the
 SHA-pinned GitHub Actions (grouping minor+patch, isolating majors); every action
 is **SHA-pinned** with a `# vX.Y.Z` comment that dependabot preserves.
+
+### Listener-scoped workspace authority
+
+Workspace selection is a deployment policy fixed at composition, not a claim a
+network client can make with a path string. A loopback-only or embedded
+`mecated` deployment uses **client-selected** authority, so its client can pick
+an absolute checkout or sibling worktree. `mecated` switches to
+**server-assigned** authority for any non-loopback, wildcard, or mixed API
+listener (and operators must select it explicitly when a loopback listener sits
+behind a proxy). In that mode, `--workspace` is the one authoritative deployment
+root and every filesystem `CreateSession` request must carry an empty
+`workspace` field. A non-empty value is rejected as `InvalidArgument` before
+path cleaning, filesystem access, trust evaluation, or environment creation;
+it is never compared with or substituted for the configured root. A
+filesystem-bearing server-assigned deployment without `--workspace` fails before
+it starts listeners.
+
+This policy also validates persisted filesystem sessions, rehydration, scheduled
+fires, legacy adoption, and composition-created environment overrides. Stored
+roots must be non-empty, absolute, clean, and exactly equal to the configured
+clean root; relative/traversal spellings, symlink aliases, and roots made stale
+by configuration change fail closed before filesystem access. The direct wire
+rule is stricter: a non-empty client value is always rejected without cleaning
+or comparison. The wire field remains for compatibility: an empty workspace is
+an intentional request for the server's configured root, never a request to
+infer a path from the client host.
+
+`mecak8s` is always server-assigned and has no mounted workspace by default. It
+maps an omitted or empty profile to `no-fs`, accepts no client workspace, and
+rejects any non-`no-fs` profile until a future operator-enabled mounted-workspace
+deployment defines that authority. A remote `mecatui` likewise refuses an
+explicit workspace locally, before resolving or sending its own cwd; the service
+remains the enforcement boundary for every other client. See
+[ADR 0237](../adr/0237-listener-scoped-workspace-authority.md).
 
 ### Multi-replica deployment & single-writer enforcement
 

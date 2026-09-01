@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 
@@ -19,15 +20,31 @@ type startupResumeSource interface {
 const startupReasonNotFound = client.CapabilityReasonUnknown
 
 type startupResumeError struct {
-	Reason client.CapabilityReason
-	text   string
+	Reason         client.CapabilityReason
+	text           string
+	cause          error
+	candidateFresh bool
+	// noEligibleChat marks the specific --resume-latest miss where the inventory was
+	// listed successfully but held no eligible resumable chat. It is the ONLY miss
+	// --resume-latest degrades into a fresh session; a list/transport failure
+	// (also Reason == CapabilityReasonUnknown) is NOT this case and still surfaces.
+	noEligibleChat bool
 }
 
 func (e *startupResumeError) Error() string { return e.text }
+func (e *startupResumeError) Unwrap() error { return e.cause }
 
 func startupResumeConfig(ctx context.Context, source startupResumeSource, cfg config) (*client.ResumeSelection, string, error) {
 	resume, err := resolveStartupResume(ctx, source, cfg.resumeID, cfg.resumeLatest)
 	if err != nil {
+		// --resume-latest degrades a "no eligible chat" miss into a fresh session
+		// (fall through to cfg.workspace) instead of failing startup. Only that
+		// specific miss (noEligibleChat) is degraded: a list/transport failure still
+		// surfaces (and --resume-latest never uses an exact ID).
+		var resumeErr *startupResumeError
+		if cfg.resumeLatest && errors.As(err, &resumeErr) && resumeErr.noEligibleChat {
+			return nil, cfg.workspace, nil
+		}
 		return nil, "", err
 	}
 	if resume != nil {
@@ -45,7 +62,7 @@ func resolveStartupResume(ctx context.Context, source startupResumeSource, exact
 	}
 	rows, err := source.ListSessions(ctx)
 	if err != nil {
-		return nil, &startupResumeError{Reason: client.CapabilityReasonUnknown, text: "could not list resumable chats; retry or start without a resume flag"}
+		return nil, &startupResumeError{Reason: client.CapabilityReasonUnknown, text: "could not list resumable chats; retry or start without a resume flag", cause: err}
 	}
 
 	// Do not trust transport ordering here: the wire promises this key, but sorting
@@ -67,17 +84,28 @@ func resolveStartupResume(ctx context.Context, source startupResumeSource, exact
 		// Latest means newest with an available authoritative transcript. A
 		// pruned/corrupt row is advisory inventory, so continue to the next row.
 	}
-	return nil, &startupResumeError{Reason: startupReasonNotFound, text: "no eligible resumable chat was found; use --resume with an exact ID or start a new chat"}
+	return nil, &startupResumeError{Reason: startupReasonNotFound, noEligibleChat: true, text: "no eligible resumable chat was found; use --resume with an exact ID or start a new chat"}
 }
 
 func loadExactStartupResume(ctx context.Context, source startupResumeSource, id string) (*client.ResumeSelection, error) {
 	snapshot, err := source.GetSession(ctx, id)
 	if err != nil {
-		return nil, &startupResumeError{Reason: startupReasonNotFound, text: "session not found; check the exact ID or use --resume-latest"}
+		reason := client.CapabilityReasonUnknown
+		if client.IsNotFound(err) {
+			reason = startupReasonNotFound
+		}
+		return nil, &startupResumeError{Reason: reason, text: "session lookup unavailable; retry or start without a resume flag", cause: err}
 	}
 	transcript, err := source.GetSessionTranscript(ctx, id)
-	if err != nil || !transcript.Complete || transcript.SessionID != id {
-		return nil, &startupResumeError{Reason: client.CapabilityReasonTranscriptUnavailable, text: "the authoritative transcript is unavailable; retry or start without a resume flag"}
+	if err != nil {
+		reason := client.CapabilityReasonTranscriptUnavailable
+		if client.IsNotFound(err) {
+			reason = startupReasonNotFound
+		}
+		return nil, &startupResumeError{Reason: reason, text: "the authoritative transcript is unavailable; retry or start without a resume flag", cause: err}
+	}
+	if !transcript.Complete || transcript.SessionID != id {
+		return nil, &startupResumeError{Reason: client.CapabilityReasonTranscriptUnavailable, text: "the authoritative transcript is unavailable; retry or start without a resume flag", candidateFresh: true}
 	}
 	row := client.SessionListItem{
 		ID: id, State: snapshot.State, Workspace: snapshot.Workspace, CreatedAt: snapshot.CreatedAt,

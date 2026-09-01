@@ -48,6 +48,17 @@ when the code that satisfies the plan has landed.
 
 ## Plans
 
+- [Local mecak8s Kind fixture](mecak8s-kind-fixture.md) — cleanly separates an
+  operator-run mock/real-provider mecak8s fixture, optional Keycloak caller
+  identity, and the deferred ToolHive/vMCP delegation extension. Status: draft.
+- [goccy/go-yaml migration](goccy-yaml-migration.md) — replace direct root and
+  engine yaml.v3 parsing with goccy/go-yaml while preserving safe diagnostics,
+  strict/lenient contracts, frontmatter parsing, and standalone engine closure.
+  Status: draft.
+- [Operator-defined LLM providers](operator-defined-llm-providers.md) — operator-local,
+  truthfully named gateway providers over the existing Responses, Chat Completions, and
+  Anthropic Messages adapters, plus persistent built-in endpoint overrides. Status: draft.
+- [Surface approval migration](surface-approval-migration.md) — final Phase-2 migration of the mecatui approval UI onto the dynamic surface contract, including ephemeral render-frame hit dispatch. Status: landed.
 - [Spine convergence](spine-convergence.md) — bring the
   to-acceptance-plan / plan-orchestrate / test-writer spine + ac-trace into
   mecatl. Status: draft.
@@ -75,16 +86,37 @@ when the code that satisfies the plan has landed.
   application sessions, schedules, teams, memory, event streams, live runs, and
   model-facing object access; remote-driver enforcement is deferred to #452. Status:
   draft.
+- [Session storage continuity](session-storage-continuity.md) — bounded current snapshots,
+  indexed metadata, maintenance jobs, and writable legacy-session adoption. Status:
+  landed.
 - [Session continuity UX](session-continuity-ux.md) — authoritative session-family
   metadata, honest replay/inspection, an active-session copy surface, startup resume,
   and a final session-ID handoff for mecatui. Status: landed.
-- [Session storage continuity](session-storage-continuity.md) — bounded current
-  snapshots, indexed progressive inventory, resumable migration/cleanup, configurable
-  retention, and explicit legacy-chat adoption. Status: draft.
 - [Steer-while-running](steer-while-running.md) — inject a user message into an
   in-flight run (Claude Code's "steer"): an engine-side supersedable inbox drained
   at the turn boundary, a gRPC `Converse` frame, the authoritative drain echo, and
   the mecatui capability flip; gRPC-only v1 (HTTP deferred). Status: draft.
+- [Authority evaluator port](authority-evaluator-port.md) — derived capability sets
+  narrowed at every delegation seam, with the decision behind one swappable
+  evaluator port at the single dispatch chokepoint; Cedar is an opt-in adapter.
+  Status: draft.
+- [Extensible mecatui status line](mecatui-status-line.md) — user-global
+  responsive header/footer templates or one local command over a shared status
+  input and theme-integrated StatusML; present chrome is the default templates.
+  Status: draft.
+
+- [Listener-scoped workspace authority](listener-scoped-workspace-authority.md) — network listeners assign one operator-configured filesystem root while embedded and loopback deployments retain client-selected workspaces; mecak8s is no-FS by default. Status: draft.
+- [SDK server enablers](sdk-server-enablers.md) — the Go-side contracts the TypeScript
+  SDK is built on: `GetServerInfo` + an open-string feature vocabulary, RFC 9457 typed
+  errors, exact-origin CORS, a durable host-minted `run_id` with stale-control guards,
+  `port.CursorEventLog` + the Redis LIST→Stream migration, `WatchSessionEvents`, the
+  spawned-daemon UDS/ready-file surface, and listener-scoped `mcp_servers`. Status: draft.
+- [TypeScript SDK core (M1)](sdk-typescript-core.md) — `@stacklok/mecatl-sdk` M1: the
+  `sdk/typescript/` scaffold (pnpm 11, TS 6, biome, vitest, API Extractor), pinned
+  protobuf-es generation for `mecatl.v1` with a freshness gate, Connect-ES + HTTP/SSE
+  raw transports behind an injected-Transport seam, typed errors and the compatibility
+  floor, `Client`/`Session`/`Run` choreography with permissions and strict steer,
+  multimodal helpers, and the offline e2e against `mecated --mock`. Status: draft.
 
 ## See also
 

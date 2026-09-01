@@ -13,7 +13,10 @@
 package arch
 
 import (
+	"errors"
 	"go/build"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -68,15 +71,17 @@ type coreImportRule struct {
 	desc            string          // human rule cited on failure
 }
 
-// coreImportRules is the direction table covering ALL seven tiers. Domain leaves
-// (session, governance) assert ZERO internal imports (pure leaves). Every higher
-// tier names only the lower tiers it legitimately depends on — never sideways,
-// never upward.
+// coreImportRules is the direction table covering ALL seven tiers. Governance
+// remains session-free; session may carry governance capability values. Every
+// higher tier names only the lower tiers it legitimately depends on — never
+// sideways, never upward.
 var coreImportRules = []coreImportRule{
 	{
-		pkg:         modulePrefix + "engine/session",
-		allowedCore: map[string]bool{},
-		desc:        "session is the pure domain leaf: it may import only stdlib (zero internal imports)",
+		pkg: modulePrefix + "engine/session",
+		allowedCore: map[string]bool{
+			modulePrefix + "engine/governance": true,
+		},
+		desc: "session may import governance's capability value + stdlib; governance stays session-free",
 	},
 	{
 		pkg:         modulePrefix + "engine/governance",
@@ -224,6 +229,42 @@ func TestNoCoreImportsAdapter(t *testing.T) {
 				}
 			})
 		})
+	}
+}
+
+func TestNoEngineAdapterImportsAgent(t *testing.T) {
+	const adapterRoot = "../adapter"
+	const agentImport = modulePrefix + "engine/agent"
+
+	packages := 0
+	err := filepath.WalkDir(adapterRoot, func(path string, d os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if !d.IsDir() {
+			return nil
+		}
+		bp, importErr := build.ImportDir(path, 0)
+		if importErr != nil {
+			var noGo *build.NoGoError
+			if errors.As(importErr, &noGo) {
+				return nil
+			}
+			return importErr
+		}
+		packages++
+		for _, imp := range bp.Imports {
+			if imp == agentImport {
+				t.Errorf("reference adapter %s imports engine/agent in production code; engine/adapter/* may depend only on inward domain/port seams", filepath.ToSlash(path))
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("walk reference adapters: %v", err)
+	}
+	if packages == 0 {
+		t.Fatal("no engine/adapter packages found; the adapter-to-agent boundary check is vacuous")
 	}
 }
 

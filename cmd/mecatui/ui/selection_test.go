@@ -841,35 +841,43 @@ func TestSelectedTextUnchangedByEmptyLineFix(t *testing.T) {
 	}
 }
 
-// TestPressDragReleaseCopies: a press anchors, motion extends, release copies. The
-// returned command carries the OSC52 payload AND the shell-write fallback fires;
-// the status reads "copied". FAILS if the copy path breaks.
-func TestPressDragReleaseCopies(t *testing.T) {
+// TestPressDragReleaseCopiesSelection confirms a non-empty conversation drag
+// copies on release while retaining its selection.
+func TestPressDragReleaseCopiesSelection(t *testing.T) {
 	m, cb := selModel(t)
 	m.vp.SetContent("hello world\nsecond line\nthird row")
 	m.vp.SetYOffset(0)
 	top := convTopRow(m)
 
-	m, _ = pressMouse(m, tea.MouseLeft, 0, top) // anchor at line0 col0
-	if !m.sel.active {
-		t.Fatal("press should activate a selection")
-	}
-	m, _ = motionMouse(m, 11, top) // extend to end of "hello world"
+	m, _ = pressMouse(m, tea.MouseLeft, 0, top)
+	m, _ = motionMouse(m, 11, top)
 	m, cmd := releaseMouse(m, 11, top)
 
 	leaves := collectLeaves(cmd)
-	payload, ok := osc52Payload(leaves)
-	if !ok {
-		t.Fatal("release should return an OSC52 SetClipboard command")
+	osc52, shellWrites := 0, 0
+	for _, msg := range leaves {
+		if _, ok := msg.(shellWriteResultMsg); ok {
+			shellWrites++
+		} else {
+			osc52++
+		}
 	}
-	if payload != "hello world" {
-		t.Errorf("OSC52 payload = %q, want %q", payload, "hello world")
+	if osc52 != 1 || shellWrites != 1 {
+		t.Fatalf("copy transports = OSC52:%d shell:%d, want one each", osc52, shellWrites)
+	}
+	payload, ok := osc52Payload(leaves)
+	if !ok || payload != "hello world" {
+		t.Fatalf("release OSC52 payload = %q, ok=%v", payload, ok)
+	}
+	for _, msg := range leaves {
+		mm, _ := m.Update(msg)
+		m = mm.(Model)
+	}
+	if !m.sel.active || selectedText(m.vp.GetContent(), m.sel) != "hello world" {
+		t.Fatalf("selection = %q, want retained hello world", selectedText(m.vp.GetContent(), m.sel))
 	}
 	if len(cb.wrote) != 1 || string(cb.wrote[0]) != "hello world" {
-		t.Errorf("shell-write fallback not invoked with the payload: %v", cb.wrote)
-	}
-	if !strings.Contains(stripANSIstr(m.statusMsg), "copied") {
-		t.Errorf("status = %q, want a 'copied N chars' confirmation", stripANSIstr(m.statusMsg))
+		t.Fatalf("release shell clipboard writes = %q", cb.wrote)
 	}
 }
 
@@ -1993,9 +2001,10 @@ type nonSelectableCase struct {
 // permission-ask case (the most likely real mid-drag interruption) is included.
 func TestSelectableGateBlocksAndClears(t *testing.T) {
 	cases := []nonSelectableCase{
-		{"mcpOverlay", func(m *Model) { m.mcp.view = mcpPanel }},
-		{"modelsOverlay", func(m *Model) { m.models.view = modelsPanel }},
+		{"mcpOverlay", func(m *Model) { m.modal = &mcpState{view: mcpPanel} }},
+		{"modelsOverlay", func(m *Model) { m.modal = &modelsState{view: modelsPanel} }},
 		{"worktreesOverlay", func(m *Model) { m.worktrees.view = worktreesPanel }},
+		{"soulOverlay", func(m *Model) { m.modal = &soulState{view: soulPanel} }},
 		{"help", func(m *Model) { m.showHelp = true }},
 		{"awaitingApproval", func(m *Model) { m.phase = phaseAwaitingApproval }},
 		{"fatal", func(m *Model) { m.phase = phaseFatal }},
@@ -2098,8 +2107,8 @@ func TestCtrlVPasteWithActiveSelection(t *testing.T) {
 
 	m = pressCtrlV(t, m)
 
-	if !strings.Contains(m.ta.Value(), "pasted text") {
-		t.Errorf("ctrl+v should insert the pasted text regardless of an active selection, got %q", m.ta.Value())
+	if !strings.Contains(m.prompt.Value(), "pasted text") {
+		t.Errorf("ctrl+v should insert the pasted text regardless of an active selection, got %q", m.prompt.Value())
 	}
 }
 
@@ -2507,7 +2516,7 @@ func TestDoubleClickIdentitySnapshotSurvivesRefresh(t *testing.T) {
 
 // TestMouseDebugOverlay covers the gated MECATUI_DEBUG_MOUSE diagnostic: with
 // DebugMouse on, a mouse press sets m.mouseDebug to the formatted line (raw coords +
-// content mapping) and the footer surfaces it (highest priority — over the phase
+// content and input mapping) and the footer surfaces it (highest priority — over the phase
 // arms). With DebugMouse off, no press sets it and the footer shows the normal
 // status. Default OFF, zero cost when unset.
 func TestMouseDebugOverlay(t *testing.T) {
@@ -2527,7 +2536,7 @@ func TestMouseDebugOverlay(t *testing.T) {
 	m2.deps.DebugMouse = true
 	mo := tea.Mouse{X: 7, Y: convTopRow(m2) + 1}
 	line := m2.mouseDebugLine(mo)
-	for _, want := range []string{"MOUSE raw x=7", "y=", "top=", "yoff=", "vph=", "map ok="} {
+	for _, want := range []string{"MOUSE raw x=7", "y=", "top=", "yoff=", "vph=", "map ok=", "input ok="} {
 		if !strings.Contains(line, want) {
 			t.Errorf("mouseDebugLine = %q, missing %q", line, want)
 		}

@@ -13,7 +13,8 @@ not restate it.
 | --- | --- |
 | **Contributor / agent** | [`READING.md`](READING.md) → foundation spine (architecture → domain → ports → loop) → topic branches |
 | **Operator** | [`../README.md`](../README.md) → [usage & install](usage/install.md) → [quickstart](usage/quickstart.md) → [running `mecated`](usage/mecated.md) → [usage guide](usage.md) |
-| **Library consumer** | [User docs intro](https://github.com/stacklok/mecatl/blob/main/user-docs/intro.md) → [`engine/session`](../engine/session) → [extension points](https://github.com/stacklok/mecatl/blob/main/user-docs/extension-points/index.md) → [`engine/COMPATIBILITY.md`](../engine/COMPATIBILITY.md) |
+| **Library consumer** | [Building on mecatl](https://github.com/stacklok/mecatl/blob/main/user-docs/building/index.md) → [`engine/session`](../engine/session) → [extension points](https://github.com/stacklok/mecatl/blob/main/user-docs/building/extension-points/index.md) → [`engine/COMPATIBILITY.md`](../engine/COMPATIBILITY.md) |
+| **API client developer** | [Drive via gRPC / HTTP](https://github.com/stacklok/mecatl/blob/main/user-docs/building/deployment/grpc-http.md) → [`contracts/proto/mecatl/v1/`](../contracts/proto/mecatl/v1) → [gRPC reference](usage/grpc-api.md) or [HTTP/SSE reference](usage/http-sse-api.md) |
 
 ## Nearby
 
@@ -24,3 +25,6 @@ not restate it.
 - [`design/PRODUCTION-READINESS.md`](design/PRODUCTION-READINESS.md) — the live shipped/deferred status tracker.
 - [ADR 0215](adr/0215-openai-subscription-manual-token.md) — the landed,
   experimental `openai-codex` capability and its private-backend boundary.
+- [Agent Fabric Protocol](agent-fabric-protocol.md) — a draft, MCP-adjacent
+  protocol for remote access to files, folders, and callable actions over
+  HTTP; not yet implemented in mecatl.

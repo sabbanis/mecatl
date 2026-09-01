@@ -13,6 +13,30 @@ a private UNIX socket (the default) or an **external** `mecated` it dials via
 start and no TCP port. See [Run](#run).
 
 It is built on the Charm v2 stack (Bubble Tea / Lip Gloss / Bubbles / Glamour).
+
+### Local status lines
+
+Mecatui reads `status_customization:` only from the client-owned
+`$XDG_CONFIG_HOME/mecatui/settings.yaml`. It composes a UI-agnostic
+`statusline.Source`: the UI submits display-safe `Input` snapshots and listens for
+latest `Result` semantic spans, while the source owns template evaluation or the
+optional local direct executable, refresh, cancellation, and fallback. The source
+returns no terminal rendering; the UI applies the active theme, preserves its
+mandatory safety/navigation and activity lanes, then clips and aligns the result.
+
+A configuration selects exactly one source: responsive `templates` or a
+`command` with an absolute `executable` and literal `args`. Templates receive an
+automatically StatusML-escaped projection; a command receives the same raw input
+as JSON on stdin. It is run directly (there is no shell or source configuration
+form); `/bin/sh` is available only when explicitly selected as the executable with
+literal arguments. It uses a constrained environment, local-only CWD selection, a
+one-second deadline, and a combined 4 KiB stdout/stderr limit. StatusML accepts semantic theme tokens and validated
+HTTP(S) link metadata, never raw ANSI or OSC.
+
+See [Status line customization](https://github.com/stacklok/mecatl/blob/main/user-docs/mecatui/status-line.md)
+for the complete settings schema, input reference, StatusML grammar, safety limits,
+and copyable template and executable examples.
+
 The render packages (`ui`, `theme`) and the `client` package stay a pure client —
 they never import any `engine/...` or `internal/...` package and render solely from the proto
 `Event` envelope. Hosting the embedded server is confined to the `cmd/mecatui`
@@ -78,10 +102,18 @@ bin/mecated serve &                                    # listens on 127.0.0.1:80
 bin/mecatui connect 127.0.0.1:8080 --workspace "$PWD"
 ```
 
-`--workspace` defaults to the current directory and is always resolved to an
-absolute path (the server requires absolute).
+`--workspace` defaults to the current directory for an embedded server and for a
+loopback client-selected `mecated`; it is resolved to an absolute path in those
+modes. For a non-loopback `connect` target, mecatui does **not** send its local cwd.
+An explicit `--workspace` is rejected locally before it is resolved or
+transmitted. A server-assigned deployment chooses its configured root from an
+empty wire workspace; `mecak8s` chooses its no-FS profile from its empty profile.
+The server independently enforces this contract for stale and non-mecatui
+clients.
 
 ### Transport commands
+
+Run `mecatui --help`, `mecatui -h`, or `mecatui help` for the concise top-level command index. `mecatui help sessions`, `mecatui help connect`, `mecatui help debug`, and `mecatui help login` alias their corresponding command-specific help; direct `sessions --help`, `connect --help`, `debug --help`, and `login --help` also work. Use bare `mecatui --help-flags` for common embedded-mode flags and bare `mecatui --help-all` (or the corresponding `sessions` or `connect` form) for the exhaustive flag reference.
 
 The transport is exactly what the invocation says — there is no implicit probe
 or fallback:
@@ -100,6 +132,17 @@ or fallback:
   create a new chat with the launch workspace/mode/model defaults, or `esc` to
   quit without a session. Inspection `esc` returns to the startup inventory.
 
+- **`mecatui debug SESSION_ID [flags]`** — create a separate durable no-filesystem
+  analysis session permanently bound to that stored target. `SESSION_ID` may be the
+  full opaque ID or the exact 12-byte ID shown in the TUI header. A unique
+  header ID resolves through the caller-visible inventory; if it is ambiguous,
+  mecatui creates nothing and asks for the full ID. The invocation is the consent
+  gesture: before entering the TUI, mecatui warns that the target transcript
+  and diagnostic evidence may contain prompts, outputs, tool arguments/results, file
+  paths, and secrets and will be sent to the selected model. It then submits a default
+  diagnostic prompt automatically. The target is never resumed, leased, mutated, or
+  used as the debugger's conversation.
+
 - **`mecatui connect ADDRESS [flags]`** — always dial a running `mecated` at
   `ADDRESS` (host:port); **never probe** loopback and **never embed** — the
   target must already be serving. Embedded-server flags (`--mock`,
@@ -113,29 +156,111 @@ or fallback:
   bin/mecatui connect mecated.internal:443 --tls --auth-token "$MECATL_AUTH_TOKEN"
   ```
 
+- **`mecatui login ADDRESS`** — performs the remote server's public OIDC
+  Authorization Code + PKCE login, then records target metadata and an encrypted,
+  target-bound credential. It requires `--issuer`, `--client-id`, `--audience`, and
+  `--tls-ca`; this CA verifies the issuer endpoints and is not the optional server CA
+  supplied to `connect`. It exits without starting a session. `--no-browser` prints the
+  authorization URL instead of opening a browser and then waits for the fixed
+  `http://127.0.0.1:18473/oauth/callback` callback (headless/SSH use). For SSH, open
+  that URL on the operator workstation and forward the fixed callback port to the host
+  running `mecatui login`:
+
+  ```sh
+  ssh -N -L 18473:127.0.0.1:18473 user@login-host
+  ```
+
+  This is Authorization Code + PKCE, not device flow. `connect` does **not** implicitly
+  open a browser: an unenrolled target returns guidance to run this command.
+
+  A rejected callback reports a closed validation rule that failed — for example
+  `callback state did not match the authorization request` — rather than echoing
+  hostile callback values. Provider-returned OAuth `error` and `error_description`
+  are the narrow exception: each is printable-subset filtered and bounded. No code,
+  state, token, or callback path appears in either form.
+
+  RFC 9207 `iss` follows section 2.4: a present `iss` must match the expected
+  issuer, and an absent one is refused only when the authorization server's
+  discovery document sets `authorization_response_iss_parameter_supported`. A
+  provider that does not implement RFC 9207 therefore still works, while one that
+  promised an `iss` cannot have it stripped. Wrong-state and other unauthenticated
+  fixed-route probes are unlimited and do not burn state; the separate MCP OAuth
+  random-path callback retains its bounded sixteen matching-route attempts.
+
+- **`mecatui logout ADDRESS`** — removes the saved target and its target-bound
+  credential without starting a session. The command is idempotent. It conditionally
+  deletes credentials before metadata under a per-target transaction lock, so a
+  concurrent token rotation retains the registry entry and reports an incomplete
+  logout rather than making the credential unreachable. It releases the lock before
+  spending one operation-wide fifteen-second provider budget on discovery and every
+  best-effort RFC 7009 revocation attempt; an
+  unavailable issuer does not block local removal, so provider-side termination is not
+  guaranteed. Existing credential-only orphans cannot be pruned because the store has
+  no enumeration operation.
+
+- **`mecatui llm login [--skip-browser]`** — runs the separate ToolHive LLM gateway
+  OIDC flow and exits without connecting to `mecated`. `--skip-browser` prints its
+  authorization URL and waits for the callback. It is not remote-server login.
+
 ### OIDC-connected server
 
-For a `mecated` or `mecak8s` deployment with caller identity enabled, obtain an
-OIDC token from your identity provider and pass it to the **external** transport.
-`mecatui` sends it as per-RPC `authorization: Bearer …` metadata on every gRPC
-request; it does not run an OIDC browser flow or refresh the token itself.
+`mecatui login ADDRESS` is the enrollment path for a remote `mecated`/`mecak8s`
+caller-identity deployment. The issuer, public client, audience, redirect URI, and
+scopes are bound to the canonical `host:port` target. Login validates discovery,
+PKCE, and the resulting token, and private HTTPS requires an explicit issuer CA bundle
+path. The registry saves that path/reference—not CA contents—for issuer discovery,
+token, JWKS, refresh, and revocation only;
+`connect --tls-ca` independently verifies the gRPC server. The connection registry
+contains public metadata only; credentials are encrypted on disk using a canonical-
+root-scoped key held by the OS keyring. Under a root lock, an old unsuffixed keyring key
+is copied only when the encrypted namespace contains an actual credential record; merely
+opening an empty namespace does not trigger migration. Legacy credentials enrolled with a zero-padded target port need
+one login after upgrade because target canonicalization changes their credential key.
 
 ```sh
 # A local port-forward is loopback, so it is the one plaintext bearer exception.
 kubectl port-forward -n mecatl service/mecak8s-agent 8080:8080 &
 export MECATL_AUTH_TOKEN="$(your-oidc-cli print-access-token)"
-bin/mecatui connect 127.0.0.1:8080 --auth-token "$MECATL_AUTH_TOKEN" --workspace /tmp
+bin/mecatui connect 127.0.0.1:8080 --auth-token "$MECATL_AUTH_TOKEN"
 ```
 
 For a non-loopback endpoint, `mecatui` refuses to send a bearer without `--tls`.
-Use `--tls-ca` when the deployment uses a private CA. The workspace is evaluated
-by the **server**, not the TUI host: `/tmp` above is a path inside the selected
-agent pod, not your local checkout. See [Security & transport](usage/mecated.md#security--transport-auth-tls-rate-limiting) for the attribution model and its non-tenancy limits.
+Use `connect --tls-ca` when the server uses a private CA. The remote server chooses
+its own workspace authority: mecatui sends no local cwd, and an explicit
+`--workspace` is rejected locally rather than being treated as a path inside an
+agent pod. See [Security & transport](usage/mecated.md#security--transport-auth-tls-rate-limiting) for the attribution model and its non-tenancy limits.
+
+On later `connect`, a saved target supplies a managed dynamic bearer source: each RPC
+asks for a currently validated access token. Application token demand, rather than RPC
+success, gates proactive refresh, and refresh/enrollment/logout share one per-target
+interprocess transaction with CAS-persisted rotation. Only an exact structured OAuth
+`invalid_grant` code deletes a rejected credential; matching provider prose does not.
+A static `--auth-token` is unmanaged and is never obtained or refreshed by mecatui.
+Tokens do not enter UI state, logs, or command arguments. If authentication fails, the
+recoverable `/connect` overlay names whether the target is unenrolled, the session
+expired, the local credential is unusable, cleanup should be retried, or the server
+rejected the bearer. It never opens a browser itself. A rejected bearer requires
+issuer/audience/CA remediation rather than another login; cleanup retries without a
+browser. After same-target re-auth, mecatui asks the server's ownership-enforced
+session/transcript boundary to prove the new caller owns the prior session. Only a
+safe terminal turn boundary is resumed; a missing, mismatched, active, awaiting, or
+ambiguous candidate starts a fresh session and no in-flight prompt is replayed. The
+closed recovery action preserves that candidate and the current server CA path only for
+the same target; neither crosses a target switch. `/connect` lists saved
+targets and requires confirmation. Selecting one restarts into a new remote session;
+selecting **Sign in to a new target** returns to the CLI login flow first. No session
+or conversation crosses a target switch.
+
+The Kind remote flow is available after fixture setup with the documented host
+aliases and public CA. It is a live qualification path, not part of ordinary
+offline `task test` coverage; see `deploy/mecak8s-vmcp/README.md`.
 
 `ADDRESS` must immediately follow `connect`; a missing or flag-first `ADDRESS` is
 a usage error, with one carve-out: `mecatui connect --help` renders the connect
 help instead of the missing-ADDRESS usage error. Put `sessions` after the address
-for the remote startup browser: `mecatui connect ADDRESS sessions [flags]`.
+for the remote startup browser, or `debug SESSION_ID` for a remote dedicated debugger:
+`mecatui connect ADDRESS sessions [flags]` and
+`mecatui connect ADDRESS debug SESSION_ID [flags]`.
 An unknown leading command fails closed.
 
 The startup browser never creates a throwaway session. It completes the model-list
@@ -152,12 +277,71 @@ a usage error; choose one startup intent explicitly.
 > --subagent-ask-reviewer …` and point `mecatui connect` at it. The `--model-slot
 > ask-reviewer=…` model slot is unaffected.
 
+### Debug a stored session
+
+```sh
+mecatui debug 01JOPAQUETARGET
+mecatui connect 127.0.0.1:8080 debug 01JOPAQUETARGET
+mecatui connect 127.0.0.1:8080 debug 01JOPAQUETARGET --debug-mcp github
+```
+
+`--debug-mcp NAME` is repeatable and selects only already-configured server-global
+streaming-HTTP MCP servers. The debugger may draft a GitHub-like issue without calling the
+server. After reviewing it, send a new current prompt such as `Publish this issue now`;
+each mutating call opens an approval card even under yolo/configured allow. Allow once sends
+one request. A later mutation asks again; Allow always is deliberately not learned.
+
+These commands accept either the full opaque session ID or the exact 12-byte ID
+shown in the TUI header. The short form is resolved from the caller-visible session
+inventory. If more than one visible session shares it, no debug session is created and
+mecatui asks for the full ID. These commands do not attach to or continue the target.
+They authorize it, create a separate durable no-filesystem debug session, print a privacy
+disclosure, and submit one first genuine user turn. That turn is ordered as the diagnosis
+objective, the required status/transcript/pagination workflow, the expected report sections,
+and finally the same sanitized current-client/server report produced by bare `/diagnostics`.
+The report is clearly delimited debugger runtime context, never target evidence. A custom
+`--prompt` replaces only the objective; the runtime block remains. Remote report lookup uses
+the authenticated server-info path, and a safely classified failure leaves unavailable
+fields without blocking diagnosis or exposing the raw error. The disclosure is load-bearing: target prompts, model output,
+tool arguments/results, paths, and secrets can be sent to the selected model. Running the
+command is the consent gesture.
+
+The debug model always has `InspectSession`, permanently bound by the server to
+the command's target. It can request bounded `status`, `transcript`, `activity`,
+`performance`, `network`, `related`, `delegation`, `history`, and `manifest` views, but
+cannot supply or change the target ID. `related` returns opaque handles for currently
+retained descendants admitted by the server's ownership posture and evidence-backed
+incarnation-specific tombstone/status rows; use a returned
+handle to inspect a child transcript. `history` separates current, compaction-archive, and
+event-reconstructed histories. Status names latest-run counters, cumulative snapshot usage,
+and lifetime EventLog counters separately. Snapshot
+transcript is the authoritative history. Activity, performance, and network depend on EventLog
+availability and report scan/page completeness explicitly. Network contains only sanitized
+failed/interesting resilience-attempt decisions and classifications; no raw error, URL,
+header, body, prompt, tool argument, or credential is retained. Successful-attempt timing and
+per-phase DNS/TCP/TLS timing are not measured. All returned evidence is fenced as untrusted. The target is
+never resumed, reopened, recovered, leased, mutated, approved, cancelled, or steered by
+the debugger.
+
+The debug conversation persists independently and can rehydrate after server restart with
+the same exact lineage and narrow catalog. Invalid lineage/no-fs metadata, a missing debug
+factory, or an unavailable target fails closed. The ordinary padded header places amber/bold
+`DEBUG target #<digest>` immediately after `mecatui` in every phase. At narrow widths it
+sheds model/mode/server detail before that complete target identity rather than clipping it;
+`/session` displays the safely quoted exact target ID and copies it with `t`. The
+`DEBUG <target-digest>` terminal title remains unchanged. The TUI hides `/clear`, `/sessions`, `/models`,
+`/effort`, and `/worktrees`, and blocks the mode/effort shortcuts because those controls
+can replace the launch binding. Schedule and learning controls remain available because
+changing those independent settings does not rebind the debug target; harmless inspection
+and presentation controls remain too.
+
 ### Continue a chat at startup
 
 `--resume SESSION_ID` adopts an existing owned main chat before Bubble Tea starts.
 `--resume-latest` instead chooses the newest eligible owned main chat whose authoritative
-snapshot transcript is available. Both flags work with the embedded server and with
-`mecatui connect`, and they are mutually exclusive:
+snapshot transcript is available; when none exists, it starts a fresh session instead of
+failing — the "continue where I left off, otherwise begin" launch. Both flags work with
+the embedded server and with `mecatui connect`, and they are mutually exclusive:
 
 ```sh
 mecatui --resume 01JOPAQUESESSIONID
@@ -169,8 +353,9 @@ transcript, workspace, mode, model, and capabilities, then targets the same opaq
 `--workspace` and `--mode` therefore describe only a newly created session; an adopted
 chat keeps its stored values. Scheduled runs, child runs, unknown legacy rows, chats
 awaiting approval, active chats, and rows without a complete authoritative transcript
-are not eligible. Exact `--resume` reports why its row cannot be continued;
-`--resume-latest` skips ineligible or unreadable rows and tries the next one.
+are not eligible. Exact `--resume` reports why its row cannot be continued; `--resume-latest`
+skips ineligible or unreadable rows and tries the next one. A genuine inventory-list
+failure still surfaces rather than being masked as "start new".
 
 The read-only startup lookup does not reopen, recover, abandon, or acquire a lease.
 Those checks remain atomic at the ordinary run-entry funnel when the first new prompt
@@ -219,18 +404,19 @@ a short directive with a longer brief. The seed fires ONCE: a `/models` restart 
 | `--workspace` | cwd | absolute workspace root for a new session; an adopted chat keeps its stored workspace |
 | `--mode` | `default` | permission posture for a new session: `default` \| `plan` \| `accept-edits`; an adopted chat keeps its stored mode |
 | `--resume` | – | continue the owned main chat with this exact opaque session ID; loads its authoritative transcript without creating a throwaway session; mutually exclusive with `--resume-latest` |
-| `--resume-latest` | off | continue the newest eligible owned main chat with an available authoritative transcript; excludes active, awaiting, scheduled, child, and unknown sessions; mutually exclusive with `--resume` |
+| `--resume-latest` | off | continue the newest eligible owned main chat with an available authoritative transcript; excludes active, awaiting, scheduled, child, and unknown sessions; when none is eligible, start a new chat; mutually exclusive with `--resume` |
 | `-p` / `--prompt` | – | seed prompt auto-submitted once the first session is ready (the CLI task to launch with). The TUI stays interactive for follow-ups; this is NOT a one-shot. Both `--prompt` and `--prompt-file` may be given (literal first, joined by a blank line). Fires ONCE — a `/models` restart or `/clear` never re-submits it |
 | `--prompt-file` | – | path to a file whose contents are the seed prompt body. Read at startup (fail-fast on unreadable). Joined after `--prompt` when both are given. Same once-only semantics as `--prompt` |
 | `--theme` | `aztec` | theme name (also `MECATUI_THEME`) |
 | `--theme-dir` | – | extra directory of `*.json` themes to load |
 | `--auth-token` | – | bearer token for an **external** server (or `MECATL_AUTH_TOKEN`) |
 | `--tls` | off | use TLS transport for an **external** server |
-| `--tls-ca` | – | PEM CA bundle for external-server verification |
+| `--tls-ca` | – | path to a PEM CA bundle for external-server verification |
 | `--insecure` | off | skip TLS verification (testing only) |
 | `--list-themes` | – | print available themes and exit |
+| `--version` | – | print the build identity and exit before normal startup |
 | `--inline` / `--no-alt-screen` | off | render inline in the terminal's normal buffer instead of the alternate screen, preserving native scrollback/search (no mouse capture; see `--no-mouse` below) |
-| `--no-mouse` | off | keep the alt screen but don't capture the mouse, so the terminal's **native** click-drag selection works; trades away in-app wheel scroll + drag-select/copy (or `MECATUI_NO_MOUSE=1`; see the selection section) |
+| `--no-mouse` | off | keep the alt screen but disable mouse capture and in-app mouse gestures, preserving the terminal's **native** click-drag selection; keyboard prompt selection still works (or `MECATUI_NO_MOUSE=1`; see the selection section) |
 | `--terminal-title` | `on` | dynamic terminal window/tab title: `on` shows `<session title> — <status word> mecatui` (the title is the first prompt, the status word reflects the phase); `off` collapses to the bare `mecatui` (escape hatch for terminals/multiplexers where a set title does more harm than good). Accepts `on`/`off`/`true`/`false`/`1`/`0` (or `MECATUI_NO_TERMINAL_TITLE=1`; see the terminal title section) |
 | `--no-banner` | off | disable the first-run welcome **splash** (mascot + gradient wordmark); the plain prompt hint + affordance list still show. Auto-forced on under `--quiet` or a non-interactive stdin |
 | `--model` | – (provider default) | model id for the **embedded** server; empty = the server-configured `--default-model` (when set), else the provider-appropriate built-in (anthropic → `claude-sonnet-4-6`, openai → `gpt-5`, openrouter → `openai/gpt-5`; openai-codex → first entitled live model). Overridden per session by the `/models` picker |
@@ -268,10 +454,10 @@ a short directive with a longer brief. The seed fires ONCE: a `/models` restart 
 | `--trust-project` | off | **embedded** server: honour a discovered project's permission **ALLOW** rules **and** its project soul (`.mecatl/soul.md`). Default OFF, unified with `mecated` — deny/ask are always honoured regardless. Only pass it for a repo you trust |
 | `--yolo` | off | **embedded** server: OPERATOR POSTURE (dangerous) — suppress permission prompts for the built-in mutate-ask floor, for ephemeral/sandboxed use only. A configured deny/ask in any scope still applies. Refused as root unless `MECATL_SANDBOX=1` (or `IS_SANDBOX=1`) |
 | `--quiet` | off | discard the embedded server's operational diagnostics instead of writing them to `$XDG_STATE_HOME/mecatl/mecatui.log` (see the diagnostics note below) |
-| `--perf` | off | **embedded** server: expose the loopback perf admin surface (`/metrics`, `/debug/pprof`, `/debug/vars`, `/debug/flightrecorder`) and wire domain metrics. Loopback, UNAUTHENTICATED |
-| `--perf-addr` | – (`127.0.0.1:9099`) | **embedded** server: admin listen address for `--perf`. Empty = the **fixed** `127.0.0.1:9099` (predictable, so an MCP-client config can hardcode the `/mcp` URL; distinct from `mecated`'s `:9090`). Pass another `host:port`, or `127.0.0.1:0` for an ephemeral port. On a clash, startup **fails with guidance** |
+| `--perf` | off | **embedded** server: expose the sensitive admin surface (`/metrics`, `/debug/pprof`, `/debug/vars`, `/debug/flightrecorder`) and wire domain metrics. Empty `--perf-addr` uses the instance's owner-private UNIX `admin.sock`. UNAUTHENTICATED |
+| `--perf-addr` | – | **embedded** server: explicit TCP address for `--perf`; only loopback is accepted. Empty uses the private per-instance UNIX socket, except `--perf-mcp` uses ephemeral `127.0.0.1` TCP because streaming HTTP needs a URL. `127.0.0.1:0` explicitly requests ephemeral TCP |
 | `--perf-goroutine-warn-threshold` | 0 (off) | **embedded** server: arm the live goroutine-leak watchdog — Warn whenever the goroutine count exceeds this; the `/metrics` goroutine series is exported regardless. Only consulted with `--perf` |
-| `--perf-mcp` | off | **embedded** server: mount the read-only perf MCP server at `/mcp` on the `--perf` surface (introspect this process over MCP). Refuses a non-loopback `--perf-addr` |
+| `--perf-mcp` | off | **embedded** server: mount the read-only streaming-HTTP perf MCP server at `/mcp`. With no `--perf-addr`, the resolved ephemeral loopback URL is logged. No stdio MCP; raw admin data is not injected into a debug/model session |
 
 The embedded server has no auth/TLS — it is a private, user-owned UNIX socket
 (the same single-user loopback trust model `mecated` uses for `127.0.0.1`, with a
@@ -337,7 +523,7 @@ left owned after the bounded shutdown completes.
 | Env | Effect |
 |---|---|
 | `MECATUI_THEME` | theme name (same as `--theme`) |
-| `MECATUI_NO_MOUSE` | don't capture the mouse (same as `--no-mouse`) — native terminal selection over in-app wheel/drag |
+| `MECATUI_NO_MOUSE` | disable mouse capture and in-app mouse gestures (same as `--no-mouse`) while preserving native terminal selection; keyboard prompt selection still works |
 | `MECATUI_NO_TERMINAL_TITLE` | suppress the dynamic terminal window/tab title (same as `--terminal-title=off`) — collapse to the bare `mecatui` |
 | `MECATUI_DEBUG_MOUSE` | overlay raw mouse coords / click-mapping in the footer during a press/drag (troubleshooting) |
 | `MECATUI_FORCE_EMOJI` / `MECATUI_NO_EMOJI` | force / suppress the emoji glyph for the YOLO posture badge (force-on, no-wins-over-force); default is conservative env-based detection (see the posture badge) |
@@ -361,7 +547,10 @@ The title leads because tab bars **truncate from the right**; the status is a
 **static word, never an animated spinner** (per-frame title churn trips OS
 attention heuristics — the dock bounces / the taskbar flashes on every change).
 The title self-heals across a session switch / fork / carryover (a refetch adopts
-the server's stored title when this client never saw the first prompt).
+the server's stored title when this client never saw the first prompt). A dedicated
+debugger instead always starts with `DEBUG <target-digest>`, followed by its static
+phase label; the persistent amber/bold `DEBUG target #<digest>` segment in the ordinary
+padded header carries the same identity through every lifecycle and fatal state.
 
 The title is terminal-escape-sanitized (C0/ESC/DEL stripped — a malicious prompt
 can't embed an OSC title-injection), and newlines/tabs collapse to single spaces
@@ -447,9 +636,24 @@ root, not the render layer — no proto event, no change to `ui`/`theme`/`client
 
 **Built-in client-side slash commands always appear.** Typing `/` opens the
 palette with a set of commands the TUI itself ships — independent of workspace
-dirs and even when server slash-command expansion is off. `/clear` (reset the
-conversation and scrollback) and `/help` (open the keys-&-features overlay) are
-*always* available because they act purely on the TUI's own state; `/mcp` (browse
+dirs and even when server slash-command expansion is off. `/clear` creates a new
+empty server session in the current workspace, using the current effective model,
+reasoning-effort, and permission mode, then clears the conversation and scrollback
+only after that session is ready; `/help` opens the keys-&-features overlay.
+`/diagnostics` is an exception to the local-only commands: the exact
+whitespace-trimmed lower-case bare command follows ordinary built-in dispatch,
+generates a concise sanitized report, and submits that report through the normal
+model-facing prompt path. It includes only the runtime platform, client build,
+server mode, server build, server implementation, and already-held
+provider/model/permission-mode state, the sanitized diagnostic display projection of the current remote connection target when locally known, and the sanitized diagnostic display projection for the already-held active provider when supplied by `GetServerInfo`. Neither endpoint value is connection configuration or an instruction to reconnect. Each retains only URL scheme, host, optional port, and escaped clean path; userinfo, query, fragment, controls, TLS/auth settings, and arbitrary server configuration are excluded. Embedded UNIX-socket endpoints report unavailable unless an actual local URL endpoint is already known without lookup. In remote mode it makes one authenticated
+`GetServerInfo` call; its lookup status is only `ok`, `not-supported`,
+`unreachable`, or `invalid-response`. It never includes raw errors, connection or
+authentication details, credentials, workspace paths, session content, or server
+configuration/state. In embedded mode it uses the locally known server identity
+and makes no RPC.
+These commands are *always* available because they are client-owned commands (with
+`/clear` using the existing session-create RPC); `/compact` (force one server-side
+history compaction pass), `/mcp` (browse
 the MCP inventory), `/agents` (browse the agent-definition inventory — the
 resolved registry the `Subagent` tool routes delegations to), `/team` (the unified
 agents overlay pinned to the Teams tab — same surface as `ctrl+a`, which picks a
@@ -462,9 +666,10 @@ learning proposals), `/reflect` (explicitly reflect the current completed sessio
 (switch to a sibling git worktree), and `/schedule` (browse & manage scheduled
 tasks) appear
 only when the connected server advertises those capabilities (and, for
-`/mcp`/`/agents`/`/skills`/`/soul`/`/usermodel`/`/reflections`/`/reflect`/`/dream`/`/models`/`/worktrees`/`/schedule`, the matching client
-collaborator is wired). The fixed palette order is
-`clear, help, mcp, agents, team, skills, soul, usermodel, reflections, reflect, dream, models, effort, worktrees, schedule, learning, learning-sensitivity` (locked by a test).
+`/compact`/`/mcp`/`/agents`/`/skills`/`/soul`/`/usermodel`/`/reflections`/`/reflect`/`/dream`/`/models`/`/worktrees`/`/schedule`, the matching client
+collaborator is wired). The fixed palette order starts
+`clear, help, session, retry, diagnostics, compact`, then the available inventory, model,
+workspace, schedule, and operator-setting commands (locked by a test).
 `/learning` is local embedded-server operator-settings UX: each invocation selects the
 next Off→Review→Auto value in `$XDG_CONFIG_HOME/mecatl/settings.yaml`, preserving
 unrelated YAML and comments. `/learning-sensitivity` independently cycles
@@ -482,11 +687,34 @@ the mode or sensitivity on the remote server host and restart that server.
 `/agents` and `/team` are distinct: `/agents` is the **definition inventory** (a
 palette-only `ListAgents` snapshot, gated on `caps.agents`), while `/team` opens
 the **live overlay** of a team that has actually run (gated on `caps.teams`).
-These never reach the model — a bare built-in line is intercepted and run
-locally. Gated-off builtins are hidden from the palette and help overlay;
-typing one anyway blocks the send with a warning (it never reaches the model).
-(`/compact` is a planned follow-up: it needs a server RPC that does not
-exist yet.)
+These never reach the model: a bare built-in line is intercepted locally even
+while a run is streaming, although commands such as `/compact` then enforce their
+own idle-only boundary. `/diagnostics` is the exception: its bare form submits the
+generated sanitized report through the ordinary model-facing prompt path. It takes
+no arguments: `/diagnostics` followed by any text or newline remains in the input,
+is not sent, and shows a local argument warning. Gated-off builtins are hidden from
+the palette and help overlay; typing one anyway blocks the send with a warning.
+Unknown slash commands remain model-facing input so workspace commands keep their
+server-side expansion. Recognized built-ins with arguments retain the input, are not
+sent, and show a local argument warning; `/compact` follows the same rule.
+
+**`/compact` (manual model-history compaction).** This built-in appears in the
+palette and help only when `ServerCapabilities.manual_compaction` is true and the
+client RPC collaborator is wired. Type the bare command with no arguments while the
+session is idle. Mecatui blocks prompt submission until the unary request finishes,
+so a new run cannot overtake the rewrite. The server also serializes the operation
+against run entry and any configured session lease.
+
+The operation runs the configured compactor once without waiting for the automatic
+0.8 trigger. It sends no chat prompt, creates no model turn, and keeps the visible
+scrollback. A changed response appends `Model history compacted.` as a scrollback
+notice; a successful no-op appends `Model history is already compact.` Existing
+cards are not removed because scrollback is the user's transcript, while the server's
+model-facing persisted history is what changed. The cascade strategy may need its
+summary tier, which can make a compaction-slot model call and incur that model cost.
+`/compact` is refused during a run or pending approval. An older server leaves the
+capability false, so the command is hidden and a directly typed bare command gets a
+local unavailable warning rather than reaching the model.
 
 **`/soul` (read-only persona inspection).** Gated on `caps.soul` AND a wired soul
 fetcher. It fires `GetSoul` (a build-time snapshot the server takes once at
@@ -580,7 +808,8 @@ workspaces inherit). `↑`/`↓` move the cursor over the **filtered** set, `pgu
 `pgdown` page, `home`/`end` jump. (`j`/`k` type into the filter — they do **not**
 navigate here, unlike the read-only overlays — so a name like `kimi`/`jamba` filters
 as typed.) `esc` is **two-stage**: with a non-empty filter it clears the filter (the
-picker stays open); with an empty filter it closes the picker.
+picker stays open); with an empty filter it closes the picker. Before selection, the
+picker states: **`Switching models is expensive as it clears caches.`**
 
 For `openai-codex`, the rows are the account's live entitlements, not public
 OpenAI catalog guesses. A rejected token, unreachable private service, or
@@ -590,21 +819,28 @@ remain visible during a later refresh failure, but that does not hide an inferen
 failure. Codex rows never receive ToolHive's `org` intent label.
 
 `enter` on the cursor row **switches immediately** — the conversation is ALWAYS kept.
-Because the provider is FIXED per session, switching live means a real handoff: the
-old session is closed (`CloseSession`) and a fresh one is created on the picked model
-**seeded with the current session's conversation** via `source_session_id` on the
-`CreateSessionRequest` (`CreateSessionWithCarryover`). The server snapshots the source
-conversation and seeds it into the new session, so the model sees the full prior
-context. The header rebinds to the NEW session's effective model and a transient status
-note reads **`switched to <model> — conversation kept`**. For a **cross-provider**
-switch the server strips the prior model's provider-private state (reasoning cache,
-provider phase, item ids) and replays the text/roles/tool calls to the new provider, so
-the note honestly adds **`(prior reasoning cache dropped)`** — the conversation still
-carries. (There is no confirm overlay and no same-provider gate: the server accepts
-carryover for any provider.) If no live session exists yet (pre-first-connect, or a
-failure left no session), the pick falls back to a plain `CreateSession` — there's no
-source to carry from. **Dropping the conversation is a separate action**: run `/clear`
-to reset the transcript and start fresh on the current model.
+Because the provider is FIXED per session, switching live means a real handoff: a fresh
+session on the picked model is **seeded with the current session's conversation** via
+`source_session_id` on the `CreateSessionRequest` (`CreateSessionWithCarryover`). The
+server snapshots the source conversation and seeds it into the new session, so the model
+sees the full prior context. While the target is being created and hydrated, mecatui
+keeps the source ID, metadata, and visible projection but disarms its old live feed; the
+input remains non-interactive. It then loads and validates the target's complete,
+matching authoritative transcript, adopts that transcript (rather than retaining its
+local projection), and only then best-effort closes the source. The header rebinds to the
+NEW session's effective model and the transient status note reads **`switched to
+<model> — conversation kept`**. For a **cross-provider** switch the server strips the
+prior model's provider-private state (reasoning cache, provider phase, item ids) and
+replays the text/roles/tool calls to the new provider. The picker provides the single
+cache warning before the switch. There is no confirm overlay and no same-provider gate:
+the server accepts carryover for any provider. Creation or transcript-hydration failure
+preserves the open source session,
+restores its live feed, and returns to idle without claiming carryover; an unused target
+is best-effort closed after hydration failure. A source-close error does not undo a
+hydrated target. If no live session exists yet (pre-first-connect, or a failure left no
+session), the pick falls back to a plain `CreateSession` — there's no source to carry
+from. **Dropping the conversation is a separate action**: run `/clear` to reset the
+transcript and create a fresh empty session on the current workspace and effective model.
 
 `ctrl+g` sets the cursor row as the **client global default** (the `★` row) — used
 by new/unseen workspaces; it is control-modified so a bare `g` stays typeable in the
@@ -732,8 +968,9 @@ re-validates every part regardless.
 - a clipboard **image** is staged as an inline attachment and an `[Image #N]` marker
   is inserted into the prompt (cap-gated on `image` — on a text-only model the image
   is refused with a status line and nothing is staged);
-- otherwise the clipboard **text** is inserted into the prompt (always — text is not
-  cap-gated, so `ctrl+v` still pastes text on an image-incapable model).
+- otherwise the clipboard **text** replaces any active prompt selection, or is inserted
+  at the caret when there is none (always — text is not cap-gated, so `ctrl+v` still
+  pastes text on an image-incapable model).
 
 On submit, every surviving `[Image #N]` marker becomes a media part (ascending by
 `N`, in display order), the marker is **stripped** from the sent text, and the part
@@ -759,9 +996,9 @@ A **large** bracketed paste — **≥ 2000 characters or ≥ 30 lines**, alone o
 can't rebuild the lag; only the incoming paste is ever staged, typed text never
 converts) — does not enter the input buffer literally. It is staged behind a
 `[Pasted text #N]` placeholder (the text twin of the `[Image #N]` marker), and the
-full payload expands back **in place** when the prompt is sent — or, mid-run, the
-moment `enter` queues it as a follow-up (the queue always holds final text). Below
-the thresholds a paste is byte-identical to the literal-insert behaviour.
+full payload expands back **in place** when the prompt is sent — or, mid-run, when
+`enter` steers it on a steering-capable server or queues it as a fallback follow-up
+(the queue always holds final text). Below the thresholds a paste is byte-identical to the literal-insert behaviour.
 
 Why: the input widget re-wraps every buffered line on every rendered frame, so a huge
 paste sitting in the buffer made **every subsequent keystroke** pay for the paste
@@ -774,9 +1011,9 @@ renumbered (its numbering is separate from `[Image #N]`); **deleting the marker 
 the input before sending silently drops that paste**; `/clear` drops any
 staged-but-unsent pastes. `@`-mentions or `[Image #N]` markers *inside* the pasted
 payload behave exactly as if typed — expansion happens before mention/media handling.
-One divergence from a small paste: the placeholder is **appended at the end of the
-input** (like image markers), not inserted at the cursor — a small literal paste is
-cursor-positioned.
+One divergence from a small paste: without an active prompt selection, the placeholder
+is **appended at the end of the input** (like image markers), not inserted at the cursor.
+With a selection, the selected text is replaced before the placeholder is inserted.
 
 ## First-run welcome splash
 
@@ -857,14 +1094,15 @@ show the plain prompt-hint card.
 | Key | Action |
 |---|---|
 | `enter` (idle) | send the prompt |
-| `enter` (while a run streams) | **queue a follow-up** (staged; the whole queue is **merged into one prompt** and sent when the turn ends) |
+| `enter` (while a run streams) | **steer the current run** when supported (applies at the next turn boundary); otherwise **queue a follow-up** (staged; the whole queue is **merged into one prompt** and sent when the turn ends) |
 | `↑` (empty input, non-empty queue) | **edit queued** — pull the merged staged follow-ups back into the input for revising (non-destructive; the queue is emptied into the textarea, not dropped). Works both mid-run and while a paused queue is held. |
 | `shift+enter` (or `ctrl+j`) | newline in the input |
-| paste (bracketed) | insert clipboard text into the prompt; a single pasted **media-file path** is staged as an attachment instead, and a **large** paste (≥ 2000 chars — alone or combined with the current input — or ≥ 30 lines) is staged behind a `[Pasted text #N]` placeholder appended at the end of the input, expanding on send (ignored while an overlay/modal is open) |
-| `ctrl+v` | read the OS clipboard — a clipboard **image** stages as an `[Image #N]` attachment (when supported), else paste clipboard **text** (see below) |
-| `esc` (while a run streams) | clear staged input → else clear the queue → else cancel the in-flight run (sends `Cancel`; waits for the terminal result) |
+| paste (bracketed) | replace the active prompt selection, or insert clipboard text at the caret; a single pasted **media-file path** is staged as an attachment instead, and a **large** paste (≥ 2000 chars — alone or combined with the current input — or ≥ 30 lines) is staged behind a `[Pasted text #N]` placeholder, replacing the active selection before insertion or otherwise appending at the end of the input, expanding on send (ignored while an overlay/modal is open) |
+| `ctrl+v` | read the OS clipboard — a clipboard **image** stages as an `[Image #N]` attachment (when supported), else replace the active prompt selection with clipboard **text** (see below) |
+| `ctrl+u` | clear the entire unsent draft, including staged attachments and large-paste placeholders (rebindable via `ClearPrompt`) |
+| `esc` (while a run streams) | cancel the in-flight run (sends `Cancel`; waits for the terminal result; leaves the draft and queued follow-ups intact) |
 | `enter` (idle, **paused queue**, empty input) | resume — send the merged staged follow-ups |
-| `esc` (idle, **paused queue**) | clear staged input → else clear the queue |
+| `esc` (idle, **paused queue**) | clear the queue (the current draft remains intact) |
 | `ctrl+c` | graceful quit (double-press): with a non-empty prompt the first press **clears the input**; on an empty prompt it **arms** the guard and shows a footer hint — press `ctrl+c` again within 3s to exit. Any other key disarms. The fatal (dead-connection) screen exits on a single press. |
 | `ctrl+d` | the unix EOF-habit quit (double-press, **empty prompt only**): on an empty prompt it arms its OWN guard and shows a hint — press `ctrl+d` again within 3s to exit. On a populated prompt it stays the textarea's delete-forward, never a quit. Independent of `ctrl+c` (neither key confirms the other). |
 | `ctrl+z` | **suspend the TUI to the shell** (SIGTSTP); `fg` resumes it. Works in every state — idle, mid-run, even the permission modal (the ask stays pending). **Suspending does NOT stop the embedded `mecated` or an in-flight run** — the engine keeps working in the background and the UI re-syncs on `fg`. An in-conversation notice on resume names the session and what was suspended (a pre-suspend terminal notice can't survive the alt-screen teardown, so it's shown on return instead). |
@@ -880,15 +1118,18 @@ show the plain prompt-hint card.
 | `pgup` / `pgdn` | scroll the conversation up / down |
 | `home` / `end` | jump to the top / bottom of the conversation (`end` resumes auto-follow) |
 | mouse wheel | scroll the conversation (**alt screen only**; see below) |
-| mouse drag (left) | **select text** in the conversation — drag to an edge auto-scrolls; copies on release (alt screen only; see below) |
-| double / triple-click (left) | select word / whole line (copies; alt screen only) |
-| right-click | copy the current selection (if any) |
+| mouse click (prompt text) | place the prompt caret; drag from it to select prompt text (**alt screen only**; see below) |
+| mouse drag (left) | select text in the prompt or conversation — dragging in the conversation to an edge auto-scrolls; prompt release does **not** copy (alt screen only; see below) |
+| double / triple-click (left) | select word / whole line in the conversation (copies; alt screen only) |
+| `ctrl+shift+c` | copy the active prompt or conversation selection; no selection is a no-op |
+| right-click | copy the active prompt or conversation selection; no selection is a no-op |
 | middle-click | **paste the primary selection** (X11/Wayland select-to-copy buffer) into the prompt — read via the shell backend (`wl-paste --primary` / `xclip -selection primary -o`), falling back to an OSC52 primary read; routed through the same pipeline as a bracketed paste, so a large selection stages as `[Pasted text #N]`. `shift+middle-click` always performs the terminal-native paste instead. |
 | `esc` (with an active selection) | **clear the selection** first — before any other `esc` meaning |
 | `?` | help overlay (on an empty prompt) |
-| `/` | slash-command palette (built-in `/clear`, `/help`; caps-gated `/mcp`, `/agents`, `/team`, `/skills`, `/soul`, `/usermodel`, `/reflections`, `/reflect`, `/dream`, `/models`, `/effort`, `/worktrees`, `/schedule`; operator-setting `/learning`; plus workspace commands) |
+| `/` | slash-command palette (built-in `/clear`, `/help`, `/session`, `/retry`; capability-gated `/compact`, `/mcp`, `/agents`, `/team`, `/skills`, `/soul`, `/usermodel`, `/reflections`, `/reflect`, `/dream`, `/models`, `/effort`, `/worktrees`, `/schedule`; operator-setting `/learning`; plus workspace commands) |
 | `alt+m` | cycle the current session permission mode: **default → plan → accept-edits → default**. The server/session is authoritative; if the aggregate rejects the switch because a turn is running or awaiting approval, mecatui shows a notice and retries the selected mode at the next prompt boundary. |
 | `ctrl+a` | open the **unified agents overlay** — ONE surface with three tabs: **Subagents** (the flat Subagent-child fleet), **Parallel** (the fork-join GROUP roster — join mode, branches, winner, fork paths), and **Teams** (the full roster + per-member focus of the most-recent team). `tab` cycles tabs, `enter` focuses a row/group, `esc` steps back / closes. The default tab is **context-sensitive** (team live → parallel live → subagents → parallel → team). Works **while idle and mid-run**; inert under a permission modal. `/team` opens it pinned to the Teams tab. |
+| `ctrl+g` | select all prompt text (rebindable as `SelectAll`; inside the `/models` picker, the existing `SetGlobalDefault` binding is used instead) |
 | `x` (agents overlay, on a **running** lane) | **cancel that child agent** (sends `CancelChild` with the lane's child id; the run itself keeps streaming). Works on all three tabs: a **Subagents** lane (roster or focus pane), a **Parallel branch** (inside a focused group — `↑/↓` selects the branch), and a **team member** (Teams roster or focus pane; mid-drive OR idle between rounds — the member is de-scheduled and its claimed tasks released). Confirm-less, because it is recoverable: the child is persisted (a subagent stays **resumable** by its `agentId`; a cancelled branch reads `[FAILED] cancelled by user`; a cancelled member shows `stopped — cancelled`). Inert on a done lane. If the child was parked on a surfaced permission ask, the server retracts it (`permission.retract`) and the approval modal dismisses itself. |
 | `@` | file-mention menu — complete a workspace path, then attach it on submit (see below) |
 
@@ -989,11 +1230,14 @@ safe there). Actions marked *(approval)* are the permission-modal keys.
 
 | Action | Default chord(s) | Scope | What it does |
 |---|---|---|---|
-| `Submit` | `enter` | global | send the prompt; while a run streams, queue a follow-up |
+| `Submit` | `enter` | global | send the prompt; while a run streams, steer when supported or queue a follow-up otherwise |
 | `Newline` | `shift+enter`, `ctrl+j` | global | newline in the input |
-| `Cancel` | `esc` | global | cancel the running turn / clear staged input & queue |
+| `Cancel` | `esc` | global | cancel the running turn; idle Escape leaves the current draft intact |
+| `ClearPrompt` | `ctrl+u` | global | clear the entire unsent draft, including staged attachments and large-paste placeholders |
 | `EditBack` | `up` | global | pull the queued follow-ups back into the input (empty input only) |
 | `Paste` | `ctrl+v` | global | paste a clipboard image as an attachment, else clipboard text |
+| `SelectAll` | `ctrl+g` | global | select all prompt text; the `/models` picker keeps its `SetGlobalDefault` binding |
+| `CopySelection` | `ctrl+shift+c` | global | copy the active prompt or conversation selection; no selection is a no-op |
 | `Quit` | `ctrl+c` | global | graceful quit (double-press; first press clears the input or arms) |
 | `QuitD` | `ctrl+d` | global | EOF-habit quit (double-press, empty prompt only; independent of `Quit`) |
 | `Suspend` | `ctrl+z` | global | suspend the TUI to the shell (`fg` resumes; the engine keeps running) |
@@ -1041,17 +1285,20 @@ explicit rebind of either must keep the pair disjoint, or startup fails with a
 #### What the override cannot reach — the textarea's own editing keys
 
 The prompt input is the bubbles `textarea` widget, which ships its **own**
-keymap (`textarea.DefaultKeyMap`) that mecatui does NOT expose to `--keymap` —
-these are not actions in the table above and cannot be rebound:
+keymap (`textarea.DefaultKeyMap`). Its editing keys, including upstream keyboard
+selection, are not remappable through `--keymap`; the client-owned exceptions are
+`SelectAll`, `CopySelection`, and `ClearPrompt` in the action table above:
 
 | Chord(s) | Edit |
 |---|---|
 | `right` / `ctrl+f`, `left` / `ctrl+b` | character forward / backward |
+| `shift+right`, `shift+left`, `shift+up`, `shift+down` | extend or shrink the prompt selection |
 | `alt+right` / `alt+f`, `alt+left` / `alt+b` | word forward / backward |
 | `down` / `ctrl+n`, `up` / `ctrl+p` | next / previous line |
 | `home` / `ctrl+a`, `end` / `ctrl+e` | line start / line end |
 | `alt+backspace` / `ctrl+w`, `alt+delete` / `alt+d` | delete word backward / forward |
-| `ctrl+k`, `ctrl+u` | kill to line end / line start |
+| `ctrl+k` | kill to line end |
+| `ctrl+u` | clear the entire unsent draft (mecatui intercepts it as `ClearPrompt`) |
 | `backspace` / `ctrl+h`, `delete` / `ctrl+d` | delete character backward / forward |
 | `enter` / `ctrl+m` | insert newline (mecatui intercepts `enter` as Submit first) |
 | `ctrl+v` | paste (mecatui intercepts `ctrl+v` as Paste first) |
@@ -1162,7 +1409,9 @@ single-column left border and is the SINGLE vertical accent cue (the textarea's 
 prompt bar and line-number gutter are suppressed), staying mode-coloured at full strength
 whether the input is focused or blurred. The panel carries a tinted top-pad row inside it so the prompt isn't pressed against
 the top border, and one blank spacer row sits above the panel so it isn't jammed against the
-conversation history.
+conversation history. The editor preserves a three-row minimum, grows and shrinks
+with explicit newlines and soft wraps to eight rows, then scrolls internally to keep
+the caret visible.
 
 **Header bar.** `mecatui · session #<digest> · <model> · mode <mode> · <server>`.
 The session segment uses the same terminal-safe eight-character SHA-256 digest as the
@@ -1495,6 +1744,16 @@ The **mouse wheel** is only active on the alternate screen (the default full-scr
 TUI). With `--inline` / `--no-alt-screen` the terminal's own scrollback and native
 selection are left untouched (no mouse capture).
 
+**Prompt selection (alt screen).** Click directly on prompt text to place the caret;
+drag to select from that anchor, with the mapping following the textarea's soft-wrap
+and scroll state. `shift+arrow` and the textarea's upstream keyboard selection work
+too. The selected range is rendered visibly and is the target for typing, text paste,
+newline insertion, and deletion. Prompt mouse release does **not** copy. Prompt
+selection survives permission prompts, overlays, and other non-content changes; a
+prompt-content mutation clears it. Starting a conversation selection clears prompt
+selection, and starting prompt selection clears conversation selection, so exactly one
+surface owns a selection at a time.
+
 **In-app text selection + copy (alt screen).** On the alt screen the app captures
 the mouse, so it provides its **own** text selection: **left-click-drag** over the
 conversation highlights the runes under the drag (press = anchor, drag = extend,
@@ -1533,13 +1792,19 @@ while a run streams, a permission ask is open, or the client is connecting. A **
 the **word** under the cursor (a maximal run of word characters, whitespace, or
 punctuation) and a **triple-click** selects the **whole logical line** — both
 highlight and copy immediately, just like copy-on-select; a fourth click at the same
-spot cycles back to a plain anchor. A **right-click** copies the current selection
-too. **`esc`** clears an active selection **before** its other
-meanings (cancel a run / close an overlay / clear the input or queue); with no
-selection, `esc` behaves exactly as before. Selection is **blocked** while an
-overlay/modal owns the screen (permission ask, `/mcp`, `/team`, `/agents`,
+spot cycles back to a plain anchor. A **right-click** or **`ctrl+shift+c`** copies
+the active prompt or conversation selection; with no selection either action is a
+no-op. Conversation selection still copies on release; prompt selection does not.
+**`esc`** clears an active selection **before** its other
+meanings (cancel a running turn or close an overlay); with no selection, it cancels
+an active run directly while preserving the draft, queued follow-ups, and steer. At
+idle it leaves the draft intact; the paused-queue case clears only that queue.
+Conversation selection is **blocked** while
+an overlay/modal owns the screen (permission ask, `/mcp`, `/team`, `/agents`,
 `/skills`, `/soul`, `/usermodel`, `/models`, help, the fatal screen) — a press there
-starts nothing, and opening an overlay mid-drag clears the selection. The wheel
+starts nothing, and opening an overlay clears an in-progress conversation selection
+while stopping a prompt drag without changing an already completed prompt selection.
+An existing prompt selection is preserved through those non-content changes. The wheel
 still scrolls while a selection exists, without clearing it.
 
 The copy uses **OSC52** (`tea.SetClipboard`) as the primary path and **also**
@@ -1549,10 +1814,12 @@ mirrors the payload into the platform clipboard binary as a best-effort fallback
 the OSC52 copy still carries the selection, and a failed shell write is never
 surfaced as an error.
 
-**`--no-mouse`: native selection instead.** In-app selection and the mouse wheel
-exist only because the app captures the mouse — and Bubble Tea has no wheel-only
-mouse mode, so capturing it is what *prevents* the terminal's own click-drag
-selection. Capturing the mouse also suppresses the terminal's native
+**`--no-mouse`: native selection instead.** In-app mouse selection and the mouse
+wheel exist only because the app captures the mouse — and Bubble Tea has no wheel-only
+mouse mode, so capturing it is what *prevents* the terminal's own click-drag selection.
+`--no-mouse` disables mouse capture and all in-app mouse gestures, restoring native
+click-drag selection and native middle-click paste. Keyboard prompt selection remains
+available. Capturing the mouse also suppresses the terminal's native
 **middle-click primary-selection paste**, which is why the app performs it in-app
 (see the keys table); `--no-mouse` restores the native middle-click paste along
 with native selection, and **`shift+middle-click` always performs the
@@ -1574,17 +1841,17 @@ likewise leaves the mouse uncaptured.)
 off (a highlight on the wrong line, a click that lands a row away), set
 **`MECATUI_DEBUG_MOUSE=1`**: the footer-left is overridden during a press/drag with a
 live diagnostic — the raw mouse cell, the layout offsets (`top` = conversation top
-row, `yoff`, viewport height), and the `screenToContent` mapping (`ok`, logical
-`L`/`C`). It is off by default (zero cost when unset).
+row, `yoff`, viewport height), the `screenToContent` mapping (`ok`, logical `L`/`C`),
+and the prompt-text hit bounds. It is off by default (zero cost when unset).
 
 ### Type-while-running and queued follow-ups
 
 The input stays **focused while a run streams**, so you can compose the next
-request without waiting. Pressing `enter` mid-run **enqueues** the (trimmed,
-non-empty) line rather than starting a second concurrent run — the queue is capped
-at 16; an over-cap `enter` is rejected with a muted `queue full (16)` status and the
-input is kept. A muted card above the input shows `⏳ N queued · ↑ edit` with up to
-three previews (`+K more` over that).
+request without waiting. Pressing `enter` mid-run **steers** the (trimmed,
+non-empty) line when the server supports steering; otherwise it queues the line
+instead of starting a second concurrent run. The fallback queue is capped at 16; an
+over-cap `enter` is rejected with a muted `queue full (16)` status and the input is
+kept. A muted card above the input shows `⏳ N queued · ↑ edit` with up to three previews (`+K more` over that).
 
 When the run ends on a **healthy** stop, the whole queue is **merged into one prompt**
 (the staged lines joined by a blank line) and submitted through the ordinary prompt
@@ -1595,37 +1862,46 @@ limits `max_turns`, `max_tool_calls`, and `budget` (the run just ran out of
 turn/tool/token budget; firing the merged prompt reopens it with a fresh budget, which
 is what a lined-up "continue" wants).
 
-A **transient** failure — an idle/stalled stream, an overloaded/unavailable backend, a
-rate limit, or a transient upstream 5xx — is treated like a healthy stop and
-**auto-resumes** the merged queue, since a plain retry is likely to succeed. This
-auto-resume fires **only** when follow-ups are staged: a transient death of a run with
-an **empty** queue does not auto-retry the original prompt — the user must resend it
-manually.
+A terminal provider failure is classified by two presence-aware fields: retry
+disposition (`unknown`, `retryable`, or `permanent`) and stream progress
+(`unknown`, `precommit`, `visible`, or `complete`). Mecatui starts **one** automatic,
+prompt-free failed-step retry only when a new server explicitly reports
+`retryable + precommit`. It sends a fresh `Converse` stream whose first frame is
+`RetryStart`, not another Prompt, so the original user message is not duplicated.
+The textarea and queued future prompts stay untouched. If that retry succeeds, the
+existing healthy queue drain resumes.
 
-A **permanent** provider error — a 4xx rejection other than 408/429, a
-context-window overflow, a policy block — renders a ONE-LINE summary block
-(`✗ <first line, ≤120 runes> — retrying won't help; the request is rejected. Start a
+An absent typed field (an old server) or explicit `unknown` pauses and preserves
+the queue. `/retry` is available for every bound idle session and sends `RetryStart`;
+the server authoritatively accepts or rejects eligibility from durable state. It adds no
+Prompt or user card and does not reset the textarea or mutate queued prompts. Visible
+output is never retried automatically. Retry transport failures and clean pre-turn
+brakes preserve the manual affordance and keep queued work paused; only `turn.start`
+proves an authoritative model attempt. Persisted conversation/tool state is reused, but
+live turn-0 instructions, operator profile, and system prompt are re-resolved.
+
+A **permanent** provider error, such as a non-retryable 4xx rejection or context-window
+overflow, renders a ONE-LINE summary block
+(`✗ <first line, ≤120 runes>: retrying won't help; the request is rejected. Start a
 new session or /clear.`) instead of a raw error block. The raw error payload is
 available on `ctrl+t` expand under a dim `raw payload:` header. A permanent error is
-never auto-retried (the `transient` flag is forced false).
-When a session that failed permanently is recovered for a new prompt, a
-transient `recover_notice` warning line appears before the first turn so you see it
-before burning another provider call.
+never auto-retried. When a session that failed permanently is recovered for a new
+prompt, a transient `recover_notice` warning line appears before the first turn.
 
-A **hard**
-error, a **user cancel**, `max_consecutive_failures`, or a stream close instead
-**pauses and keeps** the queue, so a genuinely-broken run or a deliberate cancel never
-silently fires the backlog. The card switches from the muted `⏳ N queued · ↑ edit` to a
+A paused retry, hard error, user cancel, `max_consecutive_failures`, or stream close
+**pauses and keeps** the queue, so a broken run or deliberate cancel never silently
+fires the backlog. The card switches from the muted `⏳ N queued · ↑ edit` to a
 louder `⏸ N queued · paused: <reason>` with the resume/edit/clear keys, so a held queue
 is never mistaken for a hang. From there (idle), `enter` on an empty line **resumes**
 (sends the merged queue), `↑` on an empty line pulls the merged queue back into the
 input for **editing** (non-destructive), and `esc` **clears** the queue; sending a
 fresh prompt also clears the pause and lets the queue drain at that run's clean end.
 
-A built-in (`/clear`, `/help`) typed mid-run is enqueued like any other line and
-dispatched **at drain time**, when the phase is idle and the built-in's idle-guard is
-satisfied (so a queued `/clear` clears the transcript instead of sending a prompt).
-`/clear` itself empties the queue along with the rest of the session-derived state.
+A bare built-in typed mid-run is handled locally **immediately**: an available
+builtin runs, while an unavailable one retains its local warning. Neither is queued
+or sent to the model. `/clear` retains its running-state warning instead of clearing
+an active conversation. `/clear` itself also empties any queued follow-ups when it
+runs while idle.
 
 Queueing is **running-only**: while a permission modal is open the modal keys own the
 keyboard unchanged (no mid-approval queueing).
@@ -1638,21 +1914,27 @@ When the server's engine arms the mid-run **steer inbox** (steer-while-running, 
 carries `steer: true` and the TUI **flips** mid-run input from the local terminal
 queue to the engine steer path:
 
-- `enter` mid-run **sends a `steer` frame** on the live Converse stream instead of
-  staging locally. Each `enter` mints a fresh client `message_id` and the frame
-  carries ONLY that line's text; the engine's single-slot inbox **appends** each
-  frame into the one pending bundle (merged with a blank-line separator) and
-  drains the bundle at the **next turn boundary**, recording it as an ordinary
-  user continuation — so the model is nudged *mid-flight*, no waiting for the
-  run to end. The TUI keeps an **ordered queue of sends** (id + text); the drain
-  echo carries the **watermark** (the latest contributing send's id) and the
-  queue splits on it: everything up to and including the watermark landed (it
-  renders in context), anything after stays pending.
+- `enter` mid-run sends a `steer` frame on the live Converse stream instead of
+  staging locally, **except that a bare recognized TUI built-in** (such as `/help`
+  or `/clear`) still runs locally. Unknown slash commands and workspace commands
+  remain model-facing input. Recognized built-ins with arguments retain the input
+  and show a local argument warning. The same attachment preparation used by an
+  idle prompt also runs here: `@` mentions, staged image markers, aggregate caps,
+  marker stripping, mixed text+media, and media-only input all retain their
+  ordinary prompt semantics. Each steer mints a fresh client `message_id`; the
+  frame carries that fragment's text and media parts. The engine's single-slot
+  inbox **appends** each frame into the one pending bundle (merged with a blank-line
+  separator) and drains the bundle at the **next turn boundary**, recording it as an
+  ordinary user continuation — so the model is nudged *mid-flight*, no waiting for
+  the run to end. The TUI keeps an **ordered queue of sends** (id + text); the drain
+  echo carries the **watermark** (the latest contributing send's id) and the queue
+  splits on it: everything up to and including the watermark landed (it renders in
+  context), anything after stays pending.
 - The card above the input reflects the **authoritative** server-reported state —
   the engine is the sole authority on what happened to a steer (the client cannot
   observe the exact drain moment across stream latency), so the card shows what
   the server acked/echoed, never a client-side guess: `⏳ steer: sending…` (sent,
-  ack in flight) → `⏳ steer queued · ↑ edit · esc retract` (acked, parked for the
+  ack in flight) → `⏳ steer queued · ↑ edit · esc cancel` (acked, parked for the
   next boundary) → `↪ steer sent as a follow-up (run had already ended)` (a
   **too-late** race: the run had already gone terminal, so the text was
   auto-promoted to a fresh follow-up run — never silently dropped) or
@@ -1668,14 +1950,16 @@ queue to the engine steer path:
   queue's pending sends back into the input as ONE editable blob; resending sends
   the edited blob as a fresh fragment under a NEW `message_id` (an already-drained
   send is never re-sent — the watermark split keeps the queue honest). A late
-  `none_pending` ack means the drain won — the steer shipped as sent. `esc` on a
-  pending/queued steer **retracts** it (`steer_cancel`) before it would cancel
-  the run.
+  `none_pending` ack means the drain won — the steer shipped as sent. Escape does
+  not retract a pending/queued steer: after selection-clear precedence it cancels the
+  running turn directly and preserves the steer, draft, and queued follow-ups. Text
+  and attachment bytes share this lifecycle: `↑` restores both to the draft, the drain
+  watermark releases the landed prefix, and a successful retract drops both.
 
-When the capability is **absent** (an older server, or steer disabled), none of this
-engages: mid-run input keeps the #228 local merge-queue behaviour **byte-identical**
-(staged, merged, and drained as a follow-up prompt when the run ends), and no `steer`
-frame is ever sent.
+When `steer` is **false** because the feature is runtime-disabled, none of this
+engages: all mid-run input, including attachment bytes, stays in the #228 local
+merge queue (staged, merged, and drained as one marker-free follow-up prompt when
+the run ends), and no `steer` frame is ever sent.
 
 ## Theming
 

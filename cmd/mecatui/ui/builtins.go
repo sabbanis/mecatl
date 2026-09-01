@@ -16,15 +16,11 @@ import (
 // are a Model concern — they mutate model state (clear the conversation, open an
 // overlay) rather than talking to the server. They coexist with server-side
 // workspace commands in the palette; see mergeCommands for precedence.
-//
-// Note: /compact is intentionally NOT a built-in. Compaction is a server
-// operation with no client-reachable RPC today, so a "/compact" built-in would
-// have nothing to call. It is a follow-up that needs a proto message + server
-// RPC before the ui can offer it.
 type builtin struct {
-	name string
-	desc string
-	run  func(Model) (tea.Model, tea.Cmd)
+	name        string
+	desc        string
+	acceptsArgs bool
+	run         func(Model) (tea.Model, tea.Cmd)
 }
 
 // wiredCollaborators is the set of "is this ui collaborator wired" booleans the
@@ -32,25 +28,28 @@ type builtin struct {
 // had reached 7 and was growing per feature) into one named struct so call sites
 // read clearly and a new collaborator is one field, not an 8th positional bool.
 type wiredCollaborators struct {
-	MCP         bool
-	Agents      bool
-	Skills      bool
-	Soul        bool
-	UserModel   bool
-	Reflections bool
-	Dream       bool
-	Models      bool // mirrors client.Capabilities.ModelSelection
-	Worktrees   bool
-	Scheduling  bool
-	Sessions    bool // /sessions picker — gated on inventory + authoritative transcript
-	Learning    bool // /learning operator-settings enum
-	DebugAsk    bool // /debug-ask — env-gated (MECATUI_DEBUG_ASK=1) fake-ask injector
+	MCP          bool
+	Agents       bool
+	Skills       bool
+	Soul         bool
+	UserModel    bool
+	Reflections  bool
+	Dream        bool
+	Compactor    bool
+	Models       bool // mirrors client.Capabilities.ModelSelection
+	Worktrees    bool
+	Scheduling   bool
+	Sessions     bool // /sessions picker — gated on inventory + authoritative transcript
+	Learning     bool // /learning operator-settings enum
+	DebugAsk     bool // /debug-ask — env-gated (MECATUI_DEBUG_ASK=1) fake-ask injector
+	Connect      bool // /connect — saved remote target picker
+	DebugSession bool // dedicated target-bound debugger: hide binding-breaking actions
 }
 
 // wiredCollaborators builds the struct from m.deps — the SINGLE construction
 // site for it, called by every builtinCommands/builtinByName call site
-// (palette.go's builtinRows, update.go's runSelectedBuiltin and submitPrompt) so
-// the three can never drift out of sync again (issue: the palette's hand-rolled
+// (palette.go's builtinRows, update.go's dispatchSelectedBuiltin and
+// dispatchBareBuiltin) so the three can never drift out of sync again (issue: the palette's hand-rolled
 // copy once omitted Sessions, so /sessions never appeared in autocomplete even
 // though the actual dispatch path built it correctly).
 func (m Model) wiredCollaborators() wiredCollaborators {
@@ -59,10 +58,13 @@ func (m Model) wiredCollaborators() wiredCollaborators {
 		Soul: m.deps.Soul != nil, UserModel: m.deps.UserModel != nil, Models: m.deps.Models != nil,
 		Reflections: m.deps.Reflections != nil,
 		Dream:       m.deps.Dream != nil,
+		Compactor:   m.deps.Compactor != nil,
 		Worktrees:   m.deps.Worktrees != nil, Scheduling: m.deps.Sched != nil,
-		Sessions: m.deps.Sessions != nil && m.deps.Transcript != nil,
-		Learning: m.deps.Learning != nil,
-		DebugAsk: m.deps.DebugAsk,
+		Sessions:     m.deps.Sessions != nil && m.deps.Transcript != nil,
+		Learning:     m.deps.Learning != nil,
+		DebugAsk:     m.deps.DebugAsk,
+		Connect:      m.deps.Connect != nil,
+		DebugSession: m.deps.DebugTarget != "",
 	}
 }
 
@@ -105,6 +107,23 @@ func builtinCommands(caps client.Capabilities, w wiredCollaborators) []builtin {
 			desc: "show active session details and copy its exact ID",
 			run:  Model.runSessionDetails,
 		},
+		{
+			name: "retry",
+			desc: "retry the last eligible failed model step without resending its prompt",
+			run:  Model.runFailedStepRetry,
+		},
+		{
+			name: "diagnostics",
+			desc: "send a concise client and server diagnostics report",
+			run:  Model.runDiagnostics,
+		},
+	}
+	if caps.ManualCompaction && w.Compactor {
+		out = append(out, builtin{
+			name: "compact",
+			desc: "compact this session's model history",
+			run:  Model.runCompact,
+		})
 	}
 	if caps.MCP && w.MCP {
 		out = append(out, builtin{
@@ -195,6 +214,9 @@ func builtinCommands(caps client.Capabilities, w wiredCollaborators) []builtin {
 			run:  Model.runSessions,
 		})
 	}
+	if w.Connect {
+		out = append(out, builtin{name: "connect", desc: "sign in and connect to a saved remote target", run: Model.runConnect})
+	}
 	out = appendLearningBuiltin(out, w)
 	out = appendDebugAskBuiltin(out, w)
 	// /posture prints the server-wide operator posture tier + a line per defense.
@@ -206,6 +228,18 @@ func builtinCommands(caps client.Capabilities, w wiredCollaborators) []builtin {
 			desc: "show the server's operator posture",
 			run:  Model.runPosture,
 		})
+	}
+	if w.DebugSession {
+		filtered := out[:0]
+		for _, b := range out {
+			switch b.name {
+			case "clear", "models", "effort", "worktrees", "sessions":
+				continue
+			default:
+				filtered = append(filtered, b)
+			}
+		}
+		return filtered
 	}
 	return out
 }
@@ -246,28 +280,116 @@ func builtinByName(caps client.Capabilities, w wiredCollaborators, name string) 
 	return builtin{}, false
 }
 
-// runClear resets the conversation and all derived session state so the
-// zero-state welcome card reappears (conv.isEmpty() becomes true). It is
-// idle-only: while a run streams it is a no-op with an explanatory status, so a
-// /clear mid-turn can't tear out the live stream's backing state.
+// runClear starts a create-first handoff to a new empty session. It is idle-only:
+// while a run streams it is a no-op with an explanatory status, so a /clear
+// mid-turn can't tear out the live stream's backing state. The old session and
+// its UI stay bound until creation succeeds; this both avoids data loss on a
+// create failure and prevents a prompt from reaching the old session while the
+// handoff is pending.
 func (m Model) runClear() (tea.Model, tea.Cmd) {
 	if m.phase != phaseIdle {
 		m.statusMsg = m.deps.Theme.Style("warning").Render("cannot clear while running")
 		return m, nil
 	}
-	// resetSession (model.go) owns the full set of session-derived fields, so a
-	// future such field can never be silently forgotten by /clear.
-	m = m.resetSession()
-	m.statusMsg = m.deps.Theme.Style("success").Render("cleared")
-	m.refreshView()
-	return m, nil
+	if m.deps.Session == nil {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("cannot clear: session creation unavailable")
+		return m, nil
+	}
+
+	oldID := m.sessionID
+	m.phase = phaseConnecting // blocks input while the old session is still displayed
+	m.statusMsg = "clearing — creating a fresh session…"
+	return m, tea.Batch(m.clearSessionCmd(oldID), m.sp.Tick)
+}
+
+// clearSessionSelection prefers the server's effective model echo, while retaining
+// the locally requested reasoning effort when an older server did not echo it.
+func (m Model) clearSessionSelection() client.ModelSelection {
+	sel := m.createModelSelection
+	if resolved := m.resolvedSessionModel; resolved.ProviderID != "" || resolved.ModelID != "" {
+		if resolved.ProviderID != "" {
+			sel.ProviderID = resolved.ProviderID
+		}
+		if resolved.ModelID != "" {
+			sel.ModelID = resolved.ModelID
+		}
+		if resolved.ReasoningEffort != "" {
+			sel.ReasoningEffort = resolved.ReasoningEffort
+		}
+	}
+	return sel
+}
+
+// clearSessionCmd creates the replacement before the old session is touched. The
+// reducer performs the local reset and binding before it schedules the best-effort
+// close, so a create failure leaves the old session entirely usable.
+func (m Model) clearSessionCmd(oldID string) tea.Cmd {
+	deps := m.deps
+	workspace := m.activeWorkspace
+	if workspace == "" {
+		workspace = deps.Workspace
+	}
+	sel := m.clearSessionSelection()
+	mode := m.desiredMode()
+	return func() tea.Msg {
+		id, caps, resolved, err := deps.Session.CreateSessionInWorkspace(deps.Ctx, workspace, sel, mode)
+		if err != nil {
+			return clearSessionFailedMsg{err: err}
+		}
+		return clearSessionReadyMsg{
+			ready: client.SessionReadyMsg{SessionID: id, Capabilities: caps, ResolvedModel: resolved, Mode: mode},
+			oldID: oldID,
+		}
+	}
+}
+
+type clearSessionReadyMsg struct {
+	ready client.SessionReadyMsg
+	oldID string
+}
+
+type clearSessionFailedMsg struct{ err error }
+
+// closeSessionCmd is deliberately best-effort: the replacement is already bound,
+// so failure to close the old persisted session must not affect the new one.
+func (m Model) closeSessionCmd(id string) tea.Cmd {
+	deps := m.deps
+	return func() tea.Msg {
+		if id != "" {
+			_ = deps.Session.CloseSession(deps.Ctx, id)
+		}
+		return nil
+	}
+}
+
+func (m Model) runCompact() (tea.Model, tea.Cmd) {
+	if m.phase != phaseIdle {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("cannot compact while a run is active")
+		return m, nil
+	}
+	if m.sessionID == "" {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("cannot compact: no active session")
+		return m, nil
+	}
+	if m.compactPending {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("session compaction is already in progress")
+		return m, nil
+	}
+	if m.deps.Compactor == nil || !m.caps.ManualCompaction {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("/compact is not available on this server")
+		return m, nil
+	}
+	m.compactPending = true
+	m.compactRequestToken++
+	m.statusMsg = m.deps.Theme.Style("muted").Render("compacting model history…")
+	return m, client.CompactSessionCmd(m.deps.Ctx, m.deps.Compactor, m.sessionID, m.compactRequestToken)
 }
 
 // runHelp opens the "?" keys-&-features overlay — the same state the "?" key
 // sets (see onIdleKey). It blurs the textarea so the overlay owns the keyboard.
 func (m Model) runHelp() (tea.Model, tea.Cmd) {
 	m.showHelp = true
-	m.ta.Blur()
+	m.prompt.Blur()
 	return m, nil
 }
 
@@ -275,11 +397,17 @@ func (m Model) runSessionDetails() (tea.Model, tea.Cmd) {
 	return m.openSessionDetails()
 }
 
-// runMCP opens the MCP inventory panel — the same surface ctrl+o opens. Only
-// registered when caps.MCP && the MCP collaborator is wired, so openMCP's own
-// nil/idle guards are belt-and-braces here.
-func (m Model) runMCP() (tea.Model, tea.Cmd) {
-	return m.openMCP(mcpPanel)
+func (m Model) runFailedStepRetry() (tea.Model, tea.Cmd) {
+	if m.phase != phaseIdle {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("cannot retry while a run is active")
+		return m, nil
+	}
+	if m.sessionID == "" {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("no session is available to retry")
+		return m, nil
+	}
+	m.failedStepRetryTried = true
+	return m.startFailedStepRetry()
 }
 
 // runAgentsInv opens the agent-definition inventory panel. Only registered when
@@ -293,20 +421,6 @@ func (m Model) runAgentsInv() (tea.Model, tea.Cmd) {
 // Only registered when caps.Teams.
 func (m Model) runTeam() (tea.Model, tea.Cmd) {
 	return m.openTeam()
-}
-
-// runSkills opens the skills inventory panel. Only registered when caps.Skills
-// && the skills collaborator is wired, so openSkills's own nil/idle guards are
-// belt-and-braces here.
-func (m Model) runSkills() (tea.Model, tea.Cmd) {
-	return m.openSkills()
-}
-
-// runSoul opens the read-only soul (persona) inspection panel. Only registered
-// when caps.Soul && the soul collaborator is wired, so openSoul's own nil/idle
-// guards are belt-and-braces here.
-func (m Model) runSoul() (tea.Model, tea.Cmd) {
-	return m.openSoul()
 }
 
 // runUserModel opens the read-only user-model inspection panel. Only registered
@@ -329,6 +443,12 @@ func (m Model) runDream() (tea.Model, tea.Cmd) {
 // belt-and-braces here.
 func (m Model) runModels() (tea.Model, tea.Cmd) {
 	return m.openModels()
+}
+
+// runConnect opens the saved remote-target picker. It is idle-only: switching a
+// connection tears down this TUI before any browser-capable work happens in main.
+func (m Model) runConnect() (tea.Model, tea.Cmd) {
+	return m.openConnect()
 }
 
 // runEffort opens the /effort picker (ADR 0055). Only registered when
@@ -454,48 +574,63 @@ func postureSummary(p string) string {
 		" (Deny & configured Ask always apply)"
 }
 
-// allBuiltins returns the static set of ALL possible built-in names (clear, help,
-// mcp, agents, team, skills, soul, usermodel, models, effort, worktrees, schedule,
-// sessions, posture) — regardless of caps or wired-collaborators. It is derived
-// from builtinCommands with all gates set true so it stays in sync with the table
-// (no second list to drift). Used by submitPrompt to block a /<known-builtin>
-// that is currently gated-off rather than sending it to the model as text.
+type builtinName struct {
+	name        string
+	acceptsArgs bool
+}
+
+// builtinNameRegistry is the static registry identity and argument policy used
+// before a capability-gated builtin can be dispatched.
+var builtinNameRegistry = []builtinName{
+	{name: "clear", acceptsArgs: false}, {name: "help", acceptsArgs: false}, {name: "session", acceptsArgs: false},
+	{name: "retry", acceptsArgs: false}, {name: "diagnostics", acceptsArgs: false}, {name: "compact", acceptsArgs: false},
+	{name: "mcp", acceptsArgs: false}, {name: "agents", acceptsArgs: false}, {name: "team", acceptsArgs: false},
+	{name: "skills", acceptsArgs: false}, {name: "soul", acceptsArgs: false}, {name: "usermodel", acceptsArgs: false},
+	{name: "models", acceptsArgs: false}, {name: "effort", acceptsArgs: false}, {name: "worktrees", acceptsArgs: false},
+	{name: "schedule", acceptsArgs: false}, {name: "sessions", acceptsArgs: false}, {name: "learning", acceptsArgs: false},
+	{name: "learning-sensitivity", acceptsArgs: false}, {name: "posture", acceptsArgs: false}, {name: "debug-ask", acceptsArgs: false},
+}
+
 func allBuiltins() map[string]bool {
-	allCaps := client.Capabilities{
-		MCP: true, Agents: true, Teams: true, Skills: true, Soul: true,
-		UserModel: true, ModelSelection: true, Worktrees: true, Scheduling: true,
-		Posture: "yes",
-	}
-	allWired := wiredCollaborators{
-		MCP: true, Agents: true, Skills: true, Soul: true, UserModel: true,
-		Models: true, Worktrees: true, Scheduling: true, Sessions: true, Learning: true,
-		DebugAsk: true,
-	}
-	set := make(map[string]bool, 14)
-	for _, b := range builtinCommands(allCaps, allWired) {
-		set[b.name] = true
+	set := make(map[string]bool, len(builtinNameRegistry))
+	for _, builtin := range builtinNameRegistry {
+		set[builtin.name] = builtin.acceptsArgs
 	}
 	return set
 }
 
-// knownBuiltinNames is the one-shot evaluation of allBuiltins.
 var knownBuiltinNames = allBuiltins()
 
 // isKnownBuiltinName reports whether name is one of the static built-in slash
 // commands — regardless of whether it is currently gated off by caps or wired
-// collaborators. The caller uses this alongside builtinByName to distinguish
-// "gated-off builtin" from "unknown / workspace command".
+// collaborators.
 func isKnownBuiltinName(name string) bool {
-	return knownBuiltinNames[name]
+	_, ok := knownBuiltinNames[name]
+	return ok
 }
 
-// interceptSlashCommand checks whether text is a bare slash command (no args, no
-// newlines). If it matches a currently-registered builtin, it executes it. If it
-// matches a KNOWN builtin name that is gated off, it blocks the send with a
-// warning. Otherwise it returns handled=false and the caller falls through to the
-// normal send path (workspace/custom command, issue #348).
-func (m Model) interceptSlashCommand(text string) (tea.Model, tea.Cmd, bool) {
-	name, ok := commandPrefix(text)
+// dispatchBareBuiltin checks whether raw text is a slash command after trimming
+// surrounding Unicode whitespace. A current bare built-in executes locally. A
+// recognized built-in that does not accept arguments keeps the input and shows a
+// local warning. Unknown slash commands remain model-facing.
+func (m Model) dispatchBareBuiltin(text string) (tea.Model, tea.Cmd, bool) {
+	trimmed := strings.TrimSpace(text)
+	fields := strings.Fields(trimmed)
+	if len(fields) > 1 {
+		name, ok := commandPrefix(fields[0])
+		if ok {
+			name = strings.ToLower(name)
+			acceptsArgs, known := knownBuiltinNames[name]
+			if b, found := builtinByName(m.caps, m.wiredCollaborators(), name); found {
+				acceptsArgs, known = b.acceptsArgs, true
+			}
+			if known && !acceptsArgs {
+				m.statusMsg = m.deps.Theme.Style("warning").Render("/" + name + " does not take arguments; use bare /" + name)
+				return m, nil, true
+			}
+		}
+	}
+	name, ok := commandPrefix(trimmed)
 	if !ok {
 		return m, nil, false
 	}
@@ -505,7 +640,12 @@ func (m Model) interceptSlashCommand(text string) (tea.Model, tea.Cmd, bool) {
 	// without changing the downstream palette/completion paths.
 	name = strings.ToLower(name)
 	if b, found := builtinByName(m.caps, m.wiredCollaborators(), name); found {
-		m.ta.Reset()
+		// A successful bare-command dispatch consumes the command line, so close its
+		// derived palette state too. This path serves both idle and running input.
+		m.palette.open = false
+		m.palette.filtered = nil
+		m.palette.cursor = 0
+		m.prompt.Reset()
 		mm, cmd := b.run(m)
 		return mm, cmd, true
 	}

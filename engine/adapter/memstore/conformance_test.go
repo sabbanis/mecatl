@@ -7,9 +7,11 @@ import (
 
 	"github.com/stacklok/mecatl/engine/adapter/eventlogconformance"
 	"github.com/stacklok/mecatl/engine/adapter/leaseconformance"
+	"github.com/stacklok/mecatl/engine/adapter/lineageconformance"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/storeconformance"
 	"github.com/stacklok/mecatl/engine/port"
+	"github.com/stacklok/mecatl/engine/session"
 )
 
 // TestMemstoreConformance runs the shared SessionStore conformance table
@@ -18,6 +20,17 @@ import (
 func TestMemstoreConformance(t *testing.T) {
 	storeconformance.Run(t, func(*testing.T) port.SessionStore {
 		return memstore.New()
+	})
+}
+
+func TestMemstoreLineageConformance(t *testing.T) {
+	lineageconformance.Run(t, memstore.New())
+}
+
+func TestMemstoreSessionCreatorConformance(t *testing.T) {
+	storeconformance.RunSessionCreator(t, func(*testing.T) (port.SessionStore, port.SessionStore) {
+		st := memstore.New()
+		return st, st
 	})
 }
 
@@ -46,6 +59,28 @@ func TestMemstoreConditionalPrunableConformance(t *testing.T) {
 func TestMemstoreEventLogConformance(t *testing.T) {
 	eventlogconformance.Run(t, func(*testing.T) port.EventLog {
 		return memstore.NewEventLog()
+	})
+}
+
+// TestMemstoreCursorEventLogConformance runs the shared CursorEventLog table
+// against the in-memory reference log.
+//
+// This run is the suite's OWN validation: memstore is the only backend with no
+// I/O, no encoding, and no migration, so a failure here is a failure of the
+// contract or of the suite, never of a storage detail. Cross-process delivery is
+// skipped because a second process shares no memory with this log — the
+// obligation is meaningless here rather than unmet, and it is proved against
+// Redis and JSONL instead.
+func TestMemstoreCursorEventLogConformance(t *testing.T) {
+	eventlogconformance.RunCursor(t, eventlogconformance.CursorSuite{
+		New: func(*testing.T) port.CursorEventLog {
+			return memstore.NewEventLog()
+		},
+		Reset: func(t *testing.T, log port.CursorEventLog, id session.SessionID) {
+			t.Helper()
+			log.(*memstore.EventLog).Reset(id)
+		},
+		SkipCrossProcess: true,
 	})
 }
 

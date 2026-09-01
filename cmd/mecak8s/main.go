@@ -11,9 +11,14 @@ import (
 
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
 	"github.com/stacklok/mecatl/internal/app"
+	"github.com/stacklok/mecatl/internal/buildinfo"
 )
 
 func main() {
+	if buildinfo.IsVersion(os.Args) {
+		buildinfo.PrintVersion(os.Stdout, "mecak8s")
+		return
+	}
 	if err := run(); err != nil {
 		slog.Error("mecak8s exited with error", "err", err)
 		os.Exit(1)
@@ -39,6 +44,7 @@ func run() error {
 	// port.Diagnostics (ban-guarded). Mirrors cmd/mecated.
 	slog.SetDefault(logger)
 	diag := slogdiag.NewFromLogger(logger)
+	cfg.diagnostics = diag
 
 	ctx, stop := signalCtx()
 	defer stop()
@@ -52,7 +58,8 @@ func run() error {
 		return fmt.Errorf("telemetry: %w", oerr)
 	}
 
-	built, err := app.Build(ctx, appConfig(cfg, diag, obs))
+	composition := appConfig(cfg, diag, obs)
+	built, err := app.Build(ctx, composition)
 	if err != nil {
 		flushTelemetry(os.Stderr, obs, cfg.otlpShutdownTimeout)
 		return err

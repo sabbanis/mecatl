@@ -10,8 +10,8 @@
 // daemon's.
 //
 // Pipeline 1 scope: the untrusted-prompt fence is cmd-side ONLY — mecatequi builds the
-// fenced prompt string with the existing agent.FenceUntrusted helper and passes it as
-// ordinary prompt text. Nothing in engine/agent, internal/app, or
+// fenced prompt string with the canonical governance.FenceUntrusted helper and passes
+// it as ordinary prompt text. Nothing in engine/agent, internal/app, or
 // internal/adapter/server is modified for it.
 //
 // DEVIATION FROM mecated (on purpose): --headless defaults to true. A single-shot CI
@@ -39,9 +39,14 @@ import (
 
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/app"
+	"github.com/stacklok/mecatl/internal/buildinfo"
 )
 
 func main() {
+	if buildinfo.IsVersion(os.Args) {
+		buildinfo.PrintVersion(os.Stdout, "mecatequi")
+		return
+	}
 	os.Exit(realMain(os.Args[1:], os.Stdout, os.Stderr))
 }
 
@@ -85,7 +90,8 @@ func realMain(argv []string, stdout, stderr io.Writer) int {
 		return 2
 	}
 
-	built, err := app.Build(context.Background(), appConfig(f, diag, obs))
+	composition := appConfig(f, diag, obs)
+	built, err := app.Build(context.Background(), composition)
 	if err != nil {
 		_, _ = fmt.Fprintf(stderr, "mecatequi: build: %v\n", err)
 		flushTelemetry(stderr, obs, f.otlpShutdownTimeout)

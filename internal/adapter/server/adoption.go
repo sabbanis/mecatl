@@ -55,6 +55,23 @@ type AdoptionPreflight struct {
 	Bindings AdoptionBindings
 }
 
+func (s *Service) adoptionOwnershipPreflight(ctx context.Context, id session.SessionID) (AdoptionReason, error) {
+	if !s.cfg.OwnershipEnforced || session.PrincipalFromContext(ctx) == nil {
+		return "", fmt.Errorf("%w", ErrNotFound)
+	}
+	sess, err := s.cfg.Store.Load(ctx, id)
+	if err != nil {
+		if errors.Is(err, port.ErrSessionNotFound) {
+			return "", fmt.Errorf("%w", ErrNotFound)
+		}
+		return AdoptionReasonInvalidTranscript, nil
+	}
+	if sess == nil || sess.ID != id || s.authorizeSession(ctx, sess) != nil {
+		return "", fmt.Errorf("%w", ErrNotFound)
+	}
+	return "", nil
+}
+
 func (s *Service) adoptionSource(ctx context.Context, id session.SessionID) (*session.Session, AdoptionReason, error) {
 	if !s.cfg.OwnershipEnforced || session.PrincipalFromContext(ctx) == nil {
 		return nil, "", fmt.Errorf("%w", ErrNotFound)
@@ -115,6 +132,28 @@ func validateAdoptionBindingShape(bindings AdoptionBindings) error {
 	return nil
 }
 
+// adoptionBindingsForAuthority replaces caller-provided execution bindings with
+// the deployment's environment in server-assigned mode. A non-empty filesystem
+// workspace is rejected by workspaceForCreate before any resolver or factory is
+// consulted; local/embedded adoption remains unchanged.
+func (s *Service) adoptionBindingsForAuthority(bindings AdoptionBindings) (AdoptionBindings, error) {
+	if s.cfg.WorkspaceAuthority.clientSelectsRoot() {
+		return bindings, nil
+	}
+	workspace, profile, err := s.workspaceForCreate(bindings.Workspace, bindings.Profile)
+	if err != nil {
+		return AdoptionBindings{}, err
+	}
+	bindings.Workspace = workspace
+	bindings.Profile = profile
+	if bindings.Profile == ProfileNoFS {
+		bindings.EnvironmentRef = session.EnvironmentRef{Kind: session.EnvKindNoFS}
+	} else {
+		bindings.EnvironmentRef = session.EnvironmentRef{Kind: session.EnvKindLocal, ID: workspace}
+	}
+	return bindings, nil
+}
+
 func (s *Service) resolveAdoptionEnvironment(ctx context.Context, bindings AdoptionBindings) error {
 	ref := bindings.EnvironmentRef
 	switch ref.Kind {
@@ -142,6 +181,10 @@ func (s *Service) resolveAdoptionBindings(ctx context.Context, bindings Adoption
 	if s.cfg.SessionEngine == nil {
 		return SessionEngineResult{}, fmt.Errorf("%w: adoption requires a session-engine factory", ErrInvalidArgument)
 	}
+	bindings, err := s.adoptionBindingsForAuthority(bindings)
+	if err != nil {
+		return SessionEngineResult{}, err
+	}
 	if err := validateAdoptionBindingShape(bindings); err != nil {
 		return SessionEngineResult{}, err
 	}
@@ -163,10 +206,29 @@ func (s *Service) resolveAdoptionBindings(ctx context.Context, bindings Adoption
 // the short trial lease is released before return and every condition is checked
 // again by AdoptSession under the mutation lease.
 func (s *Service) PreflightSessionAdoption(ctx context.Context, id session.SessionID, bindings AdoptionBindings) (AdoptionPreflight, error) {
+	// Reject an authority-invalid binding up front rather than swallowing the error.
+	// resolveAdoptionBindings below re-normalizes and would still return
+	// binding_unresolved, so the OUTCOME was already correct — but swallowing meant
+	// the ownership, source, and mutation-lease steps all ran for a binding doomed
+	// to fail authority. Rejecting here skips that (notably the lease acquire/release)
+	// and matches AdoptSession, which normalizes before any of it.
+	normalized, err := s.adoptionBindingsForAuthority(bindings)
+	if err != nil {
+		return AdoptionPreflight{Reason: AdoptionReasonBindingUnresolved, Bindings: bindings}, nil
+	}
+	bindings = normalized
 	result := AdoptionPreflight{Bindings: bindings}
+	reason, err := s.adoptionOwnershipPreflight(ctx, id)
+	if err != nil {
+		return result, err
+	}
+	if reason != "" {
+		result.Reason = reason
+		return result, nil
+	}
 	unlock := s.runEntryMu.lock(id)
 	defer unlock()
-	sess, reason, err := s.adoptionSource(ctx, id)
+	_, reason, err = s.adoptionSource(ctx, id)
 	if err != nil {
 		return result, err
 	}
@@ -182,7 +244,15 @@ func (s *Service) PreflightSessionAdoption(ctx context.Context, id session.Sessi
 		}
 		return result, err
 	}
+	sess, reason, err := s.adoptionSource(ctx, id)
 	release()
+	if err != nil {
+		return result, err
+	}
+	if reason != "" {
+		result.Reason = reason
+		return result, nil
+	}
 	resolved, err := s.resolveAdoptionBindings(ctx, bindings, sess.Mode)
 	if err != nil {
 		result.Reason = AdoptionReasonBindingUnresolved
@@ -249,7 +319,8 @@ func (s *Service) newAdoptionTarget(source *session.Session, targetID session.Se
 	if err := target.SeedHistory(history); err != nil {
 		return nil, fmt.Errorf("%w: invalid authoritative transcript", ErrFailedPrecondition)
 	}
-	if err := setSessionLabels(target, ProviderSelector{ProviderID: bindings.ProviderID, ModelID: bindings.ModelID}, bindings.Profile, owner); err != nil {
+	authority, _ := source.BoundAuthority()
+	if err := setSessionLabels(target, ProviderSelector{ProviderID: bindings.ProviderID, ModelID: bindings.ModelID}, bindings.Profile, owner, authority); err != nil {
 		return nil, err
 	}
 	target.EnvironmentRef = bindings.EnvironmentRef
@@ -269,6 +340,24 @@ func adoptionSourceID(s *session.Session) session.SessionID {
 	return s.Adoption.AdoptionSourceID
 }
 
+func (s *Service) publishAdoption(ctx context.Context, target *session.Session, sourceID session.SessionID, owner *session.Principal, digest string) (*session.Session, bool, error) {
+	if err := s.persistNewSession(ctx, target); err != nil {
+		s.mu.Lock()
+		delete(s.sessionEngines, target.ID)
+		delete(s.sessionEnvironments, target.ID)
+		s.mu.Unlock()
+		if errors.Is(err, port.ErrSessionAlreadyExists) {
+			existing, collisionErr := s.existingAdoption(ctx, target.ID, sourceID, owner, digest)
+			if existing == nil && collisionErr == nil {
+				return nil, false, fmt.Errorf("%w: adoption target disappeared after create collision", ErrInternal)
+			}
+			return existing, false, collisionErr
+		}
+		return nil, false, fmt.Errorf("server: persist adopted session: %w", err)
+	}
+	return target, true, nil
+}
+
 // AdoptSession atomically publishes a new explicit-main copy of one eligible
 // legacy source. The source is never transitioned or saved. The target ID and
 // persisted request digest make retries durable and caller/source-bound.
@@ -276,9 +365,20 @@ func (s *Service) AdoptSession(ctx context.Context, sourceID session.SessionID, 
 	if strings.TrimSpace(idempotencyKey) == "" || len(idempotencyKey) > 256 {
 		return nil, fmt.Errorf("%w: idempotency_key is required and must be at most 256 bytes", ErrInvalidArgument)
 	}
+	reason, err := s.adoptionOwnershipPreflight(ctx, sourceID)
+	if err != nil {
+		return nil, err
+	}
+	if reason != "" {
+		return nil, fmt.Errorf("%w: adoption ineligible: %s", ErrFailedPrecondition, reason)
+	}
+	bindings, err = s.adoptionBindingsForAuthority(bindings)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %v", ErrFailedPrecondition, AdoptionReasonBindingUnresolved)
+	}
 	unlockSource := s.runEntryMu.lock(sourceID)
 	defer unlockSource()
-	_, reason, err := s.adoptionSource(ctx, sourceID)
+	_, reason, err = s.adoptionSource(ctx, sourceID)
 	if err != nil {
 		return nil, err
 	}
@@ -339,13 +439,7 @@ func (s *Service) AdoptSession(ctx context.Context, sourceID session.SessionID, 
 		s.sessionEnvironments[targetID] = tool.MustEnvironment(bindings.EnvironmentRef, nofs.New(), nil)
 	}
 	s.mu.Unlock()
-	if err := s.cfg.Store.Save(ctx, target); err != nil {
-		s.mu.Lock()
-		delete(s.sessionEngines, targetID)
-		delete(s.sessionEnvironments, targetID)
-		s.mu.Unlock()
-		return nil, fmt.Errorf("server: persist adopted session: %w", err)
-	}
-	cleanup = false
-	return target, nil
+	published, ownsPublication, err := s.publishAdoption(ctx, target, sourceID, owner, digest)
+	cleanup = !ownsPublication
+	return published, err
 }

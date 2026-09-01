@@ -2,8 +2,9 @@
 #
 # Required tools (assumed on PATH; install commands below):
 #   - go            >= 1.26.3   (the toolchain)
-#   - golangci-lint >= 2.x      https://golangci-lint.run/welcome/install/
-#                               go install github.com/golangci/golangci-lint/v2/cmd/golangci-lint@latest
+#   - golangci-lint (version in scripts/install-golangci-lint.sh)
+#                               task tools:golangci-lint (installs the CI-matching
+#                               official release binary into .tools/bin)
 #   - goimports     (only for `task fmt`)
 #                               go install golang.org/x/tools/cmd/goimports@latest
 #   - buf           (only for `task generate`)
@@ -22,11 +23,17 @@ includes:
     taskfile: studio/Taskfile.yml
     dir: studio
   mecak8s:
+    taskfile: deploy/mecak8s-kind/Taskfile.yml
+    dir: .
+  mecak8s-vmcp:
     taskfile: deploy/mecak8s-vmcp/Taskfile.yml
     dir: .
 
 vars:
   PKG: github.com/stacklok/mecatl
+  BUILD_ID:
+    sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+  BUILD_LDFLAGS: -X github.com/stacklok/mecatl/internal/buildinfo.BuildID={{.BUILD_ID}}
 
 tasks:
   default:
@@ -38,16 +45,15 @@ tasks:
   build:
     desc: Compile binaries into bin/
     cmds:
-      - go build -o bin/mecated ./cmd/mecated
-      - go build -o bin/mecademo ./cmd/mecademo
+      - go build -ldflags "{{.BUILD_LDFLAGS}}" -o bin/mecated ./cmd/mecated
+      - go build -ldflags "{{.BUILD_LDFLAGS}}" -o bin/mecademo ./cmd/mecademo
       # mecatequi: the single-shot, headless CI/batch runner (one prompt -> diff +
       # summary JSON + optional durable event log -> exit code).
-      - go build -o bin/mecatequi ./cmd/mecatequi
+      - go build -ldflags "{{.BUILD_LDFLAGS}}" -o bin/mecatequi ./cmd/mecatequi
       # mecak8s: the storage-free, k8s-native agent binary (ADR 0048; a thin peer
       # of mecated composing app.Build with Redis store + k8s lease + drain gate).
-      - go build -o bin/mecak8s ./cmd/mecak8s
-      # mecatui stamps its build version into the welcome splash via -X main.version.
-      - go build -ldflags "-X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" -o bin/mecatui ./cmd/mecatui
+      - go build -ldflags "{{.BUILD_LDFLAGS}}" -o bin/mecak8s ./cmd/mecak8s
+      - go build -ldflags "{{.BUILD_LDFLAGS}}" -o bin/mecatui ./cmd/mecatui
       # engine/ is its own Go module (consumed via the committed go.work). Building
       # it here keeps the importable-core module compiling alongside the binaries.
       - cd engine && go build ./...
@@ -65,9 +71,8 @@ tasks:
   install:
     desc: Install mecated and mecatui into GOBIN/GOPATH/bin
     cmds:
-      - go install ./cmd/mecated
-      # mecatui stamps its build version into the welcome splash via -X main.version.
-      - go install -ldflags "-X main.version=$(git describe --tags --always --dirty 2>/dev/null || echo dev)" ./cmd/mecatui
+      - go install -ldflags "{{.BUILD_LDFLAGS}}" ./cmd/mecated
+      - go install -ldflags "{{.BUILD_LDFLAGS}}" ./cmd/mecatui
 
   test:golden:
     desc: Refresh mecatui View/teatest golden files (-update) then re-run them
@@ -120,6 +125,7 @@ tasks:
     desc: Build the mecated image locally with ko (no push; tagged under ko.local)
     env:
       KO_DOCKER_REPO: ko.local
+      VERSION: "{{.BUILD_ID}}"
     cmds:
       # --local loads the image into the local Docker/podman daemon; --bare
       # keeps the repo path clean (no extra import-path suffix) and prints the
@@ -128,6 +134,8 @@ tasks:
 
   ko:publish:
     desc: Build and push the mecated image with ko (honours KO_DOCKER_REPO)
+    env:
+      VERSION: "{{.BUILD_ID}}"
     cmds:
       - cmd: |
           if [ -z "${KO_DOCKER_REPO:-}" ]; then
@@ -153,15 +161,27 @@ tasks:
     desc: Build the mecak8s image locally with ko (ADR 0048; no push; tagged under ko.local)
     env:
       KO_DOCKER_REPO: ko.local
+      VERSION: "{{.BUILD_ID}}"
     cmds:
       - ko build --local --bare ./cmd/mecak8s
+
+  ko:publish:k8s:
+    desc: Build and push the mecak8s image with ko (ADR 0048; honours KO_DOCKER_REPO)
+    env:
+      VERSION: "{{.BUILD_ID}}"
+    cmds:
+      - cmd: |
+          if [ -z "${KO_DOCKER_REPO:-}" ]; then
+            echo "KO_DOCKER_REPO is required (e.g. export KO_DOCKER_REPO=ghcr.io/stacklok/mecatl/mecak8s)"; exit 1
+          fi
+        silent: true
+      - ko build --push --bare ./cmd/mecak8s
 
   ko:build:mecatui:
     desc: Build the mecatui image locally with ko (issue #302; no push; tagged under ko.local)
     env:
       KO_DOCKER_REPO: ko.local
-      VERSION:
-        sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+      VERSION: "{{.BUILD_ID}}"
     cmds:
       # --image-label sets the OCI config label brood-box reads to locate the
       # agent manifest (cmd/mecatui/kodata/agent.yaml, which ko lands at
@@ -174,8 +194,7 @@ tasks:
   ko:publish:mecatui:
     desc: Build and push the mecatui image with ko (issue #302; honours KO_DOCKER_REPO)
     env:
-      VERSION:
-        sh: git describe --tags --always --dirty 2>/dev/null || echo dev
+      VERSION: "{{.BUILD_ID}}"
     cmds:
       - cmd: |
           if [ -z "${KO_DOCKER_REPO:-}" ]; then
@@ -185,6 +204,43 @@ tasks:
       - ko build --push --bare
           --image-label=org.stacklok.broodbox.agent=/var/run/ko/agent.yaml
           ./cmd/mecatui
+
+  test:root-race-partition:
+    desc: Test and validate the static root-module race package partition
+    cmds:
+      - bash .github/scripts/root-race-packages_test.sh
+      - bash .github/scripts/root-race-packages.sh validate
+
+  test:race-timing-wrapper:
+    desc: Test normal and diagnostic race-test wrapper behavior
+    cmds:
+      - bash .github/scripts/race-test_test.sh
+
+  test:race-ui:
+    desc: Run the root-module UI race-test shard
+    cmds:
+      - go test -race -count=1 ./cmd/mecatui/ui
+
+  test:race-root-a:
+    desc: Run the maintained root-a race-test shard
+    cmds:
+      - bash -c 'set -euo pipefail; mapfile -t packages < <(bash .github/scripts/root-race-packages.sh root-a); go test -race -count=1 "${packages[@]}"'
+
+  test:race-root-b:
+    desc: Run the automatic root-b race-test shard (all non-UI, non-root-a packages)
+    cmds:
+      - bash -c 'set -euo pipefail; mapfile -t packages < <(bash .github/scripts/root-race-packages.sh root-b); go test -race -count=1 "${packages[@]}"'
+
+  test:non-race:
+    desc: Run complete root + module test coverage without the race detector
+    cmds:
+      - go test ./...
+      - cd engine && go test ./...
+      - cd authn/oidc && go test ./...
+      - cd provider/ssefilter && go test ./...
+      - cd provider/anthropic && go test ./...
+      - cd provider/openai && go test ./...
+      - cd provider/openaichat && go test ./...
 
   test:
     desc: Run unit tests with the race detector (root + engine + authn/oidc + provider modules + standalone hygiene proofs)
@@ -225,13 +281,8 @@ tasks:
   test:provider-standalone:
     desc: |
       Prove the opt-in provider/ submodules build + test with NO workspace
-      (GOWORK=off), the same hygiene gate as test:engine-standalone. Covers
-      ssefilter + anthropic: the only two providers whose dependency closure is
-      fully resolvable off-workspace. openai + openaichat `require
-      provider/ssefilter v0.0.0`, which is only resolvable via the workspace until
-      the first provider/ssefilter/vX.Y.Z tag is cut — their standalone proof is
-      deferred until then (ADR 0093, issue #379); they are covered by the
-      workspace (GOWORK=on) build/test invocations in `task test`.
+      (GOWORK=off), the same hygiene gate as test:engine-standalone. All four
+      provider modules are checked with their own published dependency closures.
       Locally the engine dependency resolves through your git credentials
       (GOPROXY unset). In CI the job runs it fully offline (GOPROXY=off) over a
       warmed module cache, needing no credential — replicate that locally with
@@ -243,6 +294,10 @@ tasks:
       - cd provider/ssefilter && GOWORK=off GOPROXY='{{.GOPROXY}}' go test ./...
       - cd provider/anthropic && GOWORK=off GOPROXY='{{.GOPROXY}}' go build ./...
       - cd provider/anthropic && GOWORK=off GOPROXY='{{.GOPROXY}}' go test ./...
+      - cd provider/openai && GOWORK=off GOPROXY='{{.GOPROXY}}' go build ./...
+      - cd provider/openai && GOWORK=off GOPROXY='{{.GOPROXY}}' go test ./...
+      - cd provider/openaichat && GOWORK=off GOPROXY='{{.GOPROXY}}' go build ./...
+      - cd provider/openaichat && GOWORK=off GOPROXY='{{.GOPROXY}}' go test ./...
 
   test:actions:
     desc: |
@@ -321,8 +376,8 @@ tasks:
       caller-identity boundaries (ADR 0204). Needs helm + kubeconform; needs NO
       cluster, so it runs in CI and on a laptop.
     vars:
-      PROD_SET: image.tag=v0.0.0,redis.endpoint=redis.example.internal:6379,redis.credentialsSecret=redis-credentials
-      OIDC_SET: oidc.enabled=true,oidc.issuer=https://idp.example.com,oidc.audience=mecatl
+      PROD_SET: redis.endpoint=redis.example.internal:6379,redis.credentialsSecret=redis-credentials,security.allowUnsafeRealProvider=true
+      SAFE_SET: redis.endpoint=redis.example.internal:6379,redis.credentialsSecret=redis-credentials,tls.enabled=true,tls.secretName=mecak8s-tls,oidc.enabled=true,oidc.issuer=https://idp.example.com,oidc.audience=mecatl
     preconditions:
       - sh: command -v helm >/dev/null 2>&1
         msg: "helm is not installed (https://helm.sh/docs/intro/install/)"
@@ -354,29 +409,7 @@ tasks:
       - cmd: |
           set -eu -o pipefail
           helm template production deploy/helm/mecak8s --set '{{.PROD_SET}}' | kubeconform -strict -summary -
-          helm template production deploy/helm/mecak8s --set '{{.PROD_SET}}' --set '{{.OIDC_SET}}' | kubeconform -strict -summary -
-        silent: true
-      # The default render must stay identity-OFF: caller identity is opt-in,
-      # and the published example must keep deploying what operators already
-      # expect.
-      - cmd: |
-          set -eu -o pipefail
-          if helm template production deploy/helm/mecak8s --set '{{.PROD_SET}}' | grep -qi 'oidc'; then
-            echo "the default chart render mentions oidc — caller identity must stay opt-in"; exit 1
-          fi
-        silent: true
-      # No render, default or oidc-enabled, may ever ship SSRF relaxation: the
-      # flag that lets the validator reach a private/in-cluster or http://
-      # issuer exists for the e2e fixtures ONLY, applied there via a runtime
-      # kubectl patch, never through the chart. (--oidc-jwks-uri is a URL, not
-      # a relaxation.)
-      - cmd: |
-          set -eu -o pipefail
-          for extra in '' '--set {{.OIDC_SET}}'; do
-            if helm template production deploy/helm/mecak8s --set '{{.PROD_SET}}' $extra | grep -qiE 'insecure|allow-private'; then
-              echo "chart render ships an SSRF relaxation flag — that belongs to the e2e fixtures only"; exit 1
-            fi
-          done
+          helm template production deploy/helm/mecak8s --set '{{.SAFE_SET}}' | kubeconform -strict -summary -
         silent: true
       # The oidc-enabled render must carry every base arg alongside the oidc
       # args: Helm composes ONE args: list template-side rather than
@@ -386,7 +419,7 @@ tasks:
       - cmd: |
           set -eu -o pipefail
           missing=""
-          rendered=$(helm template production deploy/helm/mecak8s --set '{{.PROD_SET}}' --set '{{.OIDC_SET}}')
+          rendered=$(helm template production deploy/helm/mecak8s --set '{{.SAFE_SET}}')
           for arg in --grpc-addr --http-addr --redis-url --session-lease-k8s-namespace --headless --posture --oidc-issuer --oidc-audience --oidc-max-jwks-staleness=1h; do
             echo "$rendered" | grep -q -- "$arg" || missing="$missing $arg"
           done
@@ -402,7 +435,10 @@ tasks:
       Each FuzzXxx also runs its seed corpus under plain `go test`, so the
       regression cases are already covered by `task test`; this task is the
       coverage-guided exploration pass. Override the per-target budget with
-      FUZZTIME, e.g. `FUZZTIME=2m task fuzz`.
+      FUZZTIME, e.g. `FUZZTIME=2m task fuzz`. FUZZTIME also accepts an
+      iteration count (`Nx`, e.g. `FUZZTIME=300000x`) instead of a duration —
+      CI's fuzz-smoke job uses that form so it can't race go test's own fuzz
+      coordinator deadline.
     vars:
       FUZZTIME: '{{.FUZZTIME | default "30s"}}'
     cmds:
@@ -411,6 +447,7 @@ tasks:
       - cd engine && go test ./governance/ -run='^$' -fuzz='^FuzzSplitCommands$' -fuzztime={{.FUZZTIME}}
       - cd engine && go test ./governance/ -run='^$' -fuzz='^FuzzCanonicalize$' -fuzztime={{.FUZZTIME}}
       - cd engine && go test ./governance/ -run='^$' -fuzz='^FuzzReadOnlyBash$' -fuzztime={{.FUZZTIME}}
+      - cd engine && go test ./governance/ -run='^$' -fuzz='^FuzzAuthorityOperationsAreMonotone$' -fuzztime={{.FUZZTIME}}
       - cd provider/openai && go test ./ -run='^$' -fuzz='^FuzzDecodeSSE$' -fuzztime={{.FUZZTIME}}
 
   bench:
@@ -563,28 +600,39 @@ tasks:
       - cd provider/openai && go test -race -coverprofile=../../coverage/provider-openai.out -covermode=atomic ./...
       - cd provider/openaichat && go test -race -coverprofile=../../coverage/provider-openaichat.out -covermode=atomic ./...
 
-  lint:
-    desc: Run golangci-lint (parallel-safe) and go vet over the root, engine, authn/oidc, and provider modules
+  tools:golangci-lint:
+    desc: Install the CI-matching golangci-lint release into .tools/bin
     cmds:
-      - golangci-lint run --allow-parallel-runners ./...
+      - sh scripts/install-golangci-lint.sh
+
+  lint:
+    desc: Run pinned golangci-lint (parallel-safe) and go vet over the root, engine, authn/oidc, and provider modules
+    deps: [tools:golangci-lint]
+    env:
+      GOLANGCI_LINT: "{{.ROOT_DIR}}/.tools/bin/golangci-lint"
+    preconditions:
+      - sh: test -x $GOLANGCI_LINT
+        msg: "missing pinned golangci-lint; run: task tools:golangci-lint"
+    cmds:
+      - $GOLANGCI_LINT run --allow-parallel-runners ./...
       - go vet ./...
       # engine/ is its own module — it shares the ROOT golangci config (no
       # engine-local .golangci.yml) so the depguard layering allowlists stay the
       # single source of truth across the module boundary.
-      - cd engine && golangci-lint run --config ../.golangci.yml --allow-parallel-runners ./...
+      - cd engine && $GOLANGCI_LINT run --config ../.golangci.yml --allow-parallel-runners ./...
       - cd engine && go vet ./...
       # authn/oidc is a separate opt-in adapter module, sharing the root config.
-      - cd authn/oidc && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners ./...
+      - cd authn/oidc && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners ./...
       - cd authn/oidc && go vet ./...
-      # provider/ submodules (ADR 0093) — each its own module, sharing the ROOT
+      # provider/ submodules (ADR 0093) — each its own module; sharing the ROOT
       # golangci config so the depguard allowlists stay the single source of truth.
-      - cd provider/ssefilter && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners ./...
+      - cd provider/ssefilter && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners ./...
       - cd provider/ssefilter && go vet ./...
-      - cd provider/anthropic && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners ./...
+      - cd provider/anthropic && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners ./...
       - cd provider/anthropic && go vet ./...
-      - cd provider/openai && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners ./...
+      - cd provider/openai && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners ./...
       - cd provider/openai && go vet ./...
-      - cd provider/openaichat && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners ./...
+      - cd provider/openaichat && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners ./...
       - cd provider/openaichat && go vet ./...
 
   vuln:
@@ -624,15 +672,28 @@ tasks:
       - cmd: set -o pipefail; cd provider/openaichat && go run golang.org/x/vuln/cmd/govulncheck@v1.1.4 -format json ./... | go run ../../.github/scripts/govulncheck-gate.go # v1.1.4
 
   lint:fix:
-    desc: Run golangci-lint with autofix (parallel-safe) over the root, engine, authn/oidc, and provider modules
+    desc: Run pinned golangci-lint with autofix (parallel-safe) over the root, engine, authn/oidc, and provider modules
+    deps: [tools:golangci-lint]
+    env:
+      GOLANGCI_LINT: "{{.ROOT_DIR}}/.tools/bin/golangci-lint"
+    preconditions:
+      - sh: test -x $GOLANGCI_LINT
+        msg: "missing pinned golangci-lint; run: task tools:golangci-lint"
     cmds:
-      - golangci-lint run --allow-parallel-runners --fix ./...
-      - cd engine && golangci-lint run --config ../.golangci.yml --allow-parallel-runners --fix ./...
-      - cd authn/oidc && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
-      - cd provider/ssefilter && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
-      - cd provider/anthropic && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
-      - cd provider/openai && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
-      - cd provider/openaichat && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
+      - $GOLANGCI_LINT run --allow-parallel-runners --fix ./...
+      - cd engine && $GOLANGCI_LINT run --config ../.golangci.yml --allow-parallel-runners --fix ./...
+      - cd authn/oidc && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
+      - cd provider/ssefilter && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
+      - cd provider/anthropic && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
+      - cd provider/openai && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
+      - cd provider/openaichat && $GOLANGCI_LINT run --config ../../.golangci.yml --allow-parallel-runners --fix ./...
+
+  test:docs-only-classifier:
+    desc: Run the offline docs-only CI classifier and workflow-wiring tests
+    cmds:
+      - bash .github/scripts/docs-only-changes_test.sh
+      - bash .github/scripts/docs-only-workflow_test.sh
+      - bash .github/scripts/race-aggregate-workflow_test.sh
 
   lint:actions:
     desc: |
@@ -645,6 +706,7 @@ tasks:
       - go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7
       - task: lint:reusable-pins
       - task: lint:action-templates
+      - bash .github/scripts/lint-vet-workflow_test.sh
 
   lint:reusable-pins:
     desc: |
@@ -697,15 +759,13 @@ tasks:
       # PrincipalFromClaims/GrantTypeFromClaims is published, this command is an
       # intentional release-sequencing gate and may fail against the older tag.
       - cd authn/oidc && GOWORK=off go mod tidy
-      # provider/ submodules (ADR 0093) — same GOWORK=off discipline as engine:
-      # each module's go.sum must reflect its OWN closure, not the host repo's.
-      # ssefilter (stdlib + openai-go) and anthropic (engine is a published dep)
-      # are self-contained today. openai + openaichat require provider/ssefilter,
-      # which has no published tag yet — their GOWORK=off tidy is deferred until
-      # provider/ssefilter/vX.Y.Z is cut (their go.sum is committed correct); they
-      # build + test through the workspace (GOWORK=on) in `task build`/`task test`.
+      # All provider modules now use resolvable standalone dependencies. The
+      # OpenAI-family modules pin the ssefilter module to an immutable revision
+      # until the provider module release tags are cut.
       - cd provider/ssefilter && GOWORK=off go mod tidy
       - cd provider/anthropic && GOWORK=off go mod tidy
+      - cd provider/openai && GOWORK=off go mod tidy
+      - cd provider/openaichat && GOWORK=off go mod tidy
 
   generate:
     desc: Regenerate contracts/gen from contracts/proto via buf

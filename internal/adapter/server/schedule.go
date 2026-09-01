@@ -178,6 +178,16 @@ func (s *Service) FireNow(ctx context.Context, name string) (port.ScheduleFire, 
 			return port.ScheduleFire{}, err
 		}
 	}
+	if !mgr.HasScheduler() {
+		return mgr.FireNow(ctx, name)
+	}
+	sched, err := mgr.GetSchedule(ctx, name)
+	if err != nil {
+		return port.ScheduleFire{}, err
+	}
+	if err := s.validatePersistedScheduleWorkspace(sched.Spec); err != nil {
+		return port.ScheduleFire{}, err
+	}
 	return mgr.FireNow(ctx, name)
 }
 
@@ -199,10 +209,12 @@ func (s *Service) EmitScheduleEvent(ctx context.Context, payload session.Schedul
 	if payload.SessionID == "" {
 		return
 	}
-	s.appendEvent(context.WithoutCancel(ctx), payload.SessionID, session.Event{
+	recorder := NewRunEventRecorder(context.WithoutCancel(ctx), s, payload.SessionID)
+	recorder.Observe(session.Event{
 		Type:     scheduleEventType(payload.Kind),
 		Schedule: &payload,
 	})
+	recorder.Close()
 }
 
 // scheduleStore returns the ScheduleStore the capabilities gate (Scheduling)

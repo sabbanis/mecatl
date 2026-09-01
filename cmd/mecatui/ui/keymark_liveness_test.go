@@ -21,7 +21,10 @@ func overrideAll() map[string][]string {
 		"Submit":           {"ctrl+f1"},
 		"Newline":          {"ctrl+f2"},
 		"Paste":            {"ctrl+f3"},
+		"SelectAll":        {"ctrl+f31"},
+		"CopySelection":    {"ctrl+f32"},
 		"Cancel":           {"ctrl+f4"},
+		"ClearPrompt":      {"ctrl+f33"},
 		"Effort":           {"ctrl+f5"},
 		"MCPPanel":         {"ctrl+f6"},
 		"Resources":        {"ctrl+f7"},
@@ -209,6 +212,15 @@ func TestFooterReflectsKeyOverride(t *testing.T) {
 		m.phase = phaseIdle
 		got := stripANSIstr(m.renderFooter())
 		// help line: "<help> help · / commands · <quit> quit"
+		if !strings.Contains(got, "ctrl+f31 select all") {
+			t.Errorf("footer help line should carry the overridden SelectAll chord ctrl+f31: %q", got)
+		}
+		if !strings.Contains(got, "ctrl+f32 copy") {
+			t.Errorf("footer help line should carry the overridden CopySelection chord ctrl+f32: %q", got)
+		}
+		if strings.Contains(got, "ctrl+g select all") || strings.Contains(got, "ctrl+shift+c copy") {
+			t.Errorf("footer help line still shows a default selection chord: %q", got)
+		}
 		if !strings.Contains(got, "ctrl+f12 help") {
 			t.Errorf("footer help line should carry the overridden help chord ctrl+f12: %q", got)
 		}
@@ -226,17 +238,17 @@ func TestFooterReflectsKeyOverride(t *testing.T) {
 		if !strings.Contains(got, "ctrl+f1 queue") {
 			t.Errorf("running footer should carry the overridden submit ctrl+f1: %q", got)
 		}
-		if !strings.Contains(got, "ctrl+f4 cancel/clear") {
-			t.Errorf("running footer should carry the overridden cancel ctrl+f4: %q", got)
+		if !strings.Contains(got, "ctrl+f33 clear") || !strings.Contains(got, "ctrl+f4 cancel") {
+			t.Errorf("running footer should carry the overridden clear/cancel chords: %q", got)
 		}
-		if strings.Contains(got, "enter queue") || strings.Contains(got, "esc cancel") {
+		if strings.Contains(got, "enter queue") || strings.Contains(got, "esc cancel") || strings.Contains(got, "ctrl+u clear") {
 			t.Errorf("running footer still shows a default chord: %q", got)
 		}
 	})
 
 	t.Run("plan-approval mnemonics", func(t *testing.T) {
 		m.phase = phaseAwaitingApproval
-		m.approval.ask = pendingAsk{Tool: "PresentPlan", offerAlways: true, Args: `{"plan":"x"}`}
+		openApprovalSurface(&m).ask = pendingAsk{Tool: "PresentPlan", offerAlways: true, Args: `{"plan":"x"}`}
 		got := stripANSIstr(m.renderFooter())
 		// approvalMnemonic upper-cases the bare rune: y→Y, q→Q, n→N.
 		if !strings.Contains(got, "Y approve & run") {
@@ -346,9 +358,9 @@ func TestPlanReviewActionBarReflectsKeyOverride(t *testing.T) {
 		client.SessionReadyMsg{SessionID: "sess-test-0001", Capabilities: allOnCaps()},
 	)
 	m.phase = phaseAwaitingApproval
-	m.approval.ask = pendingAsk{Tool: "PresentPlan", offerAlways: true, Args: `{"plan":"do the thing"}`}
-	m.openPlanReviewView(m.approval.ask, 0, "")
-	got := stripANSIstr(m.renderPlanReviewView(m.approval.ask))
+	openApprovalSurface(&m).ask = pendingAsk{Tool: "PresentPlan", offerAlways: true, Args: `{"plan":"do the thing"}`}
+	_ = m.View()
+	got := stripANSIstr(m.View().Content)
 	// A bare-rune override degrades to the honest standalone form ("[Y] approve
 	// & run"), not the wordplay stem ("[Y]pprove & run") — approvalMnemonic
 	// upper-cases the bare rune: y→Y, q→Q, n→N.
@@ -390,9 +402,9 @@ func TestPlanReviewActionBarModifiedChordDegrades(t *testing.T) {
 		client.SessionReadyMsg{SessionID: "sess-test-0001", Capabilities: allOnCaps()},
 	)
 	m.phase = phaseAwaitingApproval
-	m.approval.ask = pendingAsk{Tool: "PresentPlan", offerAlways: true, Args: `{"plan":"do the thing"}`}
-	m.openPlanReviewView(m.approval.ask, 0, "")
-	got := stripANSIstr(m.renderPlanReviewView(m.approval.ask))
+	openApprovalSurface(&m).ask = pendingAsk{Tool: "PresentPlan", offerAlways: true, Args: `{"plan":"do the thing"}`}
+	_ = m.View()
+	got := stripANSIstr(m.View().Content)
 	for _, want := range []string{"[ctrl+y] approve & run", "[ctrl+q] auto-accept edits", "[ctrl+n] iterate"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("plan-review button should carry the standalone modified-chord form %q: %q", want, got)
@@ -415,9 +427,9 @@ func TestPlanReviewActionBarDefaultBytesUnchanged(t *testing.T) {
 		client.SessionReadyMsg{SessionID: "sess-test-0001", Capabilities: allOnCaps()},
 	)
 	m.phase = phaseAwaitingApproval
-	m.approval.ask = pendingAsk{Tool: "PresentPlan", offerAlways: true, Args: `{"plan":"do the thing"}`}
-	m.openPlanReviewView(m.approval.ask, 0, "")
-	got := stripANSIstr(m.renderPlanReviewView(m.approval.ask))
+	openApprovalSurface(&m).ask = pendingAsk{Tool: "PresentPlan", offerAlways: true, Args: `{"plan":"do the thing"}`}
+	_ = m.View()
+	got := stripANSIstr(m.View().Content)
 	for _, want := range []string{"[A]pprove & run", "[W] auto-accept edits", "[D] iterate"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("plan-review default button should render %q byte-for-byte: %q", want, got)
@@ -439,7 +451,7 @@ func TestPermissionModalButtonsReflectKeyOverride(t *testing.T) {
 	r := newRenderer(theme.New("aztec", theme.AztecPalette()), keyMarkings(km))
 	r.setWidth(100)
 	ask := pendingAsk{Tool: "Edit", offerAlways: true, Args: `{"path":"a","old_string":"x","new_string":"y"}`}
-	got := stripANSIstr(r.renderPermissionModal(ask, false, 0, 100, 30, 0))
+	got := stripANSIstr(renderApprovalModalWithRenderer(r, ask, false, 100, 30))
 	for _, want := range []string{"[Y] allow", "[Q] always allow", "[N] deny"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("modal buttons should carry the overridden standalone form %q: %q", want, got)
@@ -465,7 +477,7 @@ func TestPermissionModalButtonsDefaultBytesUnchanged(t *testing.T) {
 	r := newRenderer(theme.New("aztec", theme.AztecPalette()), defaultHelpKeys())
 	r.setWidth(100)
 	ask := pendingAsk{Tool: "Edit", offerAlways: true, Args: `{"path":"a","old_string":"x","new_string":"y"}`}
-	got := stripANSIstr(r.renderPermissionModal(ask, false, 0, 100, 30, 0))
+	got := stripANSIstr(renderApprovalModalWithRenderer(r, ask, false, 100, 30))
 	for _, want := range []string{"[A]llow", "Al[w]ays", "[D]eny", "al[w]ays allows this exact command for the rest of this session"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("default modal buttons should stay the historical word-embedded form %q: %q", want, got)
@@ -486,7 +498,7 @@ func TestPermissionModalButtonsModifiedChordStandalone(t *testing.T) {
 	r := newRenderer(theme.New("aztec", theme.AztecPalette()), keyMarkings(km))
 	r.setWidth(100)
 	ask := pendingAsk{Tool: "Edit", offerAlways: true, Args: `{"path":"a","old_string":"x","new_string":"y"}`}
-	got := stripANSIstr(r.renderPermissionModal(ask, false, 0, 100, 30, 0))
+	got := stripANSIstr(renderApprovalModalWithRenderer(r, ask, false, 100, 30))
 	for _, want := range []string{"[ctrl+y] allow", "[ctrl+q] always allow", "[ctrl+n] deny"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("modal buttons should carry the modified-chord standalone form %q: %q", want, got)
@@ -518,12 +530,10 @@ func TestApprovalMnemonic(t *testing.T) {
 	}
 }
 
-// TestDefaultFooterBytesUnchanged is the byte-identical guard for the default
-// keymap: with NO overrides the footer help line, the plan-approval mnemonics,
-// and the agents advertisement must render EXACTLY the historical literals
-// ("? help · / commands · ctrl+c quit", "A approve & run · W auto-accept · D
-// iterate", "ctrl+a") so the goldens and the pre-#457 output stay byte-for-byte.
-func TestDefaultFooterBytesUnchanged(t *testing.T) {
+// TestDefaultFooterHelp pins the default footer help affordances. The selection
+// shortcuts follow help and slash commands, then quit; live-key tests separately
+// prove these markings update when operators rebind them.
+func TestDefaultFooterHelp(t *testing.T) {
 	m, _, _ := newTestModel(t, theme.New("aztec", theme.AztecPalette()))
 	m = applyAll(m,
 		tea.WindowSizeMsg{Width: 120, Height: 30},
@@ -531,12 +541,12 @@ func TestDefaultFooterBytesUnchanged(t *testing.T) {
 	)
 	m.phase = phaseIdle
 	got := stripANSIstr(m.renderFooter())
-	if !strings.Contains(got, "? help · / commands · ctrl+c quit") {
-		t.Errorf("default footer help line should be the historical literal, got %q", got)
+	if !strings.Contains(got, "? help · / commands · ctrl+g select all · ctrl+shift+c copy · ctrl+u clear · ctrl+c quit") {
+		t.Errorf("default footer help line = %q", got)
 	}
 
 	m.phase = phaseAwaitingApproval
-	m.approval.ask = pendingAsk{Tool: "PresentPlan", offerAlways: true, Args: `{"plan":"x"}`}
+	openApprovalSurface(&m).ask = pendingAsk{Tool: "PresentPlan", offerAlways: true, Args: `{"plan":"x"}`}
 	got = stripANSIstr(m.renderFooter())
 	if !strings.Contains(got, "A approve & run · W auto-accept · D iterate") {
 		t.Errorf("default plan-approval line should be the historical literal, got %q", got)
@@ -708,9 +718,14 @@ func TestMCPOverlayHintsReflectKeyOverride(t *testing.T) {
 	hk := liveHK()
 	th := theme.New("aztec", theme.AztecPalette())
 	caps := client.Capabilities{MCP: true}
+	render := func(st mcpState) string {
+		p := &st
+		p.deps = surfaceDeps{theme: th, caps: caps, marks: hk}
+		body, _ := p.Render(100, 30)
+		return stripANSIstr(body)
+	}
 	t.Run("panel footer", func(t *testing.T) {
-		st := mcpState{view: mcpPanel}
-		got := stripANSIstr(renderMCPOverlay(th, st, caps, hk, 100, 30))
+		got := render(mcpState{view: mcpPanel})
 		if !strings.Contains(got, "ctrl+f24 refresh · ctrl+f16 close") {
 			t.Errorf("panel footer should carry live refresh+close: %q", got)
 		}
@@ -719,8 +734,7 @@ func TestMCPOverlayHintsReflectKeyOverride(t *testing.T) {
 		}
 	})
 	t.Run("resources list", func(t *testing.T) {
-		st := mcpState{view: mcpResources, resources: []client.MCPResource{{Name: "r1", Server: "s"}}}
-		got := stripANSIstr(renderMCPOverlay(th, st, caps, hk, 100, 30))
+		got := render(mcpState{view: mcpResources, resources: []client.MCPResource{{Name: "r1", Server: "s"}}})
 		if !strings.Contains(got, "ctrl+f26/ctrl+f27 move · ctrl+f17 read · ctrl+f16 close") {
 			t.Errorf("resources hint should carry live move/read/close: %q", got)
 		}
@@ -729,15 +743,13 @@ func TestMCPOverlayHintsReflectKeyOverride(t *testing.T) {
 		}
 	})
 	t.Run("prompts list", func(t *testing.T) {
-		st := mcpState{view: mcpPrompts, prompts: []client.MCPPrompt{{Name: "p1", Server: "s"}}}
-		got := stripANSIstr(renderMCPOverlay(th, st, caps, hk, 100, 30))
+		got := render(mcpState{view: mcpPrompts, prompts: []client.MCPPrompt{{Name: "p1", Server: "s"}}})
 		if !strings.Contains(got, "ctrl+f26/ctrl+f27 move · ctrl+f17 select · ctrl+f16 close") {
 			t.Errorf("prompts hint should carry live move/select/close: %q", got)
 		}
 	})
 	t.Run("prompt arguments", func(t *testing.T) {
-		st := mcpState{view: mcpPromptArgs, argPrompt: client.MCPPrompt{Name: "p1"}}
-		got := stripANSIstr(renderMCPOverlay(th, st, caps, hk, 100, 30))
+		got := render(mcpState{view: mcpPromptArgs, argPrompt: client.MCPPrompt{Name: "p1"}})
 		if !strings.Contains(got, "↑/↓ field · ctrl+f17 next/submit · ctrl+f16 back") {
 			t.Errorf("prompt-args hint should keep fixed arrows and carry live choose/close: %q", got)
 		}
@@ -767,8 +779,9 @@ func TestEffortOverlayHintsReflectKeyOverride(t *testing.T) {
 func TestModelsOverlayHintsReflectKeyOverride(t *testing.T) {
 	hk := liveHK()
 	th := theme.New("aztec", theme.AztecPalette())
-	st := modelsState{view: modelsPanel, models: []client.ModelInfo{{ID: "m1"}}, filtered: []client.ModelInfo{{ID: "m1"}}}
-	got := stripANSIstr(renderModelsOverlay(th, st, client.Capabilities{ModelSelection: true}, "", hk, 100, 30))
+	catalog := modelCatalog{models: []client.ModelInfo{{ID: "m1"}}}
+	picker := modelsState{view: modelsPanel, filtered: []client.ModelInfo{{ID: "m1"}}}
+	got := stripANSIstr(renderModelsPanel(th, catalog, picker, client.Capabilities{ModelSelection: true}, "", hk, modelsRowBudgetFor(30, modelsPanelFixedRows(picker, "", hk))))
 	if !strings.Contains(got, "↑/↓/ctrl+f14 move · ctrl+f17 use · ctrl+f25 set global default · ctrl+f16 clear filter / close") {
 		t.Errorf("models hint should carry live page/use/set/close: %q", got)
 	}
@@ -799,7 +812,7 @@ func TestSessionsOverlayHintsReflectKeyOverride(t *testing.T) {
 		}
 	})
 	t.Run("transcript", func(t *testing.T) {
-		st := sessionsState{view: sessionsTranscript, replayClosed: true}
+		st := sessionsState{view: sessionsTranscript}
 		got := stripANSIstr(renderSessionsOverlay(th, st, client.Capabilities{}, "sess", "content", hk, 100, 30))
 		if !strings.Contains(got, "ctrl+f16: Back") {
 			t.Errorf("transcript hint should carry live close/back: %q", got)
@@ -858,8 +871,9 @@ func TestWorktreesOverlayHintsReflectKeyOverride(t *testing.T) {
 func TestSkillsOverlayHintsReflectKeyOverride(t *testing.T) {
 	hk := liveHK()
 	th := theme.New("aztec", theme.AztecPalette())
-	st := skillsState{view: skillsPanel, skills: []client.Skill{{Name: "s1"}}, filtered: []client.Skill{{Name: "s1"}}}
-	got := stripANSIstr(renderSkillsOverlay(th, st, client.Capabilities{Skills: true}, hk, 100, 30))
+	st := &skillsState{view: skillsPanel, skills: []client.Skill{{Name: "s1"}}, filtered: []client.Skill{{Name: "s1"}}, deps: surfaceDeps{theme: th, caps: client.Capabilities{Skills: true}, marks: hk}}
+	body, _ := st.Render(100, 30)
+	got := stripANSIstr(body)
 	// ↑/↓ stays literal; pgup/pgdn scroll + close are live (scrollMarking returns
 	// the live "<scrollU>/<scrollD>" pair once either half is remapped).
 	if !strings.Contains(got, "↑/↓/ctrl+f14/ctrl+f15 scroll · ctrl+f16 clear filter / close") {
@@ -876,8 +890,10 @@ func TestSoulAndUserModelOverlayHintsReflectKeyOverride(t *testing.T) {
 	hk := liveHK()
 	th := theme.New("aztec", theme.AztecPalette())
 	t.Run("soul", func(t *testing.T) {
-		st := soulState{view: soulPanel, soul: client.Soul{Present: true, Provenance: client.SoulProvenanceUser, SizeBytes: 10, SHA256: "abc"}}
-		got := stripANSIstr(renderSoulOverlay(th, st, client.Capabilities{Soul: true}, hk, 100, 30))
+		st := soulState{view: soulPanel, soul: client.Soul{Present: true, Provenance: client.SoulProvenanceUser, SizeBytes: 10, SHA256: "abc"},
+			deps: surfaceDeps{theme: th, marks: hk, caps: client.Capabilities{Soul: true}}}
+		body, _ := st.Render(100, 30)
+		got := stripANSIstr(body)
 		if !strings.Contains(got, "ctrl+f14/ctrl+f15 scroll · ctrl+f16 close") {
 			t.Errorf("soul hint should carry live scroll+close: %q", got)
 		}
@@ -917,10 +933,10 @@ func TestAgentsInvOverlayHintsReflectKeyOverride(t *testing.T) {
 // post-picker status text, and nested help prose. All must read the same live keyMap.
 func TestAncillaryHintsReflectKeyOverride(t *testing.T) {
 	th := theme.New("aztec", theme.AztecPalette())
-	m := New(Deps{Theme: th, KeyOverrides: overrideAll(), NoAltScreen: true})
+	m := newTestModelFromDeps(Deps{Theme: th, KeyOverrides: overrideAll(), NoAltScreen: true})
 
 	t.Run("textarea placeholder", func(t *testing.T) {
-		got := m.ta.Placeholder
+		got := m.prompt.Placeholder()
 		for _, want := range []string{"ctrl+f1 to send", "ctrl+f2 for newline", "ctrl+f12 for help"} {
 			if !strings.Contains(got, want) {
 				t.Errorf("placeholder missing live hint %q: %q", want, got)
@@ -967,15 +983,13 @@ func TestAncillaryHintsReflectKeyOverride(t *testing.T) {
 	})
 
 	t.Run("status prompts", func(t *testing.T) {
-		mm := m
-		mm.mcp.view = mcpPanel
-		inserted, _ := mm.insertIntoInput("payload", "loaded prompt")
+		inserted, _ := m.insertIntoInput("payload", "loaded prompt")
 		got := inserted.(Model).statusMsg
 		if !strings.Contains(got, "press ctrl+f1 to send") || strings.Contains(got, "press enter") {
 			t.Errorf("MCP insert status should carry live Submit: %q", got)
 		}
 
-		mm = m
+		mm := m
 		mm.queued = []string{"follow up"}
 		mm.pendingMode = "plan"
 		queued, _ := mm.popAndSubmit()

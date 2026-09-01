@@ -3,7 +3,10 @@ package session
 import (
 	"crypto/sha256"
 	"errors"
+	"fmt"
 	"strings"
+
+	"github.com/stacklok/mecatl/engine/governance"
 )
 
 // GrantType names how a Principal was authenticated. It is a closed enum of
@@ -74,21 +77,48 @@ func (p *Principal) Clone() *Principal {
 
 // PrincipalFromClaims projects an already-verified token claim set into the
 // narrow caller identity used by the engine. It does not verify claims or
-// credentials; callers must do that before calling it. Missing, empty, or
-// non-string iss/sub claims yield nil. Claim strings are preserved byte-exactly.
+// credentials; callers must do that before calling it. Missing, empty,
+// non-string, or NUL-bearing iss/sub claims yield nil. Claim strings are
+// otherwise preserved byte-exactly.
 func PrincipalFromClaims(claims map[string]any) *Principal {
 	issuer, issuerOK := claims["iss"].(string)
 	subject, subjectOK := claims["sub"].(string)
-	if !issuerOK || issuer == "" || !subjectOK || subject == "" {
+	if !issuerOK || !subjectOK {
 		return nil
 	}
 	name, _ := claims["name"].(string)
-	return &Principal{
+	principal := &Principal{
 		Issuer:    issuer,
 		Subject:   subject,
 		GrantType: GrantTypeFromClaims(claims),
 		Name:      name,
 	}
+	if issuer == "" || subject == "" || !principalIdentityHasSafeFraming(principal) {
+		return nil
+	}
+	return principal
+}
+
+// principalIdentityHasSafeFraming is the single delimiter-safety rule for
+// authority-bearing identity components. NUL is reserved as the legacy
+// persisted-key separator, so admitting it would make distinct
+// (Issuer, Subject) pairs alias. Empty components retain their existing
+// non-claims behavior; authenticated claims reject them separately above.
+func principalIdentityHasSafeFraming(p *Principal) bool {
+	return p != nil && !strings.ContainsRune(p.Issuer, '\x00') && !strings.ContainsRune(p.Subject, '\x00')
+}
+
+// IdentityWellFramed reports whether p's authority-bearing components are free
+// of the reserved owner-key separator. It is the EXPORTED form of the single
+// delimiter-safety rule, so a consumer outside this package — notably the
+// request edge's re-validation of an already-verified principal — enforces the
+// same rule the owner-key derivations depend on instead of hand-rolling it.
+//
+// A nil p is not well framed: absent identity is a nil *Principal, and callers
+// that admit ownerless operation test for nil themselves rather than routing it
+// through here.
+func (p *Principal) IdentityWellFramed() bool {
+	return principalIdentityHasSafeFraming(p)
 }
 
 // GrantTypeFromClaims derives the conservative attribution grant from an
@@ -142,51 +172,123 @@ func (p *Principal) SameIdentity(other *Principal) bool {
 	return p != nil && other != nil && p.Issuer == other.Issuer && p.Subject == other.Subject
 }
 
+// invalidPrincipalScope is the domain-separated digest every identity with
+// unsafe owner-key framing collapses to. It is hashed from a NUL-free constant,
+// and an admissible pair always hashes a string containing exactly one NUL, so
+// no valid principal can ever produce this digest.
+var invalidPrincipalScope = sha256.Sum256([]byte("mecatl:invalid-principal-scope"))
+
 // PrincipalScopeHash returns the SHA-256 digest of p's (Issuer, Subject)
-// identity pair, joined by a NUL separator — the raw hash core several
-// owner-scope-keying call sites build on top of with their own nil-handling,
-// prefix, and truncation conventions (which are load-bearing for their
-// on-disk/wire formats and must NOT be changed here). A nil p hashes the
-// empty string; callers that need a distinct nil representation apply that
-// before calling this.
+// identity pair, joined by a NUL separator. NUL is reserved from both
+// components, making the legacy framing unambiguous for every admissible
+// principal while preserving its byte-for-byte storage contract. The reservation
+// is enforced HERE rather than only at the construction seams
+// (PrincipalFromClaims, WithPrincipal, RestoreLabels), because a Principal built
+// directly from a struct literal — notably internal/adapter/grpcdriver's
+// wire-supplied owner, which ADR-0213/#452 still leaves unverified — reaches this
+// function without passing any of them. An identity whose framing is unsafe
+// returns invalidPrincipalScope, so it cannot alias a valid owner's scope.
+//
+// The raw hash core has several owner-scope-keying call sites that build on top
+// of it with their own nil-handling, prefix, and truncation conventions (which
+// are load-bearing for their on-disk/wire formats and must NOT be changed here).
+// A nil p hashes the empty string; callers that need a distinct nil
+// representation apply that before calling this.
 func PrincipalScopeHash(p *Principal) [32]byte {
 	if p == nil {
 		return sha256.Sum256(nil)
 	}
+	if !principalIdentityHasSafeFraming(p) {
+		return invalidPrincipalScope
+	}
 	return sha256.Sum256([]byte(p.Issuer + "\x00" + p.Subject))
 }
 
-// Authority is Track C's placeholder label on the Session aggregate. It is
-// INERT in the caller-identity plan: nothing reads or writes it beyond the
-// snapshot round-trip. It ships now so the contended engine/api/*.txt
-// regeneration and CHANGELOG note are paid once (ADR 0204 consequences).
-// The zero value ("") means "unset".
-type Authority string
+// Authority is the durable, plain authority payload carried by a bound session.
+// CapabilitySet is the one governance-domain representation; provenance and
+// definition identity are safe labels, not caller claims or runtime handles.
+type Authority struct {
+	CapabilitySet      governance.CapabilitySet `json:"capability_set"`
+	Provenance         string                   `json:"provenance"`
+	DefinitionIdentity string                   `json:"definition_identity,omitempty"`
+}
 
-// ErrOwnerAlreadySet is returned by RestoreLabels when the session already
-// carries a DIFFERENT owner. The owner is write-once (ADR 0204 decision 4).
-var ErrOwnerAlreadySet = errors.New("session: owner already set")
+// Clone returns an independent copy of a.
+func (a Authority) Clone() Authority {
+	a.CapabilitySet.Tools = append([]string(nil), a.CapabilitySet.Tools...)
+	return a
+}
 
-// RestoreLabels stamps the write-once identity labels (Owner, Authority) on the
-// aggregate. It is the restore seam sessnap uses — Session is an aggregate, so
-// an adapter must not poke the exported fields.
-//
-// Write-once: a nil owner leaves the label unset (the ownerless / no-auth path,
-// and it does NOT burn the slot); re-stamping the SAME owner value is
-// idempotent; stamping a DIFFERENT owner over a set one returns
-// ErrOwnerAlreadySet rather than silently re-owning the session. The owner is
-// stored as a COPY, so the caller cannot mutate a stamped session's owner
-// through its own pointer. A zero Authority leaves that label untouched (the
-// same additive posture); it is otherwise inert in this plan.
+// validAuthorityLabel rejects path-shaped and control-bearing provenance labels.
+func validAuthorityLabel(label string) bool {
+	if label == "" || len(label) > 256 {
+		return false
+	}
+	for _, r := range label {
+		if r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '_' || r == '.' || r == ':' || r == '-' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// Valid reports whether a has safe provenance labels. CapabilitySet is already
+// typed, so malformed serialized capability data fails during snapshot decoding
+// before this method can bind the aggregate.
+func (a Authority) Valid() bool {
+	return validAuthorityLabel(a.Provenance) && (a.DefinitionIdentity == "" || validAuthorityLabel(a.DefinitionIdentity))
+}
+
+var (
+	// ErrOwnerAlreadySet is returned by RestoreLabels when the session already
+	// carries a DIFFERENT owner. The owner is write-once (ADR 0204 decision 4).
+	ErrOwnerAlreadySet = errors.New("session: owner already set")
+
+	errInvalidPrincipalIdentity = errors.New("session: invalid principal identity")
+)
+
+// RestoreLabels stamps the write-once owner label and, when present, restores a
+// bound authority payload before the first runnable state.
 func (s *Session) RestoreLabels(owner *Principal, authority Authority) error {
 	if owner != nil {
+		if !principalIdentityHasSafeFraming(owner) {
+			return errInvalidPrincipalIdentity
+		}
 		if s.Owner != nil && *s.Owner != *owner {
 			return ErrOwnerAlreadySet
 		}
 		s.Owner = owner.Clone()
 	}
-	if authority != "" {
-		s.Authority = authority
+	if authority.Provenance != "" {
+		return s.BindAuthority(authority)
 	}
 	return nil
+}
+
+// BindAuthority attaches a derived authority payload before the session becomes
+// runnable. It is write-once and copies its capability set so callers cannot mutate it.
+func (s *Session) BindAuthority(authority Authority) error {
+	if s.State != StateIdle {
+		return fmt.Errorf("%w: BindAuthority from %q", ErrIllegalTransition, s.State)
+	}
+	if s.authorityBound {
+		return errors.New("session: authority already bound")
+	}
+	if !authority.Valid() {
+		return errors.New("session: invalid authority payload")
+	}
+	s.Authority = authority.Clone()
+	s.authorityBound = true
+	return nil
+}
+
+// BoundAuthority returns the copied durable authority payload and whether this
+// session was explicitly bound. An absent payload is a documented pre-feature
+// legacy session, never an empty bound set.
+func (s *Session) BoundAuthority() (Authority, bool) {
+	if !s.authorityBound {
+		return Authority{}, false
+	}
+	return s.Authority.Clone(), true
 }

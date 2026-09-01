@@ -124,7 +124,7 @@ func sampleSchedule(name string) client.Schedule {
 
 func newScheduleModel(t *testing.T, conv *fakeConv, fs *fakeScheduleLister, caps client.Capabilities) Model {
 	t.Helper()
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session:     conv,
 		Conv:        conv,
 		Sched:       fs,
@@ -168,7 +168,7 @@ func TestRunScheduleOpensOverlay(t *testing.T) {
 	if !m.schedule.loading {
 		t.Error("overlay should be loading until ListSchedules lands")
 	}
-	if m.ta.Focused() {
+	if m.prompt.Focused() {
 		t.Error("opening the overlay should blur the textarea")
 	}
 	if cmd == nil {
@@ -186,7 +186,7 @@ func TestRunScheduleOpensOverlay(t *testing.T) {
 // TestRunScheduleNilGuard: with no lister wired, openSchedule is a no-op.
 func TestRunScheduleNilGuard(t *testing.T) {
 	conv := newScheduleConv(client.Capabilities{})
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()),
 		Workspace: "/ws", Ctx: context.Background(), NoAltScreen: true,
 	})
@@ -335,9 +335,8 @@ func TestScheduleFilterModeDoesNotFireActions(t *testing.T) {
 	for _, r := range "prod" {
 		mm, cmd, _ := m.onScheduleKey(tea.KeyPressMsg{Code: r, Text: string(r)})
 		m = mm.(Model)
-		if cmd != nil {
-			m = feedCmd(t, m, cmd)
-		}
+		// textinput mutates synchronously; cmd is only its delayed cursor blink.
+		_ = cmd
 	}
 	if m.schedule.filter.Value() != "prod" {
 		t.Fatalf("filter value = %q, want %q", m.schedule.filter.Value(), "prod")
@@ -602,7 +601,7 @@ func newScheduleModelWithTranscript(t *testing.T, conv *fakeConv, fs *fakeSchedu
 	if loader != nil {
 		deps.Transcript = loader
 	}
-	m := New(deps)
+	m := newTestModelFromDeps(deps)
 	m = applyAll(
 		m,
 		tea.WindowSizeMsg{Width: 100, Height: 40},
@@ -674,8 +673,8 @@ func TestScheduleInspectJumpToFireTranscript(t *testing.T) {
 	if len(loader.calls) != 1 || loader.calls[0] != "sess-fire-2" {
 		t.Fatalf("transcript calls=%q, want [sess-fire-2]", loader.calls)
 	}
-	if m.phase != phaseReplay || m.sessions.loading || m.sessions.loadErr != nil {
-		t.Fatalf("loaded inspection state: phase=%v loading=%v err=%v", m.phase, m.sessions.loading, m.sessions.loadErr)
+	if m.phase != phaseReplay || ensureActiveSessions(&m).loading || ensureActiveSessions(&m).loadErr != nil {
+		t.Fatalf("loaded inspection state: phase=%v loading=%v err=%v", m.phase, ensureActiveSessions(&m).loading, ensureActiveSessions(&m).loadErr)
 	}
 	if m.sessionID != activeSessionID {
 		t.Fatalf("loaded inspection rebound sessionID = %q, want %q", m.sessionID, activeSessionID)

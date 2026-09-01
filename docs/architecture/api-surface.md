@@ -2,7 +2,7 @@
 
 > Part of the [mecatl architecture guide](../architecture.md).
 
-**What this covers:** the gRPC `HarnessService`, HTTP/SSE mirror, and ACP (stdio) surfaces that expose the same domain `session.Event` stream; the engine-as-library stability contract; and the `ForkSession` RPC.
+**What this covers:** the gRPC `HarnessService`, HTTP/SSE mirror, and ACP (stdio) surfaces that expose the same domain `session.Event` stream; the engine-as-library stability contract; and session operations including `ForkSession` and manual compaction.
 
 **Prerequisites:** [the agent loop](agent-loop.md) — the behavior the API drives and streams.
 
@@ -18,6 +18,8 @@ reach the right run.
 - `CreateSession(CreateSessionRequest) → CreateSessionResponse` — carries an
   OPTIONAL per-session `provider_id` / `model_id` selector (multi-provider Phase 0; see [multi-provider](providers.md))
   AND an OPTIONAL `profile` (enum-as-string: `""` = default, `"no-fs"`).
+
+  **Workspace authority is listener-scoped** ([ADR 0237](../adr/0237-listener-scoped-workspace-authority.md)). In a client-selected loopback or embedded deployment, a default filesystem session must carry an absolute workspace and a `"no-fs"` session must carry an empty one. In a server-assigned deployment, every filesystem request instead carries an empty workspace to request the operator-configured root; a non-empty client value is `InvalidArgument` before it is cleaned, compared, or used. The same policy validates stored roots at later run entry. `mecak8s` is always server-assigned but has no mounted root: an omitted or empty profile means `"no-fs"`, and any other profile is rejected. An empty wire field therefore has deployment-defined semantics; it never asks the server to infer a client path.
 
   **The filesystem is OPTIONAL per session** (the `"no-fs"` profile, issue #55):
   the workspace requirement is profile-aware — default requires one, no-fs
@@ -37,6 +39,15 @@ reach the right run.
   for such sessions is a future driver concern (`docs/adr/0005-driver-seams.md`), an
   explicit non-goal of the profile itself.
 - `GetSession(GetSessionRequest) → GetSessionResponse`
+- `CompactSession(CompactSessionRequest) → CompactSessionResponse` applies one
+  configured compaction pass without creating a model turn. It accepts an owned
+  main chat only at an idle or terminal boundary, serializes with run entry, rejects
+  a live run or pending approval, and acquires the configured mutation lease. A
+  changed result is saved before the existing compaction notice/archive events are
+  appended; `compacted=false` is a successful no-op. The additive
+  `ServerCapabilities.manual_compaction` bit lets old servers degrade safely. See
+  `internal/adapter/server/service.go` (`CompactSession`) and
+  [context management](context-and-compaction.md).
 - `SetMode(SetModeRequest) → SetModeResponse` — changes an existing session's
   permission posture through `Service.SetMode`; mid-turn changes are rejected by
   the session aggregate as `InvalidArgument`, so clients that want "next prompt"
@@ -84,6 +95,7 @@ v1 enforces required checks in the Go server (protovalidate runtime is deferred)
 | `POST /v1/sessions` | `CreateSession` | JSON body → `session_id`; optional `provider_id`/`model_id` selector + `profile` (`"no-fs"`) |
 | `GET /v1/sessions/{id}` | `GetSession` | JSON snapshot |
 | `POST /v1/sessions/{id}/mode` | `SetMode` | change permission mode; mid-turn rejection is surfaced to the client |
+| `POST /v1/sessions/{id}/compact` | `CompactSession` | bodyless forced compaction at an idle/terminal boundary; `{"compacted":true}` when history changed, false for a no-op |
 | `GET /v1/models` | `ListModels` | JSON selectable-model inventory (available providers only, secret-free) |
 | `POST /v1/sessions/{id}/prompt` | start a run | `text/event-stream`; each event is `data: <proto Event as JSON>` |
 | `POST /v1/sessions/{id}/approve` | `Run.Approve` | resolves the paused ask (verdict or legacy `allow`) |

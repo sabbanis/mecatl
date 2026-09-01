@@ -20,7 +20,7 @@ func TestHelpOpensOnlyOnEmptyInput(t *testing.T) {
 	if !m.showHelp {
 		t.Fatal("'?' on empty input should open help")
 	}
-	if m.ta.Focused() {
+	if m.prompt.Focused() {
 		t.Error("textarea should be blurred while help is up")
 	}
 
@@ -29,7 +29,7 @@ func TestHelpOpensOnlyOnEmptyInput(t *testing.T) {
 	if m.showHelp {
 		t.Fatal("'?' should close the open help overlay")
 	}
-	if !m.ta.Focused() {
+	if !m.prompt.Focused() {
 		t.Error("textarea should be refocused after closing help")
 	}
 
@@ -40,8 +40,8 @@ func TestHelpOpensOnlyOnEmptyInput(t *testing.T) {
 	if m.showHelp {
 		t.Fatal("'?' on a non-empty input must NOT open help")
 	}
-	if !strings.Contains(m.ta.Value(), "?") {
-		t.Errorf("'?' should have typed into the textarea, value=%q", m.ta.Value())
+	if !strings.Contains(m.prompt.Value(), "?") {
+		t.Errorf("'?' should have typed into the textarea, value=%q", m.prompt.Value())
 	}
 }
 
@@ -63,7 +63,7 @@ func TestHelpEscCloses(t *testing.T) {
 func TestHelpDoesNotOpenOverAnotherOverlay(t *testing.T) {
 	m := newMCPModel(t, aztec(), samplePanelMCP())
 	m = openOverlay(t, m, ctrlKey('o'))
-	if m.mcp.view == mcpNone {
+	if mcpActive(m) == nil {
 		t.Fatal("MCP overlay should be open")
 	}
 	m = applyAll(m, qmark())
@@ -78,7 +78,7 @@ func TestHelpSwallowsOtherKeysWhileOpen(t *testing.T) {
 	m := zeroStateModel(t, embeddedCaps())
 	m = applyAll(m, qmark())
 	m = applyAll(m, ctrlKey('o')) // would normally open the MCP overlay
-	if m.mcp.view != mcpNone {
+	if mcpActive(m) != nil {
 		t.Fatal("ctrl+o should be swallowed while help is up")
 	}
 	if !m.showHelp {

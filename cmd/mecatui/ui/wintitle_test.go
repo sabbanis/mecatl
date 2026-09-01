@@ -287,7 +287,7 @@ func TestWindowTitleContinueSessionAdoptsTitle(t *testing.T) {
 	}
 	loader := &fakeSessionTranscriptLoader{transcript: client.SessionTranscript{SessionID: row.ID, Complete: true}}
 	m := newSessionsModel(t, newSessionsConv(), &fakeSessionLister{sessions: []client.SessionListItem{row}}, loader)
-	m.sessions.filtered = []client.SessionListItem{row}
+	ensureActiveSessions(&m).filtered = []client.SessionListItem{row}
 	mm, cmd, _ := m.chooseSession()
 	m = applyAll(mm.(Model), cmd())
 	if m.sessionTitle != longTitle {
@@ -309,7 +309,7 @@ func TestWindowTitleHealRefetchRoundTrip(t *testing.T) {
 		recv: &fakeRecver{}, send: &fakeSender{},
 		getSessionTitle: "forked carryover task",
 	}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session:     conv,
 		Conv:        conv,
 		Theme:       theme.New("aztec", theme.AztecPalette()),
@@ -397,7 +397,7 @@ func TestWindowTitleView(t *testing.T) {
 // submitPrompt reducer path (the same path a real enter-press takes).
 func sendText(t *testing.T, m Model, text string) Model {
 	t.Helper()
-	m.ta.SetValue(text)
+	m.prompt.Rewrite(text)
 	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
 	return mm.(Model)
 }

@@ -10,6 +10,7 @@ import (
 	"strings"
 	"sync"
 
+	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
@@ -18,6 +19,7 @@ import (
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/internal/adapter/mcp"
 )
 
 // HarnessServer implements the generated mecatlv1.HarnessServiceServer over the
@@ -56,6 +58,24 @@ func (h *HarnessServer) CreateSession(ctx context.Context, req *mecatlv1.CreateS
 	if src := req.GetSourceSessionId(); src != "" {
 		opts = append(opts, WithSourceSession(session.SessionID(src)))
 	}
+	if target := req.GetDebugTargetSessionId(); target != "" {
+		opts = append(opts, WithDebugTarget(session.SessionID(target)))
+	}
+	if names := req.GetDebugMcpServers(); len(names) > 0 {
+		opts = append(opts, WithDebugMCP(names))
+	}
+	// Client-provided MCP servers (issue #821, ADR 0237). Both wire transports go
+	// through the ONE Service seam, which classifies through the same validator the
+	// ACP surface uses and then applies the deployment policy — so this handler
+	// neither classifies an entry nor decides whether the field is accepted here.
+	// An empty repeated field is not a use of the feature and stays byte-identical.
+	grant, err := h.svc.ClientMCPFromWire(clientMCPFromProto(req.GetMcpServers()))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if !grant.IsEmpty() {
+		opts = append(opts, WithClientMCP(grant))
+	}
 	sess, err := h.svc.CreateSessionWithProfile(ctx, req.GetWorkspace(), modeFromProto(req.GetMode()), limitsFromProto(req.GetLimits()), sel, profile, opts...)
 	if err != nil {
 		return nil, toStatus(err)
@@ -78,6 +98,36 @@ func (h *HarnessServer) CreateSession(ctx context.Context, req *mecatlv1.CreateS
 		},
 		ResolvedModel: resolvedModelToProto(h.svc.ResolvedModel(sess.ID)),
 	}, nil
+}
+
+// clientMCPFromProto maps the wire McpServerSpec list onto the transport-neutral
+// mcp.ClientServer shape the shared classifier consumes. It is a pure field
+// mapping and makes NO decisions: no defaulting, no normalisation, no
+// classification — those all belong to mcp.PartitionClientServers, which the ACP
+// surface reaches through its own equivalent mapping.
+//
+// GetHeaders() is passed through as-is; header VALUES are secret-shaped and are
+// never logged, echoed, or included in an error from here on.
+func clientMCPFromProto(in []*mecatlv1.McpServerSpec) []mcp.ClientServer {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]mcp.ClientServer, 0, len(in))
+	for _, m := range in {
+		out = append(out, mcp.ClientServer{
+			Name:    m.GetName(),
+			Command: m.GetCommand(),
+			URL:     m.GetUrl(),
+			Type:    m.GetType(),
+			Headers: m.GetHeaders(),
+		})
+	}
+	return out
+}
+
+// GetServerInfo returns safe build, composition, and the caller-selected provider endpoint projection.
+func (h *HarnessServer) GetServerInfo(_ context.Context, req *mecatlv1.GetServerInfoRequest) (*mecatlv1.GetServerInfoResponse, error) {
+	return h.svc.serverInfoResponse(req.GetProviderId()), nil
 }
 
 // GetSession returns a snapshot of the requested session.
@@ -160,6 +210,18 @@ func (h *HarnessServer) DeleteSession(ctx context.Context, req *mecatlv1.DeleteS
 	return &mecatlv1.DeleteSessionResponse{}, nil
 }
 
+// CompactSession applies one out-of-band compaction pass to an owned session.
+func (h *HarnessServer) CompactSession(ctx context.Context, req *mecatlv1.CompactSessionRequest) (*mecatlv1.CompactSessionResponse, error) {
+	if req.GetSessionId() == "" {
+		return nil, status.Error(codes.InvalidArgument, "session_id is required")
+	}
+	result, err := h.svc.CompactSession(ctx, session.SessionID(req.GetSessionId()), session.PrincipalFromContext(ctx))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	return &mecatlv1.CompactSessionResponse{Compacted: result.Changed}, nil
+}
+
 // ForkSession creates a peer session from an existing session's history snapshot
 // (ADR 0065). The new session inherits the source's mode, workspace, limits, and
 // provider/model/profile labels; same provider and model only, with the ONE
@@ -228,7 +290,8 @@ func (h *HarnessServer) AdoptSession(ctx context.Context, req *mecatlv1.AdoptSes
 	return &mecatlv1.AdoptSessionResponse{SessionId: string(sess.ID), SourceSessionId: string(adoptionSourceID(sess)), Capabilities: h.svc.capabilities(), SessionCapabilities: &mecatlv1.SessionCapabilities{Image: caps.Image, Audio: caps.Audio}, ResolvedModel: resolvedModelToProto(h.svc.ResolvedModel(sess.ID))}, nil
 }
 
-// Converse drives one run over a bidi stream. The first frame MUST be a Prompt;
+// Converse drives one run over a bidi stream. The first frame MUST be a Prompt
+// or RetryStart;
 // the server then relays the run's Events while concurrently reading
 // ResumeApproval / Cancel control frames, until the events channel closes (the
 // terminal result was delivered) or the stream context is cancelled.
@@ -238,27 +301,41 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 	first, err := stream.Recv()
 	if err != nil {
 		if errors.Is(err, io.EOF) {
-			return status.Error(codes.InvalidArgument, "converse: stream closed before a prompt frame")
+			return status.Error(codes.InvalidArgument, "converse: stream closed before a start frame")
 		}
 		return err
 	}
-	prompt := first.GetPrompt()
-	if prompt == nil {
-		return status.Error(codes.InvalidArgument, "converse: first frame must be a prompt")
+	var (
+		id       session.SessionID
+		run      *agent.Run
+		retrying bool
+	)
+	switch {
+	case first.GetPrompt() != nil:
+		prompt := first.GetPrompt()
+		if prompt.GetSessionId() == "" {
+			return status.Error(codes.InvalidArgument, "converse: prompt session_id is required")
+		}
+		if prompt.GetText() == "" && len(prompt.GetParts()) == 0 {
+			return status.Error(codes.InvalidArgument, "converse: prompt text or parts is required")
+		}
+		parts, perr := contentFromProto(prompt.GetParts())
+		if perr != nil {
+			return status.Error(codes.InvalidArgument, perr.Error())
+		}
+		id = session.SessionID(prompt.GetSessionId())
+		run, err = h.svc.StartRunContent(ctx, id, prompt.GetText(), parts)
+	case first.GetRetry() != nil:
+		retry := first.GetRetry()
+		if retry.GetSessionId() == "" {
+			return status.Error(codes.InvalidArgument, "converse: retry session_id is required")
+		}
+		id = session.SessionID(retry.GetSessionId())
+		retrying = true
+		run, err = h.svc.RetryFailedRun(ctx, id)
+	default:
+		return status.Error(codes.InvalidArgument, "converse: first frame must be a prompt or retry")
 	}
-	if prompt.GetSessionId() == "" {
-		return status.Error(codes.InvalidArgument, "converse: prompt session_id is required")
-	}
-	if prompt.GetText() == "" && len(prompt.GetParts()) == 0 {
-		return status.Error(codes.InvalidArgument, "converse: prompt text or parts is required")
-	}
-	parts, perr := contentFromProto(prompt.GetParts())
-	if perr != nil {
-		return status.Error(codes.InvalidArgument, perr.Error())
-	}
-
-	id := session.SessionID(prompt.GetSessionId())
-	run, err := h.svc.StartRunContent(ctx, id, prompt.GetText(), parts)
 	if err != nil {
 		return toStatus(err)
 	}
@@ -297,6 +374,7 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 	ct := &controlTarget{run: run}
 
 	rl := &runRelay{ctx: ctx, logCtx: context.WithoutCancel(ctx), id: id, acks: steerAcks, snd: snd}
+	rl.recorder = NewRunEventRecorder(rl.logCtx, h.svc, id)
 
 	// Read subsequent control frames concurrently so an approval/cancel/steer
 	// can be delivered while events are still streaming. The reader exits on
@@ -316,9 +394,12 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 	if notice := h.svc.RecoverNotice(id); notice != "" {
 		ev := session.Event{Type: session.EvRecoverNotice, Text: notice}
 		// Durable log first (cancel-detached, survives client disconnect).
-		h.svc.appendEvent(rl.logCtx, id, ev)
+		rl.recorder.Observe(ev)
 		// Forward to the client wire through the same serialized sender.
 		if err := snd.Send(&mecatlv1.ConverseResponse{Event: toProto(ev)}); err != nil {
+			// The relay goroutine owns Close on normal paths, but it has not been
+			// installed yet. Flush the recorder on this sole pre-flight exit.
+			rl.recorder.Close()
 			return err
 		}
 	}
@@ -347,7 +428,11 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
+		defer rl.recorder.Close()
 		pushErr(h.relayRun(rl, run))
+		if retrying {
+			h.svc.Persist(context.WithoutCancel(ctx), id)
+		}
 		// The terminal original must leave the registry before a steer already
 		// being routed can reopen the session. Finish it before sealing the
 		// mailbox; a route that began before the seal is allowed to post its
@@ -464,12 +549,13 @@ func (s *streamSender) Send(m *mecatlv1.ConverseResponse) error {
 // on the SAME goroutine (one relayRun call at a time), so no cross-goroutine
 // access exists by construction.
 type runRelay struct {
-	ctx     context.Context
-	logCtx  context.Context
-	id      session.SessionID
-	acks    chan *mecatlv1.SteerAck
-	snd     *streamSender
-	sendErr error
+	ctx      context.Context
+	logCtx   context.Context
+	id       session.SessionID
+	acks     chan *mecatlv1.SteerAck
+	snd      *streamSender
+	recorder *RunEventRecorder
+	sendErr  error
 }
 
 // sendEvent relays one run event through the streamSender, applying the
@@ -477,13 +563,13 @@ type runRelay struct {
 // error: a client-gone relay appends to the durable log only.
 func (h *HarnessServer) sendEvent(rl *runRelay, ev session.Event) {
 	if rl.sendErr != nil {
-		// drain-to-discard: the client is gone. Still append to the durable
-		// log (it must record the post-disconnect tail), but skip Persist /
+		// drain-to-discard: the client is gone. Still record the durable
+		// projection (it must include the post-disconnect tail), but skip Persist /
 		// auto-approve / the client send.
-		h.svc.appendEvent(rl.logCtx, rl.id, ev)
+		rl.recorder.Observe(ev)
 		return
 	}
-	if !h.svc.relayEvent(rl.ctx, rl.logCtx, rl.id, ev, true) {
+	if !h.svc.relayEvent(rl.ctx, rl.id, ev, true, rl.recorder) {
 		return // log-only event: consumed by the durable log, not relayed to the client wire
 	}
 	proto := toProto(ev)
@@ -689,9 +775,15 @@ func (h *HarnessServer) readControl(ctx context.Context, id session.SessionID, c
 		case *mecatlv1.ConverseRequest_ResumeApproval:
 			if k.ResumeApproval != nil {
 				ra := k.ResumeApproval
+				if h.staleStreamControl(ctx, id, "resume_approval", ra.GetExpectedRunId(), ct.active()) {
+					break
+				}
 				ct.active().Approve(ra.GetAskId(), verdictFromResumeApproval(ra.GetVerdict(), ra.GetAllow()))
 			}
 		case *mecatlv1.ConverseRequest_Cancel:
+			if k.Cancel != nil && h.staleStreamControl(ctx, id, "cancel", k.Cancel.GetExpectedRunId(), ct.active()) {
+				break
+			}
 			ct.active().Cancel()
 		case *mecatlv1.ConverseRequest_CancelChild:
 			if k.CancelChild != nil {
@@ -717,6 +809,33 @@ func (h *HarnessServer) readControl(ctx context.Context, id session.SessionID, c
 	}
 }
 
+// staleStreamControl reports whether a Converse control frame names a run that
+// is no longer the active one, refusing it if so (ADR 0249).
+//
+// The refusal is SILENT to the client, and that asymmetry is deliberate rather
+// than an oversight. Converse's approve and cancel frames are fire-and-forget:
+// the stream carries no per-control ack to put a typed error on, so the choices
+// are refuse-and-log or tear down the whole stream over one stale frame. Tearing
+// down would punish a client for a race it cannot avoid. A caller that needs the
+// typed ErrStaleRunControl uses the HTTP control endpoints, which return it; the
+// steer frame is the exception on this stream because it already HAS an ack
+// channel, so it reports too_late.
+//
+// The operator-visible half is the diagnostic below: nothing in the event
+// taxonomy reports a refused control, so without it a stale approve would vanish
+// without trace.
+func (h *HarnessServer) staleStreamControl(ctx context.Context, id session.SessionID, frame, expected string, run *agent.Run) bool {
+	if expected == "" || run == nil {
+		return false
+	}
+	if err := checkExpectedRun(expected, run.RunID()); err != nil {
+		h.svc.Diagnostics().Log(ctx, port.LevelWarn, "stale control frame refused",
+			"session", string(id), "frame", frame, "expected_run", valid(expected), "active_run", valid(run.RunID()))
+		return true
+	}
+	return false
+}
+
 // handleSteerFrame routes one steer frame through the Service (the single
 // routing owner — the handler is a dumb frame→Service mapper, mirroring how
 // the Approve/Cancel frames route). The Service decides live-enqueue vs
@@ -728,7 +847,18 @@ func (h *HarnessServer) readControl(ctx context.Context, id session.SessionID, c
 // drop). Every ack echoes the frame's client-minted message_id.
 func (h *HarnessServer) handleSteerFrame(ctx context.Context, id session.SessionID, frame *mecatlv1.Steer, rl *runRelay, ho *steerHandoff) {
 	text, msgID := frame.GetText(), frame.GetMessageId()
-	outcome, promoted, promotedRun, err := h.svc.Steer(ctx, id, text, msgID)
+	expectedRunID := frame.GetExpectedRunId()
+	parts, perr := contentFromProto(frame.GetParts())
+	if perr != nil || (text == "" && len(parts) == 0) {
+		reason := "empty"
+		if perr != nil {
+			reason = "invalid_content"
+		}
+		h.svc.Diagnostics().Log(ctx, port.LevelWarn, "invalid steer frame", "session", string(id), "reason", reason, "part_count", len(frame.GetParts()))
+		enqueueSteerAck(ctx, rl.acks, &mecatlv1.SteerAck{Outcome: mecatlv1.SteerOutcome_STEER_OUTCOME_TOO_LATE, Text: valid(text), MessageId: valid(msgID)})
+		return
+	}
+	outcome, promoted, promotedRun, err := h.svc.Steer(ctx, id, text, parts, msgID, expectedRunID)
 	switch {
 	case err != nil:
 		h.svc.Diagnostics().Log(ctx, port.LevelWarn, "steer route failed", "session", string(id), "error", err)
@@ -878,6 +1008,22 @@ func (h *HarnessServer) GetMcpPrompt(ctx context.Context, req *mecatlv1.GetMcpPr
 		msgs = append(msgs, toProtoMcpPromptMessage(m))
 	}
 	return &mecatlv1.GetMcpPromptResponse{Description: res.Description, Messages: msgs}, nil
+}
+
+// GetCompatibilityInfo returns the deployment's compatibility descriptor
+// (ADR 0248).
+//
+// Distinct from GetServerInfo above, which answers "which BUILD is this?" under
+// ADR 0245's privacy boundary. This answers "what may I do with this server?"
+// and carries exactly the capabilities/configuration that boundary keeps out of
+// the identity response.
+//
+// It is authenticated like every other RPC, which keeps UNAUTHENTICATED and
+// UNIMPLEMENTED distinguishable at the client: the SDK treats UNIMPLEMENTED as
+// "below the compatibility floor" and fails loudly, so an auth failure must not
+// be able to masquerade as one.
+func (h *HarnessServer) GetCompatibilityInfo(ctx context.Context, _ *mecatlv1.GetCompatibilityInfoRequest) (*mecatlv1.GetCompatibilityInfoResponse, error) {
+	return h.svc.CompatibilityInfo(ctx), nil
 }
 
 // ListMcpSources returns the resolved MCP source inventory snapshot.
@@ -1090,9 +1236,14 @@ func (h *HarnessServer) StreamSessionEvents(req *mecatlv1.StreamSessionEventsReq
 	// user prompts (they ARE the transcript). So relay ALL events through toProto,
 	// including the three log-only kinds. They are already metadata-only/redacted by
 	// construction (gauntlet #7). Do NOT copy the live-relay filter here.
+	// RequestManifest and NetworkAttempt remain debugger-only even on durable
+	// read-back; neither has a public proto projection.
 	for ev, iterErr := range events {
 		if iterErr != nil {
 			return status.Error(codes.Internal, iterErr.Error())
+		}
+		if !isPublicEvent(ev) {
+			continue
 		}
 		if err := stream.Send(toProto(ev)); err != nil {
 			return err
@@ -1163,6 +1314,76 @@ func (h *HarnessServer) StreamSessionLive(req *mecatlv1.StreamSessionLiveRequest
 	}
 }
 
+// WatchSessionEvents is the DURABLE replay-then-follow stream (issue #821, ADR
+// 0250): a thin transport over Service.WatchSessionEvents.
+//
+// The SSE route GET /v1/sessions/{id}/watch consumes the SAME service method, so
+// the two transports deliver identical envelope sequences by construction rather
+// than by parallel maintenance (AC7.3). Everything below is framing.
+//
+// Relay discipline mirrors StreamSessionEvents, NOT the live wire: this is the
+// READ-BACK of the durable log, so ALL events are relayed including the three
+// log-only kinds (EvApproval/EvCompactionArchive/EvUserPrompt) — a client
+// replaying a session wants the verdicts and prompts, as they ARE the transcript.
+// Do NOT copy relayLiveEvent's filter here.
+//
+// A Send error means the client is gone: break out of the iterator, which
+// releases the watch and its backend read per port.CursorEventLog's contract.
+// There is no drain-to-discard to do — unlike a live relay, this stream pulls
+// from durable storage and has no run whose emits could wedge behind it.
+func (h *HarnessServer) WatchSessionEvents(req *mecatlv1.WatchSessionEventsRequest, stream grpc.ServerStreamingServer[mecatlv1.WatchSessionEventsResponse]) error {
+	if req.GetSessionId() == "" {
+		return status.Error(codes.InvalidArgument, ErrInvalidArgument.Error())
+	}
+	envelopes, err := h.svc.WatchSessionEvents(stream.Context(),
+		session.SessionID(req.GetSessionId()), port.Cursor(req.GetCursor()), req.GetRunId())
+	if err != nil {
+		return toStatus(err)
+	}
+	for env, iterErr := range envelopes {
+		if iterErr != nil {
+			// toStatus classifies through the shared registry, so a lagging
+			// termination, a delivery gap, and a cursor fault each reach the client
+			// as the same code the HTTP surface would report.
+			return toStatus(iterErr)
+		}
+		if err := stream.Send(toProtoWatchEnvelope(env)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// toProtoWatchEnvelope projects one delivery envelope onto the wire.
+//
+// A nil Event stays nil — the phase-only frames (the replay/live boundary and
+// every gap) carry no event by design, and synthesising an empty one would make
+// a client's "did anything happen?" check answer yes.
+func toProtoWatchEnvelope(env WatchEnvelope) *mecatlv1.WatchSessionEventsResponse {
+	out := &mecatlv1.WatchSessionEventsResponse{
+		// Phase is a harness constant from a closed set, so it needs no repair.
+		//
+		// Cursor DOES get the producer-influenced-string repair, because it is not
+		// as harness-authored as it looks: the four in-tree backends mint ASCII
+		// (base64url, or a Redis XADD id), but the cursor is BACKEND-OWNED and a
+		// third-party port.CursorEventLog may mint anything. Without the repair,
+		// one invalid byte in a cursor kills the whole stream at proto marshal —
+		// the issue-#402 failure mode the mapper's mechanical backstop exists to
+		// prevent. Repairing it does corrupt that token, and that is the better
+		// failure: a corrupt cursor is rejected LOUDLY as ErrCursorMalformed at the
+		// next resume (never silently resolved to a wrong position), whereas a dead
+		// stream takes the session's whole live view with it. It also keeps the two
+		// transports byte-identical — SSE encodes this same struct through
+		// encoding/json, which would substitute U+FFFD on its own and diverge.
+		Cursor: valid(string(env.Cursor)),
+		Phase:  env.Phase,
+	}
+	if env.Event != nil {
+		out.Event = toProto(*env.Event)
+	}
+	return out
+}
+
 // relayLiveEvent reports whether a live-subscription event should be relayed on
 // the client wire. It mirrors the live Converse relay's log-only skip with ONE
 // narrow exception: a fire-result DELIVERY note (an EvUserPrompt whose text
@@ -1171,7 +1392,14 @@ func (h *HarnessServer) StreamSessionLive(req *mecatlv1.StreamSessionLiveRequest
 // log-only kinds (EvApproval, EvCompactionArchive) and a non-delivery
 // EvUserPrompt stay skipped (they are persistence-only; the client holds its
 // own verdict/compaction/prompt view).
+func isPublicEvent(ev session.Event) bool {
+	return ev.Type != session.EvNetworkAttempt && ev.Type != session.EvRequestManifest
+}
+
 func relayLiveEvent(ev session.Event) bool {
+	if !isPublicEvent(ev) {
+		return false
+	}
 	switch ev.Type {
 	case session.EvApproval, session.EvCompactionArchive:
 		return false
@@ -1180,7 +1408,7 @@ func relayLiveEvent(ev session.Event) bool {
 		// is the single detection pattern (mirrors the TUI client's
 		// deliveryNotePrefix). A non-delivery EvUserPrompt stays skipped.
 		//
-		// renderFireDelivery wraps the note in agent.FenceUntrusted, so the
+		// renderFireDelivery wraps the note in governance.FenceUntrusted, so the
 		// recorded text starts with the untrusted-fence opener
 		// ("<<<UNTRUSTED\n") FOLLOWED by the "[scheduled task " provenance
 		// header on the next line. The detection matches that FENCED form so a
@@ -1206,7 +1434,7 @@ func relayLiveEvent(ev session.Event) bool {
 const deliveryNoteHeaderPrefix = "[scheduled task "
 
 // deliveryNoteFenceOpener is the leading fence marker renderFireDelivery wraps
-// EVERY delivery note in (agent.FenceUntrusted writes "<<<UNTRUSTED\n" then the
+// EVERY delivery note in (governance.FenceUntrusted writes "<<<UNTRUSTED\n" then the
 // body). Detection keys off the fence opener FOLLOWED by the header prefix so a
 // non-delivery user prompt (never fenced) cannot match.
 const deliveryNoteFenceOpener = "<<<UNTRUSTED\n"
@@ -1248,6 +1476,14 @@ func (h *HarnessServer) GetStorageHealth(ctx context.Context, _ *mecatlv1.GetSto
 }
 
 func toProtoStorageHealth(h StorageHealth) *mecatlv1.GetStorageHealthResponse {
+	ownerlessSessionIDs := make([]string, len(h.Ownerless.SessionIDs))
+	for i, id := range h.Ownerless.SessionIDs {
+		ownerlessSessionIDs[i] = valid(id)
+	}
+	ownerlessScheduleNames := make([]string, len(h.Ownerless.ScheduleNames))
+	for i, name := range h.Ownerless.ScheduleNames {
+		ownerlessScheduleNames[i] = valid(name)
+	}
 	resp := &mecatlv1.GetStorageHealthResponse{
 		Available: h.Available, UnavailableReason: h.UnavailableReason,
 		CurrentBytes: h.CurrentBytes, CurrentBytesAvailable: h.CurrentBytesAvailable,
@@ -1264,6 +1500,16 @@ func toProtoStorageHealth(h StorageHealth) *mecatlv1.GetStorageHealthResponse {
 		LastSweepAvailable: h.LastSweepAvailable,
 		NextSweepAvailable: h.NextSweepAvailable,
 		ActiveJob:          h.ActiveJob, LastFailure: h.LastFailure,
+		OwnerlessSessionsAvailable:          h.Ownerless.SessionsAvailable,
+		OwnerlessSessionsUnavailableReason:  valid(h.Ownerless.SessionsUnavailableReason),
+		OwnerlessSessionCount:               int64(h.Ownerless.SessionCount),
+		OwnerlessSessionIds:                 ownerlessSessionIDs,
+		OwnerlessSessionIdsTruncated:        h.Ownerless.SessionIDsTruncated,
+		OwnerlessSchedulesAvailable:         h.Ownerless.SchedulesAvailable,
+		OwnerlessSchedulesUnavailableReason: valid(h.Ownerless.SchedulesUnavailableReason),
+		OwnerlessScheduleCount:              int64(h.Ownerless.ScheduleCount),
+		OwnerlessScheduleNames:              ownerlessScheduleNames,
+		OwnerlessScheduleNamesTruncated:     h.Ownerless.ScheduleNamesTruncated,
 	}
 	if h.LastSweepAvailable {
 		resp.LastSweepUnix = h.LastSweep.Unix()
@@ -1405,132 +1651,49 @@ func toProtoCleanupJob(job CleanupJob) *mecatlv1.CleanupJob {
 }
 
 // toStatus maps service sentinel errors to gRPC status codes.
-//
-//nolint:gocyclo // a flat error→code classifier; a switch is the correct shape.
 func toStatus(err error) error {
-	switch {
-	case errors.Is(err, ErrManagementUnauthorized):
-		return status.Error(codes.PermissionDenied, err.Error())
-	case errors.Is(err, ErrStorageHealthBackend):
-		return status.Error(codes.Internal, err.Error())
-	case errors.Is(err, ErrMigrationUnsupported):
-		return status.Error(codes.Unimplemented, err.Error())
-	case errors.Is(err, ErrMigrationConflict):
-		return status.Error(codes.Aborted, err.Error())
-	case errors.Is(err, ErrMigrationBackend):
-		return status.Error(codes.Internal, err.Error())
-	case errors.Is(err, ErrCleanupPlanStale):
-		return status.Error(codes.Aborted, err.Error())
-	case errors.Is(err, ErrCleanupUnsupported):
-		return status.Error(codes.Unimplemented, err.Error())
-	case errors.Is(err, ErrCleanupBackend):
-		return status.Error(codes.Internal, err.Error())
-	case errors.Is(err, ErrInvalidArgument):
-		return status.Error(codes.InvalidArgument, err.Error())
-	case errors.Is(err, ErrNotFound):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, ErrTeamNotFound):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, ErrChildNotFound):
-		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, ErrLearningUnavailable):
-		return status.Error(codes.Unimplemented, err.Error())
-	case errors.Is(err, ErrProposalConflict):
-		return status.Error(codes.Aborted, err.Error())
-	case errors.Is(err, ErrDreamUnavailable):
-		return status.Error(codes.Unimplemented, ErrDreamUnavailable.Error())
-	case errors.Is(err, ErrDreamNotFound):
-		return status.Error(codes.NotFound, ErrDreamNotFound.Error())
-	case errors.Is(err, ErrDreamInProgress):
-		return status.Error(codes.Aborted, ErrDreamInProgress.Error())
-	case errors.Is(err, ErrDreamConflict):
-		return status.Error(codes.FailedPrecondition, ErrDreamConflict.Error())
-	case errors.Is(err, ErrDreamTerminalConflict):
-		return status.Error(codes.AlreadyExists, ErrDreamTerminalConflict.Error())
-	case errors.Is(err, ErrDreamCapacity):
-		return status.Error(codes.ResourceExhausted, ErrDreamCapacity.Error())
-	case errors.Is(err, ErrDreamGenerateFailed):
-		return status.Error(codes.Internal, ErrDreamGenerateFailed.Error())
-	case errors.Is(err, ErrDreamApplyFailed):
-		return status.Error(codes.Internal, ErrDreamApplyFailed.Error())
-	case errors.Is(err, ErrDreamDeadline):
-		return status.Error(codes.DeadlineExceeded, ErrDreamDeadline.Error())
-	case errors.Is(err, ErrDreamRequestFailed):
-		return status.Error(codes.Internal, ErrDreamRequestFailed.Error())
-	case errors.Is(err, ErrFailedPrecondition):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrNoActiveRun):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrNotAwaitingPlan):
-		// ApprovePlan precondition (issue #206, Wave 4): the session is not parked
-		// awaiting a plan-originated ask. FailedPrecondition (HTTP 409).
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrSessionLeasedElsewhere):
-		// Cloud-native Phase 4: another replica holds the session's single-writer
-		// lease. Well-formed request, transiently owned elsewhere — FailedPrecondition
-		// (consistent with ErrNoActiveRun; HTTP maps it to 409 Conflict).
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrUnavailable):
-		// ADR 0048 drain gate: this replica is draining (graceful shutdown) and
-		// refuses new run-entries. Unavailable (HTTP 503) so the client retries a
-		// survivor.
-		return status.Error(codes.Unavailable, err.Error())
-	case errors.Is(err, ErrNoMCPProvider):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrTeamsDisabled):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrTeamRunning):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrTeamNotRunning):
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrTooManyTeams):
-		return status.Error(codes.ResourceExhausted, err.Error())
-	case errors.Is(err, ErrTooManySessionEngines):
-		return status.Error(codes.ResourceExhausted, err.Error())
-	case errors.Is(err, ErrNoScheduleStore):
-		// The configured store backend does not implement ScheduleStore: the
-		// schedule RPCs are not available on this deployment. Unimplemented.
-		return status.Error(codes.Unimplemented, err.Error())
-	case errors.Is(err, ErrNoEventLog):
-		// No durable EventLog (cloud-native Phase 3a) is configured: the
-		// StreamSessionEvents read-back surface is not available on this
-		// deployment. Unimplemented (HTTP 501).
-		return status.Error(codes.Unimplemented, err.Error())
-	case errors.Is(err, ErrSessionDeleteUnsupported):
-		return status.Error(codes.Unimplemented, err.Error())
-	case errors.Is(err, port.ErrSessionMetadataCursorRestart):
-		return status.Error(codes.Aborted, err.Error())
-	case errors.Is(err, port.ErrSessionMetadataPagingUnsupported):
-		return status.Error(codes.Unimplemented, err.Error())
-	case errors.Is(err, ErrSchedulerNotRunning):
-		// A ScheduleStore is available but no in-process scheduler is wired to
-		// drive a manual FireNow. FailedPrecondition (HTTP 412), distinct from
-		// ErrNoScheduleStore's Unimplemented (the store itself works fine).
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrScheduleDisabled):
-		// FireNow on a paused/done schedule. FailedPrecondition (HTTP 412).
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrScheduleExhausted):
-		// FireNow on an already-fired one-shot. FailedPrecondition (HTTP 412).
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrFireNowOverlap):
-		// FireNow singleton-overlap skip. FailedPrecondition (HTTP 412) — the
-		// schedule exists and is well-formed, it is just running.
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, ErrScheduleNotLeader):
-		// FireNow on a standby (non-leader) replica. FailedPrecondition (HTTP
-		// 412); the message names the leader to redirect to.
-		return status.Error(codes.FailedPrecondition, err.Error())
-	case errors.Is(err, port.ErrScheduleNotFound):
-		// A schedule/fire not found from the store. NotFound (HTTP 404).
-		return status.Error(codes.NotFound, err.Error())
-	case errors.Is(err, port.ErrScheduleUnsupported):
-		// The backend can never store schedules (a sticky-disable case).
-		// Unimplemented (HTTP 501).
-		return status.Error(codes.Unimplemented, err.Error())
-	case errors.Is(err, ErrInternal):
-		return status.Error(codes.Internal, err.Error())
-	default:
-		return status.Error(codes.Internal, err.Error())
-	}
+	return statusForEntry(classifyError(err), err)
 }
+
+// statusForEntry builds the gRPC status for a classified error, attaching the
+// stable mecatl code as a google.rpc.ErrorInfo detail.
+//
+// ErrorInfo is the standard carrier for exactly this (a machine-readable
+// `Reason` plus a `Domain` that scopes it), so a client reads the same
+// identifier the HTTP surface puts in the problem body's `code`. gRPC status
+// codes are far coarser than the domain — a dozen distinct conditions collapse
+// onto FailedPrecondition — so without the detail a gRPC caller simply cannot
+// tell them apart, and the SDK's "same normalized errors on both transports"
+// promise would be false on the gRPC side.
+//
+// The message stays err.Error(), unchanged from before this registry landed, and
+// is repaired to valid UTF-8: it can carry a downstream's error text, and
+// invalid UTF-8 in a status message is the marshal-time fault AGENTS.md
+// documents. If attaching the detail fails (it can only fail on a marshal
+// error), the bare status is returned — a missing detail degrades a client to
+// the old coarse behaviour, whereas dropping the status entirely would lose the
+// error.
+func statusForEntry(entry errorCodeEntry, err error) error {
+	st := status.New(entry.GRPC, session.ToValidUTF8(err.Error()))
+	withDetail, derr := st.WithDetails(&errdetails.ErrorInfo{
+		// Reason carries entry.Code VERBATIM, in lower_snake_case. AIP-193
+		// conventionally spells Reason in UPPER_SNAKE_CASE; that convention is
+		// deliberately NOT followed, and this is not an oversight to correct.
+		// AC2.2 requires the IDENTICAL string on both transports, and the HTTP
+		// problem body's `code`/`type` are lowercase to match RFC 9457 style.
+		// Upper-casing here would give one error identity two spellings, and
+		// every SDK a case conversion to know about. ADR 0248 decision 7 records
+		// the trade; TestSDKServerEnablers_Scenario2_ErrorCodeTransportParity
+		// fails if the two ever diverge.
+		Reason: entry.Code,
+		Domain: errorDomain,
+	})
+	if derr != nil {
+		return st.Err()
+	}
+	return withDetail.Err()
+}
+
+// errorDomain scopes the ErrorInfo Reason above, per the google.rpc.ErrorInfo
+// contract that a Reason is unique only within its Domain.
+const errorDomain = "mecatl.stacklok.com"

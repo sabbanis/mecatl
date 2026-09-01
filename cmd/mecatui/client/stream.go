@@ -46,6 +46,12 @@ type Stream struct {
 	send Sender
 
 	mu sync.Mutex // serialises Send (Recv is single-goroutine in the reader)
+	// resolvedApprovals is run-scoped transport correlation. It is intentionally
+	// owned by the stream rather than the UI Model, so closing a dynamic approval
+	// surface does not leave a Model approval-state tombstone merely to reject a
+	// late duplicate event.
+	resolvedApprovals map[string]struct{}
+	bearerBacked      bool
 }
 
 // NewStream binds a receive and send side into a Stream. Pass the same
@@ -53,6 +59,36 @@ type Stream struct {
 // no-op or recording Sender) in tests.
 func NewStream(recv Recver, send Sender) *Stream {
 	return &Stream{recv: recv, send: send}
+}
+
+func newAuthenticatedStream(recv Recver, send Sender, bearerBacked bool) *Stream {
+	return &Stream{recv: recv, send: send, bearerBacked: bearerBacked}
+}
+
+// MarkApprovalResolved records an ask id as resolved for this stream. It is
+// called before the deferred send command runs, so a re-delivered ask cannot
+// reopen a just-closed UI surface in that scheduling window.
+func (s *Stream) MarkApprovalResolved(askID string) {
+	if s == nil || askID == "" {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.resolvedApprovals == nil {
+		s.resolvedApprovals = make(map[string]struct{})
+	}
+	s.resolvedApprovals[askID] = struct{}{}
+}
+
+// ApprovalResolved reports whether askID was already resolved on this stream.
+func (s *Stream) ApprovalResolved(askID string) bool {
+	if s == nil || askID == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.resolvedApprovals[askID]
+	return ok
 }
 
 // ReadLoop runs the receive loop on its OWN goroutine over the live Converse
@@ -81,7 +117,7 @@ func (s *Stream) ReadLoop(ctx context.Context, out chan<- tea.Msg) {
 			return nil, err
 		}
 		return resp.GetEvent(), nil
-	}, out)
+	}, out, s.bearerBacked, true)
 }
 
 // readEventLoop is the SINGLE translation path both the live Converse stream
@@ -92,7 +128,7 @@ func (s *Stream) ReadLoop(ctx context.Context, out chan<- tea.Msg) {
 // yields StreamErrMsg; ctx cancellation unblocks a stuck send (no-leak) —
 // projection equivalence: the SAME EventToMsg path, the SAME lifecycle msgs, so
 // a replay and a live run project identically for the same event sequence.
-func readEventLoop(ctx context.Context, recv func() (*mecatlv1.Event, error), out chan<- tea.Msg) {
+func readEventLoop(ctx context.Context, recv func() (*mecatlv1.Event, error), out chan<- tea.Msg, bearerBacked, classifyAuth bool) {
 	defer close(out)
 	for {
 		ev, err := recv()
@@ -101,7 +137,12 @@ func readEventLoop(ctx context.Context, recv func() (*mecatlv1.Event, error), ou
 				emit(ctx, out, StreamClosedMsg{})
 				return
 			}
-			emit(ctx, out, StreamErrMsg{Err: err, Transient: TransientStreamErr(err)})
+			authReason := AuthReason("")
+			classified := false
+			if classifyAuth {
+				authReason, classified = AuthFailure(err, bearerBacked)
+			}
+			emit(ctx, out, StreamErrMsg{Err: err, AuthReason: authReason, Transient: !classified && TransientStreamErr(err)})
 			return
 		}
 		if m := EventToMsg(ev); m != nil {
@@ -148,6 +189,17 @@ func (s *Stream) SendPrompt(sessionID, text string, parts []*mecatlv1.Content) e
 	return s.sendFrame(&mecatlv1.ConverseRequest{
 		Kind: &mecatlv1.ConverseRequest_Prompt{
 			Prompt: &mecatlv1.Prompt{SessionId: sessionID, Text: text, Parts: parts},
+		},
+	})
+}
+
+// SendRetryStart sends the mandatory first frame for a failed-step retry. It
+// contains no prompt text: the server reuses persisted conversation/tool state while
+// resolving live instruction and system-prompt sources for the new model attempt.
+func (s *Stream) SendRetryStart(sessionID string) error {
+	return s.sendFrame(&mecatlv1.ConverseRequest{
+		Kind: &mecatlv1.ConverseRequest_Retry{
+			Retry: &mecatlv1.RetryStart{SessionId: sessionID},
 		},
 	})
 }
@@ -211,17 +263,18 @@ func (s *Stream) SendCancelChild(childID string) error {
 }
 
 // SendSteer sends a mid-run operator steer frame on the bidi Converse stream
-// (steer-while-running, issue #512). The server routes it to the live run's
-// single-slot inbox; the AUTHORITATIVE outcome (accepted / appended /
-// too_late+promoted) arrives on the SAME stream as a SteerOutcomeMsg — never
-// assumed client-side, since the client cannot observe the exact drain moment
-// across stream latency. The ui only calls this when Capabilities.Steer is true
-// (a disabled/old server falls back to the client-side merge-queue instead).
-// messageID is the client-minted correlation key the server echoes verbatim on
-// the ack and the drain echo; empty degrades to text-order matching.
-func (s *Stream) SendSteer(text, messageID string) error {
+// (steer-while-running, issue #512). The server routes its text and media to
+// the live run's single-slot inbox; the AUTHORITATIVE outcome (accepted /
+// appended / too_late+promoted) arrives on the SAME stream as a
+// SteerOutcomeMsg — never assumed client-side, since the client cannot observe
+// the exact drain moment across stream latency. The ui only calls this when
+// Capabilities.Steer is true; a runtime-disabled server falls back to the
+// client-side merge queue. messageID is the client-minted correlation key the
+// server echoes verbatim on the ack and the drain echo; empty degrades to
+// text-order matching.
+func (s *Stream) SendSteer(text string, media MediaResult, messageID string) error {
 	return s.sendFrame(&mecatlv1.ConverseRequest{
-		Kind: &mecatlv1.ConverseRequest_Steer{Steer: &mecatlv1.Steer{Text: text, MessageId: messageID}},
+		Kind: &mecatlv1.ConverseRequest_Steer{Steer: &mecatlv1.Steer{Text: text, MessageId: messageID, Parts: media.Parts}},
 	})
 }
 

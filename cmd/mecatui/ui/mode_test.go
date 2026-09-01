@@ -14,7 +14,7 @@ import (
 
 func modeTestModel(t *testing.T, conv *fakeConv) Model {
 	t.Helper()
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv,
 		Conv:    conv,
 		Theme:   theme.New("aztec", theme.AztecPalette()),
@@ -122,13 +122,13 @@ func TestPendingModeBlocksQueuedPromptUntilApplied(t *testing.T) {
 	m.pendingMode = "plan"
 	m.queued = []string{"queued follow-up"}
 
-	mm, cmd := m.drainQueue("end_turn", false)
+	mm, cmd := m.drainQueue("end_turn")
 	m = mm.(Model)
 	if cmd != nil {
 		t.Fatal("drainQueue should not submit while a mode switch is pending")
 	}
-	if strings.TrimSpace(m.ta.Value()) != "queued follow-up" {
-		t.Fatalf("textarea = %q, want queued follow-up kept for manual send", m.ta.Value())
+	if strings.TrimSpace(m.prompt.Value()) != "queued follow-up" {
+		t.Fatalf("textarea = %q, want queued follow-up kept for manual send", m.prompt.Value())
 	}
 	if !strings.Contains(stripANSIstr(m.statusMsg), "will apply before the queued prompt") {
 		t.Fatalf("status = %q, want pending-mode queue notice", stripANSIstr(m.statusMsg))

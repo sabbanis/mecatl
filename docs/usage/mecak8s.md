@@ -26,7 +26,17 @@ only when explicitly mounted/configured, but contradicts the normal storage-free
 and is not recommended. It drops
 `mecated`'s `skills promote` / `config` / `perf-mcp` subcommands, ACP, and the
 Prometheus/OTel admin surface. It inverts `mecated`'s interactive defaults: `--headless`
-defaults **on** and `--posture` defaults to **`auto`** (an unattended daemon).
+defaults **on** and `--posture` defaults to **`auto`** (an unattended daemon). Like the
+other shipped executables, exact top-level `mecak8s --version` prints its build identity
+and exits before loading normal configuration or starting listeners.
+
+`mecak8s` is always a server-assigned workspace deployment, but its normal
+storage-free pod has no mounted workspace. An omitted or empty wire `profile`
+therefore creates a `no-fs` session; clients must not send a workspace path, and
+any profile other than `no-fs` is rejected. The empty workspace/profile contract
+is intentional: it does not request a cwd from the client or an arbitrary path
+inside the pod. A mounted-workspace mode requires a future explicit operator
+design.
 
 ```console
 $ go run ./cmd/mecak8s --redis-url redis:6379 --redis-allow-plaintext --session-lease-k8s-namespace mecatl --openai
@@ -41,9 +51,9 @@ $ go run ./cmd/mecak8s --redis-url redis:6379 --redis-allow-plaintext --session-
 | --- | --- | --- |
 | `--redis-url` | `""` | Redis address (`host:port`) for the session store + durable event log (ADRs 0048 and [0233](../adr/0233-secure-external-redis.md), storage-free). The `redisstore` `Store` doubles as its own `EventLog` (like `jsonlstore`). **Mutually exclusive with `--store-dir` / `--session-store-url`** (rejected at `Build`). Takes a bare `host:port`: a `redis://` or `rediss://` URL is rejected. An address alone is not a plaintext opt-in — see `--redis-allow-plaintext`. |
 | `--redis-allow-plaintext` | `false` | Explicitly allow unauthenticated plaintext Redis; disposable local/Kind use only. Without it an address-only `--redis-url` is **rejected at `Build`**. Never set it for a production external Redis. |
-| `--redis-username-file` / `--redis-password-file` | `""` | Paths to optional Redis ACL credentials in a mounted Kubernetes Secret. A password without a username authenticates as Redis's default ACL user; a username requires a password. Credential values are never accepted as command arguments. Any credential requires verified TLS — `--redis-tls` or `--redis-tls-ca`. |
+| `--redis-username-file` / `--redis-password-file` | `""` | Paths to optional Redis ACL credentials in a mounted Kubernetes Secret. A password without a username authenticates as Redis's default ACL user; a username requires a password. Credential values are never accepted as command arguments. Any credential requires verified TLS — `--redis-tls` or `--redis-tls-ca`. When either file is configured, mecak8s watches its lexical parent and transactionally hot-reloads the complete configured Redis file set after a bounded successful probe. |
 | `--redis-tls` | `false` | Verify Redis TLS against the host system trust store. Use for a managed Redis whose certificate chains to a public CA (Azure Cache for Redis, ElastiCache in-transit encryption). |
-| `--redis-tls-ca` | `""` | Path to a PEM CA bundle from a mounted Secret used to verify Redis TLS, **replacing** the system trust store. Use for a private CA; takes precedence over `--redis-tls`. Either flag is mandatory whenever ACL credentials are configured. Client-certificate (mTLS) authentication is not supported — see [ADR 0233](../adr/0233-secure-external-redis.md). |
+| `--redis-tls-ca` | `""` | Path to a PEM CA bundle from a mounted Secret used to verify Redis TLS, **replacing** the system trust store. Use for a private CA; takes precedence over `--redis-tls`. Either flag is mandatory whenever ACL credentials are configured. The file is included in the same automatic transactional reload as Redis credential files. Client-certificate (mTLS) authentication is not supported — see [ADR 0233](../adr/0233-secure-external-redis.md). |
 | `--session-lease-k8s-namespace` | `mecatl` | Kubernetes namespace for `coordination.k8s.io` Lease-backed session leasing (the in-cluster multi-replica single-writer path). Uses in-cluster config (or the default kubeconfig out-of-cluster). The ServiceAccount needs `get,create,update,delete` on `leases` in `coordination.k8s.io` for this namespace. Empty = no leasing. |
 | `--session-lease-ttl` | `30s` | session-lease lifetime; a crashed/killed holder's lease becomes claimable after this long. |
 | `--session-lease-renew-interval` | `0` | how often the per-session renewer refreshes a held lease; `0` = `--session-lease-ttl` / 3. |
@@ -78,17 +88,251 @@ all identical to `mecated`'s (see §3).
 
 #### Production Helm chart (`deploy/helm/mecak8s/`)
 
-The production contract is the Helm chart. It never installs Redis: an install must provide an externally managed Redis endpoint and a Secret reference when any Secret key is configured. The CA-bundle Secret key is optional: leaving `redis.caKey` empty selects system-trust TLS and mounts no Secret unless an ACL key is also set. ACL password/username Secret keys are optional; a username key requires a password key. Supply exactly one agent image selector: a signed release tag (the enterprise distribution model) or a digest. The chart preserves the storage-free restricted workload, bounded resources, rolling update, probes, PDB, and namespaced Lease RBAC. It ships **no** general NetworkPolicy: network isolation is the cluster's job, and a policy the chart cannot keep complete (the agent's egress depends on the operator's provider, MCP, and API-server endpoints) is worse than none. The `oidc.*` values (below) additionally render a narrow raw-driver NetworkPolicy when caller identity is enabled.
+A real-provider install (`mockProvider: false`) has three explicit postures.
+**In-pod TLS** is `tls.enabled=true` plus OIDC.
+**Edge-terminated TLS** is `security.tlsTerminatedUpstream=true` plus OIDC, with `tls.enabled=false` selecting a ClusterIP-only plaintext h2c backend.
+The **unsafe bypass** is `security.allowUnsafeRealProvider=true`, for local or trusted-mesh deployments.
+Setting both in-pod TLS and `tlsTerminatedUpstream=true` is valid and keeps the upstream attestation.
+The unsafe bypass stamps the pod `mecatl.stacklok.com/unsafe-real-provider: "true"`; a secure upstream attestation stamps `mecatl.stacklok.com/tls-terminated-upstream: "true"`.
+Neither stamp can be forged or cleared through `podAnnotations`.
+
+Edge mode's cost is concrete: on an h2c backend the caller's `Authorization: Bearer` token crosses the pod network in cleartext.
+Any workload that can reach the Service ClusterIP can read that token and replay it as the caller, and the chart ships no NetworkPolicy, so by default every pod in the cluster can reach it.
+Admitting only the gateway's pods — by NetworkPolicy or an mTLS mesh — is therefore the load-bearing control in this posture, not optional hardening.
+`tlsTerminatedUpstream` is an attestation the chart cannot verify: it checks neither gateway TLS, nor gateway-only reachability, nor token forwarding.
+The gateway must forward the original bearer token rather than authenticate with a forwarded-identity header, and must expose a `GRPCRoute` only — never public-route the HTTP drain or health endpoints.
+The chart deliberately creates no Gateway, Route, Certificate, or general NetworkPolicy.
+Use an operator-owned `BackendTLSPolicy` or in-pod TLS where gateway-to-pod re-encryption is required.
+Move an existing pod-TLS release to h2c with a blue-green or maintenance cutover, not an assumed-safe rolling update.
+See [ADR 0278](../adr/0278-mecak8s-edge-terminated-tls.md).
+
+Leave `redis.caKey` empty to select system-trust TLS.
+This option mounts no Secret unless an ACL key is set.
+ACL password and username Secret keys are optional.
+A username key requires a password key.
+The image defaults to `v<chart-version>`.
+This default keeps ranged Helm upgrades aligned with released images.
+Set a signed release tag or digest only to override the default.
+The chart preserves the restricted, storage-free workload.
+It also preserves bounded resources, rolling updates, probes, the PDB, and namespaced Lease RBAC.
+The chart ships no general NetworkPolicy.
+The cluster must provide network isolation because agent egress depends on operator-selected endpoints.
+The `oidc.*` values add a narrow raw-driver NetworkPolicy when caller identity is enabled.
 
 ```sh
 helm upgrade --install mecak8s deploy/helm/mecak8s --namespace mecatl --create-namespace \
   --set image.repository=registry.example/mecak8s \
-  --set image.tag=v<release-version> \
   --set redis.endpoint=redis.example.internal:6379 \
-  --set redis.credentialsSecret=mecak8s-redis
+  --set redis.credentialsSecret=mecak8s-redis \
+  --set tls.enabled=true \
+  --set tls.secretName=mecak8s-tls \
+  --set oidc.enabled=true \
+  --set oidc.issuer=https://idp.example.com \
+  --set oidc.audience=mecatl
 ```
 
+`defaultProvider` and `model` are empty by default and render only when set; provider IDs
+must be built-in CLI IDs and model IDs are opaque but non-blank. `maxRunTokens` and
+`maxTeamTokens` are nullable: `null` passes no flag (the runtime remains unlimited), while
+an explicit value must be a positive integer. Empty `topologySpreadConstraints`,
+`affinity`, `nodeSelector`, and `tolerations` render no scheduling fields. Supply normal
+Kubernetes pod-spec shapes when setting them; a `kubernetes.io/hostname` spread constraint
+keeps replicas apart where enough nodes are eligible.
+
+For certificate/credential rotation, overlap old and new CAs in bundles until all leaves
+and pods have moved, then remove the old CA. Projected server cert/key and file-backed
+Redis CA/ACL changes are transactional and last-valid: malformed intermediate generations
+stay rejected while the prior generation remains active. The server client-CA pool is
+static and requires a rolling restart when it changes.
+
 The Secret is mounted read-only at `/var/run/secrets/redis` with `defaultMode: 0440`; the chart projects exactly the configured CA and ACL keys, not the whole Secret. Their values are never chart values or command arguments. The external chart passes the CA path when `redis.caKey` is set and `--redis-tls` otherwise, and conditionally passes configured password and username paths. Both TLS modes verify the Redis certificate against the hostname from `redis.endpoint` (including IP SAN rules); hostname verification is never disabled. TLS with no ACL is valid, and a system-trust install with no ACL renders no Secret volume at all. `values-kind.yaml` is a separate disposable-only profile for the local `ko.local` image and plaintext Redis fixture, and its rendered command includes the explicit `--redis-allow-plaintext` opt-in. It must not be used for a production install.
+
+#### Mounting XDG configuration
+
+Use `extraEnv`, `extraVolumes`, and `extraVolumeMounts` to project trusted,
+immutable agent configuration without adding pod-local state. Set `XDG_CONFIG_HOME`
+to the mount root and place content below `<root>/mecatl/skills`,
+`<root>/mecatl/agents`, and `<root>/mecatl/rules`. Set
+`skills.autoDiscover: true` (default `false`) to discover skills from the
+standard XDG locations (`$XDG_CONFIG_HOME/mecatl/skills` or
+`~/.config/mecatl/skills`, plus `~/.claude/skills`) and, when the workspace is
+trusted, `<workspace>/.mecatl/skills` and `<workspace>/.claude/skills`.
+Create the ConfigMap in the release namespace before referencing it:
+
+```yaml
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: mecatl-config-v1
+  namespace: mecatl
+immutable: true
+data:
+  review-skill: |
+    ---
+    name: review
+    ---
+    Review changes for correctness and security.
+  reviewer-agent: |
+    ---
+    name: reviewer
+    ---
+    Review the supplied change and report actionable findings.
+  base-rules: |
+    Keep responses concise and explain material risks.
+```
+
+Then supply the matching Helm values:
+
+```yaml
+extraEnv:
+  - name: XDG_CONFIG_HOME
+    value: /etc/mecatl-config
+skills:
+  autoDiscover: true
+extraArgs:
+  - --no-user-model
+extraVolumeMounts:
+  - name: mecatl-config
+    mountPath: /etc/mecatl-config
+    readOnly: true
+extraVolumes:
+  - name: mecatl-config
+    configMap:
+      name: mecatl-config-v1
+      items:
+        - {key: review-skill, path: mecatl/skills/review/SKILL.md}
+        - {key: reviewer-agent, path: mecatl/agents/reviewer.md}
+        - {key: base-rules, path: mecatl/rules/base.md}
+```
+
+Keep the ConfigMap and mount read-only. Immutable ConfigMaps cannot be changed:
+create a new versioned ConfigMap, update both its content and the Helm
+`configMap.name` reference, then run `helm upgrade`. Mutable ConfigMap updates
+also require a Deployment rollout because discovery is snapshotted at startup.
+A read-only XDG root cannot host the writable user-model store, so pass
+`--no-user-model` through `extraArgs`. `XDG_CONFIG_HOME` changes more than these
+three discovery paths: it also relocates operator settings, soul, and auth-file
+lookup under `<root>/mecatl`; include those files deliberately or leave them
+absent.
+
+A ToolHive-packaged skill can instead be mounted directly from an OCI artifact
+on Kubernetes 1.36 or newer. The artifact must contain `SKILL.md` at its root;
+mount each artifact at
+`<XDG_CONFIG_HOME>/mecatl/skills/<skill-name>` and enable
+`skills.autoDiscover: true`:
+
+```yaml
+extraEnv:
+  - name: XDG_CONFIG_HOME
+    value: /etc/mecatl-config
+skills:
+  autoDiscover: true
+extraArgs:
+  - --no-user-model
+extraVolumeMounts:
+  - name: review-skill
+    mountPath: /etc/mecatl-config/mecatl/skills/review
+    readOnly: true
+extraVolumes:
+  - name: review-skill
+    image:
+      reference: registry.example/skills/review@sha256:<digest>
+      pullPolicy: IfNotPresent
+```
+
+Kubernetes image volumes are inherently read-only, and the pod's
+`imagePullSecrets` apply to these artifact pulls normally. Use a digest-pinned
+reference in production; it remains immutable and `IfNotPresent` may safely use
+the node cache. A mutable tag with `IfNotPresent` may also reuse cached content;
+use `Always` if every pod start must resolve that tag from the registry. Mecatl
+still snapshots discovered skill metadata and body at process startup, so any
+artifact change requires pod recreation.
+
+##### Prove the skill in a coding run
+
+`GET /v1/skills` is an inventory check. It proves discovery, but it does not
+prove that the coding agent loaded or followed the skill. A useful end-to-end
+check must drive a real model through the skill and verify its tool calls.
+
+For example, create `oci-skill-demo/SKILL.md` with a body that requires the
+agent to create `oci-skill-proof.txt` containing `OCI_SKILL_MOUNT_OK`, then
+verify it with `Read`:
+
+```markdown
+---
+name: oci-skill-demo
+description: Creates and verifies a proof file from an OCI-mounted skill.
+---
+
+When invoked, use `Write` to create `oci-skill-proof.txt` containing exactly
+`OCI_SKILL_MOUNT_OK` and a trailing newline. Use `Read` to verify the file, then
+report the verified path and marker.
+```
+
+Build and publish that directory with ToolHive, resolve the published digest,
+and use the image-volume values above:
+
+```sh
+thv skill validate ./oci-skill-demo
+thv skill build ./oci-skill-demo --tag registry.example/skills/oci-skill-demo:v1
+thv skill push registry.example/skills/oci-skill-demo:v1
+```
+
+After starting mecak8s with a real provider, create a session and invoke the
+mounted skill through the HTTP API:
+
+```sh
+session_id=$(curl -fsS -X POST http://127.0.0.1:8081/v1/sessions \
+  -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
+
+curl -fsS -N -X POST \
+  "http://127.0.0.1:8081/v1/sessions/${session_id}/prompt" \
+  -H 'Content-Type: application/json' \
+  -d '{"text":"/oci-skill-demo Execute the mounted skill exactly and verify the resulting file."}'
+```
+
+The proof is the run, not the inventory response. Its SSE stream must show this
+sequence:
+
+1. `tool.call` for `Skill` with `name: "oci-skill-demo"`.
+2. A `tool.result` containing the instructions read from the OCI artifact.
+3. `tool.call` for `Write`, creating `oci-skill-proof.txt` with the unique marker.
+4. `tool.call` for `Read`, followed by a result containing `OCI_SKILL_MOUNT_OK`.
+5. A clean terminal result reporting the verified path and marker.
+
+Use Helm 3.16 or newer when adding an image volume to an existing release.
+Older Helm clients may render the manifest but fail to calculate the upgrade
+patch because their embedded Kubernetes API does not know the `image` volume
+field.
+
+#### Server TLS (`tls.*` chart values)
+
+Server TLS is separate from `redis.*` TLS and is disabled by default. Create the
+certificate Secret in the release namespace, then enable the chart values:
+
+```sh
+kubectl create secret tls mecak8s-tls --namespace mecatl \
+  --cert=server.crt --key=server.key
+
+helm upgrade --install mecak8s deploy/helm/mecak8s --namespace mecatl \
+  --set image.repository=registry.example/mecak8s \
+  --set redis.endpoint=redis.example.internal:6379 \
+  --set redis.credentialsSecret=mecak8s-redis \
+  --set tls.enabled=true \
+  --set tls.secretName=mecak8s-tls
+```
+
+The chart passes `/var/run/secrets/tls/tls.crt` and
+`/var/run/secrets/tls/tls.key` to `--tls-cert` and `--tls-key`, enabling TLS on
+both the gRPC and HTTP/SSE listeners. It projects only `tls.certKey` and
+`tls.keyKey` (defaulting to `tls.crt` and `tls.key`) from the pre-created Secret
+as a read-only `0440` volume; custom data-key names are supported. The chart
+creates no Secret. When enabled, the health, readiness, and drain requests use
+HTTPS. Projected certificate/key rotations are loaded transactionally and become visible to
+new gRPC and HTTP handshakes without a rollout; malformed or expired candidates retain the
+last valid certificate, and existing connections continue unchanged. A fixed internal
+observer warns once for each certificate generation that becomes expiring or expired. The
+client-CA bundle remains static and requires a rollout when it changes.
 
 #### Caller identity (`oidc.*` chart values)
 
@@ -96,11 +340,33 @@ The chart's `oidc.*` values wire the same four flags the legacy kustomize overla
 used to append: `oidc.enabled` (default `false`), `oidc.issuer`, `oidc.audience`
 (required together with `oidc.enabled`), the optional `oidc.jwksURI`, and
 `oidc.maxJWKSStaleness` (default `1h`). See [`deploy/README.md`](https://github.com/stacklok/mecatl/blob/main/deploy/README.md#caller-identity-oidc--the-opt-in-chart-values)
-for the full walkthrough, and [multi-user caller identity](https://github.com/stacklok/mecatl/blob/main/user-docs/deployment/mecak8s.md#multi-user-caller-identity-and-ownership-isolation-opt-in)
+for the full walkthrough, and [multi-user caller identity](https://github.com/stacklok/mecatl/blob/main/user-docs/building/deployment/mecak8s.md#multi-user-caller-identity-and-ownership-isolation-opt-in)
 for the isolation semantics. When `oidc.enabled` is true the chart also renders
 a `raw-driver` NetworkPolicy scoping ingress on a `app.kubernetes.io/component:
 raw-driver`-labelled pod to the mecak8s agent pod only — trusted-infrastructure
 raw gRPC drivers are not yet caller-enforced (ADR 0213).
+
+#### Local optional Keycloak fixture
+
+The disposable `deploy/mecak8s-kind/` fixture keeps its base profile unauthenticated
+and `ClusterIP`. Its optional Keycloak layer is an explicit local validation aid:
+`task mecak8s:kind-keycloak-setup` installs it;
+`task mecak8s:kind-keycloak-port-forward` is the issuer's loopback-only browser
+path, and `task mecak8s:kind-port-forward` is the sole mecak8s host path, bound
+to `127.0.0.1`. Map `keycloak.mecatl.svc.cluster.local` to `127.0.0.1` locally
+before the browser flow so the configured issuer hostname and certificate remain
+intact.
+The mecak8s certificate covers `localhost` and `127.0.0.1`; verify the fixture
+CA and hostname when connecting to `https://localhost:18081`, rather than
+weakening TLS verification.
+
+The normal fixture login is Authorization Code + PKCE for the public
+`mecatui-kind` client, requesting the `mecak8s:access` scope. A password grant
+is only a non-browser test helper, never the normal client journey. The server
+accepts only a Keycloak access token with `aud: mecak8s`; absent, forged,
+wrong-issuer, or wrong-audience tokens fail before authenticated API handling.
+The fixture's in-cluster issuer is deliberately private and CA-scoped. It does
+not change the production chart's external-IdP security defaults.
 
 #### Kind e2e (`task e2e:k8s`)
 

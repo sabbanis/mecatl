@@ -31,6 +31,14 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0104 — Session families get a bounded, injective, non-reversible physical name](./0104-session-family-physical-naming.md)
 - [0217 — Session discovery uses durable kind metadata and an authoritative transcript](./0217-session-discovery-continuation.md)
 - [0226 — Session storage separates current state, indexed metadata, and maintenance](./0226-session-storage-maintenance.md)
+- [0239 — Semantic stream retry and failed-step retry transport](./0239-semantic-stream-retry.md)
+- [0243 — Local JSONL durability boundaries](./0243-jsonl-durability.md)
+- [0245 — Safe build diagnostics](./0245-safe-build-diagnostics.md)
+- [0254 — Dedicated session debugger and per-instance admin transport](./0254-session-debugger-admin-transport.md)
+- [0255 — Sanitized durable network-attempt evidence](./0255-sanitized-network-attempt-evidence.md)
+- [0256 — Target-bound related evidence and approval-gated reporting](./0256-session-debugger-evidence-and-reporting.md) *(partially superseded by 0257)*
+- [0257 — Session debugger incarnation and disclosure hardening](./0257-session-debugger-hardening.md) *(incarnation identity and edges superseded by 0258)*
+- [0258 — Cryptographic session and lineage incarnations](./0258-cryptographic-session-incarnations.md)
 - [0229 — Redis migration uses fenced renewable ownership and indexed coverage](./0229-redis-migration-fencing.md) *(superseded by 0230)*
 - [0230 — Redis migration ownership and coverage are proved before mutation](./0230-redis-migration-atomic-ownership-and-coverage.md) *(superseded by 0231)*
 - [0231 — Redis readiness requires exact owner-index coverage](./0231-redis-owner-index-exact-coverage.md)
@@ -44,6 +52,10 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0113 — Operator MCP authentication profiles and explicit login](./0113-operator-mcp-auth-profiles.md)
 - [0223 — Pin MCP transport-error semantics that do not replay rejected calls](./0223-mcp-sdk-transport-error-semantics.md)
 - [0232 — Steer-while-running: inject a user message into an in-flight run](./0232-steer-while-running.md)
+- [0251 — Multimodal steer preserves prompt content](./0251-multimodal-steer.md)
+- [0252 — HTTP steer endpoint: `POST /v1/sessions/{id}/steer`](./0252-http-steer-endpoint.md)
+- [0253 — SDK mocking testkit: vendor the proven unary pattern, defer streaming](./0253-sdk-mocking-testkit.md)
+- [0279 — TypeScript SDK architecture: Connect-ES transport, protobuf-es codegen, in-repo pnpm project](./0279-typescript-sdk-architecture.md) *(supersedes ADR 0253 Decisions 1–2 in part)*
 - [0036 — `engine/` is its own Go module (monorepo via `go.work`)](./0036-engine-module.md)
 - [0037 — Engine public-API stability contract](./0037-engine-stability-contract.md)
 - [0038 — Event-sourced SessionStore rehydration (the reference fold)](./0038-event-sourced-rehydration.md)
@@ -53,6 +65,15 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0108 — Read skill assets on demand by logical name](./0108-on-demand-logical-skill-assets.md) *(supersedes only ADR 0005/0047's skill-asset materialization/read-root decisions)*
 - [0048 — mecak8s: Kubernetes-native agent harness (storage-free, managed-service state)](./0048-mecak8s.md)
 - [0233 — Secure external Redis on the shared connection layer](./0233-secure-external-redis.md)
+- [0237 — Listener-scoped workspace authority](./0237-listener-scoped-workspace-authority.md)
+- [0277 — Remote mecatui OIDC client authentication](./0277-remote-mecatui-oidc.md) *(supersedes 0270–0273)*
+- [0278 — mecak8s edge-terminated TLS](./0278-mecak8s-edge-terminated-tls.md) *(supersedes ADR 0240's provider-security gate scope only)*
+- [0275 — Bounded scoped HTTPS keep-alive reuse for OIDC](./0275-bounded-scoped-https-keepalive-oidc.md) *(supersedes ADR 0235's keep-alive policy and ADR 0277's credential-recovery classification only)*
+- [0270 — Activity-gated remote OIDC refresh](./0270-activity-gated-remote-oidc-refresh.md) *(superseded by 0277)*
+- [0271 — Recover remote TUI authentication without replaying ownership-ambiguous work](./0271-tui-reauth-owner-recovery.md) *(superseded by 0277)*
+- [0272 — Safe target logout for remote mecatui OIDC](./0272-remote-mecatui-logout.md) *(superseded by 0277)*
+- [0273 — Remote mecatui OIDC client login](./0273-remote-mecatui-oidc-login.md) *(superseded by 0277)*
+- [0274 — Remote logout provider budget](./0274-remote-mecatui-logout-budget.md) *(supersedes ADR 0277's logout provider budget only)*
 - [0059 — Scheduled tasks](./0059-scheduled-tasks.md)
 - [0065 — Conversation fork: peer session from a history snapshot](./0065-conversation-fork.md)
 - [0073 — Schedule tool](./0073-schedule-tool.md)
@@ -73,6 +94,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0010 — Semantic memory recall](./0010-semantic-memory-recall.md)
 - [0011 — Soul & user-model](./0011-soul-and-user-model.md)
 - [0012 — Compaction](./0012-compaction.md)
+- [0276 — Count the full request and expose durable manual compaction](./0276-full-request-and-manual-compaction.md) *(supersedes ADR 0025's `/compact` deferral only)*
 - [0106 — Optional completion-learning seam](./0106-optional-learning-seam.md)
 - [0107 — Operator-profile memory lifecycle](./0107-operator-profile-memory-lifecycle.md)
 - [0109 — Evidence-backed reflection and durable staged learning](./0109-staged-learning-proposals.md)
@@ -99,6 +121,10 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0077 — Direct-write writable Subagent (no fork, no merge-back)](./0077-direct-write-subagent.md)
 - [0079 — Converge delegation observability on two tiers (bounded previews for Subagent/Parallel)](./0079-delegation-observability-convergence.md)
 - [0200 — A failed delegated child is resumable (Recover, not refuse)](./0200-resume-a-failed-subagent.md)
+- [0242 — Route unpinned writable named specialists](./0242-route-unpinned-writable-named-specialists.md)
+- [0248 — SDK compatibility discovery and the typed error contract](./0248-sdk-compatibility-and-error-contract.md)
+- [0249 — Durable run identity: a host-minted `run_id`](./0249-durable-run-identity.md)
+- [0250 — Durable cursors and the session watch transport](./0250-durable-cursors-and-watch.md)
 
 ### Providers & APIs
 - [0016 — Multi-provider](./0016-multi-provider.md)
@@ -140,6 +166,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0098 — Telemetry for the headless binaries (mecatequi, mecak8s)](./0098-headless-telemetry.md)
 
 ### Governance & trust
+- [0241 — Canonical untrusted-content fences live in governance](./0241-governance-fence-ownership.md)
 - [0021 — Guardrails](./0021-guardrails.md)
 - [0049 — Remove the guardrails per-session checker call-count cap](./0049-guardrails-remove-maxchecks.md)
 - [0050 — Remove the guardrails oversized-content inspection skip](./0050-guardrails-remove-maxcontentbytes.md)
@@ -160,6 +187,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0095 — Root-aware project trust](./0095-root-aware-project-trust.md) *(the authoritative #359 trust decision; supersedes 0092 + 0094)*
 - [0202 — Diagnostic-only posture reporting](./0202-diagnostic-only-posture-reporting.md) *(orthogonal reporting surface; relates to 0095)*
 - [0204 — Caller identity: accept a principal, thread it everywhere, record the owner](./0204-caller-identity-threading.md) *(agent-identity Track A; audit-trail phase)*
+- [0234 — Derived delegation authority behind an evaluator port](./0234-authority-evaluator-port.md)
 - [0205 — Bound cached JWKS staleness](./0205-bounded-jwks-staleness.md)
 - [0206 — Ship reusable OIDC caller identity as an opt-in module](./0206-oidc-authn-module.md)
 - [0212 — Enforce caller ownership at every application access path](./0212-caller-ownership-enforcement.md) *(agent-identity Track A; application isolation)*
@@ -182,8 +210,9 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0087 — Staged mecatui transport migration](./0087-mecatui-staged-transport-migration.md) *(superseded by 0089)*
 - [0088 — Explicit daemon.yaml (listener topology config)](./0088-daemon-config-file.md)
 - [0222 — mecatui: ctrl+t routes by ask type; full-screen ask-args view](./0222-mecatui-ask-args-view.md)
-- [0235 — Studio: the Atrium workspace as mecatl's daemon-only web client](./0235-studio-atrium-module.md)
-- [0236 — Studio's chat list is the daemon's session store](./0236-studio-server-backed-chats.md)
+- [0280 — Studio: the Atrium workspace as mecatl's daemon-only web client](./0280-studio-atrium-module.md)
+- [0281 — Studio's chat list is the daemon's session store](./0281-studio-server-backed-chats.md)
+- [0247 — mecatui generated status lines](./0247-mecatui-status-line.md)
 
 ### Retired
 - [0029 — Repo-map tree-sitter](./0029-repomap-tree-sitter.md) *(retired)*

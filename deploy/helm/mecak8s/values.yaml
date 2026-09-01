@@ -3,15 +3,79 @@ fullnameOverride: ""
 
 image:
   repository: ghcr.io/stacklok/mecatl/mecak8s
-  # Supply exactly one immutable release selector at install time: a signed
-  # release tag or a digest. This chart supports the enterprise distribution's
-  # version-tag release model as well as digest-pinned images.
+  # Leave both selectors empty to use v<chart-version>. Set a signed release
+  # tag or digest to override that default.
   digest: ""
   tag: ""
   pullPolicy: IfNotPresent
 
+# imagePullSecrets projects Secret(s) of type kubernetes.io/dockerconfigjson
+# onto the pod for pulling a private image (e.g. a private GHCR repository).
+# Empty by default: a public image needs none.
+imagePullSecrets: []
+
+# extraEnv appends raw Kubernetes EnvVar entries to the agent container.
+# Without mockProvider or a real LLM provider credential, the binary
+# hard-fails at startup (no provider configured) — this is how a real
+# deployment supplies one: project a Secret holding e.g. OPENROUTER_API_KEY /
+# ANTHROPIC_API_KEY / OPENAI_API_KEY via valueFrom.secretKeyRef. cliconfig
+# (the same provider-resolution path mecated uses) detects the env var
+# directly and, with only one key present, selects that provider as the
+# default automatically — no --default-provider flag needed. The Secret
+# itself can come from anywhere (a `kubectl create secret` in Kind, an
+# ExternalSecret in a real cluster, ...); this values shape is identical
+# either way.
+extraEnv: []
+
+# extraArgs appends command-line arguments to the mecak8s agent container.
+extraArgs: []
+
+# extraVolumes and extraVolumeMounts append restricted Kubernetes Volume and
+# VolumeMount entries. Keep configuration content read-only and immutable; XDG-
+# based skills/agents/rules can be projected from a ConfigMap, or a ToolHive OCI
+# skill can use a Kubernetes 1.36+ image volume mounted at
+# <XDG_CONFIG_HOME>/mecatl/skills/<skill-name>.
+extraVolumes: []
+extraVolumeMounts: []
+
+# Automatically discover skills from the standard XDG and trusted workspace locations.
+# XDG and user skills are operator-trusted model-steering instructions; project
+# skill locations remain gated on explicit project trust.
+skills:
+  autoDiscover: false
+
 replicaCount: 2
 mockProvider: false
+
+# Runtime provider selection and spend ceilings. Empty/null means that the chart
+# does not pass the corresponding flag; the runtime/provider default applies.
+defaultProvider: ""
+model: ""
+maxRunTokens: null
+maxTeamTokens: null
+
+# A real provider (mockProvider: false) requires OIDC and either pod TLS or an
+# explicitly asserted gateway TLS boundary. The unsafe bypass remains for local
+# development or a trusted mesh that supplies both controls outside the pod.
+security:
+  allowUnsafeRealProvider: false
+  # For the real-provider secure profile, permits TLS upstream only with OIDC;
+  # operator owns gateway TLS, forwarding the original Authorization bearer, and
+  # gateway/mesh-only plaintext backend reachability.
+  tlsTerminatedUpstream: false
+
+# Optional Kubernetes scheduling controls. Empty values render no pod fields.
+topologySpreadConstraints: []
+affinity: {}
+nodeSelector: {}
+tolerations: []
+
+# workspace is the operator-mounted agent filesystem root (e.g. a PVC mount
+# path). Empty (the default) is a FILE-LESS deployment: every session is no-FS.
+# A non-empty ABSOLUTE path makes the deployment server-assigned filesystem
+# authority rooted there — clients cannot select another root (ADR 0237). Mount
+# the volume yourself; the chart only passes the flag.
+workspace: ""
 
 redis:
   # A production release never creates Redis. Supply the managed endpoint and,
@@ -30,8 +94,8 @@ redis:
     enabled: false
 
 oidc:
-  # Caller identity (ADR 0204/0205). Off by default — the byte-identical
-  # no-auth posture. Enabling it requires issuer + audience.
+  # Caller identity (ADR 0204/0205). Off for mock and explicit unsafe-bypass
+  # profiles; required for a real provider under the secure default.
   enabled: false
   issuer: ""
   audience: ""
@@ -40,6 +104,25 @@ oidc:
   # from the issuer's discovery document.
   jwksURI: ""
   maxJWKSStaleness: 1h
+  # allowPrivateHTTPSIssuer admits a private issuer address while retaining HTTPS
+  # and hardened default-client protections. It requires an HTTPS issuer and CA.
+  allowPrivateHTTPSIssuer: false
+  # caSecret and caKey optionally project a private OIDC CA directly to the
+  # OIDC validator; they do not change process-wide TLS trust.
+  caSecret: ""
+  caKey: ""
+
+tls:
+  # Server TLS is optional for mock and explicit unsafe-bypass profiles, but
+  # required for a real provider under the secure default. To enable it, create
+  # the named Secret in this release namespace; the chart projects only certKey
+  # and keyKey read-only (0440). Those keys default to tls.crt and tls.key. Both
+  # gRPC and HTTP/SSE use the pair and reload valid rotations in process; an
+  # invalid replacement retains the last valid certificate.
+  enabled: false
+  secretName: ""
+  certKey: tls.crt
+  keyKey: tls.key
 
 resources:
   requests:
@@ -53,5 +136,6 @@ service:
   type: ClusterIP
   grpcPort: 8080
   httpPort: 8081
+  nodePorts: {}
 
 podAnnotations: {}

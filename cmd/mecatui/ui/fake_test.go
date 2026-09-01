@@ -120,7 +120,8 @@ type fakeConv struct {
 	// is on its way to the reducer (so a follow-up prompt won't be dropped by the
 	// sessionID == "" guard in submitPrompt). See fakeRecver's doc for why the
 	// teatest cases sequence on signals like this rather than on rendered output.
-	sessionReady chan struct{}
+	sessionReady     chan struct{}
+	sessionReadyOnce sync.Once
 
 	// recvers, when non-nil, makes OpenConverse hand a FRESH scripted fakeRecver per
 	// call, round-robin over this slice (the last entry repeats once exhausted). The
@@ -154,7 +155,7 @@ type fakeConv struct {
 	created     chan struct{}
 	createdOnce sync.Once
 	// resolvedModel is the EFFECTIVE model the fake's create response echoes back —
-	// the header e2e asserts it lands in m.effectiveModel and renders from turn zero.
+	// the header e2e asserts it lands in m.resolvedSessionModel and renders from turn zero.
 	resolvedModel client.ResolvedModel
 	// echoSelAsResolved, when true, makes CreateSession echo the REQUESTED selector
 	// back as the resolved model (so the restart-now handoff e2e sees the new effective
@@ -165,6 +166,8 @@ type fakeConv struct {
 	echoSelAsResolved bool
 	createCount       int
 	closedIDs         []string
+	operations        []string
+	closeErr          error
 	mu                sync.Mutex
 	// lastResolved records the resolved model the MOST RECENT CreateSession echoed
 	// back, so GetSession can return it (modelling a real server whose GetSession
@@ -327,14 +330,15 @@ func (c *fakeConv) CreateSession(ctx context.Context, sel client.ModelSelection,
 // threaded into the create, then delegates to the shared create body.
 func (c *fakeConv) CreateSessionInWorkspace(_ context.Context, workspace string, sel client.ModelSelection, mode string) (string, client.Capabilities, client.ResolvedModel, error) {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.createdSel = sel
 	c.createdWksp = workspace
 	if mode != "" {
 		c.mode = mode
 	}
 	c.createCount++
+	c.operations = append(c.operations, "create")
 	n := c.createCount
-	c.mu.Unlock()
 	if c.created != nil {
 		c.createdOnce.Do(func() { close(c.created) })
 	}
@@ -342,11 +346,7 @@ func (c *fakeConv) CreateSessionInWorkspace(_ context.Context, workspace string,
 		c.recreatedOnce.Do(func() { close(c.recreated) })
 	}
 	if c.sessionReady != nil {
-		select {
-		case <-c.sessionReady:
-		default:
-			close(c.sessionReady)
-		}
+		c.sessionReadyOnce.Do(func() { close(c.sessionReady) })
 	}
 	// A selector rejection fails only a NON-ZERO selection (the issue #41
 	// server-rejection path). Checked FIRST so a test can pair it with createErr
@@ -378,7 +378,8 @@ func (c *fakeConv) CreateSessionInWorkspace(_ context.Context, workspace string,
 	if c.mode == "" {
 		c.mode = client.ModeDefaultString
 	}
-	return id, c.caps, resolved, nil
+	caps := c.caps
+	return id, caps, resolved, nil
 }
 
 // CreateSessionWithCarryover implements the ui SessionCreator's carryover seam
@@ -414,12 +415,14 @@ func (c *fakeConv) carryoverSources() []string {
 	return append([]string(nil), c.carryoverIDs...)
 }
 
-// CloseSession records the id closed (restart-now closes the old session first).
+// CloseSession records the id closed. closeErr models the deliberately ignored
+// best-effort close failure used by replacement-session handoff tests.
 func (c *fakeConv) CloseSession(_ context.Context, id string) error {
 	c.mu.Lock()
+	defer c.mu.Unlock()
 	c.closedIDs = append(c.closedIDs, id)
-	c.mu.Unlock()
-	return nil
+	c.operations = append(c.operations, "close")
+	return c.closeErr
 }
 
 // closed returns a copy of the recorded CloseSession ids (test-goroutine read).
@@ -427,6 +430,13 @@ func (c *fakeConv) closed() []string {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	return append([]string(nil), c.closedIDs...)
+}
+
+// ops returns the create/close call order for lifecycle assertions.
+func (c *fakeConv) ops() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	return append([]string(nil), c.operations...)
 }
 
 func (c *fakeConv) OpenConverse(ctx context.Context) (*client.Stream, error) {

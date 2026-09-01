@@ -81,9 +81,15 @@
   only for a fired/failed fire; a skipped fire has no run, duration 0). The
   duration histogram shares the `latencyInstruments` explicit-bucket ladder.
   > A broader performance-observability effort lands incrementally on a
-  > **loopback-only, unauthenticated admin listener** (`--metrics-addr`, default
-  > `127.0.0.1:9090`): `/metrics`, `/debug/pprof/*`, `/debug/vars` (a curated
-  > `runtime/metrics` snapshot), `/debug/flightrecorder` (an execution-trace ring),
+  > separate unauthenticated admin listener: `mecated --metrics-addr` remains
+  > loopback-only (default `127.0.0.1:9090`), while embedded `mecatui --perf`
+  > defaults to an owner-private per-instance UNIX `admin.sock` beside its gRPC
+  > socket. Multiple mecatui instances therefore do not contend for a fixed port.
+  > An explicit mecatui `--perf-addr` selects TCP and is rejected unless loopback;
+  > `--perf-mcp` with no explicit address uses ephemeral loopback TCP because the
+  > supported MCP transport is streaming HTTP and requires a URL. No stdio MCP is
+  > introduced. The surfaces serve `/metrics`, `/debug/pprof/*`, `/debug/vars`,
+  > `/debug/flightrecorder` (an execution-trace ring),
   > and — opt-in via `--perf-mcp` — `/mcp`, the read-only **perf MCP server**
   > (`internal/adapter/mcpperf`) that lets an agent introspect this process's
   > runtime/latency/profile state as reduced numeric summaries (slow-turns,
@@ -184,17 +190,45 @@
   EventLog.Append, and ToolCall all take the same stable per-family flock identity;
   sidecar-first/snapshot-last deletion therefore cannot race a same-family append,
   while unrelated families proceed independently. Snapshot replacement holds that
-  owner-only flock
-  from inactive-temp recovery through same-directory write, file sync, atomic rename,
-  and directory sync. Replacement temp names carry a random process-owner token and
+  owner-only flock from inactive-temp recovery through same-directory write, file
+  sync, atomic rename, and directory sync. An existing canonical snapshot may retain
+  weaker-capability Save behavior, but the first Save of a root-level legacy family
+  fails before migration when directory sync is unavailable. EventLog strict append
+  requires both file and directory sync. ToolCall instead attempts every available sync
+  and may leave an unsynced or partially synced best-effort audit record. Event and tool
+  sidecars use the same
+  flock across cooperating jsonlstore processes: newline is their commit marker,
+  append opens the canonical sidecar through an `os.Root`, rejects non-regular
+  entries without blocking on FIFOs, truncates only an unterminated EOF fragment,
+  then writes and file-syncs one complete record and directory-syncs after every
+  successful append. Event reads use confined canonical/store roots, capture a
+  bounded newline-terminated prefix under that lock, then yield after releasing it
+  while retaining the bounded descriptor/section view until iteration ends; only an
+  unterminated final fragment is ignored. A blank, whitespace-only, malformed complete
+  or middle record, unknown format, malformed payload, or I/O error fails loudly. The flock
+  does not coordinate arbitrary external writers. Replacement temp names carry a random process-owner token and
   monotonic generation; only names that validate against that private protocol are
   cleanup candidates. Startup skips a family whose lock is live, while the next
   successful Save waits for the lock and removes all prior inactive generations
   before creating its own. Thus another process's active temp and the committed
   snapshot are never reaped, and repeated crashes do not accumulate an unbounded
-  temp set. `Store.SnapshotDurability` exposes those three verified primitives: an unsupported
-  sync primitive is reported as weaker durability rather than overclaiming host-crash
-  safety. Failures before rename preserve the prior snapshot; a failure after rename
+  temp set. The configured `--store-dir` path and every ancestor must be physical,
+  non-symlink directories; on macOS use the physical `/private/...` spelling rather
+  than a `/var/...` path that traverses the `/var` symlink.
+  `Store.SnapshotDurability` exposes those three verified primitives: an unsupported
+  sync primitive is reported as weaker snapshot durability rather than overclaiming
+  host-crash safety. That claim also depends on an underlying filesystem/storage stack
+  that honors successful sync and atomic rename; the probe verifies syscall support,
+  not media persistence or whether volatile storage such as tmpfs survives power loss.
+  Snapshot Save retains the weaker-capability behavior for an existing canonical family;
+  EventLog append is unavailable without both file and directory sync, and Delete,
+  retention, and destructive/move operations fail closed without directory sync.
+  ToolCall avoids forcing legacy migration on such a filesystem: it appends to the
+  readable sidecar or the side matching the authoritative snapshot, attempts every
+  available sync, and may leave an unsynced or partially synced best-effort record.
+  Sidecars opened for append and legacy files selected for migration are tightened
+  through validated no-follow descriptors to `0600`. Failures before rename preserve
+  the prior snapshot; a failure after rename
   is loud while the new snapshot remains authoritative.
   The logical session id is an opaque valid-UTF-8 string
   stored inside each snapshot; the bounded hash-suffixed `sid-v1-` filename token is not
@@ -226,15 +260,26 @@
   disables a limit, invalid/negative/unknown config fails, and project-tier
   retention is ignored. Main deletion defaults off and requires an explicit
   acknowledgement after the planner summary is logged. Durable unknown/invalid
-  taxonomy, running/awaiting, live, and leased rows remain protected. The effective
-  secret-free `retention/v1` policy is projected by authenticated storage health.
+  taxonomy, running/awaiting, live, and leased rows remain protected. Under caller
+  ownership, ownerless rows are filtered before retention planning or mutation. The effective
+  secret-free `retention/v1` policy and bounded ownerless session/schedule cutover inventory
+  are projected by authenticated storage health.
 - **EventLog** (`port.EventLog`, cloud-native Phase 3) — a DURABLE per-session
   event timeline, SEPARATE from `EventSink` (the sink mirrors live; the log is
   storage a later consumer reads back). **The loop never calls it** — persistence
   lives at the relay (`internal/adapter/server`), which appends every observed
   event (incl. the post-disconnect tail and `EvApproval`/`EvCompactionArchive`,
   which are skipped on the client wire) on a cancel-detached context so a dead
-  client can't abort the durable write. `jsonlstore` triples as
+  client can't abort the durable write. Clients remain chunk-streamed. The run-scoped
+  durable recorder coalesces message and reasoning separately into UTF-8-safe chunks capped
+  at 1 MiB, conservatively below jsonlstore's 16 MiB record limit under worst-case JSON
+  escaping. Typical turns still produce one record of each kind; oversized turns produce
+  the minimum bounded number. A non-delta boundary flushes pending chunks before its own
+  append. Every chunk and boundary is attempted exactly once and cleared regardless of
+  error because EventLog errors can follow a durable write; retry would duplicate folded
+  text. Memory remains bounded, one warning is emitted per recorder, and later boundary/result
+  appends continue. A process crash or failed append can lose a chunk; the completed snapshot
+  remains authoritative. See [ADR 0243](../adr/0243-jsonl-durability.md). `jsonlstore` triples as
   `SessionStore`+`ToolCallRecorder`+`EventLog` (a `.events.jsonl` sidecar);
   memstore has an in-memory sibling; `grpcdriver` carries the remote
   `EventLogService` (`--event-log-url`, independent of the session store). The
@@ -255,6 +300,16 @@
   so a pure fold is byte-identical-replay faithful only for plain-chat providers
   (ADR 0038). See `docs/adr/0027-cloud-native.md` Phase 3 and the
   `eventlogconformance` suite.
+
+  A dedicated debug session is a fourth bounded consumer of the same durable facts. Its
+  target-bound `InspectSession` projections expose compaction archives, content-free request
+  manifests, sanitized network attempts, typed delegation, and latest-run versus lifetime
+  counters without widening ordinary client streams. Lineage comes from a bounded
+  `SessionLineageReader` plus typed-event fallback; retained descendants receive opaque
+  incarnation-bound, revalidated handles, while pruned snapshots remain content-free
+  tombstones keyed separately from a later same-ID incarnation. Event-log
+  retention and scan limits are reported rather than inferred. See
+  [ADR 0256](../adr/0256-session-debugger-evidence-and-reporting.md).
 
   > **Two `Load` implementations, one port.** mecatl's own adapters (memstore,
   > jsonlstore, the remote driver) implement `Load` by **snapshot-deserialize**

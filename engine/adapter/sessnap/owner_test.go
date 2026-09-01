@@ -2,10 +2,12 @@ package sessnap_test
 
 import (
 	"encoding/json"
+	"reflect"
 	"testing"
 	"time"
 
 	"github.com/stacklok/mecatl/engine/adapter/sessnap"
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/session"
 )
 
@@ -19,12 +21,13 @@ func TestCallerIdentity_Scenario0_OwnerSnapshotRoundTrip(t *testing.T) {
 
 	s := session.New("s1", session.ModeDefault, "/w", session.Limits{}, time.Unix(0, 0).UTC())
 	owner := &session.Principal{
-		Issuer:    "https://idp.example.com",
-		Subject:   "user-42",
+		Issuer:    " https://例.example.com/領域 ",
+		Subject:   " álïçé\n",
 		GrantType: session.GrantTypeUser,
 		Name:      "Alice",
 	}
-	if err := s.RestoreLabels(owner, session.Authority("team-lead")); err != nil {
+	authority := session.Authority{CapabilitySet: governance.CapabilitySet{Tools: []string{"Read"}}, Provenance: "derived"}
+	if err := s.RestoreLabels(owner, authority); err != nil {
 		t.Fatalf("RestoreLabels: %v", err)
 	}
 
@@ -43,8 +46,8 @@ func TestCallerIdentity_Scenario0_OwnerSnapshotRoundTrip(t *testing.T) {
 	if *got.Owner != *owner {
 		t.Errorf("owner round-trip: got %+v, want %+v", *got.Owner, *owner)
 	}
-	if got.Authority != session.Authority("team-lead") {
-		t.Errorf("authority round-trip: got %q, want %q", got.Authority, "team-lead")
+	if gotAuthority, bound := got.BoundAuthority(); !bound || !reflect.DeepEqual(gotAuthority, authority) {
+		t.Errorf("authority round-trip: got %+v, bound=%v; want %+v", gotAuthority, bound, authority)
 	}
 
 	// Byte-identical: re-marshalling the restored session reproduces the line.
@@ -65,6 +68,22 @@ func TestCallerIdentity_Scenario0_OwnerSnapshotRoundTrip(t *testing.T) {
 	}
 }
 
+func TestOwnerSnapshotRejectsNULDelimitedIdentity(t *testing.T) {
+	t.Parallel()
+
+	for _, owner := range []string{
+		`{"issuer":"a\u0000b","subject":"c","grant_type":"user"}`,
+		`{"issuer":"a","subject":"b\u0000c","grant_type":"user"}`,
+	} {
+		line := []byte(`{"id":"s1","state":"idle","mode":"default","limits":{},` +
+			`"counters":{},"workspace":"/w","created_at":"1970-01-01T00:00:00Z",` +
+			`"owner":` + owner + `,"authority":"must-not-apply","messages":[]}`)
+		if _, err := sessnap.Unmarshal(line); err == nil {
+			t.Fatalf("Unmarshal accepted unsafe owner %s", owner)
+		}
+	}
+}
+
 // TestCallerIdentity_Scenario0_PreShipSnapshotRestores pins AC0.2: a snapshot
 // written before this plan (no "owner"/"authority" keys) restores to a nil
 // owner and a zero authority — additive omitempty, never a parse failure.
@@ -81,8 +100,8 @@ func TestCallerIdentity_Scenario0_PreShipSnapshotRestores(t *testing.T) {
 	if got.Owner != nil {
 		t.Errorf("pre-ship snapshot restored owner %+v, want nil", *got.Owner)
 	}
-	if got.Authority != (session.Authority("")) {
-		t.Errorf("pre-ship snapshot restored authority %q, want the zero value", got.Authority)
+	if _, bound := got.BoundAuthority(); bound {
+		t.Error("pre-ship snapshot restored authority as bound")
 	}
 
 	// And the omitempty half: an ownerless session emits neither key, so a
@@ -128,16 +147,21 @@ func TestCallerIdentity_Scenario0_APICompatAdditive(t *testing.T) {
 	}
 	// RestoreState touches neither label: they are restored by the aggregate
 	// method, not the state driver.
-	if s.Owner != nil || s.Authority != session.Authority("") {
-		t.Errorf("RestoreState set the labels: owner=%v authority=%q", s.Owner, s.Authority)
+	if s.Owner != nil {
+		t.Errorf("RestoreState set owner=%v", s.Owner)
+	}
+	if _, bound := s.BoundAuthority(); bound {
+		t.Error("RestoreState set authority")
 	}
 
 	// And the fields are readable off the aggregate by an external consumer.
 	owner := &session.Principal{Issuer: "iss", Subject: "sub", GrantType: session.GrantTypeSystem}
-	if err := s.RestoreLabels(owner, session.Authority("a")); err != nil {
+	authority := session.Authority{CapabilitySet: governance.CapabilitySet{Tools: []string{"Read"}}, Provenance: "derived"}
+	if err := s.RestoreLabels(owner, authority); err != nil {
 		t.Fatalf("RestoreLabels: %v", err)
 	}
-	if s.Owner == nil || *s.Owner != *owner || s.Authority != session.Authority("a") {
-		t.Errorf("labels not readable: owner=%v authority=%q", s.Owner, s.Authority)
+	gotAuthority, bound := s.BoundAuthority()
+	if s.Owner == nil || *s.Owner != *owner || !bound || !reflect.DeepEqual(gotAuthority, authority) {
+		t.Errorf("labels not readable: owner=%v authority=%+v bound=%v", s.Owner, gotAuthority, bound)
 	}
 }

@@ -57,6 +57,10 @@ func dialGRPC(t *testing.T, svc *server.Service) (mecatlv1.HarnessServiceClient,
 // newService builds a server.Service over a real *agent.Engine wired with
 // mockllm + memfs + permpolicy + the given tools and policy rules.
 func newService(t *testing.T, llm *mockllm.Provider, rules []governance.Rule, tools ...tool.Tool) *server.Service {
+	return newServiceWithImplementation(t, llm, rules, "", tools...)
+}
+
+func newServiceWithImplementation(t *testing.T, llm *mockllm.Provider, rules []governance.Rule, implementation string, tools ...tool.Tool) *server.Service {
 	t.Helper()
 	cat := tool.NewCatalog()
 	for _, tl := range tools {
@@ -69,7 +73,15 @@ func newService(t *testing.T, llm *mockllm.Provider, rules []governance.Rule, to
 		Model:   "test-model",
 	})
 	svc, err := server.NewService(server.Config{
-		Engine:     engine,
+		Engine:               engine,
+		BuildID:              "test-build",
+		ServerImplementation: implementation,
+		ProviderEndpoint: func(providerID string) string {
+			if providerID != "test-provider" {
+				return ""
+			}
+			return "https://user:secret@provider.example:8443/api/../v1?token=secret#fragment"
+		},
 		Store:      memstore.New(),
 		Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
 		Now:        func() time.Time { return time.Unix(0, 0) },
@@ -82,6 +94,57 @@ func newService(t *testing.T, llm *mockllm.Provider, rules []governance.Rule, to
 		t.Fatalf("new service: %v", err)
 	}
 	return svc
+}
+
+func TestGRPCGetServerInfoReturnsSafeDiagnosticsSnapshot(t *testing.T) {
+	svc := newService(t, mockllm.New(), allowRules())
+	client, cleanup := dialGRPC(t, svc)
+	defer cleanup()
+
+	info, err := client.GetServerInfo(context.Background(), &mecatlv1.GetServerInfoRequest{ProviderId: "test-provider"})
+	if err != nil {
+		t.Fatalf("GetServerInfo: %v", err)
+	}
+	if got := info.GetBuildId(); got != "test-build" {
+		t.Fatalf("build_id = %q, want test-build", got)
+	}
+	if got := info.GetServerImplementation(); got != "unknown" {
+		t.Fatalf("server_implementation = %q, want unknown", got)
+	}
+	if got := info.GetLlmProviderDisplayEndpoint(); got != "https://provider.example:8443/v1" {
+		t.Fatalf("llm_provider_display_endpoint = %q, want sanitized origin and path", got)
+	}
+	if strings.Contains(info.GetLlmProviderDisplayEndpoint(), "secret") || strings.Contains(info.GetLlmProviderDisplayEndpoint(), "token") || strings.Contains(info.GetLlmProviderDisplayEndpoint(), "#") {
+		t.Fatalf("unsafe endpoint projection: %q", info.GetLlmProviderDisplayEndpoint())
+	}
+	if _, err := client.GetSession(context.Background(), &mecatlv1.GetSessionRequest{SessionId: "never-created"}); status.Code(err) != codes.NotFound {
+		t.Fatalf("GetServerInfo must not create or inspect session state; GetSession code = %v, want NotFound", status.Code(err))
+	}
+}
+
+func TestGRPCGetServerInfoNormalizesImplementation(t *testing.T) {
+	for _, implementation := range []string{"mecated", "mecak8s", "mecatui"} {
+		t.Run(implementation, func(t *testing.T) {
+			svc := newServiceWithImplementation(t, mockllm.New(), allowRules(), implementation)
+			client, cleanup := dialGRPC(t, svc)
+			defer cleanup()
+			info, err := client.GetServerInfo(context.Background(), &mecatlv1.GetServerInfoRequest{ProviderId: "test-provider"})
+			if err != nil || info.GetServerImplementation() != implementation {
+				t.Fatalf("GetServerInfo = %#v, %v", info, err)
+			}
+		})
+	}
+	for _, implementation := range []string{"grpc://127.0.0.1", "mecated\nforged", "token=secret-value", "Mecated", strings.Repeat("a", 65)} {
+		t.Run("invalid", func(t *testing.T) {
+			svc := newServiceWithImplementation(t, mockllm.New(), allowRules(), implementation)
+			client, cleanup := dialGRPC(t, svc)
+			defer cleanup()
+			info, err := client.GetServerInfo(context.Background(), &mecatlv1.GetServerInfoRequest{ProviderId: "test-provider"})
+			if err != nil || info.GetServerImplementation() != "unknown" {
+				t.Fatalf("GetServerInfo = %#v, %v; want unknown", info, err)
+			}
+		})
+	}
 }
 
 // TestGRPCConverseFullCycle drives CreateSession then a Converse stream that
@@ -192,7 +255,7 @@ func TestGRPCConverseInvalidUTF8ToolResult(t *testing.T) {
 // a second close is idempotent (still ok, since close != delete-snapshot), and a
 // never-created id surfaces as codes.NotFound.
 func TestGRPCCloseSession(t *testing.T) {
-	svc := newService(t, mockllm.New(), allowRules())
+	svc := newService(t, mockllm.New(mockllm.TextTurn("close-session-reply")), allowRules())
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 
@@ -203,9 +266,39 @@ func TestGRPCCloseSession(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
+	transcript, err := client.GetSessionTranscript(ctx, &mecatlv1.GetSessionTranscriptRequest{SessionId: cs.GetSessionId()})
+	if err != nil {
+		t.Fatalf("GetSessionTranscript after create: %v", err)
+	}
+	if len(transcript.GetMessages()) != 0 {
+		t.Fatalf("fresh session transcript has %d messages, want empty", len(transcript.GetMessages()))
+	}
+
+	// The established server-test convention drives the real Engine through the
+	// Service lifecycle and persists its terminal snapshot before CloseSession.
+	if got := driveCompletedTurn(t, svc, session.SessionID(cs.GetSessionId()), "persist this conversation"); got != "close-session-reply" {
+		t.Fatalf("completed turn reply = %q, want close-session-reply", got)
+	}
 
 	if _, err := client.CloseSession(ctx, &mecatlv1.CloseSessionRequest{SessionId: cs.GetSessionId()}); err != nil {
 		t.Fatalf("CloseSession: %v", err)
+	}
+	// EndSession releases runtime resources but keeps the persisted snapshot.
+	transcript, err = client.GetSessionTranscript(ctx, &mecatlv1.GetSessionTranscriptRequest{SessionId: cs.GetSessionId()})
+	if err != nil {
+		t.Fatalf("GetSessionTranscript after close: %v", err)
+	}
+	var sawUser, sawAssistant bool
+	for _, message := range transcript.GetMessages() {
+		if message.GetText() == "persist this conversation" {
+			sawUser = true
+		}
+		if message.GetText() == "close-session-reply" {
+			sawAssistant = true
+		}
+	}
+	if !sawUser || !sawAssistant {
+		t.Fatalf("closed session transcript lost conversation: user=%v assistant=%v messages=%+v", sawUser, sawAssistant, transcript.GetMessages())
 	}
 	// Idempotent: the snapshot still persists, so a second close succeeds.
 	if _, err := client.CloseSession(ctx, &mecatlv1.CloseSessionRequest{SessionId: cs.GetSessionId()}); err != nil {

@@ -62,10 +62,18 @@ const (
 //   - is acpInclude by default.
 var flagMetaByFlag = map[string]flagMeta{
 	// ── Server (serve-only) ───────────────────────────────────────────────
-	"config":       {group: groupServer, common: false, acp: acpExclude},
-	"grpc-addr":    {group: groupServer, common: true, acp: acpExclude},
-	"http-addr":    {group: groupServer, common: true, acp: acpExclude},
-	"metrics-addr": {group: groupServer, common: false, acp: acpExclude},
+	"config":    {group: groupServer, common: false, acp: acpExclude},
+	"grpc-addr": {group: groupServer, common: true, acp: acpExclude},
+	"http-addr": {group: groupServer, common: true, acp: acpExclude},
+	// Daemon hosting (issue #821 Scenario 8): what a SPAWNED local daemon needs.
+	// Advanced — an operator running mecated by hand never sets them — and
+	// server-boundary, so absent from ACP help (a stdio ACP client already has
+	// its parent's lifetime and needs no socket or readiness barrier).
+	"grpc-unix-socket":    {group: groupServer, common: false, acp: acpExclude},
+	"ready-file":          {group: groupServer, common: false, acp: acpExclude},
+	"lifetime-pipe-fd":    {group: groupServer, common: false, acp: acpExclude},
+	"workspace-authority": {group: groupServer, common: false, acp: acpExclude},
+	"metrics-addr":        {group: groupServer, common: false, acp: acpExclude},
 
 	// ── Security (serve-only) ─────────────────────────────────────────────
 	"auth-token": {group: groupSecurity, common: true, acp: acpExclude},
@@ -83,6 +91,8 @@ var flagMetaByFlag = map[string]flagMeta{
 	// TEST-ONLY SSRF relaxation (see cliconfig.OIDCConfig): not common, and
 	// acpExclude like its siblings — an ACP client has no business setting it.
 	"oidc-insecure-allow-private-issuer": {group: groupSecurity, common: false, acp: acpExclude},
+	"oidc-allow-private-https-issuer":    {group: groupSecurity, common: false, acp: acpExclude},
+	"oidc-ca-cert-file":                  {group: groupSecurity, common: false, acp: acpExclude},
 
 	// ── Observability (serve-only) ────────────────────────────────────────
 	"otlp-endpoint":            {group: groupObservability, common: false, acp: acpExclude},
@@ -165,6 +175,8 @@ var flagMetaByFlag = map[string]flagMeta{
 
 	// ── Posture & permissions (both) ─────────────────────────────────────
 	"posture":                   {group: groupPermissions, common: true, acp: acpInclude},
+	"deployment-id":             {group: groupServer, common: false, acp: acpInclude},
+	"cors-origins":              {group: groupSecurity, common: false, acp: acpExclude},
 	"yolo":                      {group: groupPermissions, common: true, acp: acpInclude},
 	"trust-project":             {group: groupPermissions, common: true, acp: acpInclude},
 	"permissions-conventional":  {group: groupPermissions, common: true, acp: acpInclude},
@@ -172,6 +184,8 @@ var flagMetaByFlag = map[string]flagMeta{
 	"permission-config":         {group: groupPermissions, common: false, acp: acpInclude},
 	"plan-mode-auto-approve":    {group: groupPermissions, common: false, acp: acpInclude},
 	"no-steer":                  {group: groupPermissions, common: false, acp: acpInclude},
+	"authority-evaluator":       {group: groupPermissions, common: false, acp: acpExclude},
+	"cedar-authority-policy":    {group: groupPermissions, common: false, acp: acpExclude},
 
 	// ── Guardrails (both) ────────────────────────────────────────────────
 	"guardrails-model": {group: groupGuardrails, common: false, acp: acpInclude},
@@ -433,6 +447,7 @@ func writeTopLevelHelpAll(out io.Writer, fs *flag.FlagSet) {
 	_, _ = fmt.Fprintf(out, "  config daemon validate  strictly validate a daemon.yaml\n")
 	_, _ = fmt.Fprintf(out, "  skills promote          promote a model-authored candidate skill\n")
 	_, _ = fmt.Fprintf(out, "  perf-mcp print-config   print a paste-ready client .mcp.json\n")
+	_, _ = fmt.Fprintf(out, "\nGlobal: mecated --version prints the build version and exits.\n")
 	_, _ = fmt.Fprintf(out, "\nExhaustive serve-compatible flag reference (every public flag a\n")
 	_, _ = fmt.Fprintf(out, "`mecated serve` invocation accepts):\n\n")
 	_, _ = fmt.Fprintf(out, "Flags:\n")

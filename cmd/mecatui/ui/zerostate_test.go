@@ -14,25 +14,19 @@ import (
 // and the given caps — the first-run state the welcome card renders in.
 func zeroStateModel(t *testing.T, caps client.Capabilities) Model {
 	t.Helper()
-	// Hermeticity: the zero-state View path calls welcome.KittyCapable() (real env)
-	// via maybeKittyTransmit on SessionReadyMsg. On a kitty/Ghostty/WezTerm/Konsole
-	// machine that flips m.kittyActive true and Splash emits U+10EEEE placeholder
-	// cells (not ANSI — stripANSI keeps them), diverging the goldens. Pin the
-	// override that wins over everything, matching the MECATUI_NO_MOUSE isolation in
-	// config_test.go.
-	t.Setenv("MECATUI_NO_KITTY", "1")
 	recv := &fakeRecver{gate: make(chan struct{})}
 	conv := &fakeConv{recv: recv, send: &fakeSender{}, caps: caps}
-	m := New(Deps{
-		Session:     conv,
-		Conv:        conv,
-		Theme:       aztec(),
-		Server:      "127.0.0.1:8080",
-		Workspace:   "/workspace",
-		Mode:        "default",
-		Model:       "mock-model",
-		Ctx:         context.Background(),
-		NoAltScreen: true,
+	m := newTestModelFromDeps(Deps{
+		Session:      conv,
+		Conv:         conv,
+		Theme:        aztec(),
+		Server:       "127.0.0.1:8080",
+		Workspace:    "/workspace",
+		Mode:         "default",
+		Model:        "mock-model",
+		Ctx:          context.Background(),
+		NoAltScreen:  true,
+		kittyCapable: func() bool { return false },
 	})
 	// A tall viewport so the FULL welcome card shows (mascot + wordmark + cwd +
 	// model + tagline + affordances + memory note) — the splash now fits its body to
@@ -126,7 +120,7 @@ func TestZeroStateCapsTailoring(t *testing.T) {
 // "<provider-id> gateway detected (no API key needed) — /models" line when an
 // intent-driven provider is available-but-not-default. The splash renders at
 // phaseIdle (post-connect), by which point the first ModelsMsg has landed and
-// m.models.statuses is populated — so the line catches a new operator at the
+// m.modelCatalog.statuses is populated — so the line catches a new operator at the
 // moment they're most attentive. Suppressed when the gateway is the default
 // (availableNotDefaultStatus returns false) or when no statuses are present.
 func TestZeroStateGatewayNote(t *testing.T) {
@@ -145,14 +139,14 @@ func TestZeroStateGatewayNote(t *testing.T) {
 	}
 
 	// Suppressed when the gateway IS the default (AvailableNotDefault false).
-	m.models.statuses = []client.ProviderStatus{{ProviderID: "toolhive", State: "ok", ModelCount: 5, AvailableNotDefault: false}}
+	m.modelCatalog.statuses = []client.ProviderStatus{{ProviderID: "toolhive", State: "ok", ModelCount: 5, AvailableNotDefault: false}}
 	plain = stripANSIstr(m.renderZeroState())
 	if strings.Contains(plain, "gateway detected") {
 		t.Errorf("splash should NOT render the gateway line when the gateway is the default, got:\n%s", plain)
 	}
 
 	// Suppressed with no statuses (byte-identical pre-feature path).
-	m.models.statuses = nil
+	m.modelCatalog.statuses = nil
 	plain = stripANSIstr(m.renderZeroState())
 	if strings.Contains(plain, "gateway detected") {
 		t.Errorf("splash should NOT render the gateway line with no statuses, got:\n%s", plain)

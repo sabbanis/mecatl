@@ -37,8 +37,9 @@ type flags struct {
 	prompt         string
 	promptFile     string
 	promptFileBody string
-	// untrustedPrompt fences the prompt body via agent.FenceUntrusted (cmd-side
-	// only). Default false: a normal CI prompt is the operator's own trusted task.
+	// untrustedPrompt fences the prompt body via governance.FenceUntrusted
+	// (cmd-side only). Default false: a normal CI prompt is the operator's own
+	// trusted task.
 	untrustedPrompt bool
 	// instructions is the TRUSTED operator-framing channel (--instructions). When
 	// non-empty buildPrompt emits it OUTSIDE the untrusted fence (never fenced), ahead
@@ -360,6 +361,7 @@ func usageEpilogue(fs *flag.FlagSet) func() {
 		_, _ = fmt.Fprintf(out, "Usage: mecatequi --prompt <text> [flags]\n\n")
 		_, _ = fmt.Fprintf(out, "Flags:\n")
 		fs.PrintDefaults()
+		_, _ = fmt.Fprintln(out, "\nVersion: mecatequi --version prints the build version and exits.")
 		_, _ = fmt.Fprintf(out, `
 Output routing:
   --out-summary defaults to stdout ("-"); --out-diff and --out-events are opt-in
@@ -379,13 +381,8 @@ Exit codes (read stop_reason in the summary — the code alone is coarse):
 	}
 }
 
-// appConfig maps the parsed flags onto the shared app.Config build contract. It
-// threads a Diagnostics sink (stderr, the mecated pattern) and — when telemetry
-// is enabled — the observability handles from buildObservability. With no
-// --otlp-* flags the handles are zero-valued (Sink/ToolCallRecorder/
-// MetricsRoleScoper nil), so the default posture is byte-identical to the
-// pre-telemetry shape. The Interactive inversion is the deliberate headless
-// default: a CI run has no approver, so Interactive = !headless.
+// appConfig constructs the complete declarative app.Config for the command root.
+// app.Build loads the injected provider credential after resolving operator definitions.
 func appConfig(f flags, diag port.Diagnostics, obs observability) app.Config {
 	out := app.Config{
 		Workspace:       f.workspace,
@@ -406,10 +403,12 @@ func appConfig(f flags, diag port.Diagnostics, obs observability) app.Config {
 		// MCP_<NAME>_TOKEN bearer already resolved into Headers at parse time),
 		// consumed by app.Build's static MCP source. Nil-safe when the flag was
 		// never registered (a hand-built test config).
-		MCPServers:              f.mcpServers.Servers(),
-		MCPProfileLoader:        cliconfig.NewMCPProfileResolver(f.mcpServers, os.LookupEnv),
-		PermissionsConventional: true,
-		PermissionConfigs:       f.permissionConfigs,
+		MCPServers:               f.mcpServers.Servers(),
+		MCPProfileLoader:         cliconfig.NewMCPProfileResolver(f.mcpServers, os.LookupEnv),
+		ProviderCredentialLoader: cliconfig.NewProviderCredentialResolver(f.providerFlags, f.providerCredentials),
+		ProviderOverrides:        f.providerFlags.EndpointOverrides(),
+		PermissionsConventional:  true,
+		PermissionConfigs:        f.permissionConfigs,
 
 		GuardrailsModel:    f.guardrailsModel,
 		GuardrailsDisabled: f.guardrailsOff,
@@ -451,9 +450,6 @@ func appConfig(f flags, diag port.Diagnostics, obs observability) app.Config {
 		ToolCallRecorder:  obs.ToolCallRecorder,
 		MetricsRoleScoper: obs.MetricsRoleScoper,
 	}
-	// Project the once-resolved credentials and parsed base URLs without I/O.
-	// An OPENAI_API_KEY in the environment implies the real provider — the same flip
-	// mecated does — keyed off the resolved key.
 	keys := f.providerCredentials
 	f.providerFlags.ApplyResolved(&out, keys)
 	if keys.OpenAI != "" {

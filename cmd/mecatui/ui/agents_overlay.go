@@ -102,7 +102,7 @@ func (m Model) openAgents() (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 	}
-	m.ta.Blur() // the overlay owns the keyboard while open
+	m.prompt.Blur() // the overlay owns the keyboard while open
 	// Context-sensitive default tab (preferredAgentsTab is the single predicate, tested in
 	// isolation): the richest LIVE surface wins, else the tab that has content.
 	m.agentsTab = m.preferredAgentsTab(teamLive, haveTeam, haveSub, parallelLive, haveParallel)
@@ -137,7 +137,7 @@ func (m Model) closeAgents() (tea.Model, tea.Cmd) {
 	m.team = teamState{}
 	m.subagents = subagentState{}
 	m.parallel = parallelState{}
-	cmd := m.ta.Focus()
+	cmd := m.prompt.Focus()
 	return m, cmd
 }
 
@@ -263,27 +263,14 @@ func (m Model) onSubagentRosterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	fleet := m.conv.subagentFleet
 	n := len(fleet)
 	page := teamRosterRows(m.vp.Height())
-	switch {
-	case key.Matches(msg, m.keys.Close):
+	if key.Matches(msg, m.keys.Close) {
 		return m.closeAgents()
-	case key.Matches(msg, m.keys.Up):
-		m.subagents.cursor = clampCursor(m.subagents.cursor-1, n)
+	}
+	if next, handled := navigateRosterCursor(msg, m.keys, m.subagents.cursor, n, page); handled {
+		m.subagents.cursor = next
 		return m, nil
-	case key.Matches(msg, m.keys.Down):
-		m.subagents.cursor = clampCursor(m.subagents.cursor+1, n)
-		return m, nil
-	case key.Matches(msg, m.keys.ScrollU):
-		m.subagents.cursor = clampCursor(m.subagents.cursor-page, n)
-		return m, nil
-	case key.Matches(msg, m.keys.ScrollD):
-		m.subagents.cursor = clampCursor(m.subagents.cursor+page, n)
-		return m, nil
-	case key.Matches(msg, m.keys.JumpTop):
-		m.subagents.cursor = 0
-		return m, nil
-	case key.Matches(msg, m.keys.JumpEnd):
-		m.subagents.cursor = clampCursor(n-1, n)
-		return m, nil
+	}
+	switch {
 	case key.Matches(msg, m.keys.Choose):
 		if m.subagents.cursor < 0 || m.subagents.cursor >= n {
 			return m, nil
@@ -358,28 +345,14 @@ func (m Model) onParallelRosterKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	groups := m.conv.parallelGroups
 	n := len(groups)
 	page := teamRosterRows(m.vp.Height())
-	switch {
-	case key.Matches(msg, m.keys.Close):
+	if key.Matches(msg, m.keys.Close) {
 		return m.closeAgents()
-	case key.Matches(msg, m.keys.Up):
-		m.parallel.cursor = clampCursor(m.parallel.cursor-1, n)
+	}
+	if next, handled := navigateRosterCursor(msg, m.keys, m.parallel.cursor, n, page); handled {
+		m.parallel.cursor = next
 		return m, nil
-	case key.Matches(msg, m.keys.Down):
-		m.parallel.cursor = clampCursor(m.parallel.cursor+1, n)
-		return m, nil
-	case key.Matches(msg, m.keys.ScrollU):
-		m.parallel.cursor = clampCursor(m.parallel.cursor-page, n)
-		return m, nil
-	case key.Matches(msg, m.keys.ScrollD):
-		m.parallel.cursor = clampCursor(m.parallel.cursor+page, n)
-		return m, nil
-	case key.Matches(msg, m.keys.JumpTop):
-		m.parallel.cursor = 0
-		return m, nil
-	case key.Matches(msg, m.keys.JumpEnd):
-		m.parallel.cursor = clampCursor(n-1, n)
-		return m, nil
-	case key.Matches(msg, m.keys.Choose):
+	}
+	if key.Matches(msg, m.keys.Choose) {
 		if m.parallel.cursor < 0 || m.parallel.cursor >= n {
 			return m, nil
 		}

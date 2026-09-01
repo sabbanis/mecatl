@@ -18,6 +18,7 @@ import (
 	"github.com/stacklok/mecatl/engine/learning"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/internal/adapter/mcp"
 )
 
 // HTTPHandler is the HTTP/SSE adapter over the shared Service. It serves the
@@ -28,6 +29,7 @@ import (
 //	DELETE /v1/sessions/{id}          -> CloseSession (release session resources; 204)
 //	POST   /v1/sessions/{id}/rename   -> RenameSession (persist an explicit title)
 //	POST   /v1/sessions/{id}/delete   -> DeleteSession (physical snapshot + sidecars)
+//	POST   /v1/sessions/{id}/compact  -> CompactSession (bodyless manual compaction)
 //	POST   /v1/sessions/{id}/prompt   -> start a run; text/event-stream of Events
 //	POST   /v1/sessions/{id}/approve  -> resolve the paused ask on the run
 //	POST   /v1/sessions/{id}/cancel   -> cancel the in-flight run
@@ -35,6 +37,8 @@ import (
 //	POST   /v1/sessions/{id}/steer    -> enqueue a mid-run steer (unary; outcome JSON)
 //	POST   /v1/sessions/{id}/steer-cancel -> retract the pending (un-drained) steer
 //	POST   /v1/sessions/{id}/fork     -> ForkSession (peer session from a history snapshot; 201)
+//	GET    /v1/sessions/{id}/events   -> replay the durable event log; the stream ENDS
+//	GET    /v1/sessions/{id}/watch    -> durable replay-then-follow; the stream STAYS OPEN
 //
 // Every Event is emitted as one SSE `data:` line carrying the proto Event
 // marshalled to JSON, so the HTTP and gRPC surfaces share one event shape.
@@ -47,6 +51,8 @@ type HTTPHandler struct {
 // http.Handler ready to mount.
 func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h := &HTTPHandler{svc: svc, mux: http.NewServeMux()}
+	h.mux.HandleFunc("GET /v1/info", h.getServerInfo)
+	h.mux.HandleFunc("GET /v1/compatibility", h.getCompatibilityInfo)
 	h.mux.HandleFunc("POST /v1/sessions", h.createSession)
 	h.mux.HandleFunc("GET /v1/sessions/{id}", h.getSession)
 	h.mux.HandleFunc("GET /v1/sessions/{id}/transcript", h.getSessionTranscript)
@@ -54,7 +60,9 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h.mux.HandleFunc("DELETE /v1/sessions/{id}", h.closeSession)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/rename", h.renameSession)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/delete", h.deleteSession)
+	h.mux.HandleFunc("POST /v1/sessions/{id}/compact", h.compactSession)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/prompt", h.prompt)
+	h.mux.HandleFunc("POST /v1/sessions/{id}/retry", h.retry)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/approve", h.approve)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/plan:approve", h.approvePlan)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/cancel", h.cancel)
@@ -104,6 +112,7 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h.mux.HandleFunc("POST /v1/storage/cleanup/jobs/{id}/cancel", h.cancelSessionCleanup)
 	h.mux.HandleFunc("GET /v1/storage/cleanup/jobs/{id}", h.getSessionCleanupJob)
 	h.mux.HandleFunc("GET /v1/sessions/{id}/events", h.streamSessionEvents)
+	h.mux.HandleFunc("GET /v1/sessions/{id}/watch", h.watchSessionEvents)
 	h.mux.HandleFunc("POST /v1/teams", h.createTeam)
 	h.mux.HandleFunc("POST /v1/teams/{id}/members", h.spawnTeammate)
 	h.mux.HandleFunc("POST /v1/teams/{id}/messages", h.sendTeammateMessage)
@@ -129,6 +138,16 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 // ServeHTTP routes to the registered handlers.
 func (h *HTTPHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	h.mux.ServeHTTP(w, r)
+}
+
+// getServerInfo returns safe build, composition, and the caller-selected provider endpoint projection.
+func (h *HTTPHandler) getServerInfo(w http.ResponseWriter, r *http.Request) {
+	providerIDs := r.URL.Query()["provider_id"]
+	providerID := ""
+	if len(providerIDs) == 1 {
+		providerID = providerIDs[0]
+	}
+	writeJSON(w, http.StatusOK, h.svc.serverInfoResponse(providerID))
 }
 
 // --- request/response bodies ------------------------------------------------
@@ -161,6 +180,53 @@ type createSessionBody struct {
 	// running/awaiting source is a 4xx (FailedPrecondition). Empty means no
 	// carryover.
 	SourceSessionID string `json:"source_session_id,omitempty"`
+	// DebugTargetSessionID creates a separate no-fs diagnostic session bound to
+	// one authorized target; it never copies target conversation state.
+	DebugTargetSessionID string   `json:"debug_target_session_id,omitempty"`
+	DebugMCPServers      []string `json:"debug_mcp_servers,omitempty"`
+	// MCPServers are CLIENT-PROVIDED streaming-HTTP MCP servers mounted for this
+	// session's lifetime, mirroring the proto field (issue #821, ADR 0237). Empty
+	// is byte-identical to today. Whether the field is accepted at all is a
+	// DEPLOYMENT policy: a deployment with any network-facing API listener refuses
+	// every non-empty value with a 501 "client_mcp_unsupported" problem. A stdio or
+	// sse entry is a 400 on every deployment.
+	MCPServers []mcpServerIn `json:"mcp_servers,omitempty"`
+}
+
+// mcpServerIn is one client-provided MCP server on the HTTP create body. It
+// mirrors the proto McpServerSpec field-for-field so the two transports accept
+// the same request, and carries Command ONLY so a command-shaped entry is
+// classified as stdio and rejected AS stdio — it is never executed.
+//
+// Headers values are secret-shaped: never logged, never echoed in the response,
+// never included in an error.
+type mcpServerIn struct {
+	Name    string            `json:"name,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Type    string            `json:"type,omitempty"`
+	Command string            `json:"command,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// clientMCPFromJSON maps the HTTP create body's MCP entries onto the
+// transport-neutral shape the shared classifier consumes. Like its gRPC peer it
+// is a pure field mapping and makes no decisions: classification and the
+// deployment policy both live behind Service.ClientMCPFromWire.
+func clientMCPFromJSON(in []mcpServerIn) []mcp.ClientServer {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]mcp.ClientServer, 0, len(in))
+	for _, m := range in {
+		out = append(out, mcp.ClientServer{
+			Name:    m.Name,
+			Command: m.Command,
+			URL:     m.URL,
+			Type:    m.Type,
+			Headers: m.Headers,
+		})
+	}
+	return out
 }
 
 type limitsIn struct {
@@ -231,7 +297,11 @@ type serverCapabilitiesJSON struct {
 	StorageMigration  bool                              `json:"storage_migration"`
 	StorageCleanup    bool                              `json:"storage_cleanup"`
 	LegacyAdoption    bool                              `json:"legacy_adoption"`
+	SessionDebug      bool                              `json:"session_debug"`
+	DebugMCP          bool                              `json:"debug_mcp"`
 	ManualDream       *mecatlv1.ManualDreamCapabilities `json:"manual_dream,omitempty"`
+	Steer             bool                              `json:"steer"`
+	ManualCompaction  bool                              `json:"manual_compaction"`
 	Posture           string                            `json:"posture,omitempty"`
 	// Steer mirrors ServerCapabilities.steer: true when the engine's steer
 	// inbox is armed (Deps.EnableSteer), so an HTTP client gates the
@@ -262,7 +332,11 @@ func capabilitiesJSON(c *mecatlv1.ServerCapabilities) *serverCapabilitiesJSON {
 		StorageMigration:  c.GetStorageMigration(),
 		StorageCleanup:    c.GetStorageCleanup(),
 		LegacyAdoption:    c.GetLegacyAdoption(),
+		SessionDebug:      c.GetSessionDebug(),
+		DebugMCP:          c.GetDebugMcp(),
 		ManualDream:       c.GetManualDream(),
+		Steer:             c.GetSteer(),
+		ManualCompaction:  c.GetManualCompaction(),
 		Posture:           c.GetPosture(),
 		Steer:             c.GetSteer(),
 	}
@@ -286,7 +360,9 @@ type sessionResp struct {
 	// read surface is consistent with gRPC GetSession: the EFFECTIVE provider+model
 	// this session resolved to (from Service.ResolvedModel, the composition single
 	// source). Omitted (nil) when no model resolved (older-server-equivalent).
-	ResolvedModel *resolvedModelJSON `json:"resolved_model,omitempty"`
+	ResolvedModel *resolvedModelJSON            `json:"resolved_model,omitempty"`
+	Kind          string                        `json:"kind,omitempty"`
+	Relationship  *mecatlv1.SessionRelationship `json:"relationship,omitempty"`
 }
 
 type dreamGenerateBody struct {
@@ -361,6 +437,11 @@ type approveBody struct {
 	// "allow_always" (allow_always additionally learns a per-session rule). An
 	// empty/unknown value falls back to Allow.
 	Verdict string `json:"verdict,omitempty"`
+	// ExpectedRunID, when set, scopes this control to ONE run: the request is
+	// refused with a 409 problem (code "stale_run_control") if the session's
+	// current run is a different one. Empty is the legacy behaviour — the control
+	// applies to whatever run is current. See ADR 0249.
+	ExpectedRunID string `json:"expected_run_id,omitempty"`
 }
 
 // --- handlers ---------------------------------------------------------------
@@ -368,8 +449,26 @@ type approveBody struct {
 // createSession handles POST /v1/sessions.
 func (h *HTTPHandler) createSession(w http.ResponseWriter, r *http.Request) {
 	var body createSessionBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	// STRICT decode. An unknown field is a 400, not a silent drop.
+	//
+	// This body is where leniency stopped being harmless: a client coming from the
+	// gRPC surface (or using a generated client) naturally writes the protojson
+	// spelling {"mcpServers": [...]}, which a lenient decoder discards — returning
+	// 201 with a session that has none of the MCP servers the caller asked for, and
+	// no signal anywhere that it dropped them. That is the same silent-degradation
+	// class as a partial mount, on the transport where it is easiest to hit.
+	//
+	// The error detail is surfaced because encoding/json names the offending field
+	// ("unknown field \"mcpServers\""), which turns an otherwise baffling 400 into a
+	// self-diagnosing one. It describes the caller's own input, so it leaks nothing.
+	//
+	// It is a deliberate behaviour CHANGE: a request carrying a stray field used to
+	// succeed. The strictness matches decodeLearningJSON's existing posture on this
+	// same handler set.
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
 	// Session profile (issue #55): the workspace requirement is PROFILE-AWARE and
@@ -392,6 +491,23 @@ func (h *HTTPHandler) createSession(w http.ResponseWriter, r *http.Request) {
 	var opts []CreateSessionOption
 	if body.SourceSessionID != "" {
 		opts = append(opts, WithSourceSession(session.SessionID(body.SourceSessionID)))
+	}
+	if body.DebugTargetSessionID != "" {
+		opts = append(opts, WithDebugTarget(session.SessionID(body.DebugTargetSessionID)))
+	}
+	if len(body.DebugMCPServers) > 0 {
+		opts = append(opts, WithDebugMCP(body.DebugMCPServers))
+	}
+	// Client-provided MCP servers (issue #821, ADR 0237): the SAME Service seam the
+	// gRPC handler calls, so both transports classify through one validator and
+	// read one deployment policy. No filtering or classification happens here.
+	grant, err := h.svc.ClientMCPFromWire(clientMCPFromJSON(body.MCPServers))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if !grant.IsEmpty() {
+		opts = append(opts, WithClientMCP(grant))
 	}
 	sess, err := h.svc.CreateSessionWithProfile(r.Context(), body.Workspace, modeFromString(body.Mode), limits, sel, profile, opts...)
 	if err != nil {
@@ -566,6 +682,8 @@ func (h *HTTPHandler) writeSession(w http.ResponseWriter, status int, sess *sess
 		Title:           title,
 		TitleProvenance: string(sess.TitleProvenance),
 		ResolvedModel:   resolvedModelToJSON(h.svc.ResolvedModel(sess.ID)),
+		Kind:            string(sess.Kind),
+		Relationship:    toProtoSessionRelationship(sess.Relationship),
 	})
 }
 
@@ -617,7 +735,24 @@ func (h *HTTPHandler) prompt(w http.ResponseWriter, r *http.Request) {
 		writeServiceError(w, err)
 		return
 	}
-	h.relayRunSSE(w, r, id, run, flusher, h.svc.RecoverNotice(id))
+	h.relayRunSSE(w, r, id, run, flusher, h.svc.RecoverNotice(id), false)
+}
+
+// retry handles POST /v1/sessions/{id}/retry. It has no request body and streams
+// the failed-step retry through the same SSE relay and terminal cleanup as /prompt.
+func (h *HTTPHandler) retry(w http.ResponseWriter, r *http.Request) {
+	id := session.SessionID(r.PathValue("id"))
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	run, err := h.svc.RetryFailedRun(r.Context(), id)
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	h.relayRunSSE(w, r, id, run, flusher, "", true)
 }
 
 // relayRunSSE streams run's Events to w as Server-Sent Events until the channel
@@ -631,8 +766,13 @@ func (h *HTTPHandler) prompt(w http.ResponseWriter, r *http.Request) {
 // notice, when non-empty, is a pre-flight EvRecoverNotice message emitted BEFORE
 // the main event loop — the prompt run-entry path passes it; the approve handler
 // path passes "".
-func (h *HTTPHandler) relayRunSSE(w http.ResponseWriter, r *http.Request, id session.SessionID, run *agent.Run, flusher http.Flusher, notice string) {
-	defer h.svc.deregister(id, run)
+func (h *HTTPHandler) relayRunSSE(w http.ResponseWriter, r *http.Request, id session.SessionID, run *agent.Run, flusher http.Flusher, notice string, persistAtEnd bool) {
+	defer func() {
+		if persistAtEnd {
+			h.svc.Persist(context.WithoutCancel(r.Context()), id)
+		}
+		h.svc.deregister(id, run)
+	}()
 
 	w.Header().Set("Content-Type", "text/event-stream")
 	w.Header().Set("Cache-Control", "no-cache")
@@ -640,6 +780,8 @@ func (h *HTTPHandler) relayRunSSE(w http.ResponseWriter, r *http.Request, id ses
 	w.WriteHeader(http.StatusOK)
 	flusher.Flush()
 	logCtx := context.WithoutCancel(r.Context())
+	recorder := NewRunEventRecorder(logCtx, h.svc, id)
+	defer recorder.Close()
 	enc := json.NewEncoder(w)
 
 	// Inject a pre-flight EvRecoverNotice when the session just recovered from a
@@ -647,7 +789,7 @@ func (h *HTTPHandler) relayRunSSE(w http.ResponseWriter, r *http.Request, id ses
 	// provider call. Emitted ONCE per recovery.
 	if notice != "" {
 		ev := session.Event{Type: session.EvRecoverNotice, Text: notice}
-		h.svc.appendEvent(logCtx, id, ev)
+		recorder.Observe(ev)
 		if _, err := w.Write([]byte("data: ")); err != nil {
 			return
 		}
@@ -691,10 +833,10 @@ func (h *HTTPHandler) relayRunSSE(w http.ResponseWriter, r *http.Request, id ses
 			// drain-to-discard: the client is gone. Still append to the durable
 			// log (it must record the post-disconnect tail), but skip Persist /
 			// auto-approve / the client write.
-			h.svc.appendEvent(logCtx, id, ev)
+			recorder.Observe(ev)
 			continue
 		}
-		if !h.svc.relayEvent(r.Context(), logCtx, id, ev, true) {
+		if !h.svc.relayEvent(r.Context(), id, ev, true, recorder) {
 			continue // log-only event: consumed by the durable log, not relayed to the client wire
 		}
 		p := toProto(ev)
@@ -731,7 +873,7 @@ func (h *HTTPHandler) approve(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "ask_id is required")
 		return
 	}
-	run, err := h.svc.ApproveRun(r.Context(), id, body.AskID, verdictFromHTTP(body.Verdict, body.Allow))
+	run, err := h.svc.ApproveRun(r.Context(), id, body.AskID, verdictFromHTTP(body.Verdict, body.Allow), body.ExpectedRunID)
 	if err != nil {
 		writeServiceError(w, err)
 		return
@@ -758,16 +900,18 @@ func (h *HTTPHandler) approve(w http.ResponseWriter, r *http.Request) {
 		// happened regardless of whether a client consumes the stream. Use a
 		// cancel-detached context so the request returning does not abort the writes.
 		logCtx := context.WithoutCancel(r.Context())
+		recorder := NewRunEventRecorder(logCtx, h.svc, id)
 		go func() {
+			defer recorder.Close()
 			for ev := range run.Events() {
-				h.svc.appendEvent(logCtx, id, ev)
+				recorder.Observe(ev)
 			}
 			h.svc.deregister(id, run)
 		}()
 		w.WriteHeader(http.StatusNoContent)
 		return
 	}
-	h.relayRunSSE(w, r, id, run, flusher, "")
+	h.relayRunSSE(w, r, id, run, flusher, "", false)
 }
 
 // verdictFromHTTP maps the HTTP approve body's string verdict to the domain
@@ -856,6 +1000,8 @@ func (h *HTTPHandler) relayEventsSSE(w http.ResponseWriter, r *http.Request, id 
 	// durable log (it must record the post-disconnect tail, including the terminal
 	// EvResult) — the same discipline as relayRunSSE.
 	logCtx := context.WithoutCancel(r.Context())
+	recorder := NewRunEventRecorder(logCtx, h.svc, id)
+	defer recorder.Close()
 	enc := json.NewEncoder(w)
 	failed := false
 	fail := func() {
@@ -866,12 +1012,12 @@ func (h *HTTPHandler) relayEventsSSE(w http.ResponseWriter, r *http.Request, id 
 		if failed {
 			// drain-to-discard: the client is gone. Still append to the durable
 			// log, but skip Persist / the client write.
-			h.svc.appendEvent(logCtx, id, ev)
+			recorder.Observe(ev)
 			continue
 		}
 		// autoApprove=false: this path IS the plan-approval resolution — running
 		// the auto-approve observer inside it would recurse.
-		if !h.svc.relayEvent(r.Context(), logCtx, id, ev, false) {
+		if !h.svc.relayEvent(r.Context(), id, ev, false, recorder) {
 			continue // log-only event: consumed by the durable log, not relayed to the client wire
 		}
 		if _, err := w.Write([]byte("data: ")); err != nil {
@@ -948,10 +1094,40 @@ func (h *HTTPHandler) deleteSession(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
+// compactSession handles the bodyless POST /v1/sessions/{id}/compact action.
+func (h *HTTPHandler) compactSession(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	if id == "" {
+		writeError(w, http.StatusBadRequest, "session_id is required")
+		return
+	}
+	result, err := h.svc.CompactSession(r.Context(), session.SessionID(id), session.PrincipalFromContext(r.Context()))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, &mecatlv1.CompactSessionResponse{Compacted: result.Changed})
+}
+
+// cancelBody is the OPTIONAL JSON body of POST /v1/sessions/{id}/cancel.
+//
+// The endpoint predates it and must keep accepting an empty body, so decoding is
+// best-effort: a missing or unparseable body leaves ExpectedRunID empty, which is
+// the legacy "cancel whatever is running" behaviour. Refusing a malformed body
+// would break every existing caller that sends none.
+type cancelBody struct {
+	// ExpectedRunID, when set, scopes the cancel to ONE run. Cancelling the wrong
+	// run destroys work rather than merely permitting it, so a client that knows
+	// which run it is stopping should always send this. See ADR 0249.
+	ExpectedRunID string `json:"expected_run_id,omitempty"`
+}
+
 // cancel handles POST /v1/sessions/{id}/cancel, cancelling the in-flight run.
 func (h *HTTPHandler) cancel(w http.ResponseWriter, r *http.Request) {
 	id := session.SessionID(r.PathValue("id"))
-	if err := h.svc.Cancel(r.Context(), id); err != nil {
+	var body cancelBody
+	_ = json.NewDecoder(r.Body).Decode(&body) // optional body; see cancelBody
+	if err := h.svc.Cancel(r.Context(), id, body.ExpectedRunID); err != nil {
 		writeServiceError(w, err)
 		return
 	}
@@ -1123,10 +1299,6 @@ func (h *HTTPHandler) createTeam(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if body.Workspace == "" {
-		writeError(w, http.StatusBadRequest, "workspace is required")
-		return
-	}
 	var specs []agent.MemberSpec
 	if len(body.Members) > 0 {
 		specs = make([]agent.MemberSpec, 0, len(body.Members))
@@ -1265,6 +1437,9 @@ func (h *HTTPHandler) runTeam(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 	out, err := h.svc.RunTeam(ctx, id, func(te agent.TeamEvent) {
+		if !isPublicEvent(te.Event) {
+			return
+		}
 		writeFrame(&mecatlv1.TeamEvent{Member: te.Member, Event: toProto(te.Event)})
 	})
 	if err != nil {
@@ -1543,6 +1718,18 @@ func (h *HTTPHandler) getMcpPrompt(w http.ResponseWriter, r *http.Request) {
 		msgs = append(msgs, toProtoMcpPromptMessage(m))
 	}
 	writeJSON(w, http.StatusOK, &mecatlv1.GetMcpPromptResponse{Description: res.Description, Messages: msgs})
+}
+
+// getCompatibilityInfo handles GET /v1/compatibility.
+//
+// It reads the SAME Service.CompatibilityInfo projection the gRPC handler does,
+// so the two transports cannot disagree about what this server permits — the
+// transport parity the SDK's normalized surface depends on. See ADR 0248.
+//
+// GET /v1/info is the sibling route for build identity (ADR 0245); the two are
+// deliberately separate resources rather than one overloaded document.
+func (h *HTTPHandler) getCompatibilityInfo(w http.ResponseWriter, r *http.Request) {
+	writeJSON(w, http.StatusOK, h.svc.CompatibilityInfo(r.Context()))
 }
 
 // listMcpSources handles GET /v1/mcp/sources.
@@ -2088,16 +2275,19 @@ func (h *HTTPHandler) streamSessionEvents(w http.ResponseWriter, r *http.Request
 	// (they ARE the transcript). So relay ALL events through toProto, including the
 	// three log-only kinds. They are already metadata-only/redacted by construction
 	// (gauntlet #7). Do NOT copy the live-relay filter here.
+	// RequestManifest and NetworkAttempt remain debugger-only even on durable
+	// read-back; neither has a public proto projection.
 	enc := json.NewEncoder(w)
 	for ev, iterErr := range events {
 		if iterErr != nil {
 			// Mid-stream fault: emit an SSE error frame and stop. The iter.Seq2
 			// releases its file handle on early break per port.EventLog.Read's
 			// contract.
-			_ = enc.Encode(map[string]string{"error": iterErr.Error()})
-			_, _ = w.Write([]byte("\n"))
-			flusher.Flush()
+			writeSSEError(w, flusher, map[string]string{"error": iterErr.Error()})
 			return
+		}
+		if !isPublicEvent(ev) {
+			continue
 		}
 		if _, err := w.Write([]byte("data: ")); err != nil {
 			return // client disconnected; the iter releases its file handle on break
@@ -2112,7 +2302,101 @@ func (h *HTTPHandler) streamSessionEvents(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// watchSessionEvents handles GET /v1/sessions/{id}/watch — the DURABLE
+// replay-then-follow watch as a Server-Sent Events stream (issue #821, ADR 0250).
+//
+// It is a NEW route, deliberately beside GET /v1/sessions/{id}/events rather than
+// a widening of it. That route is a bounded replay that ends; this one replays,
+// announces the boundary, and then stays open. Overloading one path with a query
+// parameter would change an existing endpoint's termination behaviour for every
+// client that already depends on the stream ending.
+//
+// Query parameters: `cursor` (opaque, empty = from the beginning) and `run_id`
+// (optional filter). Both are handed to the same Service.WatchSessionEvents the
+// gRPC handler uses, which is what makes the envelope sequences identical.
+//
+// Each frame is one WatchSessionEventsResponse — {event, cursor, phase} — so a
+// client reads its resume position off the same frame that carried the event.
+// This is the READ-BACK of the durable log, so ALL events are relayed including
+// the three log-only kinds; do NOT copy the live-relay filter here.
+func (h *HTTPHandler) watchSessionEvents(w http.ResponseWriter, r *http.Request) {
+	id := session.SessionID(r.PathValue("id"))
+	flusher, _ := w.(http.Flusher)
+	if flusher == nil {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	// Resolved BEFORE any header is written, so a missing feature, a bad cursor, or
+	// a session this caller may not read is a real status code and an RFC 9457
+	// problem body rather than a 200 with an error frame inside it.
+	envelopes, err := h.svc.WatchSessionEvents(r.Context(), id,
+		port.Cursor(r.URL.Query().Get("cursor")), r.URL.Query().Get("run_id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	enc := json.NewEncoder(w)
+	for env, iterErr := range envelopes {
+		if iterErr != nil {
+			// Mid-stream fault, after the 200 is already committed: the status code
+			// is spent, so the terminal condition has to ride the stream. It carries
+			// the stable machine code so a client can tell a resumable lag from a
+			// delivery gap without parsing prose. Breaking out releases the watch.
+			entry := classifyError(iterErr)
+			writeSSEError(w, flusher, map[string]string{"code": entry.Code, "error": iterErr.Error()})
+			return
+		}
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return // client disconnected; breaking out releases the watch
+		}
+		if err := enc.Encode(toProtoWatchEnvelope(env)); err != nil { // Encode appends a newline
+			return
+		}
+		if _, err := w.Write([]byte("\n")); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+}
+
 // --- helpers ----------------------------------------------------------------
+
+// writeSSEError writes a TERMINAL error frame as valid Server-Sent Events.
+//
+// The payload has to ride a `data: ` line. Per the EventSource grammar a line is
+// split into `field: value` at the first colon, so a bare `{"code":"..."}` parses
+// as the unrecognised field `{"code"` and is DISCARDED — a conforming client sees
+// the stream go quiet and cannot tell a resumable fault from a delivery gap from
+// a clean end. That silence is precisely the failure the durable watch exists to
+// abolish (see ErrWatchLagging), so the framing here is load-bearing rather than
+// cosmetic.
+//
+// The frame is tagged `event: error` so a client can ROUTE it — an SSE consumer
+// otherwise has to shape-sniff the JSON against the success payload it is not,
+// and on the watch route the success payload is a WatchSessionEventsResponse
+// whose fields are all optional, so sniffing is unreliable by construction.
+//
+// Callers own the payload shape: the watch route carries the stable machine
+// `code`, the older replay route carries `error` alone. Both now ARRIVE, which is
+// the fix; unifying their bodies would change a shape clients may already read.
+func writeSSEError(w http.ResponseWriter, flusher http.Flusher, payload any) {
+	if _, err := w.Write([]byte("event: error\ndata: ")); err != nil {
+		return
+	}
+	if err := json.NewEncoder(w).Encode(payload); err != nil { // Encode appends a newline
+		return
+	}
+	if _, err := w.Write([]byte("\n")); err != nil {
+		return
+	}
+	flusher.Flush()
+}
 
 // modeFromString maps a JSON mode string to a session.PermissionMode. Unknown
 // or empty values fall through to the empty mode (Service applies its default).
@@ -2133,156 +2417,33 @@ func modeFromString(s string) session.PermissionMode {
 func writeJSON(w http.ResponseWriter, code int, v any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(code)
+	writeJSONBody(w, v)
+}
+
+// writeJSONBody encodes v to w. It is split out of writeJSON so the RFC 9457
+// path (which sets its own Content-Type and status) shares the one encoder.
+func writeJSONBody(w http.ResponseWriter, v any) {
 	_ = json.NewEncoder(w).Encode(v)
 }
 
-// writeError writes a JSON {"error": msg} body with the given status code.
+// writeError writes an RFC 9457 problem body for a caller that already knows the
+// HTTP status but has no service sentinel — request-shape failures raised inside
+// a handler (malformed JSON, a missing required field, an oversized body).
+//
+// It derives the stable code from the status rather than inventing one per call
+// site, so the ~40 existing callers keep working unchanged while every response
+// still carries a machine-readable code.
 func writeError(w http.ResponseWriter, code int, msg string) {
-	writeJSON(w, code, map[string]string{"error": msg})
+	writeProblem(w, entryForHTTPStatus(code), msg)
 }
 
-// writeServiceError maps a service sentinel error to an HTTP status.
+// writeServiceError writes a service sentinel error as an RFC 9457 problem.
 //
-//nolint:gocyclo // a flat error→code classifier; a switch is the correct shape.
+// It is a REGISTRY LOOKUP, not a switch. It used to be a 49-case
+// errors.Is chain maintained in parallel with toStatus in grpc.go; the two
+// agreed only by discipline, and a sentinel added to one and forgotten in the
+// other would have reported a different class per transport. Both now read
+// errorRegistry, so they cannot disagree. See ADR 0248.
 func writeServiceError(w http.ResponseWriter, err error) {
-	switch {
-	case errors.Is(err, ErrManagementUnauthorized):
-		writeError(w, http.StatusForbidden, err.Error())
-	case errors.Is(err, ErrStorageHealthBackend):
-		writeError(w, http.StatusInternalServerError, err.Error())
-	case errors.Is(err, ErrMigrationUnsupported):
-		writeError(w, http.StatusNotImplemented, err.Error())
-	case errors.Is(err, ErrMigrationConflict):
-		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, ErrMigrationBackend):
-		writeError(w, http.StatusInternalServerError, err.Error())
-	case errors.Is(err, ErrCleanupPlanStale):
-		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, ErrCleanupUnsupported):
-		writeError(w, http.StatusNotImplemented, err.Error())
-	case errors.Is(err, ErrCleanupBackend):
-		writeError(w, http.StatusInternalServerError, err.Error())
-	case errors.Is(err, ErrInvalidArgument):
-		writeError(w, http.StatusBadRequest, err.Error())
-	case errors.Is(err, ErrNotFound):
-		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrTeamNotFound):
-		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrChildNotFound):
-		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, ErrLearningUnavailable):
-		writeError(w, http.StatusNotImplemented, err.Error())
-	case errors.Is(err, ErrProposalConflict):
-		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, ErrDreamUnavailable):
-		writeError(w, http.StatusNotImplemented, ErrDreamUnavailable.Error())
-	case errors.Is(err, ErrDreamNotFound):
-		writeError(w, http.StatusNotFound, ErrDreamNotFound.Error())
-	case errors.Is(err, ErrDreamInProgress):
-		writeError(w, http.StatusConflict, ErrDreamInProgress.Error())
-	case errors.Is(err, ErrDreamConflict):
-		writeError(w, http.StatusPreconditionFailed, ErrDreamConflict.Error())
-	case errors.Is(err, ErrDreamTerminalConflict):
-		writeError(w, http.StatusGone, ErrDreamTerminalConflict.Error())
-	case errors.Is(err, ErrDreamCapacity):
-		writeError(w, http.StatusTooManyRequests, ErrDreamCapacity.Error())
-	case errors.Is(err, ErrDreamGenerateFailed):
-		writeError(w, http.StatusInternalServerError, ErrDreamGenerateFailed.Error())
-	case errors.Is(err, ErrDreamApplyFailed):
-		writeError(w, http.StatusInternalServerError, ErrDreamApplyFailed.Error())
-	case errors.Is(err, ErrDreamDeadline):
-		writeError(w, http.StatusGatewayTimeout, ErrDreamDeadline.Error())
-	case errors.Is(err, ErrDreamRequestFailed):
-		writeError(w, http.StatusInternalServerError, ErrDreamRequestFailed.Error())
-	case errors.Is(err, ErrFailedPrecondition):
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-	case errors.Is(err, ErrTeamsDisabled):
-		// Teams are not enabled (no MemberEngine wired): a precondition for any
-		// team RPC is unmet. The gRPC side maps it to FailedPrecondition.
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-	case errors.Is(err, ErrTeamRunning):
-		// The team is already running: a second run, a late spawn, or a cleanup
-		// of a live team. FailedPrecondition, like the gRPC side.
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-	case errors.Is(err, ErrTeamNotRunning):
-		// The team is NOT running (created-but-never-run, or already done): a
-		// CancelTeammate has no in-flight run to reach into. FailedPrecondition,
-		// like the gRPC side.
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-	case errors.Is(err, ErrTooManyTeams):
-		// The live-team registry is at MaxTeams (gRPC: ResourceExhausted).
-		writeError(w, http.StatusTooManyRequests, err.Error())
-	case errors.Is(err, ErrTooManySessionEngines):
-		// The per-session engine registry is at MaxSessionEngines (gRPC:
-		// ResourceExhausted): the client must release a session before opening another.
-		writeError(w, http.StatusTooManyRequests, err.Error())
-	case errors.Is(err, ErrNoScheduleStore):
-		// The configured store backend does not implement ScheduleStore: the
-		// schedule RPCs are not available on this deployment. 501.
-		writeError(w, http.StatusNotImplemented, err.Error())
-	case errors.Is(err, ErrNoEventLog):
-		// No durable EventLog (cloud-native Phase 3a) is configured: the
-		// StreamSessionEvents read-back surface is not available on this
-		// deployment. 501 (gRPC Unimplemented).
-		writeError(w, http.StatusNotImplemented, err.Error())
-	case errors.Is(err, ErrSessionDeleteUnsupported):
-		writeError(w, http.StatusNotImplemented, err.Error())
-	case errors.Is(err, port.ErrSessionMetadataCursorRestart):
-		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, port.ErrSessionMetadataPagingUnsupported):
-		writeError(w, http.StatusNotImplemented, err.Error())
-	case errors.Is(err, ErrSchedulerNotRunning):
-		// A ScheduleStore is available but no in-process scheduler is wired to
-		// drive a manual FireNow. 412 (gRPC FailedPrecondition), distinct from
-		// ErrNoScheduleStore's 501 (the store itself works fine).
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-	case errors.Is(err, ErrScheduleDisabled):
-		// FireNow on a paused/done schedule. 412 (gRPC FailedPrecondition).
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-	case errors.Is(err, ErrScheduleExhausted):
-		// FireNow on an already-fired one-shot. 412 (gRPC FailedPrecondition).
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-	case errors.Is(err, ErrFireNowOverlap):
-		// FireNow singleton-overlap skip. 412 (gRPC FailedPrecondition) — the
-		// schedule exists and is well-formed, it is just running.
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-	case errors.Is(err, ErrScheduleNotLeader):
-		// FireNow on a standby (non-leader) replica. 412 (gRPC
-		// FailedPrecondition); the message names the leader to redirect to.
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-	case errors.Is(err, port.ErrScheduleNotFound):
-		// A schedule/fire not found from the store. 404.
-		writeError(w, http.StatusNotFound, err.Error())
-	case errors.Is(err, port.ErrScheduleUnsupported):
-		// The backend can never store schedules (a sticky-disable case). 501.
-		writeError(w, http.StatusNotImplemented, err.Error())
-	case errors.Is(err, ErrNoActiveRun):
-		// Known session, but its run is not live in this process (e.g. the
-		// stream was lost across a restart): nothing to deliver the control to.
-		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, ErrNotAwaitingPlan):
-		// ApprovePlan precondition (issue #206, Wave 4): the session is not parked
-		// awaiting a plan-originated ask (it is live, not awaiting, or awaiting a
-		// generic tool ask). 409 Conflict — the session exists and is well-formed,
-		// it is just not in the state this atomic RPC requires.
-		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, ErrSessionLeasedElsewhere):
-		// Cloud-native Phase 4: another replica holds the session's single-writer
-		// lease. 409 Conflict — the session exists and is well-formed, it is just
-		// owned by another process right now (a later retry can succeed).
-		writeError(w, http.StatusConflict, err.Error())
-	case errors.Is(err, ErrUnavailable):
-		// ADR 0048 drain gate: this replica is draining (graceful shutdown) and
-		// refuses new run-entries. 503 so the client retries a survivor.
-		writeError(w, http.StatusServiceUnavailable, err.Error())
-	case errors.Is(err, ErrNoMCPProvider):
-		// No MCP provider is wired: the precondition for read/get is unmet.
-		writeError(w, http.StatusPreconditionFailed, err.Error())
-	case errors.Is(err, ErrInternal):
-		// A downstream/transport fault on a connected MCP server — not the
-		// client's fault, so 500 rather than 400.
-		writeError(w, http.StatusInternalServerError, err.Error())
-	default:
-		writeError(w, http.StatusInternalServerError, err.Error())
-	}
+	writeProblem(w, classifyError(err), err.Error())
 }

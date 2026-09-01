@@ -21,7 +21,7 @@ func ctrlC() tea.KeyPressMsg { return tea.KeyPressMsg{Code: 'c', Mod: tea.ModCtr
 // "second ctrl+c quits" path exercises the cancel without a live stream.
 func quitModel(t *testing.T) Model {
 	t.Helper()
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30})
 	m.phase = phaseIdle
 	return m
@@ -126,14 +126,14 @@ func TestQuitGuardInterveningKeyDisarms(t *testing.T) {
 // input clears the input and does NOT arm (mirrors esc's clear-the-line).
 func TestQuitGuardFirstCtrlCNonEmptyClearsInput(t *testing.T) {
 	m := quitModel(t)
-	m.ta.SetValue("a draft prompt")
+	m.prompt.Rewrite("a draft prompt")
 
 	m, cmd := pressKey(m, ctrlC())
 	if m.quitArmed {
 		t.Error("ctrl+c with non-empty input should NOT arm the guard")
 	}
-	if strings.TrimSpace(m.ta.Value()) != "" {
-		t.Errorf("ctrl+c with non-empty input should clear the input, got %q", m.ta.Value())
+	if strings.TrimSpace(m.prompt.Value()) != "" {
+		t.Errorf("ctrl+c with non-empty input should clear the input, got %q", m.prompt.Value())
 	}
 	if isQuitCmd(cmd) {
 		t.Error("ctrl+c with non-empty input must not quit")
@@ -269,7 +269,7 @@ func TestQuitDoublePressCancelsRunningProgram(t *testing.T) {
 		runCancelled: make(chan struct{}),
 	}
 	prog := newProgress()
-	model := New(Deps{
+	model := newTestModelFromDeps(Deps{
 		Session:     conv,
 		Conv:        conv,
 		Theme:       th,
@@ -310,7 +310,7 @@ func TestQuitDoublePressCancelsRunningProgram(t *testing.T) {
 // reducer to phaseFatal; a single ctrl+c then finishes the program.
 func TestQuitFatalSinglePressProgram(t *testing.T) {
 	prog := newProgress()
-	model := New(Deps{
+	model := newTestModelFromDeps(Deps{
 		Session:     &errSession{},
 		Theme:       theme.New("aztec", theme.AztecPalette()),
 		Ctx:         context.Background(),

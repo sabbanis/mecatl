@@ -48,6 +48,9 @@ type progress struct {
 	cond *sync.Cond
 	seen map[phase]bool
 	last phase // most recently observed phase
+	// sessionBinds counts phaseConnecting→phaseIdle transitions. Unlike phaseIdle
+	// alone, this proves that an asynchronous session creation completed and bound.
+	sessionBinds int
 	// runDone counts completed runs: a phaseRunning→…→phaseIdle return. It lets a
 	// case wait for a run to FINISH even though phaseIdle was already seen at connect
 	// time (so a plain seen[phaseIdle] can't distinguish "connected" from "run done").
@@ -62,15 +65,20 @@ func newProgress() *progress {
 }
 
 // record is the Deps.onPhase callback: it marks a phase seen, advances the
-// run-completion counter on an active→idle return, and wakes any waiter.
+// session-bind and run-completion counters on their respective transitions, and
+// wakes any waiter.
 func (p *progress) record(ph phase) {
 	p.mu.Lock()
 	p.seen[ph] = true
+	previous := p.last
 	p.last = ph
 	switch ph {
 	case phaseRunning, phaseAwaitingApproval:
 		p.wasActive = true
 	case phaseIdle:
+		if previous == phaseConnecting {
+			p.sessionBinds++
+		}
 		if p.wasActive {
 			p.runDone++
 			p.wasActive = false
@@ -87,6 +95,14 @@ func (p *progress) wait(t *testing.T, target phase, d time.Duration) {
 	t.Helper()
 	p.waitFunc(t, d, func() bool { return p.seen[target] },
 		func() string { return "reach phase " + phaseName(target) })
+}
+
+// waitSessionBinds blocks until at least n asynchronous session creations have
+// completed their phaseConnecting→phaseIdle bind transition.
+func (p *progress) waitSessionBinds(t *testing.T, n int, d time.Duration) {
+	t.Helper()
+	p.waitFunc(t, d, func() bool { return p.sessionBinds >= n },
+		func() string { return "complete a session bind (idle after connecting)" })
 }
 
 // waitRunComplete blocks until at least n runs have completed (phaseRunning →
@@ -120,8 +136,8 @@ func (p *progress) waitFunc(t *testing.T, d time.Duration, ok func() bool, desc 
 	defer p.mu.Unlock()
 	for !ok() {
 		if time.Now().After(deadline) {
-			t.Fatalf("reducer did not %s within %s (last=%s seen=%v runDone=%d)",
-				desc(), scaleWait(d), phaseName(p.last), p.seen, p.runDone)
+			t.Fatalf("reducer did not %s within %s (last=%s seen=%v sessionBinds=%d runDone=%d)",
+				desc(), scaleWait(d), phaseName(p.last), p.seen, p.sessionBinds, p.runDone)
 		}
 		p.cond.Wait()
 	}
@@ -213,7 +229,7 @@ func preApprovalScript() []*mecatlv1.ConverseResponse {
 // sent, so the approval drives the post-approval tail (mirrors mecademo). Alt
 // screen is disabled so direct View() snapshots are clean. Used by the synchronous
 // golden/render tests (driveTo, TestRenderStripsServerEscapes).
-func newTestModel(t *testing.T, th theme.Theme) (Model, *fakeRecver, *fakeSender) {
+func newTestModel(t *testing.T, th theme.Theme, tweak ...func(*Deps)) (Model, *fakeRecver, *fakeSender) {
 	t.Helper()
 	recv := &fakeRecver{script: preApprovalScript(), gateType: "permission.ask", gate: make(chan struct{})}
 	send := &fakeSender{}
@@ -223,17 +239,24 @@ func newTestModel(t *testing.T, th theme.Theme) (Model, *fakeRecver, *fakeSender
 		}
 	}
 	conv := &fakeConv{recv: recv, send: send}
-	m := New(Deps{
-		Session:     conv,
-		Conv:        conv,
-		Theme:       th,
-		Server:      "127.0.0.1:8080",
-		Workspace:   "/workspace",
-		Mode:        "default",
-		Model:       "mock-model",
-		Ctx:         context.Background(),
-		NoAltScreen: true,
-	})
+	deps := Deps{
+		Session:           conv,
+		Conv:              conv,
+		Theme:             th,
+		Server:            "127.0.0.1:8080",
+		Workspace:         "/workspace",
+		Mode:              "default",
+		Model:             "mock-model",
+		Ctx:               context.Background(),
+		NoAltScreen:       true,
+		emojiCapable:      func() bool { return false },
+		kittyCapable:      func() bool { return false },
+		scrollKeysMarking: func() string { return "pgup/pgdn" },
+	}
+	for _, fn := range tweak {
+		fn(&deps)
+	}
+	m := newTestModelFromDeps(deps)
 	return m, recv, send
 }
 
@@ -274,21 +297,24 @@ func newProgramModel(t *testing.T, th theme.Theme, script []*mecatlv1.ConverseRe
 	conv := &fakeConv{recv: recv, send: send, sessionReady: make(chan struct{})}
 	prog := newProgress()
 	deps := Deps{
-		Session:     conv,
-		Conv:        conv,
-		Theme:       th,
-		Server:      "127.0.0.1:8080",
-		Workspace:   "/workspace",
-		Mode:        "default",
-		Model:       "mock-model",
-		Ctx:         context.Background(),
-		NoAltScreen: true,
-		onPhase:     prog.record,
+		Session:           conv,
+		Conv:              conv,
+		Theme:             th,
+		Server:            "127.0.0.1:8080",
+		Workspace:         "/workspace",
+		Mode:              "default",
+		Model:             "mock-model",
+		Ctx:               context.Background(),
+		NoAltScreen:       true,
+		emojiCapable:      func() bool { return false },
+		kittyCapable:      func() bool { return false },
+		scrollKeysMarking: func() string { return "pgup/pgdn" },
+		onPhase:           prog.record,
 	}
 	for _, fn := range tweak {
 		fn(&deps)
 	}
-	return programDeps{recv: recv, send: send, conv: conv, prog: prog, model: New(deps)}
+	return programDeps{recv: recv, send: send, conv: conv, prog: prog, model: newTestModelFromDeps(deps)}
 }
 
 // TestFullCycleProgram drives the whole three-act scenario through the real
@@ -530,6 +556,7 @@ func TestClearBuiltinProgram(t *testing.T) {
 	// the conversation.
 	tm.Type("/clear")
 	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	pd.prog.waitSessionBinds(t, 2, 5*time.Second)
 
 	// ctrl+c is now a graceful double-press (issue #17): the first arms the quit
 	// guard, the second exits — so the test driver presses it twice to terminate.
@@ -623,17 +650,20 @@ func TestQueuedPromptAutoSendsProgram(t *testing.T) {
 	send := &fakeSender{}
 	conv := &fakeConv{recv: run1, send: send, recvers: []*fakeRecver{run1, run2}, sessionReady: make(chan struct{})}
 	prog := newProgress()
-	model := New(Deps{
-		Session:     conv,
-		Conv:        conv,
-		Theme:       th,
-		Server:      "127.0.0.1:8080",
-		Workspace:   "/workspace",
-		Mode:        "default",
-		Model:       "mock-model",
-		Ctx:         context.Background(),
-		NoAltScreen: true,
-		onPhase:     prog.record,
+	model := newTestModelFromDeps(Deps{
+		Session:           conv,
+		Conv:              conv,
+		Theme:             th,
+		Server:            "127.0.0.1:8080",
+		Workspace:         "/workspace",
+		Mode:              "default",
+		Model:             "mock-model",
+		Ctx:               context.Background(),
+		NoAltScreen:       true,
+		emojiCapable:      func() bool { return false },
+		kittyCapable:      func() bool { return false },
+		scrollKeysMarking: func() string { return "pgup/pgdn" },
+		onPhase:           prog.record,
 	})
 	tm := teatest.NewTestModel(t, model, teatest.WithInitialTermSize(100, 30))
 

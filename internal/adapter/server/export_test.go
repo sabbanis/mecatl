@@ -95,7 +95,7 @@ func (s *Service) NeedsRehydrationForTest(sess *session.Session) bool {
 
 // TrackSteerMessageIDForTest appends one client-minted id to the session's
 // watermark FIFO — the test seam for the steer correlation invariant pin
-// (ADR-0232; assert positional, not textual, correlation).
+// (ADR-0233; assert positional, not textual, correlation).
 func (s *Service) TrackSteerMessageIDForTest(id session.SessionID, messageID string) {
 	s.trackSteerMessageID(id, messageID)
 }
@@ -104,4 +104,34 @@ func (s *Service) TrackSteerMessageIDForTest(id session.SessionID, messageID str
 // so the full-matrix test can assert every agent.SteerOutcome arm.
 func SteerOutcomeToProtoForTest(o agent.SteerOutcome) mecatlv1.SteerOutcome {
 	return steerOutcomeToProto(o)
+}
+
+// ShrinkWatchDeliveryForTest narrows the bounded watch delivery state (ADR 0250)
+// for one test and returns the restore func.
+//
+// The bounds are deliberately NOT configuration: an operator has no reason to
+// tune them, and exporting a knob so a test can be cheap would put a production
+// surface on the wire for a test's convenience. Proving "a slow watcher is
+// terminated" against the production 512 envelopes and five-second grace would
+// take 512 events and five seconds to assert nothing the shrunk version does not.
+func ShrinkWatchDeliveryForTest(buffer int, grace time.Duration) (restore func()) {
+	prevBuffer, prevGrace := watchDeliveryBuffer, watchDeliveryGrace
+	watchDeliveryBuffer, watchDeliveryGrace = buffer, grace
+	return func() { watchDeliveryBuffer, watchDeliveryGrace = prevBuffer, prevGrace }
+}
+
+// ClassifyErrorCodeForTest exposes the stable error code the shared registry
+// assigns to err, so a test can assert the wire contract a client branches on
+// rather than an error string.
+func ClassifyErrorCodeForTest(err error) string {
+	return classifyError(err).Code
+}
+
+// WatchTerminalForTest exposes the watch's terminal-precedence decision so the
+// gap-outranks-everything rule can be asserted exhaustively. The discriminating
+// state (a faulted watcher that had ALREADY recorded a lagging termination) is
+// reachable in production only through a race, so an end-to-end test cannot
+// produce it deterministically.
+func WatchTerminalForTest(gapped bool, recorded error) error {
+	return watchTerminal(gapped, recorded)
 }

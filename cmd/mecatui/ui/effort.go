@@ -28,7 +28,7 @@ import (
 // persisted state stays clean (an unset effort is absent from models.yaml, not the
 // literal "auto"). effortValue does that mapping; effortLabel does the inverse for
 // display. The server normalises/clamps anyway (e.g. openai "max" echoes "high"),
-// and the LIVE display reads m.effectiveModel.ReasoningEffort (the resolved value),
+// and the LIVE display reads m.resolvedSessionModel.ReasoningEffort (the resolved value),
 // so the picker only ever needs to send the operator's REQUEST.
 
 // effortView is the active /effort overlay (none = closed). Idle-only, esc-dismissed.
@@ -84,7 +84,7 @@ func effortLabel(value string) string {
 }
 
 // openEffort opens the picker, positioning the cursor on the CURRENT effective effort
-// (resolved by the server, m.effectiveModel.ReasoningEffort) so the current tier is
+// (resolved by the server, m.resolvedSessionModel.ReasoningEffort) so the current tier is
 // pre-selected. Only callable while idle and when model selection is available (the
 // effort is a per-session server setting that only matters with a selectable model);
 // returns the model unchanged otherwise. Unlike /models it fires no RPC (the enum is
@@ -93,9 +93,9 @@ func (m Model) openEffort() (tea.Model, tea.Cmd) {
 	if m.phase != phaseIdle || !m.caps.ModelSelection {
 		return m, nil
 	}
-	m.ta.Blur() // overlay owns the keyboard while open
+	m.prompt.Blur() // overlay owns the keyboard while open
 	m.effort.view = effortPanel
-	m.effort.cursor = effortCursorFor(m.effectiveModel.ReasoningEffort)
+	m.effort.cursor = effortCursorFor(m.resolvedSessionModel.ReasoningEffort)
 	return m, nil
 }
 
@@ -121,11 +121,11 @@ func effortCursorFor(current string) int {
 // inventory with Reasoning==false; an unknown/unloaded model returns false (fail-open,
 // matching the server's unknown=capable posture), so the warning never cries wolf.
 func (m Model) currentModelNoReasoning() bool {
-	id, pid := m.effectiveModel.ModelID, m.effectiveModel.ProviderID
+	id, pid := m.resolvedSessionModel.ModelID, m.resolvedSessionModel.ProviderID
 	if id == "" {
 		return false // no resolved model yet → say nothing
 	}
-	for _, mi := range m.models.models {
+	for _, mi := range m.modelCatalog.models {
 		if mi.ID == id && mi.ProviderID == pid {
 			return !mi.Reasoning
 		}
@@ -136,7 +136,7 @@ func (m Model) currentModelNoReasoning() bool {
 // closeEffort dismisses the overlay and returns focus to the prompt input.
 func (m Model) closeEffort() (tea.Model, tea.Cmd) {
 	m.effort.view = effortNone
-	cmd := m.ta.Focus()
+	cmd := m.prompt.Focus()
 	return m, cmd
 }
 
@@ -190,21 +190,21 @@ func (m Model) chooseEffort() (tea.Model, tea.Cmd, bool) {
 
 // effortSelection builds the ModelSelection for a restart that changes ONLY the
 // reasoning effort: it carries the CURRENT session's provider/model (the effective
-// model the server resolved, falling back to the pending activeModel) so the model
+// model the server resolved, falling back to the pending createModelSelection) so the model
 // is preserved across the restart, with the new effort applied. When no model is
 // known yet (older server / mid-connect) it carries the bare effort over the
 // server-default provider — meaningful on its own (ADR 0055: effort rides the
 // server-default provider), so this is not a zero selection.
 func (m Model) effortSelection(effort string) client.ModelSelection {
 	sel := client.ModelSelection{
-		ProviderID: m.effectiveModel.ProviderID,
-		ModelID:    m.effectiveModel.ModelID,
+		ProviderID: m.resolvedSessionModel.ProviderID,
+		ModelID:    m.resolvedSessionModel.ModelID,
 	}
 	if sel.ProviderID == "" && sel.ModelID == "" {
 		// No server-resolved model yet — fall back to the pending next selection so a
 		// pre-connect effort change still preserves whatever model is queued.
-		sel.ProviderID = m.activeModel.ProviderID
-		sel.ModelID = m.activeModel.ModelID
+		sel.ProviderID = m.createModelSelection.ProviderID
+		sel.ModelID = m.createModelSelection.ModelID
 	}
 	sel.ReasoningEffort = effort
 	return sel

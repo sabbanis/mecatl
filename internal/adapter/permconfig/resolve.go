@@ -2,6 +2,7 @@ package permconfig
 
 import (
 	"context"
+	"errors"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -209,8 +210,24 @@ type Resolver struct {
 	operatorStorageManagement    *StorageManagementSection
 	operatorStorageManagementErr error
 
+	// operatorProviders and operatorProviderOverrides are immutable operator-tier
+	// provider configuration captured once at resolver construction.
+	operatorProviders         ProviderDefinitions
+	operatorProviderOverrides ProviderOverrides
+	operatorProviderConfigErr error
+
 	mu    sync.RWMutex
 	cache map[string]*cacheEntry // keyed by ws.Root()
+}
+
+// OperatorProviders returns the operator-tier custom provider definitions and
+// endpoint overrides. Both maps are immutable snapshots; the returned error records
+// a strict operator configuration parse failure involving either section.
+func (r *Resolver) OperatorProviders() (ProviderDefinitions, ProviderOverrides, error) {
+	if r == nil {
+		return nil, nil, nil
+	}
+	return r.operatorProviders, r.operatorProviderOverrides, r.operatorProviderConfigErr
 }
 
 // OperatorStorageManagement returns the immutable operator-tier management
@@ -587,6 +604,12 @@ func (r *Resolver) loadProjectRules(ws tool.WorkspaceReader) ([]governance.Rule,
 		// project repo weaken or disable a security checker — a downgrade the usual
 		// tighten-only project gate does NOT permit (it reverses here: project config
 		// can only TIGHTEN permissions, but a guardrail relaxation is a LOOSENING).
+		if cfg.Providers != nil {
+			r.diag.Log(context.Background(), port.LevelWarn, "providers: IGNORING project-tier providers block (operator-tier only)", "file", src.path, "root", ws.Root())
+		}
+		if cfg.ProviderOverrides != nil {
+			r.diag.Log(context.Background(), port.LevelWarn, "provider_overrides: IGNORING project-tier provider_overrides block (operator-tier only)", "file", src.path, "root", ws.Root())
+		}
 		if cfg.Guardrails != nil {
 			r.diag.Log(context.Background(), port.LevelWarn,
 				"guardrails: IGNORING a project-tier guardrails: block (operator-tier only — a project repo cannot configure/disable a security checker; set guardrails in your user-global settings.yaml or via --guardrails-model)",
@@ -600,7 +623,7 @@ func (r *Resolver) loadProjectRules(ws tool.WorkspaceReader) ([]governance.Rule,
 		if strings.TrimSpace(cfg.Posture) != "" {
 			r.diag.Log(context.Background(), port.LevelWarn,
 				"posture: IGNORING a project-tier posture: scalar (operator-tier only — a project repo cannot raise the automation posture; set posture in your user-global settings.yaml or via --posture)",
-				"file", src.path, "root", ws.Root(), "ignored_value", strings.TrimSpace(cfg.Posture))
+				"file", src.path, "root", ws.Root())
 		}
 		// ReasoningEffort is OPERATOR-TIER ONLY (ADR 0055), for consistency with
 		// posture: a project file's reasoning-effort: scalar is IGNORED
@@ -610,7 +633,7 @@ func (r *Resolver) loadProjectRules(ws tool.WorkspaceReader) ([]governance.Rule,
 		if strings.TrimSpace(cfg.ReasoningEffort) != "" {
 			r.diag.Log(context.Background(), port.LevelWarn,
 				"reasoning-effort: IGNORING a project-tier reasoning-effort: scalar (operator-tier only — set reasoning-effort in your user-global settings.yaml or via --reasoning-effort)",
-				"file", src.path, "root", ws.Root(), "ignored_value", strings.TrimSpace(cfg.ReasoningEffort))
+				"file", src.path, "root", ws.Root())
 		}
 		// PlanModeAutoApprove is OPERATOR-TIER ONLY (issue #206 Wave 6a), for
 		// consistency with posture/guardrails: a project file's plan-mode-auto-approve:
@@ -810,6 +833,9 @@ func (r *Resolver) applyTrustGate(rules []governance.Rule, report *Report) []gov
 // Read from the host filesystem via the injectable env (NOT a workspace — these
 // live outside any session root). Fail-soft per file.
 func (r *Resolver) captureOperatorParseError(data []byte, err error) {
+	if (hasTopLevelKey(data, "providers") || hasTopLevelKey(data, "provider_overrides")) && r.operatorProviderConfigErr == nil {
+		r.operatorProviderConfigErr = errors.New("operator provider configuration is invalid")
+	}
 	if hasTopLevelKey(data, "retention") && r.operatorRetentionErr == nil {
 		r.operatorRetentionErr = err
 	}
@@ -864,6 +890,7 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 		r.captureMCP(cfg.MCP)
 		r.captureRetention(cfg.Retention)
 		r.captureStorageManagement(cfg.StorageManagement)
+		r.captureProviders(cfg.Providers, cfg.ProviderOverrides)
 	}
 
 	if !r.opts.Conventional {
@@ -902,6 +929,7 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 				r.captureMCP(cfg.MCP)
 				r.captureRetention(cfg.Retention)
 				r.captureStorageManagement(cfg.StorageManagement)
+				r.captureProviders(cfg.Providers, cfg.ProviderOverrides)
 			}
 		}
 	}
@@ -921,6 +949,17 @@ func (r *Resolver) loadUserRules(report *Report) []governance.Rule {
 	}
 
 	return rules
+}
+
+// captureProviders records the first complete operator provider snapshot. Explicit
+// files precede user-global settings, so the command-line operator tier wins.
+func (r *Resolver) captureProviders(definitions ProviderDefinitions, overrides ProviderOverrides) {
+	if r.operatorProviders == nil && definitions != nil {
+		r.operatorProviders = definitions
+	}
+	if r.operatorProviderOverrides == nil && overrides != nil {
+		r.operatorProviderOverrides = overrides
+	}
 }
 
 // captureGuardrails records the FIRST operator-tier guardrails: block seen during
@@ -1059,20 +1098,19 @@ func specOf(rule governance.Rule) string {
 	return rule.Tool + "(" + rule.Pattern + ")"
 }
 
-// logReport logs the lossy outcomes (demoted/inert/dropped specs) of a load at the
-// given origin, so an operator can see exactly what was weakened or ignored. A
-// clean report logs nothing.
+// logReport logs the lossy outcome category and harness-authored reason without
+// forwarding a rule spec from configuration into diagnostics.
 func (r *Resolver) logReport(report *Report, origin string) {
 	if report.Empty() {
 		return
 	}
 	for _, e := range report.Demoted {
-		r.diag.Log(context.Background(), port.LevelWarn, "permission config: rule demoted", "origin", origin, "spec", e.Spec, "reason", e.Reason)
+		r.diag.Log(context.Background(), port.LevelWarn, "permission config: rule demoted", "origin", origin, "reason", e.Reason)
 	}
 	for _, e := range report.Inert {
-		r.diag.Log(context.Background(), port.LevelWarn, "permission config: rule inert", "origin", origin, "spec", e.Spec, "reason", e.Reason)
+		r.diag.Log(context.Background(), port.LevelWarn, "permission config: rule inert", "origin", origin, "reason", e.Reason)
 	}
 	for _, e := range report.Dropped {
-		r.diag.Log(context.Background(), port.LevelWarn, "permission config: rule dropped", "origin", origin, "spec", e.Spec, "reason", e.Reason)
+		r.diag.Log(context.Background(), port.LevelWarn, "permission config: rule dropped", "origin", origin, "reason", e.Reason)
 	}
 }

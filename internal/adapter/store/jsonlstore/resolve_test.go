@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/stacklok/mecatl/engine/adapter/sessnap"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 )
 
@@ -438,7 +439,7 @@ func TestResolverRootRejectsTraversalDuringMigration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonicalRelativeName: %v", err)
 	}
-	if err := moveLegacyFile(root, filepath.Join("..", filepath.Base(foreign)), dst); err == nil {
+	if err := moveLegacyFile((*os.Root).Rename, root, filepath.Join("..", filepath.Base(foreign)), dst); err == nil {
 		t.Fatal("moveLegacyFile accepted a source outside the store root")
 	}
 	assertBytes(t, foreign, want)
@@ -488,7 +489,7 @@ func TestMigrationRejectsSymlinkSourceToForeignDescendant(t *testing.T) {
 	if err != nil {
 		t.Fatalf("canonicalRelativeName: %v", err)
 	}
-	if err := moveLegacyFile(root, src, dst); err == nil {
+	if err := moveLegacyFile((*os.Root).Rename, root, src, dst); err == nil {
 		t.Fatal("moveLegacyFile accepted a symlink source")
 	}
 	assertBytes(t, foreign, want)
@@ -785,11 +786,8 @@ func TestLongLegacyIDMigratesForward(t *testing.T) {
 	}
 }
 
-// TestAppendLineRepairsTornTail pins appendLine's two branches directly: a file
-// ending in '\n' is appended to verbatim, and one ending mid-record gets a
-// separating newline so the fragment cannot swallow the next record. Without it
-// a single interrupted write corrupts the FOLLOWING record too, in any of the
-// three per-session files.
+// TestAppendLineRepairsTornTail pins that a clean file is extended and an
+// unterminated EOF fragment is discarded before the next committed record.
 func TestAppendLineRepairsTornTail(t *testing.T) {
 	for _, tc := range []struct {
 		name     string
@@ -797,15 +795,16 @@ func TestAppendLineRepairsTornTail(t *testing.T) {
 		want     string
 	}{
 		{"clean tail", "{\"a\":1}\n", "{\"a\":1}\n{\"b\":2}\n"},
-		{"torn tail", "{\"a\":1}\n{\"partial", "{\"a\":1}\n{\"partial\n{\"b\":2}\n"},
+		{"torn tail", "{\"a\":1}\n{\"partial", "{\"a\":1}\n{\"b\":2}\n"},
 		{"empty file", "", "{\"b\":2}\n"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			path := filepath.Join(t.TempDir(), "x.jsonl")
+			st := newInternalStore(t)
+			path := st.resolver.canonicalPath("append-tail", kindEvents)
 			if tc.existing != "" {
 				writeBytes(t, path, []byte(tc.existing))
 			}
-			if err := appendLine(path, []byte("{\"b\":2}")); err != nil {
+			if err := st.appendLine(path, []byte("{\"b\":2}"), appendStrict); err != nil {
 				t.Fatalf("appendLine: %v", err)
 			}
 			assertBytes(t, path, []byte(tc.want))
@@ -956,6 +955,34 @@ func collectEvents(t *testing.T, st *Store, id session.SessionID) []session.Even
 		events = append(events, ev)
 	}
 	return events
+}
+
+func TestCreateCollisionDoesNotMigrateLegacyFamily(t *testing.T) {
+	ctx := context.Background()
+	first := newInternalStore(t)
+	second, err := New(first.resolver.dir)
+	if err != nil {
+		t.Fatalf("New(second): %v", err)
+	}
+	id := session.SessionID("legacy-create-collision")
+	legacy := map[sessionKind][]byte{
+		kindSnapshot: append(snapshotLine(t, id, "legacy winner"), '\n'),
+		kindTools:    []byte("legacy tool\n"),
+		kindEvents:   []byte("legacy event\n"),
+	}
+	for kind, content := range legacy {
+		writeBytes(t, first.resolver.legacyPath(id, kind), content)
+	}
+
+	loser := session.New(id, session.ModeAccept, "/loser", session.Limits{}, time.Unix(2, 0).UTC())
+	if err := second.Create(ctx, loser); !errors.Is(err, port.ErrSessionAlreadyExists) {
+		t.Fatalf("Create(collision) = %v, want ErrSessionAlreadyExists", err)
+	}
+	for kind, content := range legacy {
+		assertBytes(t, first.resolver.legacyPath(id, kind), content)
+		assertMissing(t, first.resolver.canonicalPath(id, kind))
+	}
+	assertMissing(t, first.resolver.currentSnapshotPath(id))
 }
 
 func newInternalStore(t *testing.T) *Store {

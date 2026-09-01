@@ -108,6 +108,11 @@ var blanketBypassPhrases = []string{
 // validate reports the entry's own defect, or nil if it is well-formed. It
 // does not know the boundary name (the caller adds that context).
 func (e ClassificationEntry) validate() error {
+	switch e.Kind {
+	case KindCallerOwned, KindDerived, KindSharedInfrastructure, KindExempt:
+	default:
+		return fmt.Errorf("unknown access kind %q", e.Kind)
+	}
 	r := strings.TrimSpace(e.Rationale)
 	if r == "" {
 		return errors.New("missing rationale")
@@ -146,6 +151,13 @@ func (r classificationReport) Errors() []error {
 		errs = append(errs, fmt.Errorf("%s: stale classification table entry %q — boundary no longer exists, remove it", r.Surface, name))
 	}
 	return errs
+}
+
+// ValidateClassifiedNames compares actual boundary names with their classification
+// entries. It is exported for composition-owned registries whose concrete
+// registrations are not visible to this package.
+func ValidateClassifiedNames(surface string, table map[string]ClassificationEntry, boundaries []string) []error {
+	return classifyNames(surface, table, boundaries).Errors()
 }
 
 // classifyNames is the guard's core comparison: every name in boundaries must
@@ -243,11 +255,13 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"CreateSessionWithProfile":  {KindCallerOwned, "atomic owner bind at creation (reserveSessionID); ForkSession/carryover sources are authorized via authorizeSession before copying history"},
 	"CreateSessionWithMCP":      {KindCallerOwned, "delegates to CreateSessionWithProfile's atomic owner bind"},
 	"GetSession":                {KindCallerOwned, "authorizeSession: owner mismatch or absence both return ErrNotFound"},
+	"WithAuthorizedSession":     {KindCallerOwned, "ownership preflight excludes foreign lock contention; authoritative reload under runEntryMu precedes the caller-owned effect"},
 	"GetTranscript":             {KindCallerOwned, "one SessionStore.Load followed by authorizeSession; no run-entry side effects"},
 	"LoadSession":               {KindCallerOwned, "authorizeSession before rehydration"},
 	"LoadSessionWithMCP":        {KindCallerOwned, "delegates to LoadSession's authorizeSession before mounting client MCP"},
 	"SetMode":                   {KindCallerOwned, "authorizes via GetSession before changing the session's permission mode"},
 	"RenameSession":             {KindCallerOwned, "authorizes via GetSession, then revalidates ownership, kind, state, liveness, and lease under runEntryMu before persisting"},
+	"CompactSession":            {KindCallerOwned, "binds the verified caller, then revalidates ownership, chat purpose, state, liveness, and lease under runEntryMu before saving and appending events"},
 	"DeleteSession":             {KindCallerOwned, "authorizes via GetSession, then revalidates ownership, kind, state, liveness, and lease under runEntryMu before physical deletion"},
 	"ForkSession":               {KindCallerOwned, "authorizes the SOURCE session (authorizeSession) before copying its history to a new owned session"},
 	"PreflightSessionAdoption":  {KindCallerOwned, "loads and authorizes the legacy source from the verified caller context before reporting eligibility"},
@@ -266,9 +280,11 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"CancelSessionCleanup":      {KindCallerOwned, "gates on management authority; matches the verified principal against the bounded job registry — the underlying cleanup scope is store-wide, never caller-owned"},
 	"SessionCleanupJob":         {KindCallerOwned, "gates on management authority and returns only a caller-bound sanitized job projection; the underlying cleanup data is store-wide, not the caller's own sessions"},
 	"StreamSessionEvents":       {KindCallerOwned, "event log/live stream resolves through the owning session's authorizeSession check"},
+	"WatchSessionEvents":        {KindCallerOwned, "durable replay-then-follow watch (ADR 0250); watchLog resolves ownership through the same GetSession check StreamSessionEvents uses, EAGERLY — before any envelope is yielded — because the durable log holds the whole transcript"},
 	"Subscribe":                 {KindCallerOwned, "authorizes via GetSession before registering a live subscriber (issue #368)"},
 
 	// --- caller-owned: live run verbs ---
+	"RetryFailedRun":           {KindCallerOwned, "authorizes and reloads under runEntryMu before failed-step retry eligibility and launch"},
 	"StartRun":                 {KindCallerOwned, "delegates to StartRunContent's run-entry authorization"},
 	"StartRunContent":          {KindCallerOwned, "authorizes before the public chat-purpose kind gate and shared run-entry path"},
 	"StartScheduledRunContent": {KindCallerOwned, "trusted scheduler-purpose entry; authorizes the schedule owner before its kind gate and shared run-entry path"},
@@ -311,15 +327,17 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"MaintenanceMutationAvailable": {KindDerived, "read-only capability truth consumed by composition before scheduling automatic retention"},
 	"FinishRun":                    {KindDerived, "deregisters an id the wire adapter already finished draining from its own authorized run"},
 	"PublishSessionEvent":          {KindDerived, "publishes to subscribers already registered via the (caller-owned) Subscribe for this id; PublishSessionEvent itself takes no ctx and makes no independent decision"},
-	"AppendRunEvent":               {KindDerived, "durable-append passthrough to the single appendEvent chokepoint for an id the in-process caller (the scheduler fire loop) already owns via its own run"},
 	"RecoverNotice":                {KindDerived, "pops a notice keyed by id that only the relay's own immediately-preceding, already-authorized StartRunContent call could have set"},
 	"LookupSteerMessageID":         {KindDerived, "pops a steer message-id correlation only the relay's own already-authorized Steer call could have parked; consumed by the gRPC relay's EvSteer echo stamp on the same stream"},
 	"SetSessionEnvironment":        {KindDerived, "called only with the id CreateSession* just returned to the same caller (internal/adapter/acp); renamed from SetSessionWorkspace by the execution-environments refactor"},
 	"CloseSession":                 {KindDerived, "internal cleanup for an id the caller (EndSession, already authorized) or the owning connection has already established as its own; takes no ctx"},
 	"EmitScheduleEvent":            {KindDerived, "stamps the fire's ALREADY-established actor (the scheduler's system principal for a tick fire, or FireNow's caller) captured at fire time; makes no independent ownership decision"},
+	"CanProcessSchedule":           {KindDerived, "scheduler-only pre-claim deployment-authority check over an already-loaded durable schedule; no caller-facing ownership decision"},
 	"MaybeAutoApprovePlan":         {KindDerived, "invoked from relayEvent only for an id the SAME request's already-authorized StartRunContent/ApprovePlan call is streaming"},
 
 	// --- shared infrastructure: process-wide catalog/config, same for every caller by design ---
+	"CompatibilityInfo":       {KindSharedInfrastructure, "the deployment's capability/feature descriptor, identical for every caller; it touches no session, schedule, or memory record"},
+	"ClientMCPFromWire":       {KindSharedInfrastructure, "classifies a request's MCP entries and applies the deployment-wide client-MCP policy, which is identical for every caller; it reads and writes no session, schedule, or memory record and reaches no network"},
 	"ListMcpResources":        {KindSharedInfrastructure, "MCP servers are process-wide composition config, not a caller-owned record; every caller may list a wired server's resources"},
 	"ReadMcpResource":         {KindSharedInfrastructure, "reads a resource off a process-wide MCP server registration, not a caller-owned record"},
 	"ListMcpPrompts":          {KindSharedInfrastructure, "reads prompt snapshots off a process-wide MCP server registration"},
@@ -364,6 +382,7 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"Close":                  {KindExempt, "process shutdown; not a per-request caller-facing operation"},
 	"Drain":                  {KindExempt, "process drain-gate arm; not a per-request caller-facing operation"},
 	"Diagnostics":            {KindExempt, "returns the injected port.Diagnostics sink, a composition-time wiring accessor"},
+	"OwnershipEnforced":      {KindExempt, "returns the composition-time ownership posture; resource decisions still use ownsResource/authorizeSession"},
 	"IsDraining":             {KindExempt, "reads the process-wide drain flag Drain sets"},
 	"ActiveRuns":             {KindExempt, "process-wide in-flight run count, an operator/health metric with no per-caller identity"},
 	"StorageReady":           {KindExempt, "a storage-backend health probe, not a caller-owned resource read"},
@@ -372,10 +391,11 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"SetScheduleMinInterval": {KindExempt, "composition-time configuration of the scheduling frequency floor"},
 	"ScheduleManager":        {KindExempt, "composition-time accessor for the context-free manager handle; Schedule and ScheduleQuery are separately classified caller-owned consumers"},
 
-	// --- exempt: composition-owned session staleness sweep (issue #475), process-wide by design ---
-	"SessionStale":                       {KindExempt, "decides staleness for a metadata-scan candidate inside internal/app's composition-owned sweep, never a per-request caller-facing verb (mirrors IsLive)"},
+	// --- narrow shared-infrastructure stale-session maintenance (issue #475 / #368) ---
+	"SessionStale":                       {KindSharedInfrastructure, "decides staleness only for metadata returned by the stale-session reconciler's root-authorized narrow enumeration"},
 	"LeaseSweepDisabled":                 {KindExempt, "reads the process-wide sticky sweep-disabled flag SessionStale sets, consumed only by the composition-owned sweep"},
-	"SettleIfStale":                      {KindExempt, "repairs a stale session found by the composition-owned sweep's own metadata scan across every session, not a caller-supplied id from a caller-owned boundary"},
+	"StaleRunningCandidates":             {KindSharedInfrastructure, "root-authorized metadata-only enumeration of owned running, non-scheduled sessions; returns no transcript content"},
+	"SettleIfStale":                      {KindSharedInfrastructure, "root-authorized authoritative reload and settlement of a stale running candidate; ownerless records are rejected under ownership enforcement"},
 	"DeleteSessionForRetention":          {KindExempt, "legacy composition retention callback; revalidates durable taxonomy/state and acquires the session mutation lease before deletion"},
 	"DeleteSessionForRetentionCandidate": {KindExempt, "composition-owned retention callback over planner metadata; holds run-entry, lease, and backend family exclusions through conditional deletion"},
 }
@@ -436,58 +456,10 @@ var systemAccessTable = map[syscaller.Root]ClassificationEntry{
 		KindSharedInfrastructure,
 		"one-shot startup live-model-catalog fetch and swap; reads provider APIs and publishes a process-wide model registry snapshot, identical for every caller, touching no session/schedule/team/memory record at all",
 	},
-}
-
-// modelToolAccessTable classifies the model-facing tool families that reach a
-// caller-owned or shared-infrastructure boundary directly rather than only
-// through *Service — ADR 0212 decision 2's "model-tool access boundary" and
-// Scenario 3's non-store coverage. Names are the literal tool.ToolSpec.Name
-// values (engine/agent keeps its own name constants unexported; these
-// literals are the single source the guard and the tests share — see
-// ADR 0212 and docs/architecture.md's caller-ownership section).
-var modelToolAccessTable = map[string]ClassificationEntry{
-	// Project memory tools (Remember/Recall/SearchMemory): backed by
-	// memory.CallerStore(project=true), classified caller-owned above.
-	// Forget is a CallerStore capability (classified in callerStoreAccessTable)
-	// with no registered model-facing tool today — there is nothing to list
-	// here until one is added.
-	"Remember":     {KindCallerOwned, "backed by memory.CallerStore(project=true); scoped by verified caller + workspace"},
-	"Recall":       {KindCallerOwned, "backed by memory.CallerStore(project=true); scoped by verified caller + workspace"},
-	"SearchMemory": {KindCallerOwned, "backed by memory.CallerStore(project=true); scoped by verified caller + workspace"},
-	// User-model memory (RememberUser/RecallUser/SearchUserModel): backed by
-	// memory.CallerStore(project=false), a DISTINCT kind (decision 2) from
-	// project memory even where logical keys match.
-	"RememberUser":    {KindCallerOwned, "backed by memory.CallerStore(project=false); scoped by verified caller only, a distinct kind from project memory"},
-	"RecallUser":      {KindCallerOwned, "backed by memory.CallerStore(project=false); scoped by verified caller only"},
-	"SearchUserModel": {KindCallerOwned, "backed by memory.CallerStore(project=false); scoped by verified caller only"},
-	// Child/team observability and delegation: these act on a caller-supplied
-	// handle (agentId / teamID) inside the SAME run, so the decision is the
-	// resuming child/team session's own owner check (engine/agent/teaminspect.go,
-	// subagentinspect.go, subagentstatus.go), which SameIdentity-matches the
-	// run's caller.
-	"InspectSubagent": {KindCallerOwned, "reads a persisted child session's transcript; teaminspect/subagentinspect authorize via sess.Owner.SameIdentity(caller) before returning it"},
-	"InspectMember":   {KindCallerOwned, "reads a persisted team-member session's transcript; authorizes via sess.Owner.SameIdentity(caller) before returning it"},
-	"SubagentStatus":  {KindCallerOwned, "reads the run-scoped background-child registry (parentCaps.children), which only ever holds children this SAME run's caller spawned"},
-	"Subagent":        {KindCallerOwned, "a resume: <agentId> load authorizes the persisted child via sess.Owner.SameIdentity(caller) before recovering or re-persisting it (issue #368 task 09)"},
-	"Team":            {KindCallerOwned, "the in-loop Team tool inherits the run's OWN authorized session; RunTeam's gRPC entry point is separately classified above via lookupTeam"},
-	"Schedule":        {KindCallerOwned, "every verb (create/list/inspect/pause/resume/delete/fire-now) uses the context-bound owner-namespaced schedule manager, which derives/enforces ownership per verb; GetFire's parent-owner check is a separate gRPC/REST-only boundary this tool never reaches"},
-	"ScheduleQuery":   {KindCallerOwned, "the context-bound schedule manager filters list results by owner before rendering model-visible metadata"},
-}
-
-// ModelToolBoundaries is the single registry of model-facing tool names ADR
-// 0102's "model-tool access boundary" covers — the tools that reach a
-// caller-owned or shared-infrastructure decision directly rather than only
-// through *Service. It mirrors internal/syscaller.Roots' registry discipline:
-// a new tool in this family is added HERE (and to modelToolAccessTable) or
-// TestInvariant_owned_access_is_classified fails, naming the gap. Tools
-// unrelated to caller ownership (Read, Bash, WebSearch, …) are deliberately
-// NOT enumerated — this is a narrow, reviewable boundary list, not the whole
-// catalog.
-var ModelToolBoundaries = []string{
-	"Remember", "Recall", "SearchMemory",
-	"RememberUser", "RecallUser", "SearchUserModel",
-	"InspectSubagent", "InspectMember", "SubagentStatus", "Subagent", "Team",
-	"Schedule", "ScheduleQuery",
+	syscaller.RootStaleSessionReconcile: {
+		KindSharedInfrastructure,
+		"stale-session repair: may enumerate metadata and settle only owned, running, non-scheduled crash orphans through the root-authorized narrow server seam; cannot read transcripts or use caller memory",
+	},
 }
 
 // ClassifyServiceBoundaries walks every exported *Service method (the
@@ -526,13 +498,7 @@ func ClassifySystemBoundaries() []error {
 	return classifyNames("syscaller.Root", table, names).Errors()
 }
 
-// ClassifyModelToolBoundaries walks ModelToolBoundaries (the model-tool
-// access boundary registry).
-func ClassifyModelToolBoundaries() []error {
-	return classifyNames("model-tool", modelToolAccessTable, ModelToolBoundaries).Errors()
-}
-
-// ClassifyAllBoundaries runs every classified surface's guard and returns the
+// ClassifyAllBoundaries runs every server-owned classified surface's guard and returns the
 // concatenated findings — the single entry point
 // TestInvariant_owned_access_is_classified drives (AC5.1).
 func ClassifyAllBoundaries() []error {
@@ -540,6 +506,5 @@ func ClassifyAllBoundaries() []error {
 	errs = append(errs, ClassifyServiceBoundaries()...)
 	errs = append(errs, ClassifyCallerStoreBoundaries()...)
 	errs = append(errs, ClassifySystemBoundaries()...)
-	errs = append(errs, ClassifyModelToolBoundaries()...)
 	return errs
 }

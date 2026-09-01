@@ -33,7 +33,7 @@ func (f *fakeWorktreeLister) List(_ context.Context, _ string) ([]client.Worktre
 // driven through the connect (SessionReadyMsg) so it is idle and ready.
 func newWorktreesModel(t *testing.T, conv *fakeConv, fw *fakeWorktreeLister, caps client.Capabilities) Model {
 	t.Helper()
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session:     conv,
 		Conv:        conv,
 		Worktrees:   fw,
@@ -101,7 +101,7 @@ func TestRunWorktreesOpensOverlay(t *testing.T) {
 	if !m.worktrees.loading {
 		t.Error("overlay should be loading until ListWorktrees lands")
 	}
-	if m.ta.Focused() {
+	if m.prompt.Focused() {
 		t.Error("opening the overlay should blur the textarea")
 	}
 	if cmd == nil {
@@ -120,7 +120,7 @@ func TestRunWorktreesOpensOverlay(t *testing.T) {
 // openWorktrees is a no-op.
 func TestRunWorktreesNilGuard(t *testing.T) {
 	conv := newWorktreesConv(client.Capabilities{})
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()),
 		Workspace: "/ws", Ctx: context.Background(), NoAltScreen: true,
 	})

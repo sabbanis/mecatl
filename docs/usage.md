@@ -30,6 +30,12 @@ an editor that spawned it.
 
 ---
 
+## Build identity and safe diagnostics
+
+Every shipped executable accepts exact top-level `--version` and prints its build id without starting normal configuration or services. Authenticated clients can read the server build identity and sanitized diagnostic display endpoint projections through gRPC `GetServerInfo` or HTTP `GET /v1/info`; these are not connection configuration or instructions. The detailed transport contracts are in [the gRPC API](usage/grpc-api.md) and [the HTTP/SSE API](usage/http-sse-api.md). Mecatui's `/diagnostics` behavior is documented in [the TUI guide](tui.md).
+
+---
+
 ## Table of contents
 
 | Section | File |
@@ -54,6 +60,24 @@ an editor that spawned it.
 | 18. OpenAI Codex subscription | [OpenAI Codex subscription](#openai-codex-subscription-experimental) |
 | 19. ToolHive LLM gateway | [ToolHive LLM gateway](#toolhive-llm-gateway) |
 
+## mecatui command discovery
+
+`mecatui --help`, `mecatui -h`, and `mecatui help` render the concise command index.
+`mecatui help sessions`, `mecatui help connect`, `mecatui help debug`, and `mecatui help login` alias the
+corresponding command-specific help; direct `sessions --help`, `connect --help`, `debug --help`, and
+`login --help` remain available. Use bare `mecatui --help-flags` for common embedded-mode
+flags, or `--help-all` with bare `mecatui`, `sessions`, or `connect` for every applicable
+flag. `mecatui llm login` supports standard help and `--skip-browser`; it opens
+the ToolHive LLM gateway OIDC flow only. `mecatui login ADDRESS` instead supports the
+remote issuer/client/audience/CA/callback options and enrolls that remote target.
+
+Inside the TUI, `/retry` manually repeats the last typed `retryable` failed model
+step when it is still retry-pending. Mecatui automatically retries
+`retryable + precommit` only once; a second precommit failure or any
+`retryable + visible` failure requires `/retry`. The command sends no new prompt,
+preserves the textarea and queued prompts, and reports a harmless status when no
+eligible failure exists. Historical transcript replay never triggers automatic retry.
+
 ## mecatui session identity
 
 The TUI header shows a compact `#<digest>` for the active session rather than a long
@@ -74,7 +98,9 @@ session handoff. Seed-prompt and resume flags conflict with this explicit browse
 To continue directly at process startup, pass `--resume SESSION_ID` or
 `--resume-latest` in either embedded or `connect` mode. mecatui adopts the complete
 authoritative transcript without creating a throwaway session; latest excludes active,
-awaiting, scheduled, child, unknown, and transcript-unavailable rows. The first new
+awaiting, scheduled, child, unknown, and transcript-unavailable rows. When no eligible
+chat exists, `--resume-latest` starts a fresh chat instead of failing (a genuine
+inventory-list failure still surfaces). The first new
 prompt still enters the normal atomic run funnel. If attachment fails, the transcript
 stays visible and the preserved prompt can be retried with `r` or returned to with
 `esc`; no fallback chat is created. A `--prompt`/`--prompt-file` seed is submitted only
@@ -85,6 +111,65 @@ recovers the byte-exact final active ID after any rebind. Keep it to launch
 `mecatui --resume SESSION_ID` later. No handoff is claimed when setup fails, no session
 exists, the TUI fails, or a signal interrupts/forces exit; stdout is unchanged. See the
 [full TUI reference](tui.md#continue-a-chat-at-startup).
+
+## Debug a stored session
+
+Use `mecatui debug SESSION_ID` against the embedded store, or
+`mecatui connect ADDRESS debug SESSION_ID` against a running server. `SESSION_ID`
+may be the full opaque ID or the exact 12-byte ID displayed in the TUI header.
+The short form must identify one caller-visible inventory row; an ambiguous prefix
+creates nothing and requires the full ID. The command creates a **separate durable
+debug session** and submits one first user turn containing the sanitized current debugger
+client/server diagnostics baseline plus a request to inspect the bound target's status and
+authoritative transcript. A custom `--prompt` replaces that diagnosis request, not the
+baseline. Remote baseline lookup failures are safely classified and do not block diagnosis.
+The invocation itself is consent:
+mecatui prints a privacy warning because stored prompts, outputs, tool arguments/results,
+paths, and secrets may be sent to the selected model.
+
+The debug engine has an empty workspace, the no-filesystem profile, and the
+read-only `InspectSession` tool. Add repeatable `--debug-mcp NAME` flags to expose direct
+tools from only those already-configured server-global streaming-HTTP MCP servers:
+
+```sh
+mecatui debug SESSION_ID --debug-mcp github
+mecatui connect ADDRESS debug SESSION_ID --debug-mcp github --debug-mcp slack
+```
+
+Unknown, disconnected, duplicate, or tool-empty selections fail creation. No inline/client
+MCP configuration, URL, header, stdio transport, resource tool, or query meta-tool is accepted.
+The selected server names and exact initial tool-name ceiling are persisted; restart requires
+every selected server/tool still to exist and never adds newly advertised tools. Read-only
+annotations are honored, while absent/false means mutating. Every mutating call requires a
+fresh interactive approval even under configured/yolo/learned Allow; Deny remains absolute,
+headless use is denied, and Allow Always executes only the current call without learning.
+The model must draft an outward action first and may call a mutating reporting tool only after
+a later genuine current operator request explicitly asks to publish/send it.
+
+InspectSession's status and transcript views come from the target
+snapshot; activity and performance are optional EventLog projections. `related` returns only
+opaque target-bound handles for inspectable same-owner retained descendants; those handles can
+scope every ordinary view without accepting raw session IDs. `delegation` reports typed
+subagent/parallel/team/schedule evidence and parent result linkage. `history` catalogs the
+current snapshot, retained compaction archives, and retained-event reconstruction with separate
+opaque handles, and `manifest` lists content-free request manifests. Each reports scan,
+projection, and retention gaps explicitly; a pruned, inaccessible, absent, never-produced, or
+not-retained child is labelled only when the available lineage/event evidence proves it.
+Snapshot latest-run counters and cumulative usage are named separately from lifetime EventLog
+aggregates. The `network` view
+shows bounded failed/interesting resilience attempts with retry/terminal decisions, elapsed
+and safe failure classes, validated provider statuses, and closed correlation kinds with fixed
+SHA-256 digests. It never exposes raw provider codes, correlation IDs, errors, URLs, headers, bodies, prompts,
+tool arguments, or credentials, and states that successful-attempt and DNS/TCP/TLS phase
+timing are unavailable.
+Evidence is bounded and fenced as hostile data. The target ID is fixed by the server,
+not supplied by the model, and the debug run never resumes, mutates, approves, cancels,
+steers, or leases the target. The normal padded header places amber/bold
+`DEBUG target #<digest>` immediately after `mecatui` and keeps that complete identity when
+less important model/mode/server details are shed. `/session` shows the safely quoted exact
+target ID and copies it with `t`; the target-derived terminal title is unchanged.
+Model/mode/session-changing affordances are disabled. See
+[ADR 0254](adr/0254-session-debugger-admin-transport.md).
 
 ## Scheduled tasks
 
@@ -100,6 +185,10 @@ mecated serve --store-dir ./state --scheduler-tick-interval 30s   # scheduler ti
 mecak8s --redis-url redis.example:6379 --redis-tls          # multi-replica, ticks by default
 mecated serve --store-dir ./state --no-scheduler                  # opt out (manual management still works)
 ```
+
+The mecak8s Helm chart offers three secure real-provider transport postures — in-pod
+TLS, operator-attested edge-terminated TLS, and the explicit unsafe bypass. Picking one
+is [the mecak8s guide's](usage/mecak8s.md) job, not this page's.
 
 Flags:
 
@@ -213,8 +302,8 @@ in-chat `Schedule` tool, the REST/gRPC API):
     conversation as a FENCED UNTRUSTED preamble prepended to the prompt (NOT as
     seeded history). Carried context is UNTRUSTED (model-authored +
     tool-result-laden; a prior fire may have been prompt-injected), so it must not
-    become live instructions; the fence (`agent.FenceUntrusted` +
-    `NeutraliseFraming`) quarantines it so a forged `<<<UNTRUSTED` marker or
+    become live instructions; the canonical governance fence
+    (`governance.FenceUntrusted` + `NeutraliseFraming`) quarantines it so a forged `<<<UNTRUSTED` marker or
     harness section header in the prior content cannot break out of its block.
     Allowed on either trigger. On prior-session-load failure (not found, decode
     error) the fire degrades to fresh-context (WARN, never fails the fire). A
@@ -352,9 +441,9 @@ Direct mode needs a cached OIDC credential. Get one with either of:
 
 ```sh
 # Option A: mecatui runs the interactive OIDC browser flow in-process (no separate thv binary).
-mecatui login
+mecatui llm login
 # Headless / SSH / CI: print the authorization URL instead of opening a browser.
-mecatui login --skip-browser
+mecatui llm login --skip-browser
 
 # Option B: the ToolHive CLI itself.
 thv llm setup
@@ -362,7 +451,7 @@ thv llm setup
 
 Both write a refresh-token REFERENCE (never the token value) to ToolHive's own config,
 so a subsequent non-interactive direct-mode session reuses the credential without
-re-login. `mecatui login` is a CLI-only operation — it does NOT start a session or
+re-login. `mecatui llm login` is a CLI-only operation — it does NOT start a session or
 connect to a server.
 
 #### Headless remediation
@@ -371,11 +460,11 @@ connect to a server.
 credential) surfaces a terminal error rather than launching a browser:
 
 ```
-no cached ToolHive LLM gateway credential — run `thv llm setup` (or `mecatui login`) to log in, or use `--toolhive-llm-mode proxy`
+no cached ToolHive LLM gateway credential — run `thv llm setup` (or `mecatui llm login`) to log in, or use `--toolhive-llm-mode proxy`
 ```
 
 The error names all three remediations. Pick whichever fits the deployment:
-`thv llm setup` / `mecatui login` to obtain a credential, or
+`thv llm setup` / `mecatui llm login` to obtain a credential, or
 `--toolhive-llm-mode proxy` to fall back to the loopback proxy (which holds the
 credential itself).
 

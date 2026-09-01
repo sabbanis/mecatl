@@ -27,11 +27,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/port"
+	"github.com/stacklok/mecatl/internal/adapter/server"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
@@ -69,6 +71,9 @@ const gracefulStopTimeout = 30 * time.Second
 // knobs (listeners, TLS, auth, drain). It deliberately drops mecated's
 // telemetry/metrics/admin surface and its subcommands.
 type config struct {
+	// diagnostics is installed by run after the command root builds its operator
+	// sink; tests and alternate callers may leave it nil for a silent edge.
+	diagnostics            port.Diagnostics
 	grpcAddr               string
 	httpAddr               string
 	workspace              string
@@ -260,13 +265,11 @@ func parseFlags(argv []string) (config, error) {
 	fs := flag.NewFlagSet("mecak8s", flag.ContinueOnError)
 	var cfg config
 
-	cwd, _ := os.Getwd()
-
 	fs.StringVar(&cfg.grpcAddr, "grpc-addr", defaultGRPCAddr,
 		"gRPC listen address (a pod binds 0.0.0.0; set --auth-token and/or --tls-cert for a non-mesh deployment)")
 	fs.StringVar(&cfg.httpAddr, "http-addr", defaultHTTPAddr,
 		"HTTP/SSE listen address (carries /healthz, /readyz, /drain outside auth; the API mux inside auth)")
-	fs.StringVar(&cfg.workspace, "workspace", cwd, "default session workspace root")
+	fs.StringVar(&cfg.workspace, "workspace", "", "optional shared agent workspace root, e.g. a mounted PVC path. Empty (the default) is a FILE-LESS deployment: every session is no-FS. A non-empty ABSOLUTE path selects a server-assigned filesystem deployment rooted there — the operator vouches for the mount and clients cannot select another root (ADR 0237)")
 	fs.StringVar(&cfg.model, "model", "", "model identifier sent to the provider (empty: provider-appropriate default)")
 	fs.StringVar(&cfg.defaultProvider, "default-provider", "", "server-configured deployment-wide default provider id (e.g. openai, openrouter, anthropic); validated FAIL-FAST at startup")
 	fs.StringVar(&cfg.defaultModel, "default-model", "", "server-configured deployment-wide default model id for the default provider; validated FAIL-FAST at startup")
@@ -395,6 +398,12 @@ func parseFlags(argv []string) (config, error) {
 	fs.StringVar(&cfg.otlpMetricsProtocol, "otlp-metrics-protocol", "grpc", "OTLP transport for metrics: \"grpc\" (default) or \"http\"")
 	fs.DurationVar(&cfg.otlpShutdownTimeout, "otlp-shutdown-timeout", 5*time.Second, "bound on the telemetry flush at SIGTERM (so a dead collector cannot hang shutdown). 0 disables the bound")
 
+	fs.Usage = func() {
+		_, _ = fmt.Fprint(fs.Output(), "Usage: mecak8s [flags]\n\n")
+		fs.PrintDefaults()
+		_, _ = fmt.Fprintln(fs.Output(), "\nVersion: mecak8s --version prints the build version and exits.")
+	}
+
 	if err := fs.Parse(argv); err != nil {
 		return config{}, err
 	}
@@ -468,8 +477,19 @@ func parseFlags(argv []string) (config, error) {
 		return config{}, fmt.Errorf("--metrics-addr %q is not loopback: the admin mux (/metrics, /debug/pprof, /debug/vars) exposes unauthenticated runtime data; bind loopback (e.g. 127.0.0.1:9090) or leave it empty", cfg.metricsAddr)
 	}
 
+	// A configured workspace is a server-assigned filesystem root (a mounted PVC),
+	// so it must be an absolute, already-clean path — the same rule NewService
+	// enforces for the authoritative root. Reject a relative or unclean value here
+	// with a flag-level message rather than letting it surface from app.Build.
+	if cfg.workspace != "" && (!filepath.IsAbs(cfg.workspace) || filepath.Clean(cfg.workspace) != cfg.workspace) {
+		return config{}, fmt.Errorf("--workspace %q must be a clean absolute path (a mounted filesystem root); leave it empty for a file-less deployment", cfg.workspace)
+	}
+
 	return cfg, nil
 }
+
+// mecak8sServerImplementation is the stable family reported to authenticated clients.
+const mecak8sServerImplementation = "mecak8s"
 
 // appConfig maps the CLI config onto the shared app.Config build contract,
 // threading a Diagnostics sink into the engine/composition. It is a thin subset
@@ -479,8 +499,21 @@ func parseFlags(argv []string) (config, error) {
 // from the observability handles (issue #343): nil when telemetry is off (the
 // byte-identical no-metrics posture), non-nil when --otlp-* is set.
 func appConfig(cfg config, diag port.Diagnostics, obs observability) app.Config {
+	// Workspace authority is driven by whether an operator configured a root.
+	// Empty (the default) is a FILE-LESS deployment: never pass the process cwd
+	// (a container root) as an agent workspace — every session is no-FS. A
+	// non-empty root is a deliberately mounted filesystem (e.g. a PVC): a
+	// server-assigned deployment rooted there, so clients cannot select another
+	// root (ADR 0237). Session/harness state stays in Redis + the k8s API either
+	// way (ADR 0048); a mounted workspace holds agent working files, not state.
+	workspace, authority, authoritativeRoot := "", server.WorkspaceAuthorityFileless, ""
+	if cfg.workspace != "" {
+		workspace, authority, authoritativeRoot = cfg.workspace, server.WorkspaceAuthorityServerAssigned, cfg.workspace
+	}
 	out := app.Config{
-		Workspace:              cfg.workspace,
+		Workspace:              workspace,
+		WorkspaceAuthority:     authority,
+		AuthoritativeWorkspace: authoritativeRoot,
 		Model:                  cfg.model,
 		DefaultProvider:        cfg.defaultProvider,
 		DefaultModel:           cfg.defaultModel,
@@ -542,20 +575,22 @@ func appConfig(cfg config, diag port.Diagnostics, obs observability) app.Config 
 		ModelSlots:                    cfg.modelSlots.AsMap(),
 		// Remote MCP servers (issue #341): the static name=URL entries (with any
 		// MCP_<NAME>_TOKEN bearer already resolved into Headers at parse time).
-		MCPServers:              cfg.mcpServers.Servers(),
-		MCPProfileLoader:        cliconfig.NewMCPProfileResolver(cfg.mcpServers, os.LookupEnv),
-		EnableParallel:          cfg.enableParallel,
-		EnableTeams:             cfg.enableTeams,
-		SoulPath:                cfg.soulFile,
-		NoSoul:                  cfg.noSoul,
-		UserModelDir:            cfg.userModelDir,
-		NoUserModel:             cfg.noUserModel,
-		PermissionsConventional: cfg.permissionsConventional,
-		ImportClaudePermissions: cfg.importClaudePermissions,
-		TrustProject:            cfg.trustProject,
-		PermissionConfigs:       cfg.permissionConfigs,
-		Posture:                 app.ParsePosture(cfg.posture),
-		PostureFlagSet:          cfg.postureFlagSet,
+		MCPServers:               cfg.mcpServers.Servers(),
+		MCPProfileLoader:         cliconfig.NewMCPProfileResolver(cfg.mcpServers, os.LookupEnv),
+		ProviderCredentialLoader: cliconfig.NewProviderCredentialResolver(cfg.providerFlags, cfg.providerCredentials),
+		ProviderOverrides:        cfg.providerFlags.EndpointOverrides(),
+		EnableParallel:           cfg.enableParallel,
+		EnableTeams:              cfg.enableTeams,
+		SoulPath:                 cfg.soulFile,
+		NoSoul:                   cfg.noSoul,
+		UserModelDir:             cfg.userModelDir,
+		NoUserModel:              cfg.noUserModel,
+		PermissionsConventional:  cfg.permissionsConventional,
+		ImportClaudePermissions:  cfg.importClaudePermissions,
+		TrustProject:             cfg.trustProject,
+		PermissionConfigs:        cfg.permissionConfigs,
+		Posture:                  app.ParsePosture(cfg.posture),
+		PostureFlagSet:           cfg.postureFlagSet,
 		// Reasoning-effort tier (ADR 0055): operator-tier only; reasoningEffortFlagSet
 		// lets CLI out-rank the operator-global settings.yaml reasoning-effort: key
 		// (folded by foldOperatorReasoningEffort in app.Build, like posture).
@@ -586,6 +621,7 @@ func appConfig(cfg config, diag port.Diagnostics, obs observability) app.Config 
 		slog.Warn(keys.AuthFileWarning)
 	}
 	cfg.toolhiveLLMFlags.Apply(&out)
+	out.ServerImplementation = mecak8sServerImplementation
 	return out
 }
 

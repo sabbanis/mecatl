@@ -1,0 +1,63 @@
+# Fixture-local CA and leaf certificate for the shared Dex HTTPS issuer.
+# cert-manager generates both Secrets at runtime; no key or certificate value belongs in Git.
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: fixture-ca-bootstrap
+spec:
+  selfSigned: {}
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: fixture-ca
+spec:
+  isCA: true
+  commonName: fixture-ca
+  secretName: fixture-ca
+  issuerRef:
+    name: fixture-ca-bootstrap
+    kind: Issuer
+---
+apiVersion: cert-manager.io/v1
+kind: Issuer
+metadata:
+  name: fixture-ca
+spec:
+  ca:
+    secretName: fixture-ca
+---
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: mecak8s-tls
+spec:
+  secretName: mecak8s-tls
+  commonName: mecak8s-mecak8s.mecatl-vmcp.svc.cluster.local
+  dnsNames:
+    - mecak8s-mecak8s.mecatl-vmcp.svc.cluster.local
+    - localhost
+  ipAddresses:
+    - 127.0.0.1
+  issuerRef:
+    name: fixture-ca
+    kind: Issuer
+---
+# Keycloak terminates its own TLS (like Dex, unlike vMCP). Same fixture CA, so the
+# exported fixture-ca ConfigMap keeps working for every client that already
+# trusts it -- mecak8s, and vMCP's caBundleRef.
+apiVersion: cert-manager.io/v1
+kind: Certificate
+metadata:
+  name: keycloak-tls
+spec:
+  secretName: keycloak-tls
+  commonName: keycloak.mecatl-vmcp.svc.cluster.local
+  dnsNames:
+    - keycloak.mecatl-vmcp.svc.cluster.local
+    - localhost
+  ipAddresses:
+    - 127.0.0.1
+  issuerRef:
+    name: fixture-ca
+    kind: Issuer

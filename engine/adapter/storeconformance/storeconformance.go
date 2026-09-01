@@ -63,6 +63,7 @@ func Run(t *testing.T, newStore func(t *testing.T) port.SessionStore) {
 			{id: "conf-kind-subagent", kind: session.SessionKindSubagent, rel: session.SessionRelationship{ParentSessionID: "parent", CallID: "call-sub"}},
 			{id: "conf-kind-parallel", kind: session.SessionKindParallelBranch, rel: session.SessionRelationship{ParentSessionID: "parent", CallID: "call-par", BranchIndex: intPointer(2)}},
 			{id: "conf-kind-team", kind: session.SessionKindTeamMember, rel: session.SessionRelationship{TeamID: "team", MemberName: "reviewer", ParentSessionID: "parent"}},
+			{id: "conf-kind-debug", kind: session.SessionKindDebug, rel: session.SessionRelationship{DebugTargetID: "target"}},
 		}
 		for _, tc := range cases {
 			t.Run(string(tc.kind), func(t *testing.T) {
@@ -549,7 +550,7 @@ func RunMetadataPager(t *testing.T, newStore func(t *testing.T) port.SessionStor
 		{id: "ownerless"},
 	} {
 		s := newSession(fixture.id)
-		if err := s.RestoreLabels(fixture.owner, session.Authority("")); err != nil {
+		if err := s.RestoreLabels(fixture.owner, session.Authority{}); err != nil {
 			t.Fatalf("RestoreLabels(%q): %v", fixture.id, err)
 		}
 		if err := st.Save(ctx, s); err != nil {
@@ -594,7 +595,7 @@ func RunMetadataPager(t *testing.T, newStore func(t *testing.T) port.SessionStor
 		t.Fatalf("foreign continuation error = %v, want restart", err)
 	}
 	changed := newSession("generation-change")
-	if err := changed.RestoreLabels(alice, session.Authority("")); err != nil {
+	if err := changed.RestoreLabels(alice, session.Authority{}); err != nil {
 		t.Fatalf("RestoreLabels(generation-change): %v", err)
 	}
 	if err := st.Save(ctx, changed); err != nil {
@@ -636,7 +637,7 @@ func RunConditionalPrunable(t *testing.T, newStore func(t *testing.T) port.Sessi
 	}
 	owner := &session.Principal{Issuer: "https://issuer.example", Subject: "cleanup-owner"}
 	s := newSession("conditional-delete")
-	if err := s.RestoreLabels(owner, session.Authority("")); err != nil {
+	if err := s.RestoreLabels(owner, session.Authority{}); err != nil {
 		t.Fatalf("RestoreLabels: %v", err)
 	}
 	if err := st.Save(ctx, s); err != nil {

@@ -18,6 +18,7 @@
 package sessnap
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -30,16 +31,17 @@ import (
 // struct with JSON tags so it serializes deterministically regardless of the
 // (untagged) layout of the domain types.
 type Snapshot struct {
-	ID         session.SessionID      `json:"id"`
-	State      session.State          `json:"state"`
-	Mode       session.PermissionMode `json:"mode"`
-	Limits     session.Limits         `json:"limits"`
-	Counters   session.Counters       `json:"counters"`
-	Workspace  string                 `json:"workspace"`
-	CreatedAt  time.Time              `json:"created_at"`
-	Messages   []messageDTO           `json:"messages"`
-	Pending    *session.PendingAsk    `json:"pending,omitempty"`
-	StopReason session.StopReason     `json:"stop_reason,omitempty"`
+	ID          session.SessionID      `json:"id"`
+	State       session.State          `json:"state"`
+	Mode        session.PermissionMode `json:"mode"`
+	Limits      session.Limits         `json:"limits"`
+	Counters    session.Counters       `json:"counters"`
+	Workspace   string                 `json:"workspace"`
+	CreatedAt   time.Time              `json:"created_at"`
+	Incarnation session.IncarnationID  `json:"incarnation,omitempty"`
+	Messages    []messageDTO           `json:"messages"`
+	Pending     *session.PendingAsk    `json:"pending,omitempty"`
+	StopReason  session.StopReason     `json:"stop_reason,omitempty"`
 	// Kind and Relationship are the validated producer taxonomy from ADR 0217.
 	// A missing kind is legacy data and restores as unknown (fail-closed).
 	Kind         session.SessionKind         `json:"kind,omitempty"`
@@ -60,6 +62,13 @@ type Snapshot struct {
 	// — additive, no version bump. Persisting it lets a restarted process re-mint the
 	// SAME per-session engine (the same-effort adapter) via the factory.
 	ReasoningEffort string `json:"reasoning_effort,omitempty"`
+	// DebugMCPServers names only the configured server-global MCP servers selected
+	// for a debug session. DebugMCPTools is the exact direct-tool ceiling captured
+	// at creation; neither field contains URLs, headers, or connection details.
+	DebugMCPServers []string `json:"debug_mcp_servers,omitempty"`
+	DebugMCPTools   []string `json:"debug_mcp_tools,omitempty"`
+	// DebugTargetFingerprint is the non-projectable target-incarnation binding.
+	DebugTargetFingerprint string `json:"debug_target_fingerprint,omitempty"`
 	// Title is the session's human-readable label seeded from the first genuine
 	// user prompt. omitempty keeps a pre-Title snapshot with no "title" key
 	// decoding to "" — additive, no format-tag bump (the same precedent as
@@ -79,6 +88,16 @@ type Snapshot struct {
 	// snapshot with no "permanent" key decoding to false — purely additive, no
 	// format-tag bump.
 	Permanent bool `json:"permanent,omitempty"`
+	// RetryDisposition and StreamProgress are the typed terminal facts for a failed
+	// model stream. Missing legacy fields decode conservatively to unknown.
+	RetryDisposition session.RetryDisposition `json:"retry_disposition,omitempty"`
+	StreamProgress   session.StreamProgress   `json:"stream_progress,omitempty"`
+	// RetryPending persists the consumed failed-step retry intent across the crash window
+	// between preparation and terminal completion. Its metadata remains separate
+	// from failed-state metadata because the prepared aggregate is idle/running.
+	RetryPending            bool                     `json:"retry_pending,omitempty"`
+	RetryPendingDisposition session.RetryDisposition `json:"retry_pending_disposition,omitempty"`
+	RetryPendingProgress    session.StreamProgress   `json:"retry_pending_progress,omitempty"`
 	// LastError records a StateFailed session's terminal failure CAUSE
 	// (session.RecordLastError, the Permanent-analog for the failure detail).
 	// omitempty keeps a pre-#332 snapshot with no "last_error" key decoding to ""
@@ -87,6 +106,17 @@ type Snapshot struct {
 	// event-side subagentCausePayload so the snapshot and the subagent.end event
 	// carry the same persisted cause.
 	LastError string `json:"last_error,omitempty"`
+	// RunID is the opaque, host-minted identity of the run this session is
+	// currently driving or most recently drove (ADR 0249). Persisting it is what
+	// makes an awaiting-approval resume continue THE SAME run across a process
+	// restart: the resume path reads it back and reuses it instead of minting a
+	// new one.
+	//
+	// omitempty keeps a pre-0245 snapshot with no "run_id" key decoding to "" —
+	// purely additive, no format-tag bump (the Profile/ProviderID/Usage
+	// precedent). A legacy session restores with no run id and is stamped on its
+	// next run; there is no migration sweep.
+	RunID string `json:"run_id,omitempty"`
 	// Owner is the verified caller the session is attributed to (ADR 0204). A
 	// POINTER for true omitempty: an ownerless session emits no "owner" key, so a
 	// pre-ship snapshot decodes to a nil owner and an ownerless snapshot stays
@@ -96,10 +126,10 @@ type Snapshot struct {
 	// entry under engine/COMPATIBILITY.md; a direct-assignment field is
 	// Added/minor).
 	Owner *session.Principal `json:"owner,omitempty"`
-	// Authority is Track C's inert label, round-tripped here so the contended
-	// generated-file regeneration is paid once. omitempty keeps a pre-ship
-	// snapshot with no "authority" key decoding to the zero value.
-	Authority session.Authority `json:"authority,omitempty"`
+	// Authority is the plain, derived capability payload. A nil pointer is a
+	// genuinely pre-feature legacy record; a present payload must decode to the
+	// one governance.CapabilitySet representation or restore fails closed.
+	Authority *session.Authority `json:"authority,omitempty"`
 	// EnvironmentRef is the resolved execution-environment identity this session
 	// runs against (ADR 0214, issue #462 phase 3). The ref is a value type
 	// (EnvironmentKind + opaque ID); a zero ref {Kind:"", ID:""} is the
@@ -167,27 +197,33 @@ func Of(s *session.Session) (Snapshot, error) {
 		relationship.BranchIndex = &branchIndex
 	}
 	snap := Snapshot{
-		ID:               s.ID,
-		State:            s.State,
-		Mode:             s.Mode,
-		Limits:           s.Limits,
-		Counters:         s.Counters,
-		Workspace:        s.Workspace,
-		EnvironmentRef:   s.EnvironmentRef,
-		Profile:          s.Profile,
-		ProviderID:       s.ProviderID,
-		ModelID:          s.ModelID,
-		ReasoningEffort:  s.ReasoningEffort,
-		Title:            s.Title,
-		TitleProvenance:  s.TitleProvenance,
-		Authority:        s.Authority,
-		Kind:             s.Kind,
-		Relationship:     relationship,
-		AdoptionMetadata: s.Adoption.Clone(),
-		CreatedAt:        s.CreatedAt,
+		ID:                     s.ID,
+		State:                  s.State,
+		Mode:                   s.Mode,
+		Limits:                 s.Limits,
+		Counters:               s.Counters,
+		Workspace:              s.Workspace,
+		EnvironmentRef:         s.EnvironmentRef,
+		Profile:                s.Profile,
+		ProviderID:             s.ProviderID,
+		ModelID:                s.ModelID,
+		ReasoningEffort:        s.ReasoningEffort,
+		DebugMCPServers:        append([]string(nil), s.DebugMCPServers...),
+		DebugMCPTools:          append([]string(nil), s.DebugMCPTools...),
+		DebugTargetFingerprint: s.DebugTargetFingerprint,
+		Title:                  s.Title,
+		TitleProvenance:        s.TitleProvenance,
+		Kind:                   s.Kind,
+		Relationship:           relationship,
+		CreatedAt:              s.CreatedAt,
+		Incarnation:            s.Incarnation(),
 		// Owner is a pointer for true omitempty; Clone so the snapshot cannot
 		// alias (and later mutate) the aggregate's own principal.
-		Owner: s.Owner.Clone(),
+		Owner:            s.Owner.Clone(),
+		AdoptionMetadata: s.Adoption.Clone(),
+	}
+	if authority, ok := s.BoundAuthority(); ok {
+		snap.Authority = &authority
 	}
 	// Usage is a pointer for true omitempty: only emit the key when there is spend
 	// to persist, so a zero-usage snapshot stays byte-identical to a pre-Usage one.
@@ -211,7 +247,10 @@ func Of(s *session.Session) (Snapshot, error) {
 		snap.StopReason = r
 	}
 	snap.Permanent = s.FailurePermanence()
+	snap.RetryDisposition, snap.StreamProgress = s.FailureMetadata()
+	snap.RetryPendingDisposition, snap.RetryPendingProgress, snap.RetryPending = s.FailedStepRetryPending()
 	snap.LastError = s.LastError()
+	snap.RunID = s.RunID()
 	return snap, nil
 }
 
@@ -222,6 +261,10 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 	s := session.New(snap.ID, snap.Mode, snap.Workspace, snap.Limits, snap.CreatedAt)
 	if err := s.RestoreSessionMetadata(snap.Kind, snap.Relationship); err != nil {
 		return nil, fmt.Errorf("sessnap: restore session metadata: %w", err)
+	}
+
+	if err := restoreAuthority(s, snap.Authority); err != nil {
+		return nil, err
 	}
 
 	// Rebuild the conversation history verbatim.
@@ -235,15 +278,25 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 	s.ProviderID = snap.ProviderID
 	s.ModelID = snap.ModelID
 	s.ReasoningEffort = snap.ReasoningEffort
+	s.DebugMCPServers = append([]string(nil), snap.DebugMCPServers...)
+	s.DebugMCPTools = append([]string(nil), snap.DebugMCPTools...)
+	s.DebugTargetFingerprint = snap.DebugTargetFingerprint
 	s.EnvironmentRef = snap.EnvironmentRef
 	s.Adoption = snap.Clone()
+	// RunID restores by direct assignment, like Profile/Title above: it is an
+	// inert stored label, not lifecycle state, so it does not belong in
+	// RestoreState's state-machine parameter list.
+	s.BeginRun(snap.RunID)
 	s.Title = snap.Title
 	s.TitleProvenance = snap.TitleProvenance
 	// The identity labels go through the WRITE-ONCE aggregate method rather than a
 	// field poke (Session is an aggregate) and rather than a RestoreState
 	// parameter (that widening is Changed/breaking; this stays Added/minor).
-	if err := s.RestoreLabels(snap.Owner, snap.Authority); err != nil {
+	if err := s.RestoreLabels(snap.Owner, session.Authority{}); err != nil {
 		return nil, fmt.Errorf("sessnap: restore labels: %w", err)
+	}
+	if err := s.RestoreIncarnation(snap.Incarnation); err != nil {
+		return nil, fmt.Errorf("sessnap: restore incarnation: %w", err)
 	}
 
 	// The cumulative usage to seed (a nil pointer => the zero Usage, the pre-Usage
@@ -260,7 +313,51 @@ func (snap Snapshot) Restore() (*session.Session, error) {
 	if err := RestoreState(s, snap.State, snap.StopReason, snap.Pending, snap.Counters, usage, snap.Permanent, snap.LastError); err != nil {
 		return nil, err
 	}
+	if snap.State == session.StateFailed {
+		disposition := snap.RetryDisposition
+		if disposition == session.RetryDispositionUnknown && snap.Permanent {
+			disposition = session.RetryDispositionPermanent
+		}
+		if err := s.RecordFailureMetadata(disposition, snap.StreamProgress); err != nil {
+			return nil, fmt.Errorf("sessnap: restore failure metadata: %w", err)
+		}
+	}
+	if snap.RetryPending {
+		if err := s.RestoreFailedStepRetryPending(snap.RetryPendingDisposition, snap.RetryPendingProgress); err != nil {
+			return nil, fmt.Errorf("sessnap: restore failed-step retry intent: %w", err)
+		}
+	}
 	return s, nil
+}
+
+func restoreAuthority(s *session.Session, authority *session.Authority) error {
+	if authority == nil {
+		return nil // Pre-feature record: legacy, deliberately unbound.
+	}
+	if err := ValidatePersistedAuthority(authority); err != nil {
+		return fmt.Errorf("sessnap: restore authority: %w", err)
+	}
+	if err := s.BindAuthority(*authority); err != nil {
+		return fmt.Errorf("sessnap: restore authority: %w", err)
+	}
+	return nil
+}
+
+// ValidatePersistedAuthority rejects an authority claim that cannot represent a
+// usable derived capability set. Callers must distinguish a nil authority
+// pointer caused by a genuinely absent legacy field before calling it.
+func ValidatePersistedAuthority(authority *session.Authority) error {
+	if authority == nil {
+		return errors.New("missing authority claim")
+	}
+	set := authority.CapabilitySet
+	if len(set.Tools) == 0 && set.RemainingDelegationDepth == 0 && !set.FileSystem && !set.DirectWrite {
+		return errors.New("missing or empty capability set")
+	}
+	if !authority.Valid() {
+		return errors.New("invalid authority payload")
+	}
+	return nil
 }
 
 // RestoreState drives a freshly-constructed (StateIdle) Session through the state
@@ -382,11 +479,39 @@ func Marshal(s *session.Session) ([]byte, error) {
 
 // Unmarshal decodes a JSON snapshot line and restores it into a Session.
 func Unmarshal(line []byte) (*session.Session, error) {
+	var wire struct {
+		Authority json.RawMessage `json:"authority"`
+	}
+	if err := json.Unmarshal(line, &wire); err != nil {
+		return nil, fmt.Errorf("sessnap: decode snapshot: %w", err)
+	}
+	if err := validateAuthorityWireClaim(wire.Authority); err != nil {
+		return nil, fmt.Errorf("sessnap: decode authority: %w", err)
+	}
+
 	var snap Snapshot
 	if err := json.Unmarshal(line, &snap); err != nil {
 		return nil, fmt.Errorf("sessnap: decode snapshot: %w", err)
 	}
 	return snap.Restore()
+}
+
+func validateAuthorityWireClaim(raw json.RawMessage) error {
+	if len(raw) == 0 {
+		return nil // Genuinely pre-feature record: no authority field.
+	}
+	if bytes.Equal(bytes.TrimSpace(raw), []byte("null")) {
+		return errors.New("null authority claim")
+	}
+	var claim map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &claim); err != nil {
+		return err
+	}
+	set, ok := claim["capability_set"]
+	if !ok || bytes.Equal(bytes.TrimSpace(set), []byte("null")) || bytes.Equal(bytes.TrimSpace(set), []byte("{}")) {
+		return errors.New("missing or empty capability set")
+	}
+	return nil
 }
 
 func toDTO(m session.Message) messageDTO {

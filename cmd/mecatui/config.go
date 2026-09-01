@@ -12,6 +12,7 @@ import (
 
 	"github.com/charmbracelet/x/ansi"
 
+	"github.com/stacklok/mecatl/cmd/mecatui/client"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
@@ -19,29 +20,39 @@ import (
 // config is the resolved CLI/env configuration for mecatui.
 type config struct {
 	// transportMode is the resolved canonical transport mode (local/connect)
-	// threaded explicitly from resolveTransportMode through parse and validate.
+	// threaded explicitly from resolveInvocation through parse and validate.
 	// It drives the transport path (no-probe/no-embed) and the
 	// trust/provider/posture validation gating (ADR 0087).
 	transportMode transportMode
 	// connectAddress is the dial target for `mecatui connect ADDRESS` ("" for the
-	// bare/local mode). Set by resolveTransportMode; consumed by resolveTransport.
+	// bare/local mode). Set by resolveInvocation; consumed by resolveTransport.
 	connectAddress string
 	// browseSessions selects the startup session-browser launch intent. Transport
 	// remains independent: both embedded and connect modes can browse first.
 	browseSessions bool
+	// debugTarget binds a dedicated no-filesystem analysis session to one stored
+	// target. It comes only from the command grammar, never from a flag.
+	debugTarget string
+	// debugMCP selects configured server-global MCP servers by name for a debug session.
+	debugMCP []string
 	// helpAll is true when --help-all was passed; it requests the exhaustive
 	// flag listing and exits 0 before transport resolution.
-	helpAll    bool
-	keymap     *cliconfig.KeyValueList
-	workspace  string
-	mode       string
-	theme      string
-	themeDir   string
-	authToken  string
-	useTLS     bool
-	tlsCA      string
-	insecure   bool
-	listThemes bool
+	helpAll   bool
+	helpFlags bool
+	keymap    *cliconfig.KeyValueList
+	workspace string
+	// workspaceExplicit distinguishes an operator-supplied --workspace from the
+	// empty default. Remote connect rejects the former without resolving it.
+	workspaceExplicit bool
+	mode              string
+	theme             string
+	themeDir          string
+	authToken         string
+	useTLS            bool
+	tlsCA             string
+	insecure          bool
+	noSavedAuth       bool
+	listThemes        bool
 
 	// noAltScreen renders mecatui INLINE in the terminal's normal buffer instead
 	// of the alternate screen. Off by default (full-screen TUI on the alt screen);
@@ -303,8 +314,8 @@ type config struct {
 	// docs/adr/0018-perf-observability.md; used only when hosting an in-process
 	// server). OFF by default. perf arms the loopback runtime-introspection admin
 	// surface (pprof/expvar/RSS/goroutines/flightrecorder + /metrics) plus the
-	// domain-metrics EventSink in the embedded engine. perfAddr is the loopback
-	// admin listen address (empty = an ephemeral loopback port, logged on start).
+	// domain-metrics EventSink. Empty perfAddr uses a private UNIX socket, except
+	// perfMCP uses ephemeral loopback TCP for its streaming-HTTP transport.
 	// perfGoroutineWarnThreshold arms the live goroutine-leak watchdog (0 = off).
 	perf                       bool
 	perfAddr                   string
@@ -319,7 +330,7 @@ type config struct {
 // name) as a bare (embedded/local) invocation. Existing tests that exercise the
 // flag-parsing logic (not the mode-specific transport/help behaviour) use this
 // entry point. Production goes through parseTransportFlags via
-// resolveTransportMode.
+// resolveInvocation.
 func parseFlags(args []string) (config, error) {
 	_, cfg, err := parseTransportFlags(modeLocal, os.Stderr, args)
 	return cfg, err
@@ -336,7 +347,7 @@ func parseFlags(args []string) (config, error) {
 // the registration block. Production calls it with os.Stderr and discards the
 // returned FlagSet. mode is the resolved canonical transport mode; out is where
 // --help / parse errors are written; args excludes the program name (and, for
-// local/connect, the command word / ADDRESS — resolveTransportMode strips them).
+// local/connect, the command word / ADDRESS — resolveInvocation strips them).
 func parseTransportFlags(mode transportMode, out io.Writer, args []string, browseSessions ...bool) (*flag.FlagSet, config, error) {
 	var cfg config
 	cfg.transportMode = mode
@@ -345,8 +356,12 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	fs.SetOutput(out)
 	fs.StringVar(&cfg.workspace, "workspace", "", "absolute workspace root for a new session (default: cwd); an adopted session keeps its stored workspace")
 	fs.StringVar(&cfg.mode, "mode", "default", "permission mode: default | plan | accept-edits")
+	fs.Func("debug-mcp", "debug sessions only: select one already-configured server-global streaming-HTTP MCP server by name (repeatable)", func(value string) error {
+		cfg.debugMCP = append(cfg.debugMCP, value)
+		return nil
+	})
 	fs.StringVar(&cfg.resumeID, "resume", "", "start by continuing the owned main chat with this exact opaque session ID; loads its authoritative transcript without creating a throwaway session (mutually exclusive with --resume-latest)")
-	fs.BoolVar(&cfg.resumeLatest, "resume-latest", false, "start by continuing the newest eligible owned main chat with an available authoritative transcript; excludes active, awaiting, scheduled, child, and unknown sessions (mutually exclusive with --resume)")
+	fs.BoolVar(&cfg.resumeLatest, "resume-latest", false, "start by continuing the newest eligible owned main chat with an available authoritative transcript; excludes active, awaiting, scheduled, child, and unknown sessions (mutually exclusive with --resume); when none exists, start a new chat instead of failing")
 	fs.StringVar(&cfg.prompt, "prompt", "", "seed prompt auto-submitted once the first session is ready (the CLI task to launch with). The TUI stays interactive for follow-ups; this is NOT a one-shot. Both --prompt and --prompt-file may be given (literal first)")
 	fs.StringVar(&cfg.prompt, "p", "", "short form of --prompt")
 	fs.StringVar(&cfg.promptFile, "prompt-file", "", "path to a file whose contents are the seed prompt body. Read at startup (fail-fast on unreadable). Joined after --prompt when both are given")
@@ -354,8 +369,9 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	fs.StringVar(&cfg.themeDir, "theme-dir", "", "extra directory of *.json themes to load")
 	fs.StringVar(&cfg.authToken, "auth-token", "", "bearer token for an external server (or MECATL_AUTH_TOKEN)")
 	fs.BoolVar(&cfg.useTLS, "tls", false, "use TLS transport when dialling an external server")
-	fs.StringVar(&cfg.tlsCA, "tls-ca", "", "PEM CA bundle for external-server verification")
+	fs.StringVar(&cfg.tlsCA, "tls-ca", "", "path to a PEM CA bundle for external-server verification")
 	fs.BoolVar(&cfg.insecure, "insecure", false, "skip TLS verification (testing only)")
+	fs.BoolVar(&cfg.noSavedAuth, "no-saved-auth", false, "ignore saved remote login credentials")
 	fs.BoolVar(&cfg.listThemes, "list-themes", false, "list available themes and exit")
 	fs.BoolVar(&cfg.noAltScreen, "no-alt-screen", false, "render inline in the terminal's normal buffer instead of the alternate screen, preserving native scrollback/search")
 	fs.BoolVar(&cfg.noAltScreen, "inline", false, "alias for --no-alt-screen: render inline in the normal buffer, preserving native scrollback/search")
@@ -435,11 +451,12 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	fs.StringVar(&cfg.skillsDir, "skills-dir", "", "embedded server only: directory of skill units (<name>/SKILL.md); empty = the conventional dirs (e.g. .claude/skills)")
 	fs.BoolVar(&cfg.noSkills, "no-skills", false, "embedded server only: disable skill discovery (the Skill tool) entirely")
 
-	fs.BoolVar(&cfg.perf, "perf", false, "embedded server only: expose the loopback perf-observability admin surface (/metrics, /debug/pprof, /debug/vars, /debug/flightrecorder) and wire domain metrics into the engine. OFF by default. The address is logged on start. SECURITY: loopback-bound, UNAUTHENTICATED — its output can embed prompt text/file paths/goroutine stacks, so it stays on 127.0.0.1 only (decision 6/7 of docs/adr/0018-perf-observability.md)")
-	fs.StringVar(&cfg.perfAddr, "perf-addr", "", "embedded server only: loopback listen address for the --perf admin surface (empty = the fixed default 127.0.0.1:9099, predictable so an MCP-client config can hardcode the /mcp URL; distinct from mecated's :9090). Pass another host:port, or 127.0.0.1:0 for an ephemeral port. On a port clash, start FAILS with guidance. Only consulted with --perf")
+	fs.BoolVar(&cfg.perf, "perf", false, "embedded server only: expose the private perf-observability admin surface (/metrics, /debug/pprof, /debug/vars, /debug/flightrecorder) and wire domain metrics into the engine. OFF by default. Empty --perf-addr uses a per-instance UNIX socket. SECURITY: UNAUTHENTICATED — its output can embed prompt text/file paths/goroutine stacks")
+	fs.StringVar(&cfg.perfAddr, "perf-addr", "", "embedded server only: explicit loopback host:port for the --perf admin surface (empty = private per-instance UNIX socket, or ephemeral 127.0.0.1 TCP with --perf-mcp). Use 127.0.0.1:0 for explicit ephemeral TCP. Non-loopback addresses are refused. Only consulted with --perf")
 	fs.IntVar(&cfg.perfGoroutineWarnThreshold, "perf-goroutine-warn-threshold", 0, "embedded server only: arm the live goroutine-leak watchdog — log a Warn whenever runtime.NumGoroutine() exceeds this count (decision 10). 0 (default) disables the alarm; the /metrics goroutine-count series is exported regardless. Only consulted with --perf")
-	fs.BoolVar(&cfg.perfMCP, "perf-mcp", false, "embedded server only: mount the read-only perf MCP server at /mcp on the --perf admin surface, so an agent can introspect THIS process's runtime/latency/profile state over MCP (list_slow_turns, runtime/heap/CPU profiles, FlightRecorder). Only meaningful with --perf. SECURITY: loopback-bound, UNAUTHENTICATED (decision 6) — embed REFUSES a non-loopback --perf-addr with this set")
-	fs.BoolVar(&cfg.helpAll, "help-all", false, "print the exhaustive flag reference for this command and exit (the common --help lists only the task-oriented subset)")
+	fs.BoolVar(&cfg.perfMCP, "perf-mcp", false, "embedded server only: mount the read-only streaming-HTTP perf MCP server at /mcp. With empty --perf-addr this selects ephemeral 127.0.0.1 TCP and logs the resolved URL; stdio is never used. Only meaningful with --perf. SECURITY: loopback-bound, UNAUTHENTICATED")
+	fs.BoolVar(&cfg.helpAll, "help-all", false, "print the exhaustive flag reference for this command and exit")
+	fs.BoolVar(&cfg.helpFlags, "help-flags", false, "print the common embedded-mode flag reference and exit (bare invocation only)")
 
 	fs.Usage = transportUsage(fs, mode, cfg.browseSessions)
 
@@ -449,6 +466,15 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 		// run over the full real registration path via the --help-triggered ErrHelp
 		// path.
 		return fs, config{}, err
+	}
+
+	// --help-flags is the bare/local common flag reference.
+	if cfg.helpFlags {
+		if mode != modeLocal || cfg.browseSessions {
+			return fs, config{}, errors.New("--help-flags is available only as bare 'mecatui --help-flags'")
+		}
+		writeBareCommonHelp(fs.Output(), fs)
+		return nil, config{}, flag.ErrHelp
 	}
 
 	// --help-all was parsed as a normal flag; render and return ErrHelp (exit 0).
@@ -472,12 +498,15 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	if err := rejectInapplicableFlags(fs, mode); err != nil {
 		return fs, config{}, err
 	}
+	if fs.NArg() != 0 {
+		return fs, config{}, fmt.Errorf("unexpected operand %q", fs.Arg(0))
+	}
 
 	if err := finalizeParsedConfig(fs, &cfg); err != nil {
 		return fs, config{}, err
 	}
-	if cfg.resumeID != "" && cfg.resumeLatest {
-		return fs, config{}, errors.New("--resume and --resume-latest are mutually exclusive")
+	if err := validateResumeSelectors(cfg); err != nil {
+		return fs, config{}, err
 	}
 	if err := validateSessionsLaunch(cfg); err != nil {
 		return fs, config{}, err
@@ -490,6 +519,33 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 		cfg.promptFileBody = string(body)
 	}
 	return fs, cfg, nil
+}
+
+// validateResumeSelectors enforces that at most ONE startup resume intent is chosen:
+// --resume and --resume-latest are mutually exclusive. It is shared by the
+// parse-time check and the client-side validate() so both surfaces agree.
+func validateResumeSelectors(cfg config) error {
+	n := 0
+	if cfg.resumeID != "" {
+		n++
+	}
+	if cfg.resumeLatest {
+		n++
+	}
+	if n > 1 {
+		return errors.New("--resume and --resume-latest are mutually exclusive")
+	}
+	return nil
+}
+
+func validateLaunchSelectors(cfg config) error {
+	if err := validateResumeSelectors(cfg); err != nil {
+		return err
+	}
+	if cfg.debugTarget == "" && len(cfg.debugMCP) > 0 {
+		return errors.New("--debug-mcp is allowed only with the debug command")
+	}
+	return nil
 }
 
 func validateSessionsLaunch(cfg config) error {
@@ -538,6 +594,8 @@ func recordExplicitFlag(f *flag.Flag, cfg *config) {
 		cfg.defaultProviderFlagSet = true
 	case "terminal-title":
 		cfg.terminalTitleFlagSet = true
+	case "workspace":
+		cfg.workspaceExplicit = true
 	}
 	markRetentionCLIFlag(&cfg.retentionCLISet, f.Name)
 }
@@ -600,7 +658,7 @@ func finalizeParsedConfig(fs *flag.FlagSet, cfg *config) error {
 	cfg.anthropicKey = keys.Anthropic
 	cfg.openCodeKey = keys.OpenCode
 
-	if !cfg.listThemes {
+	if !cfg.listThemes && cfg.transportMode != modeConnect {
 		ws, err := resolveWorkspace(cfg.workspace)
 		if err != nil {
 			return err
@@ -666,6 +724,34 @@ func transportUsage(fs *flag.FlagSet, mode transportMode, browseSessions ...bool
 	}
 }
 
+// configureWorkspaceForTransport applies the workspace authority rule after the
+// connect target is known. A remote client never resolves its cwd: the empty wire
+// field asks the server to select its authoritative root. An explicit path is
+// rejected before a dial or CreateSession call. Embedded and loopback workflows
+// retain the local cwd/worktree default.
+func configureWorkspaceForTransport(cfg *config) error {
+	if cfg.debugTarget != "" && cfg.transportMode == modeConnect {
+		if cfg.workspaceExplicit {
+			return errors.New("--workspace is not allowed when connecting to a remote debug session")
+		}
+		cfg.workspace = ""
+		return nil
+	}
+	if cfg.transportMode == modeConnect && !client.IsLoopbackHost(cfg.connectAddress) {
+		if cfg.workspaceExplicit {
+			return errors.New("--workspace is not allowed when connecting to a remote server")
+		}
+		cfg.workspace = ""
+		return nil
+	}
+	ws, err := resolveWorkspace(cfg.workspace)
+	if err != nil {
+		return err
+	}
+	cfg.workspace = ws
+	return nil
+}
+
 // resolveWorkspace defaults an empty workspace to the cwd and makes it absolute.
 func resolveWorkspace(ws string) (string, error) {
 	if ws == "" {
@@ -687,16 +773,27 @@ func resolveWorkspace(ws string) (string, error) {
 
 // validate checks invariants the server also enforces, failing fast client-side.
 func (c config) validate() error {
+	if c.debugTarget != "" && c.listThemes {
+		return errors.New("debug conflicts with --list-themes")
+	}
 	if c.listThemes {
 		return nil
 	}
-	if c.resumeID != "" && c.resumeLatest {
-		return errors.New("--resume and --resume-latest are mutually exclusive")
+	if err := validateLaunchSelectors(c); err != nil {
+		return err
 	}
-	if c.workspace == "" {
+	if c.debugTarget != "" {
+		switch {
+		case c.resumeID != "" || c.resumeLatest:
+			return errors.New("debug conflicts with resume launch actions")
+		case c.browseSessions:
+			return errors.New("debug conflicts with sessions launch")
+		}
+	}
+	if c.workspace == "" && c.debugTarget == "" && (c.transportMode != modeConnect || client.IsLoopbackHost(c.connectAddress)) {
 		return errors.New("workspace is required")
 	}
-	if !filepath.IsAbs(c.workspace) {
+	if c.workspace != "" && !filepath.IsAbs(c.workspace) {
 		return fmt.Errorf("workspace must be absolute: %q", c.workspace)
 	}
 	switch c.mode {
@@ -706,30 +803,41 @@ func (c config) validate() error {
 	}
 	// Provider/posture checks apply ONLY to paths that may embed (ADR 0087 Phase
 	// 1); the predicate + its rationale live once on config.mayEmbed.
-	mayEmbed := c.mayEmbed()
-	// When hosting an embedded server the provider must be resolvable: an OpenAI,
-	// Anthropic, or OpenRouter key in the environment, the offline mock, or an
-	// auto-detected/explicit ToolHive LLM gateway proxy (--toolhive-llm, default
-	// on) — the same detection app.Build runs, so this pre-check agrees with what
-	// the embedded server will actually resolve.
-	if mayEmbed && !c.providerKeys.Any() && c.openAIKey == "" && c.openRouterKey == "" && c.anthropicKey == "" && c.openCodeKey == "" && !c.mock {
-		var probe app.Config
-		c.toolhiveLLMFlags.Apply(&probe)
-		if !app.ToolhiveAvailable(probe) {
-			return errors.New("no LLM provider configured: set a provider credential, use --auth-file, enable a ToolHive gateway, pass --mock, or connect to mecated; see docs/usage.md")
+	if c.mayEmbed() {
+		if err := validateEmbeddedProvider(c); err != nil {
+			return err
 		}
-	}
-	// Operator posture: refuse an allow-all tier (auto or yolo) when running
-	// privileged outside a declared sandbox. The tier is the AUTHORITATIVE one
-	// (incl. the operator-global settings.yaml posture: key), so a YAML-only
-	// allow-all tier cannot escape the refusal — and app.Build re-checks it as
-	// the fail-closed backstop.
-	if mayEmbed {
+		// Operator posture: refuse an allow-all tier (auto or yolo) when running
+		// privileged outside a declared sandbox. The tier is the AUTHORITATIVE one
+		// (incl. the operator-global settings.yaml posture: key), so a YAML-only
+		// allow-all tier cannot escape the refusal — and app.Build re-checks it as
+		// the fail-closed backstop.
 		if err := app.PostureRefusalReason(embeddedAuthoritativePosture(c), embeddedPrivileged()); err != nil {
 			return err
 		}
 	}
 	return nil
+}
+
+// validateEmbeddedProvider ensures an embedded server has a provider path before the TUI
+// takes over the terminal. It mirrors app.Build's provider availability rules.
+func validateEmbeddedProvider(c config) error {
+	if c.providerKeys.Any() || c.openAIKey != "" || c.openRouterKey != "" || c.anthropicKey != "" || c.openCodeKey != "" || c.mock {
+		return nil
+	}
+	hasCustom, err := cliconfig.HasOperatorProviderDefinitions(true, true, nil)
+	if err != nil {
+		return fmt.Errorf("resolve operator provider configuration: %w", err)
+	}
+	if hasCustom {
+		return nil
+	}
+	var probe app.Config
+	c.toolhiveLLMFlags.Apply(&probe)
+	if app.ToolhiveAvailable(probe) {
+		return nil
+	}
+	return errors.New("no LLM provider configured: set a provider credential, use --auth-file, enable a ToolHive gateway, pass --mock, or connect to mecated; see docs/usage.md")
 }
 
 // mayEmbed reports whether this run may host an embedded server, and so is

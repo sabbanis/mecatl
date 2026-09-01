@@ -25,7 +25,7 @@ func newSteerModel(t *testing.T, steerCap bool) (Model, *fakeConv) {
 	recv := &fakeRecver{}
 	send := &fakeSender{}
 	conv := &fakeConv{recv: recv, send: send, caps: client.Capabilities{Steer: steerCap}}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session:     conv,
 		Conv:        conv,
 		Theme:       theme.New("aztec", theme.AztecPalette()),
@@ -88,13 +88,131 @@ func steerCancelCount(send *fakeSender) int {
 	return n
 }
 
-// TestSteer_DisabledFallsBackToLocalQueue is the TUI half of AC6.2: with the steer
-// capability ABSENT (an old server, or the operator disabled it), `enter` mid-run
-// stages into the client-side merge-queue EXACTLY as #228 — no steer frame is sent,
-// the queue holds the merged text, and a clean end drains it through the ordinary
-// prompt path. Byte-identical to the pre-steer behaviour.
-func TestSteer_DisabledFallsBackToLocalQueue(t *testing.T) {
-	m, conv := newSteerModel(t, false) // capability ABSENT
+func TestSteer_MultimodalSendAndEditBack(t *testing.T) {
+	m, conv := newSteerModel(t, true)
+	m.caps.Image = true
+	m = startRunning(t, m, "first")
+	m.prompt.Rewrite("inspect [Image #1]")
+	m.stagedMedia = map[string]stagedAttachment{
+		"[Image #1]": {mime: "image/png", data: []byte("pixels")},
+		"[Image #2]": {mime: "image/png", data: []byte("deleted")},
+	}
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mm.(Model)
+	runBatchLeaves(cmd)
+	frames := conv.send.frames()
+	steer := frames[len(frames)-1].GetSteer()
+	part := steer.GetParts()[0]
+	if steer.GetText() != "inspect" || len(steer.GetParts()) != 1 || part.GetKind().String() != "KIND_IMAGE" || part.GetMimeType() != "image/png" || string(part.GetData()) != "pixels" {
+		t.Fatalf("steer = text %q parts %#v", steer.GetText(), steer.GetParts())
+	}
+	if strings.Contains(steer.GetText(), "[Image #1]") {
+		t.Fatal("attachment marker reached the wire")
+	}
+	mm, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
+	m = mm.(Model)
+	runBatchLeaves(cmd)
+	if m.prompt.Value() != "inspect [Image #1]" || string(m.stagedMedia["[Image #1]"].data) != "pixels" {
+		t.Fatalf("edit-back lost draft/media: %q %#v", m.prompt.Value(), m.stagedMedia)
+	}
+	if _, retained := m.stagedMedia["[Image #2]"]; retained {
+		t.Fatal("deleted attachment marker was retained by queued send")
+	}
+	m.stagedMedia["[Image #1]"] = stagedAttachment{mime: "image/png", data: []byte("replacement-pixels")}
+	mm, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mm.(Model)
+	runBatchLeaves(cmd)
+	replacement := conv.send.frames()[len(conv.send.frames())-1].GetSteer()
+	if replacement.GetText() != "inspect" || len(replacement.GetParts()) != 1 || replacement.GetParts()[0].GetMimeType() != "image/png" || string(replacement.GetParts()[0].GetData()) != "replacement-pixels" {
+		t.Fatalf("replacement steer = text %q parts %#v", replacement.GetText(), replacement.GetParts())
+	}
+	mm, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+	m = mm.(Model)
+	runBatchLeaves(cmd)
+	mm, _ = m.Update(client.SteerOutcomeMsg{Outcome: client.SteerRetracted, MessageID: "steer-0002"})
+	m = mm.(Model)
+	if m.steer == nil || m.steer.Phase != steerRetracted || len(m.steer.Sends) != 1 || len(m.steer.Sends[0].Media.Parts) != 0 || len(m.steer.Sends[0].Staged) != 0 || len(m.stagedMedia) != 0 {
+		t.Fatalf("cancel retained steer attachments: steer=%#v staged=%#v", m.steer, m.stagedMedia)
+	}
+}
+
+func TestSteer_RejectsCompletePendingMediaAggregateAtomically(t *testing.T) {
+	m, conv := newSteerModel(t, true)
+	m.caps.Image = true
+	m = startRunning(t, m, "first")
+	m.steer = &steerState{Phase: steerSent, Text: "kept"}
+	for i := 0; i < 16; i++ {
+		part, desc, err := client.StageClipboardImage("image/png", []byte{byte(i)}, m.caps)
+		if err != nil {
+			t.Fatal(err)
+		}
+		media := client.MediaResult{Descriptors: []string{desc}}
+		media.Parts = append(media.Parts, part)
+		m.steer.Sends = append(m.steer.Sends, steerQueuedSend{ID: "old", Text: "kept", Media: media})
+	}
+	m.prompt.Rewrite("new [Image #1]")
+	m.stagedMedia = map[string]stagedAttachment{"[Image #1]": {mime: "image/png", data: []byte("new")}}
+	before := m.steer
+	frames := len(conv.send.frames())
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mm.(Model)
+	runBatchLeaves(cmd)
+	if m.steer != before || m.prompt.Value() != "new [Image #1]" || string(m.stagedMedia["[Image #1]"].data) != "new" || len(conv.send.frames()) != frames {
+		t.Fatalf("aggregate rejection mutated state: steer=%p/%p draft=%q staged=%#v frames=%d/%d", m.steer, before, m.prompt.Value(), m.stagedMedia, len(conv.send.frames()), frames)
+	}
+}
+
+func TestSteer_MediaOnlySendAndEcho(t *testing.T) {
+	m, conv := newSteerModel(t, true)
+	m.caps.Image = true
+	m = startRunning(t, m, "first")
+	m.prompt.Rewrite("[Image #1]")
+	m.stagedMedia = map[string]stagedAttachment{"[Image #1]": {mime: "image/png", data: []byte("pixels")}}
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mm.(Model)
+	runBatchLeaves(cmd)
+	steer := conv.send.frames()[len(conv.send.frames())-1].GetSteer()
+	if steer.GetText() != "" || len(steer.GetParts()) != 1 {
+		t.Fatalf("media-only steer = text %q parts %d", steer.GetText(), len(steer.GetParts()))
+	}
+	mm, _ = m.Update(client.SteerEchoMsg{Parts: []client.ContentBlock{{Kind: client.ContentBlockImage, MimeType: "image/png", Data: []byte("pixels")}}, MessageID: "steer-0001"})
+	m = mm.(Model)
+	last := m.conv.blocks[len(m.conv.blocks)-1]
+	if len(last.media) != 1 || last.media[0] != "image/png (inline)" {
+		t.Fatalf("echo media projection = %#v", last)
+	}
+}
+
+func TestSteer_FailedAckRestoresCorrelatedAttachment(t *testing.T) {
+	m, conv := newSteerModel(t, true)
+	m.caps.Image = true
+	m = startRunning(t, m, "first")
+	m.prompt.Rewrite("retry [Image #1]")
+	m.stagedMedia = map[string]stagedAttachment{"[Image #1]": {mime: "image/png", data: []byte("owned-once")}}
+	mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mm.(Model)
+	runBatchLeaves(cmd)
+	mm, _ = m.Update(client.SteerOutcomeMsg{Outcome: client.SteerTooLate, Promoted: false, MessageID: "steer-0001"})
+	m = mm.(Model)
+	if m.steer != nil || m.prompt.Value() != "retry [Image #1]" || string(m.stagedMedia["[Image #1]"].data) != "owned-once" {
+		t.Fatalf("failed send not restored exactly: steer=%#v draft=%q staged=%#v", m.steer, m.prompt.Value(), m.stagedMedia)
+	}
+	mm, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+	m = mm.(Model)
+	runBatchLeaves(cmd)
+	frames := conv.send.frames()
+	last := frames[len(frames)-1].GetSteer()
+	if last.GetMessageId() != "steer-0002" || len(last.GetParts()) != 1 || string(last.GetParts()[0].GetData()) != "owned-once" || len(m.stagedMedia) != 0 {
+		t.Fatalf("retry reused/lost attachment: frame=%#v staged=%#v", last, m.stagedMedia)
+	}
+}
+
+// TestSteer_RuntimeDisabledFallsBackToLocalQueue verifies that runtime feature
+// disabling preserves the client-side queue: `enter` mid-run sends no steer
+// frame, the queue holds merged text, and a clean end drains it through the
+// ordinary prompt path.
+func TestSteer_RuntimeDisabledFallsBackToLocalQueue(t *testing.T) {
+	m, conv := newSteerModel(t, false) // runtime feature disabled
 	m = startRunning(t, m, "first")
 
 	m = enqueue(t, m, "second")
@@ -229,15 +347,12 @@ func TestSteer_TUIRendersAuthoritativeState(t *testing.T) {
 		mm, _ := m.Update(client.SteerOutcomeMsg{Outcome: client.SteerTooLate, Text: "second", Promoted: false, MessageID: "steer-0001"})
 		m = mm.(Model)
 
-		if m.steer == nil || m.steer.Phase != steerFailed {
-			t.Fatalf("steer state = %+v, want steerFailed (not-sent), got:", m.steer)
+		if m.steer != nil || m.prompt.Value() != "second" {
+			t.Fatalf("failed undelivered send was not restored for editing: steer=%+v draft=%q", m.steer, m.prompt.Value())
 		}
-		card := stripANSIstr(m.renderSteer())
-		if strings.Contains(card, "follow-up") {
-			t.Fatalf("not-sent must not claim a follow-up was sent, got:\n%s", card)
-		}
-		if !strings.Contains(card, "not sent") {
-			t.Fatalf("not-sent card must state the text was not delivered, got:\n%s", card)
+		status := stripANSIstr(m.statusMsg)
+		if strings.Contains(status, "follow-up") || !strings.Contains(status, "restored for editing") {
+			t.Fatalf("failed status must be honest and retryable, got %q", status)
 		}
 	})
 
@@ -255,7 +370,7 @@ func TestSteer_TUIRendersAuthoritativeState(t *testing.T) {
 		mm2, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 		m = mm2.(Model)
 		runBatchLeaves(cmd)
-		if got := m.ta.Value(); got != "second" {
+		if got := m.prompt.Value(); got != "second" {
 			t.Fatalf("↑ must pull the in-flight message into the textarea, got %q", got)
 		}
 		if got := steerCancelCount(conv.send); got != 1 {
@@ -282,7 +397,7 @@ func TestSteer_TUIRendersAuthoritativeState(t *testing.T) {
 		}
 	})
 
-	t.Run("esc retracts a pending steer", func(t *testing.T) {
+	t.Run("esc cancels without retracting a pending steer", func(t *testing.T) {
 		m, conv := newSteerModel(t, true)
 		m = startRunning(t, m, "first")
 		m = enqueueSteer(t, m, "second")
@@ -291,14 +406,20 @@ func TestSteer_TUIRendersAuthoritativeState(t *testing.T) {
 		m = mm.(Model)
 		runBatchLeaves(cmd)
 
-		if got := steerCancelCount(conv.send); got != 1 {
-			t.Fatalf("esc on a pending steer must send ONE steer_cancel, got %d", got)
+		if got := steerCancelCount(conv.send); got != 0 {
+			t.Fatalf("esc must not retract a pending steer, got %d steer_cancel frames", got)
 		}
-		// The authoritative retracted ack drives the lifecycle to retracted.
-		mm2, _ := m.Update(client.SteerOutcomeMsg{Outcome: client.SteerRetracted, MessageID: "steer-0001"})
-		m = mm2.(Model)
-		if m.steer == nil || m.steer.Phase != steerRetracted {
-			t.Fatalf("steer state = %+v, want retracted", m.steer)
+		cancelFrames := 0
+		for _, frame := range conv.send.frames() {
+			if frame.GetCancel() != nil {
+				cancelFrames++
+			}
+		}
+		if cancelFrames != 1 {
+			t.Fatalf("esc sent %d Cancel frames, want 1", cancelFrames)
+		}
+		if m.steer == nil || m.steer.Phase != steerPending {
+			t.Fatalf("esc changed pending steer state: %+v", m.steer)
 		}
 	})
 
@@ -385,7 +506,7 @@ func TestSteer_TUIEditCancelThenRecompose(t *testing.T) {
 	runBatchLeaves(cmd)
 
 	wantDraft := "second" + queueMergeSep + "third"
-	if got := m.ta.Value(); got != wantDraft {
+	if got := m.prompt.Value(); got != wantDraft {
 		t.Fatalf("↑ must pull the whole not-yet-drained set into ONE editable blob, got %q, want %q", got, wantDraft)
 	}
 	// Exactly ONE steer_cancel fired; the outstanding (cancelled) bundle is the
@@ -452,7 +573,7 @@ func TestSteer_TUIEditBackNoDuplicate(t *testing.T) {
 	mm2, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyUp})
 	m = mm2.(Model)
 	runBatchLeaves(cmd)
-	if got := m.ta.Value(); got != "first" {
+	if got := m.prompt.Value(); got != "first" {
 		t.Fatalf("↑ must pull the in-flight steer back for editing, got %q", got)
 	}
 
@@ -508,7 +629,7 @@ func TestSteer_TUIBurnedIdFreshDraft(t *testing.T) {
 	if got := steerCancelCount(conv.send); got != 0 {
 		t.Fatalf("↑ after drain must send NO steer_cancel (the id is burned), got %d", got)
 	}
-	if got := m.ta.Value(); got != "" {
+	if got := m.prompt.Value(); got != "" {
 		t.Fatalf("↑ after drain must NOT pull the shipped text back (burned id), got %q", got)
 	}
 
@@ -602,4 +723,126 @@ func TestSteer_CardGolden(t *testing.T) {
 	m.refreshView()
 	got := stripANSI([]byte(m.View().Content))
 	compareGolden(t, "steer_card.golden", got)
+}
+
+// TestSteer_RunningSlashCommandsInterceptLocalBuiltins verifies that local bare
+// built-ins keep their local meaning while a steer-capable run streams. Unknown
+// slash commands remain model-facing so workspace commands still work.
+func TestSteer_RunningSlashCommandsInterceptLocalBuiltins(t *testing.T) {
+	t.Run("help stays local after a steer", func(t *testing.T) {
+		m, conv := newSteerModel(t, true)
+		m = startRunning(t, m, "first")
+
+		m = typeText(t, m, "normal steer")
+		mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		runBatchLeaves(cmd) // execute the actual returned send command
+		m = mm.(Model)
+		if got := steerTexts(conv.send); len(got) != 1 || got[0] != "normal steer" {
+			t.Fatalf("normal input must send one steer, got %v", got)
+		}
+
+		m = typeText(t, m, "  /help  ")
+		mm, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		runBatchLeaves(cmd) // execute the actual returned local-builtin command
+		m = mm.(Model)
+		if !m.showHelp {
+			t.Fatal("bare /help must open local help while the run remains active")
+		}
+		if m.phase != phaseRunning {
+			t.Fatalf("bare /help changed phase to %v, want running", m.phase)
+		}
+		if got := m.prompt.Value(); got != "" {
+			t.Fatalf("bare /help must clear the input, got %q", got)
+		}
+		if got := steerTexts(conv.send); len(got) != 1 {
+			t.Fatalf("bare /help must not send another steer, got %v", got)
+		}
+		if len(m.queued) != 0 {
+			t.Fatalf("bare /help must not add a queued follow-up, got %v", m.queued)
+		}
+		if m.palette.open {
+			t.Fatal("bare /help must close the command palette after consuming its input")
+		}
+
+		// Close the local overlay, then prove the original run and its pending steer
+		// remain usable without cancelling either one.
+		mm, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
+		runBatchLeaves(cmd)
+		m = mm.(Model)
+		m = typeText(t, m, "second steer")
+		mm, cmd = m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		runBatchLeaves(cmd)
+		m = mm.(Model)
+		if got := steerTexts(conv.send); len(got) != 2 || got[1] != "second steer" {
+			t.Fatalf("run must accept another steer after /help, got %v", got)
+		}
+		if got := steerCancelCount(conv.send); got != 0 {
+			t.Fatalf("bare /help must not cancel the pending steer, sent %d steer_cancel frames", got)
+		}
+		if m.phase != phaseRunning {
+			t.Fatalf("run stopped after /help and another steer: phase=%v", m.phase)
+		}
+	})
+
+	t.Run("palette clear preserves an active steer", func(t *testing.T) {
+		m, conv := newSteerModel(t, true)
+		m = startRunning(t, m, "first")
+
+		// Establish the active steer state before selecting the local command.
+		m = enqueueSteer(t, m, "ordinary steer")
+		if got := steerTexts(conv.send); len(got) != 1 || got[0] != "ordinary steer" {
+			t.Fatalf("first ordinary input must send one steer, got %v", got)
+		}
+		if got := promptTexts(conv.send); len(got) != 1 || got[0] != "first" {
+			t.Fatalf("running steers must not open prompts, got %v", got)
+		}
+
+		// Select /clear through the palette, rather than submitting a typed command.
+		m = typeText(t, m, "/")
+		if !m.palette.open || len(m.palette.filtered) == 0 || m.palette.filtered[0].Name != "clear" || !m.palette.filtered[0].Builtin {
+			t.Fatalf("/ must select the local clear builtin in the palette, got %+v", m.palette)
+		}
+		mm, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		runBatchLeaves(cmd)
+		m = mm.(Model)
+
+		if m.phase != phaseRunning || m.conv.isEmpty() {
+			t.Fatal("palette /clear must not disrupt a running conversation")
+		}
+		if !strings.Contains(stripANSIstr(m.statusMsg), "cannot clear while running") {
+			t.Fatalf("palette /clear status = %q, want running warning", m.statusMsg)
+		}
+		if m.palette.open || m.prompt.Value() != "" {
+			t.Fatalf("palette /clear must close the palette and clear input, open=%t input=%q", m.palette.open, m.prompt.Value())
+		}
+		if got := steerTexts(conv.send); len(got) != 1 {
+			t.Fatalf("palette /clear must not send another steer, got %v", got)
+		}
+		if got := promptTexts(conv.send); len(got) != 1 {
+			t.Fatalf("palette /clear must not open a prompt, got %v", got)
+		}
+		if len(m.queued) != 0 {
+			t.Fatalf("palette /clear must not add a queued follow-up, got %v", m.queued)
+		}
+		if got := steerCancelCount(conv.send); got != 0 {
+			t.Fatalf("palette /clear must not cancel the active steer, sent %d steer_cancel frames", got)
+		}
+
+		m = enqueueSteer(t, m, "second ordinary steer")
+		if got := steerTexts(conv.send); len(got) != 2 || got[1] != "second ordinary steer" {
+			t.Fatalf("run must accept another steer after palette /clear, got %v", got)
+		}
+	})
+
+	t.Run("clear is safe and unknown commands fall through", func(t *testing.T) {
+		m, conv := newSteerModel(t, true)
+		m = startRunning(t, m, "first")
+
+		m = typeText(t, m, "/workspace-command")
+		_, cmd := m.Update(tea.KeyPressMsg{Code: tea.KeyEnter})
+		runBatchLeaves(cmd)
+		if got := steerTexts(conv.send); len(got) != 1 || got[0] != "/workspace-command" {
+			t.Fatalf("unknown workspace command must fall through to steer, got %v", got)
+		}
+	})
 }

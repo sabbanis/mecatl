@@ -5,7 +5,6 @@ import (
 	"path/filepath"
 	"strings"
 
-	"charm.land/bubbles/v2/textarea"
 	tea "charm.land/bubbletea/v2"
 	"charm.land/lipgloss/v2"
 	"github.com/charmbracelet/x/ansi"
@@ -63,7 +62,13 @@ func (m Model) View() tea.View {
 	}
 
 	if m.phase == phaseFatal {
-		v.Content = m.renderFatal()
+		if m.deps.DebugTarget != "" {
+			header := m.renderHeader()
+			bodyHeight := max(0, m.height-lipgloss.Height(header))
+			v.Content = header + "\n" + m.renderFatalAtHeight(bodyHeight)
+		} else {
+			v.Content = m.renderFatal()
+		}
 		return v
 	}
 
@@ -78,71 +83,43 @@ func (m Model) View() tea.View {
 	return v
 }
 
-// renderBody picks the viewport body: an overlay (help/picker/panel), the
-// permission-modal card (generic) or the full-screen scrollable plan-review
-// view (a plan ask), or the conversation.
+// renderBody picks the viewport body: a help/picker/panel overlay, an open modal
+// surface centered by the PARENT via centerCard, or the conversation. "Parents
+// place, surfaces size": a modal returns its UNSCENTERED body sized from the
+// offered geometry; view.go then centers it here with the conversation geometry.
 func (m Model) renderBody() string {
-	if m.phase == phaseAwaitingApproval {
-		return m.renderApprovalBody()
-	}
+	m.hits.clear()
+	m.metrics.clear()
 	switch {
 	case m.sessionDetailsOpen:
 		return renderSessionDetails(m.deps.Theme, m.sessionDetails(), m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.showHelp:
 		return renderHelpOverlay(m.deps.Theme, m.caps, m.width, m.vp.Height(), m.helpKeyMarkings())
-	case m.mcp.view != mcpNone:
-		return renderMCPOverlay(m.deps.Theme, m.mcp, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.team.view != teamNone:
 		return renderAgentsOverlay(m.deps.Theme, m.agentsTab, m.subagents, m.parallel, m.team, m.conv.latestTeamBlock(), m.conv.subagentFleet, m.conv.parallelGroups, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.agentsInv.view != agentsInvNone:
 		return renderAgentsInvOverlay(m.deps.Theme, m.agentsInv, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
-	case m.skills.view != skillsNone:
-		return renderSkillsOverlay(m.deps.Theme, m.skills, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
-	case m.soul.view != soulNone:
-		return renderSoulOverlay(m.deps.Theme, m.soul, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
+	case m.modal != nil:
+		return (&m).renderModalSurface()
 	case m.userModel.view != userModelNone:
 		return renderUserModelOverlay(m.deps.Theme, m.userModel, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.reflections.view != reflectionsNone:
 		return renderReflectionsOverlay(m.deps.Theme, m.reflections, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.dream.view != dreamClosed:
 		return renderDreamOverlay(m.deps.Theme, m.dream, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
-	case m.models.view != modelsNone:
-		return renderModelsOverlay(m.deps.Theme, m.models, m.caps, m.modelProvenanceLine(), m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.effort.view != effortNone:
-		return renderEffortOverlay(m.deps.Theme, m.effort, m.effectiveModel.ReasoningEffort, m.currentModelNoReasoning(), m.helpKeyMarkings(), m.width, m.vp.Height())
+		return renderEffortOverlay(m.deps.Theme, m.effort, m.resolvedSessionModel.ReasoningEffort, m.currentModelNoReasoning(), m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.worktrees.view != worktreesNone:
 		return renderWorktreesOverlay(m.deps.Theme, m.worktrees, m.caps, m.helpKeyMarkings(), m.width, m.vp.Height())
 	case m.schedule.view != scheduleNone:
 		return renderScheduleOverlay(m.deps.Theme, m.schedule, m.caps, m.deps.Transcript != nil, m.helpKeyMarkings(), m.width, m.vp.Height())
-	case m.sessions.view != sessionsNone:
-		return renderSessionsOverlay(m.deps.Theme, m.sessions, m.caps, m.sessionID, m.rend.vpView(m.vp), m.helpKeyMarkings(), m.width, m.vp.Height())
+	case m.connect.open:
+		return m.renderConnectOverlay(m.deps.Theme)
 	case m.phase == phaseIdle && m.conv.isEmpty() && !m.restartedThisRun:
 		return m.renderZeroState()
 	default:
 		return m.rend.vpView(m.vp)
 	}
-}
-
-// renderApprovalBody owns the phaseAwaitingApproval arm of renderBody (extracted
-// to keep renderBody under the cyclomatic bound). The full-screen ask-args view
-// (issue #488) owns the body while open — discriminated BEFORE the plan/generic
-// modal arms (the phase stays phaseAwaitingApproval; argsViewOpen is Model state
-// alongside it).
-func (m Model) renderApprovalBody() string {
-	if m.approval.argsViewOpen {
-		return m.renderAskArgsView(m.approval.ask)
-	}
-	if isPlanAsk(m.approval.ask.Tool) {
-		// A plan ask fills the conversation region with a dedicated SCROLLABLE
-		// viewport (planVP) instead of the small centered card — the plan is
-		// read in full, no collapse, no ctrl+t gate. planVP is populated at the
-		// reducer seams (openPlanReviewView: the PermissionAskMsg reducer, the
-		// queued-successor advance path, relayout/onResize geometry changes)
-		// so the render path is a pure read of m.approval.planVP.View(). See
-		// renderPlanReviewView / openPlanReviewView.
-		return m.renderPlanReviewView(m.approval.ask)
-	}
-	return m.rend.renderPermissionModal(m.approval.ask, m.expandTools, len(m.approval.queue), m.width, m.vp.Height(), m.approval.askVPOffset)
 }
 
 // renderHeader is the top bar: session id · model · mode · server.
@@ -163,6 +140,9 @@ func (m Model) renderHeader() string {
 	line := strings.Join(withBadge, "  ·  ")
 	if nextBadge != "" && lipgloss.Width(line) > m.widthOr()-headerIdentityPad {
 		line = strings.Join(m.headerIdentityParts(sid, ""), "  ·  ")
+	}
+	if m.deps.DebugTarget != "" && lipgloss.Width(line) > m.widthOr()-headerIdentityPad {
+		line = strings.Join(m.debugEssentialHeaderParts(sid), "  ·  ")
 	}
 	// Right-align ONE muted indicator on the header line when it fits beside the
 	// identity segment; otherwise drop it (so the indicator never forces a wrap — the
@@ -186,9 +166,31 @@ func (m Model) renderHeader() string {
 	// never hidden by scrolling.
 	badge, badgeW, hasBadge := m.postureBadgeRender()
 	if hasBadge || tail != "" {
+		if lineSurface := m.generatedStatusLine.Header; m.deps.DebugTarget == "" && lineSurface.Present && statusSurfaceFits(lineSurface, m.statusLineGeometry().headerAvailable) {
+			line = renderStatusSurface(m.deps.Theme, lineSurface, m.statusLineGeometry().headerAvailable, false)
+			line = m.fitHeader(line, badge, badgeW, tail, m.widthOr())
+			return m.deps.Theme.Style("header").Width(m.widthOr()).Render(line)
+		}
+		if m.deps.DebugTarget == "" && m.deps.StatusSource != nil {
+			line = m.fitHeader("", badge, badgeW, tail, m.widthOr())
+			return m.deps.Theme.Style("header").Width(m.widthOr()).Render(line)
+		}
 		line = m.fitHeader(line, badge, badgeW, tail, m.widthOr())
+	} else if lineSurface := m.generatedStatusLine.Header; m.deps.DebugTarget == "" && lineSurface.Present && statusSurfaceFits(lineSurface, m.statusLineGeometry().headerAvailable) {
+		line = renderStatusSurface(m.deps.Theme, lineSurface, m.statusLineGeometry().headerAvailable, false)
+	} else if m.deps.DebugTarget == "" && m.deps.StatusSource != nil {
+		line = ""
 	}
-	return m.deps.Theme.Style("header").Width(m.widthOr()).Render(line)
+	header := m.deps.Theme.Style("header").Width(m.widthOr()).Render(line)
+	return header
+}
+
+func (m Model) debugHeaderTarget() string {
+	return m.deps.Theme.Style("warning").Bold(true).Render("DEBUG target #" + sessionDigest(m.deps.DebugTarget)[:8])
+}
+
+func (m Model) debugEssentialHeaderParts(sid string) []string {
+	return []string{"mecatui", m.debugHeaderTarget(), "session " + client.DisplaySessionID(sid)}
 }
 
 // Operator-posture tier names (the m.caps.Posture vocabulary, server-wide). Named
@@ -265,7 +267,7 @@ func (m Model) postureBadgeRender() (styled string, plainWidth int, present bool
 //
 //  1. While CONNECTING (no create response yet) ⇒ "" (no segment): the server owns
 //     the resolved value and we must not guess it.
-//  2. The EFFECTIVE model the server resolved THIS session to (m.effectiveModel,
+//  2. The EFFECTIVE model the server resolved THIS session to (m.resolvedSessionModel,
 //     echoed verbatim on SessionReadyMsg) — shown from turn zero. Its human display
 //     name is resolved from the already-held ListModels inventory by (provider_id,
 //     model_id); when the inventory has no match (not yet loaded, or a passthrough
@@ -277,15 +279,15 @@ func (m Model) headerModelLabel() string {
 	if m.phase == phaseConnecting {
 		return ""
 	}
-	if rm := m.effectiveModel; rm.ModelID != "" {
-		for _, mi := range m.models.models {
+	if rm := m.resolvedSessionModel; rm.ModelID != "" {
+		for _, mi := range m.modelCatalog.models {
 			if mi.ProviderID == rm.ProviderID && mi.ID == rm.ModelID && mi.DisplayName != "" {
 				return mi.DisplayName
 			}
 		}
 		return rm.ModelID
 	}
-	if name := m.activeModel.ModelID; name != "" {
+	if name := m.createModelSelection.ModelID; name != "" {
 		return name
 	}
 	return m.deps.Model
@@ -298,13 +300,15 @@ func (m Model) headerModelLabel() string {
 const headerIdentityPad = 4
 
 // headerIdentityParts builds the header identity segments. withNext is the next:
-// badge ("" to omit it). Order: mecatui · session · model · [next: …] · mode ·
-// ws: <worktree> · socket. The next: badge sits AFTER the current model so the eye
-// reads "running X, next Y", and is the FIRST segment renderHeader sheds under width
-// pressure. The ws: segment is shown only when the active workspace differs from the
-// launch workspace (Deps.Workspace) — no noise when not switched (issue #102).
+// badge ("" to omit it). Order: mecatui · [DEBUG target] · session · model ·
+// [next: …] · mode · ws: <worktree> · socket. The debug target is immutable,
+// always uses its complete digest, and precedes the debugger session identity.
 func (m Model) headerIdentityParts(sid, withNext string) []string {
-	parts := []string{"mecatui", "session " + short(sid)}
+	parts := []string{"mecatui"}
+	if m.deps.DebugTarget != "" {
+		parts = append(parts, m.debugHeaderTarget())
+	}
+	parts = append(parts, "session "+client.DisplaySessionID(sid))
 	// Model segment: the EFFECTIVE model the server resolved THIS session to (set once
 	// on SessionReadyMsg). The header only CHOOSES which known string to display; it
 	// never resolves a default itself. While connecting there is NO model segment.
@@ -323,7 +327,7 @@ func (m Model) headerIdentityParts(sid, withNext string) []string {
 		// THIS session to, appended as a subtle ` · <effort>` so it rides WITH the model
 		// segment (and sheds with it under width pressure). Shown ONLY when non-empty
 		// (auto/unset echoes "" and so never renders).
-		if eff := effortHeaderSuffix(m.effectiveModel.ReasoningEffort); eff != "" {
+		if eff := effortHeaderSuffix(m.resolvedSessionModel.ReasoningEffort); eff != "" {
 			seg += " · " + eff
 		}
 		parts = append(parts, seg)
@@ -333,9 +337,9 @@ func (m Model) headerIdentityParts(sid, withNext string) []string {
 	// toolhive — disclosure-only (no acknowledgment required), riding the same
 	// segment slice so the EXISTING width-shedding/fitHeader math applies
 	// unchanged (it sheds like any other low-priority segment under pressure).
-	if m.effectiveModel.ProviderID == "toolhive" {
+	if m.resolvedSessionModel.ProviderID == "toolhive" {
 		parts = append(parts, m.deps.Theme.Style("muted").Render("via ToolHive gateway"))
-	} else if row, ok := availableNotDefaultStatus(m.models.statuses); ok {
+	} else if row, ok := availableNotDefaultStatus(m.modelCatalog.statuses); ok {
 		// Sibling (N1): when an intent-driven provider is detected-and-reachable
 		// but NOT the active default, show a muted "<provider-id> gateway
 		// available" segment. Mutually exclusive with the active-case branch
@@ -392,38 +396,8 @@ func modeAccentStyle(th theme.Theme, mode string) lipgloss.Style {
 
 func (m *Model) applyModeInputStyle() {
 	mode := m.inputMode()
-	styles := m.ta.Styles()
-	base := textarea.DefaultDarkStyles()
 	accent := modeAccentStyle(m.deps.Theme, mode)
-	// The textarea's inner prompt bar and line-number gutter are suppressed (New() sets
-	// Prompt="" and ShowLineNumbers=false, issue #161), so the rail border is the single
-	// mode cue — no Prompt/LineNumber/CursorLineNumber styling needed here any more.
-	styles.Focused.Placeholder = base.Focused.Placeholder.Foreground(accent.GetForeground())
-	styles.Cursor.Color = accent.GetForeground()
-	// Tint the WHOLE textarea body on the faint panel background so the input block
-	// reads as ONE even surface — the same bgPanel the rail pads its margins with — and
-	// so an empty input and a typed one look identical (the inconsistent-tint bug). The
-	// DefaultDarkStyles ship their own per-state backgrounds (a black cursor-line, a
-	// transparent body), which made the rows tint differently by content; overriding the
-	// body/cursor-line/placeholder/end-of-buffer backgrounds to bgPanel makes the fill
-	// uniform across every row. Applied to BOTH focus states so blur doesn't change the
-	// surface (the rail border is the single mode cue and stays at full accent strength
-	// regardless of focus — see the rail-blur invariant).
-	bg := m.deps.Theme.Color("bgPanel")
-	// Typed text gets the theme's full-strength Text colour for contrast: the bubbles
-	// DefaultDarkStyles leave Text with no foreground (terminal default) and tint the
-	// CursorLine grey (color 245), so what you type rendered washed-out on the panel.
-	// Setting both to the bright Text slot makes the input legible without touching the
-	// dim Placeholder (which stays muted as a prompt cue).
-	txt := m.deps.Theme.Color("text")
-	for _, st := range []*textarea.StyleState{&styles.Focused, &styles.Blurred} {
-		st.Base = st.Base.Background(bg)
-		st.Text = st.Text.Background(bg).Foreground(txt)
-		st.CursorLine = st.CursorLine.Background(bg).Foreground(txt)
-		st.EndOfBuffer = st.EndOfBuffer.Background(bg)
-		st.Placeholder = st.Placeholder.Background(bg)
-	}
-	m.ta.SetStyles(styles)
+	m.prompt.SetColors(accent.GetForeground(), m.deps.Theme.Color("bgPanel"), m.deps.Theme.Color("text"))
 }
 
 func (m Model) renderHeaderMode(mode string) string {
@@ -433,16 +407,16 @@ func (m Model) renderHeaderMode(mode string) string {
 
 // headerNextBadge is the muted "next: <model>" header badge previewing the
 // pendingNext (apply-on-next-create) selection. It shows ONLY when there is a KNOWN
-// effective model to contrast against (m.effectiveModel set) AND the pendingNext
-// resolves to a DIFFERENT (provider, model). Both guards matter: when no effective
-// model is known yet (connecting / older server) the model SEGMENT already shows the
+// resolved session model to contrast against (m.resolvedSessionModel set) AND the pendingNext
+// resolves to a DIFFERENT (provider, model). Both guards matter: when no resolved
+// session model is known yet (connecting / older server) the model SEGMENT already shows the
 // pendingNext, so a "next:" badge would just duplicate it; and a same-model next is
 // nothing to preview. The display name is resolved from the ListModels inventory by
 // (provider_id, model_id), falling back to the raw id — the same lookup the
-// effective-model label uses. Returns "" when there is no distinct next model.
+// resolved-session-model label uses. Returns "" when there is no distinct next model.
 func (m Model) headerNextBadge() string {
-	next := m.activeModel
-	eff := m.effectiveModel
+	next := m.createModelSelection
+	eff := m.resolvedSessionModel
 	if next.ModelID == "" || eff.ModelID == "" {
 		return ""
 	}
@@ -450,7 +424,7 @@ func (m Model) headerNextBadge() string {
 		return ""
 	}
 	label := next.ModelID
-	for _, mi := range m.models.models {
+	for _, mi := range m.modelCatalog.models {
 		if mi.ProviderID == next.ProviderID && mi.ID == next.ModelID && mi.DisplayName != "" {
 			label = mi.DisplayName
 			break
@@ -477,10 +451,15 @@ func (m Model) scrollIndicator() string {
 // with the hook-modified glyph and avoids "Δ" colliding with the Edit/Write
 // "+N/-N" diff size signals. It is a compact count; the full path list is
 // revealed under ctrl+t (see renderChangedFiles).
+const changedFilesIndicatorLimit = 999
+
 func (m Model) changedFilesIndicator() string {
 	n := len(m.filesChanged)
 	if n == 0 {
 		return ""
+	}
+	if n > changedFilesIndicatorLimit {
+		return "✎ 999+ files"
 	}
 	return "✎ " + plural(n, "file")
 }
@@ -489,6 +468,21 @@ func (m Model) changedFilesIndicator() string {
 // and the right-aligned changed-files indicator so they never touch. Mirrors the
 // footer's footerGapPad but is owned by the header path (naming honesty).
 const headerGapPad = 2
+
+// statusHeaderAvailable is the custom-header budget after renderer-owned system
+// lanes and the header's own padding have been reserved.
+func (m Model) statusHeaderAvailable(badge string, badgeW int, tail string) int {
+	lanes := badgeW
+	if badge != "" && tail != "" {
+		lanes += 2 + lipgloss.Width(tail)
+	} else if tail != "" {
+		lanes += lipgloss.Width(tail)
+	}
+	if lanes > 0 {
+		lanes += headerGapPad
+	}
+	return max(0, m.widthOr()-2-lanes)
+}
 
 // fitHeader right-aligns the indicator (an optional ALREADY-STYLED posture badge plus an
 // optional MUTED scroll/changed-files tail) beside the identity line when there is room
@@ -528,17 +522,19 @@ func (m Model) fitHeader(line, badge string, badgeW int, tail string, width int)
 	return line + strings.Repeat(" ", gap) + styled
 }
 
-// renderFooter is the status bar: spinner + active tool + status + usage.
-func (m Model) renderFooter() string {
+// footerActivity renders only the renderer-owned activity lane. Status sources
+// receive its reserved width but cannot replace this chrome.
+func (m Model) footerActivity() string {
+	approval := approvalFooterProjection{}
+	if m.phase == phaseAwaitingApproval {
+		approval = approvalFooterProjectionFor(approvalSurfaceFor(&m))
+	}
 	var left string
 	switch m.phase {
 	case phaseRunning:
 		spin := m.sp.View()
 		switch {
 		case m.activeTool != "" && m.toolProgress != "":
-			// A long-running tool forwarded a transient progress line: show it in
-			// place of the bare "Running X…" so the footer reflects live activity
-			// instead of looking frozen. Cleared on the next tool.result/turn boundary.
 			left = fmt.Sprintf("%s %s…", spin, m.toolProgress)
 		case m.activeTool != "":
 			left = fmt.Sprintf("%s Running %s…", spin, m.activeTool)
@@ -546,57 +542,60 @@ func (m Model) renderFooter() string {
 			left = spin + " thinking…"
 		}
 	case phaseAwaitingApproval:
-		// With asks queued behind the visible modal, the footer carries the same
-		// "(1 of N)" badge as the modal title; the single-ask frame stays
-		// byte-identical.
 		label := "⚠ awaiting approval"
-		if isPlanAsk(m.approval.ask.Tool) {
+		if approval.plan {
 			label = "⚙ plan review"
 		}
-		if n := len(m.approval.queue); n > 0 {
-			label = fmt.Sprintf("%s (1 of %d)", label, 1+n)
+		if approval.queued > 0 {
+			label = fmt.Sprintf("%s (1 of %d)", label, 1+approval.queued)
 		}
 		left = m.deps.Theme.Style("askTitle").Render(label)
 	case phaseConnecting:
 		left = m.sp.View() + " connecting…"
 	default:
-		// The idle/default-phase footer-left (selection count / reconnecting cue /
-		// gateway notice / statusMsg) is extracted to keep renderFooter under the
-		// cyclomatic bound; see idleFooterLeft.
 		left = m.idleFooterLeft()
 	}
-
-	// The mouse-debug overlay (MECATUI_DEBUG_MOUSE=1) takes the footer-left at the
-	// HIGHEST priority — over every phase arm above — so the live raw-coords/mapping
-	// line stays visible even during a drag (the gesture that the diagnostic targets).
 	if m.deps.DebugMouse && m.mouseDebug != "" {
 		left = m.deps.Theme.Style("muted").Render(m.mouseDebug)
 	}
+	return left
+}
+
+// renderFooter is the status bar: spinner + active tool + status + usage.
+func (m Model) renderFooter() string {
+	approval := approvalFooterProjection{}
+	if m.phase == phaseAwaitingApproval {
+		approval = approvalFooterProjectionFor(approvalSurfaceFor(&m))
+	}
+	left := m.footerActivity()
 
 	// The full decompressed chord list now lives in the "?" help overlay, so the
-	// footer carries only the two entry points and quit. "/ commands" is ALWAYS
-	// shown: the TUI ships built-in client-side commands (/clear, /help, and the
-	// caps-gated /mcp,/agents), so "/" is a live entry point even when the server
-	// has slash-command expansion disabled. While a run streams the line is extended
-	// with the type-while-running affordance (enter queues a follow-up; esc clears
-	// the staged input/queue or cancels the run). Every chord is sourced from the
-	// LIVE keyMap markings (hk) so a rebinding propagates to the footer affordances
-	// (issue #457, the #455 liveness pattern extended to the footer).
+	// footer leads with its two entry points and carries only the most useful prompt
+	// affordances plus quit. "/ commands" is ALWAYS shown: the TUI ships built-in
+	// client-side commands (/clear, /help, and the caps-gated /mcp,/agents), so "/"
+	// is a live entry point even when the server has slash-command expansion disabled.
+	// While a run streams the line is extended with the type-while-running affordance
+	// (enter steers when supported or queues a follow-up otherwise; ctrl+u clears the
+	// unsent draft; esc cancels the run without changing draft, queue, or steer state).
+	// Prompt selection affordances appear only while the prompt accepts input. Every
+	// chord is sourced from the LIVE keyMap markings (hk) so a rebinding propagates to
+	// the footer affordances (issue #457, the #455 liveness pattern extended to the
+	// footer).
 	hk := m.helpKeyMarkings()
-	help := hk.help + " help · / commands · " + hk.quit + " quit"
-	if m.phase == phaseRunning {
-		help = hk.submit + " queue · " + hk.cancel + " cancel/clear · " + help
+	help := hk.help + " help · / commands"
+	if m.pasteGateOpen() {
+		help += " · " + hk.selectAll + " select all · " + hk.copySelection + " copy"
+		if m.phase != phaseRunning {
+			help += " · " + hk.clearPrompt + " clear"
+		}
 	}
-	if m.phase == phaseAwaitingApproval && isPlanAsk(m.approval.ask.Tool) {
-		// Gate the "W auto-accept" hint on offerAlways — the SAME condition the
-		// action bar (permission.go renderPlanReviewView) uses to show/hide the
-		// [W] button. Without this a surfaced child plan ask (offerAlways=false)
-		// would advertise a key that silently no-ops (onApprovalKey ignores W).
-		// The mnemonics are the LIVE Allow/AllowAlways/Deny chords with the first
-		// rune upper-cased (the footer idiom: "A", "W", "D" by default) so an
-		// override propagates (issue #457).
+	help += " · " + hk.quit + " quit"
+	if m.phase == phaseRunning {
+		help = hk.submit + " queue · " + hk.clearPrompt + " clear · " + hk.cancel + " cancel · " + help
+	}
+	if m.phase == phaseAwaitingApproval && approval.plan {
 		allow, always, deny := approvalMnemonic(hk.allow), approvalMnemonic(hk.allowAlways), approvalMnemonic(hk.deny)
-		if m.approval.ask.offerAlways {
+		if approval.offerAlways {
 			help = allow + " approve & run · " + always + " auto-accept · " + deny + " iterate · " + help
 		} else {
 			help = allow + " approve & run · " + deny + " iterate · " + help
@@ -610,6 +609,17 @@ func (m Model) renderFooter() string {
 	}
 
 	width := m.widthOr()
+	available := m.statusLineGeometry().footerAvailable
+	if surface := m.generatedStatusLine.Footer; surface.Present && statusSurfaceFits(surface, available) {
+		custom := renderStatusSurface(m.deps.Theme, surface, available, true)
+		line := left + strings.Repeat(" ", footerGapPad) + custom
+		footer := m.deps.Theme.Style("footer").Width(width).Render(line)
+		return footer + "\n" + m.deps.Theme.Style("muted").Render(help)
+	}
+	if m.deps.StatusSource != nil {
+		footer := m.deps.Theme.Style("footer").Width(width).Render(left)
+		return footer + "\n" + m.deps.Theme.Style("muted").Render(help)
+	}
 	line := m.fitFooter(left, width)
 	footer := m.deps.Theme.Style("footer").Width(width).Render(line)
 	return footer + "\n" + m.deps.Theme.Style("muted").Render(help)
@@ -674,7 +684,7 @@ const footerGapPad = 2
 
 // contextWindow returns the denominator for the footer context meter:
 //
-//  1. m.effectiveModel.ContextWindow > 0 — the window the SERVER resolved for THIS
+//  1. m.resolvedSessionModel.ContextWindow > 0 — the window the SERVER resolved for THIS
 //     session's model (echoed on SessionReadyMsg, refreshed on every model switch /
 //     GetSession). It is now LIVE-FIRST server-side, so a live-only model heals to
 //     its real window. Exact operator configuration precedes live metadata; the global
@@ -683,8 +693,8 @@ const footerGapPad = 2
 //     trigger together. The client never recomputes the window.
 //  2. 0 — unknown; the meter renderers degrade to the bare "ctx <N>" current size.
 func (m Model) contextWindow() int64 {
-	if m.effectiveModel.ContextWindow > 0 {
-		return m.effectiveModel.ContextWindow
+	if m.resolvedSessionModel.ContextWindow > 0 {
+		return m.resolvedSessionModel.ContextWindow
 	}
 	return 0
 }
@@ -866,7 +876,7 @@ func (m Model) renderQueue() string {
 		// The edit hint only applies when EditBack is actionable, which
 		// requires an EMPTY input line; a draft present would make the
 		// hint misleading.
-		if strings.TrimSpace(m.ta.Value()) == "" {
+		if strings.TrimSpace(m.prompt.Value()) == "" {
 			b.WriteString(muted.Render(fmt.Sprintf("⏳ %d queued · %s edit", n, hk.editBack)))
 		} else {
 			b.WriteString(muted.Render(fmt.Sprintf("⏳ %d queued", n)))
@@ -898,7 +908,7 @@ func (m Model) renderQueue() string {
 // Four honest states:
 //   - PENDING (steerPending): sent, ack not yet back — a muted "⏳ steer: sending…".
 //   - SENT (steerSent): acked accepted/appended, parked for the next turn
-//     boundary — a muted "⏳ steer queued · ↑ edit · esc retract".
+//     boundary — a muted "⏳ steer queued · ↑ edit · esc cancel".
 //   - PROMOTED (steerPromoted): acked too_late — the run had ended, so the text
 //     auto-started a follow-up — a ctxWarn "↪ steer sent as a follow-up (run had
 //     already ended)".
@@ -916,11 +926,9 @@ func (m Model) renderSteer() string {
 	case steerPending:
 		b.WriteString(muted.Render("⏳ steer: sending…"))
 	case steerSent:
-		b.WriteString(muted.Render("⏳ steer queued · " + hk.editBack + " edit · " + hk.cancel + " retract"))
+		b.WriteString(muted.Render("⏳ steer queued · " + hk.editBack + " edit · " + hk.cancel + " cancel"))
 	case steerPromoted:
 		b.WriteString(th.Style("ctxWarn").Render("↪ steer sent as a follow-up (run had already ended)"))
-	case steerFailed:
-		b.WriteString(th.Style("warning").Render("✕ steer not sent (promotion failed) · ↑ to edit · esc to drop"))
 	case steerRetracted:
 		b.WriteString(muted.Render("✕ steer retracted"))
 	}
@@ -943,13 +951,14 @@ func (m Model) renderSteer() string {
 // textarea fact in the key changed since the previous render, the cached string is
 // returned instead of re-running textarea.View()'s full per-line re-wrap.
 //
-// Correctness of the single entry rests on two facts. (1) The textarea's only
-// state NOT in the key — its internal viewport scroll offset, and the virtual
-// cursor's blink phase — can only change as a side effect of a mutation that also
-// changes a keyed fact in the SAME reducer step (the scroll offset moves only when
-// the cursor crosses the visible window, i.e. row/rowOffset/width/height changed;
-// the blink phase flips only on Focus/Blur, since the reducer never routes
-// cursor.BlinkMsg to the textarea — the cursor is static, not blinking, today).
+// Correctness of the single entry rests on two facts. (1) Selection is keyed by
+// its active state and normalized logical endpoints. The textarea's only state NOT
+// in the key — its internal viewport scroll offset and the virtual cursor's blink
+// phase — can only change as a side effect of a mutation that also changes a keyed
+// fact in the SAME reducer step (the scroll offset moves only when the cursor
+// crosses the visible window, i.e. row/rowOffset/width/height changed; the blink
+// phase flips only on Focus/Blur, since the reducer never routes cursor.BlinkMsg to
+// the textarea — the cursor is static, not blinking, today).
 // The active permission mode is deliberately keyed because it changes the input
 // colour cue without necessarily changing any textarea-owned state.
 // (2) renderInput runs on EVERY reduced message (the relayout chokepoint's
@@ -957,21 +966,28 @@ func (m Model) renderSteer() string {
 // is no window in which a hidden-state change can hide behind an unchanged key.
 func (m Model) renderInput() string {
 	m.applyModeInputStyle()
-	li := m.ta.LineInfo()
+	li := m.prompt.LineInfo()
+	hasSelection := m.prompt.HasSelection()
+	selectionFrom, selectionTo, _ := m.prompt.Selection()
 	key := inputRenderKey{
-		value:     m.ta.Value(),
-		row:       m.ta.Line(),
-		rowOffset: li.RowOffset,
-		colOffset: li.ColumnOffset,
-		focused:   m.ta.Focused(),
-		width:     m.ta.Width(),
-		height:    m.ta.Height(),
-		mode:      m.inputMode(),
+		value:            m.prompt.Value(),
+		row:              m.prompt.Line(),
+		rowOffset:        li.RowOffset,
+		colOffset:        li.ColumnOffset,
+		selection:        hasSelection,
+		selectionFromRow: selectionFrom.Row,
+		selectionFromCol: selectionFrom.Col,
+		selectionToRow:   selectionTo.Row,
+		selectionToCol:   selectionTo.Col,
+		focused:          m.prompt.Focused(),
+		width:            m.prompt.Width(),
+		height:           m.prompt.Height(),
+		mode:             m.inputMode(),
 	}
 	if m.rend.inputValid && m.rend.inputKey == key {
 		return m.rend.inputView
 	}
-	out := m.renderInputRail(m.ta.View())
+	out := m.renderInputRail(m.prompt.View())
 	m.rend.inputKey, m.rend.inputView, m.rend.inputValid = key, out, true
 	return out
 }
@@ -1064,22 +1080,18 @@ func stripTrailingBlank(s string) string {
 
 // renderFatal renders a centred fatal-error panel.
 func (m Model) renderFatal() string {
+	return m.renderFatalAtHeight(m.height)
+}
+
+func (m Model) renderFatalAtHeight(height int) string {
 	msg := m.deps.Theme.Style("errorText").Render("connection failed") + "\n\n" +
 		m.deps.Theme.Style("muted").Render(m.fatalErr) + "\n\n" +
 		m.deps.Theme.Style("muted").Render("press "+m.helpKeyMarkings().quit+" to quit")
 	card := m.deps.Theme.Style("askCard").Render(msg)
-	if m.width > 0 && m.height > 0 {
-		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, card)
+	if m.width > 0 && height > 0 {
+		return lipgloss.Place(m.width, height, lipgloss.Center, lipgloss.Center, card)
 	}
 	return card
-}
-
-// short truncates a long id for the header.
-func short(s string) string {
-	if len(s) <= 12 {
-		return s
-	}
-	return s[:12]
 }
 
 // maxModelLen caps the model name shown in the header so a long provider-scoped

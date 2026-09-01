@@ -221,9 +221,9 @@ func New(opts ...Option) *Provider {
 	// responses.NewStreaming drives the plain ssestream decoder, so it hits the
 	// identical empty-payload json.Unmarshal defect.
 	reqOpts = append(reqOpts, option.WithMiddleware(ssefilter.NewKeepaliveFilter()))
-	if c.apiKey != "" {
-		reqOpts = append(reqOpts, option.WithAPIKey(c.apiKey))
-	}
+	// Always install the resolved value, including an empty value. Otherwise the
+	// SDK autoloads OPENAI_API_KEY, which violates a custom auth.method=none.
+	reqOpts = append(reqOpts, option.WithAPIKey(c.apiKey))
 	if c.baseURL != "" {
 		reqOpts = append(reqOpts, option.WithBaseURL(c.baseURL))
 	}
@@ -382,7 +382,7 @@ func (p *Provider) streamAttempt(ctx context.Context, params responses.ResponseN
 		if ctx.Err() != nil {
 			return emitted, false, nil
 		}
-		return emitted, false, streamErr
+		return emitted, false, withHTTPErrorMetadata(streamErr)
 	}
 	if !st.done && ctx.Err() == nil {
 		// Clean EOF but NO terminal Responses event: the SDK's ssestream

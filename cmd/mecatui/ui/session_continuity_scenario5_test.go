@@ -20,7 +20,7 @@ func TestSessionContinuityUX_Scenario5_DetailsSurface(t *testing.T) {
 	m.sessionCreatedAt = 1_700_000_000
 	m.sessionModifiedAt = 1_700_000_100
 	m.activeWorkspace = "/work/repo"
-	m.effectiveModel = client.ResolvedModel{ProviderID: "openrouter", ModelID: "openai/gpt-5"}
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: "openrouter", ModelID: "openai/gpt-5"}
 
 	got := stripANSIstr(renderSessionDetails(m.deps.Theme, m.sessionDetails(), helpKeys{closeOnly: "esc"}, 100, 30))
 	for _, want := range []string{
@@ -110,7 +110,7 @@ func driveSessionRebindJourney(t *testing.T, journey string, cb client.Clipboard
 		const id = "continued-id"
 		loader := &fakeSessionTranscriptLoader{transcript: client.SessionTranscript{SessionID: id, Complete: true, Kind: client.SessionKindMain}}
 		m.deps.Transcript = loader
-		m.sessions.filtered = []client.SessionListItem{{ID: id, Title: "Stored chat", Kind: client.SessionKindMain, Capabilities: client.SessionInventoryCapabilities{PublicChat: true, Inspect: true}}}
+		ensureActiveSessions(&m).filtered = []client.SessionListItem{{ID: id, Title: "Stored chat", Kind: client.SessionKindMain, Capabilities: client.SessionInventoryCapabilities{PublicChat: true, Inspect: true}}}
 		mm, cmd, handled := m.chooseSession()
 		if !handled || cmd == nil {
 			t.Fatal("stored continuation did not request its authoritative transcript")
@@ -120,6 +120,7 @@ func driveSessionRebindJourney(t *testing.T, journey string, cb client.Clipboard
 		return m, id
 	case "model carryover":
 		conv.createCount = 1
+		m.deps.Transcript = modelSwitchTranscriptLoader{}
 		mm, cmd, handled := m.restartOnModelWithCarryover(client.ModelSelection{ProviderID: "openai", ModelID: "gpt-5-mini"})
 		if !handled || cmd == nil {
 			t.Fatal("model carryover did not issue its create command")

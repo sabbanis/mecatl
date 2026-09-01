@@ -93,8 +93,9 @@ type crosses the boundary. The fake `mockllm.Provider` (`engine/adapter/mockllm`
 
 **Compatible endpoints**: `WithBaseURL(url)` overrides the host (vLLM, LiteLLM,
 a local proxy); the SDK appends `/responses`. `WithAPIKey` and
-`WithRequestOption` round out the options. `cmd/mecated` plumbs
-`--openai-base-url` through to it.
+`WithRequestOption` round out the options. Command roots map `--openai-base-url`
+into the non-secret built-in endpoint override map that composition folds over
+operator settings.
 
 ## Multi-provider — registry, per-session routing & model inventory
 
@@ -204,6 +205,32 @@ before (the default path is byte-identical). A composition-only `providerConstru
 seam (mirroring `envDetector`) lets the offline e2e back two real provider ids with
 mocks; production leaves it nil.
 
+### Operator-defined providers
+
+Operator-local `settings.yaml` may declare first-class `providers.<id>` entries with an
+HTTPS base URL, required default model, one wire flavor (`openai-responses`,
+`openai-chat-completions`, or `anthropic-messages`), and either `auth.method: none`
+or `api_key` (ADR 0238). `provider_overrides` changes only the base URLs of the
+eligible built-ins; it does not turn a built-in into a custom provider. Custom IDs cannot
+collide with any built-in or the reserved offline `mock` ID.
+
+`app.Build` resolves the operator definition set once, passes that set to the injected
+`ProviderCredentialLoader` once, then applies the returned immutable `ProviderCredentials`
+before default selection and registry construction. Command roots project their non-secret
+base-URL flags into `ProviderOverrides`; Build merges those over settings-derived overrides
+before registry construction. The command roots inject the local `cliconfig` resolver but do
+not construct custom-provider registry state; Build owns and closes any credential lifecycle
+after later build failures and at normal shutdown. This keeps a
+future refreshable credential implementation at the composition boundary without exposing it
+to the engine or wire API. `mecatui connect` does not embed a server and performs no local
+provider-credential I/O. Custom API keys remain file-only records keyed by provider ID; `none`
+has no ambient credential fallback. The configured default model is
+available synchronously even when live listing fails or returns no models. Live `/models`
+requests use the declared flavor and resolved authentication, have bounded time/body
+envelopes, and refuse redirects. Inference uses the same redirect-refusing transport:
+a redirect never forwards a request body or credentials to its target. That transport
+policy is retained when default or live-model capability reminting rebuilds an adapter.
+
 **OpenRouter downstream-provider routing (issue #480, ADR 0210).** OpenRouter is a
 *meta-provider* — one model id is served by several **downstream** inference
 providers (Anthropic, Amazon Bedrock, Google Vertex, …) that OpenRouter
@@ -265,8 +292,8 @@ forces the loopback path; `direct` forces the gateway path and Build-fails when 
 is absent. The direct base URL is derived (`gateway_url + "/v1"`), never hand-set. The
 token never enters a log, an error string, or an env var (OS keyring; only its
 reference is persisted; errors are sanitised via `llm.SanitizeTokenError`). `mecatui
-login` runs the interactive OIDC flow in-process; a headless `mecated` cache-miss
-surfaces an actionable error naming `thv llm setup` / `mecatui login` /
+llm login` runs the interactive OIDC flow in-process; a headless `mecated` cache-miss
+surfaces an actionable error naming `thv llm setup` / `mecatui llm login` /
 `--toolhive-llm-mode proxy`. `tls_skip_verify` is NOT honored in direct mode (upstream
 gap) — a self-signed gateway must use `--toolhive-llm-mode proxy`. See
 `docs/adr/0102-toolhive-direct-mode.md` for the full design.
@@ -477,10 +504,12 @@ enables nor disables — the router stays governed by the taxonomy). A project-t
 (operator-tier only). The classifier itself runs on the `router` model slot (default
 `cheap` tier; an operator `classifier-slot` overrides) — a tiny one-turn call.
 
-**How it fires.** For a **plain** default delegation only (no per-call `model`, no `agent`,
-no `fork`, no `resume` — those already pin the engine), the `Subagent` `run()` hook calls a
-composition-built classifier (`RunModelRouter`, role `model-router`, tool-less, one turn,
-no-progress nudge disabled). The classifier reads the category descriptions in the clear
+**How it fires.** For a default delegation with no per-call `model`, `fork`, or `resume`,
+the `Subagent` `run()` hook calls a composition-built classifier (`RunModelRouter`, role
+`model-router`, tool-less, one turn, no-progress nudge disabled). A named `agent` remains
+eligible when its definition declared no `model:` and composition can rebuild its scoped
+engine on a same-provider routed model; a pinned, provider-switched, or inline-MCP definition
+bypasses classification. The classifier reads the category descriptions in the clear
 and the (untrusted) task prompt inside the `UntrustedFence`, and returns a category by the
 **whole-output-single-JSON-object** parse (the hardened parse the ask reviewer uses); a
 hallucinated category is a miss. Composition maps the chosen category to its model selector
@@ -493,27 +522,34 @@ same-provider** (the engine layer stays model-string-only; the chosen model is n
 `inherit`) > fork/resume > **router** > `--subagent-model` default > session model. The
 router fills the gap; it never overrides pinned intent.
 
-**Named agent-defs too (issue #286, [ADR 0066](../adr/0066-route-unpinned-and-writable-delegations.md)).**
+**Named agent-defs too (issue #286, [ADR 0066](../adr/0066-route-unpinned-and-writable-delegations.md),
+extended for writable specialists by [ADR 0242](../adr/0242-route-unpinned-writable-named-specialists.md)).**
 A delegation to a named `agent` that declared **no `model:`** (expressed no model intent) is
-ROUTABLE — the router classifies it and rebuilds the def's SCOPED engine (its
-catalog/prompt/hooks) on the picked model, fail-soft to the pre-built def engine on a miss.
-ANY non-empty `def.Model` — `inherit`, a built-in alias, a concrete id — PINS the def
-(routing skips it); **explicit `model: inherit` is how you opt a def OUT of routing**.
+ROUTABLE in read-only or `mode:"read-write"`: the router classifies it and rebuilds the def's
+SCOPED engine (its catalog/prompt/hooks) on the picked model. The writable path retains its
+mutating specialist scope and MAIN runner, so it remains direct-write against the parent
+workspace. ANY non-empty `def.Model` — `inherit`, a built-in alias, a concrete id — PINS the
+def (routing skips it); **explicit `model: inherit` is how you opt a def OUT of routing**.
 Composition excludes a def that switches provider or declares inline MCP from the routable
-set (the pick could not mint there), so the classifier is never spent for it. Team members
-and Parallel branches are out of scope (unchanged).
+set, so the classifier is never spent for it. An unavailable routed target fails soft to the
+ordinary specialist engine and reports `route-target-unavailable`; per-definition limits are
+unchanged. Team members and Parallel branches are out of scope (unchanged).
 
 **Writable delegations too (issue #285).** A `mode:"read-write"` delegation honours the
 same axes: a per-call `model` (or the router pick) rebuilds the WRITABLE explorer on that
 model via the writable engine factory (direct-write against the parent tree — no fork). A
 writable call with an explicit `model` but no writable factory wired is a LOUD error (never
 a silent inherit); a plain writable delegation whose routed pick would be discarded (factory
-unwired) does not spend the classifier at all. A writable `resume`/specialist (`agent`) keeps
-its own engine, unchanged.
+unwired) does not spend the classifier at all. A writable `resume` keeps its own engine.
+An unpinned writable specialist (`agent`) is routed through its own scoped writable factory;
+explicit `read-write`+`agent`+`model` remains invalid because an explicit override is a
+different call shape, not a router decision.
 
 **Fail-soft + breaker.** The router is **never load-bearing**. Any classifier failure,
-cancellation, unparseable verdict, unknown category, or unresolvable target → the
-delegation inherits the default explorer model. A per-run circuit breaker (default 3
+cancellation, unparseable verdict, or unknown category keeps the engine that delegation would
+otherwise use. An unresolvable routed target does the same and reports
+`route-target-unavailable`; for a named writable delegation that is its ordinary writable
+specialist, not the default explorer. A per-run circuit breaker (default 3
 consecutive misses, mirroring the ask-reviewer breaker) opens after repeated misses and
 skips the classifier for the rest of the run; a success resets it. Its mutex serialises
 classifications within a run, so a Subagent fan-out cannot multiply classifier spend.

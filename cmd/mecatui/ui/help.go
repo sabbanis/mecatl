@@ -7,7 +7,6 @@ import (
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
-	"github.com/stacklok/mecatl/cmd/mecatui/ui/platform"
 	"github.com/stacklok/mecatl/cmd/mecatui/ui/welcome"
 )
 
@@ -63,13 +62,21 @@ func helpBody(th theme.Theme, caps client.Capabilities, hk helpKeys) string {
 		{key: "/", action: "slash-command palette (built-ins always; workspace commands when enabled)"},
 		{key: "@", action: "attach a file: image/audio inlines as media (when supported), else inlines text"},
 		{key: hk.paste, action: "paste a clipboard image as an attachment (when supported), else paste text"},
+		{key: hk.selectAll, action: "select all prompt text"},
+		{key: hk.copySelection, action: "copy the active prompt or conversation selection"},
+		{key: hk.clearPrompt, action: "clear the unsent prompt"},
 		{key: hk.cancel, action: "cancel the running turn"},
 	})
 
 	b.WriteString("\n" + muted.Render("While a run is streaming") + "\n")
+	streamingSubmit := "queue a follow-up (sends when the turn ends)"
+	if caps.Steer {
+		streamingSubmit = "steer the current run (applies at the next turn boundary; bare built-ins stay local)"
+	}
 	writeHelpRows(&b, th, []helpRow{
-		{key: hk.submit, action: "queue a follow-up (sends when the turn ends)"},
-		{key: hk.cancel, action: "clear staged input / queue, else cancel run"},
+		{key: hk.submit, action: streamingSubmit},
+		{key: hk.clearPrompt, action: "clear the unsent prompt"},
+		{key: hk.cancel, action: "cancel run"},
 	})
 
 	b.WriteString("\n" + muted.Render("While the permission modal is open") + "\n")
@@ -97,6 +104,7 @@ func helpBody(th theme.Theme, caps client.Capabilities, hk helpKeys) string {
 	inspectRows = append(inspectRows,
 		helpRow{key: "/session", action: "show active session details and copy its exact ID"},
 		helpRow{key: "/sessions", action: "continue, inspect, or manage stored sessions"},
+		helpRow{key: "/connect", action: "sign in and connect to a saved remote target"},
 		helpRow{key: hk.modeSwitch, action: "cycle permission mode (default / plan / accept-edits)"},
 		helpRow{key: hk.expandTools, action: "expand/collapse details"},
 	)
@@ -107,7 +115,7 @@ func helpBody(th theme.Theme, caps client.Capabilities, hk helpKeys) string {
 		{key: hk.scroll, action: "scroll the conversation (a ↑NN% header cue shows while scrolled up)"},
 		{key: hk.jump, action: "jump to top / bottom (" + hk.scrollBottom + " resumes auto-follow)"},
 		{key: "wheel", action: "mouse-wheel scroll (alt screen only)"},
-		{key: "drag", action: "select text · drag to an edge auto-scrolls · copies on release · double-click word · triple-click line · right-click copies · " + hk.cancel + " clears"},
+		{key: "drag", action: "select conversation text · drag to an edge auto-scrolls · copies on release · double-click word · triple-click line · right-click copies · " + hk.cancel + " clears"},
 		{key: "middle-click", action: "paste the primary selection into the prompt (X11/Wayland; shift+middle-click pastes via the terminal instead)"},
 		{key: hk.help, action: "this help (on an empty prompt)"},
 		{key: hk.suspend, action: "suspend to the shell — the engine keeps running; fg resumes"},
@@ -182,32 +190,35 @@ func helpBody(th theme.Theme, caps client.Capabilities, hk helpKeys) string {
 // without a second markings path (issue #457 — the #455 liveness pattern
 // extended to the footer + inline cards).
 type helpKeys struct {
-	submit       string // Submit — send the prompt / queue a follow-up
-	newlineFirst string // Newline — first chord of the binding
-	newlineAlso  string // Newline — static " (also X)" suffix for remaining chords ("" when none)
-	paste        string // Paste
-	cancel       string // Cancel — cancel the running turn / clear staged input & queue
-	editBack     string // EditBack — pull the queued follow-up back into the textarea
-	quit         string // Quit
-	quitD        string // QuitD — the EOF-habit quit (double-press, empty prompt only)
-	suspend      string // Suspend — suspend the TUI to the shell (fg resumes)
-	help         string // Help — this overlay
-	mcpPanel     string // MCPPanel
-	resources    string // Resources
-	prompts      string // Prompts
-	agents       string // Agents
-	effort       string // Effort
-	modeSwitch   string // ModeSwitch
-	expandTools  string // ExpandTools
-	scroll       string // ScrollU/ScrollD — platform-adaptive on the default, "<up>/<down>" once remapped
-	scrollUp     string // ScrollU — first chord, for compact one-sided paging hints
-	scrollBottom string // ScrollBottom — first chord, for auto-follow prose
-	jump         string // ScrollTop/ScrollBottom joined as "home/end"
-	close        string // Close/Help joined as "esc or ?" — the keys that dismiss this overlay
-	allow        string // Allow — the permission-modal allow-once key (approval)
-	allowAlways  string // AllowAlways — the permission-modal always-allow key (approval)
-	deny         string // Deny — the permission-modal deny key (approval)
-	rawArgs      string // RawArgs — pretty↔raw toggle inside the full-screen ask-args view (r)
+	submit        string // Submit — send the prompt / queue a follow-up
+	newlineFirst  string // Newline — first chord of the binding
+	newlineAlso   string // Newline — static " (also X)" suffix for remaining chords ("" when none)
+	paste         string // Paste
+	selectAll     string // SelectAll — select all prompt text
+	copySelection string // CopySelection — copy the active prompt or conversation selection
+	clearPrompt   string // ClearPrompt — clear the unsent prompt
+	cancel        string // Cancel — cancel the running turn
+	editBack      string // EditBack — pull the queued follow-up back into the textarea
+	quit          string // Quit
+	quitD         string // QuitD — the EOF-habit quit (double-press, empty prompt only)
+	suspend       string // Suspend — suspend the TUI to the shell (fg resumes)
+	help          string // Help — this overlay
+	mcpPanel      string // MCPPanel
+	resources     string // Resources
+	prompts       string // Prompts
+	agents        string // Agents
+	effort        string // Effort
+	modeSwitch    string // ModeSwitch
+	expandTools   string // ExpandTools
+	scroll        string // ScrollU/ScrollD — platform-adaptive on the default, "<up>/<down>" once remapped
+	scrollUp      string // ScrollU — first chord, for compact one-sided paging hints
+	scrollBottom  string // ScrollBottom — first chord, for auto-follow prose
+	jump          string // ScrollTop/ScrollBottom joined as "home/end"
+	close         string // Close/Help joined as "esc or ?" — the keys that dismiss this overlay
+	allow         string // Allow — the permission-modal allow-once key (approval)
+	allowAlways   string // AllowAlways — the permission-modal always-allow key (approval)
+	deny          string // Deny — the permission-modal deny key (approval)
+	rawArgs       string // RawArgs — pretty↔raw toggle inside the full-screen ask-args view (r)
 
 	// Overlay-navigation markings (issue #457). The agents/team/mcp/effort/models/
 	// sessions/worktrees/schedule/skills/soul/usermodel overlays render inline hints
@@ -274,11 +285,20 @@ func navGlyph(chord string) string {
 
 // helpKeyMarkings builds the help-body key markings from the model's LIVE
 // keyMap, so a rebinding propagates into the "?" overlay.
-func (m Model) helpKeyMarkings() helpKeys { return keyMarkings(m.keys) }
+func (m Model) helpKeyMarkings() helpKeys {
+	marking := "pgup/pgdn"
+	if m.deps.scrollKeysMarking != nil {
+		marking = m.deps.scrollKeysMarking()
+	}
+	return keyMarkingsWithScroll(m.keys, marking)
+}
 
 // defaultHelpKeys builds the help markings from the DEFAULT bindings — the
-// honest fixture for tests that don't wire custom keymaps.
+// honest fixture for tests that don't wire custom keymaps. Standalone rendering
+// is host-independent and uses the canonical PC marking.
 func defaultHelpKeys() helpKeys { return keyMarkings(defaultKeys()) }
+
+func keyMarkings(km keyMap) helpKeys { return keyMarkingsWithScroll(km, "pgup/pgdn") }
 
 // keyMarkings derives the help-body key markings from km: each rebindable row
 // shows the binding's first chord; the scroll pair joins ScrollTop/ScrollBottom
@@ -286,32 +306,35 @@ func defaultHelpKeys() helpKeys { return keyMarkings(defaultKeys()) }
 // remaining chords. The approval keys (allow/allowAlways/deny) are populated
 // too so the footer help line and the permission/plan-review action bars read
 // the LIVE chords from the same struct (issue #457).
-func keyMarkings(km keyMap) helpKeys {
+func keyMarkingsWithScroll(km keyMap, defaultScrollMarking string) helpKeys {
 	hk := helpKeys{
-		submit:       firstKey(km.Submit, "enter"),
-		paste:        firstKey(km.Paste, "ctrl+v"),
-		cancel:       firstKey(km.Cancel, "esc"),
-		editBack:     navGlyph(firstKey(km.EditBack, "up")),
-		quit:         firstKey(km.Quit, "ctrl+c"),
-		quitD:        firstKey(km.QuitD, "ctrl+d"),
-		suspend:      firstKey(km.Suspend, "ctrl+z"),
-		help:         firstKey(km.Help, "?"),
-		mcpPanel:     firstKey(km.MCPPanel, "ctrl+o"),
-		resources:    firstKey(km.Resources, "ctrl+r"),
-		prompts:      firstKey(km.Prompts, "ctrl+p"),
-		agents:       firstKey(km.Agents, "ctrl+a"),
-		effort:       firstKey(km.Effort, "ctrl+e"),
-		modeSwitch:   firstKey(km.ModeSwitch, "alt+m"),
-		expandTools:  firstKey(km.ExpandTools, "ctrl+t"),
-		scroll:       scrollMarking(km),
-		scrollUp:     firstKey(km.ScrollU, "pgup"),
-		scrollBottom: firstKey(km.ScrollBottom, "end"),
-		jump:         firstKey(km.ScrollTop, "home") + "/" + firstKey(km.ScrollBottom, "end"),
-		close:        firstKey(km.Close, "esc") + " or " + firstKey(km.Help, "?"),
-		allow:        firstKey(km.Allow, "a"),
-		allowAlways:  firstKey(km.AllowAlways, "w"),
-		deny:         firstKey(km.Deny, "d"),
-		rawArgs:      firstKey(km.RawArgs, "r"),
+		submit:        firstKey(km.Submit, "enter"),
+		paste:         firstKey(km.Paste, "ctrl+v"),
+		selectAll:     firstKey(km.SelectAll, "ctrl+g"),
+		copySelection: firstKey(km.CopySelection, "ctrl+shift+c"),
+		clearPrompt:   firstKey(km.ClearPrompt, "ctrl+u"),
+		cancel:        firstKey(km.Cancel, "esc"),
+		editBack:      navGlyph(firstKey(km.EditBack, "up")),
+		quit:          firstKey(km.Quit, "ctrl+c"),
+		quitD:         firstKey(km.QuitD, "ctrl+d"),
+		suspend:       firstKey(km.Suspend, "ctrl+z"),
+		help:          firstKey(km.Help, "?"),
+		mcpPanel:      firstKey(km.MCPPanel, "ctrl+o"),
+		resources:     firstKey(km.Resources, "ctrl+r"),
+		prompts:       firstKey(km.Prompts, "ctrl+p"),
+		agents:        firstKey(km.Agents, "ctrl+a"),
+		effort:        firstKey(km.Effort, "ctrl+e"),
+		modeSwitch:    firstKey(km.ModeSwitch, "alt+m"),
+		expandTools:   firstKey(km.ExpandTools, "ctrl+t"),
+		scroll:        scrollMarking(km, defaultScrollMarking),
+		scrollUp:      firstKey(km.ScrollU, "pgup"),
+		scrollBottom:  firstKey(km.ScrollBottom, "end"),
+		jump:          firstKey(km.ScrollTop, "home") + "/" + firstKey(km.ScrollBottom, "end"),
+		close:         firstKey(km.Close, "esc") + " or " + firstKey(km.Help, "?"),
+		allow:         firstKey(km.Allow, "a"),
+		allowAlways:   firstKey(km.AllowAlways, "w"),
+		deny:          firstKey(km.Deny, "d"),
+		rawArgs:       firstKey(km.RawArgs, "r"),
 
 		choose:           firstKey(km.Choose, "enter"),
 		nextTab:          firstKey(km.NextTab, "tab"),
@@ -342,15 +365,13 @@ func keyMarkings(km keyMap) helpKeys {
 }
 
 // scrollMarking renders the ScrollU/ScrollD row. While the pair still holds the
-// DEFAULT pgup/pgdown chords it keeps the platform-adaptive marking
-// (platform.ScrollKeysMarking — "fn+↑/fn+↓ (pgup/pgdn)" on macOS, "pgup/pgdn"
-// elsewhere), so the default help body stays byte-identical; once either half is
-// remapped the platform gesture no longer applies, so the row shows the live
-// "<scrollU>/<scrollD>" chords instead.
-func scrollMarking(km keyMap) string {
+// DEFAULT pgup/pgdown chords it keeps the supplied platform-adaptive marking;
+// once either half is remapped the platform gesture no longer applies, so the
+// row shows the live "<scrollU>/<scrollD>" chords instead.
+func scrollMarking(km keyMap, defaultMarking string) string {
 	up, down := km.ScrollU.Keys(), km.ScrollD.Keys()
 	if len(up) == 1 && up[0] == "pgup" && len(down) == 1 && down[0] == "pgdown" {
-		return platform.ScrollKeysMarking()
+		return defaultMarking
 	}
 	return firstKey(km.ScrollU, "pgup") + "/" + firstKey(km.ScrollD, "pgdown")
 }
@@ -392,7 +413,7 @@ func (m Model) renderZeroState() string {
 	in := welcome.Info{
 		Cwd:         m.deps.Workspace,
 		Model:       m.zeroStateModelName(),
-		Provider:    m.activeModel.ProviderID, // "" when no selection yet → modelLine omits it
+		Provider:    m.createModelSelection.ProviderID, // "" when no selection yet → modelLine omits it
 		Version:     m.deps.Version,
 		Tagline:     "your local agentic coding harness",
 		Submit:      hk.submit,
@@ -446,12 +467,12 @@ func (m Model) zeroStateMemoryNote() string {
 // "ToolHive gateway detected (no API key needed) — /models" when an
 // intent-driven provider is available-but-not-default, or "" otherwise. The
 // splash only renders at phaseIdle (post-connect), by which point the first
-// ModelsMsg has landed and m.models.statuses is populated — so this catches a
+// ModelsMsg has landed and m.modelCatalog.statuses is populated — so this catches a
 // new operator at the moment they're most attentive. Vendor-neutral: the
 // provider id comes from the status row, so a future non-ToolHive
 // intent-driven provider reads naturally without a code change here.
 func (m Model) zeroStateGatewayNote() string {
-	row, ok := availableNotDefaultStatus(m.models.statuses)
+	row, ok := availableNotDefaultStatus(m.modelCatalog.statuses)
 	if !ok {
 		return ""
 	}
@@ -462,7 +483,7 @@ func (m Model) zeroStateGatewayNote() string {
 // zeroStateModelName picks the model id shown on the splash: the picker's active
 // selection once set, else the launch-time --model display (mirrors the header).
 func (m Model) zeroStateModelName() string {
-	if name := m.activeModel.ModelID; name != "" {
+	if name := m.createModelSelection.ModelID; name != "" {
 		return sanitizeTerminal(name)
 	}
 	return m.deps.Model

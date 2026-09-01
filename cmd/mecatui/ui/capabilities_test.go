@@ -6,6 +6,8 @@ import (
 	"testing"
 
 	tea "charm.land/bubbletea/v2"
+	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/status"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
 	"github.com/stacklok/mecatl/cmd/mecatui/theme"
@@ -43,7 +45,7 @@ func TestTurnEndZeroUsageKeepsStickyContextMeter(t *testing.T) {
 func TestCreateSessionCmdCarriesCaps(t *testing.T) {
 	want := client.Capabilities{MCP: true, Memory: true, Teams: true}
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}, caps: want}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv,
 		Conv:    conv,
 		Theme:   theme.New("aztec", theme.AztecPalette()),
@@ -74,9 +76,29 @@ func TestCreateSessionCmdCarriesCaps(t *testing.T) {
 
 // TestSessionReadyDefaultCapsAllFalse asserts an older server (no caps field)
 // leaves the model at the all-false zero value rather than over-promising.
+
+func TestInitialCreateAuthFailureOpensTargetAwareConnectRecovery(t *testing.T) {
+	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}, createErr: status.Error(codes.Unauthenticated, "missing")}
+	m := New(Deps{Session: conv, Conv: conv, Connect: fakeConnect{}, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background(), Server: "remote.example:443"})
+	msg := m.createSessionCmd()().(client.ConnectErrMsg)
+	if msg.AuthReason != client.AuthNotEnrolled {
+		t.Fatalf("reason=%q, want not_enrolled", msg.AuthReason)
+	}
+	got, _, handled := m.updateLifecycle(msg)
+	if !handled {
+		t.Fatal("auth create failure was not handled")
+	}
+	model := got.(Model)
+	if model.connect.failedTarget != "remote.example:443" {
+		t.Fatalf("failed target=%q", model.connect.failedTarget)
+	}
+	if !strings.Contains(model.connect.err+" "+connectAuthHint(model.connect.reason, model.connect.failedTarget), "remote.example:443") {
+		t.Fatal("recovery lost target-aware not-enrolled context")
+	}
+}
 func TestSessionReadyDefaultCapsAllFalse(t *testing.T) {
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}} // caps left zero
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv,
 		Conv:    conv,
 		Theme:   theme.New("aztec", theme.AztecPalette()),
@@ -93,14 +115,14 @@ func TestSessionReadyDefaultCapsAllFalse(t *testing.T) {
 }
 
 // TestEffectiveModelInHeaderFromTurnZero asserts the effective model the server
-// resolved (echoed on SessionReadyMsg) lands in m.effectiveModel AND renders in the
+// resolved (echoed on SessionReadyMsg) lands in m.resolvedSessionModel AND renders in the
 // header from turn zero — and that NO model segment shows while still connecting (no
 // create response yet). It also covers the older-server nil-resolved-model graceful
 // degrade: zero value ⇒ still no segment, no crash.
 func TestEffectiveModelInHeaderFromTurnZero(t *testing.T) {
 	resolved := client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5-effective", ContextWindow: 400000}
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}, resolvedModel: resolved}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv,
 		Conv:    conv,
 		Theme:   theme.New("aztec", theme.AztecPalette()),
@@ -119,8 +141,8 @@ func TestEffectiveModelInHeaderFromTurnZero(t *testing.T) {
 		t.Fatalf("SessionReadyMsg.ResolvedModel = %+v, want %+v", ready.ResolvedModel, resolved)
 	}
 	got := applyAll(m, tea.WindowSizeMsg{Width: 120, Height: 30}, ready)
-	if got.effectiveModel != resolved {
-		t.Fatalf("m.effectiveModel = %+v, want %+v", got.effectiveModel, resolved)
+	if got.resolvedSessionModel != resolved {
+		t.Fatalf("m.resolvedSessionModel = %+v, want %+v", got.resolvedSessionModel, resolved)
 	}
 	if !strings.Contains(got.renderHeader(), "gpt-5-effective") {
 		t.Fatalf("header missing the effective model id from turn zero:\n%s", got.renderHeader())
@@ -129,13 +151,13 @@ func TestEffectiveModelInHeaderFromTurnZero(t *testing.T) {
 
 // TestEffectiveModelDrivesFooterMeter closes the echo→render loop (issue #65): the
 // SAME server-echoed ResolvedModel{ContextWindow: 400000} that lands in
-// m.effectiveModel becomes the footer meter's denominator (no --context-window
+// m.resolvedSessionModel becomes the footer meter's denominator (no --context-window
 // override), so a 40K occupancy renders the bar + "40K/400K" through the live
 // reducer path.
 func TestEffectiveModelDrivesFooterMeter(t *testing.T) {
 	resolved := client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5-effective", ContextWindow: 400000}
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}, resolvedModel: resolved}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv,
 		Conv:    conv,
 		Theme:   theme.New("aztec", theme.AztecPalette()),
@@ -186,11 +208,11 @@ func TestFooterMeterFollowsModelSwitch(t *testing.T) {
 }
 
 // TestEffectiveModelOlderServerNoSegment asserts an older server (nil resolved_model
-// ⇒ zero value) leaves m.effectiveModel zero and the header shows no model segment —
+// ⇒ zero value) leaves m.resolvedSessionModel zero and the header shows no model segment —
 // graceful degrade, no crash.
 func TestEffectiveModelOlderServerNoSegment(t *testing.T) {
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}} // resolvedModel left zero
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv,
 		Conv:    conv,
 		Theme:   theme.New("aztec", theme.AztecPalette()),
@@ -201,8 +223,8 @@ func TestEffectiveModelOlderServerNoSegment(t *testing.T) {
 		t.Fatalf("older-server ResolvedModel = %+v, want zero value", ready.ResolvedModel)
 	}
 	got := applyAll(m, tea.WindowSizeMsg{Width: 120, Height: 30}, ready)
-	if (got.effectiveModel != client.ResolvedModel{}) {
-		t.Fatalf("m.effectiveModel = %+v, want zero value", got.effectiveModel)
+	if (got.resolvedSessionModel != client.ResolvedModel{}) {
+		t.Fatalf("m.resolvedSessionModel = %+v, want zero value", got.resolvedSessionModel)
 	}
 	// headerModelLabel returns "" on a zero effective model, so the header has no
 	// model segment — just exercising the render path proves no crash.
@@ -216,10 +238,10 @@ func TestEffectiveModelOlderServerNoSegment(t *testing.T) {
 // display name from the ListModels inventory by (provider_id, model_id), falling
 // back to the raw id when the inventory has no match.
 func TestHeaderModelLabelUsesInventoryDisplayName(t *testing.T) {
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
 	m.phase = phaseIdle // past the connecting gate (the create response has landed)
-	m.effectiveModel = client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"}
-	m.models.models = []client.ModelInfo{
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"}
+	m.modelCatalog.models = []client.ModelInfo{
 		{ID: "gpt-5", ProviderID: "openai", DisplayName: "GPT-5 (Friendly)"},
 		{ID: "other", ProviderID: "openai", DisplayName: "Other"},
 	}
@@ -228,7 +250,7 @@ func TestHeaderModelLabelUsesInventoryDisplayName(t *testing.T) {
 	}
 
 	// No inventory match ⇒ raw model id.
-	m.models.models = []client.ModelInfo{{ID: "different", ProviderID: "openai", DisplayName: "X"}}
+	m.modelCatalog.models = []client.ModelInfo{{ID: "different", ProviderID: "openai", DisplayName: "X"}}
 	if got := m.headerModelLabel(); got != "gpt-5" {
 		t.Fatalf("headerModelLabel = %q, want the raw model id fallback", got)
 	}
@@ -238,16 +260,16 @@ func TestHeaderModelLabelUsesInventoryDisplayName(t *testing.T) {
 // post-connect, no effective model): the header falls back to the picker's active
 // selection, then to the launch-time --model — the PRE-EXISTING behavior, kept as-is.
 func TestHeaderModelLabelFallsBackWhenNoEffectiveModel(t *testing.T) {
-	// activeModel wins when set (and no effective model).
-	m := New(Deps{Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
+	// createModelSelection wins when set (and no effective model).
+	m := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
 	m.phase = phaseIdle
-	m.activeModel = client.ModelSelection{ProviderID: "openai", ModelID: "x"}
+	m.createModelSelection = client.ModelSelection{ProviderID: "openai", ModelID: "x"}
 	if got := m.headerModelLabel(); got != "x" {
 		t.Fatalf("headerModelLabel = %q, want the active selection %q", got, "x")
 	}
 
 	// With no effective model AND no active selection, fall back to deps.Model.
-	m2 := New(Deps{Theme: theme.New("aztec", theme.AztecPalette()), Model: "y", Ctx: context.Background()})
+	m2 := newTestModelFromDeps(Deps{Theme: theme.New("aztec", theme.AztecPalette()), Model: "y", Ctx: context.Background()})
 	m2.phase = phaseIdle
 	if got := m2.headerModelLabel(); got != "y" {
 		t.Fatalf("headerModelLabel = %q, want the launch-time --model %q", got, "y")

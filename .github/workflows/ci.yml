@@ -18,6 +18,19 @@ on:
   push:
     branches: [main]
   pull_request:
+    types: [opened, synchronize, reopened, ready_for_review, converted_to_draft]
+  workflow_dispatch:
+    inputs:
+      race_timing:
+        description: Capture and upload per-command go test JSONL timing records
+        required: false
+        type: boolean
+        default: false
+      race_vet_off:
+        description: "Experimental: append -vet=off to race tests (manual dispatch only)"
+        required: false
+        type: boolean
+        default: false
 
 # Least-privilege default for the whole workflow. The CI jobs only read source.
 permissions:
@@ -34,10 +47,72 @@ env:
   # the right version; this keeps the build deterministic against that pin.
   GOTOOLCHAIN: local
   GOFLAGS: -mod=readonly
+  # Prefer the checksum-backed public proxy, but use the module's VCS origin if
+  # its transport fails. `|` (unlike `,`) permits fallback on any proxy error.
+  GOPROXY: https://proxy.golang.org|direct
 
 jobs:
+  # Do not use workflow-level path filters: required checks must exist on every
+  # push/PR. This job instead classifies the exact compare range and fail-closes
+  # to full validation whenever Git cannot prove a narrow docs-only change.
+  changes:
+    name: Changes
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    outputs:
+      docs_only: ${{ steps.classify.outputs.docs_only }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Classify changed paths
+        id: classify
+        shell: bash
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          PR_BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          PUSH_BEFORE_SHA: ${{ github.event.before }}
+          PUSH_SHA: ${{ github.sha }}
+        run: |
+          set -euo pipefail
+          docs_only=false
+          case "$EVENT_NAME" in
+            pull_request)
+              base="$PR_BASE_SHA"
+              head="$PR_HEAD_SHA"
+              ;;
+            push)
+              base="$PUSH_BEFORE_SHA"
+              head="$PUSH_SHA"
+              ;;
+            *)
+              base=""
+              head=""
+              ;;
+          esac
+          if [[ "$base" =~ ^[0-9a-f]{40}$ ]] && [[ "$head" =~ ^[0-9a-f]{40}$ ]] \
+            && [[ "$base" != 0000000000000000000000000000000000000000 ]] \
+            && [[ "$head" != 0000000000000000000000000000000000000000 ]] \
+            && git fetch --no-tags origin "$base" "$head" \
+            && git cat-file -e "$base^{commit}" \
+            && git cat-file -e "$head^{commit}"; then
+            trusted_classifier="$RUNNER_TEMP/docs-only-changes.sh"
+            if git show "$base:.github/scripts/docs-only-changes.sh" > "$trusted_classifier"; then
+              result="$(git diff --name-only --no-renames -z "$base" "$head" | bash "$trusted_classifier")" || result=false
+              if [[ "$result" == true ]]; then
+                docs_only=true
+              fi
+            fi
+          fi
+          echo "docs_only=$docs_only" >> "$GITHUB_OUTPUT"
+
   build:
     name: Build
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -60,6 +135,31 @@ jobs:
             provider/openai/go.sum
             provider/openaichat/go.sum
 
+      # Resolve the declared dependency graphs before compiling. A successful main
+      # run then saves a complete shared module cache for later PR jobs. Retry only
+      # network resolution, never build or test execution.
+      - name: Download Go modules
+        shell: bash
+        run: |
+          set -euo pipefail
+          for attempt in 1 2 3; do
+            if (
+              go mod download all
+              cd engine && go mod download all
+              cd ../authn/oidc && go mod download all
+              cd ../../provider/ssefilter && go mod download all
+              cd ../anthropic && go mod download all
+              cd ../openai && go mod download all
+              cd ../openaichat && go mod download all
+            ); then
+              exit 0
+            fi
+            if [[ "$attempt" -eq 3 ]]; then
+              exit 1
+            fi
+            sleep "$((attempt * 5))"
+          done
+
       - name: go build
         run: go build ./...
 
@@ -80,15 +180,18 @@ jobs:
           (cd provider/openai && go build ./...)
           (cd provider/openaichat && go build ./...)
 
-  test:
-    name: Test (race)
+  test-race-root-a:
+    name: Test (race root-a)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
     runs-on: ubuntu-24.04
-    timeout-minutes: 15
+    timeout-minutes: 20
+    env:
+      RACE_VET_OFF: ${{ github.event_name == 'workflow_dispatch' && inputs.race_vet_off }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
           go-version-file: go.mod
@@ -101,33 +204,192 @@ jobs:
             provider/anthropic/go.sum
             provider/openai/go.sum
             provider/openaichat/go.sum
-
-      # `task test` == `go test -race ./...` (root) + the engine module + the
-      # standalone hygiene proof. We run the underlying commands directly rather
-      # than pulling in the Task binary; CI and local `task test` stay in lockstep
-      # because the go commands are identical. The standalone GOWORK=off proof
-      # lives in its own `engine-standalone` job below.
-      - name: go test -race
-        run: go test -race ./...
-
-      # engine/ is a separate module — `./...` from the root does NOT cross the
-      # module boundary, so its tests are a second invocation.
-      - name: go test -race (engine module)
-        run: cd engine && go test -race ./...
-
-      - name: go test -race (OIDC authn module)
-        run: cd authn/oidc && go test -race ./...
-
-      # provider/ submodules (ADR 0093) — each its own module under the workspace.
-      - name: go test -race (provider modules)
+      - name: Validate race workflow contracts
         run: |
-          (cd provider/ssefilter && go test -race ./...)
-          (cd provider/anthropic && go test -race ./...)
-          (cd provider/openai && go test -race ./...)
-          (cd provider/openaichat && go test -race ./...)
+          bash .github/scripts/root-race-packages_test.sh
+          bash .github/scripts/root-race-packages.sh validate
+          bash .github/scripts/race-test_test.sh
+          bash .github/scripts/race-vet-off-workflow_test.sh
+          bash .github/scripts/race-aggregate-workflow_test.sh
+          bash .github/scripts/docs-only-changes_test.sh
+          bash .github/scripts/docs-only-workflow_test.sh
+      - name: go test -race (root-a and modules)
+        env:
+          RACE_TIMING: ${{ github.event_name == 'workflow_dispatch' && inputs.race_timing }}
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(bash .github/scripts/root-race-packages.sh root-a)
+          bash .github/scripts/race-test.sh root-a -count=1 "${packages[@]}"
+          (cd engine && bash "$GITHUB_WORKSPACE/.github/scripts/race-test.sh" engine ./...)
+          (cd authn/oidc && bash "$GITHUB_WORKSPACE/.github/scripts/race-test.sh" oidc ./...)
+          (cd provider/ssefilter && bash "$GITHUB_WORKSPACE/.github/scripts/race-test.sh" provider-ssefilter ./...)
+          (cd provider/anthropic && bash "$GITHUB_WORKSPACE/.github/scripts/race-test.sh" provider-anthropic ./...)
+          (cd provider/openai && bash "$GITHUB_WORKSPACE/.github/scripts/race-test.sh" provider-openai ./...)
+          (cd provider/openaichat && bash "$GITHUB_WORKSPACE/.github/scripts/race-test.sh" provider-openaichat ./...)
+      - name: Upload root-a race timing records
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.race_timing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: race-timing-root-a
+          path: .scratch/race-timing/*.jsonl
+          if-no-files-found: warn
+          retention-days: 3
 
-  lint:
-    name: Lint
+  test-race-root-b:
+    name: Test (race root-b)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RACE_VET_OFF: ${{ github.event_name == 'workflow_dispatch' && inputs.race_vet_off }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            engine/go.sum
+            authn/oidc/go.sum
+            provider/ssefilter/go.sum
+            provider/anthropic/go.sum
+            provider/openai/go.sum
+            provider/openaichat/go.sum
+      - name: go test -race (root-b)
+        env:
+          RACE_TIMING: ${{ github.event_name == 'workflow_dispatch' && inputs.race_timing }}
+        run: |
+          set -euo pipefail
+          mapfile -t packages < <(bash .github/scripts/root-race-packages.sh root-b)
+          bash .github/scripts/race-test.sh root-b -count=1 "${packages[@]}"
+      - name: Upload root-b race timing records
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.race_timing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: race-timing-root-b
+          path: .scratch/race-timing/*.jsonl
+          if-no-files-found: warn
+          retention-days: 3
+
+  test-race-ui:
+    name: Test (race UI)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && (github.event_name != 'pull_request' || github.event.pull_request.draft == false)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      RACE_VET_OFF: ${{ github.event_name == 'workflow_dispatch' && inputs.race_vet_off }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            engine/go.sum
+            authn/oidc/go.sum
+            provider/ssefilter/go.sum
+            provider/anthropic/go.sum
+            provider/openai/go.sum
+            provider/openaichat/go.sum
+      - name: go test -race (UI)
+        env:
+          RACE_TIMING: ${{ github.event_name == 'workflow_dispatch' && inputs.race_timing }}
+        run: bash .github/scripts/race-test.sh ui -count=1 ./cmd/mecatui/ui
+      - name: Upload UI race timing records
+        if: always() && github.event_name == 'workflow_dispatch' && inputs.race_timing
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: race-timing-ui
+          path: .scratch/race-timing/*.jsonl
+          if-no-files-found: warn
+          retention-days: 3
+
+  test-non-race-draft:
+    name: Test (non-race draft coverage)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true' && github.event_name == 'pull_request' && github.event.pull_request.draft == true
+    runs-on: ubuntu-24.04
+    timeout-minutes: 30
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            engine/go.sum
+            authn/oidc/go.sum
+            provider/ssefilter/go.sum
+            provider/anthropic/go.sum
+            provider/openai/go.sum
+            provider/openaichat/go.sum
+      - name: Complete test coverage without race detector
+        run: |
+          set -euo pipefail
+          mapfile -t root_a < <(bash .github/scripts/root-race-packages.sh root-a)
+          mapfile -t root_b < <(bash .github/scripts/root-race-packages.sh root-b)
+          go test -count=1 "${root_a[@]}"
+          go test -count=1 "${root_b[@]}"
+          go test -count=1 ./cmd/mecatui/ui
+          (cd engine && go test ./...)
+          (cd authn/oidc && go test ./...)
+          (cd provider/ssefilter && go test ./...)
+          (cd provider/anthropic && go test ./...)
+          (cd provider/openai && go test ./...)
+          (cd provider/openaichat && go test ./...)
+
+  # The stable required context is emitted only by full-race push/non-draft PR
+  # runs. Draft coverage and docs-only runs use distinct contexts.
+  test:
+    name: ${{ needs.changes.outputs.docs_only == 'true' && 'Test (docs-only)' || github.event_name == 'pull_request' && github.event.pull_request.draft && 'Test (non-race draft)' || github.event_name == 'workflow_dispatch' && 'Test (race experiment)' || 'Test (race)' }}
+    needs: [changes, test-race-root-a, test-race-root-b, test-race-ui, test-non-race-draft]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    steps:
+      - name: Require the applicable test coverage
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          ROOT_A_RESULT: ${{ needs.test-race-root-a.result }}
+          ROOT_B_RESULT: ${{ needs.test-race-root-b.result }}
+          UI_RESULT: ${{ needs.test-race-ui.result }}
+          DRAFT_RESULT: ${{ needs.test-non-race-draft.result }}
+          IS_DRAFT: ${{ github.event_name == 'pull_request' && github.event.pull_request.draft }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANGES_RESULT" != success ]]; then
+            echo "changes job did not succeed: $CHANGES_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$DOCS_ONLY" == true ]]; then
+            exit 0
+          fi
+          if [[ "$IS_DRAFT" == true ]]; then
+            [[ "$DRAFT_RESULT" == success ]] || { echo "draft non-race coverage failed: $DRAFT_RESULT" >&2; exit 1; }
+            exit 0
+          fi
+          if [[ "$ROOT_A_RESULT" != success || "$ROOT_B_RESULT" != success || "$UI_RESULT" != success ]]; then
+            echo "race shard failure: root-a=$ROOT_A_RESULT root-b=$ROOT_B_RESULT ui=$UI_RESULT" >&2
+            exit 1
+          fi
+
+  analysis:
+    name: Analysis
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 30
     steps:
@@ -148,23 +410,24 @@ jobs:
             provider/openai/go.sum
             provider/openaichat/go.sum
 
-      # golangci-lint-action manages its own cache and the linter binary. The
-      # Taskfile documents golangci-lint v2.x; pin to a concrete v2 release. It
-      # lints the ROOT module; the engine module is linted in a follow-on step
-      # using the binary this action installs onto PATH, sharing the ROOT config.
+      - id: golangci-version
+        run: echo "version=$(sh scripts/install-golangci-lint.sh --version)" >> "$GITHUB_OUTPUT"
+
+      # golangci-lint-action manages its own cache and installs the same pinned
+      # release local `task lint` installs into .tools/bin.
       - uses: golangci/golangci-lint-action@ba0d7d2ec06a0ea1cb5fa41b2e4a3ab91d21278a # v9.3.0
         with:
           # Must be a golangci-lint built with Go >= the go.mod toolchain
           # (1.26.x): older binaries refuse to load with "the Go language
           # version used to build golangci-lint is lower than the targeted Go
-          # version". v2.12.2 is the latest v2 release and is built with go1.26.x.
-          version: v2.12.2
+          # version". The version is declared by scripts/install-golangci-lint.sh.
+          version: ${{ steps.golangci-version.outputs.version }}
           # 10m, not 5m: the repo outgrew the old budget on the 2-core runners —
           # at 5m the run died with exit code 4 ("Timeout exceeded") and the
           # interrupted staticcheck pass reported spurious SA5011s (partial
           # no-return facts), failing every push since. The module lint steps run
           # sequentially, so the 30-minute job budget leaves room after a worst-case
-          # root lint for the remaining module lint, vet, and workflow checks; this
+          # root lint for the remaining module lint and workflow checks; this
           # lets golangci-lint, not the job, report a timeout.
           args: --timeout=10m
 
@@ -186,22 +449,6 @@ jobs:
           (cd provider/anthropic && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners --timeout=10m ./...)
           (cd provider/openai && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners --timeout=10m ./...)
           (cd provider/openaichat && golangci-lint run --config ../../.golangci.yml --allow-parallel-runners --timeout=10m ./...)
-
-      - name: go vet
-        run: go vet ./...
-
-      - name: go vet (engine module)
-        run: cd engine && go vet ./...
-
-      - name: go vet (OIDC authn module)
-        run: cd authn/oidc && go vet ./...
-
-      - name: go vet (provider modules)
-        run: |
-          (cd provider/ssefilter && go vet ./...)
-          (cd provider/anthropic && go vet ./...)
-          (cd provider/openai && go vet ./...)
-          (cd provider/openaichat && go vet ./...)
 
       # Lint the GitHub Actions workflows + assert the reusable workflow's first-party
       # sibling-action pins match the release tag (the version-skew guard). actionlint is
@@ -233,9 +480,86 @@ jobs:
           bash .github/actions/mecatequi-extract-prompt/extract-prompt_test.sh
           bash .github/actions/mecatequi-publish/publish_test.sh
           bash .github/actions/action-wrappers_test.sh
+          bash .github/scripts/lint-vet-workflow_test.sh
+
+  # Keep cmd/vet authoritative and complete without serializing its cold root-module
+  # cost behind golangci-lint. The two jobs use separate runners, so vet adds no CPU
+  # or memory contention to the already resource-bound golangci analysis.
+  vet:
+    name: Vet
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: |
+            go.sum
+            engine/go.sum
+            authn/oidc/go.sum
+            provider/ssefilter/go.sum
+            provider/anthropic/go.sum
+            provider/openai/go.sum
+            provider/openaichat/go.sum
+
+      - name: Require complete vet coverage
+        shell: bash
+        run: |
+          set -euo pipefail
+          go vet ./...
+          (cd engine && go vet ./...)
+          (cd authn/oidc && go vet ./...)
+          (cd provider/ssefilter && go vet ./...)
+          (cd provider/anthropic && go vet ./...)
+          (cd provider/openai && go vet ./...)
+          (cd provider/openaichat && go vet ./...)
+
+  # Preserve one stable required context while analysis and vet run concurrently.
+  # The aggregate itself validates the classifier and both applicable child jobs,
+  # so failures and cancellations cannot be hidden by dependency skipping.
+  lint:
+    name: Lint
+    needs: [changes, analysis, vet]
+    if: always()
+    runs-on: ubuntu-24.04
+    timeout-minutes: 5
+    steps:
+      - name: Require applicable lint coverage
+        shell: bash
+        env:
+          CHANGES_RESULT: ${{ needs.changes.result }}
+          DOCS_ONLY: ${{ needs.changes.outputs.docs_only }}
+          ANALYSIS_RESULT: ${{ needs.analysis.result }}
+          VET_RESULT: ${{ needs.vet.result }}
+        run: |
+          set -euo pipefail
+          if [[ "$CHANGES_RESULT" != success ]]; then
+            echo "changes job did not succeed: $CHANGES_RESULT" >&2
+            exit 1
+          fi
+          if [[ "$DOCS_ONLY" == true ]]; then
+            if [[ "$ANALYSIS_RESULT" != skipped || "$VET_RESULT" != skipped ]]; then
+              echo "docs-only child jobs were not skipped: analysis=$ANALYSIS_RESULT vet=$VET_RESULT" >&2
+              exit 1
+            fi
+            exit 0
+          fi
+          if [[ "$ANALYSIS_RESULT" != success || "$VET_RESULT" != success ]]; then
+            echo "lint coverage failed: analysis=$ANALYSIS_RESULT vet=$VET_RESULT" >&2
+            exit 1
+          fi
 
   fuzz-smoke:
     name: Fuzz smoke
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -264,21 +588,28 @@ jobs:
       # A short coverage-guided pass over the security-critical parsers. This is
       # a smoke check (find shallow crashers fast), NOT the nightly deep fuzz —
       # the seed corpora already run under `go test` in the test job. The
-      # Taskfile `fuzz` task runs the 4 FuzzXxx targets sequentially; at
-      # 40s/target that is ~160s plus build, comfortably under the timeout.
-      # (Was 20s/target; FuzzCanonicalize intermittently hit "context deadline
-      # exceeded" right at that boundary on a loaded runner -- go test's fuzz
-      # driver has its own scheduling/coverage-merge overhead on top of
-      # -fuzztime, so a tight budget has no slack for that. Doubled rather than
-      # padded by a few seconds, since the failure was reproducing reliably.)
+      # Taskfile `fuzz` task runs the FuzzXxx targets sequentially.
+      #
+      # FUZZTIME is an ITERATION COUNT (`Nx`), not a wall-clock duration. A
+      # duration budget (e.g. `40s`) races go test's own fuzz coordinator: near
+      # the deadline the coordinator can kill an in-flight worker RPC and
+      # report the whole target as failed with "context deadline exceeded" —
+      # this reproduced reliably at 20s/target and intermittently even after
+      # doubling to 40s/target, on a loaded runner. An iteration count has no
+      # deadline to race: the coordinator stops after N executions regardless
+      # of how fast the runner is that day. 300000 execs/target is comfortably
+      # under a minute per target even on a slow runner (CI logs showed
+      # 10k-30k execs/sec), well inside the job timeout.
       # The governance fuzzers live in the engine module — `task fuzz` runs
       # them from engine/ (workspace-on, so it resolves against the same
       # checkout).
       - name: task fuzz (short)
-        run: task fuzz FUZZTIME=40s
+        run: task fuzz FUZZTIME=300000x
 
   engine-standalone:
     name: Engine module (standalone, GOWORK=off)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Proves the importable-core module builds + tests with NO workspace and NO
@@ -311,6 +642,8 @@ jobs:
 
   provider-standalone:
     name: Provider modules (standalone, GOWORK=off)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # Proves the opt-in provider/ submodules build + test with NO workspace
@@ -384,6 +717,8 @@ jobs:
 
   api-compat:
     name: API compat (engine public surface)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # The engine module's public API surface (the seven core packages) is a
@@ -417,6 +752,8 @@ jobs:
 
   vuln:
     name: Vulnerabilities (govulncheck)
+    needs: changes
+    if: needs.changes.outputs.docs_only != 'true'
     runs-on: ubuntu-24.04
     timeout-minutes: 15
     # Supply-chain hygiene that travels with the engine library: govulncheck
@@ -503,6 +840,7 @@ jobs:
 
   docs:
     name: Docs (matlatl)
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:
@@ -526,6 +864,17 @@ jobs:
             provider/anthropic/go.sum
             provider/openai/go.sum
             provider/openaichat/go.sum
+
+      # Documentation-only changes still run the repository's Go-backed document
+      # invariants (ADR numbering, citations, lifecycle, and reading-map checks).
+      - name: go test ./docs/lint
+        run: go test ./docs/lint
+
+      # This command owns an executable contract for the session-storage
+      # operations guide under user-docs/. Keep it on the docs-only path: a
+      # documentation rename or edit must not leave a stale referenced runbook.
+      - name: go test documented mecated operations
+        run: go test ./cmd/mecated -run '^TestSessionStorageContinuity_Scenario9_'
 
       # Freshness gate for the generated configuration reference + the embedded
       # config-init skeleton: regenerate both to a temp dir and fail if they differ
@@ -579,6 +928,7 @@ jobs:
 
   user-docs:
     name: User docs (Docusaurus build)
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     # `user-docs/` (the mecatl.dev site content) is excluded from the matlatl
@@ -608,6 +958,7 @@ jobs:
 
   domain-model:
     name: Domain model
+    needs: changes
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     steps:

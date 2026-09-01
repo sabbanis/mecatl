@@ -100,31 +100,60 @@ static base), `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`,
 
 ## Caller identity (OIDC) — the opt-in chart values
 
-`deploy/helm/mecak8s/`'s `oidc.*` values turn on **caller identity and
+`deploy/helm/mecak8s/` treats `mockProvider: false` as a real-provider deployment and
+fails closed unless the release picks one of three explicit postures: in-pod TLS plus
+OIDC; edge-terminated TLS (`security.tlsTerminatedUpstream=true`, `tls.enabled=false`,
+OIDC, and a `ClusterIP` Service); or the conspicuous unsafe bypass
+(`security.allowUnsafeRealProvider=true`). TLS encrypts the server transport; OIDC
+authenticates callers, and neither substitutes for the other. Edge mode leaves an h2c
+backend whose caller bearer tokens cross the pod network in cleartext — restricting
+reachability to the gateway or mesh is the control that matters, and the chart ships no
+NetworkPolicy to do it. The full operator contract, and what the chart deliberately does
+not create, is [ADR 0278](../docs/adr/0278-mecak8s-edge-terminated-tls.md).
+
+The `oidc.*` values turn on **caller identity and
 ownership isolation** for the mecak8s agent: a real IdP authenticates each
 caller, and every new session and schedule records the verified `(issuer,
 subject)` that owns it. With the verifier enabled, callers can access only
 their own records; historical ownerless records are deliberately unavailable
 rather than adopted.
 
+The chart uses `v<chart-version>` when both image selectors are empty. This keeps
+ranged Helm upgrades aligned with released images. Set `image.tag` or
+`image.digest` only to override that default.
+
 ```sh
 helm upgrade --install mecak8s deploy/helm/mecak8s --namespace mecatl --create-namespace \
   --set image.repository=registry.example/mecak8s \
-  --set image.tag=v<release-version> \
   --set redis.endpoint=redis.example.internal:6379 \
   --set redis.credentialsSecret=mecak8s-redis \
+  --set tls.enabled=true \
+  --set tls.secretName=mecak8s-tls \
   --set oidc.enabled=true \
   --set oidc.issuer=https://idp.example.com/realms/mecatl \
   --set oidc.audience=mecatl
 ```
+
+`defaultProvider` and `model` are optional and become `--default-provider` and
+`--model` only when non-empty. `maxRunTokens` and `maxTeamTokens` default to `null`
+(unset/unlimited at the runtime); if supplied, each must be a positive integer. Optional
+`topologySpreadConstraints`, `affinity`, `nodeSelector`, and `tolerations` values are
+passed through under the pod spec and omitted when empty. For two replicas, a hostname
+spread constraint is recommended where the cluster has multiple eligible nodes.
+
+During Secret rotation, keep old and new issuing CAs together in the Redis/OIDC bundles
+for an overlap window, rotate leaf credentials, then remove the old CA. mecak8s reloads
+server certificate/key and file-backed Redis CA/ACL material transactionally and retains
+the last valid generation when an intermediate projection or probe fails. The server
+`client-ca` trust pool is static: changing it requires a rolling pod restart.
 
 Enabling `oidc.enabled` appends four flags to the agent — `--oidc-issuer`,
 `--oidc-audience` (required whenever the issuer is set), the optional
 `--oidc-jwks-uri` (pin the signing-key endpoint and skip discovery, for an
 air-gapped or pinned-key deployment; set via `oidc.jwksURI`), and
 `--oidc-max-jwks-staleness` (`oidc.maxJWKSStaleness`, default `1h`). The
-default is identity **off**, byte-identically to a mecak8s without it, so
-nothing changes for existing installs of this chart.
+`oidc.enabled` itself defaults off for the mock fixture and explicit unsafe-bypass
+profiles; a real-provider chart render cannot leave it off under the secure default.
 
 **This is an isolation cutover, not an ownerless-data migration.** Before
 enabling it, inventory and back up ownerless sessions and schedules from the
@@ -173,6 +202,24 @@ its corresponding signing-key revocation exposure.
 The JWKS cache is process-local and is not persisted. Restarting fetches current
 keys again; if the IdP is still unavailable, an identity-enabled process cannot
 start.
+
+### Disposable Keycloak validation fixture
+
+`deploy/mecak8s-kind/` layers a private Keycloak issuer over its otherwise
+unauthenticated Kind baseline for local validation only. Run
+`task mecak8s:kind-keycloak-setup`, then use its explicit loopback-only
+port-forward; mecak8s stays a `ClusterIP` Service with no Ingress, NodePort,
+LoadBalancer, or wildcard host binding. Its fixture certificate covers
+`localhost` and `127.0.0.1`, and clients must verify both the hostname and the
+fixture CA.
+
+The normal client login is Authorization Code + PKCE using Keycloak's public
+client and an access token with the `mecak8s` audience. A password grant is a
+narrow test helper, not a normal client flow. The fixture demonstrates the
+same fail-closed boundary: initial JWKS unavailability prevents startup; once
+keys have been fetched, an outage beyond `oidc.maxJWKSStaleness` returns 503,
+not an unauthenticated fallback or a 401 token result. It is not a production
+IdP configuration and does not relax the chart's external-IdP protections.
 
 ### Trying it locally by hand
 

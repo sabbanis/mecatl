@@ -14,8 +14,25 @@ import (
 
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/internal/app"
+	"github.com/stacklok/mecatl/internal/buildinfo"
 	"github.com/stacklok/mecatl/internal/testutil/codextest"
 )
+
+func TestVersionInvocationIsExact(t *testing.T) {
+	if !buildinfo.IsVersion([]string{"mecatui", "--version"}) {
+		t.Fatal("exact --version was not recognized")
+	}
+	var buf bytes.Buffer
+	buildinfo.PrintVersion(&buf, "mecatui")
+	if got := buf.String(); got != "mecatui "+buildinfo.BuildID+"\n" {
+		t.Errorf("PrintVersion output = %q, want %q", got, "mecatui "+buildinfo.BuildID+"\n")
+	}
+	for _, args := range [][]string{{"--version", "--mock"}, {"-version"}} {
+		if _, _, err := parseTransportFlags(modeLocal, io.Discard, args); err == nil {
+			t.Errorf("parseTransportFlags(%v) accepted a non-exact version invocation", args)
+		}
+	}
+}
 
 // TestContextWindowOverrideFlagWiring pins the embedded-only flag's parse, config
 // mapping, and connect-mode rejection.
@@ -40,6 +57,9 @@ func TestContextWindowOverrideFlagWiring(t *testing.T) {
 // <name>.md exists under a conventional dir).
 func TestEmbeddedConfigEnablesAgentDefs(t *testing.T) {
 	ac := embeddedConfig(config{workspace: "/ws", model: "m", mock: true}, port.NopDiagnostics{})
+	if ac.ServerImplementation != mecatuiServerImplementation {
+		t.Errorf("embeddedConfig ServerImplementation = %q, want %q", ac.ServerImplementation, mecatuiServerImplementation)
+	}
 	if !ac.AgentsConventional {
 		t.Error("embeddedConfig AgentsConventional = false, want true")
 	}
@@ -172,6 +192,68 @@ func TestParseFlagsDefaults(t *testing.T) {
 	}
 	if !filepath.IsAbs(cfg.workspace) {
 		t.Errorf("workspace = %q, want absolute", cfg.workspace)
+	}
+}
+
+// TestListenerScopedWorkspaceAuthority_Scenario3_RemoteConnectSendsEmptyWorkspace pins the remote client privacy default: no client cwd reaches CreateSession.
+func TestListenerScopedWorkspaceAuthority_Scenario3_RemoteConnectSendsEmptyWorkspace(t *testing.T) {
+	cfg, err := parseRunConfig(invocationResolution{mode: modeConnect, address: "203.0.113.10:8080"})
+	if err != nil {
+		t.Fatalf("parse run config: %v", err)
+	}
+	if cfg.workspace != "" {
+		t.Fatalf("remote CreateSession workspace = %q, want empty", cfg.workspace)
+	}
+}
+
+// TestListenerScopedWorkspaceAuthority_Scenario3_LocalConnectPreservesWorkspaceDefault pins the embedded and loopback cwd default.
+func TestListenerScopedWorkspaceAuthority_Scenario3_LocalConnectPreservesWorkspaceDefault(t *testing.T) {
+	want, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("get cwd: %v", err)
+	}
+	for _, tc := range []struct {
+		name      string
+		mode      transportMode
+		addr      string
+		remaining []string
+	}{
+		{name: "embedded", mode: modeLocal, remaining: []string{"--mock"}},
+		{name: "loopback connect", mode: modeConnect, addr: "127.0.0.1:8080"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg, err := parseRunConfig(invocationResolution{mode: tc.mode, address: tc.addr, remaining: tc.remaining})
+			if err != nil {
+				t.Fatalf("parse run config: %v", err)
+			}
+			if cfg.workspace != want || !filepath.IsAbs(cfg.workspace) {
+				t.Fatalf("local CreateSession workspace = %q, want absolute cwd %q", cfg.workspace, want)
+			}
+		})
+	}
+}
+
+// TestListenerScopedWorkspaceAuthority_Scenario3_RemoteExplicitWorkspaceIsRejectedLocally pins rejection before workspace resolution or session creation.
+func TestListenerScopedWorkspaceAuthority_Scenario3_RemoteExplicitWorkspaceIsRejectedLocally(t *testing.T) {
+	const explicitWorkspace = "must-not-resolve"
+	_, parsed, err := parseTransportFlags(modeConnect, io.Discard, []string{"--workspace", explicitWorkspace})
+	if err != nil {
+		t.Fatalf("parse transport flags: %v", err)
+	}
+	if parsed.workspace != explicitWorkspace {
+		t.Fatalf("parsed workspace = %q, want unresolved input %q", parsed.workspace, explicitWorkspace)
+	}
+	_, err = parseRunConfig(invocationResolution{
+		mode: modeConnect, address: "203.0.113.10:8080",
+		remaining: []string{"--workspace", explicitWorkspace},
+	})
+	if err == nil {
+		t.Fatal("remote explicit workspace was accepted")
+	} else if !strings.Contains(err.Error(), "--workspace") || !strings.Contains(err.Error(), "remote") {
+		t.Fatalf("rejection = %q, want clear remote --workspace error", err)
+	}
+	if parsed.workspace != explicitWorkspace {
+		t.Fatalf("rejected workspace = %q, want unresolved input %q", parsed.workspace, explicitWorkspace)
 	}
 }
 

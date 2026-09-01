@@ -31,7 +31,7 @@ func TestEditBackRunningPullsMergedQueue(t *testing.T) {
 
 	m = pressUp(t, m)
 
-	if got := m.ta.Value(); got != "second"+queueMergeSep+"third" {
+	if got := m.prompt.Value(); got != "second"+queueMergeSep+"third" {
 		t.Fatalf("edit-back must load the merged queue into the input, got %q", got)
 	}
 	if len(m.queued) != 0 {
@@ -63,8 +63,8 @@ func TestEditBackNonEmptyInputIsNoOp(t *testing.T) {
 	if len(m.queued) != 1 || m.queued[0] != "second" {
 		t.Fatalf("↑ over a draft must leave the queue intact, got %v", m.queued)
 	}
-	if !strings.Contains(m.ta.Value(), "draft") {
-		t.Errorf("↑ over a draft must not wipe the input, got %q", m.ta.Value())
+	if !strings.Contains(m.prompt.Value(), "draft") {
+		t.Errorf("↑ over a draft must not wipe the input, got %q", m.prompt.Value())
 	}
 }
 
@@ -79,8 +79,8 @@ func TestEditBackEmptyQueueIsNoOp(t *testing.T) {
 	if len(m.queued) != 0 {
 		t.Fatalf("no queue: ↑ must not fabricate one, got %v", m.queued)
 	}
-	if strings.TrimSpace(m.ta.Value()) != "" {
-		t.Errorf("no queue: ↑ must leave the empty input empty, got %q", m.ta.Value())
+	if strings.TrimSpace(m.prompt.Value()) != "" {
+		t.Errorf("no queue: ↑ must leave the empty input empty, got %q", m.prompt.Value())
 	}
 }
 
@@ -103,7 +103,7 @@ func TestEditBackIdlePausedPullsMergedQueue(t *testing.T) {
 
 	m = pressUp(t, m)
 
-	if got := m.ta.Value(); got != "second"+queueMergeSep+"third" {
+	if got := m.prompt.Value(); got != "second"+queueMergeSep+"third" {
 		t.Fatalf("idle edit-back must load the merged queue, got %q", got)
 	}
 	if len(m.queued) != 0 || m.queuePaused != "" {
@@ -115,10 +115,9 @@ func TestEditBackIdlePausedPullsMergedQueue(t *testing.T) {
 	}
 }
 
-// TestEscStillClearsAllNotEditBack: esc (the clear-all key) still DROPS the queue
-// outright — edit-back did not steal esc's meaning. Pins the non-regression that ↑
-// and esc are distinct: ↑ preserves, esc destroys.
-func TestEscStillClearsAllNotEditBack(t *testing.T) {
+// TestEscCancelsWithoutDroppingQueue pins that Escape now cancels directly; queued
+// follow-ups remain available for the terminal paused state.
+func TestEscCancelsWithoutDroppingQueue(t *testing.T) {
 	m, _ := newQueueModel(t)
 	m = startRunning(t, m, "first")
 	m = enqueue(t, m, "second")
@@ -126,62 +125,11 @@ func TestEscStillClearsAllNotEditBack(t *testing.T) {
 	mm, _ := m.Update(tea.KeyPressMsg{Code: tea.KeyEscape})
 	m = mm.(Model)
 
-	if len(m.queued) != 0 {
-		t.Fatalf("esc must clear the queue outright, got %v", m.queued)
+	if len(m.queued) != 1 || m.queued[0] != "second" {
+		t.Fatalf("esc changed queued follow-up: %v", m.queued)
 	}
-	if strings.TrimSpace(m.ta.Value()) != "" {
-		t.Errorf("esc-clear must not load the queue into the input, got %q", m.ta.Value())
-	}
-}
-
-// TestAutoResumeTransientResultError: a TRANSIENT stop=error (ResultMsg.Transient
-// true) with staged follow-ups AUTO-FIRES the merged queue — a plain retry is likely
-// to succeed. Fires exactly once (one new Prompt frame carrying the merged text).
-func TestAutoResumeTransientResultError(t *testing.T) {
-	m, conv := newQueueModel(t)
-	m = startRunning(t, m, "first")
-	m = enqueue(t, m, "second")
-	m = enqueue(t, m, "third")
-
-	mm, cmd := m.Update(client.ResultMsg{Stop: stopError, Error: "engine overloaded", Transient: true})
-	m = mm.(Model)
-	runBatchLeaves(cmd)
-
-	if len(m.queued) != 0 {
-		t.Fatalf("transient error must auto-drain the merged queue, got %v", m.queued)
-	}
-	if m.queuePaused != "" {
-		t.Fatalf("transient auto-resume must not mark paused, got %q", m.queuePaused)
-	}
-	if m.phase != phaseRunning {
-		t.Errorf("transient auto-resume must reopen a run, phase=%d", m.phase)
-	}
-	got := promptTexts(conv.send)
-	want := []string{"first", "second" + queueMergeSep + "third"}
-	if len(got) != len(want) || got[1] != want[1] {
-		t.Fatalf("transient auto-resume must fire the merged queue exactly once, frames = %v want %v", got, want)
-	}
-}
-
-// TestAutoResumeTransientStreamErr: a TRANSIENT StreamErrMsg auto-fires the merged
-// queue, same policy as a transient result error.
-func TestAutoResumeTransientStreamErr(t *testing.T) {
-	m, conv := newQueueModel(t)
-	m = startRunning(t, m, "first")
-	m = enqueue(t, m, "second")
-
-	mm, cmd := m.Update(client.StreamErrMsg{Err: errors.New("stream idle timeout"), Transient: true})
-	m = mm.(Model)
-	runBatchLeaves(cmd)
-
-	if len(m.queued) != 0 || m.queuePaused != "" {
-		t.Fatalf("transient stream error must auto-drain, got queued=%v paused=%q", m.queued, m.queuePaused)
-	}
-	if m.phase != phaseRunning {
-		t.Errorf("transient stream-error auto-resume must reopen a run, phase=%d", m.phase)
-	}
-	if got := promptTexts(conv.send); len(got) != 2 || got[1] != "second" {
-		t.Fatalf("transient stream error must fire the queue once, frames = %v", got)
+	if strings.TrimSpace(m.prompt.Value()) != "" {
+		t.Errorf("esc must not load the queue into the input, got %q", m.prompt.Value())
 	}
 }
 
@@ -223,10 +171,8 @@ func TestHardErrorStillPauses(t *testing.T) {
 	})
 }
 
-// TestCancelStillPausesEvenIfTransientFlag: a user-cancel PAUSES regardless — the
-// transient path is gated on stop==stopError, so a "cancelled" stop never
-// auto-resumes even if a (spurious) transient flag rode along. Pins that the USER's
-// intent to stop is never fought.
+// TestCancelStillPausesEvenIfTransientFlag: a user-cancel PAUSES regardless of
+// legacy display classification. Pins that the USER's intent to stop is never fought.
 func TestCancelStillPausesEvenIfTransientFlag(t *testing.T) {
 	m, conv := newQueueModel(t)
 	m = startRunning(t, m, "first")
@@ -245,10 +191,7 @@ func TestCancelStillPausesEvenIfTransientFlag(t *testing.T) {
 }
 
 // TestMaxConsecutiveFailuresStillPausesEvenIfTransientFlag: a
-// `max_consecutive_failures` stop PAUSES regardless — the transient path is gated on
-// stop==stopError, so a `max_consecutive_failures` stop never auto-resumes even if a
-// (spurious) transient flag rode along with an error text that WOULD otherwise
-// classify as transient.
+// `max_consecutive_failures` stop PAUSES regardless of legacy display classification.
 func TestMaxConsecutiveFailuresStillPausesEvenIfTransientFlag(t *testing.T) {
 	m, conv := newQueueModel(t)
 	m = startRunning(t, m, "first")
@@ -267,11 +210,8 @@ func TestMaxConsecutiveFailuresStillPausesEvenIfTransientFlag(t *testing.T) {
 }
 
 // TestStreamClosedPausesQueue: a clean stream close (io.EOF → StreamClosedMsg) while
-// a run is streaming with a non-empty queue PAUSES and KEEPS the queue — a transient
-// drop normally arrives as StreamErrMsg (with a gRPC status), so a bare close is
-// treated conservatively as a pause, not an auto-resume. Pins the drainQueue("closed",
-// false) call site: a regression to ("closed", true), or to shouldDrain including
-// "closed", would silently auto-fire the backlog on every early server close.
+// a run is streaming with a non-empty queue PAUSES and KEEPS the queue. A close has
+// no typed semantic commit facts, so it can never authorize replay or queue drain.
 func TestStreamClosedPausesQueue(t *testing.T) {
 	m, conv := newQueueModel(t)
 	m = startRunning(t, m, "first")
@@ -292,40 +232,6 @@ func TestStreamClosedPausesQueue(t *testing.T) {
 	}
 }
 
-// TestAutoResumeTransientFiresExactlyOnce: the anti-loop guarantee. A transient error
-// auto-drains the WHOLE merged queue in one step (queue emptied before submit), so a
-// SECOND transient terminal on the reopened run finds an empty queue and fires
-// NOTHING. Without merge-in-one-step (or if the reopened run re-populated the queue)
-// this would loop — the drainQueue len==0 early-return is what makes auto-resume
-// safe. Feeds two transient ResultMsgs back to back and asserts exactly TWO prompt
-// frames total (the initial "first" + the single merged auto-resume).
-func TestAutoResumeTransientFiresExactlyOnce(t *testing.T) {
-	m, conv := newQueueModel(t)
-	m = startRunning(t, m, "first")
-	m = enqueue(t, m, "second")
-	m = enqueue(t, m, "third")
-
-	// First transient terminal → drains the merged queue (frame #2), queue empty.
-	mm, cmd := m.Update(client.ResultMsg{Stop: stopError, Error: "engine overloaded", Transient: true})
-	m = mm.(Model)
-	runBatchLeaves(cmd)
-	if len(m.queued) != 0 || m.phase != phaseRunning {
-		t.Fatalf("first transient must auto-resume into a running run, queued=%v phase=%d", m.queued, m.phase)
-	}
-
-	// Second transient terminal on the reopened run → empty queue → NO third frame.
-	mm, cmd = m.Update(client.ResultMsg{Stop: stopError, Error: "engine overloaded", Transient: true})
-	m = mm.(Model)
-	runBatchLeaves(cmd)
-
-	if got := promptTexts(conv.send); len(got) != 2 {
-		t.Fatalf("auto-resume must fire exactly once (no loop), frames = %v want 2", got)
-	}
-	if m.queuePaused != "" {
-		t.Fatalf("empty-queue terminal must not mark paused, got %q", m.queuePaused)
-	}
-}
-
 // TestEditBackSetsEditingStatusAndFocus: edit-back is more than a value swap — it must
 // leave the pulled-back text as an EDITABLE, focused draft (it returns afterInputEdit,
 // which re-focuses/re-syncs the input) and set a muted "editing" status so the user
@@ -341,7 +247,7 @@ func TestEditBackSetsEditingStatusAndFocus(t *testing.T) {
 	if got := stripANSIstr(m.statusMsg); !strings.Contains(got, "editing") {
 		t.Errorf("edit-back must set an 'editing' status, got %q", got)
 	}
-	if !m.ta.Focused() {
+	if !m.prompt.Focused() {
 		t.Error("edit-back must leave the input focused for editing")
 	}
 }

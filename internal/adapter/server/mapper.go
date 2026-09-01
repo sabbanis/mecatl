@@ -36,6 +36,9 @@ func contentFromProto(parts []*mecatlv1.Content) ([]session.Content, error) {
 	if len(parts) == 0 {
 		return nil, nil
 	}
+	if len(parts) > session.MaxPromptMediaParts {
+		return nil, fmt.Errorf("prompt has too many media parts: %d (limit %d)", len(parts), session.MaxPromptMediaParts)
+	}
 	out := make([]session.Content, 0, len(parts))
 	for i, p := range parts {
 		if p == nil {
@@ -121,8 +124,15 @@ func toProto(ev session.Event) *mecatlv1.Event {
 	out := &mecatlv1.Event{
 		Type: string(ev.Type),
 		Seq:  ev.Seq,
-		Turn: ClampInt32(ev.Turn),
-		Text: valid(ev.Text),
+		// RunId IS repaired, even though this server mints it as opaque base32.
+		// engine/agent is an importable library and RunRequest.RunID is a public
+		// field, so any embedder can supply arbitrary bytes; treating it as
+		// harness-authored would be true of this binary and false of the contract.
+		// A protobuf string field rejects invalid UTF-8 at marshal time, which is
+		// codes.Internal on a live stream — the exact issue-#402 failure mode.
+		RunId: valid(ev.RunID),
+		Turn:  ClampInt32(ev.Turn),
+		Text:  valid(ev.Text),
 	}
 	if ev.ToolCall != nil {
 		out.ToolCall = toProtoToolCall(*ev.ToolCall)
@@ -132,6 +142,12 @@ func toProto(ev session.Event) *mecatlv1.Event {
 	}
 	if ev.Ask != nil {
 		out.Ask = toProtoAsk(*ev.Ask)
+	}
+	if ev.ModelRetry != nil {
+		out.ModelRetry = &mecatlv1.ModelRetry{
+			RetryDisposition: retryDispositionToProto(ev.ModelRetry.Disposition),
+			StreamProgress:   streamProgressToProto(ev.ModelRetry.Progress),
+		}
 	}
 	if ev.Result != nil {
 		out.Result = toProtoResult(*ev.Result)
@@ -177,7 +193,7 @@ func toProto(ev session.Event) *mecatlv1.Event {
 // The text is operator-supplied (producer-influenced), so it rides the valid()
 // backstop like every other non-harness string.
 func toProtoSteer(p session.SteerPayload) *mecatlv1.SteerEcho {
-	return &mecatlv1.SteerEcho{Text: valid(p.Text)}
+	return &mecatlv1.SteerEcho{Text: valid(p.Text), Parts: contentToProto(p.Parts)}
 }
 
 // toProtoParallel maps a session.ParallelPayload to its proto Parallel form: the
@@ -687,12 +703,44 @@ func toProtoAsk(a session.PendingAsk) *mecatlv1.PermissionAsk {
 
 // toProtoResult maps a session.ResultPayload to its proto Result form.
 func toProtoResult(p session.ResultPayload) *mecatlv1.Result {
+	disposition := p.Disposition
+	if disposition == session.RetryDispositionUnknown && p.Permanent {
+		disposition = session.RetryDispositionPermanent
+	}
+	protoDisposition := retryDispositionToProto(disposition)
+	progress := streamProgressToProto(p.Progress)
 	return &mecatlv1.Result{
-		Stop:      string(p.Stop),
-		Text:      valid(p.Text),
-		Usage:     toProtoUsage(p.Usage),
-		Error:     valid(p.Error),
-		Permanent: p.Permanent,
+		Stop:             string(p.Stop),
+		Text:             valid(p.Text),
+		Usage:            toProtoUsage(p.Usage),
+		Error:            valid(p.Error),
+		Permanent:        disposition == session.RetryDispositionPermanent,
+		RetryDisposition: &protoDisposition,
+		StreamProgress:   &progress,
+	}
+}
+
+func retryDispositionToProto(d session.RetryDisposition) mecatlv1.RetryDisposition {
+	switch d {
+	case session.RetryDispositionRetryable:
+		return mecatlv1.RetryDisposition_RETRY_DISPOSITION_RETRYABLE
+	case session.RetryDispositionPermanent:
+		return mecatlv1.RetryDisposition_RETRY_DISPOSITION_PERMANENT
+	default:
+		return mecatlv1.RetryDisposition_RETRY_DISPOSITION_UNKNOWN
+	}
+}
+
+func streamProgressToProto(p session.StreamProgress) mecatlv1.StreamProgress {
+	switch p {
+	case session.StreamProgressPrecommit:
+		return mecatlv1.StreamProgress_STREAM_PROGRESS_PRECOMMIT
+	case session.StreamProgressVisible:
+		return mecatlv1.StreamProgress_STREAM_PROGRESS_VISIBLE
+	case session.StreamProgressComplete:
+		return mecatlv1.StreamProgress_STREAM_PROGRESS_COMPLETE
+	default:
+		return mecatlv1.StreamProgress_STREAM_PROGRESS_UNKNOWN
 	}
 }
 
@@ -758,6 +806,10 @@ func toProtoSession(s *session.Session, rm ResolvedModel, caps *mecatlv1.ServerC
 		TitleProvenance:         string(s.TitleProvenance),
 		Capabilities:            caps,
 		AdoptionSourceSessionId: valid(string(adoptionSourceID(s))),
+		Kind:                    string(s.Kind),
+		Relationship:            toProtoSessionRelationship(s.Relationship),
+		DebugMcpServers:         validStrings(s.DebugMCPServers),
+		DebugMcpTools:           validStrings(s.DebugMCPTools),
 	}
 }
 
@@ -983,7 +1035,7 @@ func toProtoSessionRelationship(r session.SessionRelationship) *mecatlv1.Session
 	out := &mecatlv1.SessionRelationship{
 		ParentSessionId: string(r.ParentSessionID), CallId: string(r.CallID),
 		ScheduleName: r.ScheduleName, OriginSessionId: string(r.OriginSessionID),
-		TeamId: r.TeamID, MemberName: r.MemberName,
+		TeamId: r.TeamID, MemberName: r.MemberName, DebugTargetSessionId: valid(string(r.DebugTargetID)),
 	}
 	if r.BranchIndex != nil {
 		index := ClampInt32(*r.BranchIndex)

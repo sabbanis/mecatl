@@ -10,6 +10,8 @@ This folder no longer holds the per-feature design records — those are now num
   implementation reference.
 - [principles.md](./principles.md) — the **platform principles** acceptance plans cite
   as `Principle N` (the ac-trace grounding list).
+- [surface-migration-plan.md](./surface-migration-plan.md) — the issue #555 surface
+  interface (one modal, dynamic Open, surfaceDeps); `/soul` is the first migrator.
 - this file — the **documentation & citation conventions** the `docs/lint` gate enforces.
 
 One source of truth per fact: current behaviour in
@@ -109,3 +111,10 @@ now. To widen it, add a glob to the `patterns` slice in `TestRealDesignDocsCitat
 ## The records
 
 The per-feature design records are now ADRs — see the **[ADR index](../adr/README.md)**.
+
+Qualification reports — point-in-time findings about an external system's contract,
+kept because the invariants they pin are expensive to rediscover:
+
+- [mecak8s vMCP delegation contract](mecak8s-vmcp-delegation-contract.md) — what
+  ToolHive's RFC 8693 token exchange accepts and emits, qualified against a pinned
+  runtime. Its fixture is [deploy/mecak8s-vmcp](../../deploy/mecak8s-vmcp/README.md).

@@ -73,8 +73,8 @@ func (st *Store) observeMetadataWork(kind metadataWorkKind) {
 // store without reading any snapshot payload. Legacy records remain loadable,
 // but bounded inventory is honestly unavailable until an explicit migration
 // has saved every record through the current format.
-func (st *Store) initializeMetadataIndex(ctx context.Context) error {
-	state, err := st.client.Get(ctx, metadataIndexStateKey).Result()
+func initializeMetadataIndex(ctx context.Context, client redis.UniversalClient) error {
+	state, err := client.Get(ctx, metadataIndexStateKey).Result()
 	if err == nil {
 		if state != metadataIndexReady && state != metadataIndexStale {
 			return fmt.Errorf("redisstore: unknown metadata index state %q", state)
@@ -88,7 +88,7 @@ func (st *Store) initializeMetadataIndex(ctx context.Context) error {
 	state = metadataIndexReady
 	var cursor uint64
 	for {
-		keys, next, scanErr := st.client.Scan(ctx, cursor, sessionKeyPrefix+"*", 1).Result()
+		keys, next, scanErr := client.Scan(ctx, cursor, sessionKeyPrefix+"*", 1).Result()
 		if scanErr != nil {
 			return fmt.Errorf("redisstore: inspect legacy metadata index: %w", scanErr)
 		}
@@ -101,15 +101,54 @@ func (st *Store) initializeMetadataIndex(ctx context.Context) error {
 		}
 		cursor = next
 	}
-	if err := st.client.SetNX(ctx, metadataIndexStateKey, state, 0).Err(); err != nil {
+	if err := client.SetNX(ctx, metadataIndexStateKey, state, 0).Err(); err != nil {
 		return fmt.Errorf("redisstore: initialize metadata index state: %w", err)
 	}
 	return nil
 }
 
+var createMetadataScript = redis.NewScript(`
+if redis.call('EXISTS', KEYS[1]) ~= 0 then
+  return 0
+end
+redis.call('HSET', KEYS[1],
+  'blob', ARGV[1],
+  'mtime', ARGV[2],
+  'metadata_entry', ARGV[3],
+  'metadata_owner', ARGV[5],
+  'lineage_key', ARGV[8])
+redis.call('ZADD', KEYS[2], 0, ARGV[3])
+if ARGV[5] ~= '' then
+  redis.call('ZADD', ARGV[7] .. ARGV[5], 0, ARGV[3])
+end
+redis.call('HINCRBY', KEYS[3], ARGV[4], 1)
+if ARGV[5] ~= '' then
+  redis.call('HINCRBY', KEYS[3], ARGV[5], 1)
+end
+redis.call('HSET', KEYS[5], ARGV[8], ARGV[9])
+redis.call('INCR', KEYS[4])
+return 1
+`)
+
 var saveMetadataScript = redis.NewScript(`
 local old_member = redis.call('HGET', KEYS[1], 'metadata_entry')
 local old_scope = redis.call('HGET', KEYS[1], 'metadata_owner') or ''
+local old_lineage_key = redis.call('HGET', KEYS[1], 'lineage_key')
+if not old_lineage_key and old_member then
+  old_lineage_key = ARGV[11]
+end
+if old_lineage_key and old_lineage_key ~= ARGV[8] then
+  local lineage = redis.call('HGET', KEYS[5], old_lineage_key)
+  if lineage then
+    local tombstone, count = string.gsub(lineage, '"State":"retained"', '"State":"pruned"')
+    local deleted_count
+    tombstone, deleted_count = string.gsub(tombstone, '"DeletedAt":"0001%-01%-01T00:00:00Z"', '"DeletedAt":"' .. ARGV[10] .. '"')
+    if count ~= 1 or deleted_count ~= 1 then
+      return redis.error_reply('invalid lineage record')
+    end
+    redis.call('HSET', KEYS[5], old_lineage_key, tombstone)
+  end
+end
 if old_member then
   redis.call('ZREM', KEYS[2], old_member)
   if old_scope ~= '' then
@@ -120,7 +159,8 @@ redis.call('HSET', KEYS[1],
   'blob', ARGV[1],
   'mtime', ARGV[2],
   'metadata_entry', ARGV[3],
-  'metadata_owner', ARGV[5])
+  'metadata_owner', ARGV[5],
+  'lineage_key', ARGV[8])
 redis.call('ZADD', KEYS[2], 0, ARGV[3])
 if ARGV[5] ~= '' then
   redis.call('ZADD', ARGV[7] .. ARGV[5], 0, ARGV[3])
@@ -132,6 +172,7 @@ end
 if ARGV[5] ~= '' then
   redis.call('HINCRBY', KEYS[3], ARGV[5], 1)
 end
+redis.call('HSET', KEYS[5], ARGV[8], ARGV[9])
 redis.call('INCR', KEYS[4])
 return 1
 `)
@@ -145,7 +186,7 @@ func sessionMetadata(s *session.Session, modifiedAt time.Time, size int64) port.
 	}
 }
 
-func (st *Store) saveSnapshotAndMetadata(ctx context.Context, s *session.Session, blob []byte, modifiedAt time.Time) error {
+func saveSnapshotAndMetadata(ctx context.Context, client redis.UniversalClient, s *session.Session, blob []byte, modifiedAt time.Time) error {
 	row := sessionMetadata(s, modifiedAt, int64(len(blob)))
 	member, err := encodeMetadataMember(row)
 	if err != nil {
@@ -155,11 +196,37 @@ func (st *Store) saveSnapshotAndMetadata(ctx context.Context, s *session.Session
 	if s.Owner != nil {
 		ownerScope = metadataOwnerScope(s.Owner)
 	}
-	return saveMetadataScript.Run(ctx, st.client,
-		[]string{sessionKey(s.ID), metadataGlobalIndexKey, metadataGenerationKey, metadataRebuildGenerationKey},
+	lineage, err := json.Marshal(redisLineageRecord(s))
+	if err != nil {
+		return err
+	}
+	return saveMetadataScript.Run(ctx, client,
+		[]string{sessionKey(s.ID), metadataGlobalIndexKey, metadataGenerationKey, metadataRebuildGenerationKey, lineageHashKey},
 		blob, modifiedAt.UnixNano(), member, metadataGlobalScope, ownerScope, metadataIndexStateKey,
-		metadataOwnerIndexBase,
+		metadataOwnerIndexBase, redisLineageKey(s.ID, string(s.Incarnation())), lineage, time.Now().UTC().Format(time.RFC3339Nano), string(s.ID),
 	).Err()
+}
+
+func createSnapshotAndMetadata(ctx context.Context, client redis.UniversalClient, s *session.Session, blob []byte, modifiedAt time.Time) (bool, error) {
+	row := sessionMetadata(s, modifiedAt, int64(len(blob)))
+	member, err := encodeMetadataMember(row)
+	if err != nil {
+		return false, err
+	}
+	ownerScope := ""
+	if s.Owner != nil {
+		ownerScope = metadataOwnerScope(s.Owner)
+	}
+	lineage, err := json.Marshal(redisLineageRecord(s))
+	if err != nil {
+		return false, err
+	}
+	created, err := createMetadataScript.Run(ctx, client,
+		[]string{sessionKey(s.ID), metadataGlobalIndexKey, metadataGenerationKey, metadataRebuildGenerationKey, lineageHashKey},
+		blob, modifiedAt.UnixNano(), member, metadataGlobalScope, ownerScope, metadataIndexStateKey,
+		metadataOwnerIndexBase, redisLineageKey(s.ID, string(s.Incarnation())), lineage,
+	).Int()
+	return created == 1, err
 }
 
 var deleteMetadataScript = redis.NewScript(`
@@ -173,15 +240,26 @@ if member then
     redis.call('HINCRBY', KEYS[3], owner_scope, 1)
   end
 end
-redis.call('DEL', KEYS[1], KEYS[4], KEYS[5])
+local lineage_key = redis.call('HGET', KEYS[1], 'lineage_key') or ARGV[3]
+local lineage = redis.call('HGET', KEYS[8], lineage_key)
+if lineage then
+  local tombstone, count = string.gsub(lineage, '"State":"retained"', '"State":"pruned"')
+  local deleted_count
+  tombstone, deleted_count = string.gsub(tombstone, '"DeletedAt":"0001%-01%-01T00:00:00Z"', '"DeletedAt":"' .. ARGV[4] .. '"')
+  if count ~= 1 or deleted_count ~= 1 then
+    return redis.error_reply('invalid lineage record')
+  end
+  redis.call('HSET', KEYS[8], lineage_key, tombstone)
+end
+redis.call('DEL', KEYS[1], KEYS[4], KEYS[5], KEYS[7])
 redis.call('INCR', KEYS[6])
 return 1
 `)
 
-func (st *Store) deleteSessionAndMetadata(ctx context.Context, id session.SessionID) error {
-	return deleteMetadataScript.Run(ctx, st.client,
-		[]string{sessionKey(id), metadataGlobalIndexKey, metadataGenerationKey, toolsKey(id), eventsKey(id), metadataRebuildGenerationKey},
-		metadataGlobalScope, metadataOwnerIndexBase,
+func deleteSessionAndMetadata(ctx context.Context, client redis.UniversalClient, id session.SessionID) error {
+	return deleteMetadataScript.Run(ctx, client,
+		[]string{sessionKey(id), metadataGlobalIndexKey, metadataGenerationKey, toolsKey(id), eventsKey(id), metadataRebuildGenerationKey, eventsGenerationKey(id), lineageHashKey},
+		metadataGlobalScope, metadataOwnerIndexBase, string(id), time.Now().UTC().Format(time.RFC3339Nano),
 	).Err()
 }
 
@@ -197,19 +275,30 @@ if owner_scope ~= '' then
   redis.call('ZREM', ARGV[3] .. owner_scope, member)
   redis.call('HINCRBY', KEYS[3], owner_scope, 1)
 end
-redis.call('DEL', KEYS[1], KEYS[4], KEYS[5])
+local lineage_key = redis.call('HGET', KEYS[1], 'lineage_key') or ARGV[4]
+local lineage = redis.call('HGET', KEYS[8], lineage_key)
+if lineage then
+  local tombstone, count = string.gsub(lineage, '"State":"retained"', '"State":"pruned"')
+  local deleted_count
+  tombstone, deleted_count = string.gsub(tombstone, '"DeletedAt":"0001%-01%-01T00:00:00Z"', '"DeletedAt":"' .. ARGV[5] .. '"')
+  if count ~= 1 or deleted_count ~= 1 then
+    return redis.error_reply('invalid lineage record')
+  end
+  redis.call('HSET', KEYS[8], lineage_key, tombstone)
+end
+redis.call('DEL', KEYS[1], KEYS[4], KEYS[5], KEYS[7])
 redis.call('INCR', KEYS[6])
 return 1
 `)
 
-func (st *Store) deleteSessionIfMetadataUnchanged(ctx context.Context, expected port.SessionDiscoveryMeta) (bool, error) {
+func deleteSessionIfMetadataUnchanged(ctx context.Context, client redis.UniversalClient, expected port.SessionDiscoveryMeta) (bool, error) {
 	member, err := encodeMetadataMember(expected)
 	if err != nil {
 		return false, err
 	}
-	result, err := conditionalDeleteMetadataScript.Run(ctx, st.client,
-		[]string{sessionKey(expected.ID), metadataGlobalIndexKey, metadataGenerationKey, toolsKey(expected.ID), eventsKey(expected.ID), metadataRebuildGenerationKey},
-		member, metadataGlobalScope, metadataOwnerIndexBase,
+	result, err := conditionalDeleteMetadataScript.Run(ctx, client,
+		[]string{sessionKey(expected.ID), metadataGlobalIndexKey, metadataGenerationKey, toolsKey(expected.ID), eventsKey(expected.ID), metadataRebuildGenerationKey, eventsGenerationKey(expected.ID), lineageHashKey},
+		member, metadataGlobalScope, metadataOwnerIndexBase, string(expected.ID), time.Now().UTC().Format(time.RFC3339Nano),
 	).Int()
 	return result == 1, err
 }
@@ -231,11 +320,11 @@ end
 return result
 `)
 
-func (st *Store) pageSessionMetadata(ctx context.Context, request port.SessionMetadataPageRequest) (port.SessionMetadataPage, error) {
+func (st *Store) pageSessionMetadata(ctx context.Context, client redis.UniversalClient, request port.SessionMetadataPageRequest) (port.SessionMetadataPage, error) {
 	if request.Limit < 0 {
 		return port.SessionMetadataPage{}, fmt.Errorf("redisstore: metadata page limit must be non-negative")
 	}
-	if err := st.requireMetadataIndex(ctx); err != nil {
+	if err := requireMetadataIndex(ctx, client); err != nil {
 		return port.SessionMetadataPage{}, err
 	}
 	scope, indexKey := metadataScopeAndKey(request)
@@ -243,7 +332,7 @@ func (st *Store) pageSessionMetadata(ctx context.Context, request port.SessionMe
 	if err != nil {
 		return port.SessionMetadataPage{}, err
 	}
-	result, err := pageMetadataScript.Run(ctx, st.client, []string{indexKey, metadataGenerationKey},
+	result, err := pageMetadataScript.Run(ctx, client, []string{indexKey, metadataGenerationKey},
 		scope, expectedGeneration, minimum, request.Limit+1).Result()
 	if err != nil {
 		if strings.Contains(err.Error(), "MECATL_METADATA_CURSOR_RESTART") {
@@ -254,8 +343,8 @@ func (st *Store) pageSessionMetadata(ctx context.Context, request port.SessionMe
 	return st.decodeMetadataPage(result, request, scope)
 }
 
-func (st *Store) requireMetadataIndex(ctx context.Context) error {
-	state, err := st.client.Get(ctx, metadataIndexStateKey).Result()
+func requireMetadataIndex(ctx context.Context, client redis.UniversalClient) error {
+	state, err := client.Get(ctx, metadataIndexStateKey).Result()
 	if err == nil && state == metadataIndexReady {
 		return nil
 	}

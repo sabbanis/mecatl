@@ -23,11 +23,11 @@ import (
 // idleModelWith builds an idle, sized model with the given effective + pending-next
 // selections wired (no overlays open), so the header next-badge logic is exercised
 // directly. effective is delivered as the create response's resolved model; next is
-// set as the pending activeModel.
+// set as the pending createModelSelection.
 func idleModelWith(t *testing.T, effective client.ResolvedModel, next client.ModelSelection, inv []client.ModelInfo) Model {
 	t.Helper()
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv,
 		Conv:    conv,
 		Theme:   theme.New("aztec", theme.AztecPalette()),
@@ -35,12 +35,12 @@ func idleModelWith(t *testing.T, effective client.ResolvedModel, next client.Mod
 		Mode:    "default",
 		Ctx:     context.Background(),
 	})
-	m.models.models = inv
+	m.modelCatalog.models = inv
 	m = applyAll(m,
 		tea.WindowSizeMsg{Width: 160, Height: 30},
 		client.SessionReadyMsg{SessionID: "sess-test-0001", ResolvedModel: effective},
 	)
-	m.activeModel = next
+	m.createModelSelection = next
 	return m
 }
 
@@ -129,8 +129,8 @@ func TestHeaderNextBadgeDroppedUnderWidthPressure(t *testing.T) {
 // client-held sources reads "server default".
 func TestModelProvenanceServerDefault(t *testing.T) {
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
-	m.effectiveModel = client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"}
+	m := newTestModelFromDeps(Deps{Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"}
 	if got := m.modelProvenance(client.ModelSelection{ProviderID: "openai", ModelID: "gpt-5"}); got != "server default" {
 		t.Fatalf("provenance = %q, want server default", got)
 	}
@@ -141,11 +141,11 @@ func TestModelProvenanceServerDefault(t *testing.T) {
 func TestModelProvenanceWorkspaceDefault(t *testing.T) {
 	ws := client.ModelSelection{ProviderID: "openrouter", ModelID: "anthropic/claude"}
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background(),
 		WorkspaceDefault: ws, WorkspaceDefaultSet: true,
 	})
-	m.effectiveModel = client.ResolvedModel{ProviderID: ws.ProviderID, ModelID: ws.ModelID}
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: ws.ProviderID, ModelID: ws.ModelID}
 	if got := m.modelProvenance(ws); got != "workspace default" {
 		t.Fatalf("provenance = %q, want workspace default", got)
 	}
@@ -156,11 +156,11 @@ func TestModelProvenanceWorkspaceDefault(t *testing.T) {
 func TestModelProvenanceGlobalDefault(t *testing.T) {
 	gd := client.ModelSelection{ProviderID: "openai", ModelID: "gpt-5"}
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background(),
 		GlobalDefault: gd,
 	})
-	m.effectiveModel = client.ResolvedModel{ProviderID: gd.ProviderID, ModelID: gd.ModelID}
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: gd.ProviderID, ModelID: gd.ModelID}
 	if got := m.modelProvenance(gd); got != "global default" {
 		t.Fatalf("provenance = %q, want global default", got)
 	}
@@ -171,13 +171,13 @@ func TestModelProvenanceGlobalDefault(t *testing.T) {
 func TestModelProvenancePickedThisSession(t *testing.T) {
 	picked := client.ModelSelection{ProviderID: "openrouter", ModelID: "anthropic/claude"}
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background(),
 		// Even though it ALSO matches a workspace default, picked-this-session wins.
 		WorkspaceDefault: picked, WorkspaceDefaultSet: true,
 	})
 	m.pickedThisSession = picked
-	m.effectiveModel = client.ResolvedModel{ProviderID: picked.ProviderID, ModelID: picked.ModelID}
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: picked.ProviderID, ModelID: picked.ModelID}
 	if got := m.modelProvenance(picked); got != "picked this session" {
 		t.Fatalf("provenance = %q, want picked this session", got)
 	}
@@ -187,11 +187,11 @@ func TestModelProvenancePickedThisSession(t *testing.T) {
 // reads "--model flag".
 func TestModelProvenanceFlag(t *testing.T) {
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background(),
 		Model: "gpt-5",
 	})
-	m.effectiveModel = client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"}
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"}
 	if got := m.modelProvenance(client.ModelSelection{ProviderID: "openai", ModelID: "gpt-5"}); got != "--model flag" {
 		t.Fatalf("provenance = %q, want --model flag", got)
 	}
@@ -203,13 +203,13 @@ func TestModelProvenanceFlag(t *testing.T) {
 // resolved from the FIRST model the gateway credential listed) reads
 // "auto-selected", NOT "server default" (which would imply a deliberate
 // operator choice). The label is now vendor-neutral: it is gated on the WIRE
-// bit (statusAutoSelected over m.models.statuses), never a bare
+// bit (statusAutoSelected over m.modelCatalog.statuses), never a bare
 // ProviderID=="toolhive" check.
 func TestModelProvenanceToolhiveAutoSelected(t *testing.T) {
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
-	m.effectiveModel = client.ResolvedModel{ProviderID: "toolhive", ModelID: "claude-sonnet-4-6"}
-	m.models.statuses = []client.ProviderStatus{{ProviderID: "toolhive", State: "ok", DefaultModelAutoSelected: true}}
+	m := newTestModelFromDeps(Deps{Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: "toolhive", ModelID: "claude-sonnet-4-6"}
+	m.modelCatalog.statuses = []client.ProviderStatus{{ProviderID: "toolhive", State: "ok", DefaultModelAutoSelected: true}}
 	if got := m.modelProvenance(client.ModelSelection{ProviderID: "toolhive", ModelID: "claude-sonnet-4-6"}); got != "auto-selected" {
 		t.Fatalf("provenance = %q, want auto-selected", got)
 	}
@@ -223,9 +223,9 @@ func TestModelProvenanceToolhiveAutoSelected(t *testing.T) {
 // for every toolhive session, including this deliberately-configured one.
 func TestModelProvenanceToolhiveOperatorConfigured_NotAutoSelected(t *testing.T) {
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
-	m.effectiveModel = client.ResolvedModel{ProviderID: "toolhive", ModelID: "gpt-5"}
-	m.models.statuses = []client.ProviderStatus{{ProviderID: "toolhive", State: "ok", DefaultModelAutoSelected: false}}
+	m := newTestModelFromDeps(Deps{Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: "toolhive", ModelID: "gpt-5"}
+	m.modelCatalog.statuses = []client.ProviderStatus{{ProviderID: "toolhive", State: "ok", DefaultModelAutoSelected: false}}
 	if got := m.modelProvenance(client.ModelSelection{ProviderID: "toolhive", ModelID: "gpt-5"}); got != "server default" {
 		t.Fatalf("provenance = %q, want server default (operator-configured, no AutoSelected bit)", got)
 	}
@@ -238,8 +238,8 @@ func TestModelProvenanceToolhiveOperatorConfigured_NotAutoSelected(t *testing.T)
 // default".
 func TestModelProvenanceNoStatusRow_NotAutoSelected(t *testing.T) {
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
-	m.effectiveModel = client.ResolvedModel{ProviderID: "toolhive", ModelID: "claude-sonnet-4-6"}
+	m := newTestModelFromDeps(Deps{Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background()})
+	m.resolvedSessionModel = client.ResolvedModel{ProviderID: "toolhive", ModelID: "claude-sonnet-4-6"}
 	if got := m.modelProvenance(client.ModelSelection{ProviderID: "toolhive", ModelID: "claude-sonnet-4-6"}); got != "server default" {
 		t.Fatalf("provenance = %q, want server default (no status row)", got)
 	}
@@ -304,18 +304,24 @@ func TestModelsSetGlobalDefaultPersists(t *testing.T) {
 	for i := 0; i < 3; i++ {
 		m = pressModelsKey(t, m, tea.KeyPressMsg{Code: tea.KeyDown})
 	}
-	mm, cmd = m.onModelsKeyTuple(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
+	mm, cmd, _ = m.onOverlayKey(tea.KeyPressMsg{Code: 'g', Mod: tea.ModCtrl})
 	m = mm.(Model)
 	want := client.ModelSelection{ProviderID: "openrouter", ModelID: "anthropic/claude"}
-	if m.models.globalDefault != want {
-		t.Fatalf("globalDefault = %+v, want %+v (★ marker tracks immediately)", m.models.globalDefault, want)
+	if m.modelCatalog.globalDefault != want {
+		t.Fatalf("globalDefault = %+v, want %+v (★ marker tracks immediately)", m.modelCatalog.globalDefault, want)
 	}
 	// ctrl+g must NOT change the active/pending selection or open the confirm.
-	if !m.activeModel.IsZero() {
-		t.Errorf("ctrl+g must not change the active selection, got %+v", m.activeModel)
+	if !m.createModelSelection.IsZero() {
+		t.Errorf("ctrl+g must not change the active selection, got %+v", m.createModelSelection)
 	}
-	if m.models.view != modelsPanel {
-		t.Errorf("ctrl+g must keep the picker open, view = %v", m.models.view)
+	if modelsSurface(t, m).view != modelsPanel {
+		t.Errorf("ctrl+g must keep the picker open, view = %v", modelsSurface(t, m).view)
+	}
+	if got := modelsSurface(t, m).catalog.globalDefault; got != want {
+		t.Fatalf("surface globalDefault = %+v, want %+v (open picker marker must update)", got, want)
+	}
+	if !strings.Contains(stripANSIstr(m.View().Content), "★") {
+		t.Fatal("open picker should render the updated global-default marker")
 	}
 	if !strings.Contains(stripANSIstr(m.statusMsg), "global default set") {
 		t.Errorf("status should read 'global default set', got %q", stripANSIstr(m.statusMsg))
@@ -384,10 +390,11 @@ func TestCarryoverHandoff(t *testing.T) {
 		resolvedModel: client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"},
 	}
 	prog := newProgress()
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session:     conv,
 		Conv:        conv,
 		Models:      &fakeModels{models: models},
+		Transcript:  modelSwitchTranscriptLoader{},
 		Theme:       theme.New("aztec", theme.AztecPalette()),
 		Server:      "127.0.0.1:8080",
 		Workspace:   "/workspace",
@@ -443,13 +450,14 @@ func TestCarryoverHandoff(t *testing.T) {
 	// (d) the header shows the NEW effective model (gpt-5-mini), set from the new
 	// SessionReadyMsg — the shared reducer path.
 	want := client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5-mini"}
-	if fm.effectiveModel != want {
-		t.Fatalf("final effectiveModel = %+v, want %+v (rebound from the carryover session)", fm.effectiveModel, want)
+	if fm.resolvedSessionModel != want {
+		t.Fatalf("final resolvedSessionModel = %+v, want %+v (rebound from the carryover session)", fm.resolvedSessionModel, want)
 	}
-	// (e) the carryover handoff reset the LOCAL transcript (the server carries the
-	// history; the client rebuilds from the seeded session).
-	if !fm.conv.isEmpty() {
-		t.Fatalf("local conversation transcript should be reset after the carryover handoff (server carries history)")
+	// (e) the adopted projection comes from the authoritative target snapshot,
+	// not the source's locally accumulated transcript.
+	visible := stripANSIstr(fm.View().Content)
+	if strings.Contains(visible, "hello there") || strings.Contains(visible, "first") {
+		t.Fatalf("target adoption must not retain source projection:\n%s", visible)
 	}
 	if !fm.restartedThisRun {
 		t.Fatalf("restartedThisRun should be set after a carryover handoff")
@@ -459,12 +467,8 @@ func TestCarryoverHandoff(t *testing.T) {
 	// FinalModel without output-flush sequencing).
 }
 
-// TestCarryoverHandoffFailure asserts a FAILED CreateSessionWithCarryover surfaces
-// through the SAME recoverable path as a plain restart failure (restartFailedMsg),
-// NOT a new failure type: the reducer drives idle + restartFailed armed + a loud
-// status naming the model. Mirrors the TestRestartFailedRecoverable shape over the
-// carryover cmd. The source session is NOT closed on the failure path (the carryover
-// cmd closes the source only AFTER a successful create).
+// TestCarryoverHandoffFailure asserts a failed CreateSessionWithCarryover leaves
+// the source session bound and recoverable; the handoff must not reconstruct it.
 func TestCarryoverHandoffFailure(t *testing.T) {
 	conv := &fakeConv{
 		recv:      &fakeRecver{},
@@ -472,7 +476,7 @@ func TestCarryoverHandoffFailure(t *testing.T) {
 		caps:      client.Capabilities{ModelSelection: true},
 		createErr: errors.New("carryover create rejected"),
 	}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session:      conv,
 		Conv:         conv,
 		Models:       &fakeModels{models: sampleModels().models},
@@ -492,10 +496,8 @@ func TestCarryoverHandoffFailure(t *testing.T) {
 	// cursor row, arms the status note, and fires restartOnModelWithCarryover (the
 	// carryover create). Prime the picker so the cursor is on gpt-5-mini.
 	sel := client.ModelSelection{ProviderID: "openai", ModelID: "gpt-5-mini"}
-	m.models.models = sampleModels().models
-	m.models.filtered = sampleModels().models
-	m.models.cursor = 1 // gpt-5-mini (same provider as the live openai/gpt-5)
-	mm, _, handled := m.chooseModel()
+	m.modelCatalog.models = sampleModels().models
+	mm, _, handled := m.chooseModel(sel, "")
 	m = mm.(Model)
 	if !handled {
 		t.Fatal("chooseModel should be handled for a same-provider candidate")
@@ -504,10 +506,10 @@ func TestCarryoverHandoffFailure(t *testing.T) {
 		t.Fatalf("phase mid-handoff = %v, want phaseConnecting", m.phase)
 	}
 
-	// Drive the carryover cmd → the failing create → restartFailedMsg, then reduce it.
-	failMsg := m.carryoverCmd("sess-test-0001", sel)()
-	if _, ok := failMsg.(restartFailedMsg); !ok {
-		t.Fatalf("a failed carryover create must produce restartFailedMsg, got %T (NOT a new failure type)", failMsg)
+	// Drive the carryover cmd → the failing create → source-preserving failure.
+	failMsg := m.carryoverCmd("sess-test-0001", sel, m.modelSwitchRequestToken)()
+	if _, ok := failMsg.(modelSwitchFailedMsg); !ok {
+		t.Fatalf("a failed carryover create must preserve its source, got %T", failMsg)
 	}
 	mm2, _ := m.Update(failMsg)
 	m = mm2.(Model)
@@ -524,11 +526,11 @@ func TestCarryoverHandoffFailure(t *testing.T) {
 	if m.phase != phaseIdle {
 		t.Fatalf("phase after a failed carryover create = %v, want phaseIdle (recoverable)", m.phase)
 	}
-	if m.sessionID != "" {
-		t.Fatalf("sessionID after a failed carryover create = %q, want empty (no session)", m.sessionID)
+	if m.sessionID != "sess-test-0001" {
+		t.Fatalf("sessionID after a failed carryover create = %q, want source session", m.sessionID)
 	}
-	if !m.restartFailed {
-		t.Fatalf("restartFailed should be set after a failed carryover create (arms enter-to-retry)")
+	if m.restartFailed {
+		t.Fatal("restartFailed must remain false when the source session survives")
 	}
 	// A visible error status names the model that failed.
 	st := stripANSIstr(m.statusMsg)
@@ -565,10 +567,11 @@ func TestSeamlessSwitchCrossProviderCarriesProgram(t *testing.T) {
 		resolvedModel: client.ResolvedModel{ProviderID: "openai", ModelID: "gpt-5"},
 	}
 	prog := newProgress()
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session:     conv,
 		Conv:        conv,
 		Models:      &fakeModels{models: models},
+		Transcript:  modelSwitchTranscriptLoader{},
 		Theme:       theme.New("aztec", theme.AztecPalette()),
 		Server:      "127.0.0.1:8080",
 		Workspace:   "/workspace",
@@ -581,6 +584,9 @@ func TestSeamlessSwitchCrossProviderCarriesProgram(t *testing.T) {
 
 	waitClosed(t, "startup CreateSession", conv.created, 5*time.Second)
 	prog.wait(t, phaseIdle, 5*time.Second)
+	tm.Type("cross-provider visible user")
+	tm.Send(tea.KeyPressMsg{Code: tea.KeyEnter})
+	prog.waitRunComplete(t, 1, 5*time.Second)
 
 	// Open /models, filter to claude (cross-provider), enter — seamless switch.
 	for _, r := range "/models" {
@@ -614,8 +620,12 @@ func TestSeamlessSwitchCrossProviderCarriesProgram(t *testing.T) {
 	}
 	// The header shows the NEW effective model (claude).
 	want := client.ResolvedModel{ProviderID: "openrouter", ModelID: "anthropic/claude"}
-	if fm.effectiveModel != want {
-		t.Fatalf("final effectiveModel = %+v, want %+v (rebound from the carryover session)", fm.effectiveModel, want)
+	if fm.resolvedSessionModel != want {
+		t.Fatalf("final resolvedSessionModel = %+v, want %+v (rebound from the carryover session)", fm.resolvedSessionModel, want)
+	}
+	visible := stripANSIstr(fm.View().Content)
+	if strings.Contains(visible, "cross-provider visible user") || strings.Contains(visible, "first") {
+		t.Fatalf("cross-provider target must not retain local source projection:\n%s", visible)
 	}
 	// The cross-provider strip caveat is unit-tested in TestModelsChooseSwitchArmsStatusNote
 	// (the double-ctrl+c quit overwrites statusMsg here, so it can't be asserted at
@@ -641,7 +651,7 @@ func TestRestartOnModelTearsDownLiveRun(t *testing.T) {
 		recvers:      []*fakeRecver{run},
 		runCancelled: make(chan struct{}),
 	}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session:     conv,
 		Conv:        conv,
 		Models:      &fakeModels{models: []client.ModelInfo{{ID: "gpt-5", ProviderID: "openai", DisplayName: "GPT-5"}}},
@@ -654,7 +664,7 @@ func TestRestartOnModelTearsDownLiveRun(t *testing.T) {
 
 	// Start a real run: submitPrompt opens the stream, sets cancelRun, bumps streamGen,
 	// and launches the reader goroutine.
-	m.ta.SetValue("run something")
+	m.prompt.Rewrite("run something")
 	mm, cmd := m.submitPrompt()
 	m = mm.(Model)
 	if m.stream == nil || m.cancelRun == nil {
@@ -710,7 +720,7 @@ func TestRestartNowCreateFailureRecovers(t *testing.T) {
 		// (failing) call, matching production where the startup connect was the first.
 		createCount: 1,
 	}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session:      conv,
 		Conv:         conv,
 		Models:       &fakeModels{models: sampleModels().models},
@@ -786,7 +796,7 @@ func TestRestartNowCreateFailureRecovers(t *testing.T) {
 // flag. The flag is NOT cleared eagerly — the resolving msg owns its lifecycle.
 func TestRestartFailedEnterRetries(t *testing.T) {
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background(),
 	})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -794,7 +804,7 @@ func TestRestartFailedEnterRetries(t *testing.T) {
 	m.phase = phaseIdle
 	m.sessionID = ""
 	m.restartFailed = true
-	m.activeModel = client.ModelSelection{ProviderID: "openrouter", ModelID: "anthropic/claude"}
+	m.createModelSelection = client.ModelSelection{ProviderID: "openrouter", ModelID: "anthropic/claude"}
 
 	mm, cmd := m.onIdleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
 	m = mm.(Model)
@@ -853,7 +863,7 @@ func TestRestartRetryReFailureStaysRecoverable(t *testing.T) {
 		send:      &fakeSender{},
 		createErr: errors.New("still rate limited"), // EVERY create fails (persistent transient)
 	}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background(),
 	})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -861,7 +871,7 @@ func TestRestartRetryReFailureStaysRecoverable(t *testing.T) {
 	m.phase = phaseIdle
 	m.sessionID = ""
 	m.restartFailed = true
-	m.activeModel = client.ModelSelection{ProviderID: "openrouter", ModelID: "anthropic/claude"}
+	m.createModelSelection = client.ModelSelection{ProviderID: "openrouter", ModelID: "anthropic/claude"}
 
 	// Enter-to-retry fires the recoverable create path.
 	mm, cmd := m.onIdleKey(tea.KeyPressMsg{Code: tea.KeyEnter})
@@ -919,7 +929,7 @@ func TestRestartStaleStreamEventDropped(t *testing.T) {
 		recv: run, send: &fakeSender{}, recvers: []*fakeRecver{run},
 		runCancelled: make(chan struct{}),
 	}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv,
 		Models:      &fakeModels{models: []client.ModelInfo{{ID: "gpt-5", ProviderID: "openai", DisplayName: "GPT-5"}}},
 		Theme:       theme.New("aztec", theme.AztecPalette()),
@@ -927,7 +937,7 @@ func TestRestartStaleStreamEventDropped(t *testing.T) {
 		NoAltScreen: true,
 	})
 	m = applyAll(m, tea.WindowSizeMsg{Width: 100, Height: 30}, client.SessionReadyMsg{SessionID: "sess-test-0001"})
-	m.ta.SetValue("run something")
+	m.prompt.Rewrite("run something")
 	mm, cmd := m.submitPrompt()
 	m = mm.(Model)
 	staleGen := m.streamGen // the generation the live reader is tagged with
@@ -962,7 +972,7 @@ func TestRestartStaleStreamEventDropped(t *testing.T) {
 // NO splash (it is a first-run affordance, not a per-switch one).
 func TestWelcomeSplashSuppressedAfterRestart(t *testing.T) {
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()),
 		Workspace: "/workspace", Mode: "default", Ctx: context.Background(), NoAltScreen: true,
 	})
@@ -984,7 +994,7 @@ func TestWelcomeSplashSuppressedAfterRestart(t *testing.T) {
 // restartOnModelCmd must NOT call CloseSession when there is no prior session id.
 func TestRestartOnModelCmdNoCloseWhenNoOldID(t *testing.T) {
 	conv := &fakeConv{recv: &fakeRecver{}, send: &fakeSender{}}
-	m := New(Deps{
+	m := newTestModelFromDeps(Deps{
 		Session: conv, Conv: conv, Theme: theme.New("aztec", theme.AztecPalette()), Ctx: context.Background(),
 	})
 	sel := client.ModelSelection{ProviderID: "openai", ModelID: "gpt-5"}

@@ -49,7 +49,7 @@ func newLiveDeliveryModel(t *testing.T, fl *fakeLiveStreamer) Model {
 		Ctx:         context.Background(),
 		NoAltScreen: true,
 	}
-	m := New(deps)
+	m := newTestModelFromDeps(deps)
 	m = applyAll(
 		m,
 		tea.WindowSizeMsg{Width: 100, Height: 40},
@@ -84,8 +84,8 @@ func deliveryUserPromptEvent(_, _, text string) *mecatlv1.Event {
 // untrusted-fence wrapping). deliveryProvenanceText is the SAME body wrapped
 // in the fenced-untrusted block renderFireDelivery produces (the
 // "<<<UNTRUSTED\n" opener + body + trailing "<<<UNTRUSTED\n"). The ui package
-// may not import engine/agent, so this is the literal mirror of
-// agent.WriteUntrustedBlock's bytes; the client's deliverNoteFrom detects the
+// may not import engine/governance, so this is the literal mirror of
+// governance.WriteUntrustedBlock's bytes; the client's deliverNoteFrom detects the
 // note via this exact fenced shape.
 const deliveryProvenanceBody = "[scheduled task nightly-sync (fire sched--fire1) completed with stop reason: end_turn]\nfire result text"
 
@@ -163,8 +163,8 @@ func TestFireDelivery_Scenario5_ConnectedTUIRendersDeliveryLive(t *testing.T) {
 
 // TestFireDelivery_Scenario6_TransportProjectionParity verifies AC6.4: the SAME
 // delivery EvUserPrompt event produces the SAME DeliveryNoteMsg/render whether it
-// arrives via the live stream (LiveStreamCmd / updateLiveMsg) or the replay stream
-// (ReplayStreamCmd / applyReplayEvent). One EventToMsg projection, two transports
+// arrives via the live stream (LiveStreamCmd / updateLiveMsg) or replay processing
+// (StreamSessionEvents / applyReplayEvent). One EventToMsg projection, two transports
 // — both paths reduce the delivery to an equivalent delivery-card block.
 func TestFireDelivery_Scenario6_TransportProjectionParity(t *testing.T) {
 	deliveryEv := deliveryUserPromptEvent("nightly-sync", "sched--fire1", deliveryProvenanceText)
@@ -186,16 +186,15 @@ func TestFireDelivery_Scenario6_TransportProjectionParity(t *testing.T) {
 	// Build a fresh transcript conversation and drive applyReplayEvent with
 	// the SAME DeliveryNoteMsg (the msg EventToMsg returns is what the replay
 	// ReadLoop pushes).
-	rm := Model{}
-	rm.sessions.transcript = conversation{}
-	rm.applyReplayEvent(liveDN)
+	rs := sessionsState{}
+	rs.applyReplayEvent(liveDN)
 
 	// ── Assertions ─────────────────────────────────────────────────────
 	liveBlocks := lm.conv.blocks
 	if len(liveBlocks) != 1 {
 		t.Fatalf("live path: expected 1 block, got %d", len(liveBlocks))
 	}
-	replayBlocks := rm.sessions.transcript.blocks
+	replayBlocks := rs.transcript.blocks
 	if len(replayBlocks) != 1 {
 		t.Fatalf("replay path: expected 1 block, got %d", len(replayBlocks))
 	}
