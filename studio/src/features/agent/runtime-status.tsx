@@ -10,7 +10,9 @@ import {
   useState,
 } from "react";
 import {
+  fetchHarnessCompatibility,
   fetchHarnessControlStatus,
+  type HarnessCompatibility,
   type HarnessControlStatus,
   probeHarness,
   setActiveHarnessProvider,
@@ -37,6 +39,16 @@ export interface RuntimeStatus {
   gateway: { name: string; url: string } | null;
   /** Why the daemon is unreachable, when it is. */
   detail: string;
+  /** The daemon's open feature registry (GET /v1/compatibility, ADR 0248).
+   *  Empty against an older daemon — every feature-gated surface must treat
+   *  absence as "not supported", never assume. */
+  features: ReadonlySet<string>;
+  /** The operator-enabled server capabilities off the same document. */
+  serverCapabilities: Record<string, unknown>;
+  /** Operator-set deployment label ("" when unset / older daemon). */
+  deployment: string;
+  /** False only when the daemon reports an API major Studio does not speak. */
+  apiCompatible: boolean;
   /** Forces an immediate re-probe (the offline screen's Retry). */
   refresh: () => Promise<void>;
   /**
@@ -64,6 +76,7 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
   const [detail, setDetail] = useState("");
   const [control, setControl] = useState<HarnessControlStatus | null>(null);
   const [mode, setMode] = useState<"managed" | "external">("managed");
+  const [compat, setCompat] = useState<HarnessCompatibility | null>(null);
   const capabilitiesLoaded = useRef(false);
 
   const probe = useCallback(async (signal?: AbortSignal) => {
@@ -80,6 +93,16 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
       if (!capabilitiesLoaded.current) {
         capabilitiesLoaded.current = true;
         void refreshComposerCapabilities();
+        // Feature detection rides each (re)connect: a restart may be a
+        // different daemon version. Best-effort — an older daemon without
+        // the endpoint reports null and every gate reads "unsupported".
+        fetchHarnessCompatibility(signal)
+          .then((doc) => {
+            if (!signal?.aborted) setCompat(doc);
+          })
+          .catch(() => {
+            if (!signal?.aborted) setCompat(null);
+          });
       }
     } else {
       setState("offline");
@@ -106,6 +129,12 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
     await probe();
   }, [probe]);
 
+  // Memo-free derivations: both are cheap and re-render-safe.
+  const featureSet = new Set(compat?.features ?? []);
+  // 0/absent = older daemon (compatible by definition of the additive era);
+  // a REPORTED major other than 1 is a real skew Studio must not hide.
+  const apiCompatible = compat === null || compat.apiMajor <= 1;
+
   const switchProvider = useCallback(
     async (kind: string) => {
       await setActiveHarnessProvider(kind);
@@ -126,12 +155,29 @@ export function RuntimeStatusProvider({ children }: { children: ReactNode }) {
         toolhiveAvailable: control?.toolhiveGateway?.available ?? false,
         gateway: control?.gateway ?? null,
         detail,
+        features: featureSet,
+        serverCapabilities: compat?.capabilities ?? {},
+        deployment: compat?.deployment ?? "",
+        apiCompatible,
         refresh,
         switchProvider,
       }}
     >
       {state === "offline" && (
         <OfflineBanner detail={detail} onRetry={refresh} />
+      )}
+      {state === "connected" && !apiCompatible && (
+        <div
+          role="alert"
+          className="flex items-center justify-center gap-3 border-b border-amber-500/40 bg-amber-500/10 px-4 py-1.5 text-xs text-amber-700 dark:text-amber-400"
+        >
+          <span className="font-medium">
+            This daemon speaks API v{compat?.apiMajor} — Studio supports v1.
+          </span>
+          <span className="hidden sm:inline">
+            Some features may not work; update Studio or the daemon.
+          </span>
+        </div>
       )}
       {children}
     </RuntimeStatusContext.Provider>

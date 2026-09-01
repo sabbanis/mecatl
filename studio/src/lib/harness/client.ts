@@ -38,13 +38,51 @@ export interface HarnessStatus {
   detail: string;
 }
 
-async function readError(response: Response): Promise<string> {
-  try {
-    const body = (await response.json()) as { error?: string };
-    return body.error ?? `${response.status} ${response.statusText}`;
-  } catch {
-    return `${response.status} ${response.statusText}`;
+/**
+ * A daemon HTTP error, typed on the stable machine `code` from the RFC 9457
+ * problem-details body (ADR 0248). The legacy top-level `error` key is still
+ * sent by every daemon, so `message` always carries the server's own words;
+ * `code` is "" against a pre-problem-details daemon. Flow control should
+ * branch on `code`, never on message prose.
+ */
+export class HarnessApiError extends Error {
+  readonly status: number;
+  readonly code: string;
+  constructor(status: number, code: string, message: string) {
+    super(message);
+    this.name = "HarnessApiError";
+    this.status = status;
+    this.code = code;
   }
+}
+
+/** Codes whose raw detail deserves plainer user-facing framing. */
+const codeFraming: Record<string, string> = {
+  draining: "The daemon is restarting — try again in a moment.",
+  session_leased_elsewhere:
+    "Another client is driving this chat right now — try again when its run finishes.",
+};
+
+async function apiError(response: Response): Promise<HarnessApiError> {
+  const fallback = `${response.status} ${response.statusText}`;
+  try {
+    const body = (await response.json()) as {
+      error?: string;
+      code?: string;
+      detail?: string;
+      title?: string;
+    };
+    const code = typeof body.code === "string" ? body.code : "";
+    const message =
+      codeFraming[code] ?? body.error ?? body.detail ?? body.title ?? fallback;
+    return new HarnessApiError(response.status, code, message);
+  } catch {
+    return new HarnessApiError(response.status, "", fallback);
+  }
+}
+
+async function readError(response: Response): Promise<string> {
+  return (await apiError(response)).message;
 }
 
 /**
@@ -67,6 +105,44 @@ export async function probeHarness(
       detail: error instanceof Error ? error.message : String(error),
     };
   }
+}
+
+/**
+ * The daemon's compatibility document (GET /v1/compatibility, ADR 0248):
+ * the API major, the operator-enabled server capabilities (no probe session
+ * needed), the open feature registry, and the operator's deployment label.
+ * Returns null against an older daemon without the endpoint.
+ */
+export interface HarnessCompatibility {
+  apiMajor: number;
+  features: string[];
+  capabilities: Record<string, unknown>;
+  deployment: string;
+}
+
+export async function fetchHarnessCompatibility(
+  signal?: AbortSignal,
+): Promise<HarnessCompatibility | null> {
+  const response = await fetch(`${HARNESS_API}/compatibility`, {
+    signal,
+    cache: "no-store",
+  });
+  if (response.status === 404) return null; // pre-ADR-0248 daemon
+  if (!response.ok) throw await apiError(response);
+  const body = (await response.json()) as {
+    api_major?: number;
+    features?: unknown;
+    capabilities?: Record<string, unknown>;
+    deployment?: string;
+  };
+  return {
+    apiMajor: typeof body.api_major === "number" ? body.api_major : 0,
+    features: Array.isArray(body.features)
+      ? body.features.filter((f): f is string => typeof f === "string")
+      : [],
+    capabilities: body.capabilities ?? {},
+    deployment: body.deployment ?? "",
+  };
 }
 
 /**
@@ -99,7 +175,7 @@ export async function createHarnessSession(
     ),
     signal: options?.signal,
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { session_id?: string };
   if (!body.session_id) throw new Error("harness returned no session id");
   return body.session_id;
@@ -132,9 +208,9 @@ export async function forkHarnessSessionToModel(
     signal,
   });
   if (response.status === 412) {
-    throw new ThreadSourceBusyError(await readError(response));
+    throw new ThreadSourceBusyError((await apiError(response)).message);
   }
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { session_id?: string };
   if (!body.session_id) throw new Error("harness returned no session id");
   if (title) {
@@ -181,9 +257,9 @@ export async function createThreadHarnessSession(
     signal,
   });
   if (response.status === 412) {
-    throw new ThreadSourceBusyError(await readError(response));
+    throw new ThreadSourceBusyError((await apiError(response)).message);
   }
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { session_id?: string };
   if (!body.session_id) throw new Error("harness returned no session id");
   try {
@@ -252,7 +328,7 @@ export async function streamHarnessPrompt(
       signal,
     },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   if (!response.body) throw new Error("harness returned no event stream");
 
   const reader = response.body.getReader();
@@ -316,7 +392,7 @@ export async function respondToHarnessApproval(
       body: JSON.stringify({ ask_id: askId, verdict }),
     },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 // ── Session inventory / transcripts (daemon session store) ──────────────────
@@ -333,7 +409,7 @@ async function fetchSessionInventoryPage(
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   return decodeSessionInventory(await response.json());
 }
 
@@ -373,7 +449,7 @@ export async function renameHarnessSession(
       body: JSON.stringify({ title }),
     },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { title?: string };
   return body.title ?? title;
 }
@@ -390,7 +466,7 @@ export async function fetchHarnessSessionMode(
     `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}`,
     { signal, cache: "no-store" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { mode?: string };
   return decodeSessionPermissionMode(body.mode);
 }
@@ -415,7 +491,7 @@ export async function setHarnessSessionMode(
       body: JSON.stringify({ mode: encodeSessionPermissionMode(mode) }),
     },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { mode?: string };
   return decodeSessionPermissionMode(body.mode);
 }
@@ -426,7 +502,7 @@ export async function deleteHarnessSession(sessionId: string): Promise<void> {
     `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/delete`,
     { method: "POST" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /**
@@ -443,7 +519,7 @@ export async function fetchSessionTranscriptMessages(
     `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/transcript`,
     { signal, cache: "no-store" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   return decodeSessionTranscript(await response.json());
 }
 
@@ -472,7 +548,7 @@ export async function fetchHarnessUserModel(
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     entries?: { key?: string; description?: string }[];
     size_bytes?: number | string;
@@ -506,7 +582,7 @@ export async function harnessScheduleAction(
   const response = await fetch(path, {
     method: action === "delete" ? "DELETE" : "POST",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /**
@@ -523,7 +599,7 @@ export async function listScheduleRows(
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   return decodeScheduleRows(await response.json());
 }
 
@@ -548,7 +624,7 @@ export async function saveHarnessSchedule(
       body,
     },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /** Reads a schedule's fire history, newest first. */
@@ -560,7 +636,7 @@ export async function listScheduleFires(
     `${HARNESS_API}/schedules/${encodeURIComponent(name)}/fires`,
     { signal, cache: "no-store" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   return decodeScheduleFires(await response.json());
 }
 
@@ -577,7 +653,7 @@ export async function listHarnessCommands(
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     commands?: { name?: string; description?: string }[];
   };
@@ -610,7 +686,7 @@ export async function listHarnessSkills(
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     skills?: {
       name?: string;
@@ -644,7 +720,7 @@ export async function listHarnessModels(signal?: AbortSignal): Promise<
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     models?: {
       id?: string;
@@ -811,7 +887,7 @@ export async function saveHarnessRouter(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify(config),
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /**
@@ -835,7 +911,7 @@ export async function connectHarnessGateway(
       token: token?.trim() || undefined,
     }),
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 // ── Controller: provider management ─────────────────────────────────────────
@@ -863,7 +939,7 @@ export async function listHarnessProviders(
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     providers?: {
       name?: string;
@@ -901,7 +977,7 @@ export async function listKnownHarnessProviders(
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     known?: {
       name?: string;
@@ -945,7 +1021,7 @@ export async function testHarnessProviderKey(
     `${CONTROL_API}/providers/${encodeURIComponent(name)}/test`,
     { method: "POST" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     ok?: boolean;
     status?: number;
@@ -966,14 +1042,14 @@ export async function removeHarnessProvider(name: string): Promise<void> {
     `${CONTROL_API}/providers/${encodeURIComponent(name)}`,
     { method: "DELETE" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /** Restarts the daemon with its current config — how a provider block just
  *  added to auth.yaml (guided add) becomes visible to mecated. */
 export async function restartHarnessDaemon(): Promise<void> {
   const response = await fetch(`${CONTROL_API}/restart`, { method: "POST" });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /**
@@ -990,7 +1066,7 @@ export async function setActiveHarnessProvider(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ kind }),
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     provider?: string;
     selectedProvider?: string | null;
@@ -1033,7 +1109,7 @@ export async function listDisabledHarnessSkills(
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     disabled?: { name?: string; description?: string }[];
   };
@@ -1057,7 +1133,7 @@ export async function createHarnessSkill(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name, body }),
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /** Reads a skill's SKILL.md from the controller (either side of disabled). */
@@ -1069,7 +1145,7 @@ export async function fetchHarnessSkillBody(
     `${CONTROL_API}/skills/${requireSkillName(name)}/body`,
     { signal, cache: "no-store" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { body?: string };
   return body.body ?? "";
 }
@@ -1092,7 +1168,7 @@ export async function createHarnessSkillFiles(
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({ name: requireSkillName(name), files }),
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /** One bundled file in a skill's folder. */
@@ -1111,7 +1187,7 @@ export async function listHarnessSkillFiles(
     `${CONTROL_API}/skills/${requireSkillName(name)}/files`,
     { signal, cache: "no-store" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { files?: HarnessSkillFile[] };
   return (body.files ?? []).filter(
     (file) => typeof file?.path === "string" && typeof file?.size === "number",
@@ -1129,7 +1205,7 @@ export async function fetchHarnessSkillFile(
     `${CONTROL_API}/skills/${requireSkillName(name)}/file?path=${encodeURIComponent(path)}`,
     { signal, cache: "no-store" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { content?: string };
   return body.content ?? "";
 }
@@ -1147,7 +1223,7 @@ export async function saveHarnessSkillBody(
       body: JSON.stringify({ body }),
     },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /** Moves a skill in or out of the disabled holding area. RESTARTS the daemon. */
@@ -1159,7 +1235,7 @@ export async function setHarnessSkillEnabled(
     `${CONTROL_API}/skills/${requireSkillName(name)}/${enabled ? "enable" : "disable"}`,
     { method: "POST" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /** Deletes a skill's directory from the workspace. RESTARTS the daemon. */
@@ -1168,7 +1244,7 @@ export async function deleteHarnessSkill(name: string): Promise<void> {
     `${CONTROL_API}/skills/${requireSkillName(name)}`,
     { method: "DELETE" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
 }
 
 /** Reads the daemon's RESOLVED agent inventory (what it can delegate to now). */
@@ -1179,7 +1255,7 @@ export async function listHarnessAgents(
     signal,
     cache: "no-store",
   });
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     agents?: { name?: string; description?: string }[];
   };
@@ -1202,7 +1278,7 @@ export async function startHarnessGatewayOAuth(
 ): Promise<string> {
   const query = new URLSearchParams({ name, url });
   const response = await fetch(`${CONTROL_API}/mcp/oauth/start?${query}`);
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { authorizationUrl?: string };
   if (!body.authorizationUrl) {
     throw new Error("gateway returned no authorization URL");
@@ -1264,7 +1340,7 @@ export async function steerHarnessRun(
       body: JSON.stringify({ text, message_id: messageId }),
     },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
     outcome?: string;
     message_id?: string;
@@ -1290,7 +1366,7 @@ export async function cancelHarnessSteer(
     `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/steer-cancel`,
     { method: "POST" },
   );
-  if (!response.ok) throw new Error(await readError(response));
+  if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { outcome?: string };
   return body.outcome === "retracted" ? "retracted" : "none_pending";
 }
