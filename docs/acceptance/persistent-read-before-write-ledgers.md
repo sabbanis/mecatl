@@ -1,7 +1,7 @@
 # Persistent read-before-write ledgers — acceptance plan
 
 **Phase:** storage-independent file-mutation safety
-**Status:** in-progress, 2026-08-26. Reopened for the panel-review repair wave: Workspace and ReadLedger ownership are being separated at Environment.
+**Status:** landed, 2026-08-26. Panel-repair wave completed: Workspace is content-only and Environment independently owns the selected ReadLedger.
 **Issue:** [stacklok/mecatl#888](https://github.com/stacklok/mecatl/issues/888).
 **ADR:** [ADR-0278](../adr/0278-persistent-read-before-write-ledgers.md) — separates session-scoped ledger storage from file-content storage while preserving fail-closed mutation and final filesystem CAS.
 **Accumulator branch:** `acc/persistent-read-ledgers` (off `main`).
@@ -20,29 +20,29 @@ The doc is organized scenario-first because acceptance is about what the running
 
 Scenarios are listed in implementation order. Each is independently demoable; later scenarios assume earlier ones but do not change their acceptance criteria. Within each scenario, ACs progress from the contract and default path through durable storage to fail-closed tool behaviour.
 
-### Scenario 1 — The same file workspace can use an independently selected session ledger
+### Scenario 1 — One Environment composes independent file-content and evidence capabilities
 
-A host constructs two Workspaces over the same file-content backend and binds each to a distinct session-scoped ledger. Agent-facing Read records the exact opaque version returned by `ReadVersion`; Edit and existing-file Write retrieve that evidence through the ledger rather than an adapter-owned map. The ledger operations are context-aware and return errors, so unavailable storage cannot be mistaken for an absent or successful record. Workspace remains in `engine/tool`, preserving the cycle break and version protocol described by [`architecture.md` § ports and adapter boundaries](../architecture.md) and [`AGENTS.md` — `FileSystem`/`Workspace`/`Environment` and ADR-0208 invariants](../../AGENTS.md).
+A host constructs Environments that may share the exact same Workspace/content backend while carrying distinct session-scoped ledgers. Agent-facing Read records the exact opaque version returned by `ReadVersion`; Edit and existing-file Write retrieve that evidence from `Environment.ReadLedger`, not from Workspace. Ledger operations are context-aware and error-bearing, so unavailable storage cannot be mistaken for absence or success. Workspace, ReadLedger, and Environment remain in `engine/tool`, preserving the cycle break and version protocol described by [`architecture.md` § ports and adapter boundaries](../architecture.md) and [`AGENTS.md` — `FileSystem`/`Workspace`/`Environment` and ADR-0208 invariants](../../AGENTS.md).
 
 **Work:**
-- engine domain (`engine/tool`): define the session-bound read-ledger capability and expose failure-distinguishing record/lookup operations through Workspace; keep `FileVersion` opaque and `LedgerKey` I/O-free.
-- reference adapters (`engine/adapter/*`): provide the in-memory default and a reusable ledger conformance suite; let conforming Workspaces receive a ledger without coupling that ledger to their file-content backend.
-- root adapters (`internal/adapter/*`): migrate osfs and ACP to the error-bearing ledger signature while preserving their existing default in-memory behavior; production selection of a durable ledger is deferred to #889.
-- compatibility: update the engine API baselines and changelog for the intentional Workspace surface change.
+- engine domain (`engine/tool`): define the session-bound read-ledger capability, keep Workspace content-only, and make Environment carry both mandatory capabilities; keep `FileVersion` opaque with a narrow persistence codec and keep `LedgerKey` I/O-free.
+- reference adapters (`engine/adapter/*`): provide the in-memory default and a reusable ledger conformance suite; file-content Workspaces do not import or own ledgers.
+- composition and root adapters (`internal/app`, `internal/adapter/*`): pair each Environment with a ledger while preserving the exact osfs, ACP, no-fs, remote, or fork content backend; production selection of a durable ledger is deferred to #889.
+- compatibility: update the engine API baselines and changelog for the intentional Workspace and Environment surface changes.
 
 **Acceptance:**
 - AC1.1: Recording a read stores the exact opaque `FileVersion` supplied by the corresponding version-bearing read, and lookup returns that same valid token without reading file contents, preserving [ADR-0208](../adr/0208-execution-environment.md)'s no-I/O evidence contract.
   - verify: `TestInvariant_persistent_read_ledger_exact_version`
 - AC1.2: Relative and ordinary in-root absolute spellings converge through the existing I/O-free lexical key rule; physical aliases may conservatively miss without filesystem inspection.
   - verify: `TestInvariant_persistent_read_ledger_lexical_key`
-- AC1.3: Two Workspaces over one file-content backend can select different ledger instances, and a record in one session is absent from the other.
-  - verify: `TestPersistentReadLedgers_Scenario1_IndependentSessionLedgers`
-- AC1.4: With no durable ledger selected, the standard composition uses a fresh in-memory ledger and retains the existing per-live-Workspace reset behaviour.
+- AC1.3: Two Environments can carry the exact same Workspace/content backend with different ledger instances, and a record in one session is absent from the other.
+  - verify: `TestPersistentReadLedgers_EnvironmentSeparatesWorkspaceAndLedger`, `TestPersistentReadLedgers_Scenario1_IndependentSessionLedgers`
+- AC1.4: With no durable ledger selected, standard Environment composition supplies a fresh in-memory ledger; rebuilding the Environment starts with no evidence.
   - verify: `TestPersistentReadLedgers_Scenario1_DefaultMemoryLifecycle`
-- AC1.5: The ledger and Workspace contracts remain in `engine/tool`; neither imports a root adapter or Redis dependency.
+- AC1.5: The ledger, Workspace, and Environment contracts remain in `engine/tool`; neither imports a root adapter or Redis dependency.
   - verify: `TestNoCoreImportsAdapter`, `TestCoreImportDirection`, `TestNoCyclesAmongCore`
-- AC1.6: A forked child receives a fresh child-session ledger and never inherits or writes the parent session's ledger, including when the parent selected durable storage.
-  - verify: `TestPersistentReadLedgers_Scenario1_ForkLedgerIsolation`
+- AC1.6: Every delegation child receives a fresh child ledger and never inherits or writes parent evidence. Isolated children pair it with the fork Workspace; direct-write and other base-sharing children retain the exact parent Workspace/content backend and runner.
+  - verify: `TestPersistentReadLedgers_Scenario1_ForkLedgerIsolation`, `TestPersistentReadLedgers_ForkPreservesContentBackendAndFreshLedger`, `TestPersistentReadLedgers_DirectWritePreservesWorkspaceAndFreshLedger`
 
 ---
 
@@ -62,14 +62,14 @@ Two independently constructed Redis ledger handles bind to the same session scop
   - verify: `TestPersistentReadLedgers_Scenario2_RedisSessionIsolation`
 - AC2.3: Redis ledger storage carries an injectively encoded session scope plus normalized path identity and opaque version data only; adversarial delimiters cannot make two `(session, path)` pairs address the same entry, and the ledger API has no file-content operation.
   - verify: `TestInvariant_persistent_read_ledger_storage_independence`
-- AC2.4: Missing state returns “not recorded,” while timeout, unavailable transport, undecodable data, or corrupt state returns an error distinguishable from absence.
-  - verify: `TestPersistentReadLedgers_Scenario2_RedisFailureClassification`
+- AC2.4: Missing state returns “not recorded,” while timeout, unavailable transport, missing/null/wrongly typed fields, undecodable data, or unknown formats return an error distinguishable from absence. Invalid zero versions are rejected before storage; valid empty opaque tokens round-trip.
+  - verify: `TestPersistentReadLedgers_Scenario2_RedisFailureClassification`, `TestPersistentReadLedgers_RedisCorruptStateFailsClosed`, `TestPersistentReadLedgers_InvalidVersionRejected`, `TestFileVersionPersistenceRoundTrip`
 - AC2.5: The in-memory and Redis implementations pass one shared read-ledger conformance contract entirely offline.
   - verify: `TestReadLedgerConformance`
 - AC2.6: Concurrent record and lookup operations on one session ledger are race-free, and independently opened Redis handles converge on complete opaque tokens rather than torn or partially decoded state.
   - verify: `TestPersistentReadLedgers_Scenario2_ConcurrentAccess`
-- AC2.7: Removing a Redis ledger scope removes all evidence for that session; reopening or reusing the same session ID starts with no recorded version and cannot inherit a deleted session's authorization evidence.
-  - verify: `TestPersistentReadLedgers_Scenario2_DeleteAndReuseStartsEmpty`
+- AC2.7: Canonical and conditional Redis session deletion atomically remove the ledger with the session sidecars; explicit ledger-only cleanup is idempotent. Reopening or reusing the same session ID starts with no evidence.
+  - verify: `TestPersistentReadLedgers_Scenario2_DeleteAndReuseStartsEmpty`, `TestPersistentReadLedgers_RedisSessionDeletionRemovesLedger`, `TestPersistentReadLedgers_RedisConditionalDeletionRemovesLedger`
 - AC2.8: Distinct session/path pairs containing separators or common prefix material remain distinct Redis addresses and cannot observe one another's evidence.
   - verify: `TestPersistentReadLedgers_Scenario2_InjectiveRedisIdentity`
 
@@ -79,7 +79,7 @@ Two independently constructed Redis ledger handles bind to the same session scop
 
 The built-in Read/Edit/Write tools use the selected ledger's error-bearing operations. A failed lookup or a corrupt record never authorizes mutation; a changed file still fails before replacement; and a change racing after the tool's current read is still stopped by `ReplaceFile`. New-file Write remains create-only and needs no fabricated prior-read evidence. These are the load-bearing mutation rules in [ADR-0208](../adr/0208-execution-environment.md) and [`IMPLEMENTATION-NOTES.md` § Version-aware Workspace mutation](../design/IMPLEMENTATION-NOTES.md).
 
-A post-mutation ledger-write failure is reported honestly: the already-successful create/replace is not rolled back or described as untouched, but no new evidence is assumed and a later existing-file mutation requires another successful Read. This preserves data truth while failing closed for the next authorization attempt.
+A post-mutation ledger-write failure is reported honestly: the already-successful create/replace is not rolled back or described as untouched, and no new evidence is assumed. Existing evidence is not fabricated or invalidated: a later existing-file mutation may proceed only when that evidence still equals the current version and final `ReplaceFile` CAS succeeds.
 
 **Work:**
 - file tools (`engine/adapter/fstools`): thread context and ledger errors through Read, Edit, and Write; distinguish absent evidence from unavailable/corrupt ledger state.
@@ -87,7 +87,7 @@ A post-mutation ledger-write failure is reported honestly: the already-successfu
 - living docs: revise architecture, implementation notes, AGENTS.md, and ADR-0027 ledger lifetime/fidelity entries; regenerate public API and documentation artifacts.
 
 **Acceptance:**
-- AC3.1: If recording a successful Read fails, the tool reports that the read evidence was not retained and a later Edit or existing-file Write is refused until a Read is recorded successfully.
+- AC3.1: If recording a successful Read fails, the tool reports that no new evidence was retained. It does not fabricate or invalidate prior evidence; a later mutation remains authorized only if an existing recorded version equals the current content and final CAS succeeds.
   - verify: `TestPersistentReadLedgers_Scenario3_ReadRecordFailureFailsClosed`
 - AC3.2: An unavailable or corrupt ledger lookup refuses Edit and existing-file Write before `ReplaceFile` is called; it is never treated as an unrecorded-but-otherwise-authorized read.
   - verify: `TestPersistentReadLedgers_Scenario3_LookupFailurePreventsMutation`
@@ -97,11 +97,11 @@ A post-mutation ledger-write failure is reported honestly: the already-successfu
   - verify: `TestEditConditionalReplaceRejectsConcurrentChange`, `TestWriteConditionalReplaceRejectsConcurrentChange`
 - AC3.5: New-file Write remains create-only and does not require a ledger entry; concurrent creators still produce exactly one winner.
   - verify: `TestPersistentReadLedgers_Scenario3_CreateOnlyUnchanged`
-- AC3.6: If persisting the new version after a successful create or replace fails, the tool reports both facts without rollback, and the next existing-file mutation is refused until another successful Read records evidence.
+- AC3.6: If persisting the new version after a successful create or replace fails, the tool reports both facts without rollback and establishes no new evidence. Existing evidence retains only its ordinary exact-version meaning and remains subject to final CAS.
   - verify: `TestPersistentReadLedgers_Scenario3_PostMutationRecordFailure`
 - AC3.7: Existing osfs, memfs, ACP, no-fs, remoteenv, and file-tool conformance/regression suites remain green under the revised ledger seam.
   - verify: inspection — each adapter's existing conformance entry point runs under `task test`; the aggregate gate, rather than a fabricated cross-module test name, proves this matrix
-- AC3.8: ACP ledger record/lookup remains independently synchronized from its file RPC path, so a parked file RPC does not block an otherwise local in-memory ledger operation.
+- AC3.8: An Environment-selected ledger remains independently synchronized from ACP's file RPC path, so a parked file RPC does not block a local in-memory ledger operation.
   - verify: `TestFSWorkspaceLedgerNotBlockedByParkedRPC`
 
 ## Out of scope
@@ -117,14 +117,14 @@ A post-mutation ledger-write failure is reported honestly: the already-successfu
 
 ## Cross-cutting deliverables
 
-- Add [ADR-0278](../adr/0278-persistent-read-before-write-ledgers.md) and mark only ADR-0208 decision 6 as superseded when the decision is accepted.
-- Update `docs/architecture.md`, `docs/architecture/ports.md`, `docs/design/IMPLEMENTATION-NOTES.md`, and the `AGENTS.md` invariant so they no longer claim the ledger is necessarily in-memory or reset with every rebuilt Workspace.
+- Add [ADR-0278](../adr/0278-persistent-read-before-write-ledgers.md), which declares ADR-0208 decision 6 superseded; do not edit the frozen ADR-0208 text.
+- Update `docs/architecture.md`, `docs/architecture/ports.md`, `docs/design/IMPLEMENTATION-NOTES.md`, and the `AGENTS.md` invariant so Workspace is content-only and Environment independently carries the selected ledger.
 - Replace ADR-0027's “reset-by-design” read-ledger fidelity row with the split default-memory/durable-selected lifecycle and add any outlives-a-call Redis ledger resource to List 1.
 - Update `engine/CHANGELOG.md` and `engine/api/*.txt` under the engine compatibility policy.
 
 ## Sequencing recommendation
 
-First land the error-bearing ledger contract, in-memory adapter, and conformance suite. Then migrate Workspace implementations and file tools while retaining all current mutation regressions. Add the Redis implementation only after the shared contract is green, then run cross-handle/session failure proofs and finish the living/API documentation. This order keeps every backend judged by one contract and prevents Redis details from shaping the engine interface.
+First define the error-bearing ledger contract, in-memory adapter, and conformance suite. Then separate Workspace content operations from Environment-owned ledger selection and migrate file tools and child construction without replacing content backends. Add and harden the Redis implementation only after the shared contract is green, integrate its key into atomic session deletion, then finish living/API documentation. This keeps every backend judged by one contract and prevents Redis details from shaping the engine interface.
 
 ## Named tests landing in this plan
 
@@ -133,6 +133,13 @@ First land the error-bearing ledger contract, in-memory adapter, and conformance
 - `TestPersistentReadLedgers_Scenario1_IndependentSessionLedgers`
 - `TestPersistentReadLedgers_Scenario1_DefaultMemoryLifecycle`
 - `TestPersistentReadLedgers_Scenario1_ForkLedgerIsolation`
+- `TestPersistentReadLedgers_EnvironmentSeparatesWorkspaceAndLedger`
+- `TestPersistentReadLedgers_ForkPreservesContentBackendAndFreshLedger`
+- `TestPersistentReadLedgers_DirectWritePreservesWorkspaceAndFreshLedger`
+- `TestFileVersionPersistenceRoundTrip`
+- `TestPersistentReadLedgers_RedisCorruptStateFailsClosed`
+- `TestPersistentReadLedgers_RedisSessionDeletionRemovesLedger`
+- `TestPersistentReadLedgers_RedisConditionalDeletionRemovesLedger`
 - `TestPersistentReadLedgers_Scenario2_RedisReopen`
 - `TestPersistentReadLedgers_Scenario2_RedisSessionIsolation`
 - `TestInvariant_persistent_read_ledger_storage_independence`
@@ -160,9 +167,9 @@ First land the error-bearing ledger contract, in-memory adapter, and conformance
 ## Deferred decisions and known risks
 
 - **Durable-key retention and capacity.** Deleting a session's ledger scope is required so a reused ID cannot inherit evidence; age-based pruning/TTL remains deferred to #889. Until production lifecycle wiring lands, operators must treat the proof adapter's non-expiring key growth as an availability/capacity risk.
-- **Post-mutation ledger-write failure cannot be atomic with a separately selected content backend.** The mutation remains truthful and durable, the failed evidence is not assumed, and the next mutation requires a successful Read; cross-store distributed transactions are not introduced.
+- **Post-mutation ledger-write failure cannot be atomic with a separately selected content backend.** The mutation remains truthful and durable, the failed operation establishes no new evidence, and any existing evidence remains governed by exact-version equality plus final CAS; cross-store distributed transactions are not introduced.
 - **Redis key schema becomes durable adapter state.** Its representation must be versioned and corruption must fail closed so #889 can reuse it without an in-place ambiguity.
-- **Intentional core API change.** Error-bearing ledger operations are required to distinguish absence from outage; the compatibility artifacts and changelog make that break explicit rather than preserving a fail-open signature.
+- **Intentional core API change.** Workspace is content-only, Environment requires a separate ReadLedger, and ledger operations are error-bearing so absence is distinct from outage; compatibility artifacts and changelog make the break explicit.
 
 ## Exit criteria
 

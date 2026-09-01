@@ -559,22 +559,24 @@ Two deliberate cycle-breaks worth noting, documented in code:
 - `port` imports `tool` and `prompt` (because `LLMRequest` carries
   `[]tool.ToolSpec` and `prompt.Layered`) — see the package note at the top of
   `engine/port/llm.go`.
-- `FileSystem`/`Workspace`/`Environment` live in `engine/tool`, **not**
+- `FileSystem`/`Workspace`/`ReadLedger`/`Environment` live in `engine/tool`, **not**
   `engine/port`, because `port` already imports `tool` while
   `tool.Tool.Execute` takes an `Environment`; defining them in `port` would form
   a `port↔tool` cycle. See the package note in `engine/tool/tool.go`.
-  `Environment` bundles a `Workspace`, an optional bound `CommandRunner`, and a
-  backend identity `EnvironmentRef`. FS tools obtain `env.Workspace()`; the Bash
+  `Environment` bundles a non-null content-only `Workspace`, a separately selected
+  non-null `ReadLedger`, an optional bound `CommandRunner`, and a backend identity
+  `EnvironmentRef`. FS tools obtain `env.Workspace()` and `env.ReadLedger()`; the Bash
   tool obtains `env.CommandRunner()`. Workspace file mutation is version-aware:
   agent-facing Read records an opaque `FileVersion`, new-file Write is create-only,
   and Edit/existing-file Write finish with conditional replace. Public Workspace
-  exposes no unconditional mutation. Its file-content backend and session-scoped
-  `tool.ReadLedger` are independently selected: default Workspace constructors use a
-  fresh in-memory ledger, while a caller may inject a durable ledger without changing
-  filesystem storage. Ledger absence is an ordinary read-before-mutate refusal;
-  storage/decode/corruption errors fail closed. Forked Environments receive a fresh
-  child ledger rather than inheriting parent evidence, and the final conditional
-  `ReplaceFile` remains the concurrency guard. See [ADR 0278](adr/0278-persistent-read-before-write-ledgers.md).
+  exposes no unconditional mutation or ledger operation. Default Environment
+  composition supplies a fresh in-memory ledger, while a caller may select a durable
+  ledger without changing filesystem storage. Ledger absence is an ordinary
+  read-before-mutate refusal; storage/decode/corruption errors fail closed. Every child
+  receives a fresh ledger: isolated children pair it with their fork Workspace, while
+  base-sharing/direct-write children retain the exact parent content backend and runner.
+  The final conditional `ReplaceFile` remains the concurrency guard. See
+  [ADR 0278](adr/0278-persistent-read-before-write-ledgers.md).
   As of [ADR 0214](adr/0214-environment-persistence.md), `EnvironmentRef` is a DURABLE
   snapshot field: a non-in-tree ref persists across a restart and reattaches a live
   `Environment` at run entry through `server.Config.EnvironmentResolver`; the in-tree

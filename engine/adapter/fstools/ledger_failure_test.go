@@ -70,8 +70,8 @@ func (w *ledgerFailureWorkspace) CreateFile(ctx context.Context, path string, da
 }
 
 // TestPersistentReadLedgers_Scenario3_ReadRecordFailureFailsClosed pins AC3.1:
-// if recording a successful Read fails, the tool reports that the read
-// evidence was not retained, and a LATER Edit or existing-file Write is
+// if recording a successful Read fails, the tool reports that no new evidence
+// was retained. This fixture has no older evidence, so a later mutation is
 // refused until a Read is recorded successfully.
 func TestPersistentReadLedgers_Scenario3_ReadRecordFailureFailsClosed(t *testing.T) {
 	base := memfs.NewWorkspace("/")
@@ -108,6 +108,27 @@ func TestPersistentReadLedgers_Scenario3_ReadRecordFailureFailsClosed(t *testing
 	}), ws, ledger)
 	if editRes.IsError {
 		t.Fatalf("Edit after a SUCCESSFUL Read-record should succeed, got: %s", editRes.Content)
+	}
+
+	// A failed refresh does not invalidate older matching evidence. The first
+	// Read records the current version; the second Read sees unchanged bytes but
+	// fails to persist its equivalent token. Normal equality still authorizes
+	// the following Edit, and final ReplaceFile CAS remains the race guard.
+	base = memfs.NewWorkspace("/")
+	seed(t, base, "same.txt", "same\n")
+	ws = &ledgerFailureWorkspace{Workspace: base}
+	ledger = &ledgerFailureLedger{base: ledgerFor(base)}
+	execWithLedger(t, ReadTool{}, call(t, "Read", map[string]any{"path": "same.txt"}), ws, ledger)
+	ledger.recordReadErr = errSimulatedLedgerRecord
+	failedRefresh := execWithLedger(t, ReadTool{}, call(t, "Read", map[string]any{"path": "same.txt"}), ws, ledger)
+	if !failedRefresh.IsError {
+		t.Fatal("Read refresh with a failed RecordRead must report the failure")
+	}
+	editRes = execWithLedger(t, EditTool{}, call(t, "Edit", map[string]any{
+		"path": "same.txt", "old_string": "same", "new_string": "changed",
+	}), ws, ledger)
+	if editRes.IsError {
+		t.Fatalf("Edit with older matching evidence should succeed, got: %s", editRes.Content)
 	}
 }
 
@@ -197,9 +218,9 @@ func TestPersistentReadLedgers_Scenario3_CreateOnlyUnchanged(t *testing.T) {
 
 // TestPersistentReadLedgers_Scenario3_PostMutationRecordFailure pins AC3.6: if
 // persisting the new version after a successful create or replace fails, the
-// tool reports BOTH the successful mutation and the record failure — WITHOUT
-// rollback — and the NEXT existing-file mutation is refused until another
-// successful Read records evidence.
+// tool reports BOTH the successful mutation and the record failure without
+// rollback. In these fixtures the content changed, so older evidence is stale
+// and the next existing-file mutation is refused by normal version equality.
 func TestPersistentReadLedgers_Scenario3_PostMutationRecordFailure(t *testing.T) {
 	t.Run("Edit", func(t *testing.T) {
 		base := memfs.NewWorkspace("/")

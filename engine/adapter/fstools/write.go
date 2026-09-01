@@ -138,11 +138,10 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 		}
 		// Re-record the new version so a subsequent Edit/Write in the same turn
 		// is valid. The overwrite ALREADY SUCCEEDED; a failure here is reported
-		// honestly WITHOUT rollback (ADR 0278) — the next existing-file mutation
-		// on this path is refused until another successful Read records evidence.
+		// honestly WITHOUT rollback and establishes no new evidence (ADR 0278).
 		if err := ledger.RecordRead(ctx, tool.LedgerKey(ws.Root(), args.Path), newVer); err != nil {
 			return session.NewToolError(in.ID, fmt.Sprintf(
-				"overwrote %q (%d bytes), but failed to retain read evidence for the new version: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
+				"overwrote %q (%d bytes), but failed to retain read evidence for the new version: %v. No new evidence was stored; any earlier evidence remains subject to version checks.",
 				args.Path, len(args.Content), err)), nil
 		}
 		return session.NewToolResult(in.ID, fmt.Sprintf("overwrote %q (%d bytes)", args.Path, len(args.Content))), nil
@@ -159,11 +158,10 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 			return session.ToolResult{}, fmt.Errorf("write: creating %q: %w", args.Path, err)
 		}
 		// The create ALREADY SUCCEEDED; a failure here is reported honestly
-		// WITHOUT rollback (ADR 0278) — a later mutation on this path is
-		// refused until another successful Read records evidence.
+		// WITHOUT rollback and establishes no new evidence (ADR 0278).
 		if err := ledger.RecordRead(ctx, tool.LedgerKey(ws.Root(), args.Path), newVer); err != nil {
 			return session.NewToolError(in.ID, fmt.Sprintf(
-				"wrote %q (%d bytes), but failed to retain read evidence for it: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
+				"wrote %q (%d bytes), but failed to retain read evidence for it: %v. No new evidence was stored; any earlier evidence remains subject to version checks.",
 				args.Path, len(args.Content), err)), nil
 		}
 		return session.NewToolResult(in.ID, fmt.Sprintf("wrote %q (%d bytes)", args.Path, len(args.Content))), nil

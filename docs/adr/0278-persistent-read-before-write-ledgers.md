@@ -2,7 +2,7 @@
 
 - Status: Accepted
 - Date: 2026-08-26
-- Scope: Workspace read-before-write evidence, adapter composition, and durable ledger storage
+- Scope: Environment capability ownership, Workspace file-content operations, and durable read-ledger storage
 - Supersedes: ADR 0208 decision 6 only (live-Workspace/in-memory ledger lifetime)
 - Superseded by: none
 
@@ -16,7 +16,7 @@ The existing `RecordRead` and `RecordedVersion` signatures also cannot distingui
 
 ## Decision
 
-Define an error-bearing, session-bound read-ledger capability in `engine/tool`. A Workspace composes its file-content operations with one selected ledger and continues to present the combined capability to file tools; the ledger implementation and file-content implementation may be selected independently.
+Define an error-bearing, session-bound read-ledger capability in `engine/tool`. `Workspace` remains the file-content capability only; it does not own or expose ledger operations. An immutable `Environment` separately carries a non-null Workspace and a non-null ReadLedger, so composition can select their implementations and lifetimes independently without reconstructing or replacing the content backend.
 
 Ledger operations accept context and distinguish three outcomes:
 
@@ -24,23 +24,23 @@ Ledger operations accept context and distinguish three outcomes:
 2. no entry for the normalized path; and
 3. a storage, decode, or corruption error.
 
-The ledger stores the exact opaque token supplied by the corresponding `ReadVersion`. Workspace adapters continue to own path interpretation and apply the existing I/O-free `LedgerKey` normalization before storage. Ledger implementations never inspect file contents or resolve physical aliases.
+The ledger stores the exact opaque token supplied by the corresponding `ReadVersion`. File tools apply the existing I/O-free `LedgerKey` normalization from the Workspace root and requested path before storage. Ledger implementations never inspect file contents or resolve physical aliases. A narrow persistence codec round-trips valid opaque versions, including an empty token, and rejects the invalid zero `FileVersion`; it does not expose version semantics to callers.
 
-The default constructors retain a fresh in-memory ledger, preserving the existing behavior for deployments that select no durable storage. A reusable engine conformance suite defines exact-token round-trip, session isolation, absence, concurrent access, and error behavior. A Redis implementation in the root adapter layer is the first non-memory proof: it is bound to one session scope, uses a versioned validated representation, and borrows the existing Redis client's lifecycle. Its physical addressing is injective across `(session, normalized path)` pairs — path bytes are not ambiguously concatenated with the session identifier; a per-session Redis hash with normalized paths as fields is the preferred existing-store pattern. It does not read or write file contents and is not wired as a production default by this decision.
+Default Environment construction supplies a fresh in-memory ledger, preserving existing behavior for deployments that select no durable storage. Every delegation child receives a fresh ledger: an isolated child pairs it with the fork Workspace, while a base-sharing or direct-write child retains the exact parent Workspace/content backend and runner. No child obtains isolation by reopening `Workspace.Root()` as osfs, and no failure falls back to parent evidence. A reusable engine conformance suite defines exact-token round-trip, invalid-version rejection, session isolation, absence, concurrent access, and error behavior. A Redis implementation in the root adapter layer is the first non-memory proof: it is bound to one session scope, uses a versioned validated representation, and borrows the existing Redis client's lifecycle. Its physical addressing is injective across `(session, normalized path)` pairs — path bytes are not ambiguously concatenated with the session identifier; a per-session Redis hash with normalized paths as fields is the preferred existing-store pattern. It does not read or write file contents and is not wired as a production default by this decision.
 
-A durable ledger exposes lifecycle cleanup to its composition owner. Removing a session's Redis ledger scope removes all of that session's evidence, so reopening or reusing the same session ID cannot inherit a deleted session's prior-read authorization. This is correctness cleanup, not an age-based retention policy; TTL and time-based pruning remain deferred.
+A durable ledger exposes lifecycle cleanup to its composition owner. Both canonical Redis session-deletion scripts remove the ledger hash atomically with the snapshot and other session sidecars; an explicit idempotent ledger-only reset remains available. Reopening or reusing the same session ID therefore cannot inherit a deleted session's prior-read authorization. This is correctness cleanup, not an age-based retention policy; TTL and time-based pruning remain deferred.
 
 File tools fail closed:
 
-- a failed Read evidence write is reported and establishes no prior read;
+- a failed Read evidence write is reported and establishes no new evidence; any older evidence remains usable only if ordinary version equality and final CAS still succeed;
 - an unavailable or corrupt lookup refuses Edit and existing-file Write before mutation;
 - an absent entry preserves the ordinary read-before-mutate refusal;
 - stale evidence preserves the changed-since-read refusal; and
 - `ReplaceFile` remains the final concurrency guard.
 
-New-file Write remains create-only and does not require prior-read evidence. After a successful create or replace, the tool records the returned new version. If that post-mutation ledger write fails, the content mutation is not rolled back or described as untouched: the tool reports that mutation succeeded but evidence persistence failed, and a later existing-file mutation requires another successful Read. No distributed transaction is introduced between independently selected stores.
+New-file Write remains create-only and does not require prior-read evidence. After a successful create or replace, the tool records the returned new version. If that post-mutation ledger write fails, the content mutation is not rolled back or described as untouched: the tool reports that mutation succeeded but no new evidence was persisted. Existing evidence is neither fabricated nor invalidated; a later existing-file mutation still requires its recorded version to equal the current content and remains subject to final `ReplaceFile` CAS. No distributed transaction is introduced between independently selected stores.
 
-This decision does not change filesystem content scoping, Environment identity, Bash, sandboxing, or fork/merge semantics.
+This decision changes Environment capability composition but not filesystem content scoping, Environment identity, Bash, sandboxing, or fork/merge namespace semantics.
 
 ## Consequences
 
@@ -54,9 +54,9 @@ This decision does not change filesystem content scoping, Environment identity, 
 
 **Costs and limits:**
 
-- The exported Workspace ledger methods change to carry context and errors; engine API baselines and the changelog must record the intentional compatibility impact.
-- Every Workspace implementation and fake must migrate to the error-bearing seam, even when it uses the in-memory default.
-- Independently stored content and evidence cannot be updated atomically without a distributed transaction. A post-mutation ledger failure therefore leaves truthful changed content but no reusable evidence.
+- The exported Workspace ledger methods are removed and Environment gains a required ReadLedger capability; engine API baselines and the changelog record the intentional compatibility impact.
+- Every Environment construction site and fake must supply a ledger, even when file tools are absent; Workspace implementations remain content-only.
+- Independently stored content and evidence cannot be updated atomically without a distributed transaction. A post-mutation ledger failure therefore leaves truthful changed content and establishes no new evidence; older matching evidence retains its ordinary meaning.
 - A durable key schema needs explicit versioning, corruption handling, lifecycle ownership, and later retention decisions. Session deletion clears authorization evidence, but without an age-based policy abandoned non-deleted session scopes can still grow Redis usage until production lifecycle work chooses a retention policy.
 - Redis is a contract proof in this decision, not production mecak8s filesystem wiring; that remains stacklok/mecatl#889.
 

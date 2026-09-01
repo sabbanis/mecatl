@@ -962,13 +962,10 @@ func TestFSWorkspaceLedgerCrossForm(t *testing.T) {
 	}
 }
 
-// TestFSWorkspaceLedgerNotBlockedByParkedRPC proves the split synchronization
-// (ADR 0208, ADR 0278): the ledger (a SELECTED tool.ReadLedger, independently
-// synchronized) is independent of the RPC CAS mutex (callMu), so a parked RPC
-// mutation holding callMu NEVER blocks a ledger RecordRead/RecordedVersion.
-// Before the split (a single mu for both), a wedged fs/* round-trip would have
-// wedged the ledger too. AC3.8 (docs/adr/0278): ACP ledger record/lookup stays
-// independently synchronized from its file RPC path.
+// TestFSWorkspaceLedgerNotBlockedByParkedRPC proves capability separation
+// (ADR 0208, ADR 0278): an Environment-selected ReadLedger is independent of
+// ACP's RPC CAS mutex (callMu), so a parked RPC mutation holding callMu never
+// blocks ledger RecordRead/RecordedVersion. AC3.8 pins this separation.
 func TestFSWorkspaceLedgerNotBlockedByParkedRPC(t *testing.T) {
 	ctx := context.Background()
 	ws, _, _ := newTestFSWorkspace(t, nil)

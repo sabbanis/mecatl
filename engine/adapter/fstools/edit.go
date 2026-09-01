@@ -190,12 +190,11 @@ func (EditTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envir
 
 	// Re-record the new version so subsequent edits in the same turn remain
 	// valid. The edit ALREADY SUCCEEDED (ReplaceFile above); a failure here is
-	// reported honestly WITHOUT rollback and without claiming the file is
-	// untouched (ADR 0278) — the next existing-file mutation on this path is
-	// refused until another successful Read records evidence.
+	// reported honestly WITHOUT rollback and establishes no new evidence. Any
+	// older evidence retains only its exact-version meaning (ADR 0278).
 	if err := ledger.RecordRead(ctx, tool.LedgerKey(ws.Root(), args.Path), newVer); err != nil {
 		return session.NewToolError(in.ID, fmt.Sprintf(
-			"edited %q: replaced %d occurrence(s), but failed to retain read evidence for the new version: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
+			"edited %q: replaced %d occurrence(s), but failed to retain read evidence for the new version: %v. No new evidence was stored; any earlier evidence remains subject to version checks.",
 			args.Path, replaced, err)), nil
 	}
 	return session.NewToolResult(in.ID, fmt.Sprintf("edited %q: replaced %d occurrence(s)", args.Path, replaced)), nil
