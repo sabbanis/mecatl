@@ -16,6 +16,7 @@ import {
   optionalNumber,
   optionalString,
   stringFields,
+  type UnknownRecord,
 } from "./internal";
 
 type MecatlUsage = {
@@ -29,6 +30,9 @@ type MecatlUsage = {
 export type MecatlEvent = {
   type: string;
   seq?: string | number;
+  /** Opaque id of the run that emitted this event (ADR 0249); "" on
+   *  session-scoped events (e.g. the schedule lifecycle). */
+  run_id?: string;
   text?: string;
   tool_call?: {
     id?: string;
@@ -84,10 +88,21 @@ export type MecatlEvent = {
     routed_model?: string;
     model?: string;
   };
+  /** Log-only (EvApproval): the verdict half of a permission ask. Metadata
+   *  only by construction — tool NAME + verdict string, never args. */
+  approval?: { ask_id?: string; verdict?: string; tool?: string };
+  /** Log-only (EvUserPrompt): the recorded user message. */
+  user_prompt?: { text?: string };
 };
 
 export function parseMecatlEvent(data: string): MecatlEvent {
   const raw = asRecord(JSON.parse(data));
+  return parseMecatlEventValue(raw);
+}
+
+/** Structural decode of an already-parsed event object (the watch envelope
+ *  carries the event nested, so it arrives pre-parsed). */
+function parseMecatlEventValue(raw: UnknownRecord | undefined): MecatlEvent {
   if (!raw || typeof raw.type !== "string" || !raw.type)
     throw new Error("event.type is required");
   const event: MecatlEvent = {
@@ -96,6 +111,7 @@ export function parseMecatlEvent(data: string): MecatlEvent {
       typeof raw.seq === "string" || typeof raw.seq === "number"
         ? raw.seq
         : undefined,
+    run_id: optionalString(raw.run_id),
     text: optionalString(raw.text),
   };
   event.tool_call = stringFields(raw.tool_call, [
@@ -163,7 +179,36 @@ export function parseMecatlEvent(data: string): MecatlEvent {
       ]),
       branch_index: optionalNumber(parallel.branch_index),
     };
+  event.approval = stringFields(raw.approval, ["ask_id", "verdict", "tool"]);
+  event.user_prompt = stringFields(raw.user_prompt, ["text"]);
   return event;
+}
+
+/**
+ * One delivery envelope from the durable session watch
+ * (GET /v1/sessions/{id}/watch, ADR 0250): what happened, where the client
+ * now is (the opaque resume cursor), and which phase it arrived in.
+ */
+export interface MecatlWatchEnvelope {
+  /** Null on a phase-only frame: the single replay→live boundary marker and
+   *  every gap frame. */
+  event: MecatlEvent | null;
+  /** Opaque resume token positioned AFTER this envelope; hand it back
+   *  verbatim to continue from exactly the next record. */
+  cursor: string;
+  /** Open string: "replay" | "live" | "gap" — tolerate unknown values. */
+  phase: string;
+}
+
+export function parseWatchEnvelope(data: string): MecatlWatchEnvelope {
+  const raw = asRecord(JSON.parse(data));
+  if (!raw) throw new Error("watch envelope must be an object");
+  const inner = asRecord(raw.event);
+  return {
+    event: inner ? parseMecatlEventValue(inner) : null,
+    cursor: optionalString(raw.cursor) ?? "",
+    phase: optionalString(raw.phase) ?? "",
+  };
 }
 
 /** Renders a tool's JSON args as a compact `key: value · key: value` line. */
@@ -199,13 +244,17 @@ const routingDetail = (source: {
 /**
  * Event kinds that deliberately have no visual surface in Studio: run
  * lifecycle markers, redacted child-activity detail beyond the start badge,
- * and kinds that only ever appear in durable-log replays.
+ * and kinds that only ever appear in durable-log replays. The other two
+ * log-only kinds (`user_prompt`, `approval`) decode above — the durable
+ * watch (ADR 0250) replays them and they must render, not vanish.
  */
 const SILENT_EVENT_KINDS = new Set([
   "session.init",
   "turn.start",
   "turn.end",
   "hook",
+  // The pre-compaction conversation archive: audit history for the durable
+  // log, deliberately not re-rendered into the live transcript.
   "compaction.archive",
   "subagent.tool",
   "subagent.end",
@@ -215,8 +264,6 @@ const SILENT_EVENT_KINDS = new Set([
   "team.end",
   "parallel.start",
   "parallel.end",
-  "user_prompt",
-  "approval",
   "schedule.fired",
   "schedule.skipped",
   "schedule.failed",
@@ -238,8 +285,23 @@ const ADVISORY_EVENT_KINDS = new Set([
  *
  * Unknown event kinds become a visible notice, never a silent drop — a new
  * daemon capability must show up as "not rendered yet", not vanish.
+ *
+ * Every translated event is stamped with the frame's `run_id` (when the
+ * daemon sent one), so consumers can capture the active run's identity from
+ * the first run-bearing event and scope controls to it (ADR 0249).
  */
 export function translateEvent(
+  event: MecatlEvent,
+  sessionId: string,
+): StreamEvent[] {
+  const translated = translateEventBody(event, sessionId);
+  if (event.run_id) {
+    for (const item of translated) item.runId = event.run_id;
+  }
+  return translated;
+}
+
+function translateEventBody(
   event: MecatlEvent,
   sessionId: string,
 ): StreamEvent[] {
@@ -339,6 +401,27 @@ export function translateEvent(
             parallel.branch_label ||
             (typeof index === "number" ? `branch ${index + 1}` : "branch"),
           detail: routingDetail(parallel),
+        },
+      ];
+    }
+    case "user_prompt":
+      // The durable log's record of what the user asked (EvUserPrompt).
+      // Only seen on watch/replay streams — the live prompt path never
+      // carries it. Empty text (a media-only prompt) stays quiet.
+      return event.user_prompt?.text
+        ? [{ type: "user_prompt", text: event.user_prompt.text }]
+        : [];
+    case "approval": {
+      // The verdict half of a permission ask (EvApproval), from the durable
+      // log. Metadata only: the tool's NAME and the verdict string.
+      const approval = event.approval;
+      if (!approval) return [];
+      return [
+        {
+          type: "approval_verdict",
+          approvalId: approval.ask_id ?? "",
+          toolName: approval.tool ?? "",
+          verdict: approval.verdict ?? "",
         },
       ];
     }

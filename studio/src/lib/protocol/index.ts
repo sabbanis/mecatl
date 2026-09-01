@@ -1,4 +1,9 @@
-export { parseMecatlEvent, translateEvent } from "./events";
+export {
+  type MecatlWatchEnvelope,
+  parseMecatlEvent,
+  parseWatchEnvelope,
+  translateEvent,
+} from "./events";
 export {
   decodeScheduleFires,
   decodeScheduleRows,

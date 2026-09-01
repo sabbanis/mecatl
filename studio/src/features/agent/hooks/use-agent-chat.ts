@@ -11,11 +11,13 @@ import {
   cancelHarnessSteer,
   createHarnessSession,
   fetchSessionTranscriptMessages,
+  HarnessApiError,
   type PromptPart,
   respondToHarnessApproval,
   steerHarnessRun,
   streamHarnessPrompt,
 } from "@/lib/harness/client";
+import { watchSessionEvents } from "@/lib/harness/watch";
 import {
   encodeSessionPermissionMode,
   type SessionPermissionMode,
@@ -28,6 +30,7 @@ import type {
   ApprovalRequest,
   Attachment,
   ClarificationRequest,
+  StreamEvent,
   ToolCallInfo,
 } from "../types";
 
@@ -205,6 +208,169 @@ function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
   return messages;
 }
 
+/** Quiet human framing for a durable-log approval verdict line. */
+const APPROVAL_VERDICT_LABELS: Record<string, string> = {
+  allow_once: "allowed once",
+  allow_always: "always allowed",
+  deny: "denied",
+};
+
+/**
+ * Applies one watch-delivered StreamEvent to a transcript being rebuilt from
+ * the durable session watch (ADR 0250). Pure and functional (a new array per
+ * change) so the hook can feed it from replay batches and live frames alike.
+ *
+ * The shape mirrors the live prompt path: assistant activity (tokens, tool
+ * calls, delegations, notices) accumulates onto the TRAILING assistant
+ * message, and a user-authored record (`user_prompt`, a committed steer
+ * echo) closes it — the next assistant activity opens a fresh bubble.
+ * Events with no transcript surface return the list unchanged.
+ */
+export function reduceWatchEvent(
+  messages: AgentMessage[],
+  event: StreamEvent,
+  nextId: () => string,
+): AgentMessage[] {
+  const last = messages.at(-1);
+  /** Applies onto the trailing assistant message, opening one if needed. */
+  const onAssistant = (
+    apply: (message: AgentMessage) => AgentMessage,
+  ): AgentMessage[] => {
+    if (last?.role === "assistant") {
+      return [...messages.slice(0, -1), apply(last)];
+    }
+    return [
+      ...messages,
+      apply({
+        id: nextId(),
+        role: "assistant",
+        content: "",
+        timestamp: Date.now(),
+      }),
+    ];
+  };
+  switch (event.type) {
+    case "user_prompt":
+    case "steer": {
+      // The durable record of what the user asked (or steered mid-run).
+      if (!event.text) return messages;
+      return [
+        ...messages,
+        {
+          id: nextId(),
+          role: "user",
+          content: event.text,
+          timestamp: Date.now(),
+        },
+      ];
+    }
+    case "token":
+      return onAssistant((message) => ({
+        ...message,
+        content: message.content + event.text,
+      }));
+    case "reasoning":
+      return onAssistant((message) => ({
+        ...message,
+        reasoning: (message.reasoning ?? "") + event.text,
+      }));
+    case "tool_call":
+      return onAssistant((message) => ({
+        ...message,
+        toolCalls: [
+          ...(message.toolCalls ?? []),
+          {
+            callId: event.callId,
+            name: event.name,
+            input: event.input,
+            file: event.file,
+            status: "running" as const,
+          },
+        ],
+      }));
+    case "tool_result": {
+      // Resolve the matching call on the latest message that carries it.
+      for (let index = messages.length - 1; index >= 0; index -= 1) {
+        const message = messages[index];
+        if (!message.toolCalls?.some((call) => call.callId === event.callId)) {
+          continue;
+        }
+        const updated: AgentMessage = {
+          ...message,
+          toolCalls: message.toolCalls.map((call) =>
+            call.callId === event.callId
+              ? {
+                  ...call,
+                  output: event.output,
+                  isError: event.isError,
+                  status: event.isError
+                    ? ("failed" as const)
+                    : ("completed" as const),
+                }
+              : call,
+          ),
+        };
+        return [
+          ...messages.slice(0, index),
+          updated,
+          ...messages.slice(index + 1),
+        ];
+      }
+      return messages;
+    }
+    case "approval_verdict": {
+      // The verdict half of a permission ask, rendered as a quiet one-liner.
+      const label = APPROVAL_VERDICT_LABELS[event.verdict] ?? event.verdict;
+      return onAssistant((message) => ({
+        ...message,
+        notices: [
+          ...(message.notices ?? []),
+          `Permission: ${event.toolName || "tool"} ${label || "resolved"}`,
+        ],
+      }));
+    }
+    case "notice":
+      return onAssistant((message) => ({
+        ...message,
+        notices: [...(message.notices ?? []), event.text],
+      }));
+    case "delegation":
+      return onAssistant((message) => ({
+        ...message,
+        delegations: [
+          ...(message.delegations ?? []),
+          { kind: event.kind, label: event.label, detail: event.detail },
+        ],
+      }));
+    case "run_result": {
+      if (event.stop === "error") {
+        const detail =
+          event.errorText || "The run failed without a specific error.";
+        return onAssistant((message) => ({
+          ...message,
+          failed: true,
+          failureDetail: event.permanent
+            ? `${detail} (permanent — retrying the identical request cannot succeed)`
+            : detail,
+          toolCalls: (message.toolCalls ?? []).map((call) =>
+            call.status === "running"
+              ? { ...call, status: "failed" as const }
+              : call,
+          ),
+        }));
+      }
+      if (event.text && last?.role === "assistant" && !last.content) {
+        // A run that streamed no deltas still carries its final text here.
+        return onAssistant((message) => ({ ...message, content: event.text }));
+      }
+      return messages;
+    }
+    default:
+      // Approval asks, retractions, and usage are hook state, not transcript.
+      return messages;
+  }
+}
+
 /**
  * Chat state for one daemon session. Daemon-only: the sidebar id IS the
  * daemon session id — there is no client-side session mapping and no demo
@@ -223,9 +389,17 @@ export function useAgentChat(
     /** The composer's pending model pick ("" = auto-routed); read at mint
      *  time like createMode. */
     createModel?: () => { modelId: string; providerId: string } | null;
+    /**
+     * The session's daemon lifecycle state from the inventory poll
+     * (idle/running/awaiting/…). Reactive — when it reads running/awaiting
+     * and the daemon supports `watch_session_events`, the hook attaches a
+     * durable watch (ADR 0250) to render the externally-driven run live
+     * instead of a frozen "running" badge.
+     */
+    sessionState?: string;
   },
 ) {
-  const { connected } = useRuntimeStatus();
+  const { connected, features } = useRuntimeStatus();
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [error, setError] = useState<string | null>(null);
@@ -251,6 +425,22 @@ export function useAgentChat(
   const daemonIdRef = useRef<string | null>(sessionId);
   const abortRef = useRef<AbortController | null>(null);
   const lastPromptRef = useRef<string | null>(null);
+  // The active run's opaque identity (Event.run_id, ADR 0249), captured from
+  // the first run-bearing event of the prompt stream — or the latest one a
+  // watch delivered. Approve/cancel send it as expected_run_id so a stale
+  // control can never act on the session's NEXT run. "" = unknown.
+  const runIdRef = useRef("");
+  // The session id whose run THIS hook's prompt stream is driving right now —
+  // the durable watch must not attach on top of it (the prompt path owns the
+  // view). An id, not a boolean: a stream can outlive a chat switch.
+  const drivingRef = useRef<string | null>(null);
+  // The live watch's teardown + resume position (per-session, opaque).
+  const watchAbortRef = useRef<AbortController | null>(null);
+  const watchCursorRef = useRef("");
+  // Set when a watch faulted for this session id: the transcript fallback is
+  // already showing and re-attaching would loop. Cleared when the session
+  // leaves the running/awaiting stretch (a later run gets a fresh watch).
+  const watchFaultedRef = useRef<string | null>(null);
   // Attachments sent this visit, keyed by session: the daemon's transcript
   // carries no attachment bytes, so every rehydrate would strip the chips —
   // this ref re-attaches them by matching user turns in send order.
@@ -265,55 +455,235 @@ export function useAgentChat(
   const createModelRef = useRef(options?.createModel);
   createModelRef.current = options?.createModel;
 
+  /**
+   * Rebuilds the message list from the daemon's authoritative transcript,
+   * re-attaching this visit's sent-attachment bytes. Shared by the open
+   * rehydrate, the watch-fault fallback, and the stale-run-control refresh.
+   */
+  const rehydrate = useCallback(async (id: string, signal?: AbortSignal) => {
+    const transcript = await fetchSessionTranscriptMessages(id, signal);
+    if (signal?.aborted) return;
+    const rebuilt = messagesFromTranscript(transcript);
+    let sent = sentAttachmentsRef.current.get(id);
+    if (!sent?.length) {
+      // A fresh visit: the bytes live only in IndexedDB.
+      const stored = await loadSentAttachments(id);
+      if (signal?.aborted) return;
+      if (stored.length) {
+        sentAttachmentsRef.current.set(id, stored);
+        sent = stored;
+      }
+    }
+    if (sent?.length) {
+      const pool = [...sent];
+      for (const message of rebuilt) {
+        if (message.role !== "user") continue;
+        const index = pool.findIndex(
+          (record) => record.content === message.content,
+        );
+        if (index !== -1) {
+          message.attachments = pool[index].attachments;
+          pool.splice(index, 1);
+        }
+      }
+    }
+    setMessages(rebuilt);
+  }, []);
+
+  // The durable watch is gated on the daemon's open feature registry and the
+  // session actually having a run to watch (running/awaiting per inventory).
+  const watchSupported = features.has("watch_session_events");
+  const sessionState = options?.sessionState ?? "";
+  const watchable = sessionState === "running" || sessionState === "awaiting";
+
   // Opening a chat (or switching chats) rehydrates from the daemon.
+  // watchSupported/watchable are deliberately NOT dependencies: they are read
+  // at open time only — a mid-view flip is the watch effect's business, not a
+  // reason to refetch (and re-wipe) the transcript.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: see above
   useEffect(() => {
     daemonIdRef.current = sessionId;
+    runIdRef.current = "";
+    watchCursorRef.current = "";
     setMessages([]);
     setPendingApproval(null);
     setError(null);
     setStatus("idle");
     if (!sessionId || !connected) return;
+    // A run another client is driving: the watch effect below owns the
+    // rebuild (its replay covers the whole transcript), so the fetch here
+    // would only race it and be overwritten.
+    if (watchSupported && watchable && drivingRef.current !== sessionId) {
+      return;
+    }
     const controller = new AbortController();
-    void (async () => {
-      try {
-        const transcript = await fetchSessionTranscriptMessages(
-          sessionId,
-          controller.signal,
-        );
-        if (controller.signal.aborted) return;
-        const rebuilt = messagesFromTranscript(transcript);
-        let sent = sentAttachmentsRef.current.get(sessionId);
-        if (!sent?.length) {
-          // A fresh visit: the bytes live only in IndexedDB.
-          const stored = await loadSentAttachments(sessionId);
-          if (controller.signal.aborted) return;
-          if (stored.length) {
-            sentAttachmentsRef.current.set(sessionId, stored);
-            sent = stored;
-          }
-        }
-        if (sent?.length) {
-          const pool = [...sent];
-          for (const message of rebuilt) {
-            if (message.role !== "user") continue;
-            const index = pool.findIndex(
-              (record) => record.content === message.content,
-            );
-            if (index !== -1) {
-              message.attachments = pool[index].attachments;
-              pool.splice(index, 1);
+    void rehydrate(sessionId, controller.signal).catch((caught) => {
+      if (controller.signal.aborted) return;
+      setError(caught instanceof Error ? caught.message : String(caught));
+      setStatus("error");
+    });
+    return () => controller.abort();
+  }, [sessionId, connected, rehydrate]);
+
+  // The durable session watch (ADR 0250): when this chat's run is being
+  // driven ELSEWHERE (a schedule fire, another tab, a gRPC client) and the
+  // daemon supports it, attach from the beginning — the replay rebuilds the
+  // transcript, the live boundary switches to the streaming view, and the
+  // terminal result hands back to the normal completed-state flow. Studio's
+  // own prompt-stream path is untouched: a run this tab drives never watches.
+  useEffect(() => {
+    if (!sessionId || !connected || !watchSupported || !watchable) {
+      // Leaving the running/awaiting stretch clears the fault latch, so the
+      // session's NEXT run gets a fresh watch.
+      watchFaultedRef.current = null;
+      return;
+    }
+    if (drivingRef.current === sessionId) return;
+    if (watchFaultedRef.current === sessionId) return;
+    const controller = new AbortController();
+    watchAbortRef.current = controller;
+
+    // The transcript being rebuilt from replay + live frames. Replay flushes
+    // in batches (a long history must not commit thousands of renders); every
+    // live frame renders immediately, like the prompt path.
+    let rebuilt: AgentMessage[] = [];
+    let live = false;
+    let frames = 0;
+    let serial = 0;
+    // An ask seen in replay that no later verdict/retract resolved: surfaced
+    // at the boundary — exactly the parked-approval case (state "awaiting").
+    let parkedAsk: ApprovalRequest | null = null;
+    const nextId = () => {
+      serial += 1;
+      return `watch-${serial}`;
+    };
+    const flush = () => setMessages(rebuilt);
+    const resolveAsk = (approvalId: string) => {
+      if (parkedAsk?.approvalId === approvalId) parkedAsk = null;
+      if (!live) return;
+      setPendingApproval((current) =>
+        current?.approvalId === approvalId ? null : current,
+      );
+      setStatus((current) =>
+        current === "waiting_approval" ? "streaming" : current,
+      );
+    };
+
+    setStatus("streaming");
+    setPendingApproval(null);
+    setError(null);
+
+    void watchSessionEvents(
+      sessionId,
+      (delivery) => {
+        if (delivery.cursor) watchCursorRef.current = delivery.cursor;
+        const event = delivery.event;
+        if (!event) {
+          if (delivery.phase === "live" && !live) {
+            // The replay→live boundary: the rebuild is complete. Show it and
+            // surface a still-unresolved ask (the parked-approval case).
+            live = true;
+            flush();
+            if (parkedAsk) {
+              setPendingApproval(parkedAsk);
+              setStatus("waiting_approval");
             }
           }
+          return;
         }
-        setMessages(rebuilt);
-      } catch (caught) {
-        if (controller.signal.aborted) return;
-        setError(caught instanceof Error ? caught.message : String(caught));
-        setStatus("error");
-      }
-    })();
-    return () => controller.abort();
-  }, [sessionId, connected]);
+        // The LATEST run-bearing event names the current run (a replay spans
+        // every earlier run of the session too).
+        if (event.runId) runIdRef.current = event.runId;
+        switch (event.type) {
+          case "approval":
+            parkedAsk = {
+              approvalId: event.approvalId,
+              sessionId,
+              toolName: event.toolName,
+              description: event.description,
+              details: event.details,
+            };
+            if (live) {
+              setPendingApproval(parkedAsk);
+              setStatus("waiting_approval");
+            }
+            break;
+          case "retract":
+            resolveAsk(event.approvalId);
+            break;
+          case "approval_verdict":
+            // Another client resolved the ask; the quiet verdict line also
+            // lands in the transcript via the reducer.
+            resolveAsk(event.approvalId);
+            rebuilt = reduceWatchEvent(rebuilt, event, nextId);
+            if (live) flush();
+            break;
+          case "usage":
+            // Only live frames accumulate: replay covers finished runs whose
+            // figures this visit never counted anywhere else either.
+            if (live) {
+              setUsage((prev) => ({
+                inputTokens: prev.inputTokens + event.inputTokens,
+                outputTokens: prev.outputTokens + event.outputTokens,
+                cacheReadTokens:
+                  prev.cacheReadTokens + (event.cacheReadTokens ?? 0),
+                cacheWriteTokens:
+                  prev.cacheWriteTokens + (event.cacheWriteTokens ?? 0),
+                reasoningTokens:
+                  prev.reasoningTokens + (event.reasoningTokens ?? 0),
+                estimatedCost: event.estimatedCost,
+              }));
+            }
+            break;
+          case "run_result":
+            rebuilt = reduceWatchEvent(rebuilt, event, nextId);
+            if (live) {
+              // The terminal result ends the watch; the normal
+              // completed-state flow takes over from here.
+              flush();
+              runIdRef.current = "";
+              if (event.stop === "error") {
+                setError(
+                  event.errorText || "The run failed without a specific error.",
+                );
+                setStatus("error");
+              } else {
+                setStatus("idle");
+              }
+              controller.abort();
+            }
+            break;
+          default:
+            rebuilt = reduceWatchEvent(rebuilt, event, nextId);
+            frames += 1;
+            if (live || frames % 200 === 0) flush();
+        }
+      },
+      { signal: controller.signal },
+    ).catch(() => {
+      if (controller.signal.aborted) return;
+      // Any watch fault — activity_gap / cursor_expired / an exhausted
+      // reconnect budget / a pre-stream refusal — falls back to the
+      // authoritative transcript: the codes differ, the recovery is the
+      // same, and the latch stops a re-attach loop while the run continues.
+      watchFaultedRef.current = sessionId;
+      setPendingApproval(null);
+      setStatus("idle");
+      void rehydrate(sessionId).catch(() => undefined);
+    });
+
+    return () => {
+      controller.abort();
+      if (watchAbortRef.current === controller) watchAbortRef.current = null;
+      // A torn-down watch (chat switch, state flip, disconnect) must not
+      // leave the streaming badge stuck; real terminals set their own state.
+      setStatus((current) =>
+        current === "streaming" || current === "waiting_approval"
+          ? "idle"
+          : current,
+      );
+    };
+  }, [sessionId, connected, watchSupported, watchable, rehydrate]);
 
   const queueMessage = useCallback((text: string) => {
     const trimmed = text.trim();
@@ -408,8 +778,8 @@ export function useAgentChat(
           ),
         );
 
+      let daemonId = daemonIdRef.current;
       try {
-        let daemonId = daemonIdRef.current;
         if (!daemonId) {
           const createModel = createModelRef.current?.() ?? null;
           daemonId = await createHarnessSession(
@@ -440,11 +810,20 @@ export function useAgentChat(
           }
           onSessionCreatedRef.current?.(daemonId);
         }
+        // This tab drives the run now: the durable watch must not attach on
+        // top of the prompt stream, and the run's identity starts unknown.
+        drivingRef.current = daemonId;
+        runIdRef.current = "";
         await streamHarnessPrompt(
           daemonId,
           content,
           parts,
           (event) => {
+            // The first run-bearing event names the run (ADR 0249); the id
+            // scopes this run's approve/cancel controls.
+            if (event.runId && !runIdRef.current) {
+              runIdRef.current = event.runId;
+            }
             switch (event.type) {
               case "token":
                 patch((message) => ({
@@ -599,6 +978,8 @@ export function useAgentChat(
                 }));
                 break;
               case "run_result":
+                // The run is over; a control scoped to it would be stale.
+                runIdRef.current = "";
                 if (event.stop === "error") {
                   const detail =
                     event.errorText ||
@@ -661,6 +1042,9 @@ export function useAgentChat(
         }));
       } finally {
         abortRef.current = null;
+        if (daemonId && drivingRef.current === daemonId) {
+          drivingRef.current = null;
+        }
       }
     },
     [status, connected, queueMessage],
@@ -726,7 +1110,15 @@ export function useAgentChat(
 
   const cancelChat = useCallback(async () => {
     abortRef.current?.abort();
-    if (daemonIdRef.current) await cancelHarnessRun(daemonIdRef.current);
+    if (daemonIdRef.current) {
+      // Scoped to the run this hook knows about (ADR 0249): if that run
+      // already ended, the daemon answers 409 stale_run_control and the
+      // session's NEXT run is left untouched — exactly what "cancel" meant.
+      await cancelHarnessRun(
+        daemonIdRef.current,
+        runIdRef.current || undefined,
+      );
+    }
     setStatus("idle");
   }, []);
 
@@ -883,13 +1275,26 @@ export function useAgentChat(
             : choice === "once"
               ? "allow_once"
               : "allow_always",
+          runIdRef.current || undefined,
         );
       } catch (caught) {
+        if (
+          caught instanceof HarnessApiError &&
+          caught.code === "stale_run_control"
+        ) {
+          // The run this dialog belonged to already ended (e.g. another
+          // client answered, or a schedule fire replaced it). Not an error:
+          // refresh quietly and let the transcript show what happened.
+          runIdRef.current = "";
+          setStatus("idle");
+          void rehydrate(daemonId).catch(() => undefined);
+          return;
+        }
         setError(caught instanceof Error ? caught.message : String(caught));
         setStatus("error");
       }
     },
-    [pendingApproval],
+    [pendingApproval, rehydrate],
   );
 
   const respondToClarification = useCallback(async (_response: string) => {

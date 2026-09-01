@@ -30,8 +30,9 @@ import {
 } from "@/lib/protocol";
 
 // The daemon API base: the proxy is transparent (no path rewriting), so the
-// /v1 prefix belongs to the client's own URLs.
-const HARNESS_API = "/api/mecatl/v1";
+// /v1 prefix belongs to the client's own URLs. Exported for the sibling
+// watch module (watch.ts), which shares this transport's conventions.
+export const HARNESS_API = "/api/mecatl/v1";
 
 export interface HarnessStatus {
   live: boolean;
@@ -63,7 +64,8 @@ const codeFraming: Record<string, string> = {
     "Another client is driving this chat right now — try again when its run finishes.",
 };
 
-async function apiError(response: Response): Promise<HarnessApiError> {
+/** Decodes a non-OK response into a HarnessApiError. Exported for watch.ts. */
+export async function apiError(response: Response): Promise<HarnessApiError> {
   const fallback = `${response.status} ${response.statusText}`;
   try {
     const body = (await response.json()) as {
@@ -378,18 +380,28 @@ export type HarnessApprovalVerdict = "allow_once" | "allow_always" | "deny";
 /**
  * Resolves a parked permission ask with the daemon's three-way verdict:
  * allow_once, allow_always (persists a permission rule), or deny.
+ *
+ * `expectedRunId` (when known) scopes the verdict to ONE run (ADR 0249): the
+ * daemon refuses with 409 `stale_run_control` if that run already ended, so
+ * a stale approval dialog can never act on the session's NEXT run (e.g. a
+ * schedule fire into the same session).
  */
 export async function respondToHarnessApproval(
   sessionId: string,
   askId: string,
   verdict: HarnessApprovalVerdict,
+  expectedRunId?: string,
 ): Promise<void> {
   const response = await fetch(
     `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/approve`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ ask_id: askId, verdict }),
+      body: JSON.stringify({
+        ask_id: askId,
+        verdict,
+        ...(expectedRunId ? { expected_run_id: expectedRunId } : {}),
+      }),
     },
   );
   if (!response.ok) throw await apiError(response);
@@ -1307,11 +1319,25 @@ export async function waitForHarnessGateway(
   return false;
 }
 
-/** Cancels the in-flight run for a session. */
-export async function cancelHarnessRun(sessionId: string): Promise<void> {
+/**
+ * Cancels the in-flight run for a session. `expectedRunId` (when known)
+ * scopes the cancel to ONE run (ADR 0249): a 409 `stale_run_control` means
+ * that run already ended — the desired outcome — and the session's NEXT run
+ * is left untouched. Best-effort either way: cancel is fire-and-forget.
+ */
+export async function cancelHarnessRun(
+  sessionId: string,
+  expectedRunId?: string,
+): Promise<void> {
   await fetch(
     `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/cancel`,
-    { method: "POST" },
+    expectedRunId
+      ? {
+          method: "POST",
+          headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ expected_run_id: expectedRunId }),
+        }
+      : { method: "POST" },
   ).catch(() => undefined);
 }
 

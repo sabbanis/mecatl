@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseMecatlEvent, translateEvent } from "./events";
+import { parseMecatlEvent, parseWatchEnvelope, translateEvent } from "./events";
 
 const translate = (payload: unknown) =>
   translateEvent(parseMecatlEvent(JSON.stringify(payload)), "session-1");
@@ -25,6 +25,28 @@ describe("parseMecatlEvent", () => {
     expect(event.result?.stop).toBe("error");
     expect(event.result?.error).toBe("provider rejected the request");
     expect(event.result?.permanent).toBe(true);
+  });
+});
+
+describe("parseWatchEnvelope", () => {
+  it("decodes an event-bearing envelope: inner event, cursor, phase", () => {
+    const envelope = parseWatchEnvelope(
+      JSON.stringify({
+        event: { type: "message.delta", text: "hi", run_id: "run-1" },
+        cursor: "c-42",
+        phase: "replay",
+      }),
+    );
+    expect(envelope.cursor).toBe("c-42");
+    expect(envelope.phase).toBe("replay");
+    expect(envelope.event?.type).toBe("message.delta");
+    expect(envelope.event?.run_id).toBe("run-1");
+  });
+
+  it("decodes the event-less boundary frame with a null event", () => {
+    expect(
+      parseWatchEnvelope(JSON.stringify({ cursor: "c-9", phase: "live" })),
+    ).toEqual({ event: null, cursor: "c-9", phase: "live" });
   });
 });
 
@@ -191,6 +213,50 @@ describe("translateEvent", () => {
     expect(
       translate({ type: "provider.route", text: "routed to small-1" }),
     ).toEqual([]);
+  });
+
+  it("renders a durable-log user_prompt as a user message event", () => {
+    expect(
+      translate({ type: "user_prompt", user_prompt: { text: "fix the bug" } }),
+    ).toEqual([{ type: "user_prompt", text: "fix the bug" }]);
+    // A media-only prompt (no text) stays quiet rather than an empty bubble.
+    expect(translate({ type: "user_prompt", user_prompt: {} })).toEqual([]);
+  });
+
+  it("renders a durable-log approval as a verdict event — tool name and verdict, never args", () => {
+    expect(
+      translate({
+        type: "approval",
+        approval: { ask_id: "a1", tool: "Bash", verdict: "allow_once" },
+      }),
+    ).toEqual([
+      {
+        type: "approval_verdict",
+        approvalId: "a1",
+        toolName: "Bash",
+        verdict: "allow_once",
+      },
+    ]);
+  });
+
+  it("keeps the compaction archive silent — audit history, not transcript", () => {
+    expect(translate({ type: "compaction.archive" })).toEqual([]);
+  });
+
+  it("stamps run_id onto every translated event (ADR 0249)", () => {
+    expect(
+      translate({ type: "message.delta", text: "x", run_id: "run-7" }),
+    ).toEqual([{ type: "token", text: "x", runId: "run-7" }]);
+    const results = translate({
+      type: "result",
+      run_id: "run-7",
+      result: { stop: "end_turn", text: "done" },
+    });
+    expect(results.every((event) => event.runId === "run-7")).toBe(true);
+    // Empty is meaningful — a session-scoped event stays unstamped.
+    expect(translate({ type: "message.delta", text: "x" })).toEqual([
+      { type: "token", text: "x" },
+    ]);
   });
 
   it("pretty-prints tool args on the call card", () => {

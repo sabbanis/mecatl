@@ -103,7 +103,16 @@ export interface Attachment {
 
 // ── Stream Events ───────────────────────────────────────────────────────────
 
-export type StreamEvent =
+/**
+ * Every translated event may carry the opaque, server-minted id of the run
+ * that emitted it (Event.run_id, ADR 0249). Empty/absent is meaningful: the
+ * event is session-scoped (e.g. schedule lifecycle), not run-scoped. Clients
+ * compare it for equality only — it is the handle `expected_run_id` controls
+ * (approve/cancel) are scoped to.
+ */
+export type StreamEvent = StreamEventBody & { runId?: string };
+
+type StreamEventBody =
   | { type: "token"; text: string }
   | {
       type: "tool_call";
@@ -159,6 +168,23 @@ export type StreamEvent =
   | { type: "steer"; text: string; messageId: string }
   /** A one-line advisory (tool progress, compaction, unrendered event kinds). */
   | { type: "notice"; text: string }
+  /**
+   * A recorded user message from the durable-log replay (EvUserPrompt): the
+   * watch's record of what the user asked. Log-only — the live prompt stream
+   * never carries it (the client already holds its own optimistic bubble).
+   */
+  | { type: "user_prompt"; text: string }
+  /**
+   * The resolved verdict half of a permission ask, from the durable-log
+   * replay (EvApproval). Metadata only: tool NAME + verdict string
+   * (allow_once / allow_always / deny) + the ask it resolved — never args.
+   */
+  | {
+      type: "approval_verdict";
+      approvalId: string;
+      toolName: string;
+      verdict: string;
+    }
   /** Delegation activity: the run handed work to a child agent. */
   | {
       type: "delegation";

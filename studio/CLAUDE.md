@@ -93,9 +93,16 @@ Each rule is backed by a test; break the rule and its test names you.
   session ids die with it. Surfaces warn before writes that restart.
 - FireNow (`POST /v1/schedules/{name}/fire`) is synchronous — the request lasts
   the whole agent run.
-- Live re-attach to a running session is impossible over HTTP today
-  (`StreamSessionLive` is gRPC-only): show running state from the inventory,
-  read the transcript at the end.
+- Live re-attach to a running session rides the durable watch
+  (`GET /v1/sessions/{id}/watch`, ADR 0250; gate on the
+  `watch_session_events` feature): SSE `{event, cursor, phase}` envelopes —
+  replay from the cursor (empty = the beginning), one event-less
+  `phase: "live"` boundary frame, then live follow. The client is
+  `src/lib/harness/watch.ts`; `use-agent-chat` attaches it when the
+  inventory reads running/awaiting and Studio is not itself driving the run.
+  Residual: `POST /prompt` still cancels its run on client disconnect, so a
+  reload of the DRIVING tab still ends the run — the watch covers runs
+  driven elsewhere (schedules, other tabs/clients) and parked approvals.
 
 <!-- BEGIN:nextjs-agent-rules -->
 
