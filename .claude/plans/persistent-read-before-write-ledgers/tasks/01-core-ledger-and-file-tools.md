@@ -2,7 +2,7 @@
 id: 01-core-ledger-and-file-tools
 title: Storage-independent ledger contract and fail-closed file tools
 blocked_by: []
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "888"
