@@ -1558,6 +1558,13 @@ message Prompt {
   string text = 2;
   // parts carries non-text media (image/audio) alongside the text.
   repeated Content parts = 3;
+  // detach, when true, tells the server to start the run and OWN its drain
+  // goroutine — the run continues after this stream closes. The server sends
+  // a single ack event then closes the stream. The client observes via
+  // WatchSessionEvents and controls via a control-only Converse stream.
+  // Additive: an older server ignores the field (detached runs are
+  // unsupported → the stream relays normally and cancels on disconnect).
+  bool detach = 4;
 }
 
 // ResumeApproval releases a paused permission.ask, allowing or denying the
