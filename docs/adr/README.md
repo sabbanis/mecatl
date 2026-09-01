@@ -107,6 +107,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0242 — Route unpinned writable named specialists](./0242-route-unpinned-writable-named-specialists.md)
 
 ### Providers & APIs
+- [0247 — Asynchronous session-title generation and auxiliary model usage](./0247-session-title-generation-and-auxiliary-usage.md) *(proposed)*
 - [0016 — Multi-provider](./0016-multi-provider.md)
 - [0017 — OpenAI Responses API](./0017-openai-responses-api.md) *(research)*
 - [0030 — Layered model-selection heuristics](./0030-model-selection-heuristics.md)
