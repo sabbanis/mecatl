@@ -247,7 +247,7 @@ func TestFoldContractDocMatchesSessionFields(t *testing.T) {
 	//     Kind, Relationship, CreatedAt; adoption metadata is supplied via
 	//     SessionMeta and restored as optional Session.Adoption metadata
 	//   not-event-carried identity labels (ADR 0204/0214): Owner, Authority,
-	//     EnvironmentRef — the event annotation is log-only and the fold neither
+	//     EnvironmentRef, ExternalBinding — the event annotation is log-only and the fold neither
 	//     requires nor re-derives any of them, so a folded session keeps the
 	//     snapshot-restored value (ownerless stays ownerless, a zero ref stays
 	//     zero — composition stamps it from the first resolved live Environment on
@@ -258,6 +258,7 @@ func TestFoldContractDocMatchesSessionFields(t *testing.T) {
 		"ProviderID": {}, "ModelID": {}, "ReasoningEffort": {}, "DebugMCPServers": {}, "DebugMCPTools": {}, "DebugTargetFingerprint": {}, "Kind": {},
 		"Relationship": {}, "Adoption": {}, "CreatedAt": {},
 		"Title": {}, "TitleProvenance": {}, "Owner": {}, "Authority": {}, "EnvironmentRef": {},
+		"ExternalBinding": {},
 	}
 	assertExportedFields(t, reflect.TypeOf(session.Session{}), wantSessionFields,
 		"session.Session — classify the new field in COMPATIBILITY.md's reconstruction contract")

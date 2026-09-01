@@ -13,6 +13,10 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Opaque external runtime binding** — `session.Session.ExternalBinding` stores a
+  composition-issued logical-session binding without interpreting broker topology;
+  `sessnap.Snapshot` persists it for exact reattachment checks. Added (minor).
+
 - **Generic authorization dispatch parking** — `agent.RunRequest.CanPresentAuthorization`
   opt-in permits an attached main run to durably park a
   `tool.AuthorizationRequester` call after permission and `PreToolUse` gates;
