@@ -1,5 +1,8 @@
 import "server-only";
 
+import { resolveExternalAuthorization } from "@/lib/oidc-session";
+import { requestIsTrusted } from "@/lib/request-trust";
+
 const controllerBaseURL = "http://127.0.0.1:8788";
 const forwardedRequestHeaders = [
   "accept",
@@ -14,38 +17,8 @@ const forwardedResponseHeaders = [
   "mcp-session-id",
   "www-authenticate",
 ];
-const studioOrigins = () =>
-  new Set(
-    (
-      process.env.MECATL_STUDIO_PUBLIC_ORIGIN ||
-      "http://localhost:3000,http://127.0.0.1:3000"
-    )
-      .split(",")
-      .map((origin) => origin.trim().replace(/\/$/, ""))
-      .filter(Boolean),
-  );
-
 const externalBaseURL = () =>
   process.env.MECATL_BASE_URL?.trim().replace(/\/$/, "") || "";
-
-function requestIsTrusted(request: Request) {
-  const allowed = studioOrigins();
-  const requestURL = new URL(request.url);
-  const host = request.headers.get("host") || requestURL.host;
-  const forwardedProtocol = request.headers
-    .get("x-forwarded-proto")
-    ?.split(",", 1)[0]
-    ?.trim();
-  const protocol =
-    forwardedProtocol === "https" || forwardedProtocol === "http"
-      ? `${forwardedProtocol}:`
-      : requestURL.protocol;
-  const requestOrigin = `${protocol}//${host}`;
-  const browserOrigin = request.headers.get("origin");
-  return (
-    allowed.has(requestOrigin) && (!browserOrigin || allowed.has(browserOrigin))
-  );
-}
 
 function forbidden() {
   return Response.json(
@@ -159,12 +132,22 @@ export async function proxyMecatl(request: Request, path: string[]) {
   target.search = new URL(request.url).search;
   const headers = copyRequestHeaders(request);
   if (external) {
-    const token = process.env.MECATL_AUTH_TOKEN?.trim();
-    if (token)
-      headers.set(
-        "authorization",
-        `Bearer ${token.replace(/^Bearer\s+/i, "")}`,
+    // Bearer injection (rule 3 — credentials never come from the browser):
+    // an OIDC-configured deployment injects the CURRENT access token
+    // (refreshed server-side on demand, requirement H3); without OIDC config
+    // this is the static MECATL_AUTH_TOKEN path, unchanged. A signed-out or
+    // expired OIDC session answers 401 with actionable copy instead of
+    // forwarding a request the daemon would reject opaquely.
+    const auth = await resolveExternalAuthorization();
+    if (auth.kind === "unauthorized")
+      return Response.json(
+        { error: auth.error, code: auth.code },
+        { status: auth.status },
       );
+    if (auth.kind === "unavailable")
+      return Response.json({ error: auth.error }, { status: auth.status });
+    if (auth.kind === "bearer")
+      headers.set("authorization", `Bearer ${auth.token}`);
   } else {
     headers.set("x-mecatl-studio-request", "1");
   }
