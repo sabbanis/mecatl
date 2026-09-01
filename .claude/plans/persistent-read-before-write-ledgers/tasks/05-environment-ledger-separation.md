@@ -2,8 +2,8 @@
 id: 05-environment-ledger-separation
 title: Separate Workspace content from Environment ledger ownership
 blocked_by: [04-docs-and-layering]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-persistent-read-before-write-ledgers/05-environment-ledger-separation"
 worktree: ""
 issue: "888"
 retries: 0

@@ -2,7 +2,7 @@
 id: 06-redis-ledger-hardening
 title: Fail closed on corrupt Redis state and delete evidence atomically
 blocked_by: [05-environment-ledger-separation]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "888"
