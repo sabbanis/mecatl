@@ -47,7 +47,7 @@ import {
 } from "@/lib/oidc/token-store";
 import { studioAllowedOrigins } from "@/lib/request-trust";
 
-export type OidcEnvConfig = {
+type OidcEnvConfig = {
   issuer: string;
   clientId: string;
   audience: string;
@@ -60,7 +60,7 @@ function defaultRedirectUri(): string {
   return `${first}/api/auth/oidc/callback`;
 }
 
-export function oidcConfig(): OidcEnvConfig | null {
+function oidcConfig(): OidcEnvConfig | null {
   const issuer = process.env.MECATL_OIDC_ISSUER?.trim().replace(/\/+$/, "");
   const clientId = process.env.MECATL_OIDC_CLIENT_ID?.trim();
   if (!issuer || !clientId) return null;

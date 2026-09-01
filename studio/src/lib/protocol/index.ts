@@ -1,5 +1,4 @@
 export {
-  type MecatlWatchEnvelope,
   parseMecatlEvent,
   parseWatchEnvelope,
   translateEvent,

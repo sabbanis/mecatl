@@ -319,7 +319,7 @@ function AttachmentChip({
 }
 
 /** Wall-clock child duration, humanized ("850ms", "12s", "3m 20s"). */
-export function formatChildDuration(ms: number): string {
+function formatChildDuration(ms: number): string {
   if (!Number.isFinite(ms) || ms <= 0) return "";
   if (ms < 1000) return `${Math.round(ms)}ms`;
   const seconds = Math.round(ms / 1000);

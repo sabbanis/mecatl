@@ -25,7 +25,7 @@ import {
 } from "./wire";
 
 /** One human decision recorded on a proposal. */
-export interface LearningDecision {
+interface LearningDecision {
   kind: string;
   actor: string;
   reason: string;
@@ -118,18 +118,6 @@ export async function listLearningProposals(
     proposals: asArray(body.proposals).map(decodeLearningProposal),
     nextCursor: asString(body.next_cursor),
   };
-}
-
-export async function getLearningProposal(
-  id: string,
-  signal?: AbortSignal,
-): Promise<LearningProposal> {
-  const response = await fetch(
-    `${HARNESS_API}/learning/proposals/${encodeURIComponent(id)}`,
-    { signal, cache: "no-store" },
-  );
-  if (!response.ok) throw await apiError(response);
-  return decodeLearningProposal(asRecord(await response.json()).proposal);
 }
 
 /**

@@ -25,13 +25,13 @@ import {
 export type DreamTarget = "project_memory" | "user_model";
 export type DreamDecision = "apply" | "dismiss";
 
-export interface DreamParticipant {
+interface DreamParticipant {
   key: string;
   value: string;
   description: string;
 }
 
-export interface DreamOperation {
+interface DreamOperation {
   kind: string;
   survivor: DreamParticipant;
   sources: DreamParticipant[];
@@ -95,7 +95,7 @@ export function decodeDreamPlan(raw: unknown): DreamPlan {
   };
 }
 
-export function decodeDreamReceipt(raw: unknown): DreamReceipt {
+function decodeDreamReceipt(raw: unknown): DreamReceipt {
   const record = asRecord(raw);
   return {
     id: asString(record.id),
