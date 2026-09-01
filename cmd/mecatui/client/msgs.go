@@ -130,6 +130,16 @@ type MCPAuthorizationMsg struct {
 	Status          string
 }
 
+// WorkspaceEnrollmentEventMsg is a pushed bundled-workspace-enrollment
+// resolution marker (always terminal — connected/denied/cancelled/expired/
+// failed). It deliberately carries only safe bundle correlation; browser URLs
+// and the discovered protected catalogue never cross the event stream.
+type WorkspaceEnrollmentEventMsg struct {
+	EnrollmentID string
+	Backends     []string
+	Status       string
+}
+
 // PermissionAskMsg opens the approval modal; AskID is the exact correlation key
 // echoed back in ResumeApproval — never inferred from the tool name.
 type PermissionAskMsg struct {
@@ -1106,6 +1116,9 @@ func EventToMsg(ev *mecatlv1.Event) tea.Msg {
 	case "mcp.authorization.required", "mcp.authorization.resolved":
 		a := ev.GetMcpAuthorization()
 		return MCPAuthorizationMsg{AuthorizationID: a.GetAuthorizationId(), Backend: a.GetBackend(), CallID: a.GetCallId(), Status: a.GetStatus()}
+	case "workspace_enrollment.resolved":
+		w := ev.GetWorkspaceEnrollment()
+		return WorkspaceEnrollmentEventMsg{EnrollmentID: w.GetEnrollmentId(), Backends: w.GetBackends(), Status: w.GetStatus()}
 	case "permission.ask":
 		a := ev.GetAsk()
 		return PermissionAskMsg{AskID: a.GetAskId(), Tool: a.GetTool(), Args: a.GetArgs(), Reason: a.GetReason()}

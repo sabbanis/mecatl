@@ -43,6 +43,7 @@ type wiredCollaborators struct {
 	Learning     bool // /learning operator-settings enum
 	DebugAsk     bool // /debug-ask — env-gated (MECATUI_DEBUG_ASK=1) fake-ask injector
 	Connect      bool // /connect — saved remote target picker
+	Workspace    bool // /tools-connect, /tools-cancel — bundled workspace-services enrollment
 	DebugSession bool // dedicated target-bound debugger: hide binding-breaking actions
 }
 
@@ -64,6 +65,7 @@ func (m Model) wiredCollaborators() wiredCollaborators {
 		Learning:     m.deps.Learning != nil,
 		DebugAsk:     m.deps.DebugAsk,
 		Connect:      m.deps.Connect != nil,
+		Workspace:    m.deps.WorkspaceEnrollment != nil,
 		DebugSession: m.deps.DebugTarget != "",
 	}
 }
@@ -216,6 +218,16 @@ func builtinCommands(caps client.Capabilities, w wiredCollaborators) []builtin {
 	}
 	if w.Connect {
 		out = append(out, builtin{name: connectAction, desc: "sign in and connect to a saved remote target", run: Model.runConnect})
+	}
+	// /tools-connect and /tools-cancel drive the same bundled workspace-services
+	// enrollment RPCs the (now-removed) forced modal used to drive, on demand
+	// instead of forced at session open — see WORKSPACE-ENROLLMENT-UX-AND-RACE.md.
+	// Gated on caps.WorkspaceEnrollment (session-scoped: required AND not yet
+	// admitted, per capabilitiesForSession) so the commands disappear once
+	// connected in the same session.
+	if caps.WorkspaceEnrollment && w.Workspace {
+		out = append(out, builtin{name: "tools-connect", desc: "connect the bundled protected-tool workspace services", run: Model.runToolsConnect})
+		out = append(out, builtin{name: "tools-cancel", desc: "cancel a pending workspace-services connection", run: Model.runToolsCancel})
 	}
 	out = appendLearningBuiltin(out, w)
 	out = appendDebugAskBuiltin(out, w)
@@ -383,6 +395,54 @@ func (m Model) runCompact() (tea.Model, tea.Cmd) {
 	m.compactRequestToken++
 	m.statusMsg = m.deps.Theme.Style("muted").Render("compacting model history…")
 	return m, client.CompactSessionCmd(m.deps.Ctx, m.deps.Compactor, m.sessionID, m.compactRequestToken)
+}
+
+// runToolsConnect drives the bundled workspace-services enrollment RPC
+// on demand — replacing the forced modal's [c]/[r] keys. If a bundle is
+// already pending (m.enrollment.ID != ""), it rechecks (or, after a prior
+// failure, retries) the SAME bundle rather than starting a second one.
+func (m Model) runToolsConnect() (tea.Model, tea.Cmd) {
+	if m.deps.WorkspaceEnrollment == nil {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("/tools-connect is not available on this server")
+		return m, nil
+	}
+	if m.sessionID == "" {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("cannot connect workspace services: no active session")
+		return m, nil
+	}
+	if m.enrollment.busy {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("workspace services connection is already in progress")
+		return m, nil
+	}
+	action := connectAction
+	switch {
+	case m.enrollment.ID != "" && m.enrollment.err != "":
+		action = "retry"
+	case m.enrollment.ID != "":
+		action = "check"
+	}
+	m.enrollment.busy = true
+	m.enrollment.err = ""
+	m.statusMsg = m.deps.Theme.Style("muted").Render("connecting workspace services…")
+	return m, workspaceEnrollmentCmd(m.deps.Ctx, m.deps.WorkspaceEnrollment, m.sessionID, m.enrollment.ID, action)
+}
+
+// runToolsCancel cancels the one caller-owned pending bundle — replacing the
+// forced modal's [x] key. There is nothing to cancel once no bundle is
+// pending (m.enrollment.ID == ""), including after a successful connect.
+func (m Model) runToolsCancel() (tea.Model, tea.Cmd) {
+	if m.deps.WorkspaceEnrollment == nil || m.enrollment.ID == "" {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("no pending workspace-services connection to cancel")
+		return m, nil
+	}
+	if m.enrollment.busy {
+		m.statusMsg = m.deps.Theme.Style("warning").Render("workspace services connection is already in progress")
+		return m, nil
+	}
+	m.enrollment.busy = true
+	m.enrollment.err = ""
+	m.statusMsg = m.deps.Theme.Style("muted").Render("cancelling workspace services connection…")
+	return m, workspaceEnrollmentCmd(m.deps.Ctx, m.deps.WorkspaceEnrollment, m.sessionID, m.enrollment.ID, "cancel")
 }
 
 // runHelp opens the "?" keys-&-features overlay — the same state the "?" key

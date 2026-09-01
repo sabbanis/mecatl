@@ -153,11 +153,12 @@ func catchUpReplay(ctx context.Context, replayer SessionReplayer, id string, out
 		case StreamClosedMsg, StreamErrMsg:
 			// Swallow the replay's terminal marker; the reconnect owns its own.
 			continue
-		case DeliveryNoteMsg, ResultMsg, MCPAuthorizationMsg:
+		case DeliveryNoteMsg, ResultMsg, MCPAuthorizationMsg, WorkspaceEnrollmentEventMsg:
 			// Delivery notes recover gap output. ResultMsg restores latest durable
 			// failed-step retry eligibility without replaying transcript cards or
-			// triggering automatic retry. Authorization markers are safe correlation
-			// only: presentation remains an explicit user action and replay carries no URL.
+			// triggering automatic retry. Authorization/enrollment markers are safe
+			// correlation only: presentation remains an explicit user action and
+			// replay carries no URL.
 			if !emit(ctx, out, m) {
 				return ctx.Err()
 			}

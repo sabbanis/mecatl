@@ -443,14 +443,13 @@ func (s *steerState) watermarkID() string {
 type phase int
 
 const (
-	phaseConnecting          phase = iota // awaiting CreateSession
-	phaseIdle                             // ready for a prompt
-	phaseRunning                          // a Converse run is streaming
-	phaseAwaitingApproval                 // a permission modal is open
-	phaseAuthorizing                      // an MCP browser authorization is pending
-	phaseWorkspaceEnrollment              // pre-prompt workspace bundle admission
-	phaseFatal                            // connect/fatal error; input disabled
-	phaseReplay                           // a stored-session transcript replay is open (read-only; issue #245)
+	phaseConnecting       phase = iota // awaiting CreateSession
+	phaseIdle                          // ready for a prompt
+	phaseRunning                       // a Converse run is streaming
+	phaseAwaitingApproval              // a permission modal is open
+	phaseAuthorizing                   // an MCP browser authorization is pending
+	phaseFatal                         // connect/fatal error; input disabled
+	phaseReplay                        // a stored-session transcript replay is open (read-only; issue #245)
 )
 
 // spinnerVisible reports whether the footer renders the animated spinner in the
@@ -940,6 +939,16 @@ type Model struct {
 	// ONCE per process even across repeated ModelsMsg landings (a re-open, a live
 	// refresh). Survives the dismissal of gatewayNotice (which only clears the text).
 	gatewayNoticeShown bool
+
+	// workspaceEnrollmentNotice is the rendered idle footer-left notice shown while
+	// bundled workspace services (ADR 0281) are not yet connected. Unlike
+	// gatewayNotice it is NOT dismissed by activity — it persists across keypresses
+	// and prompts until the bundle actually resolves (applyWorkspaceEnrollmentEvent
+	// / the finalize path in workspace_enrollment.go clear it), since the fact it
+	// reports (protected tools are unavailable) stays true regardless of what else
+	// the operator does. Empty = not shown. Plain text; "muted" styling is applied
+	// at render time in idleFooterLeft, matching gatewayNotice's convention.
+	workspaceEnrollmentNotice string
 }
 
 // New builds the root model from deps. It wires the widgets but does not connect;
