@@ -1083,6 +1083,8 @@ func usageFrom(u *mecatlv1.Usage) Usage {
 // reader skips nil so unknown future event kinds are ignored, not fatal). This
 // is the single translation point between the proto schema and the ui model and
 // is unit-tested over every type.
+//
+//nolint:gocyclo // one flat type-string dispatcher; each case is a trivial projection, splitting it would only relocate the same case count.
 func EventToMsg(ev *mecatlv1.Event) tea.Msg {
 	if ev == nil {
 		return nil
