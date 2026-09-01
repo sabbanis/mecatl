@@ -132,7 +132,7 @@ function SidebarContent({
     <>
       <div className="flex h-[60px] shrink-0 items-center gap-0.5 border-b border-border px-3 max-[499px]:h-14 lg:px-4">
         <h2 className="min-w-0 flex-1 truncate text-sm font-medium">
-          Session List
+          Chat History
         </h2>
         <Tooltip>
           <TooltipTrigger asChild>

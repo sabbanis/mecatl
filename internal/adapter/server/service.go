@@ -4180,7 +4180,7 @@ func (s *Service) SteerEnqueue(ctx context.Context, id session.SessionID, text, 
 	// engine disarmed steer (EnableSteer off) reports too_late — the caller
 	// (Steer's promote path, or the HTTP client itself) owns the follow-up.
 	if run, ok := s.LookupRun(id); ok {
-		outcome, err := run.EnqueueSteer(text)
+		outcome, err := run.EnqueueSteer(text, nil)
 		if err == nil && outcome != agent.SteerTooLate {
 			// Track BOTH accepted (new bundle) and appended (merged into the pending
 			// bundle): the watermark echo needs the full ordered id-list of the

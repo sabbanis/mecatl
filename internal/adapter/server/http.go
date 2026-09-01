@@ -303,11 +303,6 @@ type serverCapabilitiesJSON struct {
 	Steer             bool                              `json:"steer"`
 	ManualCompaction  bool                              `json:"manual_compaction"`
 	Posture           string                            `json:"posture,omitempty"`
-	// Steer mirrors ServerCapabilities.steer: true when the engine's steer
-	// inbox is armed (Deps.EnableSteer), so an HTTP client gates the
-	// POST /v1/sessions/{id}/steer affordance on the same bit gRPC clients
-	// read; absent/false means a steer reports too_late.
-	Steer bool `json:"steer,omitempty"`
 }
 
 // capabilitiesJSON projects the shared proto capabilities onto the JSON shape.
@@ -338,7 +333,6 @@ func capabilitiesJSON(c *mecatlv1.ServerCapabilities) *serverCapabilitiesJSON {
 		Steer:             c.GetSteer(),
 		ManualCompaction:  c.GetManualCompaction(),
 		Posture:           c.GetPosture(),
-		Steer:             c.GetSteer(),
 	}
 }
 

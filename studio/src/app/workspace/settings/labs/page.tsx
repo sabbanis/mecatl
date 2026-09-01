@@ -35,10 +35,7 @@ export default function LabsSettingsPage() {
   };
 
   return (
-    <SettingsCard
-      title="Labs"
-      description="Experimental previews. Everything here is browser-local."
-    >
+    <SettingsCard title="Labs">
       <SettingsRow
         label="Show mock features"
         htmlFor="mock-features"
