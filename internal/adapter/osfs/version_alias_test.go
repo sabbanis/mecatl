@@ -211,10 +211,10 @@ func TestLedgerKeyIsLexicalAndIOFree(t *testing.T) {
 
 	ctx := context.Background()
 	version := tool.NewFileVersion("lexical")
-	if err := ws.RecordRead(ctx, "dir/../file.txt", version); err != nil {
+	if err := testRecordRead(ctx, ws, "dir/../file.txt", version); err != nil {
 		t.Fatalf("RecordRead: %v", err)
 	}
-	got, ok, err := ws.RecordedVersion(ctx, filepath.Join(ws.Root(), "file.txt"))
+	got, ok, err := testRecordedVersion(ctx, ws, filepath.Join(ws.Root(), "file.txt"))
 	if err != nil {
 		t.Fatalf("RecordedVersion: %v", err)
 	}
@@ -223,10 +223,10 @@ func TestLedgerKeyIsLexicalAndIOFree(t *testing.T) {
 	}
 
 	outsidePath := filepath.Join(outside, "dir", "..", "other.txt")
-	if err := ws.RecordRead(ctx, outsidePath, version); err != nil {
+	if err := testRecordRead(ctx, ws, outsidePath, version); err != nil {
 		t.Fatalf("RecordRead(outsidePath): %v", err)
 	}
-	got, ok, err = ws.RecordedVersion(ctx, filepath.Clean(outsidePath))
+	got, ok, err = testRecordedVersion(ctx, ws, filepath.Clean(outsidePath))
 	if err != nil {
 		t.Fatalf("RecordedVersion(outsidePath): %v", err)
 	}

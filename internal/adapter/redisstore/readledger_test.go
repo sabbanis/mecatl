@@ -365,7 +365,7 @@ func TestPersistentReadLedgers_Scenario2_ConcurrentAccess(t *testing.T) {
 		t.Fatalf("RecordedVersion after race: %v", err)
 	}
 	if ok {
-		if _, valid := got.Token(); !valid {
+		if _, encodeErr := tool.EncodeFileVersion(got); encodeErr != nil {
 			t.Fatal("RecordedVersion after race returned an invalid (torn) FileVersion")
 		}
 	}

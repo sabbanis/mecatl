@@ -16,6 +16,7 @@ import (
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
@@ -313,7 +314,7 @@ func TestListenerScopedWorkspaceAuthority_Scenario5_PersistedOffRootSessionFails
 		t.Fatalf("store.Save override session: %v", err)
 	}
 	svc.SetSessionEnvironment(overrideSession.ID, tool.MustEnvironment(
-		session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/other/root"}, memfs.NewWorkspace("/other/root"), nil,
+		session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/other/root"}, memfs.NewWorkspace("/other/root"), memledger.New(), nil,
 	))
 	if _, err := svc.StartRun(context.Background(), overrideSession.ID, "continue"); !errors.Is(err, server.ErrFailedPrecondition) {
 		t.Fatalf("StartRun with off-root environment override error = %v, want FailedPrecondition", err)

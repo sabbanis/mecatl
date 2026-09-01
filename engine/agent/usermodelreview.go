@@ -132,7 +132,8 @@ func (r *UserModelReviewer) reviewMessages(ctx context.Context, sessionID, works
 	// off the loaded session's Owner before reaching this shared path, and
 	// Observe's ctx is the same one Engine.Run's request-edge middleware already
 	// bound it onto — see the callers above.
-	reviewEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "usermodel"}, noopWorkspace{root: workspace}, nil)
+	reviewWS := noopWorkspace{root: workspace}
+	reviewEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "usermodel"}, reviewWS, emptyReadLedger{}, nil)
 	ctx = tool.WithMemoryAttribution(ctx, tool.MemoryAttribution{
 		Writer: tool.MemoryWriterModel, Origin: tool.MemoryOriginLearning,
 		Source: tool.MemorySource{SessionID: sessionID},
@@ -233,8 +234,4 @@ func (noopWorkspace) ReplaceFile(context.Context, string, tool.FileVersion, []by
 func (noopWorkspace) Glob(context.Context, string) ([]string, error) { return nil, nil }
 func (noopWorkspace) Grep(context.Context, string, string) ([]tool.GrepMatch, error) {
 	return nil, nil
-}
-func (noopWorkspace) RecordRead(context.Context, string, tool.FileVersion) error { return nil }
-func (noopWorkspace) RecordedVersion(context.Context, string) (tool.FileVersion, bool, error) {
-	return tool.FileVersion{}, false, nil
 }

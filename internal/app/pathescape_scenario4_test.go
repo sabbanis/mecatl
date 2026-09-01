@@ -49,7 +49,7 @@ func installRelaxedWorkspace(t *testing.T, built *Built, sessID session.SessionI
 		t.Fatalf("NewWorkspace: %v", err)
 	}
 	env, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: root},
-		newEscapeWorkspace(base, clf), nil)
+		newEscapeWorkspace(base, clf), testReadLedger(), nil)
 	if err != nil {
 		t.Fatalf("NewEnvironment: %v", err)
 	}

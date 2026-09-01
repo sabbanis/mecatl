@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/governance"
@@ -88,7 +89,7 @@ func TestModelCallsCarryRunAndTurnCorrelation(t *testing.T) {
 	})
 	sess := session.New("correlation", session.ModeDefault, "/ws", session.Limits{}, time.Now())
 	ws := memfs.NewWorkspace("/ws")
-	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws"}, ws, nil)
+	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws"}, ws, memledger.New(), nil)
 	for range engine.Run(context.Background(), sess, env, agent.RunRequest{Text: "go"}).Events() {
 	}
 	if len(provider.turns) != 2 || provider.turns[0] != 0 || provider.turns[1] != 1 {

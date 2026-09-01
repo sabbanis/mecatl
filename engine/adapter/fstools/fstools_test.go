@@ -9,12 +9,24 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 )
+
+var testLedgers sync.Map
+
+func ledgerFor(ws tool.Workspace) tool.ReadLedger {
+	if ledger, ok := ws.(tool.ReadLedger); ok {
+		return ledger
+	}
+	ledger, _ := testLedgers.LoadOrStore(ws, memledger.New())
+	return ledger.(tool.ReadLedger)
+}
 
 // errSimulatedRead is a sentinel read error used to prove the Edit/Write tools
 // surface a ReadVersion failure as a model-visible "cannot read" error rather
@@ -34,7 +46,13 @@ func call(t *testing.T, name string, m map[string]any) session.ToolCall {
 // exec runs a tool and fails the test on a harness-level (Go) error.
 func exec(t *testing.T, tl tool.Tool, in session.ToolCall, ws tool.Workspace) session.ToolResult {
 	t.Helper()
-	res, err := tl.Execute(context.Background(), in, mustEnv(ws))
+	return execWithLedger(t, tl, in, ws, ledgerFor(ws))
+}
+
+func execWithLedger(t *testing.T, tl tool.Tool, in session.ToolCall, ws tool.Workspace, ledger tool.ReadLedger) session.ToolResult {
+	t.Helper()
+	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "test"}, ws, ledger, nil)
+	res, err := tl.Execute(context.Background(), in, env)
 	if err != nil {
 		t.Fatalf("%s: unexpected harness error: %v", tl.Spec().Name, err)
 	}
@@ -45,7 +63,7 @@ func exec(t *testing.T, tl tool.Tool, in session.ToolCall, ws tool.Workspace) se
 // tool reads it off the Environment, issue #462).
 func execWithRunner(t *testing.T, tl tool.Tool, in session.ToolCall, ws tool.Workspace, runner tool.CommandRunner) session.ToolResult {
 	t.Helper()
-	env, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "test"}, ws, runner)
+	env, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "test"}, ws, ledgerFor(ws), runner)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -54,16 +72,6 @@ func execWithRunner(t *testing.T, tl tool.Tool, in session.ToolCall, ws tool.Wor
 		t.Fatalf("%s: unexpected harness error: %v", tl.Spec().Name, err)
 	}
 	return res
-}
-
-// mustEnv wraps a Workspace into a shell-less tool.Environment for the fstools
-// tests (the file tools never use a runner).
-func mustEnv(ws tool.Workspace) tool.Environment {
-	env, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "test"}, ws, nil)
-	if err != nil {
-		panic(err)
-	}
-	return env
 }
 
 // seed writes a file directly into a memfs workspace (no read recorded).
@@ -177,7 +185,7 @@ func TestReadRecordsReadForEdit(t *testing.T) {
 	ws := memfs.NewWorkspace("/")
 	seed(t, ws, "a.txt", "hello\n")
 	exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), ws)
-	ver, ok, err := ws.RecordedVersion(context.Background(), "a.txt")
+	ver, ok, err := ledgerFor(ws).RecordedVersion(context.Background(), tool.LedgerKey(ws.Root(), "a.txt"))
 	if err != nil {
 		t.Fatalf("RecordedVersion: %v", err)
 	}
@@ -527,9 +535,9 @@ func TestEditReadVersionErrorIsCauseFirst(t *testing.T) {
 	exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), base)
 	ws := &readErrorWorkspace{Workspace: base, readErr: errSimulatedRead}
 
-	res := exec(t, EditTool{}, call(t, "Edit", map[string]any{
+	res := execWithLedger(t, EditTool{}, call(t, "Edit", map[string]any{
 		"path": "a.txt", "old_string": "hello", "new_string": "hi",
-	}), ws)
+	}), ws, ledgerFor(base))
 	if !res.IsError {
 		t.Fatal("Edit with a ReadVersion error must be a tool error")
 	}
@@ -549,9 +557,9 @@ func TestWriteReadVersionErrorIsCauseFirst(t *testing.T) {
 	exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), base)
 	ws := &readErrorWorkspace{Workspace: base, readErr: errSimulatedRead}
 
-	res := exec(t, WriteTool{}, call(t, "Write", map[string]any{
+	res := execWithLedger(t, WriteTool{}, call(t, "Write", map[string]any{
 		"path": "a.txt", "content": "new\n",
-	}), ws)
+	}), ws, ledgerFor(base))
 	if !res.IsError {
 		t.Fatal("Write with a ReadVersion error must be a tool error")
 	}
@@ -598,9 +606,9 @@ func TestEditDeletedAfterReadIsModelVisible(t *testing.T) {
 	exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), base)
 	ws := &deletedAfterReadWorkspace{Workspace: base, base: base}
 
-	res := exec(t, EditTool{}, call(t, "Edit", map[string]any{
+	res := execWithLedger(t, EditTool{}, call(t, "Edit", map[string]any{
 		"path": "a.txt", "old_string": "hello", "new_string": "hi",
-	}), ws)
+	}), ws, ledgerFor(base))
 	if !res.IsError {
 		t.Fatal("Edit with a concurrent delete must be a tool error")
 	}
@@ -620,9 +628,9 @@ func TestWriteDeletedAfterReadIsModelVisible(t *testing.T) {
 	exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), base)
 	ws := &deletedAfterReadWorkspace{Workspace: base, base: base}
 
-	res := exec(t, WriteTool{}, call(t, "Write", map[string]any{
+	res := execWithLedger(t, WriteTool{}, call(t, "Write", map[string]any{
 		"path": "a.txt", "content": "new\n",
-	}), ws)
+	}), ws, ledgerFor(base))
 	if !res.IsError {
 		t.Fatal("Write with a concurrent delete must be a tool error")
 	}

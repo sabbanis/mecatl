@@ -96,7 +96,7 @@ func TestACPShellLessEnvironmentDropsBashAndDocumentsPosture(t *testing.T) {
 	// Run against a SHELL-LESS Environment (nil runner) — the ACP override shape.
 	sess := session.New("acp", session.ModeDefault, cfg.Workspace, session.Limits{MaxTurns: 1}, time.Now())
 	shellLessEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: cfg.Workspace},
-		memfs.NewWorkspace(cfg.Workspace), nil)
+		memfs.NewWorkspace(cfg.Workspace), testReadLedger(), nil)
 	run := eng.Run(context.Background(), sess, shellLessEnv, agent.RunRequest{Text: "run a build"})
 	for range run.Events() {
 	}
@@ -150,7 +150,7 @@ func TestACPShellLessEnvironmentStaleBashCallIsHonestToolError(t *testing.T) {
 	}
 	sess := session.New("acp2", session.ModeDefault, cfg.Workspace, session.Limits{MaxTurns: 3}, time.Now())
 	shellLessEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: cfg.Workspace},
-		memfs.NewWorkspace(cfg.Workspace), nil)
+		memfs.NewWorkspace(cfg.Workspace), testReadLedger(), nil)
 	run := eng.Run(context.Background(), sess, shellLessEnv, agent.RunRequest{Text: "run echo hi"})
 	var sawNoShell bool
 	for ev := range run.Events() {
@@ -190,7 +190,7 @@ func TestShellBearingEnvironmentAdvertisesBashAndLacksNote(t *testing.T) {
 		t.Fatal("precondition: buildCommandRunner must return a non-nil runner for a shell-bearing cfg")
 	}
 	shellEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: cfg.Workspace},
-		memfs.NewWorkspace(cfg.Workspace), runner)
+		memfs.NewWorkspace(cfg.Workspace), testReadLedger(), runner)
 	sess := session.New("sh", session.ModeDefault, cfg.Workspace, session.Limits{MaxTurns: 1}, time.Now())
 	run := eng.Run(context.Background(), sess, shellEnv, agent.RunRequest{Text: "hello"})
 	for range run.Events() {
@@ -272,7 +272,7 @@ func TestNoFSProfileDoesNotDuplicateShellLessClause(t *testing.T) {
 	// service installs (buildSessionEnvironment / SetSessionEnvironment). This is
 	// the capability truth buildRequest reads: env.Ref().Kind == EnvKindNoFS ⇒
 	// the shell-less clause is WITHHELD even though env.CommandRunner() == nil.
-	noFSEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindNoFS, ID: ""}, nofs.New(), nil)
+	noFSEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindNoFS, ID: ""}, nofs.New(), testReadLedger(), nil)
 	run := res.Engine.Run(ctx, sess, noFSEnv, agent.RunRequest{Text: "hello"})
 	for range run.Events() {
 	}

@@ -103,7 +103,8 @@ func (ReadTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envir
 	// Edit/Write can assert read-before-mutate. A failed record is reported so
 	// the model knows the read's evidence was NOT retained: a later Edit or
 	// existing-file Write on this path will be refused until a Read succeeds.
-	if err := ws.RecordRead(ctx, args.Path, ver); err != nil {
+	ledger := env.ReadLedger()
+	if err := ledger.RecordRead(ctx, tool.LedgerKey(ws.Root(), args.Path), ver); err != nil {
 		return session.NewToolError(in.ID, fmt.Sprintf(
 			"read %q, but failed to retain read evidence: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
 			args.Path, err)), nil

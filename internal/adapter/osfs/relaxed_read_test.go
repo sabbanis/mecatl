@@ -7,6 +7,8 @@ import (
 	"runtime"
 	"testing"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
+	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/osfs"
 )
 
@@ -301,16 +303,17 @@ func TestRelaxedWrites_LedgerKeysCleanAbsolute(t *testing.T) {
 	}
 	target := filepath.Join(outside, "out.txt")
 	alias := filepath.Join(outside, "deep", "..", "out.txt")
+	ledger := memledger.New()
 
 	// Read canonical (via ReadVersion), record, look up via the `..` alias.
 	_, targetVer, rerr := relaxed.ReadVersion(t.Context(), target)
 	if rerr != nil {
 		t.Fatalf("ReadVersion(target): %v", rerr)
 	}
-	if err := relaxed.RecordRead(t.Context(), target, targetVer); err != nil {
+	if err := ledger.RecordRead(t.Context(), tool.LedgerKey(relaxed.Root(), target), targetVer); err != nil {
 		t.Fatalf("RecordRead(target): %v", err)
 	}
-	got, ok, rverr := relaxed.RecordedVersion(t.Context(), alias)
+	got, ok, rverr := ledger.RecordedVersion(t.Context(), tool.LedgerKey(relaxed.Root(), alias))
 	if rverr != nil {
 		t.Fatalf("RecordedVersion(alias): %v", rverr)
 	}
@@ -328,10 +331,10 @@ func TestRelaxedWrites_LedgerKeysCleanAbsolute(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("ReadVersion(otherAlias): %v", rerr)
 	}
-	if err := relaxed.RecordRead(t.Context(), otherAlias, otherVer); err != nil {
+	if err := ledger.RecordRead(t.Context(), tool.LedgerKey(relaxed.Root(), otherAlias), otherVer); err != nil {
 		t.Fatalf("RecordRead(otherAlias): %v", err)
 	}
-	got, ok, rverr = relaxed.RecordedVersion(t.Context(), other)
+	got, ok, rverr = ledger.RecordedVersion(t.Context(), tool.LedgerKey(relaxed.Root(), other))
 	if rverr != nil {
 		t.Fatalf("RecordedVersion(other): %v", rverr)
 	}
@@ -366,10 +369,10 @@ func TestRelaxedWrites_LedgerKeysCleanAbsolute(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("ReadVersion(inAbs): %v", rerr)
 	}
-	if err := relaxed.RecordRead(t.Context(), inAbs, inVer); err != nil {
+	if err := ledger.RecordRead(t.Context(), tool.LedgerKey(relaxed.Root(), inAbs), inVer); err != nil {
 		t.Fatalf("RecordRead(inAbs): %v", err)
 	}
-	got, ok, rverr = relaxed.RecordedVersion(t.Context(), "in.txt")
+	got, ok, rverr = ledger.RecordedVersion(t.Context(), tool.LedgerKey(relaxed.Root(), "in.txt"))
 	if rverr != nil {
 		t.Fatalf("RecordedVersion(in.txt): %v", rverr)
 	}

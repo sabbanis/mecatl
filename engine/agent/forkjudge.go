@@ -258,8 +258,11 @@ func (judgeWorkspace) Glob(context.Context, string) ([]string, error) { return n
 func (judgeWorkspace) Grep(context.Context, string, string) ([]tool.GrepMatch, error) {
 	return nil, nil
 }
-func (judgeWorkspace) RecordRead(context.Context, string, tool.FileVersion) error { return nil }
-func (judgeWorkspace) RecordedVersion(context.Context, string) (tool.FileVersion, bool, error) {
+
+type emptyReadLedger struct{}
+
+func (emptyReadLedger) RecordRead(context.Context, string, tool.FileVersion) error { return nil }
+func (emptyReadLedger) RecordedVersion(context.Context, string) (tool.FileVersion, bool, error) {
 	return tool.FileVersion{}, false, nil
 }
 
@@ -275,4 +278,4 @@ var (
 // scores text without touching the parent tree. Built once via MustEnvironment
 // (a process-wide var is safe — the Environment is immutable and carries no
 // per-run state).
-var judgeEnvironment = tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "judge"}, judgeWorkspace{}, nil)
+var judgeEnvironment = tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "judge"}, judgeWorkspace{}, emptyReadLedger{}, nil)

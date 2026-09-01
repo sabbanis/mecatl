@@ -129,9 +129,9 @@ func NewBackend() *Backend {
 func (b *Backend) NewEnvironment(label string) (tool.Environment, error) {
 	id := b.mintID(label)
 	ns := b.createNamespace(id)
-	ws := &workspace{ns: ns, ledger: memledger.New()}
+	ws := &workspace{ns: ns}
 	runner := &runner{ns: ns}
-	return tool.NewEnvironment(session.EnvironmentRef{Kind: Kind, ID: id}, ws, runner)
+	return tool.NewEnvironment(session.EnvironmentRef{Kind: Kind, ID: id}, ws, memledger.New(), runner)
 }
 
 // Resolve reattaches a LIVE Environment to the namespace named by ref.ID,
@@ -147,9 +147,9 @@ func (b *Backend) Resolve(_ context.Context, ref session.EnvironmentRef) (tool.E
 	if err != nil {
 		return tool.Environment{}, err
 	}
-	ws := &workspace{ns: ns, ledger: memledger.New()}
+	ws := &workspace{ns: ns}
 	runner := &runner{ns: ns}
-	return tool.NewEnvironment(ref, ws, runner)
+	return tool.NewEnvironment(ref, ws, memledger.New(), runner)
 }
 
 // mintID mints a fresh opaque namespace id. The label is folded in for
@@ -259,8 +259,7 @@ func (b *Backend) RehydrateForTest(id string, src tool.Workspace) error {
 // a fresh in-memory tool.ReadLedger by default) while the authoritative
 // content+version lives on the shared namespace.
 type workspace struct {
-	ns     *namespace
-	ledger tool.ReadLedger
+	ns *namespace
 }
 
 // Compile-time assertion that workspace satisfies the frozen seam.
@@ -387,28 +386,6 @@ func (w *workspace) Glob(_ context.Context, pattern string) ([]string, error) {
 // optional path glob. It mirrors memfs's in-memory grep.
 func (w *workspace) Grep(ctx context.Context, pattern, pathGlob string) ([]tool.GrepMatch, error) {
 	return grepInMemory(ctx, w.ns, pattern, pathGlob)
-}
-
-// RecordRead stores the EXACT version for path under this handle's SELECTED
-// ledger (ADR 0278; no file-content I/O). The ledger is per-handle: a second
-// handle to the same namespace has its own ledger, so a stale-version conflict
-// between two handles is observable.
-func (w *workspace) RecordRead(ctx context.Context, p string, version tool.FileVersion) error {
-	key, err := cleanPath(p)
-	if err != nil {
-		return nil // fail-safe: an uncleanable path stays unrecorded
-	}
-	return w.ledger.RecordRead(ctx, key, version)
-}
-
-// RecordedVersion returns the version previously recorded for path, from this
-// handle's selected ledger (no file-content I/O).
-func (w *workspace) RecordedVersion(ctx context.Context, p string) (tool.FileVersion, bool, error) {
-	key, err := cleanPath(p)
-	if err != nil {
-		return tool.FileVersion{}, false, nil
-	}
-	return w.ledger.RecordedVersion(ctx, key)
 }
 
 // namespaceFiles returns a snapshot of the namespace's current (path -> content)

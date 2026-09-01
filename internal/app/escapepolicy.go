@@ -465,30 +465,6 @@ func (w *escapeWorkspace) AuthorityResourcePath(path string) (target, workspace 
 	return relaxed.RelaxedAuthorityResourcePath(path)
 }
 
-// RecordRead consults the SAME pseudo-fs guard before delegating to the inner
-// workspace's ledger record (AC-W2-F1): the record is now a pure in-memory store
-// of the caller-supplied version (no inner fingerprint read), but the guard
-// still keeps a pseudo-fs path out of the ledger. A pseudo-fs RecordRead is a
-// NO-OP (the version is never recorded), which is fail-safe: the edit then fails
-// the ordinary read-before-edit check instead of validating a pseudo-fs read.
-func (w *escapeWorkspace) RecordRead(ctx context.Context, path string, version tool.FileVersion) error {
-	if w.refusePseudoFS(path) != nil {
-		return nil
-	}
-	return w.Workspace.RecordRead(ctx, path, version)
-}
-
-// RecordedVersion consults the SAME pseudo-fs guard before delegating. A
-// pseudo-fs check answers (zero, false, nil) — never read — so an Edit relying
-// on even a PLANTED pseudo-fs ledger entry can never pass the read-before-edit
-// invariant through this wrapper.
-func (w *escapeWorkspace) RecordedVersion(ctx context.Context, path string) (tool.FileVersion, bool, error) {
-	if w.refusePseudoFS(path) != nil {
-		return tool.FileVersion{}, false, nil
-	}
-	return w.Workspace.RecordedVersion(ctx, path)
-}
-
 // refusePseudoFS returns the hard-deny error when path classifies pseudo-fs
 // under the session's classifier — the SAME never-relaxed refusal the
 // permission wrapper applies, defense-in-depth at the tool-body boundary.

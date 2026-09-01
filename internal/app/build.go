@@ -6548,20 +6548,8 @@ func buildSubagentTool(ctx context.Context, cfg Config, provReg *providerRegistr
 			}))
 		opts = append(opts, agent.WithChildForker(taskForker))
 	}
-	// Every base-sharing child (shell-less read-only or direct-write) gets a
-	// fresh child-session read ledger by re-opening the SAME local namespace
-	// through the common fork-workspace constructor. This is required at every
-	// posture: a child must never inherit or write the parent session's selected
-	// durable ledger. The parent runner is retained by forkChildEnvironment, so
-	// direct-write Bash remains bound to the parent namespace. The same re-view
-	// also preserves the existing auto/yolo path-escape containment boundary.
-	opts = append(opts, agent.WithSharedChildWorkspace(func(root string) tool.Workspace {
-		ws, err := newForkWorkspace()(root, memledger.New())
-		if err != nil {
-			return nil
-		}
-		return ws
-	}))
+	// Base-sharing children retain the exact parent Workspace and receive fresh evidence.
+	opts = append(opts, agent.WithSubagentReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }))
 	// Per-call model override factory: mint an explorer child engine for a requested
 	// model through the SAME contamination-safe per-provider path (newChildEngineFor
 	// Provider re-derives Compactor/TokenCounter/Env.Model/ContextWindow for the
@@ -6666,6 +6654,7 @@ func buildNoFSSubagentTool(ctx context.Context, cfg Config, provReg *providerReg
 		agent.WithSubagentStore(store),
 		agent.WithSubagentOwnershipEnforced(cfg.OwnershipEnforced),
 		agent.WithSubagentNoFSNote(),
+		agent.WithSubagentReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }),
 		agent.WithSubagentEngineFactory(func(overrideModel string) (*agent.Engine, bool) {
 			overrideModel = strings.TrimSpace(overrideModel)
 			if overrideModel == "" {
@@ -6918,7 +6907,7 @@ func buildAgentWritableEngineFactory(ctx context.Context, cfg Config, provReg *p
 // both are filesystem acts), NO shell runners, and every member gets the no-FS
 // child surface (see buildMemberEngine's noFS branch). `a` carries the catalog
 // assets the no-FS member surface registers over; it is read only when noFS.
-func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, mainMgr *mcp.Manager, agentReg *agents.Registry, skillIdx skillIndex, a catalogAssets, noFS bool) (server.MemberEngineFactory, tool.EnvironmentForker, tool.EnvironmentForker, func(string) tool.Workspace, port.HookRunner) {
+func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, mainMgr *mcp.Manager, agentReg *agents.Registry, skillIdx skillIndex, a catalogAssets, noFS bool) (server.MemberEngineFactory, tool.EnvironmentForker, tool.EnvironmentForker, port.HookRunner) {
 	// A single hooks runner shared by the supervisor and the member coordination
 	// tools. hookexec.New(nil) matches buildEngine's default: the configured-hook map
 	// is not yet wired from cfg anywhere, so this is an inert (no-op) runner today,
@@ -6930,7 +6919,7 @@ func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, p
 		// loudly), no shell runners, and the no-FS member catalog for everyone. A
 		// no-FS base can never be relaxed, so no shared-base re-view either.
 		factory := buildMemberEngine(cfg, provReg, provider, parentProviderID, parentModel, teamHooks, agentReg, skillIdx, nil, nil, false, mainMgr, a, true)
-		return factory, nil, nil, nil, teamHooks
+		return factory, nil, nil, teamHooks
 	}
 	// agentReg is the SHARED registry (Build's single resolveAgentSeam): a
 	// member whose spec.AgentType names a def adopts that def's scoped
@@ -6976,20 +6965,7 @@ func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, p
 	mutatingRunner := buildForceCopyRunner(cfg)
 	roIsolationAvailable := memberRunner != nil && roFk != nil
 	factory := buildMemberEngine(cfg, provReg, provider, parentProviderID, parentModel, teamHooks, agentReg, skillIdx, memberRunner, mutatingRunner, roIsolationAvailable, mainMgr, a, false)
-	// Every base-sharing read-only member gets a fresh member-session read
-	// ledger by re-opening the SAME local namespace through the common fork
-	// constructor. This is unconditional across postures so a member cannot
-	// inherit or write the parent session's selected durable ledger. The nil
-	// runner keeps the existing shell-less semantics; the same re-view also
-	// preserves the auto/yolo path-escape containment boundary.
-	sharedBaseWS := func(root string) tool.Workspace {
-		ws, err := newForkWorkspace()(root, memledger.New())
-		if err != nil {
-			return nil
-		}
-		return ws
-	}
-	return factory, fk, roFk, sharedBaseWS, teamHooks
+	return factory, fk, roFk, teamHooks
 }
 
 // applyTeamConfig wires the opt-in agent-teams capability into the server.Config.
@@ -7011,11 +6987,10 @@ func applyTeamConfig(svcCfg *server.Config, cfg Config, reg *providerRegistry, p
 	// agentReg is the ONE registry Build resolved (resolveAgentSeam).
 	// The gRPC CreateTeam path is always the DEFAULT (filesystem) profile — a
 	// no-FS team exists only inside a no-fs session's in-catalog Team tool.
-	factory, fk, roFk, sharedBaseWS, teamHooks := buildTeamWiring(context.Background(), cfg, reg, provider, reg.Default(), cfg.Model, mainMgr, agentReg, skillIdx, a, false)
+	factory, fk, roFk, teamHooks := buildTeamWiring(context.Background(), cfg, reg, provider, reg.Default(), cfg.Model, mainMgr, agentReg, skillIdx, a, false)
 	svcCfg.MemberEngine = factory
 	svcCfg.Forker = fk
 	svcCfg.ReadOnlyForker = roFk
-	svcCfg.SharedBaseWorkspace = sharedBaseWS
 	svcCfg.TeamHooks = teamHooks
 	svcCfg.TeamTokenBudget = cfg.MaxTeamTokens
 	cfg.diag().Log(context.Background(), port.LevelInfo, "agent teams ENABLED (experimental; CreateTeam/SpawnTeammate/RunTeam + Team tool)")
@@ -8367,13 +8342,9 @@ func parseWorktreePorcelain(out string) []server.Worktree {
 	return wts
 }
 
-// newForkWorkspace returns the ONE workspace constructor every fork family
-// (Subagent worktree, team member force-copy/worktree, Parallel branch) uses, so
-// their isolated workspaces cannot drift in construction semantics. The caller
-// supplies a freshly minted child-session ledger; this constructor always
-// composes it and never selects the parent session's ledger.
-func newForkWorkspace() func(string, tool.ReadLedger) (tool.Workspace, error) {
-	return func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
-		return osfs.NewWorkspaceWithLedger(root, ledger)
+// newForkWorkspace returns the ONE content-workspace constructor every fork family uses.
+func newForkWorkspace() func(string) (tool.Workspace, error) {
+	return func(root string) (tool.Workspace, error) {
+		return osfs.NewWorkspace(root)
 	}
 }

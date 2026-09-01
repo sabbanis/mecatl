@@ -11,7 +11,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/hashutil"
 	"github.com/stacklok/mecatl/internal/adapter/osfs"
@@ -39,9 +38,11 @@ const fsCallTimeout = 30 * time.Second
 //   - Read / Write — DELEGATED through fs/* over the ACP connection.
 //   - ReadVersion / CreateFile / ReplaceFile — version-bearing reads and explicit
 //     mutations over the editor buffer; versions are sha256 of fs/read content.
-//   - RecordRead / RecordedVersion — the I/O-free session ledger, so Edit's
-//     read-before-edit-and-unchanged invariant tracks the editor's BUFFER, not disk
-//     (strictly better than osfs for an editor session).
+//     The Environment's separately-selected ReadLedger (a fresh memledger,
+//     composition-supplied at session/new) then tracks the editor's BUFFER
+//     versions, not disk (strictly better than osfs for an editor session) —
+//     fsWorkspace itself carries NO ledger (ADR 0278: content and read evidence
+//     are independently composed at the Environment).
 //   - Root / Glob / Grep — COMPOSED from an osfs.Workspace rooted at the SAME
 //     session cwd. ACP has no fs/list or fs/grep, so these read the local on-disk
 //     tree. The residual: Grep/Glob see disk, not unsaved buffers. This is
@@ -57,7 +58,7 @@ const fsCallTimeout = 30 * time.Second
 // It is registered per-session on the shared *server.Service via
 // SetSessionEnvironment and evicted on editor disconnect; concurrent read-only
 // dispatch may fire several Read (hence fs/read_text_file) calls at once, which
-// the ACP Conn handles safely, and the local ledger has its OWN mutex.
+// the ACP Conn handles safely.
 type fsWorkspace struct {
 	conn      *Conn
 	sessionID string
@@ -70,12 +71,6 @@ type fsWorkspace struct {
 	// callTimeout bounds a single fs/* round-trip. It defaults to fsCallTimeout;
 	// tests may shrink it to assert the bound fires against a non-responsive peer.
 	callTimeout time.Duration
-
-	// ledger is the SELECTED tool.ReadLedger (ADR 0278) — a fresh in-memory one
-	// by default. Its RecordRead/RecordedVersion perform NO I/O and are
-	// INDEPENDENTLY synchronized from the fs/* RPC path (callMu below), so a
-	// parked fs/* round-trip never blocks a ledger lookup or record.
-	ledger tool.ReadLedger
 
 	// callMu serializes the buffer CAS / create RPC SEQUENCES in CreateFile and
 	// ReplaceFile (the read-then-write compare-and-swap), so a same-instance
@@ -101,7 +96,6 @@ func newFSWorkspace(conn *Conn, sessionID, root string) (*fsWorkspace, error) {
 		sessionID:   sessionID,
 		local:       local,
 		callTimeout: fsCallTimeout,
-		ledger:      memledger.New(),
 	}, nil
 }
 
@@ -493,29 +487,4 @@ func (w *fsWorkspace) Glob(ctx context.Context, pattern string) ([]string, error
 // never become a stale EDIT.
 func (w *fsWorkspace) Grep(ctx context.Context, pattern, pathGlob string) ([]tool.GrepMatch, error) {
 	return w.local.Grep(ctx, pattern, pathGlob)
-}
-
-// RecordRead stores the EXACT authoritative version for path in the SELECTED
-// ledger (ADR 0278), performing NO file-content I/O: it stores the FileVersion
-// the caller supplies (the one ReadVersion minted). The version authority is
-// the BUFFER (sha256 of the fs/read content), so a later comparison tracks what
-// the editor would actually overwrite. The I/O-free lexical key
-// (tool.LedgerKey over the shared osfs root) makes ordinary absolute-root and
-// relative forms share one entry; symlink aliases may require another Read.
-// The ledger is INDEPENDENTLY synchronized from the fs/* RPC path (callMu), so
-// a parked fs/* round-trip never blocks this call.
-func (w *fsWorkspace) RecordRead(ctx context.Context, path string, version tool.FileVersion) error {
-	key := tool.LedgerKey(w.Root(), path)
-	return w.ledger.RecordRead(ctx, key, version)
-}
-
-// RecordedVersion returns the version previously recorded for path via
-// RecordRead, from the SELECTED ledger, performing NO file-content I/O. The
-// lookup uses the same lexical ledger key (tool.LedgerKey) as RecordRead, so
-// ordinary absolute-root and relative forms agree without filesystem/editor
-// I/O. It is INDEPENDENTLY synchronized from the fs/* RPC path (callMu), so a
-// parked fs/* round-trip never blocks this call.
-func (w *fsWorkspace) RecordedVersion(ctx context.Context, path string) (tool.FileVersion, bool, error) {
-	key := tool.LedgerKey(w.Root(), path)
-	return w.ledger.RecordedVersion(ctx, key)
 }

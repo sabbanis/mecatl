@@ -338,7 +338,7 @@ func TestEventLogInheritsStreamRedaction(t *testing.T) {
 		Policy:  permpolicy.NewPolicy(allowRules(), nil),
 		Model:   "child-model",
 	})
-	task := agent.NewSubagentTool(childEngine)
+	task := newServerTestSubagent(childEngine)
 
 	parentCat := tool.NewCatalog()
 	parentCat.MustRegister(task)

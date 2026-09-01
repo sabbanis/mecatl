@@ -7,6 +7,7 @@ import (
 	"time"
 
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/agent"
@@ -79,11 +80,12 @@ func runTeamFanout(ctx context.Context) agent.TeamOutcome {
 		return agent.MemberBuild{Engine: buildEngine(agent.Deps{LLM: prov, Catalog: cat})}
 	}
 
-	baseEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: scenarioWorkspaceRoot}, base, nil)
+	baseEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: scenarioWorkspaceRoot}, base, memledger.New(), nil)
 	sup := agent.NewSupervisor(tm, baseEnv, factory,
 		agent.WithTeamGoal("verify every slice of the codebase reads cleanly"),
 		agent.WithMemberStore(memstore.New()),
 		agent.WithMemberSessionPrefix("perf-team"),
+		agent.WithTeamReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }),
 		agent.WithMaxRounds(6))
 
 	// The lead must be enrolled first.

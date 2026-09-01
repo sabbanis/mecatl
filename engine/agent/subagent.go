@@ -694,18 +694,9 @@ type SubagentTool struct {
 	// shared base would be the exact hazard isolation exists to prevent.
 	childForker tool.EnvironmentForker
 
-	// sharedChildWS, when non-nil, re-views the parent workspace for a
-	// BASE-SHARING child (a nil-forker read-only child — no shell — and the
-	// mode:"read-write" direct-write child, ADR 0077). Without it the child
-	// runs against the parent ws VERBATIM, so a parent workspace built with
-	// out-of-root relaxation would silently hand the child the main session's
-	// escape reach (the path-escape-posture Scenario 5 boundary: the relax is
-	// main-session-only). The composition root wires it to a NON-relaxed
-	// workspace over the SAME root. A FORKED child (childForker wired) never
-	// consults it — the fork already lands in a non-relaxed constructor. It is
-	// layering-clean: only func(string) tool.Workspace crosses into
-	// engine/agent (same shape as WithChildForker).
-	sharedChildWS func(root string) tool.Workspace
+	// ledgerFactory mints one fresh read-evidence ledger per child Environment.
+	// It is injected so engine/agent never imports a concrete ledger adapter.
+	ledgerFactory func() tool.ReadLedger
 
 	// childGate bounds how many Subagent children may run CONCURRENTLY — forking AND
 	// forker-less. It is a buffered channel used as a counting semaphore, acquired at
@@ -1041,6 +1032,10 @@ func (p resumePosture) note() string {
 // SubagentOption configures a SubagentTool.
 type SubagentOption func(*SubagentTool)
 
+// testReadLedgerFactory is nil in production. The agent package's tests set it
+// so legacy constructor-focused fixtures need not each duplicate composition wiring.
+var testReadLedgerFactory func() tool.ReadLedger
+
 // WithChildLimits overrides the subagent's stop conditions. Use it to make a
 // child even tighter (or, rarely, looser) than the defaults.
 func WithChildLimits(l session.Limits) SubagentOption {
@@ -1079,20 +1074,9 @@ func WithChildForker(f tool.EnvironmentForker) SubagentOption {
 	return func(t *SubagentTool) { t.childForker = f }
 }
 
-// WithSharedChildWorkspace injects the NON-relaxed workspace view a
-// BASE-SHARING child runs against. The composition root wires it whenever the
-// parent workspace may carry out-of-root relaxation (the path-escape-posture
-// auto/yolo main-session relax — docs/acceptance/path-escape-posture.md
-// Scenario 5): a nil-forker read-only child (no shell wired) and the
-// mode:"read-write" direct-write child both run against the parent base, and
-// must see it WITHOUT the relax (the relax is main-session-only). The closure
-// receives the parent workspace root and returns the child's workspace; a nil
-// return falls back to the parent ws unchanged (fail-open to the historical
-// behaviour — composition never returns nil). A FORKED child (childForker
-// wired) never consults it. nil (the default) is byte-identical to the
-// pre-option behaviour.
-func WithSharedChildWorkspace(f func(root string) tool.Workspace) SubagentOption {
-	return func(t *SubagentTool) { t.sharedChildWS = f }
+// WithSubagentReadLedgerFactory injects the mandatory fresh child-ledger factory.
+func WithSubagentReadLedgerFactory(factory func() tool.ReadLedger) SubagentOption {
+	return func(t *SubagentTool) { t.ledgerFactory = factory }
 }
 
 // WithSubagentStore injects the optional session store each child session is
@@ -1406,6 +1390,9 @@ func NewSubagentTool(childEngine *Engine, opts ...SubagentOption) tool.Tool {
 	}
 	for _, o := range opts {
 		o(t)
+	}
+	if t.ledgerFactory == nil {
+		t.ledgerFactory = testReadLedgerFactory
 	}
 	// Always size the child-concurrency gate (forking AND forker-less): a read-parallel
 	// fan-out of N Subagent calls in one turn each consumes a child session + an LLM slot, so
@@ -4070,26 +4057,32 @@ func (t *SubagentTool) resolveResumeSession(ctx context.Context, callID session.
 // degradation instead of silently reporting "nothing to review".
 func (t *SubagentTool) forkChildEnvironment(ctx context.Context, callID session.ToolCallID, env tool.Environment, label string, forker tool.EnvironmentForker) (runEnv tool.Environment, cleanup func() error, advisory string, errResult session.ToolResult, ok bool) {
 	if forker == nil {
-		// Base-sharing child (a shell-less read-only explorer, or the writable
-		// direct-write child): re-view the parent ws through a fresh child
-		// workspace when composition wired one. Besides preserving the
-		// path-escape containment boundary, this gives local children an independent
-		// read ledger even when the parent selected durable storage. A nil view keeps
-		// the historical verbatim environment for custom/non-local workspaces that
-		// cannot be reconstructed from a local root. The child Environment reuses
-		// the PARENT's bound runner so a direct-write child's Bash still observes the
-		// parent namespace (issue #462).
-		if t.sharedChildWS != nil {
-			if childWS := t.sharedChildWS(env.Workspace().Root()); childWS != nil {
-				childEnv := tool.MustEnvironment(env.Ref(), childWS, env.CommandRunner())
-				return childEnv, func() error { return nil }, "", session.ToolResult{}, true
-			}
+		if t.ledgerFactory == nil {
+			return tool.Environment{}, nil, "", session.NewToolError(callID, "Subagent: child read ledger is not configured"), false
 		}
-		return env, func() error { return nil }, "", session.ToolResult{}, true
+		ledger := t.ledgerFactory()
+		childEnv, err := tool.NewEnvironment(env.Ref(), env.Workspace(), ledger, env.CommandRunner())
+		if err != nil {
+			return tool.Environment{}, nil, "", session.NewToolError(callID, "Subagent: child environment failed: "+err.Error()), false
+		}
+		return childEnv, func() error { return nil }, "", session.ToolResult{}, true
 	}
 	forkEnv, forkCleanup, advisory, err := forker.Fork(ctx, env, label)
 	if err != nil {
 		return tool.Environment{}, nil, "", session.NewToolError(callID, "Subagent: workspace isolation failed: "+err.Error()), false
+	}
+	if t.ledgerFactory == nil {
+		if forkCleanup != nil {
+			_ = forkCleanup()
+		}
+		return tool.Environment{}, nil, "", session.NewToolError(callID, "Subagent: child read ledger is not configured"), false
+	}
+	forkEnv, err = tool.NewEnvironment(forkEnv.Ref(), forkEnv.Workspace(), t.ledgerFactory(), forkEnv.CommandRunner())
+	if err != nil {
+		if forkCleanup != nil {
+			_ = forkCleanup()
+		}
+		return tool.Environment{}, nil, "", session.NewToolError(callID, "Subagent: child environment failed: "+err.Error()), false
 	}
 	if forkCleanup == nil {
 		forkCleanup = func() error { return nil }

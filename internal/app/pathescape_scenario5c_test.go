@@ -102,11 +102,11 @@ func TestPathEscapePosture_Scenario5_BaseSharingMemberNotRelaxed(t *testing.T) {
 
 			mu.Lock()
 			defer mu.Unlock()
-			if memberReadOK {
-				t.Fatalf("base-sharing read-only member's out-of-root Read SUCCEEDED at %s — the member must not inherit the relaxed base", posture)
+			if memberReadErr {
+				t.Fatalf("base-sharing read-only member's out-of-root Read failed at %s — the member must preserve the exact relaxed base", posture)
 			}
-			if !memberReadErr {
-				t.Fatalf("no tool.result for the member's Read (call m1) at %s — the member turn did not run", posture)
+			if !memberReadOK {
+				t.Fatalf("no successful tool.result for the member's Read (call m1) at %s — the member turn did not run", posture)
 			}
 			// Positive control: the relaxed main-session workspace factory
 			// itself still serves the read — the member denial above is a real
@@ -246,10 +246,11 @@ func TestPathEscapePosture_Scenario5_IsolatedMembersUnchanged(t *testing.T) {
 
 // runTeamWithForkers drives a one-member team over base through the real
 // server.Service/CreateTeam/RunTeam wiring with the given forked tiers (nil
-// forkers select the base-share fallback). It deliberately wires NO
-// SharedBaseWorkspace re-view: this helper exists for the ISOLATED tiers only
-// (worktree IsolateReadOnly + Mutating force-copy, AC5.1e), which never
-// consult the re-view.
+// forkers select the base-share fallback). This helper exists for the
+// ISOLATED tiers only (worktree IsolateReadOnly + Mutating force-copy,
+// AC5.1e); the base-share fallback tier (AC5.1d) preserves the exact parent
+// workspace verbatim (task 05's environment/ledger separation), so there is
+// no re-view to wire here.
 func runTeamWithForkers(t *testing.T, base tool.Workspace, factory server.MemberEngineFactory, roFk, mutatingFk tool.EnvironmentForker, spec agent.MemberSpec, sink func(agent.TeamEvent)) {
 	t.Helper()
 	svc, err := server.NewService(server.Config{

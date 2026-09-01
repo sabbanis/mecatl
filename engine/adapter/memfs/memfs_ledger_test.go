@@ -6,6 +6,8 @@ import (
 
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/memledger"
+	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/engine/tool"
 )
 
 // TestPersistentReadLedgers_Scenario1_IndependentSessionLedgers pins AC1.3
@@ -20,8 +22,12 @@ func TestPersistentReadLedgers_Scenario1_IndependentSessionLedgers(t *testing.T)
 		t.Fatalf("Write: %v", err)
 	}
 
-	wsA := memfs.NewWorkspaceOverFileSystem(fs, memledger.New())
-	wsB := memfs.NewWorkspaceOverFileSystem(fs, memledger.New())
+	wsA := memfs.NewWorkspaceOverFileSystem(fs)
+	wsB := memfs.NewWorkspaceOverFileSystem(fs)
+	ledgerA := memledger.New()
+	ledgerB := memledger.New()
+	envA := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws-a"}, wsA, ledgerA, nil)
+	envB := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws-b"}, wsB, ledgerB, nil)
 
 	// Both Workspaces see the SAME file content (one shared backend).
 	dataA, err := wsA.Read(ctx, "shared.txt")
@@ -41,19 +47,17 @@ func TestPersistentReadLedgers_Scenario1_IndependentSessionLedgers(t *testing.T)
 	if err != nil {
 		t.Fatalf("wsA.ReadVersion: %v", err)
 	}
-	if err := wsA.RecordRead(ctx, "shared.txt", ver); err != nil {
-		t.Fatalf("wsA.RecordRead: %v", err)
+	key := tool.LedgerKey(wsA.Root(), "shared.txt")
+	if err := envA.ReadLedger().RecordRead(ctx, key, ver); err != nil {
+		t.Fatalf("ledgerA.RecordRead: %v", err)
 	}
 
-	// wsA's own ledger has the record.
-	if _, ok, err := wsA.RecordedVersion(ctx, "shared.txt"); err != nil || !ok {
-		t.Fatalf("wsA.RecordedVersion = (ok=%v, err=%v), want (true, nil)", ok, err)
+	if _, ok, err := envA.ReadLedger().RecordedVersion(ctx, key); err != nil || !ok {
+		t.Fatalf("ledgerA.RecordedVersion = (ok=%v, err=%v), want (true, nil)", ok, err)
 	}
 
-	// wsB's INDEPENDENT ledger has NO record of it, despite sharing file content
-	// with wsA.
-	if _, ok, err := wsB.RecordedVersion(ctx, "shared.txt"); err != nil {
-		t.Fatalf("wsB.RecordedVersion: %v", err)
+	if _, ok, err := envB.ReadLedger().RecordedVersion(ctx, key); err != nil {
+		t.Fatalf("ledgerB.RecordedVersion: %v", err)
 	} else if ok {
 		t.Fatal("wsB.RecordedVersion reported ok=true — the two Workspaces' ledgers must be independent")
 	}
@@ -71,6 +75,8 @@ func TestPersistentReadLedgers_Scenario1_DefaultMemoryLifecycle(t *testing.T) {
 
 	// First "live" Workspace: record a read.
 	first := memfs.NewWorkspace("/ws")
+	firstLedger := memledger.New()
+	firstEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws"}, first, firstLedger, nil)
 	if err := first.Write(ctx, "a.txt", []byte("v1")); err != nil {
 		t.Fatalf("Write: %v", err)
 	}
@@ -78,10 +84,11 @@ func TestPersistentReadLedgers_Scenario1_DefaultMemoryLifecycle(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadVersion: %v", err)
 	}
-	if err := first.RecordRead(ctx, "a.txt", ver); err != nil {
+	key := tool.LedgerKey(first.Root(), "a.txt")
+	if err := firstEnv.ReadLedger().RecordRead(ctx, key, ver); err != nil {
 		t.Fatalf("RecordRead: %v", err)
 	}
-	if _, ok, err := first.RecordedVersion(ctx, "a.txt"); err != nil || !ok {
+	if _, ok, err := firstEnv.ReadLedger().RecordedVersion(ctx, key); err != nil || !ok {
 		t.Fatalf("first.RecordedVersion = (ok=%v, err=%v), want (true, nil)", ok, err)
 	}
 
@@ -91,7 +98,9 @@ func TestPersistentReadLedgers_Scenario1_DefaultMemoryLifecycle(t *testing.T) {
 	if err := rebuilt.Write(ctx, "a.txt", []byte("v1")); err != nil {
 		t.Fatalf("Write (rebuilt): %v", err)
 	}
-	if _, ok, err := rebuilt.RecordedVersion(ctx, "a.txt"); err != nil {
+	rebuiltLedger := memledger.New()
+	rebuiltEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws"}, rebuilt, rebuiltLedger, nil)
+	if _, ok, err := rebuiltEnv.ReadLedger().RecordedVersion(ctx, key); err != nil {
 		t.Fatalf("rebuilt.RecordedVersion: %v", err)
 	} else if ok {
 		t.Fatal("rebuilt.RecordedVersion reported ok=true — a rebuilt default Workspace must start with an empty ledger")

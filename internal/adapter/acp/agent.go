@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
@@ -311,7 +312,7 @@ func (a *Agent) handleSessionNew(ctx context.Context, params json.RawMessage) (a
 		// namespace), but the editor provides NO shell, so the CommandRunner is
 		// nil (Bash surfaces ErrNoShell honestly). The ref ID is the session root
 		// so the parent can identify the namespace (issue #462 phase-2 finding #2).
-		env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: ws.Root()}, ws, nil)
+		env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: ws.Root()}, ws, memledger.New(), nil)
 		a.svc.SetSessionEnvironment(sess.ID, env)
 		if len(specs) == 0 {
 			// Not already tracked via the MCP path; track now so the override is

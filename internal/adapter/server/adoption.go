@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/nofs"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
@@ -436,7 +437,7 @@ func (s *Service) AdoptSession(ctx context.Context, sourceID session.SessionID, 
 	}
 	s.sessionEngines[targetID] = &sessionEngine{engine: resolved.Engine, caps: resolved.Capabilities, providerID: resolved.ProviderID, modelID: resolved.ModelID, reasoningEffort: resolved.ReasoningEffort, builtForMode: resolved.BuiltForMode, close: closeFn}
 	if bindings.Profile == ProfileNoFS {
-		s.sessionEnvironments[targetID] = tool.MustEnvironment(bindings.EnvironmentRef, nofs.New(), nil)
+		s.sessionEnvironments[targetID] = tool.MustEnvironment(bindings.EnvironmentRef, nofs.New(), memledger.New(), nil)
 	}
 	s.mu.Unlock()
 	published, ownsPublication, err := s.publishAdoption(ctx, target, sourceID, owner, digest)

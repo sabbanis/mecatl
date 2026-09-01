@@ -7,11 +7,13 @@ import (
 	"sync"
 	"testing"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/nofs"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/team"
+	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/agents"
 	"github.com/stacklok/mecatl/internal/adapter/memory"
 	"github.com/stacklok/mecatl/internal/adapter/server"
@@ -45,7 +47,7 @@ func noFSTeamAssets(t *testing.T) catalogAssets {
 func noFSTeamWiring(t *testing.T, provider port.LLMProvider, a catalogAssets) (server.MemberEngineFactory, *agent.Supervisor, *team.Team) {
 	t.Helper()
 	cfg := Config{Model: "mock", Shell: "/bin/sh", TrustProject: true, Diagnostics: port.NopDiagnostics{}}
-	factory, fk, roFk, _, _ := buildTeamWiring(context.Background(), cfg,
+	factory, fk, roFk, _ := buildTeamWiring(context.Background(), cfg,
 		regForTest(provider, providerMock, cfg.Model), provider, providerMock, cfg.Model,
 		a.globalMgr, agents.NewRegistry(nil), nil, a, true)
 	if fk != nil || roFk != nil {
@@ -55,7 +57,7 @@ func noFSTeamWiring(t *testing.T, provider port.LLMProvider, a catalogAssets) (s
 	sup := agent.NewSupervisor(tm, testEnvironment(nofs.New(), nil),
 		func(spec agent.MemberSpec, routedModel string) agent.MemberBuild {
 			return factory(tm, spec, routedModel)
-		})
+		}, agent.WithTeamReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }))
 	return factory, sup, tm
 }
 

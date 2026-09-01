@@ -87,7 +87,10 @@ func (st *Store) DeleteReadLedger(ctx context.Context, id session.SessionID) err
 // broker) — wrapped in tool.ErrLedgerUnavailable so a caller can classify it
 // with errors.Is, distinct from an ordinary successful record.
 func (l *redisLedger) RecordRead(ctx context.Context, key string, version tool.FileVersion) error {
-	token, _ := version.Token()
+	token, err := tool.EncodeFileVersion(version)
+	if err != nil {
+		return fmt.Errorf("redisstore: encode read ledger entry: %w", err)
+	}
 	data, err := json.Marshal(ledgerRecord{V: ledgerFormat, T: token})
 	if err != nil {
 		return fmt.Errorf("redisstore: encode read ledger entry: %w", err)

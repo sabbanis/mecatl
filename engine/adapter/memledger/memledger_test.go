@@ -44,11 +44,11 @@ func TestInvariant_persistent_read_ledger_exact_version(t *testing.T) {
 	if !got.Equal(want) {
 		t.Fatalf("RecordedVersion returned a token that does not equal the recorded one")
 	}
-	gotToken, gotValid := got.Token()
-	wantToken, wantValid := want.Token()
-	if !gotValid || !wantValid || gotToken != wantToken {
-		t.Fatalf("RecordedVersion token = (%q, valid=%v), want EXACTLY the recorded (%q, valid=%v)",
-			gotToken, gotValid, wantToken, wantValid)
+	gotToken, gotErr := tool.EncodeFileVersion(got)
+	wantToken, wantErr := tool.EncodeFileVersion(want)
+	if gotErr != nil || wantErr != nil || gotToken != wantToken {
+		t.Fatalf("RecordedVersion encoded token = (%q, err=%v), want EXACTLY the recorded (%q, err=%v)",
+			gotToken, gotErr, wantToken, wantErr)
 	}
 }
 

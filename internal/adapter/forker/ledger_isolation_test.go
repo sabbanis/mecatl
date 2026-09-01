@@ -38,24 +38,25 @@ func TestPersistentReadLedgers_Scenario1_ForkLedgerIsolation(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(parentRoot, "shared.txt"), []byte("parent"), 0o600); err != nil {
 		t.Fatalf("seed parent: %v", err)
 	}
-	parentWS, err := osfs.NewWorkspaceWithLedger(parentRoot, parentLedger)
+	parentWS, err := osfs.NewWorkspace(parentRoot)
 	if err != nil {
 		t.Fatalf("parent workspace: %v", err)
 	}
 	parentVersion := tool.NewFileVersion("parent-only-evidence")
-	if err := parentWS.RecordRead(ctx, "parent-only.txt", parentVersion); err != nil {
+	if err := parentLedger.RecordRead(ctx, tool.LedgerKey(parentWS.Root(), "parent-only.txt"), parentVersion); err != nil {
 		t.Fatalf("record parent evidence: %v", err)
 	}
 	parent := tool.MustEnvironment(
 		session.EnvironmentRef{Kind: session.EnvKindLocal, ID: parentRoot},
 		parentWS,
+		parentLedger,
 		nil,
 	)
 
 	// The forker owns ledger selection: even though the parent selected durable
 	// storage, the constructor receives and composes a fresh child-session ledger.
-	f := forker.New(func(root string, childLedger tool.ReadLedger) (tool.Workspace, error) {
-		return osfs.NewWorkspaceWithLedger(root, childLedger)
+	f := forker.New(func(root string) (tool.Workspace, error) {
+		return osfs.NewWorkspace(root)
 	}, forker.WithForceCopy(), forker.WithRunner(func(root string) tool.CommandRunner {
 		runner, runnerErr := osfs.NewCommandRunnerShell(root, "/bin/sh")
 		if runnerErr != nil {
@@ -72,7 +73,7 @@ func TestPersistentReadLedgers_Scenario1_ForkLedgerIsolation(t *testing.T) {
 	if child.Workspace().Root() == parentRoot {
 		t.Fatal("child workspace must remain in an isolated child namespace")
 	}
-	if _, ok, err := child.Workspace().RecordedVersion(ctx, "parent-only.txt"); err != nil {
+	if _, ok, err := child.ReadLedger().RecordedVersion(ctx, tool.LedgerKey(child.Workspace().Root(), "parent-only.txt")); err != nil {
 		t.Fatalf("child lookup of parent evidence: %v", err)
 	} else if ok {
 		t.Fatal("child inherited evidence from the parent's durable ledger")
@@ -82,7 +83,7 @@ func TestPersistentReadLedgers_Scenario1_ForkLedgerIsolation(t *testing.T) {
 	if err != nil {
 		t.Fatalf("child ReadVersion: %v", err)
 	}
-	if err := child.Workspace().RecordRead(ctx, "shared.txt", childVersion); err != nil {
+	if err := child.ReadLedger().RecordRead(ctx, tool.LedgerKey(child.Workspace().Root(), "shared.txt"), childVersion); err != nil {
 		t.Fatalf("child RecordRead: %v", err)
 	}
 	if _, ok, err := parentLedger.RecordedVersion(ctx, "shared.txt"); err != nil {

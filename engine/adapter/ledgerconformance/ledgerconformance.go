@@ -123,7 +123,7 @@ func Run(t *testing.T, newLedger func(t *testing.T) tool.ReadLedger) {
 			t.Fatalf("RecordedVersion after race: %v", err)
 		}
 		if ok {
-			if _, valid := got.Token(); !valid {
+			if _, err := tool.EncodeFileVersion(got); err != nil {
 				t.Fatal("RecordedVersion after race returned an invalid (torn) FileVersion")
 			}
 		}

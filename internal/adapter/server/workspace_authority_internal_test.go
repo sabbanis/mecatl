@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/nofs"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
@@ -25,7 +26,7 @@ func TestValidateEnvironmentOverrideUsesAuthoritativeIdentity(t *testing.T) {
 	defaultSession := func() *session.Session {
 		return session.New("def", session.ModeDefault, "/some/root", session.Limits{}, time.Unix(0, 0))
 	}
-	emptyRootOverride := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindNoFS}, nofs.New(), nil)
+	emptyRootOverride := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindNoFS}, nofs.New(), memledger.New(), nil)
 
 	t.Run("fileless empty-root override fails closed", func(t *testing.T) {
 		s := &Service{cfg: Config{WorkspaceAuthority: WorkspaceAuthorityFileless}}
@@ -36,7 +37,7 @@ func TestValidateEnvironmentOverrideUsesAuthoritativeIdentity(t *testing.T) {
 
 	t.Run("server-assigned matching root is accepted", func(t *testing.T) {
 		s := &Service{cfg: Config{WorkspaceAuthority: WorkspaceAuthorityServerAssigned, AuthoritativeWorkspace: "/dep/ws"}}
-		match := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/dep/ws"}, memfs.NewWorkspace("/dep/ws"), nil)
+		match := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/dep/ws"}, memfs.NewWorkspace("/dep/ws"), memledger.New(), nil)
 		if err := s.validateEnvironmentOverride(defaultSession(), match); err != nil {
 			t.Fatalf("validateEnvironmentOverride(server-assigned, matching root) = %v, want nil", err)
 		}
@@ -44,7 +45,7 @@ func TestValidateEnvironmentOverrideUsesAuthoritativeIdentity(t *testing.T) {
 
 	t.Run("server-assigned off-root override fails closed", func(t *testing.T) {
 		s := &Service{cfg: Config{WorkspaceAuthority: WorkspaceAuthorityServerAssigned, AuthoritativeWorkspace: "/dep/ws"}}
-		off := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/other"}, memfs.NewWorkspace("/other"), nil)
+		off := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/other"}, memfs.NewWorkspace("/other"), memledger.New(), nil)
 		if err := s.validateEnvironmentOverride(defaultSession(), off); !errors.Is(err, ErrFailedPrecondition) {
 			t.Fatalf("validateEnvironmentOverride(server-assigned, off-root) = %v, want ErrFailedPrecondition", err)
 		}

@@ -108,7 +108,8 @@ func (EditTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envir
 	// UNAVAILABLE or CORRUPT (ADR 0278) — DISTINCT from ordinary absence — and
 	// must refuse BEFORE ReplaceFile is ever called; it is never treated as an
 	// unrecorded-but-otherwise-authorized read.
-	recorded, recordedOK, err := ws.RecordedVersion(ctx, args.Path)
+	ledger := env.ReadLedger()
+	recorded, recordedOK, err := ledger.RecordedVersion(ctx, tool.LedgerKey(ws.Root(), args.Path))
 	if err != nil {
 		return session.NewToolError(in.ID, fmt.Sprintf(
 			"refusing to edit %q: could not verify it was read this session (%v). Read the file again, then retry the edit.",
@@ -192,7 +193,7 @@ func (EditTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envir
 	// reported honestly WITHOUT rollback and without claiming the file is
 	// untouched (ADR 0278) — the next existing-file mutation on this path is
 	// refused until another successful Read records evidence.
-	if err := ws.RecordRead(ctx, args.Path, newVer); err != nil {
+	if err := ledger.RecordRead(ctx, tool.LedgerKey(ws.Root(), args.Path), newVer); err != nil {
 		return session.NewToolError(in.ID, fmt.Sprintf(
 			"edited %q: replaced %d occurrence(s), but failed to retain read evidence for the new version: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
 			args.Path, replaced, err)), nil

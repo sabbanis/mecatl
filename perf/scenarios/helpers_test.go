@@ -5,6 +5,7 @@ import (
 	"time"
 
 	"github.com/stacklok/mecatl/engine/adapter/memfs"
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/governance"
@@ -60,7 +61,7 @@ func scenarioSession(id string, limits session.Limits) *session.Session {
 // the scenario root.
 func scenarioWorkspace() tool.Environment {
 	ws := memfs.NewWorkspace(scenarioWorkspaceRoot)
-	return tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: scenarioWorkspaceRoot}, ws, nil)
+	return tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: scenarioWorkspaceRoot}, ws, memledger.New(), nil)
 }
 
 // readTool is a deterministic read-only tool returning fixed content — the

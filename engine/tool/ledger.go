@@ -18,15 +18,11 @@ import (
 var ErrLedgerUnavailable = errors.New("tool: read ledger unavailable")
 
 // ReadLedger is the session-bound, storage-selectable read-before-write
-// evidence capability (ADR 0278). A Workspace composes its file-content
-// operations with exactly one selected ReadLedger and continues to present the
-// combined capability through Workspace's own RecordRead/RecordedVersion (see
-// the Workspace doc comment) — but the ledger implementation may be selected
-// INDEPENDENTLY of the Workspace's file-content backend: two Workspaces over
-// the SAME file-content backend may select two ISOLATED ReadLedgers (session
-// scoping happens at ledger construction/selection, not by inspecting the
-// key), and a durable ledger (e.g. Redis-backed) may back a Workspace whose
-// file contents live somewhere else entirely.
+// evidence capability (ADR 0278). Environment composes exactly one ReadLedger
+// with one independently selected Workspace content backend. Two Environments
+// over the SAME Workspace may carry ISOLATED ReadLedgers (session scoping happens
+// at ledger construction/selection, not by inspecting the key), and a durable
+// ledger (for example Redis-backed) may accompany content stored elsewhere.
 //
 // Operations are context-aware and distinguish exactly three outcomes:
 //
@@ -37,8 +33,8 @@ var ErrLedgerUnavailable = errors.New("tool: read ledger unavailable")
 //
 // A ReadLedger stores the EXACT opaque token a caller supplies (the version a
 // corresponding version-bearing read minted) and performs NO file-content I/O
-// and NO physical-alias resolution of its own: a Workspace adapter owns path
-// interpretation and applies the existing I/O-free LedgerKey normalization
+// and NO physical-alias resolution of its own. The file tools apply the existing
+// I/O-free LedgerKey normalization using their Environment's Workspace root
 // BEFORE calling into the ledger, so an implementation receives an
 // already-normalized key and need not (and must not) reach back into a
 // filesystem to interpret it.

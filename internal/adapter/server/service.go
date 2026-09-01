@@ -21,6 +21,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/nofs"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/learning"
@@ -564,13 +565,6 @@ type Config struct {
 	// member IsolateReadOnly (which the composition root does only when this is
 	// wired). When nil, read-only members base-share with no shell.
 	ReadOnlyForker tool.EnvironmentForker
-	// SharedBaseWorkspace re-views a team's base workspace for a BASE-SHARING
-	// read-only member (the no-shell fallback tier) so it never inherits a relaxed
-	// base's out-of-root reach (the path-escape-posture Scenario 5 boundary —
-	// threaded to agent.WithTeamSharedBaseWorkspace). The composition root wires it
-	// whenever the Workspaces factory may return a relaxed workspace (auto/yolo).
-	// Optional; nil keeps the historical verbatim base share.
-	SharedBaseWorkspace func(root string) tool.Workspace
 	// TeamHooks fires the team lifecycle hooks (TeammateIdle) and is passed to
 	// member coordination tools for the TaskCreated / TaskCompleted gates.
 	// Optional.
@@ -1962,7 +1956,7 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 		// factory (which would MkdirAll/OpenRoot the server process's cwd — the
 		// exact hazard). It is a complete shell-less Environment with an honest
 		// nofs ref (no command runner: a file-less namespace has no shell).
-		s.sessionEnvironments[sess.ID] = tool.MustEnvironment(defaultEnvironmentRef(sess), nofs.New(), nil)
+		s.sessionEnvironments[sess.ID] = tool.MustEnvironment(defaultEnvironmentRef(sess), nofs.New(), memledger.New(), nil)
 	}
 	s.mu.Unlock()
 
@@ -3388,7 +3382,7 @@ func (s *Service) LoadSessionWithMCP(ctx context.Context, id session.SessionID, 
 		// under the same lock (the create-time discipline), so StartRun never
 		// consults the shared factory with the empty root. It is a complete
 		// shell-less Environment with an honest nofs ref.
-		s.sessionEnvironments[id] = tool.MustEnvironment(defaultEnvironmentRef(sess), nofs.New(), nil)
+		s.sessionEnvironments[id] = tool.MustEnvironment(defaultEnvironmentRef(sess), nofs.New(), memledger.New(), nil)
 	}
 	s.mu.Unlock()
 	return sess, nil
@@ -4023,7 +4017,7 @@ func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Ses
 			if !hasEnvOverride {
 				// Defensive: if the override somehow was not registered, install the
 				// honest file-less environment directly (the no-fs chokepoint).
-				envOverride = tool.MustEnvironment(defaultEnvironmentRef(sess), nofs.New(), nil)
+				envOverride = tool.MustEnvironment(defaultEnvironmentRef(sess), nofs.New(), memledger.New(), nil)
 				hasEnvOverride = true
 			}
 		}
@@ -4162,7 +4156,7 @@ func (s *Service) buildSessionEnvironment(sess *session.Session, ws tool.Workspa
 	// #6), so the live Environment's ref and the persisted/stamped ref always
 	// agree for the in-tree backends.
 	ref := defaultEnvironmentRef(sess)
-	return tool.NewEnvironment(ref, ws, runner)
+	return tool.NewEnvironment(ref, ws, memledger.New(), runner)
 }
 
 // defaultEnvironmentRef computes the resolved default EnvironmentRef for a
@@ -4408,7 +4402,7 @@ func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *sessi
 		// empty root. It is a complete shell-less Environment with an honest nofs ref.
 		// A selector session with a real workspace needs no override: the run-entry
 		// seam builds its environment from the shared factory as usual.
-		s.sessionEnvironments[id] = tool.MustEnvironment(defaultEnvironmentRef(sess), nofs.New(), nil)
+		s.sessionEnvironments[id] = tool.MustEnvironment(defaultEnvironmentRef(sess), nofs.New(), memledger.New(), nil)
 	}
 	s.mu.Unlock()
 	// On a clean replace, free the displaced prior engine's MCP manager OUTSIDE the lock

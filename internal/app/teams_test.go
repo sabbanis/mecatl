@@ -188,11 +188,11 @@ func TestMaxTeamTokensPropagates(t *testing.T) {
 		Workspaces:   osfsWS,
 		Now:          func() time.Time { return time.Unix(0, 0) },
 		MemberEngine: svcCfg.MemberEngine,
-		Forker: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
-			return osfs.NewWorkspaceWithLedger(root, ledger)
+		Forker: forker.New(func(root string) (tool.Workspace, error) {
+			return osfs.NewWorkspace(root)
 		}),
-		ReadOnlyForker: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
-			return osfs.NewWorkspaceWithLedger(root, ledger)
+		ReadOnlyForker: forker.New(func(root string) (tool.Workspace, error) {
+			return osfs.NewWorkspace(root)
 		}),
 		TeamTokenBudget: svcCfg.TeamTokenBudget,
 	})
@@ -310,12 +310,12 @@ func TestReadOnlyMemberRunsGitInWorktreeEndToEnd(t *testing.T) {
 		}
 		return newHardenedRunnerForRoot(cfg, childRoot)
 	}
-	roFk := forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
-		return osfs.NewWorkspaceWithLedger(root, ledger)
+	roFk := forker.New(func(root string) (tool.Workspace, error) {
+		return osfs.NewWorkspace(root)
 	},
 		forker.WithTempBase(worktreeBase), forker.WithRunner(sandboxedRunnerBuilder))
-	mutatingFk := forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
-		return osfs.NewWorkspaceWithLedger(root, ledger)
+	mutatingFk := forker.New(func(root string) (tool.Workspace, error) {
+		return osfs.NewWorkspace(root)
 	},
 		forker.WithForceCopy(), forker.WithRunner(forceCopyRunnerBuilder))
 	runner := buildSandboxedCommandRunner(cfg)
@@ -464,8 +464,8 @@ func teamServiceWithFactory(t *testing.T, factory server.MemberEngineFactory) *s
 		Workspaces:   osfsWS,
 		Now:          func() time.Time { return time.Unix(0, 0) },
 		MemberEngine: factory,
-		Forker: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
-			return osfs.NewWorkspaceWithLedger(root, ledger)
+		Forker: forker.New(func(root string) (tool.Workspace, error) {
+			return osfs.NewWorkspace(root)
 		}),
 	})
 	if err != nil {
@@ -513,8 +513,8 @@ func TestTeamReturnsConsolidatedReportEndToEnd(t *testing.T) {
 		Workspaces:   osfsWS,
 		Now:          func() time.Time { return time.Unix(0, 0) },
 		MemberEngine: factory,
-		Forker: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
-			return osfs.NewWorkspaceWithLedger(root, ledger)
+		Forker: forker.New(func(root string) (tool.Workspace, error) {
+			return osfs.NewWorkspace(root)
 		}),
 	})
 	if err != nil {
@@ -584,8 +584,8 @@ func TestTeamRunTeamPathSurfacesTeamID(t *testing.T) {
 		Workspaces:   osfsWS,
 		Now:          func() time.Time { return time.Unix(0, 0) },
 		MemberEngine: scriptedMemberFactory(t, scripts),
-		Forker: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
-			return osfs.NewWorkspaceWithLedger(root, ledger)
+		Forker: forker.New(func(root string) (tool.Workspace, error) {
+			return osfs.NewWorkspace(root)
 		}),
 	})
 	if err != nil {
@@ -640,7 +640,7 @@ func TestAgencyDeltaReachesTeamMemberAndLead(t *testing.T) {
 		factory := memberFactoryForTest(cfg, prov, hookexec.New(nil), agents.NewRegistry(nil), nil, nil, false, nil)
 
 		tm := team.New("t")
-		sup := agent.NewSupervisor(tm, memEnvironment("/ws"),
+		sup := newTestSupervisor(tm, memEnvironment("/ws"),
 			func(spec agent.MemberSpec, routedModel string) agent.MemberBuild {
 				return factory(tm, spec, routedModel)
 			})

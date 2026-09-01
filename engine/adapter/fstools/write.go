@@ -90,6 +90,8 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 		"refusing to overwrite existing file %q: it was not read this session, or it changed since you read it. Read it first, then retry.",
 		args.Path))
 
+	ledger := env.ReadLedger()
+
 	// Determine whether the path already exists.
 	_, statErr := ws.Stat(ctx, args.Path)
 	switch {
@@ -98,7 +100,7 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 		// A non-nil err from RecordedVersion means the ledger lookup itself is
 		// UNAVAILABLE or CORRUPT (ADR 0278) — DISTINCT from ordinary absence —
 		// and must refuse BEFORE ReplaceFile is ever called.
-		recorded, recordedOK, err := ws.RecordedVersion(ctx, args.Path)
+		recorded, recordedOK, err := ledger.RecordedVersion(ctx, tool.LedgerKey(ws.Root(), args.Path))
 		if err != nil {
 			return session.NewToolError(in.ID, fmt.Sprintf(
 				"refusing to overwrite %q: could not verify it was read this session (%v). Read it first, then retry.",
@@ -138,7 +140,7 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 		// is valid. The overwrite ALREADY SUCCEEDED; a failure here is reported
 		// honestly WITHOUT rollback (ADR 0278) — the next existing-file mutation
 		// on this path is refused until another successful Read records evidence.
-		if err := ws.RecordRead(ctx, args.Path, newVer); err != nil {
+		if err := ledger.RecordRead(ctx, tool.LedgerKey(ws.Root(), args.Path), newVer); err != nil {
 			return session.NewToolError(in.ID, fmt.Sprintf(
 				"overwrote %q (%d bytes), but failed to retain read evidence for the new version: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
 				args.Path, len(args.Content), err)), nil
@@ -159,7 +161,7 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 		// The create ALREADY SUCCEEDED; a failure here is reported honestly
 		// WITHOUT rollback (ADR 0278) — a later mutation on this path is
 		// refused until another successful Read records evidence.
-		if err := ws.RecordRead(ctx, args.Path, newVer); err != nil {
+		if err := ledger.RecordRead(ctx, tool.LedgerKey(ws.Root(), args.Path), newVer); err != nil {
 			return session.NewToolError(in.ID, fmt.Sprintf(
 				"wrote %q (%d bytes), but failed to retain read evidence for it: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
 				args.Path, len(args.Content), err)), nil

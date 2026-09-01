@@ -86,10 +86,10 @@ func TestAbsoluteInRootEditLedgerCrossForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadVersion(abs): %v", err)
 	}
-	if err := ws.RecordRead(ctx, abs, absVer); err != nil {
+	if err := testRecordRead(ctx, ws, abs, absVer); err != nil {
 		t.Fatalf("RecordRead(abs): %v", err)
 	}
-	got, ok, err := ws.RecordedVersion(ctx, rel)
+	got, ok, err := testRecordedVersion(ctx, ws, rel)
 	if err != nil {
 		t.Fatalf("RecordedVersion(rel): %v", err)
 	}
@@ -115,10 +115,10 @@ func TestAbsoluteInRootEditLedgerCrossForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadVersion(rel): %v", err)
 	}
-	if err := ws.RecordRead(ctx, rel, relVer); err != nil {
+	if err := testRecordRead(ctx, ws, rel, relVer); err != nil {
 		t.Fatalf("RecordRead(rel): %v", err)
 	}
-	got, ok, err = ws.RecordedVersion(ctx, abs)
+	got, ok, err = testRecordedVersion(ctx, ws, abs)
 	if err != nil {
 		t.Fatalf("RecordedVersion(abs): %v", err)
 	}

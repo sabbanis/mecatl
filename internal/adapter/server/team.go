@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
@@ -143,7 +144,7 @@ func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, 
 	// Workspaces factory (a misconfigured factory, etc.) must not panic. NewEnvironment
 	// rejects a nil Workspace with a normal error; wrap it as ErrInvalidArgument so the
 	// caller sees a bad-request status rather than a server crash.
-	base, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: workspace}, baseWS, baseRunner)
+	base, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: workspace}, baseWS, memledger.New(), baseRunner)
 	if err != nil {
 		return "", nil, fmt.Errorf("%w: team workspace could not be built: %w", ErrInvalidArgument, err)
 	}
@@ -162,6 +163,7 @@ func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, 
 	opts := []agent.SupervisorOption{
 		agent.WithTeamGoal(goal),
 		agent.WithMemberSessionPrefix(agent.TeamSessionPrefix + id),
+		agent.WithTeamReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }),
 	}
 	if s.cfg.RootAuthority != nil {
 		opts = append(opts, agent.WithRootAuthority(s.cfg.RootAuthority(session.SessionKindTeamMember)))
@@ -185,9 +187,6 @@ func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, 
 	}
 	if s.cfg.ReadOnlyForker != nil {
 		opts = append(opts, agent.WithReadOnlyForker(s.cfg.ReadOnlyForker))
-	}
-	if s.cfg.SharedBaseWorkspace != nil {
-		opts = append(opts, agent.WithTeamSharedBaseWorkspace(s.cfg.SharedBaseWorkspace))
 	}
 	if s.cfg.TeamHooks != nil {
 		opts = append(opts, agent.WithTeamHooks(s.cfg.TeamHooks))

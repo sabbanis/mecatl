@@ -76,13 +76,3 @@ func (Workspace) Glob(context.Context, string) ([]string, error) { return nil, n
 func (Workspace) Grep(context.Context, string, string) ([]tool.GrepMatch, error) {
 	return nil, nil
 }
-
-// RecordRead is a no-op: with no files, the read-ledger has nothing to record
-// (and no Edit tool is registered in a no-FS session anyway).
-func (Workspace) RecordRead(context.Context, string, tool.FileVersion) error { return nil }
-
-// RecordedVersion reports (zero, false, nil): no file was ever readable, so no
-// read-before-mutate precondition can hold.
-func (Workspace) RecordedVersion(context.Context, string) (tool.FileVersion, bool, error) {
-	return tool.FileVersion{}, false, nil
-}

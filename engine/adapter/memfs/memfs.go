@@ -27,7 +27,6 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
-	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
@@ -213,43 +212,20 @@ func hasDotDot(p string) bool {
 	return false
 }
 
-// Workspace is the in-memory session-scoped seam. It composes a FileSystem,
-// performs Grep over in-memory contents, and delegates the read-ledger
-// (ADR 0278) to a SELECTED tool.ReadLedger — a fresh in-memory one by default
-// (NewWorkspace), or an explicitly injected one (NewWorkspaceWithLedger), so
-// the ledger's lifetime/backend can be chosen independently of memfs's own
-// file-content storage. Command execution is not part of the Workspace; use
-// CommandRunner for that.
+// Workspace is the in-memory session-scoped content seam. Command execution
+// and read-before-write evidence are carried separately by tool.Environment.
 type Workspace struct {
-	fs     *FileSystem
-	ledger tool.ReadLedger
+	fs *FileSystem
 }
 
-// NewWorkspace returns an empty in-memory Workspace with the given logical
-// root and a FRESH in-memory ReadLedger (ADR 0278's default: no durable ledger
-// selected).
+// NewWorkspace returns an empty in-memory Workspace with the given logical root.
 func NewWorkspace(root string) *Workspace {
-	return NewWorkspaceWithLedger(root, memledger.New())
+	return NewWorkspaceOverFileSystem(NewFileSystem(root))
 }
 
-// NewWorkspaceWithLedger returns an empty in-memory Workspace with the given
-// logical root, composing the EXPLICITLY supplied ledger for its read-before-
-// write evidence (ADR 0278). This is what lets two Workspaces share memfs's
-// in-memory file-content backend semantics while selecting independent (or
-// even durable) ledger instances.
-func NewWorkspaceWithLedger(root string, ledger tool.ReadLedger) *Workspace {
-	return NewWorkspaceOverFileSystem(NewFileSystem(root), ledger)
-}
-
-// NewWorkspaceOverFileSystem returns a Workspace over the GIVEN file-content
-// backend, composing the EXPLICITLY supplied ledger. Unlike
-// NewWorkspace/NewWorkspaceWithLedger (which each mint a fresh FileSystem),
-// this lets two Workspaces share ONE file-content backend while selecting two
-// INDEPENDENT ReadLedger instances — the ADR 0278 Scenario 1 shape: a record
-// made through one Workspace's ledger is absent from the other's, even though
-// both see the same file contents.
-func NewWorkspaceOverFileSystem(backend *FileSystem, ledger tool.ReadLedger) *Workspace {
-	return &Workspace{fs: backend, ledger: ledger}
+// NewWorkspaceOverFileSystem returns a Workspace over the given content backend.
+func NewWorkspaceOverFileSystem(backend *FileSystem) *Workspace {
+	return &Workspace{fs: backend}
 }
 
 // Compile-time assertions that Workspace satisfies the filesystem and authority seams.
@@ -463,31 +439,4 @@ func (r *CommandRunner) Run(ctx context.Context, _ string) (tool.CommandResult, 
 		return tool.CommandResult{}, nil
 	}
 	return *res, nil
-}
-
-// RecordRead stores the EXACT authoritative version for path in the SELECTED
-// ledger (ADR 0278). It performs NO file-content I/O: it stores the
-// FileVersion the caller supplies (the one ReadVersion minted), so a later
-// RecordedVersion lookup compares against the recorded token without
-// re-reading the file. The ledger key is the clean session-relative path (see
-// cleanPath).
-func (w *Workspace) RecordRead(ctx context.Context, p string, version tool.FileVersion) error {
-	key, err := cleanPath(p)
-	if err != nil {
-		// An uncleanable path cannot be recorded; leave it unrecorded (fail-safe:
-		// a later mutation refuses as "not read").
-		return nil
-	}
-	return w.ledger.RecordRead(ctx, key, version)
-}
-
-// RecordedVersion returns the version previously recorded for path via
-// RecordRead, from the SELECTED ledger, performing NO file-content I/O. The
-// lookup uses the same clean key as RecordRead.
-func (w *Workspace) RecordedVersion(ctx context.Context, p string) (tool.FileVersion, bool, error) {
-	key, err := cleanPath(p)
-	if err != nil {
-		return tool.FileVersion{}, false, nil
-	}
-	return w.ledger.RecordedVersion(ctx, key)
 }

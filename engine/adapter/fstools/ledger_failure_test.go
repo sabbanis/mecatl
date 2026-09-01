@@ -24,48 +24,39 @@ var (
 	errSimulatedLedgerLookup = errors.New("simulated ledger lookup failure")
 )
 
-// ledgerFailureWorkspace wraps a real tool.Workspace and can be programmed to
-// fail RecordRead and/or RecordedVersion on demand, while every other
-// operation (Read, ReadVersion, CreateFile, ReplaceFile, Glob, Grep, Stat)
-// delegates unchanged to the embedded Workspace. This lets a test inject a
-// genuine ledger-layer failure independent of file-content operations,
-// exactly the seam ADR 0278 introduces.
+// ledgerFailureWorkspace wraps a real Workspace so tests can observe whether
+// final CAS mutation was reached. Ledger failures are injected separately via
+// ledgerFailureLedger, matching the production Environment capability split.
 type ledgerFailureWorkspace struct {
 	tool.Workspace
-
-	// recordReadErr, if non-nil, is returned by the NEXT RecordRead call
-	// instead of delegating; it is then cleared unless recordReadSticky.
-	recordReadErr    error
-	recordReadSticky bool
-
-	// lookupErr, if non-nil, is returned by EVERY RecordedVersion call instead
-	// of delegating (a lookup failure is modeled as sticky/ongoing, since an
-	// unavailable backend does not usually self-heal mid-test).
-	lookupErr error
-
-	// replaceFileCalled/createFileCalled record whether the final CAS mutation
-	// was ever reached, so a test can assert a lookup failure refuses BEFORE
-	// the mutation rather than merely producing an error result some other way.
 	replaceFileCalled bool
 	createFileCalled  bool
 }
 
-func (w *ledgerFailureWorkspace) RecordRead(ctx context.Context, path string, version tool.FileVersion) error {
-	if w.recordReadErr != nil {
-		err := w.recordReadErr
-		if !w.recordReadSticky {
-			w.recordReadErr = nil
+type ledgerFailureLedger struct {
+	base tool.ReadLedger
+
+	recordReadErr    error
+	recordReadSticky bool
+	lookupErr        error
+}
+
+func (l *ledgerFailureLedger) RecordRead(ctx context.Context, key string, version tool.FileVersion) error {
+	if l.recordReadErr != nil {
+		err := l.recordReadErr
+		if !l.recordReadSticky {
+			l.recordReadErr = nil
 		}
 		return err
 	}
-	return w.Workspace.RecordRead(ctx, path, version)
+	return l.base.RecordRead(ctx, key, version)
 }
 
-func (w *ledgerFailureWorkspace) RecordedVersion(ctx context.Context, path string) (tool.FileVersion, bool, error) {
-	if w.lookupErr != nil {
-		return tool.FileVersion{}, false, w.lookupErr
+func (l *ledgerFailureLedger) RecordedVersion(ctx context.Context, key string) (tool.FileVersion, bool, error) {
+	if l.lookupErr != nil {
+		return tool.FileVersion{}, false, l.lookupErr
 	}
-	return w.Workspace.RecordedVersion(ctx, path)
+	return l.base.RecordedVersion(ctx, key)
 }
 
 func (w *ledgerFailureWorkspace) ReplaceFile(ctx context.Context, path string, old tool.FileVersion, data []byte) (tool.FileVersion, error) {
@@ -85,11 +76,12 @@ func (w *ledgerFailureWorkspace) CreateFile(ctx context.Context, path string, da
 func TestPersistentReadLedgers_Scenario3_ReadRecordFailureFailsClosed(t *testing.T) {
 	base := memfs.NewWorkspace("/")
 	seed(t, base, "a.txt", "hello\n")
-	ws := &ledgerFailureWorkspace{Workspace: base, recordReadErr: errSimulatedLedgerRecord}
+	ws := &ledgerFailureWorkspace{Workspace: base}
+	ledger := &ledgerFailureLedger{base: ledgerFor(base), recordReadErr: errSimulatedLedgerRecord}
 
 	// The Read itself succeeded (content is readable) but the record failed:
 	// the tool must report BOTH facts.
-	res := exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), ws)
+	res := execWithLedger(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), ws, ledger)
 	if !res.IsError {
 		t.Fatalf("Read with a failed RecordRead must be a tool error, got: %s", res.Content)
 	}
@@ -101,19 +93,19 @@ func TestPersistentReadLedgers_Scenario3_ReadRecordFailureFailsClosed(t *testing
 	}
 
 	// A later Edit is refused: no valid evidence was ever recorded.
-	editRes := exec(t, EditTool{}, call(t, "Edit", map[string]any{
+	editRes := execWithLedger(t, EditTool{}, call(t, "Edit", map[string]any{
 		"path": "a.txt", "old_string": "hello", "new_string": "hi",
-	}), ws)
+	}), ws, ledger)
 	if !editRes.IsError {
 		t.Fatal("Edit after a failed RecordRead must be refused (no evidence was retained)")
 	}
 
 	// Once the ledger failure clears and a Read succeeds, Edit is authorized.
-	ws.recordReadErr = nil
-	exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), ws)
-	editRes = exec(t, EditTool{}, call(t, "Edit", map[string]any{
+	ledger.recordReadErr = nil
+	execWithLedger(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), ws, ledger)
+	editRes = execWithLedger(t, EditTool{}, call(t, "Edit", map[string]any{
 		"path": "a.txt", "old_string": "hello", "new_string": "hi",
-	}), ws)
+	}), ws, ledger)
 	if editRes.IsError {
 		t.Fatalf("Edit after a SUCCESSFUL Read-record should succeed, got: %s", editRes.Content)
 	}
@@ -129,10 +121,11 @@ func TestPersistentReadLedgers_Scenario3_LookupFailurePreventsMutation(t *testin
 		seed(t, base, "a.txt", "hello\n")
 		exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), base)
 
-		ws := &ledgerFailureWorkspace{Workspace: base, lookupErr: errSimulatedLedgerLookup}
-		res := exec(t, EditTool{}, call(t, "Edit", map[string]any{
+		ws := &ledgerFailureWorkspace{Workspace: base}
+		ledger := &ledgerFailureLedger{base: ledgerFor(base), lookupErr: errSimulatedLedgerLookup}
+		res := execWithLedger(t, EditTool{}, call(t, "Edit", map[string]any{
 			"path": "a.txt", "old_string": "hello", "new_string": "hi",
-		}), ws)
+		}), ws, ledger)
 		if !res.IsError {
 			t.Fatal("Edit with an unavailable ledger lookup must be refused")
 		}
@@ -146,10 +139,11 @@ func TestPersistentReadLedgers_Scenario3_LookupFailurePreventsMutation(t *testin
 		seed(t, base, "a.txt", "old\n")
 		exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), base)
 
-		ws := &ledgerFailureWorkspace{Workspace: base, lookupErr: errSimulatedLedgerLookup}
-		res := exec(t, WriteTool{}, call(t, "Write", map[string]any{
+		ws := &ledgerFailureWorkspace{Workspace: base}
+		ledger := &ledgerFailureLedger{base: ledgerFor(base), lookupErr: errSimulatedLedgerLookup}
+		res := execWithLedger(t, WriteTool{}, call(t, "Write", map[string]any{
 			"path": "a.txt", "content": "new\n",
-		}), ws)
+		}), ws, ledger)
 		if !res.IsError {
 			t.Fatal("Write with an unavailable ledger lookup must be refused")
 		}
@@ -169,10 +163,11 @@ func TestPersistentReadLedgers_Scenario3_CreateOnlyUnchanged(t *testing.T) {
 	// wrapper that would fail any RecordedVersion lookup — proving Write's
 	// create path never consults the ledger before CreateFile.
 	base := memfs.NewWorkspace("/")
-	ws := &ledgerFailureWorkspace{Workspace: base, lookupErr: errSimulatedLedgerLookup}
-	res := exec(t, WriteTool{}, call(t, "Write", map[string]any{
+	ws := &ledgerFailureWorkspace{Workspace: base}
+	ledger := &ledgerFailureLedger{base: ledgerFor(base), lookupErr: errSimulatedLedgerLookup}
+	res := execWithLedger(t, WriteTool{}, call(t, "Write", map[string]any{
 		"path": "new.txt", "content": "fresh\n",
-	}), ws)
+	}), ws, ledger)
 	if res.IsError {
 		t.Fatalf("Write of a new file must not consult the ledger lookup, got: %s", res.Content)
 	}
@@ -212,13 +207,11 @@ func TestPersistentReadLedgers_Scenario3_PostMutationRecordFailure(t *testing.T)
 		exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), base)
 
 		ws := &ledgerFailureWorkspace{Workspace: base}
-		// Arm the record failure only for the POST-mutation re-record (the Edit
-		// under test performs exactly one RecordRead call, at the end).
-		ws.recordReadErr = errSimulatedLedgerRecord
+		ledger := &ledgerFailureLedger{base: ledgerFor(base), recordReadErr: errSimulatedLedgerRecord}
 
-		res := exec(t, EditTool{}, call(t, "Edit", map[string]any{
+		res := execWithLedger(t, EditTool{}, call(t, "Edit", map[string]any{
 			"path": "a.txt", "old_string": "hello", "new_string": "hi",
-		}), ws)
+		}), ws, ledger)
 		if !res.IsError {
 			t.Fatalf("Edit must report the record failure as an error result, got: %s", res.Content)
 		}
@@ -235,9 +228,9 @@ func TestPersistentReadLedgers_Scenario3_PostMutationRecordFailure(t *testing.T)
 		}
 
 		// The next existing-file mutation is refused: no valid evidence exists.
-		next := exec(t, EditTool{}, call(t, "Edit", map[string]any{
+		next := execWithLedger(t, EditTool{}, call(t, "Edit", map[string]any{
 			"path": "a.txt", "old_string": "hi", "new_string": "bye",
-		}), ws)
+		}), ws, ledger)
 		if !next.IsError {
 			t.Fatal("the next Edit must be refused until another successful Read records evidence")
 		}
@@ -248,10 +241,11 @@ func TestPersistentReadLedgers_Scenario3_PostMutationRecordFailure(t *testing.T)
 		seed(t, base, "a.txt", "old\n")
 		exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), base)
 
-		ws := &ledgerFailureWorkspace{Workspace: base, recordReadErr: errSimulatedLedgerRecord}
-		res := exec(t, WriteTool{}, call(t, "Write", map[string]any{
+		ws := &ledgerFailureWorkspace{Workspace: base}
+		ledger := &ledgerFailureLedger{base: ledgerFor(base), recordReadErr: errSimulatedLedgerRecord}
+		res := execWithLedger(t, WriteTool{}, call(t, "Write", map[string]any{
 			"path": "a.txt", "content": "new\n",
-		}), ws)
+		}), ws, ledger)
 		if !res.IsError {
 			t.Fatalf("Write overwrite must report the record failure as an error result, got: %s", res.Content)
 		}
@@ -263,9 +257,9 @@ func TestPersistentReadLedgers_Scenario3_PostMutationRecordFailure(t *testing.T)
 			t.Fatalf("result must report the successful overwrite despite the record failure: %q", res.Content)
 		}
 
-		next := exec(t, WriteTool{}, call(t, "Write", map[string]any{
+		next := execWithLedger(t, WriteTool{}, call(t, "Write", map[string]any{
 			"path": "a.txt", "content": "again\n",
-		}), ws)
+		}), ws, ledger)
 		if !next.IsError {
 			t.Fatal("the next Write overwrite must be refused until another successful Read records evidence")
 		}
@@ -273,10 +267,11 @@ func TestPersistentReadLedgers_Scenario3_PostMutationRecordFailure(t *testing.T)
 
 	t.Run("Write create", func(t *testing.T) {
 		base := memfs.NewWorkspace("/")
-		ws := &ledgerFailureWorkspace{Workspace: base, recordReadErr: errSimulatedLedgerRecord}
-		res := exec(t, WriteTool{}, call(t, "Write", map[string]any{
+		ws := &ledgerFailureWorkspace{Workspace: base}
+		ledger := &ledgerFailureLedger{base: ledgerFor(base), recordReadErr: errSimulatedLedgerRecord}
+		res := execWithLedger(t, WriteTool{}, call(t, "Write", map[string]any{
 			"path": "new.txt", "content": "fresh\n",
-		}), ws)
+		}), ws, ledger)
 		if !res.IsError {
 			t.Fatalf("Write create must report the record failure as an error result, got: %s", res.Content)
 		}
@@ -289,9 +284,9 @@ func TestPersistentReadLedgers_Scenario3_PostMutationRecordFailure(t *testing.T)
 		}
 
 		// A later Edit on this now-existing file is refused: no valid evidence.
-		next := exec(t, EditTool{}, call(t, "Edit", map[string]any{
+		next := execWithLedger(t, EditTool{}, call(t, "Edit", map[string]any{
 			"path": "new.txt", "old_string": "fresh", "new_string": "stale",
-		}), ws)
+		}), ws, ledger)
 		if !next.IsError {
 			t.Fatal("Edit of the newly-created file must be refused until a successful Read records evidence")
 		}
