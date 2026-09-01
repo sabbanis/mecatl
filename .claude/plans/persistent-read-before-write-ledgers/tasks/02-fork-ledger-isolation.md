@@ -2,12 +2,12 @@
 id: 02-fork-ledger-isolation
 title: Fresh child-session ledgers for every fork
 blocked_by: [01-core-ledger-and-file-tools]
-status: blocked
-branch: ""
+status: done
+branch: "plan-persistent-read-before-write-ledgers/02-fork-ledger-isolation"
 worktree: ""
 issue: "888"
 retries: 2
-last_error: "worker provider connection reset before branch creation on all attempts"
+last_error: ""
 accumulator: acc/persistent-read-ledgers
 ---
 

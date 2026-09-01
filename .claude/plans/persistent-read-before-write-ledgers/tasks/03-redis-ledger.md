@@ -2,8 +2,8 @@
 id: 03-redis-ledger
 title: Durable session-scoped Redis ledger proof
 blocked_by: [01-core-ledger-and-file-tools]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-persistent-read-before-write-ledgers/03-redis-ledger"
 worktree: ""
 issue: "888"
 retries: 0

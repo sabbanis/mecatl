@@ -2,7 +2,7 @@
 id: 04-docs-and-layering
 title: Accept ADR 0278 and reconcile architecture and lifecycle docs
 blocked_by: [02-fork-ledger-isolation, 03-redis-ledger]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "888"
