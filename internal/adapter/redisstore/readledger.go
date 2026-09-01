@@ -30,7 +30,7 @@ const ledgerFormat = "redisstore-ledger/1"
 // I/O and carries no path/session identity of its own — that identity lives
 // entirely in the Redis key (session) and hash field (normalized path), the
 // two INDEPENDENT axes that make (session, path) addressing injective (ADR
-// 0278): concatenating them into one delimited string is exactly what this
+// 0281): concatenating them into one delimited string is exactly what this
 // scheme avoids, so an adversarial separator or shared prefix in either value
 // can never make two distinct pairs address the same hash field.
 type ledgerRecord struct {
