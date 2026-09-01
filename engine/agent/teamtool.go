@@ -160,6 +160,9 @@ type TeamTool struct {
 	// nil, read-only members base-share with no shell.
 	roForker      tool.EnvironmentForker
 	ledgerFactory func() tool.ReadLedger
+	// sharedBaseWS narrows base-sharing member authority without replacing the
+	// parent Workspace's content backend.
+	sharedBaseWS func(tool.Workspace) tool.Workspace
 	// hooks fires the team lifecycle hooks (TeammateIdle) — shared with the member
 	// coordination tools by the composition root. nil disables them.
 	hooks port.HookRunner
@@ -195,6 +198,12 @@ func WithTeamToolReadOnlyForker(f tool.EnvironmentForker) TeamOption {
 // WithTeamToolReadLedgerFactory injects the fresh ledger factory for members.
 func WithTeamToolReadLedgerFactory(factory func() tool.ReadLedger) TeamOption {
 	return func(t *TeamTool) { t.ledgerFactory = factory }
+}
+
+// WithTeamToolSharedBaseWorkspace injects the capability-narrowing Workspace
+// view the Team tool forwards to its Supervisor for base-sharing members.
+func WithTeamToolSharedBaseWorkspace(view func(tool.Workspace) tool.Workspace) TeamOption {
+	return func(t *TeamTool) { t.sharedBaseWS = view }
 }
 
 // WithTeamToolHooks injects the HookRunner threaded into the Supervisor (and, by
@@ -352,6 +361,9 @@ func (t *TeamTool) run(ctx context.Context, call session.ToolCall, env tool.Envi
 	}
 	if t.roForker != nil {
 		opts = append(opts, WithReadOnlyForker(t.roForker))
+	}
+	if t.sharedBaseWS != nil {
+		opts = append(opts, WithTeamSharedBaseWorkspace(t.sharedBaseWS))
 	}
 	if t.hooks != nil {
 		opts = append(opts, WithTeamHooks(t.hooks))

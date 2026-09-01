@@ -50,7 +50,7 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildNotRelaxed(t *testing.T
 				f := setupEscapeFS(t)
 				// NO git init: the whole point is the nil-forker path — with no
 				// sandboxed runner buildSubagentTool wires no forker, so the child
-				// runs against the parent's (relaxed) base workspace verbatim.
+				// runs against the parent's content backend through a confined child view.
 				target := mustJSONStr(t, f.target)
 				parentRead := session.NewToolCall("p1", "Read", json.RawMessage(`{"path":`+target+`}`))
 				delegate := session.NewToolCall("p2", "Subagent", json.RawMessage(`{"prompt":"read the file outside the workspace"}`))
@@ -78,7 +78,7 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildNotRelaxed(t *testing.T
 					t.Fatalf("CreateSession: %v", err)
 				}
 
-				var parentReadOK, childReadOK bool
+				var parentReadOK, childReadDenied bool
 				run, err := built.Service.StartRun(context.Background(), sess.ID, "read outside then delegate")
 				if err != nil {
 					t.Fatalf("StartRun: %v", err)
@@ -105,10 +105,10 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildNotRelaxed(t *testing.T
 					// Subagent ToolResult — both pinned below.
 					if ev.Type == session.EvSubagentTool && ev.Subagent != nil &&
 						ev.Subagent.InnerKind == session.EvToolResult && ev.Subagent.ToolName == "Read" {
-						if ev.Subagent.IsError {
-							t.Fatalf("shell-less child out-of-root Read failed at %s/%s — base-sharing must preserve the exact parent workspace", posture, trigger)
+						if !ev.Subagent.IsError {
+							t.Fatalf("shell-less child out-of-root Read SUCCEEDED at %s/%s — the base-sharing child must not inherit the relaxed parent workspace", posture, trigger)
 						}
-						childReadOK = true
+						childReadDenied = true
 					}
 					// Belt-and-suspenders: the Subagent ToolResult must never carry
 					// the out-of-root content (the child got an error, so its
@@ -124,8 +124,8 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildNotRelaxed(t *testing.T
 				if !parentReadOK {
 					t.Fatal("no EvToolResult for the parent's relaxed Read (call p1)")
 				}
-				if !childReadOK {
-					t.Fatal("no successful subagent.tool Read event for the child — the delegation did not preserve the parent workspace")
+				if !childReadDenied {
+					t.Fatal("no subagent.tool Read event for the child — the delegation did not run the child's read")
 				}
 			})
 		}
@@ -134,8 +134,8 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildNotRelaxed(t *testing.T
 
 // TestPathEscapePosture_Scenario5_SharedWorkspaceChildWriteDenied pins the
 // WRITE half of AC5.1b: a writable (mode:"read-write", direct-write, ADR 0041)
-// child — the OTHER base-sharing child path, which runs against the parent
-// workspace verbatim BY DESIGN — must NOT inherit the relaxed-WRITE reach
+// child — the OTHER base-sharing child path, which shares the parent content
+// backend through a confined child Workspace view — must NOT inherit the relaxed-WRITE reach
 // either. Its out-of-root Write is denied (the file never appears), while the
 // main session's own out-of-root Write still lands at yolo (the main session's
 // relaxed behaviour is unchanged). The child is given Bash (the forker-wired
@@ -147,8 +147,7 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildWriteDenied(t *testing.
 	}
 	f := setupEscapeFS(t)
 	writeTarget := filepath.Join(f.outside, "child-write.txt")
-	parentTarget := filepath.Join(f.outside, "parent-write.txt")
-	parentWrite := session.NewToolCall("p1", "Write", json.RawMessage(`{"path":`+mustJSONStr(t, parentTarget)+`,"content":"parent relaxed write\n"}`))
+	parentWrite := session.NewToolCall("p1", "Write", json.RawMessage(`{"path":`+mustJSONStr(t, writeTarget)+`,"content":"parent relaxed write\n"}`))
 	delegate := session.NewToolCall("p2", "Subagent", json.RawMessage(`{"prompt":"write the file outside the workspace","mode":"read-write"}`))
 	childWrite := session.NewToolCall("k1", "Write", json.RawMessage(`{"path":`+mustJSONStr(t, writeTarget)+`,"content":"child escaped write\n"}`))
 
@@ -176,7 +175,7 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildWriteDenied(t *testing.
 		t.Fatalf("CreateSession: %v", err)
 	}
 
-	var parentWriteOK, childWriteOK bool
+	var parentWriteOK, childWriteDenied bool
 	run, err := built.Service.StartRun(context.Background(), sess.ID, "write outside then delegate writable")
 	if err != nil {
 		t.Fatalf("StartRun: %v", err)
@@ -195,10 +194,10 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildWriteDenied(t *testing.
 		// (ADR 0079: the outcome is attributed on the tool.RESULT projection.)
 		if ev.Type == session.EvSubagentTool && ev.Subagent != nil &&
 			ev.Subagent.InnerKind == session.EvToolResult && ev.Subagent.ToolName == "Write" {
-			if ev.Subagent.IsError {
-				t.Fatal("writable child out-of-root Write failed at yolo — direct-write must preserve the exact parent workspace")
+			if !ev.Subagent.IsError {
+				t.Fatal("writable child out-of-root Write SUCCEEDED at yolo — the direct-write child must not inherit the relaxed parent workspace")
 			}
-			childWriteOK = true
+			childWriteDenied = true
 		}
 	}
 	built.Service.FinishRun(sess.ID, run)
@@ -206,7 +205,7 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildWriteDenied(t *testing.
 	if !parentWriteOK {
 		t.Fatal("no EvToolResult for the parent's relaxed Write (call p1)")
 	}
-	if !childWriteOK {
+	if !childWriteDenied {
 		t.Fatal("no subagent.tool Write event for the writable child — the delegation did not run the child's write")
 	}
 	// The child's write must never have landed: the only content at the target
@@ -215,7 +214,7 @@ func TestPathEscapePosture_Scenario5_SharedWorkspaceChildWriteDenied(t *testing.
 	if rerr != nil {
 		t.Fatalf("ReadFile(parent-written target): %v", rerr)
 	}
-	if !strings.Contains(string(data), "child escaped write") {
-		t.Fatalf("the writable child's out-of-root write did not land at %q", writeTarget)
+	if strings.Contains(string(data), "child escaped write") {
+		t.Fatalf("the writable child's out-of-root write LANDED at %q — child relax leak", writeTarget)
 	}
 }

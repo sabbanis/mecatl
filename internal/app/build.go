@@ -6548,8 +6548,13 @@ func buildSubagentTool(ctx context.Context, cfg Config, provReg *providerRegistr
 			}))
 		opts = append(opts, agent.WithChildForker(taskForker))
 	}
-	// Base-sharing children retain the exact parent Workspace and receive fresh evidence.
-	opts = append(opts, agent.WithSubagentReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }))
+	// Base-sharing children retain the parent content backend but receive a
+	// child-specific authority view and fresh evidence. childWorkspaceView strips
+	// main-session path relaxation without reopening Workspace.Root() as osfs.
+	opts = append(opts,
+		agent.WithSharedChildWorkspace(childWorkspaceView),
+		agent.WithSubagentReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }),
+	)
 	// Per-call model override factory: mint an explorer child engine for a requested
 	// model through the SAME contamination-safe per-provider path (newChildEngineFor
 	// Provider re-derives Compactor/TokenCounter/Env.Model/ContextWindow for the
@@ -6907,7 +6912,7 @@ func buildAgentWritableEngineFactory(ctx context.Context, cfg Config, provReg *p
 // both are filesystem acts), NO shell runners, and every member gets the no-FS
 // child surface (see buildMemberEngine's noFS branch). `a` carries the catalog
 // assets the no-FS member surface registers over; it is read only when noFS.
-func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, mainMgr *mcp.Manager, agentReg *agents.Registry, skillIdx skillIndex, a catalogAssets, noFS bool) (server.MemberEngineFactory, tool.EnvironmentForker, tool.EnvironmentForker, port.HookRunner) {
+func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, provider port.LLMProvider, parentProviderID, parentModel string, mainMgr *mcp.Manager, agentReg *agents.Registry, skillIdx skillIndex, a catalogAssets, noFS bool) (server.MemberEngineFactory, tool.EnvironmentForker, tool.EnvironmentForker, func(tool.Workspace) tool.Workspace, port.HookRunner) {
 	// A single hooks runner shared by the supervisor and the member coordination
 	// tools. hookexec.New(nil) matches buildEngine's default: the configured-hook map
 	// is not yet wired from cfg anywhere, so this is an inert (no-op) runner today,
@@ -6919,7 +6924,7 @@ func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, p
 		// loudly), no shell runners, and the no-FS member catalog for everyone. A
 		// no-FS base can never be relaxed, so no shared-base re-view either.
 		factory := buildMemberEngine(cfg, provReg, provider, parentProviderID, parentModel, teamHooks, agentReg, skillIdx, nil, nil, false, mainMgr, a, true)
-		return factory, nil, nil, teamHooks
+		return factory, nil, nil, nil, teamHooks
 	}
 	// agentReg is the SHARED registry (Build's single resolveAgentSeam): a
 	// member whose spec.AgentType names a def adopts that def's scoped
@@ -6965,7 +6970,7 @@ func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, p
 	mutatingRunner := buildForceCopyRunner(cfg)
 	roIsolationAvailable := memberRunner != nil && roFk != nil
 	factory := buildMemberEngine(cfg, provReg, provider, parentProviderID, parentModel, teamHooks, agentReg, skillIdx, memberRunner, mutatingRunner, roIsolationAvailable, mainMgr, a, false)
-	return factory, fk, roFk, teamHooks
+	return factory, fk, roFk, childWorkspaceView, teamHooks
 }
 
 // applyTeamConfig wires the opt-in agent-teams capability into the server.Config.
@@ -6987,10 +6992,11 @@ func applyTeamConfig(svcCfg *server.Config, cfg Config, reg *providerRegistry, p
 	// agentReg is the ONE registry Build resolved (resolveAgentSeam).
 	// The gRPC CreateTeam path is always the DEFAULT (filesystem) profile — a
 	// no-FS team exists only inside a no-fs session's in-catalog Team tool.
-	factory, fk, roFk, teamHooks := buildTeamWiring(context.Background(), cfg, reg, provider, reg.Default(), cfg.Model, mainMgr, agentReg, skillIdx, a, false)
+	factory, fk, roFk, sharedBaseWorkspace, teamHooks := buildTeamWiring(context.Background(), cfg, reg, provider, reg.Default(), cfg.Model, mainMgr, agentReg, skillIdx, a, false)
 	svcCfg.MemberEngine = factory
 	svcCfg.Forker = fk
 	svcCfg.ReadOnlyForker = roFk
+	svcCfg.SharedBaseWorkspace = sharedBaseWorkspace
 	svcCfg.TeamHooks = teamHooks
 	svcCfg.TeamTokenBudget = cfg.MaxTeamTokens
 	cfg.diag().Log(context.Background(), port.LevelInfo, "agent teams ENABLED (experimental; CreateTeam/SpawnTeammate/RunTeam + Team tool)")

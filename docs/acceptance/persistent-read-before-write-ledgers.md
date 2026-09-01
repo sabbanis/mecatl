@@ -41,8 +41,8 @@ A host constructs Environments that may share the exact same Workspace/content b
   - verify: `TestPersistentReadLedgers_Scenario1_DefaultMemoryLifecycle`
 - AC1.5: The ledger, Workspace, and Environment contracts remain in `engine/tool`; neither imports a root adapter or Redis dependency.
   - verify: `TestNoCoreImportsAdapter`, `TestCoreImportDirection`, `TestNoCyclesAmongCore`
-- AC1.6: Every delegation child receives a fresh child ledger and never inherits or writes parent evidence. Isolated children pair it with the fork Workspace; direct-write and other base-sharing children retain the exact parent Workspace/content backend and runner.
-  - verify: `TestPersistentReadLedgers_Scenario1_ForkLedgerIsolation`, `TestPersistentReadLedgers_ForkPreservesContentBackendAndFreshLedger`, `TestPersistentReadLedgers_DirectWritePreservesWorkspaceAndFreshLedger`
+- AC1.6: Every delegation child receives a fresh child ledger and never inherits or writes parent evidence. Isolated children pair it with the fork Workspace; direct-write and other base-sharing children retain the exact parent content backend and runner through any stricter child-authority Workspace view, without reconstructing storage from `Root()`.
+  - verify: `TestPersistentReadLedgers_Scenario1_ForkLedgerIsolation`, `TestPersistentReadLedgers_ForkPreservesContentBackendAndFreshLedger`, `TestPersistentReadLedgers_DirectWritePreservesWorkspaceAndFreshLedger`, `TestChildWorkspaceViewPreservesContentBackend`, `TestPathEscapePosture_Scenario5_SharedWorkspaceChildNotRelaxed`, `TestPathEscapePosture_Scenario5_BaseSharingMemberNotRelaxed`
 
 ---
 

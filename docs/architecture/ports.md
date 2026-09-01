@@ -101,7 +101,8 @@ evidence was persisted. Existing evidence retains only its ordinary exact-versio
 Default Environment composition supplies a fresh `engine/adapter/memledger`; durable
 selection does not change the content backend. Every child receives a fresh ledger:
 isolated children pair it with the fork Workspace, while direct-write/base-sharing
-children retain the exact parent Workspace and runner. Redisstore provides an optional
+children retain the exact parent content backend and runner through any stricter
+child-authority Workspace view; storage is never reconstructed from `Root()`. Redisstore provides an optional
 durable ledger as one validated hash per session, borrowing the Store lifecycle; both
 canonical session-deletion scripts remove it atomically with the other sidecars, and
 `DeleteReadLedger` remains an idempotent ledger-only reset. It is not wired as the

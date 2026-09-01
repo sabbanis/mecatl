@@ -574,7 +574,9 @@ Two deliberate cycle-breaks worth noting, documented in code:
   ledger without changing filesystem storage. Ledger absence is an ordinary
   read-before-mutate refusal; storage/decode/corruption errors fail closed. Every child
   receives a fresh ledger: isolated children pair it with their fork Workspace, while
-  base-sharing/direct-write children retain the exact parent content backend and runner.
+  base-sharing/direct-write children retain the exact parent content backend and runner
+  through any stricter child-authority Workspace view; storage is never reconstructed
+  from `Root()`.
   The final conditional `ReplaceFile` remains the concurrency guard. See
   [ADR 0278](adr/0278-persistent-read-before-write-ledgers.md).
   As of [ADR 0214](adr/0214-environment-persistence.md), `EnvironmentRef` is a DURABLE

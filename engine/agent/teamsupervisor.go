@@ -279,7 +279,10 @@ type Supervisor struct {
 	// no shell).
 	roForker      tool.EnvironmentForker
 	ledgerFactory func() tool.ReadLedger
-	factory       MemberEngine
+	// sharedBaseWS narrows the Workspace authority exposed to a base-sharing
+	// member without replacing its content backend. Nil keeps the base Workspace.
+	sharedBaseWS func(tool.Workspace) tool.Workspace
+	factory      MemberEngine
 	// rootAuthority is stamped only for a server-created team with no parent run.
 	// Parent-driven teams are child-derivation work and deliberately do not use it.
 	rootAuthority session.Authority
@@ -488,6 +491,13 @@ func WithReadOnlyForker(f tool.EnvironmentForker) SupervisorOption {
 // WithTeamReadLedgerFactory injects the mandatory fresh member-ledger factory.
 func WithTeamReadLedgerFactory(factory func() tool.ReadLedger) SupervisorOption {
 	return func(s *Supervisor) { s.ledgerFactory = factory }
+}
+
+// WithTeamSharedBaseWorkspace injects a capability-narrowing view for
+// base-sharing members. It receives the actual base Workspace and must preserve
+// its content backend rather than reconstructing storage from Root.
+func WithTeamSharedBaseWorkspace(view func(tool.Workspace) tool.Workspace) SupervisorOption {
+	return func(s *Supervisor) { s.sharedBaseWS = view }
 }
 
 // WithRootAuthority supplies the composed root set for members of a directly
@@ -1022,7 +1032,13 @@ func (s *Supervisor) selectMemberWorkspace(ctx context.Context, spec MemberSpec,
 		}
 		return forkOrWrap(ctx, s.roForker, s.base, spec.Name, s.ledgerFactory)
 	default:
-		memberEnv, err := tool.NewEnvironment(s.base.Ref(), s.base.Workspace(), s.ledgerFactory(), nil)
+		workspace := s.base.Workspace()
+		if s.sharedBaseWS != nil {
+			if memberWorkspace := s.sharedBaseWS(workspace); memberWorkspace != nil {
+				workspace = memberWorkspace
+			}
+		}
+		memberEnv, err := tool.NewEnvironment(s.base.Ref(), workspace, s.ledgerFactory(), nil)
 		if err != nil {
 			return tool.Environment{}, nil, fmt.Errorf("%w for %q: %w", ErrForkWorkspace, spec.Name, err)
 		}

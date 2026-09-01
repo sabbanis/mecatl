@@ -5855,9 +5855,10 @@ editor buffers and no-fs), with accurate Kind/ID, ledger, and runner posture.
 Every child gets fresh evidence ownership. `internal/adapter/forker/forker.go` (`Fork`) pairs a new
 `memledger` with the child Workspace for both worktree and copy paths. Base-sharing children do not
 reopen `Workspace.Root()` as osfs: direct-write Subagents and Team members retain the exact parent
-Workspace/content backend and appropriate runner while receiving a fresh child ledger through the
-composition-injected ledger factory. No fallback inherits the parent ledger, including when the
-parent selected durable Redis storage.
+content backend and appropriate runner through the composition-supplied child-authority Workspace
+view, while receiving a fresh child ledger from the independent ledger factory. The view preserves
+ACP/remote/custom backends and keeps the existing path-escape containment boundary. No fallback
+inherits the parent ledger, including when the parent selected durable Redis storage.
 
 The Redis ledger's lifetime is the containing redisstore Store's client-generation lifetime; handles
 borrow that client rather than owning another connection. Canonical and conditional session deletion
@@ -5949,17 +5950,17 @@ the tool-body wrapper as defense-in-depth.
 
 **Children never relax.** The relaxed construction options are wired into the MAIN
 session's workspace factory only — `newForkWorkspace` and every fork family build the
-plain non-relaxed workspace, so a forked child keeps the ordinary containment at every
+plain non-relaxed workspace, so a forked child keeps ordinary containment at every
 posture (Scenario 5). The two BASE-SHARING child paths would otherwise inherit the
-relaxed parent workspace verbatim, so composition hands them a NON-relaxed re-view of
-the shared base: `engine/agent/subagent.go` (`WithSharedChildWorkspace`) for the
-shell-less read-only explorer and the `mode:"read-write"` direct-write child, and
-`engine/agent/teamsupervisor.go` (`WithTeamSharedBaseWorkspace`) for a base-sharing
-shell-less read-only team member — SAME root, SAME per-skill read-only roots, NO relaxed
-options (the exact constructor `newForkWorkspace` uses), wired only at `PostureAuto` and
-above (inert below it, where the parent workspace is never relaxed). A root the
-constructor cannot open yields nil and the child falls back to the parent workspace
-(fail-open to the historical shape).
+relaxed parent wrapper verbatim, so composition supplies a capability-narrowing view:
+`engine/agent/subagent.go` (`WithSharedChildWorkspace`) covers the shell-less read-only
+explorer and `mode:"read-write"` direct-write child, and
+`engine/agent/teamsupervisor.go` (`WithTeamSharedBaseWorkspace`) covers a base-sharing
+shell-less read-only team member. `internal/app/escapepolicy.go` (`childWorkspaceView`)
+keeps the exact underlying content backend and classifier but rejects every escape; a
+non-relaxed, ACP, remote, or custom Workspace passes through by identity. It never
+reopens `Workspace.Root()` as osfs, so authority narrowing cannot change the namespace
+or silently replace an editor/remote backend.
 
 **ADR-0080 guardrail-routed escape checking.** The plan's "guardrail-gated iff the knob
 is configured" clause is a composition-level PRE-CHECK inside the escape policy

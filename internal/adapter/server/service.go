@@ -565,6 +565,10 @@ type Config struct {
 	// member IsolateReadOnly (which the composition root does only when this is
 	// wired). When nil, read-only members base-share with no shell.
 	ReadOnlyForker tool.EnvironmentForker
+	// SharedBaseWorkspace narrows the authority of a base-sharing member's
+	// Workspace without replacing its content backend. Composition uses it to
+	// keep main-session path-escape relaxation out of children.
+	SharedBaseWorkspace func(tool.Workspace) tool.Workspace
 	// TeamHooks fires the team lifecycle hooks (TeammateIdle) and is passed to
 	// member coordination tools for the TaskCreated / TaskCompleted gates.
 	// Optional.

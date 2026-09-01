@@ -697,6 +697,11 @@ type SubagentTool struct {
 	// ledgerFactory mints one fresh read-evidence ledger per child Environment.
 	// It is injected so engine/agent never imports a concrete ledger adapter.
 	ledgerFactory func() tool.ReadLedger
+	// sharedChildWS narrows the Workspace authority exposed to a base-sharing child
+	// without replacing its content backend. Composition uses this to remove the
+	// main session's relaxed path-escape reach while preserving ACP/remote/custom
+	// backend identity. Nil keeps the parent Workspace unchanged.
+	sharedChildWS func(tool.Workspace) tool.Workspace
 
 	// childGate bounds how many Subagent children may run CONCURRENTLY — forking AND
 	// forker-less. It is a buffered channel used as a counting semaphore, acquired at
@@ -1068,8 +1073,8 @@ func WithChildSessionPrefix(p string) SubagentOption {
 // a throwaway git worktree, never the shared parent base — preserving Subagent's
 // read-parallel safety (see ReadOnly). It should be the forker's DEFAULT mode (git
 // worktree: shares the base repo's `.git` ⇒ full history for git log/show). When the
-// forker is nil (the default), the child runs against the parent workspace exactly as
-// before. A fork failure on this path is a tool error, not a silent fallback.
+// forker is nil (the default), the child shares the parent content backend through
+// any composition-supplied authority-narrowing Workspace view. A fork failure on this path is a tool error, not a silent fallback.
 func WithChildForker(f tool.EnvironmentForker) SubagentOption {
 	return func(t *SubagentTool) { t.childForker = f }
 }
@@ -1077,6 +1082,14 @@ func WithChildForker(f tool.EnvironmentForker) SubagentOption {
 // WithSubagentReadLedgerFactory injects the mandatory fresh child-ledger factory.
 func WithSubagentReadLedgerFactory(factory func() tool.ReadLedger) SubagentOption {
 	return func(t *SubagentTool) { t.ledgerFactory = factory }
+}
+
+// WithSharedChildWorkspace injects a capability-narrowing view for base-sharing
+// children. The function receives the actual parent Workspace and must preserve
+// its content backend; it exists so child authority can be stricter than a
+// posture-relaxed main-session wrapper without reconstructing storage from Root.
+func WithSharedChildWorkspace(view func(tool.Workspace) tool.Workspace) SubagentOption {
+	return func(t *SubagentTool) { t.sharedChildWS = view }
 }
 
 // WithSubagentStore injects the optional session store each child session is
@@ -2275,7 +2288,8 @@ func (t *SubagentTool) prepareChildSession(ctx context.Context, call session.Too
 	// A mode:"read-write" child runs DIRECTLY against the parent workspace (no fork —
 	// ADR 0077): its Edit/Write/Bash mutate the real tree in place, exactly as the
 	// main agent does, and git is the rollback layer. So a writable call passes NO
-	// forker (nil) — forkChildEnvironment then returns the parent ws directly. A
+	// forker (nil) — forkChildEnvironment then shares the parent content backend
+	// through any composition-supplied authority-narrowing Workspace view. A
 	// read-only child still uses t.childForker (a throwaway git worktree when it has a
 	// shell, else the shared parent ws — read-parallel-safe via worktree isolation).
 	forker := t.childForker
@@ -4046,8 +4060,8 @@ func (t *SubagentTool) resolveResumeSession(ctx context.Context, callID session.
 // ReadOnly). A fork FAILURE is a tool error (ok=false), NOT a silent fallback to the
 // shared ws: the child has Bash precisely because isolation was available, so running
 // it shared would be the exact hazard. With a nil forker the child runs against the
-// parent ws unchanged (the read-only no-shell path AND the writable direct-write
-// path). The returned cleanup is ALWAYS non-nil (a no-op when nothing was forked) so
+// parent content backend through any configured authority-narrowing Workspace
+// view (the read-only no-shell path AND the writable direct-write path). The returned cleanup is ALWAYS non-nil (a no-op when nothing was forked) so
 // the caller can defer it unconditionally.
 //
 // advisory is the forker's OPTIONAL degraded-fork note (empty in the normal case): a
@@ -4060,8 +4074,14 @@ func (t *SubagentTool) forkChildEnvironment(ctx context.Context, callID session.
 		if t.ledgerFactory == nil {
 			return tool.Environment{}, nil, "", session.NewToolError(callID, "Subagent: child read ledger is not configured"), false
 		}
+		workspace := env.Workspace()
+		if t.sharedChildWS != nil {
+			if childWorkspace := t.sharedChildWS(workspace); childWorkspace != nil {
+				workspace = childWorkspace
+			}
+		}
 		ledger := t.ledgerFactory()
-		childEnv, err := tool.NewEnvironment(env.Ref(), env.Workspace(), ledger, env.CommandRunner())
+		childEnv, err := tool.NewEnvironment(env.Ref(), workspace, ledger, env.CommandRunner())
 		if err != nil {
 			return tool.Environment{}, nil, "", session.NewToolError(callID, "Subagent: child environment failed: "+err.Error()), false
 		}

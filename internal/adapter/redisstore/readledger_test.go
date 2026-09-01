@@ -3,6 +3,7 @@ package redisstore_test
 import (
 	"context"
 	"errors"
+	"strconv"
 	"sync"
 	"testing"
 	"time"
@@ -21,45 +22,17 @@ import (
 // (AC2.5). The same suite already runs against engine/adapter/memledger; this
 // pins that BOTH implementations satisfy the ONE contract.
 func TestReadLedgerConformance(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	t.Cleanup(mr.Close)
-	st, err := redisstore.New(mr.Addr())
-	if err != nil {
-		t.Fatalf("redisstore.New: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	st := newLedgerTestStore(t)
 
 	var counter int
 	var mu sync.Mutex
 	ledgerconformance.Run(t, func(*testing.T) tool.ReadLedger {
 		mu.Lock()
 		counter++
-		id := session.SessionID("conformance-" + time.Now().Format("150405.000000000") + "-" + itoa(counter))
+		id := session.SessionID("conformance-" + time.Now().Format("150405.000000000") + "-" + strconv.Itoa(counter))
 		mu.Unlock()
 		return st.ReadLedger(id)
 	})
-}
-
-func itoa(n int) string {
-	if n == 0 {
-		return "0"
-	}
-	digits := ""
-	neg := n < 0
-	if neg {
-		n = -n
-	}
-	for n > 0 {
-		digits = string(rune('0'+n%10)) + digits
-		n /= 10
-	}
-	if neg {
-		digits = "-" + digits
-	}
-	return digits
 }
 
 // TestPersistentReadLedgers_Scenario2_RedisReopen pins AC2.1: a version
@@ -568,16 +541,7 @@ func TestPersistentReadLedgers_Scenario2_DeleteAndReuseStartsEmpty(t *testing.T)
 // separation is physical (distinct Redis keys/fields), not merely an artifact
 // of the Go-level API.
 func TestPersistentReadLedgers_Scenario2_InjectiveRedisIdentity(t *testing.T) {
-	mr, err := miniredis.Run()
-	if err != nil {
-		t.Fatalf("miniredis: %v", err)
-	}
-	t.Cleanup(mr.Close)
-	st, err := redisstore.New(mr.Addr())
-	if err != nil {
-		t.Fatalf("redisstore.New: %v", err)
-	}
-	t.Cleanup(func() { _ = st.Close() })
+	st := newLedgerTestStore(t)
 	ctx := context.Background()
 
 	pairs := []struct {
