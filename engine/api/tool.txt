@@ -3,6 +3,7 @@
     ifacemethod func (CommandRunner).Run(ctx context.Context, command string) (CommandResult, error)
     ifacemethod func (CommandStreamer).RunStreaming(ctx context.Context, command string, out io.Writer) (exitCode int, err error)
     ifacemethod func (Disclosable).Advertised() ToolSpec
+    ifacemethod func (DispatchSerial).DispatchSerialTool()
     ifacemethod func (EnvironmentForker).Fork(ctx context.Context, base Environment, label string) (child Environment, cleanup func() error, advisory string, err error)
     ifacemethod func (EnvironmentMerger).Merge(ctx context.Context, child Environment, parent Environment) error
     ifacemethod func (FileSystem).Glob(ctx context.Context, pattern string) ([]string, error)
@@ -108,6 +109,7 @@ type CommandResult struct{Stdout string; Stderr string; ExitCode int}
 type CommandRunner interface{Run(ctx context.Context, command string) (CommandResult, error)}
 type CommandStreamer interface{RunStreaming(ctx context.Context, command string, out io.Writer) (exitCode int, err error)}
 type Disclosable interface{Advertised() ToolSpec; Tool}
+type DispatchSerial interface{DispatchSerialTool(); Tool}
 type Environment struct{}
 type EnvironmentForker interface{Fork(ctx context.Context, base Environment, label string) (child Environment, cleanup func() error, advisory string, err error)}
 type EnvironmentMerger interface{Merge(ctx context.Context, child Environment, parent Environment) error}
