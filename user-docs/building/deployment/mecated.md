@@ -60,6 +60,11 @@ mecated serve \
   --posture auto
 ```
 
+Set `--log-level` to one of the exact values `debug`, `info`, `warn`, or `error`
+(default `info`). The same threshold is used for ambient `slog` output and
+injected diagnostics. Invalid values, including `--log-level=`, fall back to
+`info` and emit one warning.
+
 `--store-dir` enables local JSONL persistence with an authoritative v2 current
 snapshot plus readable v1 history. The configured path and every ancestor must be
 physical non-symlink directories; on macOS, use the physical `/private/...` spelling
@@ -139,8 +144,11 @@ loopback-only server. Flags not covered here are advanced operator tuning; run
 | Flag | Default | Notes |
 |---|---|---|
 | `--grpc-addr` | `127.0.0.1:8080` | gRPC listen address |
-| `--http-addr` | `127.0.0.1:8081` | HTTP/SSE listen address |
+| `--http-addr` | `127.0.0.1:8081` | HTTP/SSE listen address. **Empty disables the HTTP/SSE listener and the admin listener together** — see [Hosting a spawned daemon](#hosting-a-spawned-daemon) |
 | `--metrics-addr` | `127.0.0.1:9090` | Prometheus + admin listener; empty disables it |
+| `--grpc-unix-socket` | `""` (off) | Serve gRPC on a UNIX-domain socket instead of a TCP port. Mutually exclusive with a configured `--grpc-addr`. See [Hosting a spawned daemon](#hosting-a-spawned-daemon) |
+| `--ready-file` | `""` (off) | Absolute path to write a JSON readiness document to, atomically, once every listener is up |
+| `--lifetime-pipe-fd` | `0` (off) | File descriptor of an inherited pipe; EOF on it stops the daemon gracefully (the parent-crash path) |
 | `--auth-token` | `""` (off) | Bearer token required on every request; also `MECATL_AUTH_TOKEN` |
 | `--tls-cert` | `""` | PEM server certificate; enables TLS on both listeners when paired with `--tls-key` |
 | `--tls-key` | `""` | PEM server private key |
@@ -384,7 +392,13 @@ a checked-in file weakening a security checker would be a downgrade.
 | `--toolhive-group` | `""` (default group) | ToolHive group to discover from |
 
 `--mcp-server` uses streaming-HTTP transport only. mecatl never speaks stdio MCP
-directly; ToolHive stdio backends are HTTP-proxied and fine.
+directly; ToolHive stdio backends are HTTP-proxied and fine. A `mecatui connect … debug
+SESSION_ID --debug-mcp NAME` session can borrow only the named server's direct tools. The
+selection and exact direct tool set persist across restart; any addition, removal, or rename
+fails closed. Every selected call—including tools marked read-only—requires a fresh interactive
+approval even under yolo. Denies remain absolute, headless calls deny, and allow-always is not
+learned. The intended flow is diagnose
+and draft first, then send a separate current publication request and approve exactly that call.
 
 ### Skills
 
@@ -688,6 +702,162 @@ see [Scheduled tasks](/building/what-you-get/scheduled-tasks.md#host-composition
 
 ---
 
+## Hosting a spawned daemon
+
+If something else launches `mecated` — an SDK, an editor extension, a wrapper CLI —
+the parent needs three things a network daemon does not: a private endpoint, a way
+to know when the server is reachable, and a way for the daemon to notice the parent
+died. Four flags cover it.
+
+```sh
+mecated serve \
+  --grpc-unix-socket /run/user/1000/myapp/mecated.sock \
+  --http-addr "" \
+  --ready-file /run/user/1000/myapp/ready.json \
+  --lifetime-pipe-fd 3
+```
+
+**`--grpc-unix-socket`** serves gRPC on a socket and opens **no TCP port at all**.
+Dial it as `unix:///run/user/1000/myapp/mecated.sock`. Reachability is filesystem
+permission on one path, which is strictly narrower than a loopback port that any
+local process may connect to. Some details worth knowing:
+
+- The socket is created **owner-only**, inside an owner-only (`0700`) directory that
+  mecated creates if it is missing. If the directory already exists mecated never
+  chmods it — it will not touch your `/tmp` or your systemd `RuntimeDirectory` — but
+  it does check it. A directory that is **writable by group or other and not sticky**
+  is **refused at startup**: deleting a file needs write permission on the directory,
+  not on the file, so any local user could unlink your socket and put their own
+  listener at that path. A directory that is merely **readable** beyond you is
+  accepted with a warning — others can see the socket but cannot connect to it or
+  remove it.
+- A **stale socket** left behind by a process that was killed is removed on start. A
+  socket a **live** process is still accepting on refuses the start instead, because
+  removing it would silently steal the running daemon's address.
+- `--grpc-unix-socket` **suppresses** the `--grpc-addr` default. Setting both — on the
+  command line or in a config file — is rejected at startup rather than resolved by a
+  precedence rule you would have to look up.
+- Socket paths are short by kernel rule: `sockaddr_un` stores at most 103 bytes on
+  macOS and 107 on Linux. mecated checks this at startup and tells you the path, its
+  length, and the limit, instead of letting `bind` fail with a bare `EINVAL`.
+
+**An empty `--http-addr`** disables the HTTP/SSE listener *and* the `--metrics-addr`
+admin listener. They go together deliberately: both are TCP listeners you did not
+have to ask for, and "HTTP is off" would not be true if a second one on port 9090
+survived it. `--perf-mcp` is refused in this mode, since the listener it mounts on no
+longer exists.
+
+**`--ready-file`** removes the startup race. The file is published **atomically**
+(temp file plus rename, so a poller sees the whole document or nothing) and only
+**after** composition finishes and every listener is bound — so the moment the path
+exists, you can dial:
+
+```json
+{
+  "schema": "mecated-ready/1",
+  "pid": 5821,
+  "transport": "unix",
+  "grpc_address": "/run/user/1000/myapp/mecated.sock",
+  "socket_path": "/run/user/1000/myapp/mecated.sock",
+  "api_major": 1,
+  "features": ["mcp_servers_on_create", "server_info"],
+  "deployment": "eu-west-1 staging"
+}
+```
+
+The descriptive half comes from the same projection `GetCompatibilityInfo` serves,
+so `api_major` and `features` let a parent refuse an incompatible daemon before its
+first RPC. `features` reports what this build implements **and** this deployment
+permits, so a listener-scoped identifier like `mcp_servers_on_create` appears here
+exactly when the daemon will honour it — which is why the example above, a
+socket-only daemon, lists it. The field set is a short allowlist and carries **no credential, TLS
+detail, or capability set** — the file is a local artefact with no authentication in
+front of it, and it is written `0600`. Ask over the socket for anything more.
+
+The file is **not removed on shutdown**: removing it on a graceful exit but not on
+a `SIGKILL` would be a guarantee you could not rely on, so treat it as possibly
+stale and check the `pid`. A restart over the same path overwrites it atomically.
+
+**`--lifetime-pipe-fd`** is the parent-crash path. Create a pipe, pass the read end
+to the child as a descriptor, and hold the write end without ever writing to it. If
+the parent exits — cleanly, or by `SIGKILL`, or by crashing — the kernel closes its
+descriptors, the daemon's read end sees EOF, and it shuts down through the same
+graceful path a `SIGTERM` takes, persisting session state on the way out. The parent
+has nothing to remember. Bytes on the pipe are read and discarded: it is a liveness
+signal, never a control channel. `0`, `1`, and `2` are rejected — treating stdin's
+EOF as "the parent died" would stop the daemon the moment you started it from a
+non-interactive shell.
+
+All four flags are off by default, and a daemon that sets none of them behaves
+exactly as before.
+
+### What a local-only daemon additionally unlocks
+
+Your choice of listener also decides one capability, without a flag of its own:
+**client-provided MCP servers on session creation**.
+
+A client may pass `mcp_servers` on `CreateSession` (and on `POST /v1/sessions`) to
+mount streaming-HTTP MCP servers for that session's lifetime — its own tools, with
+its own auth headers, isolated to that session. Whether the daemon accepts the
+field depends on where it listens:
+
+| Listener topology | `mcp_servers` |
+|---|---|
+| `--grpc-unix-socket` **and** `--http-addr ""` | accepted |
+| Anything else — including plain loopback TCP | refused on **every** listener, with `UNIMPLEMENTED` / `501` and the code `client_mcp_unsupported` |
+
+Only the fully socket-bound daemon qualifies. A loopback TCP port does **not**, and
+neither does a socket-plus-HTTP daemon: serving HTTP at all means serving TCP.
+
+That bar is higher than the one for workspaces, which does accept loopback, and the
+difference is deliberate. A workspace path picks among roots you already own. An MCP
+endpoint plus a credential points the daemon's **outbound network authority**
+wherever the caller chooses and has it carry the caller's token there — a larger
+grant, and one worth a narrower door. A loopback port is reachable by every process
+and every user account on the machine, browser pages included; a UNIX socket is
+guarded by filesystem permissions on a directory created for you alone.
+
+The decision is made once at startup from your listener topology, so a daemon that
+serves both a socket and a port refuses the field on both — the same `Service`
+answers for each, and the wider listener decides.
+
+The refusal is the **server's**, not a convention clients are asked to honour: a
+client that never checks still gets a clean, typed error rather than a mounted
+server. Clients that do check read `mcp_servers_on_create` from
+`GetCompatibilityInfo` (`GET /v1/compatibility`) — a deployment advertises it
+exactly when it will accept it.
+
+**Either all of them mount, or none does.** If a server you asked for cannot be
+reached, the create fails with `UNAVAILABLE` / `503` and the code
+`client_mcp_unreachable`, naming the ones that did not answer — no session is
+created. That code is distinct from `client_mcp_unsupported` because the fix is
+different: the unsupported one means this daemon will never accept the field, while
+the unreachable one means your own endpoint was down and a retry may work. A
+half-mounted session is never reported as success, since from the API it would look
+exactly like a working one while quietly missing tools.
+
+Two client-side rules are worth knowing before you wire an SDK. **Server names**
+must be 1-64 characters of `[A-Za-z0-9._-]` with no `__` and no duplicates in one
+request — they become `mcp__<name>__<tool>`, so `__` would forge another server's
+namespace and a duplicate would collide in the tool catalog. **Credentials go in
+`headers`**, never in the URL: `https://user:pass@host/mcp` is rejected, because
+the standard library turns userinfo into a `Basic` header that would bypass the
+protections `headers` values get. Anything logged or echoed shows the URL as
+`scheme://host/path` — including the connection error itself, which otherwise
+carries the full request URL — so a token in a query string stays out of your
+operator log.
+
+Client endpoints also may not redirect, so a vetted URL cannot bounce the daemon on
+to a host that was never vetted. Servers you configure yourself are unaffected.
+
+One rule holds regardless of topology: transport is streaming-HTTP only. A `stdio`
+entry — or an untyped one carrying a `command` — and an `sse` entry are rejected as
+malformed requests everywhere, because mecatl never spawns an MCP server process.
+Header values are never written to logs, never carried in an event, and never
+echoed in an error.
+
+---
+
 ## Graceful shutdown
 
 On `SIGINT` or `SIGTERM`, mecated shuts down all three listeners with a 10-second
@@ -698,6 +868,9 @@ Background subagent children owned by active sessions are cancelled when their p
 run is cancelled (the harness cancels runs on shutdown). A session's state is
 persisted (if `--store-dir` is set) before the process exits; interrupted runs are
 recoverable from the snapshot.
+
+EOF on an inherited `--lifetime-pipe-fd` takes this same path — see
+[Hosting a spawned daemon](#hosting-a-spawned-daemon).
 
 ---
 

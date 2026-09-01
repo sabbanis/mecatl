@@ -16,7 +16,9 @@ import (
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/learning"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/internal/adapter/mcp"
 )
 
 // HTTPHandler is the HTTP/SSE adapter over the shared Service. It serves the
@@ -33,6 +35,8 @@ import (
 //	POST   /v1/sessions/{id}/cancel   -> cancel the in-flight run
 //	POST   /v1/sessions/{id}/cancel-child -> cancel ONE child (subagent) of the run
 //	POST   /v1/sessions/{id}/fork     -> ForkSession (peer session from a history snapshot; 201)
+//	GET    /v1/sessions/{id}/events   -> replay the durable event log; the stream ENDS
+//	GET    /v1/sessions/{id}/watch    -> durable replay-then-follow; the stream STAYS OPEN
 //
 // Every Event is emitted as one SSE `data:` line carrying the proto Event
 // marshalled to JSON, so the HTTP and gRPC surfaces share one event shape.
@@ -104,6 +108,7 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h.mux.HandleFunc("POST /v1/storage/cleanup/jobs/{id}/cancel", h.cancelSessionCleanup)
 	h.mux.HandleFunc("GET /v1/storage/cleanup/jobs/{id}", h.getSessionCleanupJob)
 	h.mux.HandleFunc("GET /v1/sessions/{id}/events", h.streamSessionEvents)
+	h.mux.HandleFunc("GET /v1/sessions/{id}/watch", h.watchSessionEvents)
 	h.mux.HandleFunc("POST /v1/teams", h.createTeam)
 	h.mux.HandleFunc("POST /v1/teams/{id}/members", h.spawnTeammate)
 	h.mux.HandleFunc("POST /v1/teams/{id}/messages", h.sendTeammateMessage)
@@ -171,6 +176,53 @@ type createSessionBody struct {
 	// running/awaiting source is a 4xx (FailedPrecondition). Empty means no
 	// carryover.
 	SourceSessionID string `json:"source_session_id,omitempty"`
+	// DebugTargetSessionID creates a separate no-fs diagnostic session bound to
+	// one authorized target; it never copies target conversation state.
+	DebugTargetSessionID string   `json:"debug_target_session_id,omitempty"`
+	DebugMCPServers      []string `json:"debug_mcp_servers,omitempty"`
+	// MCPServers are CLIENT-PROVIDED streaming-HTTP MCP servers mounted for this
+	// session's lifetime, mirroring the proto field (issue #821, ADR 0237). Empty
+	// is byte-identical to today. Whether the field is accepted at all is a
+	// DEPLOYMENT policy: a deployment with any network-facing API listener refuses
+	// every non-empty value with a 501 "client_mcp_unsupported" problem. A stdio or
+	// sse entry is a 400 on every deployment.
+	MCPServers []mcpServerIn `json:"mcp_servers,omitempty"`
+}
+
+// mcpServerIn is one client-provided MCP server on the HTTP create body. It
+// mirrors the proto McpServerSpec field-for-field so the two transports accept
+// the same request, and carries Command ONLY so a command-shaped entry is
+// classified as stdio and rejected AS stdio — it is never executed.
+//
+// Headers values are secret-shaped: never logged, never echoed in the response,
+// never included in an error.
+type mcpServerIn struct {
+	Name    string            `json:"name,omitempty"`
+	URL     string            `json:"url,omitempty"`
+	Type    string            `json:"type,omitempty"`
+	Command string            `json:"command,omitempty"`
+	Headers map[string]string `json:"headers,omitempty"`
+}
+
+// clientMCPFromJSON maps the HTTP create body's MCP entries onto the
+// transport-neutral shape the shared classifier consumes. Like its gRPC peer it
+// is a pure field mapping and makes no decisions: classification and the
+// deployment policy both live behind Service.ClientMCPFromWire.
+func clientMCPFromJSON(in []mcpServerIn) []mcp.ClientServer {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]mcp.ClientServer, 0, len(in))
+	for _, m := range in {
+		out = append(out, mcp.ClientServer{
+			Name:    m.Name,
+			Command: m.Command,
+			URL:     m.URL,
+			Type:    m.Type,
+			Headers: m.Headers,
+		})
+	}
+	return out
 }
 
 type limitsIn struct {
@@ -241,6 +293,8 @@ type serverCapabilitiesJSON struct {
 	StorageMigration  bool                              `json:"storage_migration"`
 	StorageCleanup    bool                              `json:"storage_cleanup"`
 	LegacyAdoption    bool                              `json:"legacy_adoption"`
+	SessionDebug      bool                              `json:"session_debug"`
+	DebugMCP          bool                              `json:"debug_mcp"`
 	ManualDream       *mecatlv1.ManualDreamCapabilities `json:"manual_dream,omitempty"`
 	Steer             bool                              `json:"steer"`
 	ManualCompaction  bool                              `json:"manual_compaction"`
@@ -269,6 +323,8 @@ func capabilitiesJSON(c *mecatlv1.ServerCapabilities) *serverCapabilitiesJSON {
 		StorageMigration:  c.GetStorageMigration(),
 		StorageCleanup:    c.GetStorageCleanup(),
 		LegacyAdoption:    c.GetLegacyAdoption(),
+		SessionDebug:      c.GetSessionDebug(),
+		DebugMCP:          c.GetDebugMcp(),
 		ManualDream:       c.GetManualDream(),
 		Steer:             c.GetSteer(),
 		ManualCompaction:  c.GetManualCompaction(),
@@ -294,7 +350,9 @@ type sessionResp struct {
 	// read surface is consistent with gRPC GetSession: the EFFECTIVE provider+model
 	// this session resolved to (from Service.ResolvedModel, the composition single
 	// source). Omitted (nil) when no model resolved (older-server-equivalent).
-	ResolvedModel *resolvedModelJSON `json:"resolved_model,omitempty"`
+	ResolvedModel *resolvedModelJSON            `json:"resolved_model,omitempty"`
+	Kind          string                        `json:"kind,omitempty"`
+	Relationship  *mecatlv1.SessionRelationship `json:"relationship,omitempty"`
 }
 
 type dreamGenerateBody struct {
@@ -381,8 +439,26 @@ type approveBody struct {
 // createSession handles POST /v1/sessions.
 func (h *HTTPHandler) createSession(w http.ResponseWriter, r *http.Request) {
 	var body createSessionBody
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
-		writeError(w, http.StatusBadRequest, "invalid JSON body")
+	// STRICT decode. An unknown field is a 400, not a silent drop.
+	//
+	// This body is where leniency stopped being harmless: a client coming from the
+	// gRPC surface (or using a generated client) naturally writes the protojson
+	// spelling {"mcpServers": [...]}, which a lenient decoder discards — returning
+	// 201 with a session that has none of the MCP servers the caller asked for, and
+	// no signal anywhere that it dropped them. That is the same silent-degradation
+	// class as a partial mount, on the transport where it is easiest to hit.
+	//
+	// The error detail is surfaced because encoding/json names the offending field
+	// ("unknown field \"mcpServers\""), which turns an otherwise baffling 400 into a
+	// self-diagnosing one. It describes the caller's own input, so it leaks nothing.
+	//
+	// It is a deliberate behaviour CHANGE: a request carrying a stray field used to
+	// succeed. The strictness matches decodeLearningJSON's existing posture on this
+	// same handler set.
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
+		writeError(w, http.StatusBadRequest, "invalid JSON body: "+err.Error())
 		return
 	}
 	// Session profile (issue #55): the workspace requirement is PROFILE-AWARE and
@@ -405,6 +481,23 @@ func (h *HTTPHandler) createSession(w http.ResponseWriter, r *http.Request) {
 	var opts []CreateSessionOption
 	if body.SourceSessionID != "" {
 		opts = append(opts, WithSourceSession(session.SessionID(body.SourceSessionID)))
+	}
+	if body.DebugTargetSessionID != "" {
+		opts = append(opts, WithDebugTarget(session.SessionID(body.DebugTargetSessionID)))
+	}
+	if len(body.DebugMCPServers) > 0 {
+		opts = append(opts, WithDebugMCP(body.DebugMCPServers))
+	}
+	// Client-provided MCP servers (issue #821, ADR 0237): the SAME Service seam the
+	// gRPC handler calls, so both transports classify through one validator and
+	// read one deployment policy. No filtering or classification happens here.
+	grant, err := h.svc.ClientMCPFromWire(clientMCPFromJSON(body.MCPServers))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	if !grant.IsEmpty() {
+		opts = append(opts, WithClientMCP(grant))
 	}
 	sess, err := h.svc.CreateSessionWithProfile(r.Context(), body.Workspace, modeFromString(body.Mode), limits, sel, profile, opts...)
 	if err != nil {
@@ -579,6 +672,8 @@ func (h *HTTPHandler) writeSession(w http.ResponseWriter, status int, sess *sess
 		Title:           title,
 		TitleProvenance: string(sess.TitleProvenance),
 		ResolvedModel:   resolvedModelToJSON(h.svc.ResolvedModel(sess.ID)),
+		Kind:            string(sess.Kind),
+		Relationship:    toProtoSessionRelationship(sess.Relationship),
 	})
 }
 
@@ -1249,6 +1344,9 @@ func (h *HTTPHandler) runTeam(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 	out, err := h.svc.RunTeam(ctx, id, func(te agent.TeamEvent) {
+		if !isPublicEvent(te.Event) {
+			return
+		}
 		writeFrame(&mecatlv1.TeamEvent{Member: te.Member, Event: toProto(te.Event)})
 	})
 	if err != nil {
@@ -2084,16 +2182,19 @@ func (h *HTTPHandler) streamSessionEvents(w http.ResponseWriter, r *http.Request
 	// (they ARE the transcript). So relay ALL events through toProto, including the
 	// three log-only kinds. They are already metadata-only/redacted by construction
 	// (gauntlet #7). Do NOT copy the live-relay filter here.
+	// RequestManifest and NetworkAttempt remain debugger-only even on durable
+	// read-back; neither has a public proto projection.
 	enc := json.NewEncoder(w)
 	for ev, iterErr := range events {
 		if iterErr != nil {
 			// Mid-stream fault: emit an SSE error frame and stop. The iter.Seq2
 			// releases its file handle on early break per port.EventLog.Read's
 			// contract.
-			_ = enc.Encode(map[string]string{"error": iterErr.Error()})
-			_, _ = w.Write([]byte("\n"))
-			flusher.Flush()
+			writeSSEError(w, flusher, map[string]string{"error": iterErr.Error()})
 			return
+		}
+		if !isPublicEvent(ev) {
+			continue
 		}
 		if _, err := w.Write([]byte("data: ")); err != nil {
 			return // client disconnected; the iter releases its file handle on break
@@ -2108,7 +2209,101 @@ func (h *HTTPHandler) streamSessionEvents(w http.ResponseWriter, r *http.Request
 	}
 }
 
+// watchSessionEvents handles GET /v1/sessions/{id}/watch — the DURABLE
+// replay-then-follow watch as a Server-Sent Events stream (issue #821, ADR 0250).
+//
+// It is a NEW route, deliberately beside GET /v1/sessions/{id}/events rather than
+// a widening of it. That route is a bounded replay that ends; this one replays,
+// announces the boundary, and then stays open. Overloading one path with a query
+// parameter would change an existing endpoint's termination behaviour for every
+// client that already depends on the stream ending.
+//
+// Query parameters: `cursor` (opaque, empty = from the beginning) and `run_id`
+// (optional filter). Both are handed to the same Service.WatchSessionEvents the
+// gRPC handler uses, which is what makes the envelope sequences identical.
+//
+// Each frame is one WatchSessionEventsResponse — {event, cursor, phase} — so a
+// client reads its resume position off the same frame that carried the event.
+// This is the READ-BACK of the durable log, so ALL events are relayed including
+// the three log-only kinds; do NOT copy the live-relay filter here.
+func (h *HTTPHandler) watchSessionEvents(w http.ResponseWriter, r *http.Request) {
+	id := session.SessionID(r.PathValue("id"))
+	flusher, _ := w.(http.Flusher)
+	if flusher == nil {
+		writeError(w, http.StatusInternalServerError, "streaming unsupported")
+		return
+	}
+	// Resolved BEFORE any header is written, so a missing feature, a bad cursor, or
+	// a session this caller may not read is a real status code and an RFC 9457
+	// problem body rather than a 200 with an error frame inside it.
+	envelopes, err := h.svc.WatchSessionEvents(r.Context(), id,
+		port.Cursor(r.URL.Query().Get("cursor")), r.URL.Query().Get("run_id"))
+	if err != nil {
+		writeServiceError(w, err)
+		return
+	}
+	w.Header().Set("Content-Type", "text/event-stream")
+	w.Header().Set("Cache-Control", "no-cache")
+	w.Header().Set("Connection", "keep-alive")
+	w.WriteHeader(http.StatusOK)
+	flusher.Flush()
+
+	enc := json.NewEncoder(w)
+	for env, iterErr := range envelopes {
+		if iterErr != nil {
+			// Mid-stream fault, after the 200 is already committed: the status code
+			// is spent, so the terminal condition has to ride the stream. It carries
+			// the stable machine code so a client can tell a resumable lag from a
+			// delivery gap without parsing prose. Breaking out releases the watch.
+			entry := classifyError(iterErr)
+			writeSSEError(w, flusher, map[string]string{"code": entry.Code, "error": iterErr.Error()})
+			return
+		}
+		if _, err := w.Write([]byte("data: ")); err != nil {
+			return // client disconnected; breaking out releases the watch
+		}
+		if err := enc.Encode(toProtoWatchEnvelope(env)); err != nil { // Encode appends a newline
+			return
+		}
+		if _, err := w.Write([]byte("\n")); err != nil {
+			return
+		}
+		flusher.Flush()
+	}
+}
+
 // --- helpers ----------------------------------------------------------------
+
+// writeSSEError writes a TERMINAL error frame as valid Server-Sent Events.
+//
+// The payload has to ride a `data: ` line. Per the EventSource grammar a line is
+// split into `field: value` at the first colon, so a bare `{"code":"..."}` parses
+// as the unrecognised field `{"code"` and is DISCARDED — a conforming client sees
+// the stream go quiet and cannot tell a resumable fault from a delivery gap from
+// a clean end. That silence is precisely the failure the durable watch exists to
+// abolish (see ErrWatchLagging), so the framing here is load-bearing rather than
+// cosmetic.
+//
+// The frame is tagged `event: error` so a client can ROUTE it — an SSE consumer
+// otherwise has to shape-sniff the JSON against the success payload it is not,
+// and on the watch route the success payload is a WatchSessionEventsResponse
+// whose fields are all optional, so sniffing is unreliable by construction.
+//
+// Callers own the payload shape: the watch route carries the stable machine
+// `code`, the older replay route carries `error` alone. Both now ARRIVE, which is
+// the fix; unifying their bodies would change a shape clients may already read.
+func writeSSEError(w http.ResponseWriter, flusher http.Flusher, payload any) {
+	if _, err := w.Write([]byte("event: error\ndata: ")); err != nil {
+		return
+	}
+	if err := json.NewEncoder(w).Encode(payload); err != nil { // Encode appends a newline
+		return
+	}
+	if _, err := w.Write([]byte("\n")); err != nil {
+		return
+	}
+	flusher.Flush()
+}
 
 // modeFromString maps a JSON mode string to a session.PermissionMode. Unknown
 // or empty values fall through to the empty mode (Service applies its default).

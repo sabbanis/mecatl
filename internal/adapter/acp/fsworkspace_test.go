@@ -25,7 +25,7 @@ var acpTestLedgers sync.Map
 
 // testLedger returns a per-fsWorkspace-instance ReadLedger for tests that need
 // to record/inspect ledger state directly (the production fsWorkspace carries
-// NO ledger of its own — ADR 0278; content and read evidence are independently
+// NO ledger of its own — ADR 0281; content and read evidence are independently
 // composed at the Environment).
 func testLedger(w *fsWorkspace) tool.ReadLedger {
 	ledger, _ := acpTestLedgers.LoadOrStore(w, memledger.New())
@@ -963,7 +963,7 @@ func TestFSWorkspaceLedgerCrossForm(t *testing.T) {
 }
 
 // TestFSWorkspaceLedgerNotBlockedByParkedRPC proves capability separation
-// (ADR 0208, ADR 0278): an Environment-selected ReadLedger is independent of
+// (ADR 0208, ADR 0281): an Environment-selected ReadLedger is independent of
 // ACP's RPC CAS mutex (callMu), so a parked RPC mutation holding callMu never
 // blocks ledger RecordRead/RecordedVersion. AC3.8 pins this separation.
 func TestFSWorkspaceLedgerNotBlockedByParkedRPC(t *testing.T) {

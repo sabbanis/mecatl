@@ -62,9 +62,16 @@ const (
 //   - is acpInclude by default.
 var flagMetaByFlag = map[string]flagMeta{
 	// ── Server (serve-only) ───────────────────────────────────────────────
-	"config":              {group: groupServer, common: false, acp: acpExclude},
-	"grpc-addr":           {group: groupServer, common: true, acp: acpExclude},
-	"http-addr":           {group: groupServer, common: true, acp: acpExclude},
+	"config":    {group: groupServer, common: false, acp: acpExclude},
+	"grpc-addr": {group: groupServer, common: true, acp: acpExclude},
+	"http-addr": {group: groupServer, common: true, acp: acpExclude},
+	// Daemon hosting (issue #821 Scenario 8): what a SPAWNED local daemon needs.
+	// Advanced — an operator running mecated by hand never sets them — and
+	// server-boundary, so absent from ACP help (a stdio ACP client already has
+	// its parent's lifetime and needs no socket or readiness barrier).
+	"grpc-unix-socket":    {group: groupServer, common: false, acp: acpExclude},
+	"ready-file":          {group: groupServer, common: false, acp: acpExclude},
+	"lifetime-pipe-fd":    {group: groupServer, common: false, acp: acpExclude},
 	"workspace-authority": {group: groupServer, common: false, acp: acpExclude},
 	"metrics-addr":        {group: groupServer, common: false, acp: acpExclude},
 
@@ -87,7 +94,8 @@ var flagMetaByFlag = map[string]flagMeta{
 	"oidc-allow-private-https-issuer":    {group: groupSecurity, common: false, acp: acpExclude},
 	"oidc-ca-cert-file":                  {group: groupSecurity, common: false, acp: acpExclude},
 
-	// ── Observability (serve-only) ────────────────────────────────────────
+	// ── Observability (both) ────────────────────────────────────────────────
+	"log-level":                {group: groupObservability, common: true, acp: acpInclude},
 	"otlp-endpoint":            {group: groupObservability, common: false, acp: acpExclude},
 	"otlp-protocol":            {group: groupObservability, common: false, acp: acpExclude},
 	"otlp-insecure":            {group: groupObservability, common: false, acp: acpExclude},
@@ -263,6 +271,7 @@ var groupOrder = []string{
 	groupAgentTeams,
 	groupMCP,
 	groupServer,
+	groupObservability,
 }
 
 // commonFlagNames returns the set of flag names marked common and appropriate

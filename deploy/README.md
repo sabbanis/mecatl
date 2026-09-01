@@ -101,12 +101,15 @@ static base), `allowPrivilegeEscalation: false`, `readOnlyRootFilesystem: true`,
 ## Caller identity (OIDC) — the opt-in chart values
 
 `deploy/helm/mecak8s/` treats `mockProvider: false` as a real-provider deployment and
-fails closed unless **both** `tls.enabled` and `oidc.enabled` are true. TLS encrypts the
-server transport; OIDC authenticates callers, and neither substitutes for the other.
-Existing real-provider installs upgrading to chart 0.2.0 must add both controls. For a
-local-only deployment or a trusted mesh that supplies both controls externally, the
-explicit `security.allowUnsafeRealProvider=true` escape hatch bypasses the gate and adds
-`mecatl.stacklok.com/unsafe-real-provider: "true"` to the pod template.
+fails closed unless the release picks one of three explicit postures: in-pod TLS plus
+OIDC; edge-terminated TLS (`security.tlsTerminatedUpstream=true`, `tls.enabled=false`,
+OIDC, and a `ClusterIP` Service); or the conspicuous unsafe bypass
+(`security.allowUnsafeRealProvider=true`). TLS encrypts the server transport; OIDC
+authenticates callers, and neither substitutes for the other. Edge mode leaves an h2c
+backend whose caller bearer tokens cross the pod network in cleartext — restricting
+reachability to the gateway or mesh is the control that matters, and the chart ships no
+NetworkPolicy to do it. The full operator contract, and what the chart deliberately does
+not create, is [ADR 0278](../docs/adr/0278-mecak8s-edge-terminated-tls.md).
 
 The `oidc.*` values turn on **caller identity and
 ownership isolation** for the mecak8s agent: a real IdP authenticates each
@@ -204,11 +207,12 @@ start.
 
 `deploy/mecak8s-kind/` layers a private Keycloak issuer over its otherwise
 unauthenticated Kind baseline for local validation only. Run
-`task mecak8s:kind-keycloak-setup`, then use its explicit loopback-only
-port-forward; mecak8s stays a `ClusterIP` Service with no Ingress, NodePort,
-LoadBalancer, or wildcard host binding. Its fixture certificate covers
-`localhost` and `127.0.0.1`, and clients must verify both the hostname and the
-fixture CA.
+`task mecak8s:kind-keycloak-setup`, then use its static Kind
+`extraPortMappings`, whose host bindings are loopback-only; the fixture overlay
+selects NodePorts 30080/30081 (and Keycloak 30443), while shared/bare chart
+values remain `ClusterIP` with no Ingress, LoadBalancer, or wildcard host
+binding. Its fixture certificate covers `localhost` and `127.0.0.1`, and clients
+must verify both the hostname and the fixture CA.
 
 The normal client login is Authorization Code + PKCE using Keycloak's public
 client and an access token with the `mecak8s` audience. A password grant is a

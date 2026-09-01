@@ -280,6 +280,7 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"CancelSessionCleanup":      {KindCallerOwned, "gates on management authority; matches the verified principal against the bounded job registry — the underlying cleanup scope is store-wide, never caller-owned"},
 	"SessionCleanupJob":         {KindCallerOwned, "gates on management authority and returns only a caller-bound sanitized job projection; the underlying cleanup data is store-wide, not the caller's own sessions"},
 	"StreamSessionEvents":       {KindCallerOwned, "event log/live stream resolves through the owning session's authorizeSession check"},
+	"WatchSessionEvents":        {KindCallerOwned, "durable replay-then-follow watch (ADR 0250); watchLog resolves ownership through the same GetSession check StreamSessionEvents uses, EAGERLY — before any envelope is yielded — because the durable log holds the whole transcript"},
 	"Subscribe":                 {KindCallerOwned, "authorizes via GetSession before registering a live subscriber (issue #368)"},
 
 	// --- caller-owned: live run verbs ---
@@ -335,6 +336,7 @@ var serviceAccessTable = map[string]ClassificationEntry{
 
 	// --- shared infrastructure: process-wide catalog/config, same for every caller by design ---
 	"CompatibilityInfo":       {KindSharedInfrastructure, "the deployment's capability/feature descriptor, identical for every caller; it touches no session, schedule, or memory record"},
+	"ClientMCPFromWire":       {KindSharedInfrastructure, "classifies a request's MCP entries and applies the deployment-wide client-MCP policy, which is identical for every caller; it reads and writes no session, schedule, or memory record and reaches no network"},
 	"ListMcpResources":        {KindSharedInfrastructure, "MCP servers are process-wide composition config, not a caller-owned record; every caller may list a wired server's resources"},
 	"ReadMcpResource":         {KindSharedInfrastructure, "reads a resource off a process-wide MCP server registration, not a caller-owned record"},
 	"ListMcpPrompts":          {KindSharedInfrastructure, "reads prompt snapshots off a process-wide MCP server registration"},

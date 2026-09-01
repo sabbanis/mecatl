@@ -34,6 +34,11 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0239 — Semantic stream retry and failed-step retry transport](./0239-semantic-stream-retry.md)
 - [0243 — Local JSONL durability boundaries](./0243-jsonl-durability.md)
 - [0245 — Safe build diagnostics](./0245-safe-build-diagnostics.md)
+- [0254 — Dedicated session debugger and per-instance admin transport](./0254-session-debugger-admin-transport.md)
+- [0255 — Sanitized durable network-attempt evidence](./0255-sanitized-network-attempt-evidence.md)
+- [0256 — Target-bound related evidence and approval-gated reporting](./0256-session-debugger-evidence-and-reporting.md) *(partially superseded by 0257)*
+- [0257 — Session debugger incarnation and disclosure hardening](./0257-session-debugger-hardening.md) *(incarnation identity and edges superseded by 0258)*
+- [0258 — Cryptographic session and lineage incarnations](./0258-cryptographic-session-incarnations.md)
 - [0229 — Redis migration uses fenced renewable ownership and indexed coverage](./0229-redis-migration-fencing.md) *(superseded by 0230)*
 - [0230 — Redis migration ownership and coverage are proved before mutation](./0230-redis-migration-atomic-ownership-and-coverage.md) *(superseded by 0231)*
 - [0231 — Redis readiness requires exact owner-index coverage](./0231-redis-owner-index-exact-coverage.md)
@@ -50,7 +55,8 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0251 — Multimodal steer preserves prompt content](./0251-multimodal-steer.md)
 - [0252 — HTTP steer endpoint: `POST /v1/sessions/{id}/steer`](./0252-http-steer-endpoint.md)
 - [0253 — SDK mocking testkit: vendor the proven unary pattern, defer streaming](./0253-sdk-mocking-testkit.md)
-- [0278 — Persistent read-before-write ledgers are independent storage](./0278-persistent-read-before-write-ledgers.md) *(supersedes ADR 0208 decision 6 only)*
+- [0279 — TypeScript SDK architecture: Connect-ES transport, protobuf-es codegen, in-repo pnpm project](./0279-typescript-sdk-architecture.md) *(supersedes ADR 0253 Decisions 1–2 in part)*
+- [0281 — Persistent read-before-write ledgers are independent storage](./0281-persistent-read-before-write-ledgers.md) *(supersedes ADR 0208 decision 6 only)*
 - [0036 — `engine/` is its own Go module (monorepo via `go.work`)](./0036-engine-module.md)
 - [0037 — Engine public-API stability contract](./0037-engine-stability-contract.md)
 - [0038 — Event-sourced SessionStore rehydration (the reference fold)](./0038-event-sourced-rehydration.md)
@@ -62,6 +68,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0233 — Secure external Redis on the shared connection layer](./0233-secure-external-redis.md)
 - [0237 — Listener-scoped workspace authority](./0237-listener-scoped-workspace-authority.md)
 - [0277 — Remote mecatui OIDC client authentication](./0277-remote-mecatui-oidc.md) *(supersedes 0270–0273)*
+- [0278 — mecak8s edge-terminated TLS](./0278-mecak8s-edge-terminated-tls.md) *(supersedes ADR 0240's provider-security gate scope only)*
 - [0275 — Bounded scoped HTTPS keep-alive reuse for OIDC](./0275-bounded-scoped-https-keepalive-oidc.md) *(supersedes ADR 0235's keep-alive policy and ADR 0277's credential-recovery classification only)*
 - [0270 — Activity-gated remote OIDC refresh](./0270-activity-gated-remote-oidc-refresh.md) *(superseded by 0277)*
 - [0271 — Recover remote TUI authentication without replaying ownership-ambiguous work](./0271-tui-reauth-owner-recovery.md) *(superseded by 0277)*
@@ -205,6 +212,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0088 — Explicit daemon.yaml (listener topology config)](./0088-daemon-config-file.md)
 - [0222 — mecatui: ctrl+t routes by ask type; full-screen ask-args view](./0222-mecatui-ask-args-view.md)
 - [0247 — mecatui generated status lines](./0247-mecatui-status-line.md)
+- [0280 — Automatic light theme selection in mecatui](./0280-mecatui-light-theme-autodetect.md)
 
 ### Retired
 - [0029 — Repo-map tree-sitter](./0029-repomap-tree-sitter.md) *(retired)*

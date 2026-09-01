@@ -126,13 +126,21 @@ rotations retain the previous generation. The
 server client-CA pool remains static and requires restart; CA rotation should overlap old
 and new roots before removing the old root.
 
-Helm chart 0.2.0 treats `mockProvider: false` as real-provider intent and requires both
-`tls.enabled` and `oidc.enabled`, unless the visibly unsafe local/trusted-mesh bypass is
-explicit. Empty provider/model and null token ceilings emit no flags; explicit ceilings are
-positive. Scheduling controls are empty by default and map directly to pod-spec topology
-spread, affinity, node selector, and toleration fields. The comprehensive production
-fixture pins external verified Redis, TLS/OIDC, provider/model, finite run/team ceilings,
-and hostname spreading; Kind remains mock and secret-free.
+Helm chart 0.3.0 has three explicit real-provider postures: in-pod TLS + OIDC;
+edge-terminated TLS + OIDC (`security.tlsTerminatedUpstream`, pod TLS off for a
+ClusterIP h2c backend); and the visibly unsafe local/trusted-mesh bypass. The gate is
+enforced twice and independently — `values.schema.json` and the
+`mecak8s.validateProviderSecurity` helper — so a `--skip-schema-validation` install
+still fails closed. The edge value is an operator attestation the chart cannot verify;
+the operator contract and its cleartext-bearer-token exposure are ADR 0278's.
+Chart-owned annotations (`mecatl.stacklok.com/unsafe-real-provider`,
+`.../tls-terminated-upstream`) are `omit`-ed from `podAnnotations` before merge, so a
+release cannot forge or clear its own posture stamp. Empty provider/model
+and null token ceilings emit no flags; explicit ceilings are positive. Scheduling controls
+are empty by default and map directly to pod-spec topology spread, affinity, node selector,
+and toleration fields. The comprehensive production fixtures pin external verified Redis,
+both secure transport options, provider/model, finite run/team ceilings, and hostname
+spreading; Kind remains mock and secret-free.
 
 ---
 
@@ -162,6 +170,147 @@ optional `Adoption` metadata containing the source ID and a caller/source/reques
 ID makes a lost-response retry return that complete snapshot. Foreign and absent sources are
 both `ErrNotFound`; the source is never reopened, relabelled, or saved. There is no bulk,
 automatic, or client-transcript-upload path.
+
+---
+
+## Dedicated session debugger
+
+A debug session is a normal durable conversation for the analyst, but its authority is
+not normal. `engine/session/kind.go` (`SessionKindDebug`) persists an exact
+`DebugTargetID` plus `DebugTargetIncarnation` relationship. `internal/adapter/server/service.go`
+(`validateDebugCreate`) requires the no-fs profile, empty workspace, no carryover,
+schedule, or client-MCP relationship, and a distinct target ID. Target authorization
+uses the ordinary ownership check but maps absent and unauthorized targets to the same
+not-found result.
+
+Composition's `internal/app/build.go` (`debugSessionEngineFactory`) constructs a fresh
+per-session engine containing target-bound `InspectSession` plus only direct tools from
+explicitly selected server-global MCP names. `internal/adapter/mcp/mcp.go`
+(`Manager.SelectedTools`) borrows the shared manager without reconnecting or owning its
+lifecycle and requires exact equality with the persisted tool-name ceiling; unknown,
+disconnected, tool-empty, added, removed, or renamed-on-restart selections fail closed, and
+meta-tools are never part of this view. `internal/adapter/sessiondebug/permission.go`
+(`PermissionPolicy`) delegates every call to the base deployment policy first, preserving
+Deny and configured Ask provenance. It grants `InspectSession` only as a lower debugger floor;
+for selected MCP calls it revalidates the target incarnation and, when enabled, stable
+issuer+subject owner/principal identity, turns every otherwise-admitted call (including a
+positive read-only hint) into a fresh interactive Ask, denies all selected calls headlessly,
+and never learns an Allow Always verdict. `internal/adapter/sessiondebug/mcpguard.go` (`BindSelectedMCP`) repeats the same check
+at execution after an approval wait. The durable server names, exact tool ceiling, and
+non-projectable target-incarnation fingerprint and the session's persisted opaque 128-bit
+`crypto/rand` `IncarnationID` live on `session.Session`/`sessnap.Snapshot`;
+none carries URLs, headers, or credentials. `internal/adapter/sessiondebug/sessiondebug.go`
+(`New`) binds `InspectSession` to the trusted target; its arguments select only
+`status`, `transcript`, `activity`, `performance`, `network`, `related`, `delegation`,
+`history`, or `manifest`, never a session ID. Snapshot
+status and paged transcript use the authoritative snapshot. Transcript rows project
+model-visible `Message.Parts` and preferred `ToolResult.Parts`; bounded textual and
+structured values remain visible, while binary/media bytes become explicit metadata-only
+omissions. Per-field truncation, item omission, page scan completion, and overall projection
+completion are separate fields, so `complete: true` never masks missing model-visible data.
+If a projected row cannot fit, `omitted_rows` reports its index, role, projected byte size,
+and reason while `next_offset` still advances past it; pagination can never stall on one
+oversized row. Text repaired by `session.ToValidUTF8` is marked on its field and page and
+makes the projection incomplete. Tool arguments remain `json.RawMessage` rather than passing through `any`, preserving JSON
+number tokens larger than 2^53; malformed JSON or UTF-8 is explicitly marked omitted.
+EventLog activity and aggregate performance are non-authoritative, optional, and potentially
+incomplete. Performance therefore keeps `complete: false`; `scan_complete` only reports that
+an available log reached EOF. `internal/adapter/llmresilience/llmresilience.go`
+(`logAttemptDecision`) also builds one `session.NetworkAttemptPayload` from the same sanitized
+decision and metadata classification used by diagnostics. When
+`agent.Deps.EnableDurableEvidence` is enabled, a run-local `port.AttemptObserver`
+returns it to `engine/agent/loop.go` (`runTurn`), which emits the log-only
+`network.attempt`; the server relay persists it through the ordinary EventLog path. The
+disabled/default path does not install the observer context. The
+adapter never appends directly. It has no public protobuf projection; every ordinary client
+relay suppresses it, including live, durable read-back, and direct Team gRPC/HTTP streams,
+leaving the target-bound `InspectSession` view as its only
+model-visible path. This evidence contract is [ADR 0255](../adr/0255-sanitized-network-attempt-evidence.md). The payload retains target/run/turn correlation,
+attempt/max, elapsed, backoff, retry disposition, stream progress, decision and suppression,
+a closed failure class (`dns`, `connect`, `tls`, `timeout`, `connection_reset`,
+`stream_idle`, `breaker`, `rate_limit`, `http`, `provider`, or `unknown`), validated statuses,
+and a closed correlation kind plus a domain-separated, fixed SHA-256 digest. Raw provider codes,
+raw correlation IDs, errors, URLs, queries, headers,
+bodies, prompts, tool arguments, cookies, credentials, and environment values never enter it.
+The `network` view pages 50 rows while scanning at most 10,000 events and explicitly reports
+availability, completeness, truncation, and the absence of successful-attempt and DNS/TCP/TLS
+phase timing. Transcript pages contain at most 20 rows, activity 100,
+performance 50 turns/10,000 scanned events, and every response is bounded to 64 KiB after
+canonical fencing and framing neutralisation.
+
+The loop also emits `session.EvRequestManifest` once per turn when the explicit
+`agent.Deps.EnableDurableEvidence` gate is enabled, after `buildRequest` and
+`maybeCompact` have produced the exact final `port.LLMRequest`, immediately before `runTurn`
+invokes the provider. Composition enables the gate exactly when its relay has a durable
+EventLog, for main, per-session, and child engine shapes; a live `port.EventSink` is not a
+durability proxy. The disabled/default path skips the manifest builder entirely, including
+JSON encoding, counting, maps, and slices. `engine/agent/request_manifest.go` canonical-JSON encodes the neutral
+message slice only to calculate message count/bytes. Prompt components retain kind,
+provenance, and byte count, but no content digest: a digest would create an offline oracle.
+`prompt.AssembleWithManifest` classifies built-in project/soul/memory/rules/user-model
+assemblers without parsing rendered text; an arbitrary existing assembler still runs once and
+is honestly tagged `custom`/`unknown`. Tool names preserve the final request order, and each
+observed decision carries only a closed `catalog`, run `overlay`, or canonical MCP source label.
+Tool projection decisions are derived only at gates the loop observes: advertised,
+progressive-disclosure body hidden, mode filtered, carried-authority filtered, shell mount
+unavailable, or catalog entry shadowed by a run overlay. A profile-specific catalog that never
+contained a tool supplies no invented exclusion reason, and no adapter-private MCP discovery or
+mount failure is guessed. Payload values contain no prompt/message bodies, tool
+schemas/descriptions/arguments, reasoning blobs, URLs, headers, credentials, or
+provider-private content. The relay persists the event before the shared debugger-only
+predicate suppresses it from normal live, replay, subscription, direct-Team, and ACP surfaces.
+`InspectSession` projects manifests with bounded pagination. Its `history` catalog separately
+addresses the current snapshot, every retained `compaction.archive`, and the EventLog
+reconstruction with target-bound history handles; pages reuse the transcript projection, so
+pre-compaction tool calls/results remain visible without mutating the snapshot. `delegation`
+uses only typed subagent, parallel, team, and schedule payloads, including task, finding,
+disposition, error-round, stop, and parent CallID-to-ToolResult facts; it never parses prose or
+claims causality. Status labels snapshot counters as `latest_run_counters` and cumulative
+snapshot usage separately, while its EventLog lifetime aggregate groups RunID-bearing runs
+(legacy terminal boundaries otherwise) and sums TurnEnd usage exactly once.
+
+`related` prefers `port.SessionLineageReader`, requiring both the root ID and its
+incarnation, and supplements it with typed parent-event evidence only when the event carries
+the constructed child's incarnation. It returns only deterministic target-bound SHA-256 scope
+handles containing the child incarnation. Durable rows are keyed by `(session ID, incarnation)`, so recreation preserves
+old tombstones beside the current retained row while descendants match only the exact
+parent/origin incarnation. Legacy ID-only edges and events degrade without an inspectable
+handle rather than guessing. A selected child scope
+returns only its descendants, never sibling branches/members. Every scoped call rescans
+at most depth 8 / 500 records and revalidates root/child incarnation, each typed edge, the
+deployment ownership posture, and retained state. Enforced ownership compares only stable
+issuer+subject identity; changed display/grant metadata remains valid, while ownership-disabled
+deployments omit owner filtering consistently. Pruned, inaccessible, not-retained, never-produced, and absent labels are
+emitted only from supporting evidence; unsupported/unavailable and scan/retention/projection
+completeness remain explicit. Foreign rows never expose raw IDs.
+
+This evidence and approval boundary is [ADR 0257](../adr/0257-session-debugger-hardening.md),
+with cryptographic incarnation and edge semantics superseded by
+[ADR 0258](../adr/0258-cryptographic-session-incarnations.md); ADR 0257 supersedes ADR 0256 where stricter.
+
+All evidence is repaired to valid UTF-8 and wrapped with `governance.FenceUntrusted` before it
+reaches the model.
+
+`applyDebugSessionPosture` adds the trusted stable-prefix contract: inspect status
+first, prefer transcript truth, treat target content as hostile, distinguish evidence
+from hypotheses, and never mutate/resume/approve/cancel/steer the target. The debug
+session gets its own no-fs environment and ordinary lifecycle; no operation loads the
+target into a run-entry path or acquires its lease. On restart,
+`Service.rehydrateSession` recognizes the durable kind/relationship and calls the
+dedicated factory. Invalid no-fs metadata, a missing factory, or unavailable target
+fails closed rather than using the shared or generic no-fs engine.
+
+The first genuine user turn is ordered objective → required InspectSession workflow →
+expected report sections → delimited debugger-runtime context. The objective is the default
+or custom `--prompt`; the runtime block is compatibility/transport context, never target
+evidence. A safely classified lookup failure leaves unavailable fields but does not block
+that turn or expose the raw error. Durable authority, safety, and source hierarchy remain in
+`applyDebugSessionPosture`'s stable Role rather than dynamic runtime text. The ordinary padded header carries
+amber/bold `DEBUG target #<digest>` immediately after `mecatui`; width pressure removes
+model/mode/server detail before that complete identity, `/session` shows and copies the
+safely quoted exact target ID, and the target-derived title remains. Binding-breaking
+controls stay disabled. Live target following, raw audit/tool-record inspection, packet capture,
+raw logs/pprof, and support bundles remain out of scope. See [ADR 0254](../adr/0254-session-debugger-admin-transport.md) and [ADR 0255](../adr/0255-sanitized-network-attempt-evidence.md).
 
 ---
 
@@ -543,10 +692,11 @@ backoff or a closed suppression reason. It never logs `err.Error()`. Optional me
 rides `engine/port/attemptmetadata.go` (`ProviderErrorMetadataError`) as primitive
 structural getters so independently versioned provider modules do not depend on a new
 engine-owned value type. `internal/adapter/llmresilience/llmresilience.go`
-(`attemptMetadataArgs`) assembles and emits it only when the whole value validates:
-HTTP/in-band status, bounded printable provider code, and one closed-kind bounded
-correlation ID. Error bodies, prompts, URLs, headers, and credentials never enter
-these fields.
+(`attemptMetadata`) accepts the structural carrier only when statuses and the closed correlation
+kind are valid and arbitrary values are bounded. Diagnostics retain only numeric HTTP/in-band
+status and the closed correlation kind with the same domain-separated SHA-256 digest used by
+`network.attempt`; raw provider codes and raw correlation IDs are omitted. Error bodies, prompts,
+URLs, headers, and credentials never enter emitted fields.
 
 The three provider modules attach only safe facts exposed by their wire protocols:
 `provider/openai/stream.go`, `provider/openaichat/openaichat.go`, and
@@ -6495,6 +6645,130 @@ yet (a replay consumer is Phase 3b). See `CLOUD-NATIVE.md` (Phase 3, ledger row 
   `engine/adapter/memstore/memstore_test.go` (`TestEventLogAppendRead`,
   `TestEventLogReadEarlyBreak`).
 
+### Durable replay-then-follow: `WatchSessionEvents` (issue #821, ADR 0250)
+
+The TRANSPORT over the `port.CursorEventLog` seam: one operation that replays a
+session's durable log from a position, announces when it is caught up, and then
+follows the tail. See `0250-durable-cursors-and-watch.md`; the resources it
+allocates are `0027-cloud-native.md` List 1 rows 65–66.
+
+- **Why a third read path exists.** `port.EventLog.Read` is a complete, ordered,
+  durable replay with NO position and NO follow; `Service.Subscribe` (behind
+  `StreamSessionLive`) is live but process-local, in-memory, and DROPS for a slow
+  subscriber. "Catch up, then watch" composed from those two has a window between
+  the calls in which an append is silently lost, and no test of either half alone
+  can see it. Both legacy endpoints are UNCHANGED — a bounded replay that ends is
+  what several clients depend on.
+- **The delivery envelope is `{event, cursor, phase}`,** and `phase` is an OPEN
+  STRING (`replay`/`live`/`gap`), the `EvNoProgress`/`StopBudget` discipline. `Event`
+  is nil on a PHASE-ONLY frame; there are exactly two — the single replay→live
+  boundary marker and every gap.
+- **A gap is a phase, never a `session.Event`** (decision 5). The domain event
+  taxonomy, the proto `Event` message, and the kind-parity gate gain nothing;
+  `internal/adapter/server/cursor_event_log_surface_test.go`
+  (`TestADR_0250_GapAddsNoEventKind`) asserts that absence structurally, because
+  "just add an `EvGap` so clients can render it" would silently relocate a delivery
+  concern into the domain.
+- **The read is TWO-PHASE, and that is load-bearing.** `internal/adapter/server/watch.go`
+  (`pumpWatch`) drains with `Follow:false`, emits the boundary frame, then re-reads
+  with `Follow:true` from the exact cursor the first read stopped at.
+  `port.LogRecord.Live` marks records that arrived after a read caught up — but only
+  once such a record ARRIVES, so on an idle or finished session a client keyed on
+  that flag waits forever to learn it is caught up. Splitting the read loses nothing
+  (the cursor makes the seam exact: an append landing between the phases is
+  delivered by the follow) and is pinned by
+  `TestSDKServerEnablers_Scenario7_BoundaryFrameDoesNotWaitForAnEvent` plus a
+  cross-phase cursor-uniqueness assertion in
+  `TestSDKServerEnablers_Scenario7_ReplayThenFollow` (which catches the
+  duplicate-at-the-seam a follow resuming from the ORIGINAL cursor would produce —
+  a mutation the recomposition assertion alone missed).
+- **Slow watchers are TERMINATED, not dropped** (decision 7). Delivery is decoupled
+  from the log read by a bounded buffer (`watchDeliveryBuffer` 512) plus a grace
+  (`watchDeliveryGrace` 5s); a consumer that cannot keep up gets `ErrWatchLagging`.
+  Dropping is what `Service.Subscribe` does and stopping it is the entire point of a
+  durable cursor. **Neither terminal error carries a server-side cursor**, and that
+  is deliberate: the server's furthest-QUEUED position is not the client's, so
+  resuming from it would skip exactly the buffered envelopes the client never
+  received. The client's own last-received envelope is the only correct resume
+  point.
+- **Cursor assignment is at the ONE persistence chokepoint** (AC7.8):
+  `internal/adapter/server/service.go` (`appendEvent`) type-asserts the cursor seam
+  and calls `AppendEvent`. The returned cursor is DISCARDED — readers get positions
+  from `ReadAfter`, which is what lets a watcher in another process follow the same
+  append; remembering it locally would create a second source of truth only the
+  appending replica could see. "Exactly one append per event" means one append per
+  appended RECORD: `RunEventRecorder` still coalesces streaming text deltas, so a
+  turn of N delta events legitimately becomes one record. The loop stays
+  storage-agnostic — `engine/agent` never imports `port.CursorEventLog`, exactly as
+  it never imports `port.EventLog`.
+- **The append-gap response has two reachable tiers** (decision 6), both in
+  `noteAppendGap`: one best-effort durable `AppendGap` (cross-process — a watcher on
+  another replica sees a `gap` phase), then `faultWatchers` (guaranteed,
+  process-local — attached watchers terminate with `ActivityGapError`). The run
+  CONTINUES either way: `appendEvent` returns the original error and its caller still
+  WARNs once per run. `noteAppendGap` adds NO diagnostics line of its own — the
+  append failure is already reported, a landed marker is owned by the `gap` phase,
+  and the residual is documented rather than logged twice. **The guarantee is
+  deliberately weaker than issue #821 asked for**: a failed append consumed no
+  position, so it leaves nothing for another process to observe, and a total backend
+  outage plus process loss leaves an UNDETECTABLE gap. Do not restate it as an
+  absolute.
+- **Ownership is checked EAGERLY** in `watchLog`, via the same `GetSession` question
+  `StreamSessionEvents` asks, before any envelope is yielded — a watch is at least as
+  revealing as a read, since the durable log holds the whole transcript. The
+  classification registry row is `WatchSessionEvents` (`KindCallerOwned`).
+- **Both transports consume ONE service method,** which is what makes their envelope
+  sequences identical rather than merely similar: the gRPC handler and the NEW SSE
+  route `GET /v1/sessions/{id}/watch` are framing only.
+  `TestSDKServerEnablers_Scenario7_WatchTransportParity` compares them
+  envelope-for-envelope. The legacy `GET /v1/sessions/{id}/events` frame stays a BARE
+  Event (a separate route, not a query-parameter widening — overloading one path
+  would change an existing endpoint's termination behaviour).
+- **A stream-terminal error is framed as SSE, not as bare JSON.** Both SSE routes emit
+  it through the ONE `writeSSEError` helper as `event: error` plus a `data:` line. The
+  prefix is load-bearing rather than cosmetic: the EventSource grammar splits a line
+  into `field: value` at the first colon, so a bare `{"code":…}` parses as the
+  unrecognised field `{"code"` and is DISCARDED — the client sees the stream fall
+  silent and cannot tell a resumable lag from a delivery gap from a clean end, which is
+  the exact failure ADR 0250 exists to abolish, reintroduced at the transport. The
+  `event: error` tag lets a client ROUTE the frame instead of shape-sniffing it against
+  a `WatchSessionEventsResponse` whose fields are all optional. Payloads stay per-route
+  (the watch carries the stable `code`, the replay route carries `error` alone).
+- **A cursor is SCOPED to the `run_id` it was issued under.** Under a run filter the
+  watch's internal position (`resumeFrom`) advances over the records the filter DROPPED
+  — deliberately, so the follow does not re-read them — which means the client's cursor
+  sits past events another filter would have delivered. Resuming with a different
+  `run_id`, or none, therefore skips them with no signal. This is a CONTRACT statement
+  on both transports, not a code fix: tracking a last-DELIVERED cursor instead would
+  narrow the window without closing it, and would cost the follow its
+  no-re-read property.
+- **A gap frame is delivered WHATEVER the filter says.** A failed append left no record,
+  so there is nothing to attribute to a run; filtering it would hide a real gap from
+  exactly the client that asked to be told about its run.
+- **The client-facing gap terminal carries no backend prose.** `ActivityGapError` is a
+  bare sentinel: the cause is a raw store error (a Redis dial address, a jsonlstore
+  path) and this value reaches the client as a gRPC status message and an SSE `error`
+  field — the same exposure `GetSession` already refuses under ownership enforcement.
+  The cause is not lost: it goes to the durable gap marker (tier 1) and to the
+  recorder's append-failure WARN, so the operator keeps every byte and the client gets
+  the stable `activity_gap` code, which is the whole of what it can act on.
+- **`watchLog` refuses a delegation-child session id.** Safe TODAY by absence of data
+  (every `NewRunEventRecorder` site passes a top-level relay id, so a child has no
+  durable log), but the guard makes the invariant ENFORCED rather than emergent: a
+  future per-child-observability feature recording under child ids would otherwise turn
+  a watch into a direct child-transcript read (gauntlet #7).
+- **Cursor faults are not HTTP statuses on the watch route.** `watchLog` validates the
+  feature, the seam and ownership eagerly, but the cursor is decoded inside
+  `log.ReadAfter` — after the `200` is committed — so over SSE a malformed or expired
+  cursor arrives as the stream-terminal frame. gRPC is unaffected (`toStatus` fires
+  before any `Send`). The `400`/`409` rows stay registered because they are the right
+  mapping wherever a cursor fault is raised before the first byte.
+- **Feature identifier**: `watch_session_events` in
+  `internal/adapter/server/features.go`. It answers "does this BUILD implement the
+  watch?", NOT "will a watch succeed here" — the latter also needs the wired log to
+  implement the cursor seam, which is a deployment fact reported by
+  `watch_unsupported`.
+
 ### Durable event log — consumers (cloud-native Phase 3b)
 
 The CONSUMERS of the 3a log: a non-destructive compaction archive and a
@@ -7045,7 +7319,9 @@ engine-port or proto widening): `client.ReconnectLiveCmd`/`reconnectLiveLoop`
 in `cmd/mecatui/client/backoff.go`) that, per attempt, (a) drains the durable
 catch-up via the EXISTING `StreamSessionEvents` full replay (recovering any
 fire-result delivery note emitted during the gap — NO `from_seq`/`log_seq` cursor)
-and (b) re-opens `StreamSessionLive`. Exactly-once is a CLIENT-side FireID dedup,
+and (b) re-opens `StreamSessionLive` with a fresh, bounded 10-second context per
+attempt, so a wedged gRPC transport fails into the existing retry path rather than
+pinning the reconnect loop forever. Exactly-once is a CLIENT-side FireID dedup,
 not a server ordinal: the ui's `seenFireIDs` set (keyed on `DeliveryNoteMsg.FireID`,
 stable across replay + live) suppresses a note that arrives via BOTH the catch-up
 and the re-opened live feed — the single dedup site is `applyDeliveryNote`
@@ -7878,6 +8154,232 @@ fragment under a NEW `message_id` (already-drained sends are never re-sent; a
 late `none_pending` ack means the drain won — the steer shipped). The queue is
 the single correlation source — no separate burn maps; the watermark derives
 from the tail send.
+
+
+## Client-provided MCP on session creation (issue #821 Scenario 9, ADR 0237 / ADR 0248)
+
+`CreateSessionRequest.mcp_servers` (+ the HTTP `mcp_servers` body field) mounts a
+caller's streaming-HTTP MCP servers for one session's lifetime. Two properties are
+load-bearing and both were tightened after review on PR #903.
+
+**One validator, two callers.** `mcp.PartitionClientServers` (`internal/adapter/mcp/clientmcp.go`)
+is the single classifier: the ACP `partitionClientMCP` is now a thin field mapping onto it, and
+`Service.ClientMCPFromWire` is the wire's only entry. AC9.6 exists because a second validator on
+the wire path would be the obvious way to implement this and would drift from ACP's within a
+release. `command` is carried on the wire ONLY so a command-shaped entry classifies as stdio and
+is rejected AS stdio; nothing ever executes it.
+
+**Order inside `ClientMCPFromWire` is classify-then-gate** (the ordinary 400-before-501 shape).
+Classification runs unconditionally, so a `stdio`/`sse` entry is `InvalidArgument` naming the
+transport on EVERY deployment. Reversed, "No stdio MCP, ever" would only be *observable* where
+client MCP happens to be permitted — an invariant contingent on a config flag is not an
+invariant. `TestInvariant_no_stdio_mcp_ever` asserts both postures for exactly this reason.
+
+**The listener threshold is UDS-with-HTTP-disabled, and it is deliberately STRICTER than
+`workspaceAuthorityForListeners`.** Both are deployment-scoped per ADR 0237's Decision (one
+`*Service` backs both listeners, so no per-connection answer), but they draw the line in
+different places: workspace authority accepts loopback TCP as 0237's shipped precedent, while
+`clientMCPOnCreateForListeners` requires `grpcUnixSocket != "" && httpAddr == ""`. A workspace
+path selects among roots the operator already owns; an MCP endpoint plus its headers points the
+daemon's OUTBOUND NETWORK authority at a host the caller names and has it carry the caller's
+credentials there. Loopback TCP is reachable by every local process and local user account
+(browser pages included, for HTTP); a UNIX socket is guarded by filesystem permissions on the
+owner-only directory `listenUnixSocket` creates. AC9.2 says "over a TCP listener is refused" and
+ADR 0248 already publishes "only reachable on a UDS listener" — the first implementation reused
+the loopback-tolerant predicate and therefore accepted the field on default `mecated`.
+The two tests are asymmetric because the listeners are: HTTP is always TCP (`net.Listen("tcp",
+...)`) so an empty `--http-addr` is its only disable path, while gRPC has NO disable path, so its
+test is the POSITIVE `grpcUnixSocket != ""` — an empty `--grpc-addr` is a WILDCARD bind.
+`TestSDKServerEnablers_Scenario9_ClientMCPIsStricterThanWorkspaceAuthority` pins the divergence
+so a later "unification" of the two derivations fails loudly.
+A CONSEQUENCE worth stating: the HTTP surface can never accept the field on `mecated`, because
+serving HTTP at all is a TCP listener. The HTTP adapter still implements it — the policy is
+composition-injected, so another root may permit it — but no `mecated` topology reaches that path.
+
+**Mounting is ALL-OR-NOTHING on the wire, and the split is by CALLER, not by layer.**
+`mcp.NewManager` connects concurrently, keeps the servers that answered, drops the rest with an
+operator WARN, and errors only when EVERY one fails — so before this, a wire client could receive
+an ordinary session id for a session missing some or all of its requested tools, with nothing in
+the response distinguishing that from success (the WARN goes to the operator's log, which the
+client cannot read). That best-effort behaviour is RIGHT for ACP, whose peer is the operator's own
+editor and for whom a degraded session beats none, so it stays. The fix is a report-and-decide
+seam instead of a behaviour change one layer down: the factory populates
+`SessionEngineResult.MountedClientMCP` with the names that actually CONNECTED, and
+`verifyClientMCPMounted` fails the create when the wire asked for more. `clientMCPStrict` is set
+by `WithClientMCP` — the wire's sole entry — so the two travel together rather than as a flag a
+handler could forget. An EMPTY report with servers requested FAILS: a guarantee a factory can opt
+out of by omitting a field is not a guarantee. The check runs before any id is minted and calls
+the same `closeFn` every other rejection in `createPerSessionEngine` does, so a refusal leaks
+neither a connection nor a registry slot.
+`ErrClientMCPUnreachable` (`client_mcp_unreachable`, `Unavailable` / 503) is deliberately a
+DIFFERENT code from `ErrClientMCPUnsupported` (`client_mcp_unsupported`, `Unimplemented` / 501):
+the first is transient and the client's own endpoint to fix, the second is permanent and means
+stop asking. Collapsing them would leave an SDK unable to tell a misconfigured deployment from a
+sleeping sidecar. The report is scoped to CONNECTION only — a connected server whose tool name is
+shadowed by a server-global tool keeps counting as mounted, since that is an operator-side
+collision with its own WARN, and conflating the two would let an operator's global MCP config fail
+an unrelated client's create.
+
+**Headers are secret-shaped** (AC9.5): never logged, never projected into an event, never in an
+error. The proto `McpServerInfo` carries no headers field at all, so `ListMcpSources` is
+structurally incapable of leaking them. The unreachable-server error is the one site that reports
+per-server detail AFTER the specs crossed into the factory, which makes it the likeliest place for
+a header to be appended while "helpfully" diagnosing a failure — it names server names only, and
+`TestSDKServerEnablers_Scenario9_McpHeadersNeverLogged` has a dedicated arm for that path (a
+mutation leaking `spec.Headers` there passed every other arm).
+
+**Server names are validated at the classifier, not at connect.** `mcp.Connect` rejects `""` and
+`"__"`, but at CONNECT time inside the best-effort manager, so a malformed name surfaced as
+"server unreachable" — the wrong diagnosis, and (pre-all-or-nothing) a 200 with the server
+missing. `validateClientServerName` enforces the same rules
+`server.validateDebugMCPNames` applies to the sibling `debug_mcp_servers` field — non-empty,
+<= 64, `[A-Za-z0-9._-]`, no `"__"`, unique per request — because both feed the SAME flat tool
+namespace. Three things the connect-time check never covered: DUPLICATES (two `notes` entries both
+connect, then collide in `tool.Catalog.Register` with one set dropped on a WARN), the bytes that
+reach the provider-visible tool schema, and NAMESPACE FORGERY (`namespacedName` is raw
+concatenation `"mcp__" + server + "__" + tool`).
+**An honest residual stays:** `github` is a legal name, so a client server named `github` exposing
+`create_issue` registers as `mcp__github__create_issue` and can inherit an operator permission or
+guardrail rule written for the real one — reachable whenever the global `github` is absent or does
+not expose that tool, since global-wins fires only on an exact full-name collision. Nothing at this
+layer can distinguish naming from impersonation, because the operator's namespace and the client's
+ARE the same namespace. It is recorded in `validateClientServerName`'s doc comment, it is a further
+reason the field is gated to a UNIX-socket-only deployment, and closing it properly means prefixing
+client servers into their own namespace — a wire-visible change to every tool name a client sees,
+which is its own ADR.
+
+**Credentials may ride a URL, so two channels are closed and a third is redacted.** The
+header-secrecy work covers `ServerConfig.Headers`; it did NOT cover `URL.User`, which `net/http`
+promotes to a `Basic Authorization` header automatically — a fully functional credential path
+inheriting none of the header protections. `ValidateClientURL` now REJECTS userinfo outright and
+points at `headers`. A query-string token (`?access_token=`) cannot be rejected (it is
+syntactically identical to a benign parameter), so it is REDACTED instead: `mcp.RedactURL` renders
+`scheme://host/path`, dropping userinfo, the whole query, and the fragment — the query as a UNIT,
+because a parameter-name denylist misses the next spelling. It is exported and used by BOTH
+`ValidateClientURL`'s messages and composition's unreachable-server WARN in `internal/app`, since a
+second local copy is how two redactors drift. The `url.Parse` failure path echoes neither the raw
+string nor the `*url.Error` (which embeds the URL) — only the unwrapped inner reason.
+
+**The URL leaks through the ERROR too, which the first fix missed.** Redacting `sc.URL` at a log
+site is NOT sufficient: the `err` logged beside it embeds the complete request URL independently.
+`net/http`'s `*url.Error` carries it, and the MCP SDK formats it into its own message text
+(`rejected by transport: Post "http://host/mcp?access_token=..."`), so it arrives as a STRING inside
+a wrapped message — `innerURLError` cannot reach it and no error-chain approach can. Hence
+`mcp.RedactText` (regex-scrub every `scheme://` substring through `RedactURL`) and
+`mcp.RedactError`. This is why the redaction is a TEXT operation rather than a URL one: the
+sensitive value can appear anywhere in a message composed by a layer we do not control, including a
+future SDK version that words it differently.
+
+**The redaction moved to the SOURCE after a second review pass, because per-caller redaction did not
+hold.** The first version of this fix asked each consumer to call `RedactError` and documented that
+contract on `NewManager` ("the consumer owns its own log site"). Of the three in-tree `NewManager`
+callers, one — the inline agent-MCP callback in `agentdefs.go` — logged the raw URL *and* the raw
+error, and the grep-based audit that was supposed to find it missed it (the grep keyed on lines
+containing "mcp", which that call site's `err` line does not). One of three consumers leaking is
+evidence the CONTRACT was the wrong shape, not that the consumer was careless. So:
+
+- `Connect` redacts at its single exit (`RedactErrorValue`), making every downstream safe by
+  default — `NewManager`'s callback, `NewManager`'s returned error, and the direct callers that pass
+  the error onward (`internal/app/mcplogin.go` returns it to the CLI).
+- `RedactErrorValue` renders redacted while PRESERVING the chain via `Unwrap`, because callers
+  legitimately branch on `ErrOAuthLoginRequired`/`ErrOAuthUnavailable` and must keep doing so. An
+  error with nothing to redact is returned as-is, so the common path adds no wrapper.
+- `NewManager` replaces the `ServerConfig` handed to `onError` with `safeCallbackConfig` — URL
+  redacted, Headers dropped. That is a SECOND credential channel `Connect`'s error redaction cannot
+  reach, because the config is the caller's own value travelling back to it; a callback logging
+  `sc.Headers` leaks a bearer outright. Names survive, which is what a callback actually needs.
+- The app-side log sites keep their explicit `RedactError`/`RedactURL` calls as a deliberate SECOND
+  layer, mirroring the "keep BOTH" discipline AGENTS.md records for the UTF-8 semantic repair plus
+  mechanical backstop. A credential leak is worth two independent guards.
+
+The layers are separately tested, so a mutation removing any ONE of them fails a test naming that
+layer rather than passing on the strength of another.
+
+The fix is ALSO applied three ways at the logging layer, because the two originally-reported log
+sites were not the only ones:
+
+- The two `internal/app` client-MCP WARN sites (`onError`, and the every-server-failed aggregate)
+  call `mcp.RedactError(err)` explicitly. They log an error that crosses OUT of the mcp package as
+  a value, so no in-package decoration can reach them.
+- Four sites INSIDE the mcp package log a transport error — resource listing and prompt listing
+  (both inside `Connect`), `logRefreshErr`, and the reconnect failure — and every one can carry a
+  credential-bearing URL. Rather than dress each call, `Connect` and `NewManager` wrap their
+  `port.Diagnostics` with `redactingDiagnostics` (scrubbing the message and every string/error
+  attribute), so a log site added later is safe BY DEFAULT rather than leaking by default. The
+  `*Server` inherits that sink, so reconnect-time logging is covered too.
+  `TestRedactingSinkIsWiredAtTheEntryPoints` asserts the wiring white-box, because the earlier
+  version of that test drove `redactDiagnostics` directly and kept passing when the wrap was
+  deleted from the entry points.
+- `clampErr` REDACTS BEFORE CLAMPING. Order is load-bearing: clamping first can cut the middle of a
+  query string and leave a partial credential in the retained prefix, which the sink wrapper then
+  cannot recognise as a URL to scrub. The test fixture is sized so a 200-byte clamp lands INSIDE
+  the token, and it asserts no 6+ character prefix survives — an earlier fixture put the token
+  entirely past the cut, so truncation alone passed it.
+
+Note this redaction is NOT client-only. Operator MCP URLs are "token-bearing" in `internal/cliconfig`
+too, so scrubbing at the package sink protects both, and a redacted URL still carries
+scheme/host/path — enough to diagnose a connection failure without the credential.
+
+**Client endpoints may not redirect; operator endpoints still may.** `newMCPHTTPClient` set
+`CheckRedirect` only on the OAuth branch, so a client-supplied endpoint inherited Go's default:
+up to 10 hops to any host. Since `ValidateClientURL` is a shape allowlist with no IP-range
+screening, a vetted `https://evil.example/mcp` could 302 the daemon to
+`http://169.254.169.254/latest/meta-data/` — the sharper half of that gap, because the validator
+vets the URL GIVEN and nothing vetted the next one. `ServerConfig.NoRedirects` is set by
+`PartitionClientServers` and honoured in `newMCPHTTPClient`. It is scoped to the CLIENT path
+deliberately: an operator's URL is one they chose and may legitimately redirect to a canonical
+path, their credentials are already origin-scoped by `headerRoundTripper`, and disabling it there
+would be an unrequested change to a shipped path. `TestOperatorSpecKeepsDefaultRedirects` pins that
+scope from the other side. The remaining residual — no IP-range screening, no DNS pinning, so blind
+SSRF from the daemon's network position and loopback port probing by an already-trusted local
+caller — is documented on `ValidateClientURL` itself, including the pointer to the stronger
+standard (`session.ValidateMediaURL` + `ValidateResolvedIP`, used by `FetchMcpResource`/`webfetch`)
+that closing it properly means adopting.
+
+**`ClientMCPGrant` makes the wire invariant unforgeable.** `WithClientMCP` and the `CreateSession*`
+entries are all exported, so any in-process caller could previously mint the option from raw specs
+and bypass both the classifier and the deployment gate — the AC9.6 source-grep test was the
+symptom of a type that would not carry its own invariant. `ClientMCPFromWire` now returns a
+`ClientMCPGrant` whose `specs` field is unexported, so it is the only mint; a `ClientMCPGrant{}`
+built elsewhere is EMPTY, and `WithClientMCP` treats empty as a NO-OP (arming neither the mount nor
+strict mode) rather than as a strict-mode session with nothing to mount, which would fail every
+create. The grep test's structural half (an AST ban on a second `mcp.ValidateClientURL` call site
+in `acp`/`server`) is kept and is load-bearing; its literal `== "stdio"` scan is kept but
+explicitly DEMOTED in-comment to a weak backstop, since a reformat or a `switch m.Type` rewrite
+walks past a byte scan.
+
+**The HTTP create body decodes strictly.** `createSession` used a bare
+`json.NewDecoder(...).Decode`, so `{"mcpServers": [...]}` — the protojson spelling a gRPC-side or
+generated client naturally writes — was DISCARDED, returning 201 for a session with none of the
+requested servers: the partial-mount failure mode again, on the easiest transport to hit it from,
+with no signal at all. `DisallowUnknownFields` plus the decoder's own error detail (it names the
+offending field) makes it a self-diagnosing 400. This is a deliberate BEHAVIOUR CHANGE — a request
+with a stray field used to succeed — accepted because the alternative is a silent drop, and it
+matches `decodeLearningJSON`'s existing strictness on the same handler set. Noted for clients in
+`docs/usage/http-sse-api.md`.
+
+**`MaxClientServers` bounds fan-out, not wall-clock.** The original rationale said the factory
+connects SERIALLY so an uncapped count would stall a create for count x timeout. `mcp.NewManager`
+connects CONCURRENTLY under `maxConnectConcurrency` (16, above the cap of 8), so the worst-case
+stall is about ONE `ClientConnectTimeout`. The cap is still right — it bounds the goroutine and
+connection blast of one create — but the false premise had been copied into two test failure
+messages and the ACP test's doc comment; all three are corrected, because a future reader could
+reasonably "optimise" against it.
+
+**A note on `permittedBy`'s fail-open default.** `default: return true` is right for BUILD facts
+(they genuinely are permitted everywhere) and inverting it would force every one to carry a
+redundant arm. The gap it leaves is narrower: a new `FeatureScope` FIELD with no matching `case`
+arm would be advertised on a deployment that refuses it. `TestFeatureScopeFieldsAllGateSomething`
+reflects over `FeatureScope` and asserts each bool field, set false, removes at least one
+advertised identifier — so the omission fails CI instead of shipping a false advertisement, without
+changing the default.
+
+**Offline test shape.** The server-side tests use a stand-in factory, so composition's honesty is
+pinned separately by `internal/app/client_mcp_mounted_report_test.go` against the REAL
+`sessionEngineFactory`: a reachable in-process `mcpsdk` server over `httptest`, and an
+"unreachable" one that is a *started-then-closed* loopback listener — a genuine ECONNREFUSED dial
+that touches no external network and returns immediately instead of waiting out
+`mcp.ClientConnectTimeout`.
 
 
 ---

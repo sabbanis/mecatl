@@ -220,6 +220,69 @@ service HarnessService {
   // with no live events yet).
   rpc StreamSessionLive(StreamSessionLiveRequest) returns (stream Event);
 
+  // WatchSessionEvents is the DURABLE replay-then-follow stream: one operation
+  // that replays a session's durable event log from a position, transitions to
+  // live, and keeps following as the run appends (issue #821, ADR 0250).
+  //
+  // It exists because neither existing read path can do this. StreamSessionEvents
+  // is a complete, ordered replay with NO position and NO follow — it reads the
+  // whole log and stops, so a client that wants to catch up and then watch must
+  // read everything and THEN subscribe, and any event appended between those two
+  // steps is silently lost. StreamSessionLive is live but process-local,
+  // in-memory, and non-durable: a second replica sees nothing, a reconnecting tab
+  // sees nothing that happened while it was away, and a slow subscriber has its
+  // events DROPPED. Both remain, unchanged, for the callers that want exactly
+  // their semantics.
+  //
+  // CURSOR. `cursor` is an OPAQUE resume token meaning "I have durably received
+  // everything up to here". Treat it as bytes to hand back — never parse, build,
+  // or edit one. An EMPTY cursor means THE BEGINNING OF THE LOG, which is a real
+  // value and the common case (a client attaching for the first time wants
+  // replay-then-follow). A cursor from a superseded log generation returns
+  // `cursor_expired` (the log was deleted and recreated); one that cannot be
+  // decoded returns `cursor_malformed`. Neither is ever coerced to a position:
+  // resuming from approximately the right place is indistinguishable from
+  // resuming from the right place until data is already lost.
+  //
+  // PHASE is an OPEN STRING, not an enum — `replay`, `live`, `gap` today, and a
+  // client must tolerate a value it does not know (the same discipline the event
+  // `type`/`stop` fields already carry). `replay` records were already durable
+  // when the watch attached; `live` records arrived after it caught up. Exactly
+  // one PHASE-ONLY `live` frame (no `event`, cursor set) marks the replay to live
+  // boundary, so a client can render the transcript and then show a live view
+  // WITHOUT waiting for the next event to arrive — on an idle session that event
+  // may never come. `gap` marks a position where a durable append is KNOWN to
+  // have failed; it too carries no `event`, because a gap is a fact about
+  // DELIVERY rather than something that happened in the run (ADR 0250 decision
+  // 5 — this is why neither `session.Event` nor the `Event` message gains a gap
+  // field).
+  //
+  // RELAY DISCIPLINE mirrors StreamSessionEvents, NOT the live wire: this is the
+  // READ-BACK of the durable log, so it relays ALL events including the three
+  // log-only kinds (`approval`/`compaction_archive`/`user_prompt`) — a client
+  // replaying a session wants the verdicts and prompts, as they ARE the
+  // transcript. They are metadata-only/redacted by construction.
+  //
+  // `run_id` optionally narrows delivery to ONE run (ADR 0249). Gap frames are
+  // delivered regardless of the filter: a failed append leaves nothing to
+  // attribute to a run, so suppressing it would hide a real gap.
+  //
+  // TERMINATION. A watch ends when the client cancels, or with an error that says
+  // what to do next. A client that falls too far behind is TERMINATED with
+  // `watch_lagging` rather than having its events dropped — the cursor exists
+  // precisely so that termination is recoverable: reconnect with the last cursor
+  // received and nothing is lost. A durable append failure terminates the
+  // watchers in that process with `activity_gap` and never advances their cursor.
+  // In BOTH cases the run continues normally: a broken or slow watch must never
+  // break a live run, and a watcher never backpressures one.
+  //
+  // A server with no durable EventLog returns `no_event_log`; one whose log does
+  // not implement the cursor seam returns `watch_unsupported` — never a silent
+  // degrade to replaying the whole transcript, because a client asking to resume
+  // from a position and being handed everything is a correctness problem dressed
+  // as a performance one. Ownership is enforced exactly as on GetSession.
+  rpc WatchSessionEvents(WatchSessionEventsRequest) returns (stream WatchSessionEventsResponse);
+
   // ListSessions returns the stored-session inventory — the picker metadata a
   // client renders to let an operator open an EXISTING session by id (issue #245
   // Phase 1). It is backed by `port.PrunableStore.List` (type-asserted on the
@@ -498,6 +561,60 @@ message CreateSessionRequest {
   // is rejected with FailedPrecondition. Empty means no carryover
   // (byte-identical default).
   string source_session_id = 8;
+
+  // debug_target_session_id creates a separate diagnostic session bound to the
+  // named target. It requires profile "no-fs" and an empty workspace, cannot be
+  // combined with source_session_id, and never copies or mutates target history.
+  // Missing and foreign-owned targets are both reported as NotFound.
+  string debug_target_session_id = 9;
+
+  // debug_mcp_servers explicitly selects already-configured server-global
+  // streaming-HTTP MCP servers for this debug session. Legal only with a debug
+  // target; names are bounded and unique. No URL, header, or inline MCP config is
+  // accepted, and selection never implies publication authority.
+  repeated string debug_mcp_servers = 10;
+
+  // mcp_servers are CLIENT-PROVIDED streaming-HTTP MCP servers to mount for the
+  // lifetime of this session, via a per-session engine. Empty (the default) is
+  // byte-identical to today: the session takes the shared-engine path.
+  //
+  // LISTENER-SCOPED (ADR 0237 / ADR 0248): accepting an MCP endpoint plus its
+  // auth headers from an API caller combines a remote principal with the
+  // server's ambient outbound network authority, so it is a DEPLOYMENT policy,
+  // not an inference from the request. A deployment whose API listeners are all
+  // local (a UNIX socket, a disabled HTTP listener) permits this field; a
+  // deployment with any network-facing API listener refuses every non-empty
+  // value with the typed `client_mcp_unsupported` error (UNIMPLEMENTED / 501)
+  // rather than mounting it. The refusal is the SERVER's, so it holds against a
+  // client that never checked. A client discovers whether the field is usable
+  // from `mcp_servers_on_create` in GetCompatibilityInfo.features.
+  //
+  // Transport is streaming-HTTP ONLY, on EVERY listener and regardless of that
+  // policy: a stdio entry and an sse entry are hard-rejected as such (AGENTS.md:
+  // "No stdio MCP, ever" — mecatl never spawns an MCP server process).
+  repeated McpServerSpec mcp_servers = 11;
+}
+
+// McpServerSpec is one client-provided MCP server on CreateSessionRequest. It
+// mirrors the ACP session/new mcpServers entry shape so both surfaces classify
+// through the same validator.
+message McpServerSpec {
+  // name is the short, stable identifier that becomes the <server> segment of
+  // every wrapped tool's namespaced name.
+  string name = 1;
+  // url is the server's streaming-HTTP endpoint. It must be absolute with a
+  // host, and https — or http only to an explicit loopback host.
+  string url = 2;
+  // type is the transport discriminant: "http" (or empty with a url) is the only
+  // accepted value. "stdio" and "sse" are hard-rejected on every listener.
+  string type = 3;
+  // command is carried ONLY so a command-shaped entry is classified as stdio and
+  // rejected AS stdio. It is never executed — mecatl spawns no MCP process.
+  string command = 4;
+  // headers are extra HTTP headers sent to this server, typically an
+  // Authorization bearer. Values are SECRET-SHAPED: the server never logs them,
+  // never projects them into an event, and never includes them in an error.
+  map<string, string> headers = 5;
 }
 
 // GetServerInfoRequest asks for the sanitized diagnostic display endpoint of the
@@ -680,6 +797,12 @@ message ServerCapabilities {
   // session compaction pass to an idle owned session. Gates the client's
   // /compact action.
   bool manual_compaction = 25;
+  // session_debug is true when this server can create and rehydrate dedicated
+  // no-filesystem debug sessions.
+  bool session_debug = 26;
+  // debug_mcp is true when debug sessions may explicitly borrow selected direct
+  // tools from configured server-global streaming-HTTP MCP servers.
+  bool debug_mcp = 27;
 }
 
 // CreateSessionResponse carries the newly-allocated session id.
@@ -818,6 +941,60 @@ message StreamSessionLiveRequest {
   string session_id = 1 [(buf.validate.field).string.min_len = 1];
 }
 
+// WatchSessionEventsRequest opens a durable replay-then-follow watch (ADR 0250).
+message WatchSessionEventsRequest {
+  // session_id is the id of the session to watch. An unknown id yields a watch
+  // that replays nothing and then follows — absence is data, and a session
+  // created a moment from now is indistinguishable from one that never existed.
+  string session_id = 1 [(buf.validate.field).string.min_len = 1];
+
+  // cursor is an OPAQUE resume token from a previous response. EMPTY means the
+  // beginning of the log, which is the normal first attachment rather than an
+  // edge case.
+  //
+  // Hand back a value the server issued, verbatim. The encoding is stateless and
+  // therefore inspectable, but it is not a contract: a decoded, hand-edited
+  // cursor gets `cursor_expired` or `cursor_malformed`, never silently wrong
+  // data.
+  string cursor = 2;
+
+  // run_id, when set, narrows delivery to the events one run emitted (ADR 0249).
+  // Empty delivers every run's events. Gap frames are delivered either way.
+  //
+  // A cursor is SCOPED to the run_id it was issued under: resume with the same
+  // value you watched with. Changing it — or dropping it — replays from a
+  // position that already advanced past the other runs' records, which skips
+  // them silently.
+  string run_id = 3;
+}
+
+// WatchSessionEventsResponse is ONE delivery envelope: what happened, where the
+// client now is, and which phase of the watch it arrived in.
+message WatchSessionEventsResponse {
+  // event is the recorded event. It is ABSENT on a phase-only frame — the single
+  // replay-to-live transition marker, and every gap frame.
+  Event event = 1;
+
+  // cursor is the OPAQUE resume token positioned AFTER this envelope. A client
+  // that persists it once per processed envelope gets at-least-once delivery
+  // across a reconnect: hand the last one back and the watch continues from
+  // exactly the next record.
+  //
+  // That guarantee is scoped to the run_id the cursor was issued under. Under a
+  // run filter the watch's position advances over the records it dropped, so the
+  // cursor sits past events another filter would have delivered; resuming with a
+  // different run_id, or none, skips them with no signal. Resume with the same
+  // filter, or start from the beginning.
+  string cursor = 2;
+
+  // phase is an OPEN STRING: `replay` (already durable when the watch attached),
+  // `live` (appended while the watch was following), or `gap` (a position whose
+  // append is known to have failed). Tolerate an unknown value rather than
+  // treating it as an error — this is deliberately not an enum, so that adding a
+  // phase is a minor SDK release rather than a wire-compat event.
+  string phase = 3;
+}
+
 // ListSessionsRequest asks for one bounded keyset page of stored-session inventory.
 message ListSessionsRequest {
   // page_size is clamped by the server. Zero selects the server default.
@@ -904,6 +1081,7 @@ message SessionRelationship {
   string origin_session_id = 5;
   string team_id = 6;
   string member_name = 7;
+  string debug_target_session_id = 8;
 }
 
 // SessionInventoryCapabilities is the picker-safe action posture for one row.
@@ -1238,6 +1416,13 @@ message Session {
   // adoption_source_session_id is the immutable audit relationship on a main
   // session created by explicit legacy adoption.
   string adoption_source_session_id = 13;
+  // kind and relationship preserve the durable trusted-producer identity.
+  string kind = 14;
+  SessionRelationship relationship = 15;
+  // Selected global server names and the exact creation-time direct-tool ceiling.
+  // These contain no URLs, headers, credentials, or inline MCP configuration.
+  repeated string debug_mcp_servers = 16;
+  repeated string debug_mcp_tools = 17;
 }
 
 // ConverseRequest is a client-to-server frame on the Converse stream. The

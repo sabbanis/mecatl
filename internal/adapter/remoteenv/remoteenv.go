@@ -255,7 +255,7 @@ func (b *Backend) RehydrateForTest(id string, src tool.Workspace) error {
 
 // workspace is the tool.Workspace bound to a single namespace. Multiple
 // workspaces over the same namespace share the mutex-guarded file map, so the
-// version ledger is per-handle (RecordRead/RecordedVersion, ADR 0278 —
+// version ledger is per-handle (RecordRead/RecordedVersion, ADR 0281 —
 // a fresh in-memory tool.ReadLedger by default) while the authoritative
 // content+version lives on the shared namespace.
 type workspace struct {

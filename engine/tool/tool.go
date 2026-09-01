@@ -287,7 +287,7 @@ type AuthorityResourceResolver interface {
 // all paths to a single session root (rejecting escapes such as "../"), exposes
 // the read/search operations the core file tools need, and carries the explicit,
 // unambiguous versioned mutation operations the built-in Edit/Write tools use
-// with the Environment's independently selected ReadLedger (ADR 0208, ADR 0278).
+// with the Environment's independently selected ReadLedger (ADR 0208, ADR 0281).
 //
 // All paths are relative to the session root unless documented otherwise;
 // adapters must reject any path that resolves outside the root.
@@ -299,7 +299,7 @@ type AuthorityResourceResolver interface {
 //   - ReadVersion returns the content AND the authoritative FileVersion the
 //     adapter currently holds for path. The built-in Read tool records that
 //     version in the Environment's ReadLedger under LedgerKey(ws.Root(), path)
-//     (ADR 0278: fresh in-memory by default, or explicitly injected durable
+//     (ADR 0281: fresh in-memory by default, or explicitly injected durable
 //     storage; the ledger performs NO file-content I/O), so a
 //     later Edit/Write can assert read-before-mutate-and-unchanged.
 //   - Existing-file Write and Edit: require a recorded version, ReadVersion

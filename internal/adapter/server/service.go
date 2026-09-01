@@ -150,6 +150,29 @@ type SessionEngineResult struct {
 	// session.ModeDefault-equivalent: the Service treats "" as "no mode pin" and the
 	// stale check degrades to never-rebuild-on-mode (byte-identical to pre-Phase-3).
 	BuiltForMode session.PermissionMode
+	// DebugMCPTools is the exact direct-tool ceiling resolved by a debug factory.
+	// It contains model-facing tool names only and is persisted on the session.
+	DebugMCPTools []string
+	// MountedClientMCP names the client-provided MCP servers that ACTUALLY
+	// CONNECTED for this session — never an echo of what was requested. It is nil
+	// when no specs were passed, and SHORTER than the request when some server was
+	// unreachable (mcp.NewManager keeps only successful connections).
+	//
+	// It exists because connecting is best-effort in composition and that is the
+	// right default for ONE of the two callers, not both. The ACP adapter wants a
+	// usable session even when an editor's MCP server is down; a gRPC/HTTP
+	// CreateSession caller cannot see composition's WARN and would otherwise be
+	// handed a session ID for a session missing tools it asked for, with no way to
+	// detect it. So the factory reports the mounted set and the Service enforces
+	// all-or-nothing on the wire path only (see verifyClientMCPMounted).
+	//
+	// A factory reached through the WIRE path MUST populate it. Leaving it empty
+	// while servers were requested is treated as "nothing mounted" and fails the
+	// create, rather than as "no claim made" — a guarantee a factory can silently
+	// opt out of by forgetting a field is not a guarantee. Only WithClientMCP
+	// (the wire-only option) turns the check on, so the ACP path and every
+	// selector-only factory are unaffected.
+	MountedClientMCP []string
 	// Close tears down the session's MCP manager. Never nil (a no-op when no specs).
 	Close func() error
 }
@@ -212,6 +235,11 @@ type ResolvedModel struct {
 // (the run-entry/rehydration seam), never resolving a model itself.
 type SessionEngineFactory func(ctx context.Context, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, workspace string, mode session.PermissionMode) (SessionEngineResult, error)
 
+// DebugSessionEngineFactory builds the dedicated engine for a debug session.
+// targetFingerprint and targetOwner bind every evidence/MCP read to the exact
+// authorized target incarnation; neither may be projected to the model or wire.
+type DebugSessionEngineFactory func(ctx context.Context, sel ProviderSelector, profile SessionProfile, mode session.PermissionMode, target session.SessionID, targetFingerprint string, targetOwner *session.Principal, selectedServers, toolCeiling []string) (SessionEngineResult, error)
+
 // Config wires the server adapter to the WP8 engine and its collaborators.
 type Config struct {
 	// BuildID is the composed binary build identity exposed by GetServerInfo only.
@@ -228,6 +256,13 @@ type Config struct {
 	ProviderEndpoint func(providerID string) string
 	// Engine is the shared agent engine that drives every run. Required.
 	Engine *agent.Engine
+	// DebugSessionEngine builds dedicated no-filesystem debug-session engines.
+	// Nil disables creation and makes persisted debug sessions fail closed at
+	// rehydration rather than falling back to Engine or SessionEngine.
+	DebugSessionEngine DebugSessionEngineFactory
+	// DebugMCP reports that the debug factory can borrow selected direct tools from
+	// a configured global MCP manager.
+	DebugMCP bool
 	// Store persists and looks up sessions. Required.
 	Store port.SessionStore
 	// StorageManagementAuthorized gates process-wide storage health. A nil
@@ -270,6 +305,31 @@ type Config struct {
 	// It must be EMPTY under WorkspaceAuthorityFileless and is ignored under
 	// WorkspaceAuthorityClientSelected.
 	AuthoritativeWorkspace string
+	// ClientMCPOnCreate permits CLIENT-PROVIDED MCP servers on a session-creating
+	// API request (CreateSessionRequest.mcp_servers and its HTTP peer). It is a
+	// deployment/composition policy in the shape ADR 0237 requires, NOT an
+	// inference the server package makes from its own socket state.
+	//
+	// The zero value FAILS CLOSED: a Service built without an explicit grant
+	// refuses the field. That direction is deliberate — accepting an arbitrary
+	// outbound endpoint plus its auth headers from an API caller lends the server's
+	// ambient network authority to a remote principal, so a composition root that
+	// has not thought about it must not accidentally grant it. mecated derives it
+	// from listener topology (clientMCPOnCreateForListeners): permitted only on a
+	// UNIX-socket gRPC listener with HTTP disabled. That is STRICTER than the
+	// loopback-tolerant WorkspaceAuthority derivation above, because an
+	// attacker-named endpoint carrying caller-supplied credentials is a larger
+	// grant than a root the operator chose, and loopback TCP is reachable by every
+	// local process on the host.
+	//
+	// It gates the WIRE surface only. The in-process CreateSessionWithMCP /
+	// LoadSessionWithMCP entries are unaffected: their caller is the ACP adapter,
+	// which is a stdio peer of the operator's own editor and has no listener at
+	// all, so listener-derived policy is meaningless there.
+	//
+	// The SAME value drives the mcp_servers_on_create advertisement (FeatureScope),
+	// so a deployment cannot advertise what it will refuse.
+	ClientMCPOnCreate bool
 	// CommandRunner is the MAIN session's bound command runner (issue #462). It is
 	// the runner the main session's Environment binds when the session runs on the
 	// DEFAULT workspace; a session whose workspace DIFFERS (a worktree binding, an
@@ -1021,6 +1081,38 @@ type Service struct {
 	subscriptions       map[session.SessionID]map[int64]chan session.Event
 	subNextID           int64
 	subscriptionsClosed bool
+
+	// watches is the per-session DURABLE watch registry (ADR 0250): every
+	// attached WatchSessionEvents reader, so a failed durable append can terminate
+	// the ones in THIS process with a delivery gap (decision 6's guaranteed tier)
+	// and shutdown can stop them all.
+	//
+	// It is deliberately NOT the subscriptions registry above, and the difference
+	// is the whole feature. A subscription is an in-memory fan-out that DROPS for
+	// a slow client; a watch reads the durable log itself, so it is
+	// cross-process-capable, resumable from a cursor, and terminated — never
+	// silently dropped — when it falls behind. The Service holds only what it
+	// needs to stop a watcher and to tell it why: a watch's position, filter, and
+	// buffer live with its own goroutine, so a failing appender's walk of this map
+	// stays cheap on the relay thread.
+	//
+	// Guarded by watchMu, a THIRD mutex for the same reason subMu is a second one:
+	// appendEvent walks this map on the relay thread and must not contend with the
+	// run/registry hot path. watchesClosed permanently rejects new attachments
+	// after shutdown begins, so no pump goroutine outlives the Service.
+	watchMu       sync.Mutex
+	watches       map[session.SessionID]map[*watchRegistration]struct{}
+	watchesClosed bool
+
+	// cursorLog is cfg.EventLog narrowed to the cursor seam, or nil when the
+	// configured backend does not implement it.
+	//
+	// Resolved ONCE at construction rather than type-asserted per call: the backend
+	// cannot change at runtime, and appendEvent is on the relay hot path (every
+	// coalesced delta chunk of every turn goes through it). A nil here is the
+	// honest "this deployment cannot serve a watch" signal both appendEvent and
+	// watchLog read.
+	cursorLog port.CursorEventLog
 }
 
 // heldLease is one process-held session lease plus the cancel that stops its
@@ -1247,6 +1339,14 @@ func NewService(cfg Config) (*Service, error) {
 		cleanupJobs:         make(map[string]cleanupJobRecord),
 		subscriptions:       make(map[session.SessionID]map[int64]chan session.Event),
 	}
+	// Narrow the durable log to the cursor seam once (ADR 0250). A backend that
+	// does not implement it leaves this nil, and the watch surface reports the
+	// feature unsupported rather than degrading to a full replay.
+	if cfg.EventLog != nil {
+		if cl, ok := cfg.EventLog.(port.CursorEventLog); ok {
+			svc.cursorLog = cl
+		}
+	}
 	// Seed the model inventory from the static snapshot. ListModels and the
 	// ModelSelection cap read this atomic so a later live-catalog SetModels swap is
 	// race-free. A nil cfg.Models seeds an empty (non-nil) slice so the pointer is
@@ -1411,6 +1511,19 @@ type createSessionOpts struct {
 	// scheduled is set only by the trusted scheduler composition path. Public
 	// create requests have no field that can populate it.
 	scheduled *session.SessionRelationship
+	// debugTargetID binds a separate debug session to one authorized target.
+	debugTargetID          session.SessionID
+	debugTargetIncarnation session.IncarnationID
+	debugMCPServers        []string
+	// clientMCP are the client-provided MCP servers to mount for this session,
+	// already classified AND policy-checked by Service.ClientMCPFromWire. Empty is
+	// the byte-identical shared-engine path.
+	clientMCP []mcp.ServerConfig
+	// clientMCPStrict requires every server in clientMCP to actually connect, or
+	// the create fails with ErrClientMCPUnreachable. Set only by WithClientMCP,
+	// which is the wire path's only entry — the ACP path keeps composition's
+	// best-effort mount. See verifyClientMCPMounted.
+	clientMCPStrict bool
 }
 
 // WithSessionID overrides the session id a CreateSession* call mints. When set,
@@ -1436,6 +1549,101 @@ func WithSessionID(id session.SessionID) CreateSessionOption {
 // (no option) is the byte-identical no-carryover path.
 func WithSourceSession(id session.SessionID) CreateSessionOption {
 	return func(o *createSessionOpts) { o.sourceSessionID = id }
+}
+
+// WithDebugTarget creates a dedicated debug session bound to id. The target is
+// authorized through the ordinary absence-shaped ownership seam and is only
+// loaded for validation; its state and conversation are never changed or copied.
+func WithDebugTarget(id session.SessionID) CreateSessionOption {
+	return func(o *createSessionOpts) { o.debugTargetID = id }
+}
+
+// WithDebugMCP selects already-configured server-global MCP servers for a debug
+// session. Names are validated at the create boundary and no connection details
+// cross this seam.
+func WithDebugMCP(names []string) CreateSessionOption {
+	return func(o *createSessionOpts) { o.debugMCPServers = append([]string(nil), names...) }
+}
+
+// ClientMCPGrant is a DECIDED client-MCP result: specs that have passed the shared
+// classifier AND this deployment's policy gate. Only Service.ClientMCPFromWire
+// mints a non-empty one, because specs is unexported — so the invariant is carried
+// by the TYPE rather than by a doc comment asking callers to behave.
+//
+// That matters because WithClientMCP and the CreateSession* entries are all
+// exported: before this, any in-process caller (the scheduler, a future
+// composition root, a later refactor of the ACP adapter) could construct the
+// option from raw specs and bypass both the classifier and the gate. A
+// ClientMCPGrant{} built outside this package is EMPTY, which is inert — the
+// worst a bypass attempt achieves is a session with no client MCP, never an
+// unvalidated mount.
+type ClientMCPGrant struct {
+	specs []mcp.ServerConfig
+}
+
+// IsEmpty reports whether the grant carries no servers — either because the
+// request declared none, or because it is a zero value built outside this package.
+func (g ClientMCPGrant) IsEmpty() bool { return len(g.specs) == 0 }
+
+// WithClientMCP mounts client-provided streaming-HTTP MCP servers for the new
+// session's lifetime, via a per-session engine (which requires
+// Config.SessionEngine, else ErrInvalidArgument).
+//
+// It takes a ClientMCPGrant, not raw specs: the grant is unforgeable outside this
+// package, so "validated and policy-checked" is a type-level fact rather than a
+// convention. This option does not validate and must not — one classifier, one
+// gate, at the wire seam.
+//
+// It also arms the ALL-OR-NOTHING mount requirement (clientMCPStrict): every
+// requested server must actually connect or the create fails. That is the wire
+// contract, and this option is the wire's only entry, so the two travel
+// together rather than as a separate flag a handler could forget. The ACP path
+// (CreateSessionWithMCP) deliberately does not come through here and keeps
+// composition's best-effort behaviour.
+//
+// An EMPTY grant is a no-op: it arms nothing, so a caller that passes a zero
+// value gets the ordinary shared-engine create rather than a strict-mode session
+// with nothing to mount.
+func WithClientMCP(grant ClientMCPGrant) CreateSessionOption {
+	return func(o *createSessionOpts) {
+		if grant.IsEmpty() {
+			return
+		}
+		o.clientMCP = append([]mcp.ServerConfig(nil), grant.specs...)
+		o.clientMCPStrict = true
+	}
+}
+
+func debugMCPNameRune(r rune) bool {
+	return r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' || r == '.' || r == '_' || r == '-'
+}
+
+func validateDebugMCPNames(target session.SessionID, names []string) error {
+	if len(names) == 0 {
+		return nil
+	}
+	if target == "" {
+		return fmt.Errorf("%w: debug MCP servers are legal only with a debug target", ErrInvalidArgument)
+	}
+	if len(names) > 16 {
+		return fmt.Errorf("%w: at most 16 debug MCP servers may be selected", ErrInvalidArgument)
+	}
+	seen := make(map[string]struct{}, len(names))
+	for _, name := range names {
+		if len(name) == 0 || len(name) > 64 || strings.Contains(name, "__") {
+			return fmt.Errorf("%w: invalid debug MCP server name %q", ErrInvalidArgument, name)
+		}
+		for _, r := range name {
+			if !debugMCPNameRune(r) {
+				return fmt.Errorf("%w: invalid debug MCP server name %q", ErrInvalidArgument, name)
+			}
+		}
+		if _, duplicate := seen[name]; duplicate {
+			return fmt.Errorf("%w: duplicate debug MCP server %q", ErrInvalidArgument, name)
+		}
+		seen[name] = struct{}{}
+	}
+	return nil
 }
 
 // WithOwner overrides the owner a CreateSession* call stamps on the new session
@@ -1474,11 +1682,15 @@ func resolveOwner(ctx context.Context, opts createSessionOpts) *session.Principa
 	return session.PrincipalFromContext(ctx)
 }
 
-func newCreatedSession(id session.SessionID, mode session.PermissionMode, workspace string, limits session.Limits, createdAt time.Time, scheduled *session.SessionRelationship) (*session.Session, error) {
-	if scheduled == nil {
+func newCreatedSession(id session.SessionID, mode session.PermissionMode, workspace string, limits session.Limits, createdAt time.Time, opts createSessionOpts) (*session.Session, error) {
+	switch {
+	case opts.debugTargetID != "":
+		return session.NewDebug(id, mode, limits, createdAt, opts.debugTargetID, opts.debugTargetIncarnation)
+	case opts.scheduled != nil:
+		return session.NewScheduled(id, mode, workspace, limits, createdAt, opts.scheduled.ScheduleName, opts.scheduled.OriginSessionID, opts.scheduled.OriginIncarnation)
+	default:
 		return session.New(id, mode, workspace, limits, createdAt), nil
 	}
-	return session.NewScheduled(id, mode, workspace, limits, createdAt, scheduled.ScheduleName, scheduled.OriginSessionID)
 }
 
 // CreateSession allocates a new idle session on the SHARED engine, persists it,
@@ -1520,7 +1732,14 @@ func (s *Service) CreateSessionWithProfile(ctx context.Context, workspace string
 	for _, opt := range opts {
 		opt(&o)
 	}
-	return s.createSession(ctx, workspace, mode, limits, sel, nil, profile, o)
+	return s.createSessionWithOptions(ctx, workspace, mode, limits, sel, profile, o)
+}
+
+func (s *Service) createSessionWithOptions(ctx context.Context, workspace string, mode session.PermissionMode, limits session.Limits, sel ProviderSelector, profile SessionProfile, opts createSessionOpts) (*session.Session, error) {
+	if err := validateDebugMCPNames(opts.debugTargetID, opts.debugMCPServers); err != nil {
+		return nil, err
+	}
+	return s.createSession(ctx, workspace, mode, limits, sel, opts.clientMCP, profile, opts)
 }
 
 // createSession is the single create path generalizing the shared-engine fast
@@ -1558,6 +1777,16 @@ func setSessionLabels(sess *session.Session, sel ProviderSelector, profile Sessi
 	sess.ReasoningEffort = sel.ReasoningEffort
 	// Owner and authority are independently stamped at the same root seam.
 	return sess.RestoreLabels(owner, authority)
+}
+
+func (s *Service) setPerSessionLabels(sess *session.Session, sel ProviderSelector, profile SessionProfile, owner *session.Principal, opts createSessionOpts, res SessionEngineResult, carried session.Authority, carriedBound bool) error {
+	authority := s.rootAuthority(sess.Kind, carried, carriedBound)
+	if sess.Kind == session.SessionKindDebug {
+		authority.CapabilitySet.Tools = append(authority.CapabilitySet.Tools, res.DebugMCPTools...)
+		sess.DebugMCPServers = append([]string(nil), opts.debugMCPServers...)
+		sess.DebugMCPTools = append([]string(nil), res.DebugMCPTools...)
+	}
+	return setSessionLabels(sess, sel, profile, owner, authority)
 }
 
 func (s *Service) rootAuthority(kind session.SessionKind, carried session.Authority, carriedBound bool) session.Authority {
@@ -1602,11 +1831,15 @@ type createRequest struct {
 	relationship session.SessionRelationship
 }
 
-func newCreateRequest(workspace string, mode session.PermissionMode, limits session.Limits, selector ProviderSelector, profile SessionProfile, sourceID session.SessionID, scheduled *session.SessionRelationship) createRequest {
+func newCreateRequest(workspace string, mode session.PermissionMode, limits session.Limits, selector ProviderSelector, profile SessionProfile, sourceID session.SessionID, opts createSessionOpts) createRequest {
 	request := createRequest{workspace: workspace, mode: mode, limits: limits, selector: selector, profile: profile, sourceID: sourceID, kind: session.SessionKindMain}
-	if scheduled != nil {
+	switch {
+	case opts.debugTargetID != "":
+		request.kind = session.SessionKindDebug
+		request.relationship = session.SessionRelationship{DebugTargetID: opts.debugTargetID, DebugTargetIncarnation: opts.debugTargetIncarnation}
+	case opts.scheduled != nil:
 		request.kind = session.SessionKindScheduled
-		request.relationship = *scheduled
+		request.relationship = *opts.scheduled
 	}
 	return request
 }
@@ -1773,7 +2006,58 @@ func (s *Service) workspaceForCreate(workspace string, profile SessionProfile) (
 	}
 }
 
+func (s *Service) authorizeDebugTarget(ctx context.Context, id session.SessionID) error {
+	target, err := s.cfg.Store.Load(ctx, id)
+	if err != nil {
+		if errors.Is(err, port.ErrSessionNotFound) {
+			return fmt.Errorf("%w", ErrNotFound)
+		}
+		return fmt.Errorf("server: load debug target: %w", err)
+	}
+	if target == nil || target.ID != id || s.authorizeSession(ctx, target) != nil {
+		return fmt.Errorf("%w", ErrNotFound)
+	}
+	return nil
+}
+
+func (s *Service) validateDebugCreate(ctx context.Context, workspace string, profile SessionProfile, specs []mcp.ServerConfig, opts createSessionOpts) error {
+	if opts.debugTargetID == "" {
+		return nil
+	}
+	if profile != ProfileNoFS || workspace != "" {
+		return fmt.Errorf("%w: debug sessions require profile %q and an empty workspace", ErrInvalidArgument, ProfileNoFS)
+	}
+	if opts.sourceSessionID != "" || opts.scheduled != nil || len(specs) > 0 {
+		return fmt.Errorf("%w: debug target cannot be combined with source, scheduled, or client MCP relationships", ErrInvalidArgument)
+	}
+	if opts.idSet && opts.id == opts.debugTargetID {
+		return fmt.Errorf("%w: debug session must be separate from its target", ErrInvalidArgument)
+	}
+	return s.authorizeDebugTarget(ctx, opts.debugTargetID)
+}
+
+func (s *Service) bindRelatedIncarnations(ctx context.Context, opts *createSessionOpts) error {
+	if opts.scheduled != nil && opts.scheduled.OriginSessionID != "" {
+		origin, err := s.cfg.Store.Load(ctx, opts.scheduled.OriginSessionID)
+		if err != nil {
+			return fmt.Errorf("%w: scheduled origin is unavailable", ErrNotFound)
+		}
+		opts.scheduled.OriginIncarnation = origin.Incarnation()
+	}
+	if opts.debugTargetID != "" {
+		target, err := s.cfg.Store.Load(ctx, opts.debugTargetID)
+		if err != nil || target == nil || s.authorizeSession(ctx, target) != nil {
+			return fmt.Errorf("%w: debug target is unavailable", ErrNotFound)
+		}
+		opts.debugTargetIncarnation = target.Incarnation()
+	}
+	return nil
+}
+
 func (s *Service) createSession(ctx context.Context, workspace string, mode session.PermissionMode, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, opts createSessionOpts) (*session.Session, error) {
+	if err := s.validateDebugCreate(ctx, workspace, profile, specs, opts); err != nil {
+		return nil, err
+	}
 	var err error
 	workspace, profile, err = s.workspaceForCreate(workspace, profile)
 	if err != nil {
@@ -1792,6 +2076,9 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 	// The owner stamped on the new session: the explicit WithOwner injection, else
 	// the verified principal on the context, else nil (the ownerless no-auth path).
 	owner := resolveOwner(ctx, opts)
+	if err := s.bindRelatedIncarnations(ctx, &opts); err != nil {
+		return nil, err
+	}
 
 	// Resolve the session id: the caller's override (WithSessionID, ADR 0059
 	// decision #7 Phase-2) wins; otherwise the Service's NewID generator mints a
@@ -1806,7 +2093,7 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 		if opts.id == "" {
 			return nil, fmt.Errorf("%w: session id must not be empty", ErrInvalidArgument)
 		}
-		request := newCreateRequest(workspace, mode, limits, sel, profile, opts.sourceSessionID, opts.scheduled)
+		request := newCreateRequest(workspace, mode, limits, sel, profile, opts.sourceSessionID, opts)
 		retryRequest = &request
 		existing, release, err := s.reserveSessionID(ctx, opts.id, owner, request)
 		if err != nil {
@@ -1855,7 +2142,7 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 		// the empty pair + default profile here (the empty-selector default profile is
 		// exactly the no-per-session case), so setLabels persists nothing new — the
 		// snapshot stays byte-identical to a pre-Phase-1 default session.
-		sess, err := newCreatedSession(mintID(), mode, workspace, limits, s.cfg.Now(), opts.scheduled)
+		sess, err := newCreatedSession(mintID(), mode, workspace, limits, s.cfg.Now(), opts)
 		if err != nil {
 			return nil, fmt.Errorf("server: create session metadata: %w", err)
 		}
@@ -1869,7 +2156,7 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 		return s.persistCreatedSession(ctx, sess, owner, retryRequest)
 	}
 
-	return s.createPerSessionEngine(ctx, mintID, mode, workspace, limits, sel, specs, profile, carrySnap, owner, opts.scheduled, carriedAuthority, carriedAuthorityBound, retryRequest)
+	return s.createPerSessionEngine(ctx, mintID, mode, workspace, limits, sel, specs, profile, carrySnap, owner, opts, carriedAuthority, carriedAuthorityBound, retryRequest)
 }
 
 // createPerSessionEngine is the per-session-engine create branch, factored out
@@ -1880,8 +2167,16 @@ func (s *Service) createSession(ctx context.Context, workspace string, mode sess
 // evicts the reservation and tears the freshly-built engine down so a failed
 // create leaks neither a slot nor a connection. See createSession for the
 // profile-aware workspace rule and the carryover snapshot semantics.
-func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() session.SessionID, mode session.PermissionMode, workspace string, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, carrySnap []session.Message, owner *session.Principal, scheduled *session.SessionRelationship, carriedAuthority session.Authority, carriedAuthorityBound bool, retryRequest *createRequest) (*session.Session, error) {
-	if s.cfg.SessionEngine == nil {
+//
+//nolint:gocyclo // Creation keeps factory, authorization, registration, and teardown in one transaction.
+func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() session.SessionID, mode session.PermissionMode, workspace string, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, carrySnap []session.Message, owner *session.Principal, opts createSessionOpts, carriedAuthority session.Authority, carriedAuthorityBound bool, retryRequest *createRequest) (*session.Session, error) {
+	factory := s.cfg.SessionEngine
+	if opts.debugTargetID != "" {
+		if s.cfg.DebugSessionEngine == nil {
+			return nil, fmt.Errorf("%w: session debugging is not supported", ErrInvalidArgument)
+		}
+		factory = nil
+	} else if factory == nil {
 		return nil, fmt.Errorf("%w: per-session engine not supported (no session-engine factory configured)", ErrInvalidArgument)
 	}
 	// Cheap cap pre-check (CWE-770): reject BEFORE the factory connects MCP /
@@ -1896,14 +2191,39 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 		return nil, fmt.Errorf("%w: %d", ErrTooManySessionEngines, s.cfg.MaxSessionEngines)
 	}
 
-	res, err := s.cfg.SessionEngine(ctx, sel, specs, profile, workspace, mode)
+	var res SessionEngineResult
+	var err error
+	var debugTarget *session.Session
+	if opts.debugTargetID != "" {
+		debugTarget, err = s.cfg.Store.Load(ctx, opts.debugTargetID)
+		if err != nil || debugTarget == nil || s.authorizeSession(ctx, debugTarget) != nil {
+			return nil, fmt.Errorf("%w: debug target is unavailable", ErrNotFound)
+		}
+		if debugTarget.Incarnation() != opts.debugTargetIncarnation {
+			return nil, fmt.Errorf("%w: debug target incarnation changed during creation", ErrFailedPrecondition)
+		}
+		res, err = s.cfg.DebugSessionEngine(ctx, sel, profile, mode, opts.debugTargetID, session.DebugTargetFingerprint(debugTarget), debugTarget.Owner, opts.debugMCPServers, nil)
+	} else {
+		res, err = factory(ctx, sel, specs, profile, workspace, mode)
+	}
 	if err != nil {
 		// Factory maps an unknown/unavailable provider to ErrInvalidArgument; any
 		// error is propagated as-is for the caller to map to a status.
 		return nil, err
 	}
 	eng, closeFn := res.Engine, res.Close
-	sess, err := newCreatedSession(mintID(), mode, workspace, limits, s.cfg.Now(), scheduled)
+	// All-or-nothing client MCP on the WIRE path, BEFORE an id is minted or
+	// anything is persisted: a caller that asked for tools must not be handed a
+	// session quietly missing them. Teardown uses the same closeFn idiom as every
+	// other rejection below, so a refused create leaks neither a connection nor a
+	// registry slot.
+	if err := verifyClientMCPMounted(specs, res.MountedClientMCP, opts.clientMCPStrict); err != nil {
+		if closeFn != nil {
+			_ = closeFn()
+		}
+		return nil, err
+	}
+	sess, err := newCreatedSession(mintID(), mode, workspace, limits, s.cfg.Now(), opts)
 	if err != nil {
 		if closeFn != nil {
 			_ = closeFn()
@@ -1914,11 +2234,14 @@ func (s *Service) createPerSessionEngine(ctx context.Context, mintID func() sess
 	// creation labels on the aggregate, so a restarted process re-derives the SAME
 	// per-session engine via the factory (rehydrateSession) instead of falling to the
 	// default-provider floor / inferring the profile from the empty-workspace pun.
-	if err := setSessionLabels(sess, sel, profile, owner, s.rootAuthority(sess.Kind, carriedAuthority, carriedAuthorityBound)); err != nil {
+	if err := s.setPerSessionLabels(sess, sel, profile, owner, opts, res, carriedAuthority, carriedAuthorityBound); err != nil {
 		if closeFn != nil {
 			_ = closeFn()
 		}
 		return nil, err
+	}
+	if debugTarget != nil {
+		sess.DebugTargetFingerprint = session.DebugTargetFingerprint(debugTarget)
 	}
 	stampDefaultEnvironmentRef(sess)
 	if err := seedCarryover(sess, carrySnap); err != nil {
@@ -2048,6 +2371,8 @@ func (s *Service) capabilities() *mecatlv1.ServerCapabilities {
 		// Manual compaction uses the configured engine, or a per-session engine
 		// derived under the same service construction semantics.
 		ManualCompaction: s.cfg.Engine != nil,
+		SessionDebug:     s.cfg.DebugSessionEngine != nil,
+		DebugMcp:         s.cfg.DebugMCP,
 	}
 }
 
@@ -2072,9 +2397,99 @@ func (s *Service) CompatibilityInfo(context.Context) *mecatlv1.GetCompatibilityI
 	return &mecatlv1.GetCompatibilityInfoResponse{
 		ApiMajor:     APIMajor,
 		Capabilities: s.capabilities(),
-		Features:     serverFeatures(),
+		Features:     serverFeatures(s.featureScope()),
 		Deployment:   s.cfg.DeploymentID,
 	}
+}
+
+// featureScope projects the deployment policy the feature registry filters on.
+// It reads the SAME Config value the enforcement seam reads, which is what keeps
+// the advertisement and the refusal from disagreeing.
+func (s *Service) featureScope() FeatureScope {
+	return FeatureScope{ClientMCPOnCreate: s.cfg.ClientMCPOnCreate}
+}
+
+// verifyClientMCPMounted enforces the wire path's ALL-OR-NOTHING client-MCP
+// contract: every requested server must appear in the factory's mounted set.
+//
+// The problem it closes: connecting client MCP is best-effort in composition
+// (mcp.NewManager keeps the servers that answered and drops the rest, and returns
+// an error only when EVERY one fails). That is right for the ACP adapter, whose
+// peer is the operator's own editor and for whom a degraded session beats no
+// session. It is wrong for a wire caller, which sees none of composition's WARNs
+// and would receive an ordinary session id for a session missing some or all of
+// the tools it asked for — with nothing in the response to tell it apart from
+// success. Silent partial success is the failure mode worth engineering against.
+//
+// strict is set only by WithClientMCP, so the ACP path is untouched. When strict
+// and servers were requested, an EMPTY mounted set fails: a factory that reports
+// nothing has mounted nothing as far as this check can tell, and a guarantee that
+// a factory can opt out of by omitting a field is not a guarantee.
+//
+// The error names the SERVER NAMES that did not mount — client-supplied
+// identifiers, which the caller already knows. It carries no URL and, per AC9.5,
+// no header value: those are secret-shaped and never appear in an error.
+func verifyClientMCPMounted(requested []mcp.ServerConfig, mounted []string, strict bool) error {
+	if !strict || len(requested) == 0 {
+		return nil
+	}
+	mountedSet := make(map[string]struct{}, len(mounted))
+	for _, name := range mounted {
+		mountedSet[name] = struct{}{}
+	}
+	var missing []string
+	for _, spec := range requested {
+		if _, ok := mountedSet[spec.Name]; !ok {
+			missing = append(missing, spec.Name)
+		}
+	}
+	if len(missing) == 0 {
+		return nil
+	}
+	return fmt.Errorf("%w: %d of %d requested server(s) did not connect: %s",
+		ErrClientMCPUnreachable, len(missing), len(requested), strings.Join(missing, ", "))
+}
+
+// ClientMCPFromWire is the SINGLE enforcement seam for client-provided MCP
+// servers arriving on a session-creating API request. Both wire transports call
+// it; neither classifies an entry itself.
+//
+// Order is load-bearing, and it is the ordinary "400 before 501" shape:
+//
+//  1. CLASSIFY, unconditionally, through the shared mcp.PartitionClientServers —
+//     the same validator the ACP surface uses. A stdio or sse entry is rejected
+//     AS SUCH on every deployment, so "No stdio MCP, ever" (AGENTS.md) stays an
+//     invariant of the request shape rather than a downstream consequence of a
+//     policy flag that some future composition root might flip. Classification is
+//     pure string work: it opens no connection and has no side effect, so running
+//     it on a deployment that will refuse anyway costs nothing.
+//  2. GATE on the deployment policy. A well-formed request that this deployment
+//     does not accept is refused with the typed ErrClientMCPUnsupported
+//     (UNIMPLEMENTED / 501), never silently dropped — a client whose servers were
+//     quietly ignored would run a session it believes has tools it does not have.
+//
+// An empty list returns an EMPTY grant and no error on EVERY deployment: sending
+// no MCP servers is not a use of the feature, so a TCP deployment must not fail an
+// ordinary create that merely carries an empty repeated field.
+//
+// It returns a ClientMCPGrant rather than raw specs so that "these specs were
+// classified and permitted" is enforced by the type system: WithClientMCP accepts
+// nothing else, and the grant's field is unexported, so this function is the only
+// place a non-empty one comes from.
+//
+// Header values never appear in the returned error (they are secret-shaped).
+func (s *Service) ClientMCPFromWire(servers []mcp.ClientServer) (ClientMCPGrant, error) {
+	if len(servers) == 0 {
+		return ClientMCPGrant{}, nil
+	}
+	specs, err := mcp.PartitionClientServers(servers)
+	if err != nil {
+		return ClientMCPGrant{}, fmt.Errorf("%w: %w", ErrInvalidArgument, err)
+	}
+	if !s.cfg.ClientMCPOnCreate {
+		return ClientMCPGrant{}, fmt.Errorf("%w: this API surface is reachable over TCP; client-provided MCP servers require a UNIX-socket listener with HTTP disabled", ErrClientMCPUnsupported)
+	}
+	return ClientMCPGrant{specs: specs}, nil
 }
 
 // CreateSessionWithMCP creates a session that mounts the client-provided
@@ -2248,6 +2663,12 @@ func (s *Service) Close() {
 			_ = sch.Stop()
 		}
 	}
+	// Stop every attached durable watch (ADR 0250) so no pump goroutine outlives
+	// the Service, and refuse later attachments. A shutdown cancel is a CLEAN end,
+	// not a gap: no append failed, so the stream simply ends and the client
+	// reconnects with its cursor.
+	s.closeWatches()
+
 	s.mu.Lock()
 	engines := s.sessionEngines
 	s.sessionEngines = make(map[session.SessionID]*sessionEngine)
@@ -3900,7 +4321,7 @@ func admitRunPurpose(sess *session.Session, purpose runPurpose) error {
 	}
 	switch purpose {
 	case runPurposeChat:
-		if kind == session.SessionKindMain && !hasLegacyNonChatPrefix(sess.ID) {
+		if (kind == session.SessionKindMain || kind == session.SessionKindDebug) && !hasLegacyNonChatPrefix(sess.ID) {
 			return nil
 		}
 	case runPurposeScheduler:
@@ -4251,6 +4672,7 @@ func (s *Service) sessionNeedsPerFactory(sel ProviderSelector, specs []mcp.Serve
 // a heal that lands after the restart.
 func (s *Service) needsRehydration(sess *session.Session) bool {
 	return s.cfg.LearnedSkills != nil && sess.Owner != nil && sess.Owner.Issuer != "" && sess.Owner.Subject != "" ||
+		sess.Kind == session.SessionKindDebug ||
 		sess.Profile == string(ProfileNoFS) ||
 		sess.ProviderID != "" || sess.ModelID != "" ||
 		sess.ReasoningEffort != "" ||
@@ -4297,7 +4719,14 @@ func profileForSession(sess *session.Session) SessionProfile {
 // in FIRST-REGISTRATION-WINS mode (a concurrent rehydration losing the race keeps
 // the winner's engine and tears its own down).
 func (s *Service) rehydrateSession(ctx context.Context, sess *session.Session) (*sessionEngine, error) {
-	if s.cfg.SessionEngine == nil {
+	if sess.Kind == session.SessionKindDebug {
+		if sess.Profile != string(ProfileNoFS) || sess.Workspace != "" || sess.Relationship.DebugTargetID == "" || sess.DebugTargetFingerprint == "" {
+			return nil, fmt.Errorf("%w: persisted debug session %q has invalid no-fs metadata", ErrInvalidArgument, sess.ID)
+		}
+		if s.cfg.DebugSessionEngine == nil {
+			return nil, fmt.Errorf("%w: persisted debug session %q cannot be rehydrated (no debug-session engine factory configured)", ErrInvalidArgument, sess.ID)
+		}
+	} else if s.cfg.SessionEngine == nil {
 		// NEVER fall back to the shared engine: that is exactly the degradation
 		// (no-fs escalation / wrong-model) this seam exists to prevent. A session
 		// needing a per-session engine could only have been created with a factory
@@ -4340,6 +4769,8 @@ func (s *Service) rehydrateSession(ctx context.Context, sess *session.Session) (
 //
 // On ProfileNoFS it (re-)registers the no-fs workspace override under the SAME lock as
 // the engine, the create-time discipline.
+//
+//nolint:gocyclo // Rehydration keeps validation, factory, and atomic registration together.
 func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *session.Session, sel ProviderSelector, profile SessionProfile, mode session.PermissionMode, replace bool) (*sessionEngine, error) {
 	id := sess.ID
 	// On replace we are swapping an existing registration, so the cap is not exceeded
@@ -4352,7 +4783,21 @@ func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *sessi
 			return nil, fmt.Errorf("%w: %d", ErrTooManySessionEngines, s.cfg.MaxSessionEngines)
 		}
 	}
-	res, err := s.cfg.SessionEngine(ctx, sel, nil, profile, sess.Workspace, mode)
+	var res SessionEngineResult
+	var err error
+	if sess.Kind == session.SessionKindDebug {
+		target, loadErr := s.cfg.Store.Load(ctx, sess.Relationship.DebugTargetID)
+		if loadErr != nil || target == nil || sess.DebugTargetFingerprint == "" || !sess.Relationship.DebugTargetIncarnation.Valid() ||
+			target.Incarnation() != sess.Relationship.DebugTargetIncarnation ||
+			session.DebugTargetFingerprint(target) != sess.DebugTargetFingerprint ||
+			s.cfg.OwnershipEnforced && session.PrincipalScopeHash(target.Owner) != session.PrincipalScopeHash(sess.Owner) ||
+			s.authorizeSession(ctx, target) != nil {
+			return nil, fmt.Errorf("%w: debug target is stale or inaccessible", ErrNotFound)
+		}
+		res, err = s.cfg.DebugSessionEngine(ctx, sel, profile, mode, sess.Relationship.DebugTargetID, sess.DebugTargetFingerprint, target.Owner, sess.DebugMCPServers, sess.DebugMCPTools)
+	} else {
+		res, err = s.cfg.SessionEngine(ctx, sel, nil, profile, sess.Workspace, mode)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("server: build session engine %q: %w", id, err)
 	}
@@ -5045,6 +5490,29 @@ func (s *Service) appendEvent(ctx context.Context, id session.SessionID, ev sess
 	// actor answers "who did this?". PrincipalFromContext returns a COPY, so a
 	// later mutation cannot rewrite an already-recorded event.
 	ev.Actor = session.PrincipalFromContext(ctx)
+	// The cursor seam (ADR 0250) is used when the backend offers it, because THIS
+	// is where a durable position is assigned. AC7.8 is a structural claim, not a
+	// performance one: the position must be minted at the persistence chokepoint
+	// and nowhere else — never at an emit site in the loop, which stays
+	// storage-agnostic and never imports port.CursorEventLog at all.
+	//
+	// "Exactly one append per event" means one append per appended RECORD. The
+	// RunEventRecorder deliberately COALESCES streaming text deltas into bounded
+	// chunks before they reach here, so a turn of N delta events legitimately
+	// becomes one record; what must never happen is the same record being appended
+	// twice, or a second write path minting a rival position.
+	//
+	// The returned cursor is deliberately DISCARDED. Readers get their positions
+	// from the log itself via ReadAfter, which is exactly what lets a watcher in
+	// another process follow this append; remembering it here would create a second
+	// source of truth that only the appending replica could see.
+	if log := s.cursorLog; log != nil {
+		if _, err := log.AppendEvent(ctx, id, ev); err != nil {
+			s.noteAppendGap(ctx, id, log, err)
+			return err
+		}
+		return nil
+	}
 	return s.cfg.EventLog.Append(ctx, id, ev)
 }
 
@@ -5060,8 +5528,9 @@ func (s *Service) appendEvent(ctx context.Context, id session.SessionID, ev sess
 //     streaming deltas and durably flushes them before this event when it is a
 //     boundary; client liveness never gates observation, so the post-disconnect
 //     tail still includes the terminal EvResult.
-//  2. skip the client wire for the three log-only kinds (EvApproval,
-//     EvCompactionArchive, EvUserPrompt) — recorded above but NOT forwarded.
+//  2. skip the client wire for the five log-only kinds (EvApproval,
+//     EvCompactionArchive, EvUserPrompt, EvNetworkAttempt, EvRequestManifest) — recorded above but
+//     NOT forwarded.
 //  3. on EvPermissionAsk: Persist (snapshot semantics, gated to the healthy
 //     path — the passed ctx, NOT the cancel-detached one) and — when autoApprove
 //     is true — MaybeAutoApprovePlan (the headless auto-approve observer).
@@ -5088,12 +5557,11 @@ func (s *Service) relayEvent(ctx context.Context, id session.SessionID, ev sessi
 		}
 		s.mu.Unlock()
 	}
-	// EvApproval (3a), EvCompactionArchive (3b), and EvUserPrompt (ADR 0038) are
-	// consumed by the durable log ONLY — appended above but NOT relayed to the
-	// client wire (the verdict record, the pre-compaction archive, and the
-	// user-prompt record are log/audit history, not client events; the client
-	// already holds its own prompt). Skip the client send AFTER the Append.
-	if ev.Type == session.EvApproval || ev.Type == session.EvCompactionArchive || ev.Type == session.EvUserPrompt {
+	// EvApproval (3a), EvCompactionArchive (3b), EvUserPrompt (ADR 0038),
+	// EvNetworkAttempt (ADR 0255), and EvRequestManifest are consumed by the durable
+	// log ONLY — appended above but NOT relayed to the client wire. Debugger-only
+	// evidence never crosses an ordinary client surface.
+	if !isPublicEvent(ev) || ev.Type == session.EvApproval || ev.Type == session.EvCompactionArchive || ev.Type == session.EvUserPrompt {
 		return false
 	}
 	if ev.Type == session.EvPermissionAsk {
@@ -6401,7 +6869,8 @@ func validSessionRelationshipUTF8(relationship session.SessionRelationship) bool
 		utf8.ValidString(relationship.ScheduleName) &&
 		utf8.ValidString(string(relationship.OriginSessionID)) &&
 		utf8.ValidString(relationship.TeamID) &&
-		utf8.ValidString(relationship.MemberName)
+		utf8.ValidString(relationship.MemberName) &&
+		utf8.ValidString(string(relationship.DebugTargetID))
 }
 
 func validSessionIdentityMetadata(id session.SessionID, relationship session.SessionRelationship) bool {

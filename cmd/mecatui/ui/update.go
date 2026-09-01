@@ -14,6 +14,7 @@ import (
 	"github.com/charmbracelet/colorprofile"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
+	"github.com/stacklok/mecatl/cmd/mecatui/theme"
 	"github.com/stacklok/mecatl/cmd/mecatui/ui/welcome"
 )
 
@@ -253,6 +254,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.ColorProfileMsg:
 		return m.onColorProfile(msg), nil
 
+	case tea.BackgroundColorMsg:
+		return m.onBackgroundColor(msg), nil
+
 	case tea.MouseWheelMsg, tea.MouseClickMsg, tea.MouseMotionMsg, tea.MouseReleaseMsg:
 		return m.onMouseMsg(msg)
 
@@ -383,10 +387,7 @@ func (m Model) finishStartupResume() (tea.Model, tea.Cmd) {
 	if liveCmd := (&m).armLiveFeed(); liveCmd != nil {
 		cmd = tea.Batch(cmd, liveCmd)
 	}
-	if p := strings.TrimSpace(m.pendingInitialPrompt); p != "" {
-		m.pendingInitialPrompt = ""
-		m.prompt.Rewrite(p)
-		mm, submitCmd := m.submitPrompt()
+	if mm, submitCmd, ok := m.startInitialPrompt(); ok {
 		return mm, tea.Batch(cmd, submitCmd)
 	}
 	return m, cmd
@@ -398,6 +399,7 @@ func (m Model) finishStartupResume() (tea.Model, tea.Cmd) {
 // warning on top.
 func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd, bool) {
 	m = m.bindSessionID(msg.SessionID)
+	m = m.syncDebugTarget()
 	m.failedStepRetryTried = false
 	m.browsingStartupSessions = false
 	m.closeModal()
@@ -458,10 +460,7 @@ func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd
 	// session via resetSession and never reaches this seam).
 	// A "/"-prefixed seed (e.g. -p /clear) is dispatched by submitPrompt's
 	// builtin dispatcher — documented behavior.
-	if p := strings.TrimSpace(m.pendingInitialPrompt); p != "" {
-		m.pendingInitialPrompt = ""
-		m.prompt.Rewrite(p)
-		mm, submitCmd := m.submitPrompt()
+	if mm, submitCmd, ok := m.startInitialPrompt(); ok {
 		return mm, tea.Batch(cmd, submitCmd), true
 	}
 	if m.deps.ConnectOpen {
@@ -619,6 +618,7 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.statusMsg = m.deps.Theme.Style("warning").Render(notice)
 		return m, cmd, handled
 	case client.ConnectErrMsg:
+		m = m.syncDebugTarget()
 		if msg.AuthReason != "" {
 			m.phase = phaseIdle
 			m.connect.err = "Authentication needs attention."
@@ -1484,6 +1484,40 @@ func (m Model) onColorProfile(msg tea.ColorProfileMsg) Model {
 	return m
 }
 
+// onBackgroundColor is the light/dark auto-detect reducer (ADR 0280): it
+// consumes the tea.BackgroundColorMsg Init requested via
+// tea.RequestBackgroundColor when Deps.ThemeAutoDetect was set. It disarms
+// themeAutoDetectArmed FIRST, so a duplicate or late response — a misbehaving
+// terminal, or a race with a fast quit — is a structural no-op rather than a
+// second switch. A light response (msg.IsDark() == false) switches to the
+// built-in "solar" theme; a dark response leaves the given theme untouched.
+// Only fires once: a caller with the detect disabled (or already consumed)
+// sees themeAutoDetectArmed false and returns m unchanged.
+func (m Model) onBackgroundColor(msg tea.BackgroundColorMsg) Model {
+	if !m.themeAutoDetectArmed {
+		return m
+	}
+	m.themeAutoDetectArmed = false
+	if !msg.IsDark() {
+		m = m.switchTheme(theme.Solar())
+	}
+	return m
+}
+
+// switchTheme installs th as the active theme and resets every baked-in
+// consumer so nothing keeps rendering the old palette (ADR 0280): the input
+// textarea and every overlay read m.deps.Theme fresh on each render, but the
+// renderer's glamour/block/join caches and the spinner's style are captured at
+// construction time and must be rebuilt explicitly.
+func (m Model) switchTheme(th theme.Theme) Model {
+	m.deps.Theme = th
+	m.rend = newRenderer(th, m.rend.marks)
+	m.rend.setWidth(m.width)
+	m.sp.Style = th.Style("spinner")
+	m.refreshView()
+	return m
+}
+
 // maybeKittyTransmit fires the out-of-band Kitty mascot transmit (via tea.Raw)
 // when the welcome splash is about to show on a Kitty-capable terminal and the
 // image has not yet been transmitted at the CURRENT size tier. It is a no-op
@@ -1665,7 +1699,7 @@ func (m Model) onKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 	// alt+m cycles permission mode. It is handled here — before the phase switch —
 	// for idle + running so the key never feeds the textarea. Ctrl+M collides with
 	// Enter on real terminals, so the binding deliberately uses Alt+M.
-	if key.Matches(msg, m.keys.ModeSwitch) && (m.phase == phaseIdle || m.phase == phaseRunning) {
+	if m.deps.DebugTarget == "" && key.Matches(msg, m.keys.ModeSwitch) && (m.phase == phaseIdle || m.phase == phaseRunning) {
 		return m.switchMode(client.NextMode(m.desiredMode()))
 	}
 
@@ -2569,7 +2603,7 @@ func (m Model) onIdleKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 		return m.runMCPPrompts()
 	case key.Matches(msg, m.keys.Agents):
 		return m.openAgents()
-	case key.Matches(msg, m.keys.Effort):
+	case key.Matches(msg, m.keys.Effort) && m.deps.DebugTarget == "":
 		// ctrl+e opens the /effort reasoning-effort picker — the same surface the
 		// /effort command opens (runEffort → openEffort). openEffort self-gates on
 		// idle + caps.ModelSelection, so when model selection is unavailable this

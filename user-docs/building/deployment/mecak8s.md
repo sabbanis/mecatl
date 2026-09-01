@@ -51,20 +51,17 @@ task mecak8s:kind-status
 ```
 
 Setup creates the `mecatl-dev` Kind cluster, builds and loads `mecak8s`, installs the
-local chart and Redis, and selects the mock provider. Forward the API in a separate
-terminal:
-
-```sh
-task mecak8s:kind-port-forward
-```
-
-The forward binds to loopback only: gRPC is at `127.0.0.1:18080` and HTTPS is at
-`https://127.0.0.1:18081`. The chart Service remains `ClusterIP`; no ingress,
-NodePort, or wildcard host binding is created. Use the normal gRPC/HTTP clients
-described in [Drive via gRPC / HTTP](grpc-http.md) to send a request, or point a
-local client at these forwarded ports. The mock provider is useful for exploring the
-wire protocol, session lifecycle, and Kubernetes-backed deployment shape without
-spending provider tokens.
+local chart and Redis, and selects the mock provider. Kind's static
+`extraPortMappings` expose fixture NodePorts directly on loopback: gRPC is at
+`127.0.0.1:18080` and HTTP is at `http://127.0.0.1:18081`. Keycloak, when enabled,
+is at `127.0.0.1:8443`. These host mappings are installed only at cluster creation;
+the shared `values-kind.yaml` and bare chart defaults remain `ClusterIP`, while
+`kind-nodeports.yaml` supplies the fixture-only NodePort values. Only the host
+binding is loopback-only: the NodePorts are also open on the Kind node itself,
+reachable from the Docker network. That is fine for a disposable local cluster
+and is not a production isolation claim. Use the normal
+gRPC/HTTP clients described in [Drive via gRPC / HTTP](grpc-http.md) to send a
+request.
 
 When finished, remove the cluster and fixture-owned local state:
 
@@ -95,23 +92,13 @@ task mecak8s:kind-keycloak-setup
 task mecak8s:kind-hosts-add
 ```
 
-For the recommended quickstart, run this in one terminal and leave it running while
-using the client in another:
+For the recommended quickstart, run the readiness and CA-export helper:
 
 ```sh
 task mecak8s:kind-keycloak-demo
 ```
 
-It keeps both loopback-only forwards supervised, writes the fixture CA under
-`.scratch/`, and prints ready-to-copy `mecatui login` and `mecatui connect` commands.
-It deliberately does not rerun setup or invoke `sudo`; `Ctrl-C` stops both forwards.
-
-To manage the forwards independently instead:
-
-```sh
-task mecak8s:kind-keycloak-port-forward
-task mecak8s:kind-port-forward
-```
+It waits for the direct loopback mappings (8443, 18080, and 18081), writes the fixture CA under `.scratch/`, and prints ready-to-copy `mecatui login` and `mecatui connect` commands. It deliberately does not rerun setup or invoke `sudo`; it exits after readiness checks.
 
 The Keycloak issuer is available at `https://keycloak.mecatl.svc.cluster.local:8443`;
 the mecak8s API remains at `https://localhost:18081` (gRPC at `localhost:18080`).
@@ -133,15 +120,15 @@ task mecak8s:kind-destroy
 
 ## Local ToolHive-free Kind profile
 
-For a disposable Kind-only mecak8s baseline, use `task mecak8s:kind-setup`. It installs the local Helm chart with the explicit `values-kind.yaml` profile, which is the sole profile permitted to use the locally loaded `ko.local` image and plaintext fixture Redis. It does **not** install ToolHive, create integration resources, resolve releases, or contact GitHub. Setup recreates the named `mecatl-dev` cluster and its `.scratch/kind/mecatl-dev` state. Status uses only the dedicated kubeconfig/context, never the ambient kubeconfig. Host access is through `task mecak8s:kind-port-forward`, which binds gRPC and HTTP to `127.0.0.1` only. The local workflow above is the recommended user path; it makes no production network-isolation claim and has no general NetworkPolicy.
+For a disposable Kind-only mecak8s baseline, use `task mecak8s:kind-setup`. It installs the local Helm chart with the explicit `values-kind.yaml` profile, which is the sole profile permitted to use the locally loaded `ko.local` image and plaintext fixture Redis. It does **not** install ToolHive, create integration resources, resolve releases, or contact GitHub. Setup recreates the named `mecatl-dev` cluster and its `.scratch/kind/mecatl-dev` state. Status uses only the dedicated kubeconfig/context, never the ambient kubeconfig. Host access is through Kind `extraPortMappings`, which bind the fixture NodePorts to `127.0.0.1` only (18080/18081; Keycloak 8443). The local workflow above is the recommended user path; it makes no production network-isolation claim and has no general NetworkPolicy.
 
 ### Optional local Keycloak validation
 
 `task mecak8s:kind-keycloak-setup` adds the fixture's private Keycloak and TLS
-layer to that base. It does not expose mecak8s: the Service remains `ClusterIP`,
-and the explicit loopback port-forward is the only host path. The authenticated
-workflow above covers the issuer forwarding, hostname mapping, PKCE client, and
-TLS requirements.
+layer to that base. The fixture-only NodePort overlay is mapped by Kind to loopback;
+the shared `values-kind.yaml` profile and bare chart defaults remain `ClusterIP`.
+The authenticated workflow above covers the issuer mapping, hostname mapping, PKCE
+client, and TLS requirements.
 
 For an interactive remote client after setup, add the fixture host aliases, run
 `mecatui login ADDRESS … --tls-ca ISSUER_CA --scopes openid,profile,mecak8s:access,offline_access`,
@@ -239,11 +226,22 @@ Set a credentials Secret reference when a configured key needs reading.
 The image defaults to `v<chart-version>`.
 This default keeps ranged Helm upgrades aligned with released images.
 Set a signed release tag or digest only to override the default.
-A real-provider deployment (`mockProvider: false`) requires server TLS and OIDC caller authentication.
-TLS does not authenticate callers.
-OIDC does not encrypt transport.
-Use `security.allowUnsafeRealProvider: true` only for local deployments or trusted meshes that provide both controls externally.
-This bypass annotates the pod as unsafe.
+A real-provider deployment (`mockProvider: false`) has three explicit postures.
+In-pod TLS with OIDC.
+Edge-terminated TLS with `security.tlsTerminatedUpstream=true`, OIDC, and `tls.enabled=false` for a `ClusterIP` plaintext h2c backend.
+Or the explicit unsafe bypass.
+Setting both in-pod TLS and the upstream attestation is valid.
+The bypass annotates the pod as unsafe; a secure upstream attestation is annotated as TLS-terminated-upstream, and neither annotation can be set through `podAnnotations`.
+
+Understand what edge mode costs before choosing it.
+On an h2c backend the caller's `Authorization: Bearer` token crosses the pod network in cleartext.
+Any workload that can reach the Service ClusterIP can read that token and replay it as the caller.
+The chart ships no NetworkPolicy, so by default every pod in the cluster can reach it.
+Admitting only the gateway's pods — by NetworkPolicy or an mTLS mesh — is the load-bearing control here, not optional hardening.
+The upstream value is an attestation, not chart enforcement: nothing in the chart verifies gateway TLS, reachability, or token forwarding.
+The gateway must forward the original bearer token rather than use forwarded-identity authentication, and publish a `GRPCRoute` only—never public-route `/drain`, `/healthz`, or `/readyz`.
+The chart creates no Gateway, Route, or Certificate either; use an operator-owned `BackendTLSPolicy` or in-pod TLS for gateway-to-pod re-encryption.
+Change an existing pod-TLS release to h2c through a blue-green or maintenance cutover, not an assumed-safe rolling update.
 The chart retains two replicas, a PDB, rolling updates, restricted pod security, bounded resources, dynamic probes, and namespaced Lease RBAC.
 The chart creates no agent PVC and ships no general NetworkPolicy.
 The cluster must provide network isolation because agent egress depends on operator-selected endpoints.
@@ -279,8 +277,17 @@ The Redis Secret is mounted read-only with `defaultMode: 0440` and projects exac
 ### Mount trusted skills, agents, and rules
 
 The chart's `extraEnv`, `extraArgs`, `extraVolumes`, and `extraVolumeMounts`
-values can project an immutable ConfigMap as XDG configuration. Set
-`XDG_CONFIG_HOME` to the mount root, put files below
+values can project an immutable ConfigMap as XDG configuration. For example,
+set the shared logging threshold without changing the container image:
+
+```yaml
+extraArgs:
+  - --log-level=debug
+```
+
+`extraArgs` is appended to the `mecak8s` command line, so the same exact values
+(`debug`, `info`, `warn`, `error`) and fail-soft invalid-value behavior apply.
+Set `XDG_CONFIG_HOME` to the mount root, put files below
 `<root>/mecatl/{skills,agents,rules}`, and set `skills.autoDiscover: true`
 (default `false`) to discover skills from the standard XDG locations
 (`$XDG_CONFIG_HOME/mecatl/skills` or `~/.config/mecatl/skills`, plus
@@ -398,7 +405,10 @@ helm upgrade --install mecak8s deploy/helm/mecak8s --namespace mecatl \
   --set redis.endpoint=redis.example.internal:6379 \
   --set redis.credentialsSecret=mecak8s-redis \
   --set tls.enabled=true \
-  --set tls.secretName=mecak8s-tls
+  --set tls.secretName=mecak8s-tls \
+  --set oidc.enabled=true \
+  --set oidc.issuer=https://idp.example.com \
+  --set oidc.audience=mecatl
 ```
 
 The chart creates no Secret. With `tls.enabled=true`, it projects only
@@ -408,8 +418,14 @@ when your Secret uses different PEM key names. The container receives the
 fixed mounted paths `/var/run/secrets/tls/<certKey>` and
 `/var/run/secrets/tls/<keyKey>` as `--tls-cert` and `--tls-key`, enabling TLS
 for both gRPC and HTTP/SSE. The chart also changes health, readiness, and drain
-requests to HTTPS. Rotated certificate/key pairs are loaded transactionally for new
-handshakes without a rollout; invalid candidates retain the last valid generation.
+requests to HTTPS. This is the in-pod TLS + OIDC secure real-provider posture;
+include the OIDC values shown above for a real provider. For an operator-owned edge
+TLS boundary instead, set `security.tlsTerminatedUpstream=true` with OIDC. Keeping
+`tls.enabled=true` is valid re-encryption and preserves that upstream attestation;
+setting it false selects the ClusterIP-only plaintext h2c backend, which must be
+reachable only from the gateway or mesh. Rotated certificate/key pairs are loaded
+transactionally for new handshakes without a rollout; invalid candidates retain the
+last valid generation.
 
 ---
 

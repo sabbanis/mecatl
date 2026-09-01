@@ -26,6 +26,40 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   `LogRecordGap` is a log-record ENVELOPE variant, never a `session.Event`. A gap is a fact about delivery rather than something that happened in the run, so `session.Event`, the proto `Event` message, and the event kind-parity surface all gain nothing; a gap occupies a real append position so cursors advance past it correctly, and the legacy `EventLog.Read` SKIPS it, preserving that port's contract of returning only events.
 
   All additions are **Added = minor**: new types and functions alongside an untouched `EventLog`, with no existing signature changed.
+- **Cryptographic session incarnations and incarnation-bound lineage** — adds the
+  opaque `session.IncarnationID`, a 128-bit `crypto/rand` identity minted by every
+  `session.New`, persisted by `sessnap.Snapshot` and `eventsource.SessionMeta`, plus a
+  prefix-disjoint deterministic identity for legacy snapshots. Related-session
+  constructors and `SessionRelationship` now carry the parent/origin/target
+  incarnation; delegation events carry internal child incarnations; and
+  `port.SessionLineageQuery` requires the root incarnation. The constructor and query
+  signature changes are breaking (pre-v1 minor); the new identity APIs are Added.
+
+- **Durable selected debug MCP ceiling and target incarnation** — adds
+  `session.Session.DebugMCPServers`, `DebugMCPTools`, and
+  `DebugTargetFingerprint` plus their `sessnap.Snapshot` and `eventsource.SessionMeta`
+  fields, and adds `session.IncarnationFingerprint` /
+  `DebugTargetFingerprint`. The MCP fields persist only bounded configured server names
+  and exact model-facing direct-tool names; the non-projectable fingerprint binds target
+  ID, cryptographic incarnation, and owner scope. Added (minor).
+
+- **Content-safe request manifests** — adds `session.EvRequestManifest`,
+  `RequestManifestPayload` and its closed prompt/tool metadata (including
+  catalog/overlay/MCP source labels), plus
+  `prompt.AssembleWithManifest`/`InstructionManifest`, and the opt-in
+  `agent.Deps.EnableDurableEvidence` gate. The loop emits the log-only manifest
+  from the final provider-neutral request without retaining prompt, message, tool-spec, or
+  provider-private bodies. Hosts enable it only when their relay has durable EventLog
+  retention; zero/default Deps skip all manifest construction. Built-in instruction assemblers report provenance; custom
+  `InstructionAssembler` implementations remain compatible as `custom`/`unknown`. Added
+  (minor).
+
+- **Durable session lineage port** — adds the optional `port.SessionLineageReader`,
+  bounded `SessionLineageQuery`/`SessionLineageResult`, content-free
+  `SessionLineageRecord`, and closed retained/pruned `SessionLineageState`. Store
+  adapters can expose authoritative direct relationships and deletion tombstones
+  without widening the minimal `SessionStore` or loading transcript content.
+  Added (minor).
 
 - **`agent.Run.RunID()`** (issue #821, [ADR 0249](../docs/adr/0249-durable-run-identity.md)) — reports the run's host-minted identity, or `""` when none was supplied.
 
@@ -43,23 +77,41 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
   All four additions are **Added = minor**. `Event` and `RunRequest` gain a field, which breaks external UNKEYED struct literals — but both are already routinely constructed keyed, and `Event` is a wide event-payload struct nobody builds positionally.
 
-- **`tool.ReadLedger`, `tool.ErrLedgerUnavailable`** ([ADR 0278](../docs/adr/0278-persistent-read-before-write-ledgers.md)) — the storage-independent, context-aware read-before-write evidence capability selected independently of file content and carried by `tool.Environment`. `RecordRead(ctx, key, version) error` and `RecordedVersion(ctx, key) (version, ok, err)` distinguish a valid recorded token, ordinary absence, and an unavailable/corrupt lookup (`err != nil`). `engine/adapter/memledger` is the in-memory reference implementation; `engine/adapter/ledgerconformance` is the shared behavioral suite every implementation runs. Both additions are **Added = minor**.
+- **`tool.ReadLedger`, `tool.ErrLedgerUnavailable`** ([ADR 0281](../docs/adr/0281-persistent-read-before-write-ledgers.md)) — the storage-independent, context-aware read-before-write evidence capability selected independently of file content and carried by `tool.Environment`. `RecordRead(ctx, key, version) error` and `RecordedVersion(ctx, key) (version, ok, err)` distinguish a valid recorded token, ordinary absence, and an unavailable/corrupt lookup (`err != nil`). `engine/adapter/memledger` is the in-memory reference implementation; `engine/adapter/ledgerconformance` is the shared behavioral suite every implementation runs. Both additions are **Added = minor**.
 
-- **`tool.EncodeFileVersion`, `tool.DecodeFileVersion`, `tool.ErrInvalidFileVersion`** ([ADR 0278](../docs/adr/0278-persistent-read-before-write-ledgers.md), repair-wave task 05) — a narrow persistence/transport codec for opaque `FileVersion` values. It round-trips valid empty and non-empty tokens byte-exactly while rejecting the invalid zero value. **Added = minor**.
+- **`tool.EncodeFileVersion`, `tool.DecodeFileVersion`, `tool.ErrInvalidFileVersion`** ([ADR 0281](../docs/adr/0281-persistent-read-before-write-ledgers.md), repair-wave task 05) — a narrow persistence/transport codec for opaque `FileVersion` values. It round-trips valid empty and non-empty tokens byte-exactly while rejecting the invalid zero value. **Added = minor**.
 
 - **`agent.WithSubagentReadLedgerFactory`, `agent.WithTeamReadLedgerFactory`, `agent.WithTeamToolReadLedgerFactory`** (repair-wave task 05) — inject factories that mint a fresh ledger for every child environment without importing a concrete adapter into `engine/agent`. **Added = minor**.
 
 ### Changed
 
-- **`tool.Workspace` loses `RecordRead`/`RecordedVersion`; `tool.Environment` gains a mandatory `ReadLedger()`; `tool.NewEnvironment`/`MustEnvironment` take a new required `ledger ReadLedger` parameter** ([ADR 0278](../docs/adr/0278-persistent-read-before-write-ledgers.md), repair-wave task 05) — completes the read-ledger/content-backend separation the prior entry started: `Workspace` is now a pure content/search/versioned-mutation seam with no read-evidence capability of its own, and the read ledger is instead an independently-selected, mandatory second capability carried on `Environment` alongside `Workspace`. `NewEnvironment(ref, ws, ledger, runner)` / `MustEnvironment(ref, ws, ledger, runner)` replace the three-argument forms (`ledger` inserted before `runner`); a nil `ledger` is rejected with the new `ErrEnvironmentNoReadLedger`, mirroring the existing nil-`Workspace` rejection. The built-in Read/Edit/Write tools now record/consult evidence via `env.ReadLedger()` (keyed with the existing I/O-free `tool.LedgerKey(ws.Root(), path)`), not through the Workspace. Changed/breaking (pre-v1 a minor bump). Every in-tree `Workspace` implementation (osfs, memfs, nofs, the ACP fs-delegation workspace, remoteenv) drops its ledger methods; every `Environment` construction site now supplies an explicit ledger (a fresh `memledger.New()` for a session's default environment; a forked/direct-write child environment gets its OWN fresh ledger over the SAME content backend it was handed, never the parent's).
+- **`tool.Workspace` loses `RecordRead`/`RecordedVersion`; `tool.Environment` gains a mandatory `ReadLedger()`; `tool.NewEnvironment`/`MustEnvironment` take a new required `ledger ReadLedger` parameter** ([ADR 0281](../docs/adr/0281-persistent-read-before-write-ledgers.md), repair-wave task 05) — completes the read-ledger/content-backend separation the prior entry started: `Workspace` is now a pure content/search/versioned-mutation seam with no read-evidence capability of its own, and the read ledger is instead an independently-selected, mandatory second capability carried on `Environment` alongside `Workspace`. `NewEnvironment(ref, ws, ledger, runner)` / `MustEnvironment(ref, ws, ledger, runner)` replace the three-argument forms (`ledger` inserted before `runner`); a nil `ledger` is rejected with the new `ErrEnvironmentNoReadLedger`, mirroring the existing nil-`Workspace` rejection. The built-in Read/Edit/Write tools now record/consult evidence via `env.ReadLedger()` (keyed with the existing I/O-free `tool.LedgerKey(ws.Root(), path)`), not through the Workspace. Changed/breaking (pre-v1 a minor bump). Every in-tree `Workspace` implementation (osfs, memfs, nofs, the ACP fs-delegation workspace, remoteenv) drops its ledger methods; every `Environment` construction site now supplies an explicit ledger (a fresh `memledger.New()` for a session's default environment; a forked/direct-write child environment gets its OWN fresh ledger over the SAME content backend it was handed, never the parent's).
 
-- **`FileVersion.Token`** ([ADR 0278](../docs/adr/0278-persistent-read-before-write-ledgers.md), repair-wave task 05) — removed because it exposed an interpretation API for an opaque token. Persistence callers migrate to the added `tool.EncodeFileVersion`/`DecodeFileVersion` codec above. Changed/breaking (pre-v1 a minor bump).
+- **`FileVersion.Token`** ([ADR 0281](../docs/adr/0281-persistent-read-before-write-ledgers.md), repair-wave task 05) — removed because it exposed an interpretation API for an opaque token. Persistence callers migrate to the added `tool.EncodeFileVersion`/`DecodeFileVersion` codec above. Changed/breaking (pre-v1 a minor bump).
 
 - **Child workspace-view options** (repair-wave task 05) — `agent.WithSharedChildWorkspace`, `agent.WithTeamSharedBaseWorkspace`, and `agent.WithTeamToolSharedBaseWorkspace` now accept `func(tool.Workspace) tool.Workspace` rather than a root-to-Workspace factory. Base-sharing/direct-write children therefore retain the exact parent content backend through a potentially stricter authority view instead of reconstructing storage from `Workspace.Root()`; composition uses that view to preserve child path-escape containment while the independent read-ledger factory supplies fresh evidence. Changed/breaking (pre-v1 a minor bump).
+
+- **`agent.Deps.EnableDurableEvidence`** — adds the explicit opt-in gate for
+  debugger-only request-manifest construction/emission and sanitized network-attempt capture. The zero value preserves the allocation-sensitive
+  default loop; composition enables it only alongside durable EventLog retention. Adding a field
+  to an exported struct breaks external unkeyed literals, so this is Changed/breaking (pre-v1 a
+  minor bump).
 
 - **`agent.Run.EnqueueSteer`** (issue #861, [ADR 0251](../docs/adr/0251-multimodal-steer.md)) — changes from `EnqueueSteer(text string)` to `EnqueueSteer(text string, parts []session.Content)`, making one canonical text, media, or mixed steer entry point. Changed/breaking (pre-v1 a minor bump).
 
 - **`session.SteerPayload.Parts`** (issue #861, [ADR 0251](../docs/adr/0251-multimodal-steer.md)) — adds the committed media parts to the steer echo. Adding a field to an exported struct breaks external unkeyed literals, so this is Changed/breaking (pre-v1 a minor bump).
+
+- **`session.Event.RequestManifest`** — adds the log-only, content-safe final-request
+  manifest payload. Adding a field to an exported struct breaks external unkeyed literals,
+  so this is Changed/breaking (pre-v1 a minor bump).
+
+- **`session.Event.NetworkAttempt`** — adds the log-only sanitized provider-attempt
+  payload used by the dedicated debugger. Adding a field to an exported struct breaks
+  external unkeyed literals, so this is Changed/breaking (pre-v1 a minor bump).
+
+- **`session.SessionRelationship.DebugTargetID`** — adds the durable target link
+  for dedicated debug sessions. Adding a field to an exported struct breaks
+  external unkeyed literals, so this is Changed/breaking (pre-v1 a minor bump).
 
 - **`agent.AgentMeta.WritableAuthorityCeiling`** (issue #517, [ADR 0242](../docs/adr/0242-route-unpinned-writable-named-specialists.md)) — adds the exported mode-specific managed-authority ceiling used when a fresh named specialist runs with direct write. Adding a field to an exported struct breaks external unkeyed literals, so this is Changed/breaking (pre-v1 a minor bump).
 
@@ -89,10 +141,22 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Sanitized provider-attempt observation** — adds `session.EvNetworkAttempt`,
+  `session.NetworkAttemptPayload`, `session.CanonicalNetworkAttempt`,
+  `session.NetworkCorrelationDigest`, `port.AttemptObserver`, `port.WithAttemptObserver`,
+  and `port.ObserveAttempt`. The run-local observer lets provider decorators return
+  typed evidence to the loop, whose canonicalization rejects invalid observations,
+  binds trusted run correlation, omits provider codes, and retains correlation values
+  only as fixed domain-separated SHA-256 digests. Added (minor).
+
 - **Manual session compaction core** — `session.ReplaceHistoryAtBoundary` provides
   the pairing-validated, non-active aggregate rewrite seam; `agent.Engine.CompactSession`
   and `agent.ManualCompactionResult` run the configured compactor once and expose the
   archive/summary needed by a durable service operation. Added (minor).
+
+- **Debug session identity** — adds `session.SessionKindDebug` and
+  `session.NewDebug`, creating a separate empty-workspace session bound to one
+  target session without copying target conversation state. Added (minor).
 
 - **`agent.WithAgentWritableModelEngineFactory`** (issue #517, [ADR 0242](../docs/adr/0242-route-unpinned-writable-named-specialists.md)) — a `SubagentOption` factory that rebuilds an unpinned named `mode:"read-write"` specialist on the semantic router's selected model while preserving its specialist scope, direct-write environment, same-provider boundary, and per-definition limits. A declined target falls back to the ordinary writable specialist. Added (minor).
 

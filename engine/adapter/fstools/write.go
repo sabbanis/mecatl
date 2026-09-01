@@ -98,7 +98,7 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 	case statErr == nil:
 		// Existing file: require read-before-overwrite via the version protocol.
 		// A non-nil err from RecordedVersion means the ledger lookup itself is
-		// UNAVAILABLE or CORRUPT (ADR 0278) — DISTINCT from ordinary absence —
+		// UNAVAILABLE or CORRUPT (ADR 0281) — DISTINCT from ordinary absence —
 		// and must refuse BEFORE ReplaceFile is ever called.
 		recorded, recordedOK, err := ledger.RecordedVersion(ctx, tool.LedgerKey(ws.Root(), args.Path))
 		if err != nil {
@@ -138,7 +138,7 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 		}
 		// Re-record the new version so a subsequent Edit/Write in the same turn
 		// is valid. The overwrite ALREADY SUCCEEDED; a failure here is reported
-		// honestly WITHOUT rollback and establishes no new evidence (ADR 0278).
+		// honestly WITHOUT rollback and establishes no new evidence (ADR 0281).
 		if err := ledger.RecordRead(ctx, tool.LedgerKey(ws.Root(), args.Path), newVer); err != nil {
 			return session.NewToolError(in.ID, fmt.Sprintf(
 				"overwrote %q (%d bytes), but failed to retain read evidence for the new version: %v. No new evidence was stored; any earlier evidence remains subject to version checks.",
@@ -158,7 +158,7 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 			return session.ToolResult{}, fmt.Errorf("write: creating %q: %w", args.Path, err)
 		}
 		// The create ALREADY SUCCEEDED; a failure here is reported honestly
-		// WITHOUT rollback and establishes no new evidence (ADR 0278).
+		// WITHOUT rollback and establishes no new evidence (ADR 0281).
 		if err := ledger.RecordRead(ctx, tool.LedgerKey(ws.Root(), args.Path), newVer); err != nil {
 			return session.NewToolError(in.ID, fmt.Sprintf(
 				"wrote %q (%d bytes), but failed to retain read evidence for it: %v. No new evidence was stored; any earlier evidence remains subject to version checks.",

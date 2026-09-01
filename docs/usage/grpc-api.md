@@ -53,7 +53,98 @@ semantic-version protocol.
 | `Converse(stream ConverseRequest) → stream ConverseResponse` | bidi | drive one agent run; the first frame is either a new `Prompt` or prompt-free `RetryStart` |
 | `ApprovePlan(ApprovePlanRequest) → stream Event` | server-stream | atomically resolve a parked **plan-approval** ask (a `PresentPlan` call surfaced in plan mode, issue #206 / [ADR 0069](../adr/0069-plan-approval-gate.md)) and — on an ALLOW verdict — start a FRESH continuation run carrying the proceed message, streaming BOTH runs' events on one stream. `target_mode` selects the verdict: `DEFAULT` → allow-once (flip to default), `ACCEPT_EDITS` → allow-always (flip to accept-edits), `PLAN`/`UNSPECIFIED` → deny (iterate, no flip, no continuation run). A live run is rejected (`FAILED_PRECONDITION` — use the `Converse` `resume_approval` frame for an in-flight run); a session not `awaiting` a `PlanOriginated` ask is `FAILED_PRECONDITION` (`ErrNotAwaitingPlan`); an unknown session is `NOT_FOUND`. |
 | `StreamSessionEvents(StreamSessionEventsRequest) → stream Event` | server-stream | replay a session's durable event log (cloud-native Phase 3a read-back); an unknown id yields an empty stream; `UNIMPLEMENTED` when no durable `EventLog` is wired. **Replays the FULL timeline, including the log-only `approval`/`compaction_archive`/`user_prompt` events a live `Converse` skips** — a client opening a past session gets the verdicts and user prompts, which ARE the transcript |
+| `WatchSessionEvents(WatchSessionEventsRequest) → stream WatchSessionEventsResponse` | server-stream | **durable replay-then-follow** ([ADR 0250](../adr/0250-durable-cursors-and-watch.md)): replay from an opaque `cursor` (empty = the beginning), then keep following as the run appends. Each frame is `{event, cursor, phase}`; `phase` is an OPEN STRING (`replay`/`live`/`gap`) — tolerate an unknown value. Exactly one PHASE-ONLY `live` frame (no `event`) marks the replay→live boundary, so a client renders the transcript and shows a live view WITHOUT waiting for the next event, which on an idle session may never arrive. A `gap` frame (also event-less) marks a position whose durable append is known to have failed. Optional `run_id` narrows delivery to one run; gap frames are delivered either way. Relays the FULL timeline like `StreamSessionEvents`, log-only kinds included. Errors: `watch_unsupported` (`UNIMPLEMENTED`) when the log has no cursor seam, `no_event_log` (`UNIMPLEMENTED`), `cursor_malformed` (`INVALID_ARGUMENT`), `cursor_expired` (`FAILED_PRECONDITION` — restart from the beginning), `watch_lagging` (`RESOURCE_EXHAUSTED` — **resumable**, reconnect with your last cursor), `activity_gap` (`DATA_LOSS`) |
 | `ListSessions(ListSessionsRequest) → ListSessionsResponse` | unary | the stored-session inventory — picker metadata (id, timestamps, state, turns, model id; no conversation content), sorted most-recently-active first; an empty list when the store does not implement `PrunableStore` |
+
+**Watching a session durably.** `StreamSessionEvents` replays and ENDS;
+`StreamSessionLive` is live but process-local and DROPS for a slow client;
+`WatchSessionEvents` is the one call that does both durably. Treat the `cursor` as
+bytes to hand back — never parse, build, or edit one. Persist it once per frame you
+have PROCESSED, and on any reconnect (including after a `watch_lagging`
+termination) pass that value back: the watch continues from exactly the next
+record. Do NOT resume from a cursor you saw but did not process. A cursor is
+SCOPED TO THE `run_id` IT WAS ISSUED UNDER — a filtered watch advances its
+position over the records the filter dropped, so handing that cursor back under a
+different `run_id`, or none, skips them silently. Resume with the same filter, or
+start from the beginning. A `gap` frame, or
+an `activity_gap` termination, means events that should have been recorded were
+not — a retry does not recover them. That guarantee is deliberately bounded: it
+covers durably-appended events, and a total backend outage combined with loss of
+the process holding the watchers leaves a gap nothing can report.
+
+**Dedicated debugger creation.** Set `CreateSessionRequest.profile = "no-fs"`, leave
+`workspace` empty, and set `debug_target_session_id` to the exact authorized target.
+Optional repeated `debug_mcp_servers` names only already-configured server-global
+streaming-HTTP MCP servers. The response advertises `session_debug`/`debug_mcp` and persists
+the selected names plus exact tool ceiling. The resulting conversation uses ordinary
+`Converse`; `InspectSession` returns target-incarnation-bound evidence, and every selected
+MCP call—including tools marked read-only—surfaces a fresh ordinary `PermissionAsk` that the
+client resolves with `ResumeApproval`. Denies remain absolute, headless calls deny, and
+allow-always executes only the current call: it is not learned and the next call asks again.
+The target is never entered, leased, or
+mutated by evidence reads. See [ADR 0256](../adr/0256-session-debugger-evidence-and-reporting.md).
+
+**Client-provided MCP servers.** `CreateSessionRequest.mcp_servers` mounts
+streaming-HTTP MCP servers for the lifetime of the created session, via a
+per-session engine, so their tools and their auth headers never leak into another
+session. Each entry carries `name`, `url`, `type` (`"http"`, or empty with a
+`url`), and optional `headers`.
+
+The field is **listener-scoped**, and the scope is a DEPLOYMENT property decided
+once at startup, not a per-connection one ([ADR 0237](../adr/0237-listener-scoped-workspace-authority.md)).
+Exactly one topology accepts it: a **`--grpc-unix-socket` listener with
+`--http-addr ""`** — the SDK-spawned daemon shape. Every other deployment,
+**loopback TCP included**, refuses every non-empty value with `UNIMPLEMENTED` /
+code `client_mcp_unsupported`. One `Service` backs both API listeners, so adding
+any TCP listener gives the field up on all of them, the UNIX socket included.
+
+That threshold is stricter than the one `--workspace-authority` derives, which
+does accept loopback. The asymmetry is deliberate: a workspace path selects among
+roots the operator already owns, while an MCP endpoint plus its headers points the
+daemon at a host of the caller's choosing and has it carry supplied credentials
+there. Loopback TCP is reachable by every local process and local user on the
+host; a UNIX socket is guarded by filesystem permissions on an owner-only
+directory. The refusal is the server's, so it holds against a client that never
+checked.
+
+Check `mcp_servers_on_create` in `GetCompatibilityInfo.features` before sending
+the field; the advertisement and the enforcement read the same value, so an
+advertised deployment will accept it and an unadvertised one will not. An empty
+list is not a use of the feature and is accepted everywhere.
+
+Mounting is **all-or-nothing**. Every requested server must connect or the create
+fails with `UNAVAILABLE` / code `client_mcp_unreachable`, naming the servers that
+did not answer; no session is created. The two codes are distinct on purpose:
+`client_mcp_unsupported` is permanent and a client should stop asking, while
+`client_mcp_unreachable` is transient and the client's own endpoint to fix. A
+partial mount is never reported as success — a session silently missing some of
+its tools is indistinguishable from a working one at the API.
+
+Transport is streaming-HTTP only on EVERY deployment, regardless of that policy: a
+`stdio` entry (or an untyped entry carrying a `command`) and an `sse` entry are
+`INVALID_ARGUMENT` — mecatl never spawns an MCP server process.
+
+Each `name` must be 1–64 characters of `[A-Za-z0-9._-]`, must not contain `__`,
+and must be unique within the request; a violation is `INVALID_ARGUMENT`. The
+rules are the tool namespace's, not cosmetic: names become
+`mcp__<name>__<tool>`, so `__` inside one would forge another server's namespace,
+and duplicates would collide in the catalog with one set silently dropped. Note
+the namespace is FLAT and shared with operator-configured servers, so a client
+naming its server `github` can inherit an operator permission rule written for
+the real one — one more reason the field is gated to a local-only daemon.
+
+Credentials belong in `headers`, and nowhere else. A URL carrying userinfo
+(`https://user:pass@host/mcp`) is `INVALID_ARGUMENT`, because Go promotes it to a
+`Basic` header that would bypass every protection `headers` gets. Header values
+are secret-shaped: never logged, never carried in an event, never included in an
+error. A URL is redacted to `scheme://host/path` wherever it is logged or echoed
+in a message — in the message text, in the attributes beside it, and inside the
+underlying transport error, which embeds the full request URL of its own accord —
+so a token in the query string does not reach the operator's log.
+
+A client endpoint may not redirect: a URL that passes validation is not permitted
+to send the daemon onward to a host that never did. Operator-configured servers
+are unaffected.
 
 **Manual compaction.** Check
 `CreateSessionResponse.capabilities.manual_compaction` before offering this action.
@@ -345,18 +436,16 @@ opt-ins that spend tokens or need explicit configuration stay off: static
 `--mcp-server` registrations, the `SkillDraft` quarantine, the background
 user-model reviewer, and memory consolidation — run a full `mecated serve` and
 `connect` to it for those. It also accepts **`--perf`** (off by default) to bring up the same
-loopback observability surface `mecated` exposes — `/metrics`, `/debug/pprof/*`,
-`/debug/vars`, `/debug/flightrecorder` — on a **fixed** `127.0.0.1:9099` port by
-default (predictable, so an MCP-client config can hardcode the `/mcp` URL once;
-distinct from `mecated`'s `:9090`). Pass `--perf-addr host:port` to move it, or
-`--perf-addr 127.0.0.1:0` for an ephemeral port. On a port clash, startup **fails
-with guidance** rather than silently falling back (`--perf-goroutine-warn-threshold`
-arms the goroutine alarm). The chosen address is logged at startup (loopback, unauthenticated —
-same posture as `mecated`'s admin listener; see the observability note in §3).
-With `--perf` it also accepts **`--perf-mcp`** to mount the read-only perf MCP
-server at `/mcp` on that admin surface (same fail-closed loopback enforcement: a
-non-loopback `--perf-addr` with `--perf-mcp` is refused). This is the in-process
-way to profile a freeze in the embedded server itself.
+sensitive observability surface `mecated` exposes — `/metrics`, `/debug/pprof/*`,
+`/debug/vars`, `/debug/flightrecorder`. With no `--perf-addr`, ordinary perf uses an
+owner-private `admin.sock` beside this mecatui instance's private gRPC socket, so
+simultaneous instances do not collide. An explicit `--perf-addr host:port` selects TCP
+and must be loopback; `127.0.0.1:0` requests an ephemeral port. The resolved network and
+address are logged at startup (`--perf-goroutine-warn-threshold` arms the goroutine alarm).
+With **`--perf-mcp`**, an empty address instead selects ephemeral loopback TCP because
+the supported MCP transport is streaming HTTP and needs a URL; the resolved `/mcp` URL
+is logged. No stdio MCP is used, and this raw admin data is not injected into the model
+or dedicated session debugger.
 The embedded server also accepts `--yolo` (the
 allow-all operator posture — same semantics, root refusal, and `MECATL_SANDBOX`/
 `IS_SANDBOX` env as `mecated`; see the allow-all note in §12). It is **rejected in

@@ -41,7 +41,7 @@ const fsCallTimeout = 30 * time.Second
 //     The Environment's separately-selected ReadLedger (a fresh memledger,
 //     composition-supplied at session/new) then tracks the editor's BUFFER
 //     versions, not disk (strictly better than osfs for an editor session) —
-//     fsWorkspace itself carries NO ledger (ADR 0278: content and read evidence
+//     fsWorkspace itself carries NO ledger (ADR 0281: content and read evidence
 //     are independently composed at the Environment).
 //   - Root / Glob / Grep — COMPOSED from an osfs.Workspace rooted at the SAME
 //     session cwd. ACP has no fs/list or fs/grep, so these read the local on-disk

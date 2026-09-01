@@ -19,6 +19,7 @@ import (
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/internal/adapter/mcp"
 )
 
 // HarnessServer implements the generated mecatlv1.HarnessServiceServer over the
@@ -57,6 +58,24 @@ func (h *HarnessServer) CreateSession(ctx context.Context, req *mecatlv1.CreateS
 	if src := req.GetSourceSessionId(); src != "" {
 		opts = append(opts, WithSourceSession(session.SessionID(src)))
 	}
+	if target := req.GetDebugTargetSessionId(); target != "" {
+		opts = append(opts, WithDebugTarget(session.SessionID(target)))
+	}
+	if names := req.GetDebugMcpServers(); len(names) > 0 {
+		opts = append(opts, WithDebugMCP(names))
+	}
+	// Client-provided MCP servers (issue #821, ADR 0237). Both wire transports go
+	// through the ONE Service seam, which classifies through the same validator the
+	// ACP surface uses and then applies the deployment policy — so this handler
+	// neither classifies an entry nor decides whether the field is accepted here.
+	// An empty repeated field is not a use of the feature and stays byte-identical.
+	grant, err := h.svc.ClientMCPFromWire(clientMCPFromProto(req.GetMcpServers()))
+	if err != nil {
+		return nil, toStatus(err)
+	}
+	if !grant.IsEmpty() {
+		opts = append(opts, WithClientMCP(grant))
+	}
 	sess, err := h.svc.CreateSessionWithProfile(ctx, req.GetWorkspace(), modeFromProto(req.GetMode()), limitsFromProto(req.GetLimits()), sel, profile, opts...)
 	if err != nil {
 		return nil, toStatus(err)
@@ -79,6 +98,31 @@ func (h *HarnessServer) CreateSession(ctx context.Context, req *mecatlv1.CreateS
 		},
 		ResolvedModel: resolvedModelToProto(h.svc.ResolvedModel(sess.ID)),
 	}, nil
+}
+
+// clientMCPFromProto maps the wire McpServerSpec list onto the transport-neutral
+// mcp.ClientServer shape the shared classifier consumes. It is a pure field
+// mapping and makes NO decisions: no defaulting, no normalisation, no
+// classification — those all belong to mcp.PartitionClientServers, which the ACP
+// surface reaches through its own equivalent mapping.
+//
+// GetHeaders() is passed through as-is; header VALUES are secret-shaped and are
+// never logged, echoed, or included in an error from here on.
+func clientMCPFromProto(in []*mecatlv1.McpServerSpec) []mcp.ClientServer {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make([]mcp.ClientServer, 0, len(in))
+	for _, m := range in {
+		out = append(out, mcp.ClientServer{
+			Name:    m.GetName(),
+			Command: m.GetCommand(),
+			URL:     m.GetUrl(),
+			Type:    m.GetType(),
+			Headers: m.GetHeaders(),
+		})
+	}
+	return out
 }
 
 // GetServerInfo returns safe build, composition, and the caller-selected provider endpoint projection.
@@ -1207,9 +1251,14 @@ func (h *HarnessServer) StreamSessionEvents(req *mecatlv1.StreamSessionEventsReq
 	// user prompts (they ARE the transcript). So relay ALL events through toProto,
 	// including the three log-only kinds. They are already metadata-only/redacted by
 	// construction (gauntlet #7). Do NOT copy the live-relay filter here.
+	// RequestManifest and NetworkAttempt remain debugger-only even on durable
+	// read-back; neither has a public proto projection.
 	for ev, iterErr := range events {
 		if iterErr != nil {
 			return status.Error(codes.Internal, iterErr.Error())
+		}
+		if !isPublicEvent(ev) {
+			continue
 		}
 		if err := stream.Send(toProto(ev)); err != nil {
 			return err
@@ -1280,6 +1329,76 @@ func (h *HarnessServer) StreamSessionLive(req *mecatlv1.StreamSessionLiveRequest
 	}
 }
 
+// WatchSessionEvents is the DURABLE replay-then-follow stream (issue #821, ADR
+// 0250): a thin transport over Service.WatchSessionEvents.
+//
+// The SSE route GET /v1/sessions/{id}/watch consumes the SAME service method, so
+// the two transports deliver identical envelope sequences by construction rather
+// than by parallel maintenance (AC7.3). Everything below is framing.
+//
+// Relay discipline mirrors StreamSessionEvents, NOT the live wire: this is the
+// READ-BACK of the durable log, so ALL events are relayed including the three
+// log-only kinds (EvApproval/EvCompactionArchive/EvUserPrompt) — a client
+// replaying a session wants the verdicts and prompts, as they ARE the transcript.
+// Do NOT copy relayLiveEvent's filter here.
+//
+// A Send error means the client is gone: break out of the iterator, which
+// releases the watch and its backend read per port.CursorEventLog's contract.
+// There is no drain-to-discard to do — unlike a live relay, this stream pulls
+// from durable storage and has no run whose emits could wedge behind it.
+func (h *HarnessServer) WatchSessionEvents(req *mecatlv1.WatchSessionEventsRequest, stream grpc.ServerStreamingServer[mecatlv1.WatchSessionEventsResponse]) error {
+	if req.GetSessionId() == "" {
+		return status.Error(codes.InvalidArgument, ErrInvalidArgument.Error())
+	}
+	envelopes, err := h.svc.WatchSessionEvents(stream.Context(),
+		session.SessionID(req.GetSessionId()), port.Cursor(req.GetCursor()), req.GetRunId())
+	if err != nil {
+		return toStatus(err)
+	}
+	for env, iterErr := range envelopes {
+		if iterErr != nil {
+			// toStatus classifies through the shared registry, so a lagging
+			// termination, a delivery gap, and a cursor fault each reach the client
+			// as the same code the HTTP surface would report.
+			return toStatus(iterErr)
+		}
+		if err := stream.Send(toProtoWatchEnvelope(env)); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// toProtoWatchEnvelope projects one delivery envelope onto the wire.
+//
+// A nil Event stays nil — the phase-only frames (the replay/live boundary and
+// every gap) carry no event by design, and synthesising an empty one would make
+// a client's "did anything happen?" check answer yes.
+func toProtoWatchEnvelope(env WatchEnvelope) *mecatlv1.WatchSessionEventsResponse {
+	out := &mecatlv1.WatchSessionEventsResponse{
+		// Phase is a harness constant from a closed set, so it needs no repair.
+		//
+		// Cursor DOES get the producer-influenced-string repair, because it is not
+		// as harness-authored as it looks: the four in-tree backends mint ASCII
+		// (base64url, or a Redis XADD id), but the cursor is BACKEND-OWNED and a
+		// third-party port.CursorEventLog may mint anything. Without the repair,
+		// one invalid byte in a cursor kills the whole stream at proto marshal —
+		// the issue-#402 failure mode the mapper's mechanical backstop exists to
+		// prevent. Repairing it does corrupt that token, and that is the better
+		// failure: a corrupt cursor is rejected LOUDLY as ErrCursorMalformed at the
+		// next resume (never silently resolved to a wrong position), whereas a dead
+		// stream takes the session's whole live view with it. It also keeps the two
+		// transports byte-identical — SSE encodes this same struct through
+		// encoding/json, which would substitute U+FFFD on its own and diverge.
+		Cursor: valid(string(env.Cursor)),
+		Phase:  env.Phase,
+	}
+	if env.Event != nil {
+		out.Event = toProto(*env.Event)
+	}
+	return out
+}
+
 // relayLiveEvent reports whether a live-subscription event should be relayed on
 // the client wire. It mirrors the live Converse relay's log-only skip with ONE
 // narrow exception: a fire-result DELIVERY note (an EvUserPrompt whose text
@@ -1288,7 +1407,14 @@ func (h *HarnessServer) StreamSessionLive(req *mecatlv1.StreamSessionLiveRequest
 // log-only kinds (EvApproval, EvCompactionArchive) and a non-delivery
 // EvUserPrompt stay skipped (they are persistence-only; the client holds its
 // own verdict/compaction/prompt view).
+func isPublicEvent(ev session.Event) bool {
+	return ev.Type != session.EvNetworkAttempt && ev.Type != session.EvRequestManifest
+}
+
 func relayLiveEvent(ev session.Event) bool {
+	if !isPublicEvent(ev) {
+		return false
+	}
 	switch ev.Type {
 	case session.EvApproval, session.EvCompactionArchive:
 		return false

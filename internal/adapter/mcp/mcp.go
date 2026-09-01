@@ -33,6 +33,7 @@ import (
 	"net"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strings"
 	"sync"
 	"time"
@@ -80,6 +81,11 @@ type ServerConfig struct {
 	// defaultConnectTimeout is used. It does not bound later tool calls, which
 	// are governed by the per-call context.
 	Timeout time.Duration
+	// NoRedirects refuses HTTP redirects on this server's client. It is set for
+	// CLIENT-SUPPLIED specs (PartitionClientServers) and left false for
+	// operator-configured servers, so the operator path keeps Go's default
+	// behaviour byte-for-byte. See newMCPHTTPClient for why the two differ.
+	NoRedirects bool
 }
 
 // ValidateClientURL validates a CLIENT-PROVIDED Streamable HTTP MCP endpoint
@@ -89,13 +95,33 @@ type ServerConfig struct {
 // gated this way, since an operator may legitimately point a server at an
 // internal host.
 //
-// The contract: the URL must be absolute and carry a host, and the scheme must be
-// "https" — OR "http" only when the host is an explicit loopback address
-// ("127.0.0.1", "::1", "localhost"). Everything else (file/ftp/gopher/etc., a
-// relative URL, a hostless URL, or plaintext http to a non-loopback host) is
-// rejected. Note this is a SCHEME/host-shape allowlist, not metadata-IP
-// filtering: the editor is a local-trusted process, so we filter the obviously
-// dangerous shapes rather than resolving and blocking link-local/metadata IPs.
+// The contract: the URL must be absolute, carry a host, carry NO userinfo, and
+// use scheme "https" — OR "http" only when the host is an explicit loopback
+// address ("127.0.0.1", "::1", "localhost"). Everything else (file/ftp/gopher/
+// etc., a relative URL, a hostless URL, credentials in userinfo, or plaintext
+// http to a non-loopback host) is rejected.
+//
+// KNOW WHAT THIS IS NOT. It is a scheme/host-SHAPE allowlist, and it is the
+// weaker of this repo's two outbound-URL standards. It does NOT screen IP ranges,
+// so it permits https:// to 169.254.169.254, metadata.google.internal, 10.0.0.1,
+// or the inet_aton form 2130706433; and it validates by NAME while the dial
+// resolves by name again, so it does not close DNS rebinding. The stronger
+// standard is session.ValidateMediaURL + session.ValidateResolvedIP (used by
+// FetchMcpResource and webfetch), which screens ranges, normalises numeric and
+// trailing-dot hosts, and re-validates every redirect hop against a pinned
+// dialer.
+//
+// Two things bound the residual here. Every spec this validator accepts is
+// mounted with ServerConfig.NoRedirects, so newMCPHTTPClient refuses redirects and
+// a vetted URL cannot 302 the daemon onward to an address this check would have
+// refused — which was the sharper half of the gap.
+// And headerRoundTripper is origin-scoped, so credentials never travel to a host
+// other than the one they were configured for. What remains is blind SSRF from
+// the daemon's own network position (and loopback port probing) by a caller that
+// already reaches a UNIX-socket-only API — a local process the operator trusts.
+// Adopting the pinned-dialer standard here is the right fix and is deliberately
+// NOT bundled into the client-MCP wire feature; it changes the operator MCP path
+// too.
 func ValidateClientURL(raw string) error {
 	raw = strings.TrimSpace(raw)
 	if raw == "" {
@@ -103,14 +129,28 @@ func ValidateClientURL(raw string) error {
 	}
 	u, err := url.Parse(raw)
 	if err != nil {
-		return fmt.Errorf("mcp: invalid client MCP URL %q: %w", raw, err)
+		// Neither the raw string nor the *url.Error is echoed: url.Error embeds the
+		// URL it failed on, so %w would reintroduce exactly what RedactURL exists to
+		// strip. The inner reason is unwrapped and carries no URL.
+		return fmt.Errorf("mcp: client MCP URL is not parseable: %v", innerURLError(err))
 	}
 	if !u.IsAbs() {
-		return fmt.Errorf("mcp: client MCP URL %q must be absolute", raw)
+		return fmt.Errorf("mcp: client MCP URL %q must be absolute", RedactURL(raw))
 	}
 	host := u.Hostname()
 	if host == "" {
-		return fmt.Errorf("mcp: client MCP URL %q has no host", raw)
+		return fmt.Errorf("mcp: client MCP URL %q has no host", RedactURL(raw))
+	}
+	// USERINFO is an unguarded credential channel and must not be a back door
+	// around the Headers discipline. net/http promotes URL.User to a Basic
+	// Authorization header automatically, so "https://user:pass@host/mcp" is a
+	// fully functional credential path that never passes through ServerConfig.
+	// Headers and inherits none of its secret-shaped protections — not the
+	// no-logging rule, not the no-event rule, not the no-error rule. Reject it and
+	// say where credentials belong. (Errors here use RedactURL for the same reason:
+	// a rejection message must not be the thing that leaks the secret.)
+	if u.User != nil {
+		return errors.New("mcp: client MCP URL must not carry userinfo credentials; use headers")
 	}
 	switch strings.ToLower(u.Scheme) {
 	case "https":
@@ -119,10 +159,179 @@ func ValidateClientURL(raw string) error {
 		if isLoopbackHost(host) {
 			return nil
 		}
-		return fmt.Errorf("mcp: client MCP URL %q uses plaintext http to a non-loopback host; use https", raw)
+		return fmt.Errorf("mcp: client MCP URL %q uses plaintext http to a non-loopback host; use https", RedactURL(raw))
 	default:
-		return fmt.Errorf("mcp: client MCP URL %q scheme %q not allowed (https, or http to loopback only)", raw, u.Scheme)
+		return fmt.Errorf("mcp: client MCP URL %q scheme %q not allowed (https, or http to loopback only)", RedactURL(raw), u.Scheme)
 	}
+}
+
+// RedactURL renders a client-supplied URL for a MESSAGE OR AN OPERATOR LOG with
+// any embedded credential removed: scheme://host/path only, dropping userinfo, the
+// whole query string, and the fragment.
+//
+// The query goes as a UNIT rather than being filtered key-by-key. A credential in
+// the query ("?access_token=...", "?key=...", "?sig=...") is syntactically
+// indistinguishable from a benign parameter, so a denylist of parameter names
+// would miss the next spelling; dropping the query costs a little diagnostic
+// detail and closes the class. userinfo is separately REJECTED outright by
+// ValidateClientURL — this is the backstop for the channel that cannot be.
+//
+// It is exported because composition logs these URLs too (the
+// client-MCP-unreachable WARN in internal/app), and one redaction policy shared is
+// the point: a second local copy is how the two drift.
+//
+// An unparseable or hostless input degrades to a placeholder rather than the raw
+// string, since that is precisely the case where echoing the input is the leak.
+func RedactURL(raw string) string {
+	u, err := url.Parse(strings.TrimSpace(raw))
+	if err != nil || u.Host == "" {
+		return "(redacted url)"
+	}
+	safe := url.URL{Scheme: u.Scheme, Host: u.Host, Path: u.Path}
+	return safe.String()
+}
+
+// urlInText matches a scheme-bearing URL embedded in free text. The terminator set
+// is deliberately small — whitespace, quotes, angle brackets, backslash, backtick —
+// because transport errors render URLs inside quotes (`Post "https://..."`) and
+// over-capturing a trailing comma or paren is harmless: RedactURL drops the query
+// regardless, so any junk lands in the discarded tail rather than in the output.
+var urlInText = regexp.MustCompile(`(?i)\bhttps?://[^\s"'` + "`" + `<>\\]+`)
+
+// RedactText scrubs every URL embedded in free text, replacing each with its
+// RedactURL form (scheme://host/path — no userinfo, no query, no fragment).
+//
+// It exists because redacting a ServerConfig.URL at a log site is NOT sufficient:
+// the ERROR logged beside it embeds the full request URL independently.
+// net/http's *url.Error carries it, and the MCP SDK formats it into its own
+// message text (`rejected by transport: Post "http://host/mcp?access_token=..."`),
+// so the URL arrives as a STRING inside a wrapped message rather than as an
+// unwrappable field — innerURLError cannot reach it and neither can any
+// error-chain approach. A text scrub is the only thing that does.
+//
+// This is why the redaction is a TEXT operation rather than a URL one: the
+// sensitive value can appear anywhere in a message composed by a layer we do not
+// control, including a future SDK version that words it differently.
+func RedactText(s string) string {
+	if s == "" {
+		return s
+	}
+	return urlInText.ReplaceAllStringFunc(s, RedactURL)
+}
+
+// RedactError renders err for a log with every URL it embeds redacted. A nil error
+// renders as the empty string.
+//
+// Prefer this over logging err directly ANYWHERE an MCP server's URL could reach
+// the error — which in practice means every MCP transport error, since the URL is
+// what the transport was asked to reach.
+func RedactError(err error) string {
+	if err == nil {
+		return ""
+	}
+	return RedactText(err.Error())
+}
+
+// redactedError renders a redacted message while preserving the ORIGINAL error
+// chain, so errors.Is / errors.As still see through it. That combination is the
+// point: callers legitimately branch on sentinels (ErrOAuthLoginRequired,
+// ErrOAuthUnavailable) and must keep doing so, while anything that PRINTS the
+// error gets the scrubbed text.
+//
+// Unwrap does expose the unredacted original, so a caller can still leak by
+// unwrapping and printing deliberately. That is an explicit act rather than the
+// default, which is the distinction this type exists to create.
+type redactedError struct {
+	inner error
+	msg   string
+}
+
+func (e *redactedError) Error() string { return e.msg }
+func (e *redactedError) Unwrap() error { return e.inner }
+
+// RedactErrorValue wraps err so that printing it cannot leak an embedded URL.
+// An error with nothing to redact is returned AS-IS, so the common case adds no
+// wrapper and no allocation.
+func RedactErrorValue(err error) error {
+	if err == nil {
+		return nil
+	}
+	raw := err.Error()
+	msg := RedactText(raw)
+	if msg == raw {
+		return err
+	}
+	return &redactedError{inner: err, msg: msg}
+}
+
+// redactingDiagnostics wraps a port.Diagnostics so every message and every
+// string/error attribute logged THROUGH IT has its embedded URLs scrubbed.
+//
+// It is applied once, at this package's diagnostics ENTRY POINTS (Connect and
+// NewManager), rather than at each of the package's log sites. That is the point:
+// there were four in-package sites logging a transport error (resource listing,
+// prompt listing, list refresh, reconnect), every one of them able to carry a
+// credential-bearing URL, and dressing each call individually leaves the next one
+// added to leak by default. Wrapping the sink makes the safe behaviour the
+// automatic one.
+//
+// Attribute KEYS are scrubbed too. They are harness-authored constants that never
+// contain a URL, so this is a no-op on them — but treating every string uniformly
+// removes the need for the wrapper to reason about slog's key/value positions,
+// which is exactly the kind of assumption that breaks quietly.
+type redactingDiagnostics struct{ inner port.Diagnostics }
+
+// redactDiagnostics wraps diag unless it is already wrapped, so the
+// NewManager -> Connect path does not double-decorate. Double scrubbing would be
+// harmless (RedactText is idempotent — a redacted URL has no query left to drop)
+// but the guard keeps the log path cheap.
+func redactDiagnostics(diag port.Diagnostics) port.Diagnostics {
+	if diag == nil {
+		return port.NopDiagnostics{}
+	}
+	if _, already := diag.(redactingDiagnostics); already {
+		return diag
+	}
+	return redactingDiagnostics{inner: diag}
+}
+
+func (d redactingDiagnostics) Log(ctx context.Context, level port.Level, msg string, attrs ...any) {
+	d.inner.Log(ctx, level, RedactText(msg), redactAttrs(attrs)...)
+}
+
+func (d redactingDiagnostics) With(attrs ...any) port.Diagnostics {
+	return redactingDiagnostics{inner: d.inner.With(redactAttrs(attrs)...)}
+}
+
+// redactAttrs scrubs the string and error values in a slog-style attribute list,
+// leaving every other type untouched. It copies rather than mutating in place: the
+// caller may reuse the slice, and a logger must never edit its caller's data.
+func redactAttrs(attrs []any) []any {
+	if len(attrs) == 0 {
+		return attrs
+	}
+	out := make([]any, len(attrs))
+	for i, a := range attrs {
+		switch v := a.(type) {
+		case string:
+			out[i] = RedactText(v)
+		case error:
+			out[i] = RedactError(v)
+		default:
+			out[i] = a
+		}
+	}
+	return out
+}
+
+// innerURLError unwraps a *url.Error to its underlying reason, which — unlike the
+// wrapper — does not embed the offending URL.
+func innerURLError(err error) error {
+	var uerr *url.Error
+	if errors.As(err, &uerr) && uerr.Err != nil {
+		return uerr.Err
+	}
+	return err
 }
 
 // isLoopbackHost reports whether host is an explicit loopback address that
@@ -284,6 +493,26 @@ func newMCPHTTPClient(cfg ServerConfig, oauth *OAuthController) *http.Client {
 		// Resource requests carrying restored or refreshed bearer tokens must use
 		// the same no-proxy, DNS-pinned destination policy as OAuth endpoints.
 		client.Transport = oauthResourceRoundTripper{base: oauth.transport}
+	} else if cfg.NoRedirects {
+		// NO REDIRECTS for a CLIENT-SUPPLIED endpoint. Go's default follows up to 10
+		// hops to ANY host, so a URL that passed ValidateClientURL's scheme/host
+		// shape check could 302 the daemon onward to an address that never would
+		// have — a cloud metadata endpoint, a private range, a loopback port.
+		// ValidateClientURL vets the URL the caller GAVE us; only this closes the one
+		// it can be sent to next. A Streamable-HTTP MCP endpoint has no legitimate
+		// need to redirect, so refusing costs nothing functional.
+		//
+		// Scoped to the client path ON PURPOSE. The OPERATOR path keeps Go's default
+		// (this branch is not taken) because an operator's endpoint is a URL they
+		// chose themselves and may legitimately redirect to a canonical path, and
+		// their credentials are already protected cross-origin by the origin-scoped
+		// headerRoundTripper. Disabling it there would be an unrequested behaviour
+		// change to a shipped path; here it closes an SSRF amplifier on a surface
+		// this feature is the first to expose to a wire caller.
+		//
+		// The OAuth branch above has its own stricter origin-pinned policy
+		// (mcpOAuthRedirectPolicy) and keeps it; this is the branch that had none.
+		client.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	}
 	if len(cfg.Headers) == 0 {
 		return client
@@ -313,9 +542,27 @@ func newMCPHTTPClient(cfg ServerConfig, oauth *OAuthController) *http.Client {
 // unavailable; callers (the composition root) are expected to log-and-skip such
 // a server rather than aborting the whole harness.
 func Connect(ctx context.Context, cfg ServerConfig, diag port.Diagnostics) (*Server, error) {
-	if diag == nil {
-		diag = port.NopDiagnostics{}
-	}
+	// REDACT AT THE SOURCE. Every error this package hands out is produced here or
+	// below, and net/http embeds the full request URL — query string included — in
+	// any connection error. Redacting at the one exit rather than at each consumer
+	// is what makes every downstream safe by default: NewManager's onError
+	// callback, NewManager's returned error, and the direct callers that return
+	// this error onward (internal/app's MCP login flow) all inherit it without
+	// needing to remember.
+	//
+	// The alternative — asking each consumer to call RedactError — was tried and
+	// demonstrably does not hold: of three NewManager callers, one logged the raw
+	// error and the raw URL, and the audit that was supposed to find it missed it.
+	srv, err := connect(ctx, cfg, diag)
+	return srv, RedactErrorValue(err)
+}
+
+func connect(ctx context.Context, cfg ServerConfig, diag port.Diagnostics) (*Server, error) {
+	// Wrap the sink so no log line from this package — nor from the *Server it
+	// builds, which inherits this diag — can carry a credential-bearing URL. See
+	// redactingDiagnostics for why this is a sink decoration rather than a fix at
+	// each call site.
+	diag = redactDiagnostics(diag)
 	if cfg.Name == "" {
 		return nil, errors.New("mcp: server config requires a Name")
 	}
@@ -780,9 +1027,16 @@ type Manager struct {
 // least one was configured, so the caller can distinguish "nothing usable" from
 // "all good".
 func NewManager(ctx context.Context, configs []ServerConfig, onError func(cfg ServerConfig, err error), diag port.Diagnostics) (*Manager, error) {
-	if diag == nil {
-		diag = port.NopDiagnostics{}
-	}
+	// Same sink decoration as Connect.
+	//
+	// Unlike an earlier version of this comment, callers do NOT have to redact what
+	// they are handed: the error reaches onError already redacted (Connect redacts
+	// at the source) and the ServerConfig is replaced with a safe view
+	// (safeCallbackConfig). The returned error is redacted too. That inversion is
+	// deliberate — "the consumer owns its own log site" was the documented contract,
+	// and one of three consumers still leaked, which is evidence the contract was
+	// the wrong shape rather than that the consumer was careless.
+	diag = redactDiagnostics(diag)
 	m := &Manager{}
 	if len(configs) == 0 {
 		return m, nil
@@ -820,16 +1074,40 @@ func NewManager(ctx context.Context, configs []ServerConfig, onError func(cfg Se
 		if r.err != nil {
 			lastErr = r.err
 			if onError != nil {
-				onError(r.cfg, r.err)
+				// The CONFIG is a second credential channel, independent of the error:
+				// a callback that logs sc.URL leaks a query token even when the error
+				// beside it is clean, and one that logs sc.Headers leaks a bearer
+				// outright. Connect's redaction cannot reach either, because the config
+				// is the caller's own value travelling back to it. So the callback gets
+				// a SAFE VIEW: URL redacted to scheme://host/path, Headers dropped.
+				//
+				// Names and everything else are preserved, which is what a callback
+				// actually needs — the three in-tree callbacks log Name, and one logs
+				// the URL for context. A future callback that genuinely needs the raw
+				// URL or the headers has to reach for the original config it passed in,
+				// which makes that a visible decision instead of an accident.
+				onError(safeCallbackConfig(r.cfg), r.err)
 			}
 			continue
 		}
 		m.servers = append(m.servers, r.srv)
 	}
 	if len(results) > 0 && len(m.servers) == 0 {
-		return m, fmt.Errorf("mcp: no servers could be connected: %w", lastErr)
+		// lastErr already arrives redacted from Connect; RedactErrorValue here is the
+		// belt on the braces, so a future change to this message cannot reintroduce a
+		// URL without the wrapper catching it.
+		return m, RedactErrorValue(fmt.Errorf("mcp: no servers could be connected: %w", lastErr))
 	}
 	return m, nil
+}
+
+// safeCallbackConfig returns cfg with its two credential-bearing fields made safe
+// for an error callback to log: the URL redacted, the headers dropped. Every other
+// field is preserved verbatim.
+func safeCallbackConfig(cfg ServerConfig) ServerConfig {
+	cfg.URL = RedactURL(cfg.URL)
+	cfg.Headers = nil
+	return cfg
 }
 
 // maxConnectConcurrency caps the number of MCP servers connecting in parallel.
@@ -850,6 +1128,57 @@ func (m *Manager) Tools() []tool.Tool {
 		all = append(all, s.Tools()...)
 	}
 	return all
+}
+
+// SelectedTools returns only direct tools from the named connected servers.
+// ceiling, when non-empty, is an exact persisted tool-name ceiling: every name
+// must still be advertised and no newly advertised tool is returned. The view
+// borrows this Manager and never owns or closes a connection.
+func (m *Manager) SelectedTools(names, ceiling []string) ([]tool.Tool, error) {
+	if len(names) == 0 {
+		if len(ceiling) != 0 {
+			return nil, errors.New("mcp: tool ceiling requires selected servers")
+		}
+		return nil, nil
+	}
+	if m == nil {
+		return nil, errors.New("mcp: no global manager is configured")
+	}
+	var selected []tool.Tool
+	for _, name := range names {
+		s, err := m.byName(name)
+		if err != nil {
+			return nil, err
+		}
+		tools := s.Tools()
+		if len(tools) == 0 {
+			return nil, fmt.Errorf("mcp: selected server %q advertises no tools", name)
+		}
+		selected = append(selected, tools...)
+	}
+	if len(ceiling) == 0 {
+		return selected, nil
+	}
+	current := make(map[string]tool.Tool, len(selected))
+	for _, candidate := range selected {
+		name := candidate.Spec().Name
+		if _, exists := current[name]; exists {
+			return nil, fmt.Errorf("mcp: duplicate selected tool %q", name)
+		}
+		current[name] = candidate
+	}
+	if len(current) != len(ceiling) {
+		return nil, fmt.Errorf("mcp: selected debug tool set changed (current=%d persisted=%d)", len(current), len(ceiling))
+	}
+	bounded := make([]tool.Tool, 0, len(ceiling))
+	for _, name := range ceiling {
+		candidate, ok := current[name]
+		if !ok {
+			return nil, fmt.Errorf("mcp: persisted debug tool %q is no longer available", name)
+		}
+		bounded = append(bounded, candidate)
+	}
+	return bounded, nil
 }
 
 // Provider is the read-side seam over the connected MCP servers' resources and
