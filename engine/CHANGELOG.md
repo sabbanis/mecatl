@@ -13,6 +13,14 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Generic authorization dispatch parking** — `agent.RunRequest.CanPresentAuthorization`
+  opt-in permits an attached main run to durably park a
+  `tool.AuthorizationRequester` call after permission and `PreToolUse` gates;
+  `agent.ResumeApprovalWith` carries the same explicit capability on restored
+  permission continuations. `agent.Run.Outcome` reports `RunOutcomeAuthorizationPending` for this
+  nonterminal close; no `session.StopReason` or `EvResult` is emitted. Added
+  (minor).
+
 - **Safe external-authorization events** — `session.EvAuthorizationRequired`,
   `session.EvAuthorizationResolved`, `session.AuthorizationStatus`, and
   `session.AuthorizationPayload` add a provider-neutral durable lifecycle grammar;
