@@ -4,7 +4,7 @@
 - Date: 2026-08-12
 - Scope: future execution-environment identity and capability seams; `engine/tool` Workspace version protocol; `engine/adapter/{fstools,memfs,nofs}`; `internal/adapter/{osfs,acp}`; per-session Workspace lifetime in `internal/adapter/server`
 - Supersedes: none
-- Superseded by: [ADR 0211](./0211-execution-environment-runtime-seam.md) — for decisions 1–3 (the staged deferral of the `Environment`/runner/forker/merger runtime seam) ONLY. ADR 0208's version-aware file mutation (decisions 4–6) remains authoritative.
+- Superseded by: [ADR 0211](./0211-execution-environment-runtime-seam.md) — for decisions 1–3 (the staged deferral of the `Environment`/runner/forker/merger runtime seam) ONLY; [ADR 0278](./0278-persistent-read-before-write-ledgers.md) — for decision 6 (live-Workspace/in-memory ledger lifetime) ONLY. ADR 0208's version-aware file mutation (decisions 4–5) remains authoritative.
 
 ## Context
 

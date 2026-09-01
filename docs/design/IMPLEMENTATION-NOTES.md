@@ -5783,22 +5783,36 @@ refs; a tiny `cat`/`write` test protocol; `FileVersion` CAS across handles; `con
 inside the adapter, NOT in `engine/session`). It is a contract proof only and is NOT wired by default
 `app.Build`. No production remote transport, flags, proto changes, or external dependencies.
 
-The first migration stage is the version protocol in `engine/tool/tool.go` (`FileVersion`,
-`Workspace`). Plain Read remains for non-agent consumers, but public Workspace exposes no
-unconditional mutation: concrete adapter/FileSystem Write methods are bootstrap/setup APIs outside the
-capability handed to tools. The built-in bodies use only the safe path:
+The version and ledger contracts live in `engine/tool/tool.go` (`FileVersion`, `Workspace`,
+`LedgerKey`) and `engine/tool/ledger.go` (`ReadLedger`, `ErrLedgerUnavailable`). They stay in core
+because `port` already imports `tool`; neither contract imports a root adapter or Redis dependency.
+A Workspace composes its file-content operations with exactly one independently selected,
+session-scoped ledger:
 
-1. `engine/adapter/fstools/read.go` (`ReadTool.Execute`) calls `ReadVersion` and records the exact
-   adapter-minted version; `RecordRead`/`RecordedVersion` perform no I/O. osfs and ACP ledger keys use
-   lexical Clean/Rel only: ordinary abs/relative forms converge, while physical symlink aliases may
-   safely miss and force another Read.
-2. `engine/adapter/fstools/edit.go` (`EditTool.Execute`) and existing-file Write require
-   `RecordedVersion`, make a current version-bearing read, reject a recorded/current mismatch, then
-   call conditional `ReplaceFile` against that current version.
+1. `engine/adapter/fstools/read.go` (`ReadTool.Execute`) calls `ReadVersion`, applies the Workspace
+   adapter's I/O-free lexical `LedgerKey`, and records the exact adapter-minted token. A record
+   failure is returned to the model and establishes no reusable evidence. Default osfs, memfs, ACP,
+   and remoteenv constructors select a fresh `engine/adapter/memledger/memledger.go` (`New`) ledger;
+   explicit constructors inject a different ledger without changing the file-content backend.
+2. `engine/adapter/fstools/edit.go` (`EditTool.Execute`) and existing-file Write call the
+   context-aware `RecordedVersion`. Ordinary absence keeps the familiar not-read refusal; storage,
+   decode, or corruption errors are distinct and fail closed before mutation. With valid evidence,
+   the tools read the current version, reject a recorded/current mismatch, then call conditional
+   `ReplaceFile` against that current version.
 3. New-file Write calls create-only `CreateFile`. A create race reports an existing-file conflict;
    there is no empty/`AnyVersion` overwrite sentinel.
-4. A successful create/replace records the returned new version so another mutation through the same
-   live Workspace remains valid.
+4. A successful create/replace records the returned new version. If that post-mutation ledger write
+   fails, the tool truthfully reports that content changed but evidence persistence failed; it does
+   not roll back content or claim the mutation was untouched, and another existing-file mutation
+   requires a successful Read.
+
+`engine/adapter/ledgerconformance/ledgerconformance.go` (`Run`) pins exact-token round-trip,
+absence, replacement, key isolation, cancellation, and concurrent access for each ledger adapter.
+`internal/adapter/redisstore/readledger.go` (`ReadLedger`, `DeleteReadLedger`) is the durable proof:
+one versioned Redis hash per session uses normalized paths as fields, borrows the Store's existing
+client-generation lifecycle, classifies unavailable/corrupt data with `tool.ErrLedgerUnavailable`,
+and idempotently deletes the whole scope before a deleted session ID is reused. It does no
+file-content I/O and is not production-default wiring.
 
 The final ReplaceFile is load-bearing: `engine/adapter/fstools/fstools_test.go`
 (`TestEditConditionalReplaceRejectsConcurrentChange`,
@@ -5825,18 +5839,27 @@ instances over an arbitrary backend are not claimed to be globally serialized. A
 POSIX process bypassing Workspace does not participate; local osfs is not claimed as kernel-level CAS.
 A future remote backend owes true backend CAS.
 
-The ledger belongs to the live Environment instance. The default Service path constructs a
-fresh Environment per run (Workspace + bound CommandRunner + EnvironmentRef);
-`internal/adapter/server/service.go` (`sessionEnvironments`)
-is the per-session override map: a surface adapter (the ACP editor-buffer adapter, the
-no-fs profile) registers a COMPLETE Environment override via `SetSessionEnvironment`
-that carries an accurate ref (Kind/ID) and the correct CommandRunner (nil for a
-file-less/buffer namespace). An override is preferred over a fresh factory build and is
-evicted on `CloseSession` / editor disconnect. Rebuilding a default Environment —
-including the next user run — resets its ledger, so Edit/overwrite is refused until Read
-records a version through that instance. The overrides are in-memory (restart loses them);
-a restarted session re-derives its Environment through the same rehydration path (no-fs
-profile, ACP adapter reconnect). **EnvironmentRef is now a DURABLE snapshot field (ADR 0214, issue #462 phase 3):** `EnvironmentRef` persists via `sessnap.Snapshot.EnvironmentRef` (Go 1.26 `omitzero` — a default/local session stays byte-identical to a pre-phase-3 snapshot); a non-in-tree Kind reattaches a live `Environment` at run entry through `server.Config.EnvironmentResolver` (nil/mismatch/nil-Workspace fails loudly with `ErrFailedPrecondition`, never a silent local fallback; the in-tree Kinds never reach the resolver — they re-derive through the factories; the resolver does NOT trigger per-session engine rehydration — environment reattachment and engine rehydration are INDEPENDENT). A default `local`/`nofs` ref is stamped at `createSession`; a legacy zero ref is stamped from the first resolved live Environment on the next save (no migration sweep). See the Persistence/reattachment subsection above for the full detail.
+Ledger scope is selected independently from Environment and filesystem-content scope. Default
+Workspace constructors create a fresh in-memory ledger, preserving the previous behavior: rebuilding
+a default Environment (including the next user run) starts with no evidence and Edit/overwrite is
+refused until Read records a version. Explicit constructors can instead bind a durable session ledger
+to that Workspace. This does not turn `internal/adapter/server/service.go`
+(`sessionEnvironments`) into a default Environment cache: it remains the per-session override map for
+complete Environments registered by surface adapters (ACP editor buffers and no-fs), with accurate
+Kind/ID and runner posture.
+
+Fork isolation is stricter than merely choosing a different Workspace root:
+`internal/adapter/forker/forker.go` (`Fork`) creates a fresh child `memledger` for both worktree and
+copy paths and passes it to the child Workspace constructor. It never copies or inherits the parent
+ledger, including when the parent selected a durable Redis ledger. Direct-write Subagents use the
+parent Environment and therefore its selected ledger, matching their intentional parent-workspace
+semantics.
+
+The Redis ledger's lifetime is the containing redisstore Store's client-generation lifetime; handles
+borrow that client rather than owning another connection. `DeleteReadLedger` is the explicit,
+idempotent correctness cleanup for session deletion/reuse. No TTL or age pruning is implied, and the
+ledger is not yet selected by default production composition. The ordinary in-memory override and
+restart behavior remains unchanged. **EnvironmentRef is a DURABLE snapshot field (ADR 0214, issue #462 phase 3):** `EnvironmentRef` persists via `sessnap.Snapshot.EnvironmentRef` (Go 1.26 `omitzero` — a default/local session stays byte-identical to a pre-phase-3 snapshot); a non-in-tree Kind reattaches a live `Environment` at run entry through `server.Config.EnvironmentResolver` (nil/mismatch/nil-Workspace fails loudly with `ErrFailedPrecondition`, never a silent local fallback; the in-tree Kinds never reach the resolver — they re-derive through the factories; the resolver does NOT trigger per-session engine rehydration — environment reattachment and engine rehydration are INDEPENDENT). A default `local`/`nofs` ref is stamped at `createSession`; a legacy zero ref is stamped from the first resolved live Environment on the next save (no migration sweep). See the Persistence/reattachment subsection above for the full detail.
 
 ### Path-escape posture (`docs/acceptance/path-escape-posture.md` + ADR 0080)
 

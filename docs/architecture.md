@@ -45,7 +45,7 @@ This page is the overview and router; the big picture and the layering rule are 
 **Foundations** (the linear spine — read in order):
 
 - **[The domain model](architecture/domain-model.md)** — the Session aggregate, Conversation, Events, ToolCall/ToolResult value objects.
-- **[The ports (`engine/port`)](architecture/ports.md)** — the seams the loop consumes: `LLMProvider`, `SessionStore`, `PermissionPolicy`, `HookRunner`, and the `tool.Workspace`/`FileSystem` seam.
+- **[The ports (`engine/port`)](architecture/ports.md)** — the seams the loop consumes: `LLMProvider`, `SessionStore`, `PermissionPolicy`, `HookRunner`, and the `tool.Workspace`/`FileSystem`/`ReadLedger` seam.
 - **[The agent loop & permission pause/resume](architecture/agent-loop.md)** — `Engine.Run` / drive algorithm, dispatch (read-parallel / mutate-serial), and permission pause/resume.
 
 **Topic branches** (stand alone; each lists its prerequisite):
@@ -275,7 +275,7 @@ flowchart LR
   subgraph DOMAIN["domain (no infra imports)"]
     sess["engine/session\nSession · Conversation · Event\nToolCall · ToolResult · Usage\n(inert labels: Profile · ProviderID · ModelID · ReasoningEffort · Title)"]
     gov["engine/governance\nEffect · Decision · Rule · Scope\nHookEvent · Evaluator · bash.go"]
-    tl["engine/tool\nTool · ToolSpec · Catalog · Disclosable\nFileSystem · Workspace · Environment · CommandRunner\nMemoryStore · EnvironmentForker · EnvironmentMerger · ToolSearch"]
+    tl["engine/tool\nTool · ToolSpec · Catalog · Disclosable\nFileSystem · Workspace · ReadLedger · Environment · CommandRunner\nMemoryStore · EnvironmentForker · EnvironmentMerger · ToolSearch"]
     pr["engine/prompt\nLayered · Build · Env · toolDisciplineHints\nInstructionAssembler · SoulSource · RulesSource · CommandExpander\n(model-neutral; per-model agencyDelta lives in internal/app)"]
   end
 
@@ -286,7 +286,7 @@ flowchart LR
 
   subgraph DRIVEN["driven adapters — engine/adapter + internal/adapter"]
     oai["openai · mockllm"]
-    fs["osfs (+CommandRunner) · memfs"]
+    fs["osfs (+CommandRunner) · memfs · memledger · redisstore ReadLedger"]
     st["memstore · jsonlstore · redisstore · sessnap"]
     tools["tools (Read/Edit/Write/Grep/Glob/WebFetch/WebSearch + optional Bash)"]
     pp["permpolicy · hookexec · modelhook"]
@@ -568,8 +568,13 @@ Two deliberate cycle-breaks worth noting, documented in code:
   tool obtains `env.CommandRunner()`. Workspace file mutation is version-aware:
   agent-facing Read records an opaque `FileVersion`, new-file Write is create-only,
   and Edit/existing-file Write finish with conditional replace. Public Workspace
-  exposes no unconditional mutation; its ledger belongs to the live
-  Environment instance and resets whenever the default Service factory rebuilds it.
+  exposes no unconditional mutation. Its file-content backend and session-scoped
+  `tool.ReadLedger` are independently selected: default Workspace constructors use a
+  fresh in-memory ledger, while a caller may inject a durable ledger without changing
+  filesystem storage. Ledger absence is an ordinary read-before-mutate refusal;
+  storage/decode/corruption errors fail closed. Forked Environments receive a fresh
+  child ledger rather than inheriting parent evidence, and the final conditional
+  `ReplaceFile` remains the concurrency guard. See [ADR 0278](adr/0278-persistent-read-before-write-ledgers.md).
   As of [ADR 0214](adr/0214-environment-persistence.md), `EnvironmentRef` is a DURABLE
   snapshot field: a non-in-tree ref persists across a restart and reattaches a live
   `Environment` at run entry through `server.Config.EnvironmentResolver`; the in-tree

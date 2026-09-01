@@ -2,7 +2,7 @@
 
 > Part of the [mecatl architecture guide](../architecture.md).
 
-**What this covers:** the port interfaces the loop consumes (`LLMProvider`, `SessionStore`, `PermissionPolicy`, `HookRunner`, `EventSink`, `EventLog`, `ToolCallRecorder`, `Diagnostics`, `Clock`, `SessionLease`), the `LLMRequest`/`Chunk` stream types, and the `tool.Workspace`/`FileSystem`/`CommandRunner` seam (which live in `engine/tool` to break a port↔tool cycle).
+**What this covers:** the port interfaces the loop consumes (`LLMProvider`, `SessionStore`, `PermissionPolicy`, `HookRunner`, `EventSink`, `EventLog`, `ToolCallRecorder`, `Diagnostics`, `Clock`, `SessionLease`), the `LLMRequest`/`Chunk` stream types, and the `tool.Workspace`/`FileSystem`/`ReadLedger`/`CommandRunner` seam (which lives in `engine/tool` to break a port↔tool cycle).
 
 **Prerequisites:** [the domain model](domain-model.md) — the value objects the ports carry.
 
@@ -78,7 +78,7 @@ name→Tool registry with `Register`/`MustRegister`/`Lookup`/`Tools`. Its
 `Specs(mode)` and `Available(mode)` apply **plan-mode filtering at the catalog
 level**: in `ModePlan` only `ReadOnly()` tools are exposed, ordered by name.
 
-`FileSystem`, `Workspace`, and `Environment` live here (not in `port`) to break
+`FileSystem`, `Workspace`, `ReadLedger`, and `Environment` live here (not in `port`) to break
 the `port↔tool` cycle. `Tool.Execute` takes a `tool.Environment` (ADR 0211) — an
 immutable, per-namespace capability bundle carrying a `Workspace`
 (`env.Workspace()`), an optional bound `CommandRunner` (`env.CommandRunner()`; nil
@@ -89,20 +89,29 @@ when the namespace has no shell), and a backend identity ref
 `../` escapes), exposes the
 read-only `Root/Read/Stat` surface plus `Glob/Grep`, and carries the version-aware
 mutation protocol from [ADR 0208](../adr/0208-execution-environment.md).
-`ReadVersion` returns content plus an opaque `FileVersion`; `RecordRead` stores
-that exact version with no I/O, and `RecordedVersion` is the I/O-free ledger
-lookup. Ledger keys use lexical Clean/Rel only: ordinary absolute-root/relative
-forms converge, cleaned out-of-root absolutes converge, and physical symlink
-aliases may safely miss and force another Read. Agent-facing Read records the
-returned version. Edit and existing-file
-Write compare the recorded version with a current version-bearing read, then
-finish with conditional `ReplaceFile`; new-file Write uses create-only
-`CreateFile`. Public `Workspace` has no unconditional Write capability. Concrete
-adapters may retain bootstrap/setup writers outside the interface. The ledger is
-scoped to the live Environment instance (which owns the Workspace); the default
-Service factory builds a fresh Environment per run, while existing no-fs/ACP
-overrides (registered via `SetSessionEnvironment`) retain their owner-defined
-lifetime. Restarting the process loses in-memory overrides; a restarted session
+`ReadVersion` returns content plus an opaque `FileVersion`. `Workspace` composes
+its file-content operations with one independently selected, session-scoped
+`tool.ReadLedger`: `RecordRead` stores the exact token after I/O-free lexical
+Clean/Rel normalization, and `RecordedVersion` distinguishes a found token,
+ordinary absence, and an unavailable/corrupt backend. The ledger performs no
+file-content I/O or physical alias resolution. Default Workspace constructors
+select a fresh `engine/adapter/memledger` instance; explicit constructors can
+combine the same content backend with isolated or durable ledgers. Agent-facing
+Read reports a ledger-record failure and retains no usable evidence. Edit and
+existing-file Write fail closed on lookup errors, compare found evidence with a
+current version-bearing read, then finish with conditional `ReplaceFile`;
+new-file Write uses create-only `CreateFile`. Public `Workspace` has no
+unconditional Write capability, and concrete adapters may retain bootstrap/setup
+writers outside the interface. A successful create/replace records its returned
+version; if that post-mutation record fails, the tool reports the successful
+content mutation plus failed evidence persistence rather than claiming rollback.
+Forked Environments always receive a fresh child in-memory ledger, so parent read
+evidence never authorizes child mutations. Redisstore provides an optional durable
+ledger as one versioned hash per session, borrowing the Store's Redis-client
+lifecycle; `DeleteReadLedger` idempotently removes the session scope before ID
+reuse. It is not wired as the production default. See
+[ADR 0278](../adr/0278-persistent-read-before-write-ledgers.md).
+Restarting the process loses in-memory overrides; a restarted session
 re-derives its Environment through the same rehydration path (no-fs profile,
 ACP adapter reconnect). As of ADR 0214, `EnvironmentRef` is a DURABLE snapshot
 field: a non-in-tree ref persists and reattaches a live `Environment` at run

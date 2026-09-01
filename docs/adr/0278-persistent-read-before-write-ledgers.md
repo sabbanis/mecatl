@@ -1,6 +1,6 @@
 # ADR 0278 — Persistent read-before-write ledgers are independent storage
 
-- Status: Proposed
+- Status: Accepted
 - Date: 2026-08-26
 - Scope: Workspace read-before-write evidence, adapter composition, and durable ledger storage
 - Supersedes: ADR 0208 decision 6 only (live-Workspace/in-memory ledger lifetime)
