@@ -168,6 +168,67 @@ describe("provider management surface", () => {
     expect(testKey).not.toHaveBeenCalled();
   });
 
+  it("lists a settings-defined keyless custom provider as a normal row", () => {
+    // G1.3 (ADR 0238): an auth.method none provider has no auth.yaml block,
+    // so it reaches the UI only because the controller also lists the
+    // settings providers: section. keyPresent true = "no credential needed",
+    // so Set-as-active stays enabled.
+    render(
+      <ProviderSection
+        runtime={fakeRuntime()}
+        management={fakeManagement({
+          providers: [
+            {
+              name: "my-gateway",
+              configured: true,
+              keyPresent: true,
+              source: "settings.yaml",
+              testable: false,
+            },
+          ],
+        })}
+      />,
+    );
+    expect(screen.getByText("my-gateway")).toBeInTheDocument();
+    expect(screen.getByText(/settings\.yaml/)).toBeInTheDocument();
+  });
+
+  it("custom gateway flow emits both snippets and never a key input", async () => {
+    const user = userEvent.setup();
+    render(
+      <ProviderSection runtime={fakeRuntime()} management={fakeManagement()} />,
+    );
+    await user.click(screen.getByRole("button", { name: /Add provider/ }));
+    await user.click(await screen.findByRole("combobox"));
+    await user.click(
+      await screen.findByRole("option", { name: /Custom gateway/ }),
+    );
+
+    await user.type(screen.getByLabelText("Provider id"), "my-gateway");
+    await user.type(screen.getByLabelText("Base URL"), "https://gw.example/v1");
+    await user.type(screen.getByLabelText("Default model"), "org/model");
+
+    // Both copyable snippets: the settings providers: block (with the strict
+    // fields the daemon requires, default_model included) and the auth.yaml
+    // key block with its placeholder.
+    expect(
+      screen.getByText(/api_flavor: openai-responses/),
+    ).toBeInTheDocument();
+    expect(screen.getByText(/default_model: "org\/model"/)).toBeInTheDocument();
+    expect(screen.getByText(/method: api_key/)).toBeInTheDocument();
+    expect(screen.getByText(/api_key: <YOUR_KEY>/)).toBeInTheDocument();
+
+    // Rule 3 still holds with the custom form open: the inputs collect the
+    // NON-secret definition (id, URL, model) — nothing password-shaped, and
+    // no field whose name suggests a credential.
+    for (const input of document.querySelectorAll("input, textarea")) {
+      expect(input.getAttribute("type")).not.toBe("password");
+      expect(
+        `${input.getAttribute("id")} ${input.getAttribute("placeholder")}`,
+      ).not.toMatch(/key|token|secret/i);
+    }
+  });
+
   it("external mode renders the managed note and no management controls", () => {
     render(
       <ProviderSection

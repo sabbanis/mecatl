@@ -148,6 +148,7 @@ export function ProviderSection({
                   known={management.known}
                   configured={management.providers.map((p) => p.name)}
                   authFile={status.authFile}
+                  operatorSettings={status.operatorSettings}
                   reload={management.reload}
                   restartDaemon={management.restartDaemon}
                   restarting={management.busy === "restart"}

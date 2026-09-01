@@ -1,8 +1,16 @@
 import { describe, expect, it } from "vitest";
 import {
+  CUSTOM_PROVIDER_API_FLAVORS,
+  customProviderAuthSnippet,
+  customProviderProbeURL,
+  customProviderSettingsSnippet,
   KNOWN_AUTH_PROVIDERS,
   listAuthFileProviders,
+  listSettingsProviders,
+  RESERVED_CUSTOM_PROVIDER_IDS,
   removeAuthFileProvider,
+  validCustomProviderBaseURL,
+  validCustomProviderId,
   validProviderName,
 } from "./provider-auth.mjs";
 
@@ -195,7 +203,7 @@ describe("removeAuthFileProvider", () => {
 });
 
 describe("known provider registry", () => {
-  it("mirrors the daemon's closed set and never embeds a real key", () => {
+  it("mirrors the daemon's built-in set and never embeds a real key", () => {
     expect(KNOWN_AUTH_PROVIDERS.map((p) => p.name)).toEqual([
       "openrouter",
       "anthropic",
@@ -215,6 +223,241 @@ describe("known provider registry", () => {
     }
     for (const bad of ["", "-lead", "a/b", "a b", "a".repeat(65), "../x"]) {
       expect(validProviderName(bad), bad).toBe(false);
+    }
+  });
+});
+
+/**
+ * Custom ("Custom gateway") provider helpers, ADR 0238: what the dialog
+ * validates and emits must match mecated's strict operator-settings parse
+ * (internal/adapter/permconfig/providers.go) byte-for-byte in shape, or the
+ * copied snippet fails the daemon's startup.
+ */
+describe("custom provider id and base URL", () => {
+  it("accepts the daemon's lower-case DNS-label-like grammar", () => {
+    for (const good of ["g", "my-gateway", "a1", `a${"b".repeat(61)}c`]) {
+      expect(validCustomProviderId(good), good).toBe(true);
+    }
+  });
+
+  it("rejects bad shapes and every reserved built-in id", () => {
+    for (const bad of [
+      "",
+      "My-Gateway",
+      "-lead",
+      "trail-",
+      "under_score",
+      "a".repeat(64),
+      "a b",
+    ]) {
+      expect(validCustomProviderId(bad), bad).toBe(false);
+    }
+    // The daemon reserves the built-ins (reservedProviderIDs) — offering one
+    // would emit a snippet mecated refuses.
+    for (const reserved of RESERVED_CUSTOM_PROVIDER_IDS) {
+      expect(validCustomProviderId(reserved), reserved).toBe(false);
+    }
+    expect(RESERVED_CUSTOM_PROVIDER_IDS).toContain("openai");
+    expect(RESERVED_CUSTOM_PROVIDER_IDS).toContain("toolhive");
+  });
+
+  it("requires HTTPS with no userinfo, query, or fragment", () => {
+    expect(validCustomProviderBaseURL("https://gw.example/v1")).toBe(true);
+    expect(validCustomProviderBaseURL("https://gw.example:8443")).toBe(true);
+    for (const bad of [
+      "http://gw.example/v1",
+      "https://user:pass@gw.example",
+      "https://gw.example/v1?token=x",
+      "https://gw.example/v1#frag",
+      "not a url",
+      "",
+    ]) {
+      expect(validCustomProviderBaseURL(bad), bad).toBe(false);
+    }
+  });
+});
+
+describe("custom provider snippets", () => {
+  it("emits the exact settings providers: block the daemon parses", () => {
+    const snippet = customProviderSettingsSnippet({
+      id: "my-gateway",
+      baseURL: "https://gw.example/v1",
+      defaultModel: "org/model:free",
+      apiFlavor: "openai-responses",
+      authMethod: "api_key",
+    });
+    expect(snippet).toBe(
+      [
+        "providers:",
+        "  my-gateway:",
+        '    base_url: "https://gw.example/v1"',
+        '    default_model: "org/model:free"',
+        "    api_flavor: openai-responses",
+        "    auth:",
+        "      method: api_key",
+        "",
+      ].join("\n"),
+    );
+  });
+
+  it("defaults any non-api_key auth to the daemon's none", () => {
+    const snippet = customProviderSettingsSnippet({
+      id: "open-gw",
+      baseURL: "https://gw.example",
+      defaultModel: "m",
+      apiFlavor: "anthropic-messages",
+      authMethod: "none",
+    });
+    expect(snippet).toContain("      method: none");
+    expect(snippet).not.toContain("api_key");
+  });
+
+  it("emits an auth.yaml key block with a placeholder, never a value", () => {
+    expect(customProviderAuthSnippet("my-gateway")).toBe(
+      "providers:\n  my-gateway:\n    api_key: <YOUR_KEY>\n",
+    );
+  });
+
+  it("round-trips: the emitted settings snippet lists back verbatim", () => {
+    const snippet = customProviderSettingsSnippet({
+      id: "round-trip",
+      baseURL: "https://gw.example/v1",
+      defaultModel: "m1",
+      apiFlavor: "openai-chat-completions",
+      authMethod: "none",
+    });
+    expect(listSettingsProviders(snippet)).toEqual([
+      {
+        name: "round-trip",
+        baseURL: "https://gw.example/v1",
+        defaultModel: "m1",
+        apiFlavor: "openai-chat-completions",
+        authMethod: "none",
+      },
+    ]);
+  });
+});
+
+describe("listSettingsProviders", () => {
+  const settings = [
+    "# operator settings",
+    "models:",
+    "  default: x",
+    "providers:",
+    "  keyed-gw:",
+    '    base_url: "https://keyed.example/v1"',
+    "    default_model: m-keyed",
+    "    api_flavor: openai-responses",
+    "    auth:",
+    "      method: api_key",
+    "  open-gw:",
+    "    base_url: https://open.example",
+    "    default_model: m-open",
+    "    api_flavor: anthropic-messages",
+    "    auth:",
+    "      method: none",
+    "  implicit-gw:",
+    "    base_url: https://implicit.example",
+    "    default_model: m-implicit",
+    "    api_flavor: openai-chat-completions",
+    "permissions:",
+    "  allow: []",
+    "",
+  ].join("\n");
+
+  it("lists every custom definition with its non-secret shape", () => {
+    expect(listSettingsProviders(settings)).toEqual([
+      {
+        name: "keyed-gw",
+        baseURL: "https://keyed.example/v1",
+        defaultModel: "m-keyed",
+        apiFlavor: "openai-responses",
+        authMethod: "api_key",
+      },
+      {
+        name: "open-gw",
+        baseURL: "https://open.example",
+        defaultModel: "m-open",
+        apiFlavor: "anthropic-messages",
+        authMethod: "none",
+      },
+      {
+        // No auth block = the daemon's default, none.
+        name: "implicit-gw",
+        baseURL: "https://implicit.example",
+        defaultModel: "m-implicit",
+        apiFlavor: "openai-chat-completions",
+        authMethod: "none",
+      },
+    ]);
+  });
+
+  it("returns null when the text has no providers: key (the capture fold)", () => {
+    // Distinct from []: mecated captures the section whole-block
+    // first-non-nil across operator files, so a caller folding an imported
+    // operator-settings.yaml over the user-global one needs the difference.
+    expect(listSettingsProviders("models:\n  default: x\n")).toBeNull();
+    expect(listSettingsProviders("")).toBeNull();
+    expect(listSettingsProviders("providers: {}\n")).toEqual([]);
+  });
+
+  it("drops entries whose id the daemon would refuse", () => {
+    const text = [
+      "providers:",
+      "  Bad_Name:",
+      "    base_url: https://x.example",
+      "  openai:", // reserved built-in
+      "    base_url: https://y.example",
+      "  fine:",
+      "    base_url: https://z.example",
+    ].join("\n");
+    expect(listSettingsProviders(text)?.map((p) => p.name)).toEqual(["fine"]);
+  });
+
+  it("stops at the first dedented top-level key", () => {
+    const text =
+      "providers:\n  a-gw:\n    base_url: https://a.example\nother:\n  b-gw:\n    base_url: https://b.example\n";
+    expect(listSettingsProviders(text)?.map((p) => p.name)).toEqual(["a-gw"]);
+  });
+});
+
+describe("customProviderProbeURL", () => {
+  it("builds a models-list probe per flavor against the configured base", () => {
+    expect(
+      customProviderProbeURL("openai-responses", "https://gw.example/v1"),
+    ).toBe("https://gw.example/v1/models");
+    expect(
+      customProviderProbeURL(
+        "openai-chat-completions",
+        "https://gw.example/v1/",
+      ),
+    ).toBe("https://gw.example/v1/models");
+    expect(
+      customProviderProbeURL("anthropic-messages", "https://gw.example"),
+    ).toBe("https://gw.example/models?limit=1");
+  });
+
+  it("refuses unknown flavors and unprobeable base URLs", () => {
+    expect(customProviderProbeURL("grpc-exotic", "https://gw.example")).toBe(
+      "",
+    );
+    expect(
+      customProviderProbeURL("openai-responses", "http://gw.example"),
+    ).toBe("");
+    expect(customProviderProbeURL("openai-responses", "")).toBe("");
+  });
+
+  it("covers exactly the daemon's closed api_flavor enum", () => {
+    expect(CUSTOM_PROVIDER_API_FLAVORS).toEqual([
+      "openai-responses",
+      "openai-chat-completions",
+      "anthropic-messages",
+    ]);
+    for (const flavor of CUSTOM_PROVIDER_API_FLAVORS) {
+      expect(
+        customProviderProbeURL(flavor, "https://gw.example"),
+        flavor,
+      ).not.toBe("");
     }
   });
 });

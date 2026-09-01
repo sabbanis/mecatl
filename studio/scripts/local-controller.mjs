@@ -1,8 +1,9 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
 import {
   lstat,
   mkdir,
+  open,
   readdir,
   readFile,
   rename,
@@ -20,8 +21,10 @@ import {
   validSkillName,
 } from "../src/lib/controller-security.mjs";
 import {
+  customProviderProbeURL,
   KNOWN_AUTH_PROVIDERS,
   listAuthFileProviders,
+  listSettingsProviders,
   removeAuthFileProvider,
   validProviderName,
 } from "../src/lib/provider-auth.mjs";
@@ -59,6 +62,30 @@ const memoryDir = resolve(workspace, ".scratch/studio-memory");
 const authFile = process.env.XDG_CONFIG_HOME
   ? resolve(process.env.XDG_CONFIG_HOME, "mecatl/auth.yaml")
   : resolve(homedir(), ".config/mecatl/auth.yaml");
+// The user-global operator settings file, same XDG convention as auth.yaml.
+// mecated always reads it at the operator tier; it is where a hand-added
+// custom `providers:` block (ADR 0238) lives unless an imported
+// operator-settings.yaml (a CLI-tier file, which wins whole-block) carries
+// its own.
+const userSettingsFile = process.env.XDG_CONFIG_HOME
+  ? resolve(process.env.XDG_CONFIG_HOME, "mecatl/settings.yaml")
+  : resolve(homedir(), ".config/mecatl/settings.yaml");
+// mecated's --ready-file target: the atomically-published mecated-ready/1
+// document carrying the RESOLVED listener addresses (the daemon binds
+// 127.0.0.1:0 and reports what the kernel picked), pid, api_major, features,
+// and deployment. Written only after every listener is up, never removed by
+// the daemon — the controller unlinks the stale one before each spawn.
+const readyFilePath = resolve(studioStateDir, "mecated-ready.json");
+// The named FIFO backing --lifetime-pipe-fd. mecated fstat's the descriptor
+// and rejects anything that is not a real pipe (S_IFIFO) — and Node's stdio
+// "pipe" entries are AF_UNIX socketpairs — so the pipe is made with
+// mkfifo(1) and its NAME is unlinked as soon as both ends are open.
+const lifetimeFifoPath = resolve(studioStateDir, "mecated-lifetime.fifo");
+// How long to wait for the ready file. Remote MCP gateways may cold-start and
+// mecatl gives their initialize handshake up to 30 seconds; MCP construction
+// happens during composition, which completes BEFORE the ready file is
+// written, so the wait stays comfortably longer than that.
+const readyWaitMs = 60_000;
 
 /** auth.yaml's text, or "" when it does not exist / cannot be read. */
 async function readAuthFileText() {
@@ -79,6 +106,45 @@ async function listConfiguredProviderNames() {
   return listAuthFileProviders(await readAuthFileText()).map(
     (provider) => provider.name,
   );
+}
+
+/**
+ * The operator-defined custom providers (ADR 0238) mecated will actually
+ * see, mirroring its whole-block first-non-nil `providers:` capture across
+ * the operator tier: the imported operator-settings.yaml (the CLI-tier file
+ * this controller passes) is consulted first, then the user-global
+ * settings.yaml. The section is non-secret by design — ids, flavors, base
+ * URLs, auth methods; any key stays in auth.yaml.
+ */
+async function listCustomSettingsProviders() {
+  const sources = operatorSettingsActive
+    ? [operatorSettingsFile, userSettingsFile]
+    : [userSettingsFile];
+  for (const file of sources) {
+    let text;
+    try {
+      text = await readFile(file, "utf8");
+    } catch {
+      continue;
+    }
+    const providers = listSettingsProviders(text);
+    if (providers !== null) return providers;
+  }
+  return [];
+}
+
+/**
+ * Every provider name the daemon can be started on: the auth.yaml blocks
+ * plus the settings-defined custom providers — a keyless
+ * (`auth.method: none`) custom provider never appears in auth.yaml, so the
+ * auth scan alone would refuse to select it.
+ */
+async function listSelectableProviderNames() {
+  const names = await listConfiguredProviderNames();
+  for (const provider of await listCustomSettingsProviders()) {
+    if (!names.includes(provider.name)) names.push(provider.name);
+  }
+  return names;
 }
 
 // ── Provider management ─────────────────────────────────────────────────────
@@ -161,14 +227,31 @@ function clampProviderError(text) {
 }
 
 /**
- * Runs the one bounded probe for a provider's stored key. Returns the JSON
- * the route answers with: {ok:true} | {ok:false, status, rejected?, error}.
+ * The one keyed probe request for a CUSTOM (settings-defined, ADR 0238)
+ * provider: a models listing against ITS configured base URL, with the
+ * header shape its api_flavor dictates. Controller-local for the same reason
+ * readProviderCredential is — it carries the key.
+ */
+function customProviderKeyProbe(definition, key) {
+  const url = customProviderProbeURL(definition.apiFlavor, definition.baseURL);
+  if (definition.apiFlavor === "anthropic-messages") {
+    return {
+      url,
+      headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
+    };
+  }
+  return { url, headers: { Authorization: `Bearer ${key}` } };
+}
+
+/**
+ * Runs the one bounded probe ({url, headers}) for a provider's stored key.
+ * Returns the JSON the route answers with:
+ * {ok:true} | {ok:false, status, rejected?, error}.
  * A 401/403 is the provider saying the KEY is bad; anything else (5xx,
  * timeout, DNS) is an infrastructure answer, reported distinctly so a red
  * "key rejected" dot is never shown for a provider outage.
  */
-async function probeProviderKey(name, key) {
-  const probe = providerKeyProbes[name](key);
+async function probeProviderKey(probe) {
   let response;
   try {
     response = await fetch(probe.url, {
@@ -398,6 +481,10 @@ allowedOrigins.add(studioPublicOrigin);
 let child = null;
 let provider = "offline mock";
 let mecatlBaseURL = "";
+// What the child's ready file reported at the last successful start: the
+// non-secret compatibility descriptor a parent may surface (H1.3). Null
+// until a child has published one.
+let readyInfo = null;
 let gateway = null;
 let modelRouterConfig = null;
 let operatorSettingsActive = false;
@@ -443,17 +530,77 @@ async function readBody(request, limit = 1_048_576) {
   return Buffer.concat(chunks);
 }
 
-async function pickLoopbackPort() {
-  const probe = http.createServer();
-  await new Promise((resolveListen, reject) => {
-    probe.once("error", reject);
-    probe.listen(0, "127.0.0.1", resolveListen);
+/**
+ * A REAL pipe for mecated's --lifetime-pipe-fd. The daemon fstat's the
+ * inherited descriptor and rejects anything that is not S_IFIFO — and Node's
+ * stdio "pipe" entries are AF_UNIX socketpairs — so the pipe is a named FIFO
+ * made with mkfifo(1), both ends opened, and the name unlinked (the
+ * descriptors outlive it). The controller holds the WRITE end and never
+ * writes: if this process dies — SIGKILL included — the kernel closes it,
+ * the child reads EOF, and mecated stops through its ordinary graceful
+ * shutdown. That is what keeps a controller crash from orphaning a daemon.
+ */
+async function createLifetimePipe() {
+  await rm(lifetimeFifoPath, { force: true });
+  await new Promise((done, fail) => {
+    execFile("mkfifo", ["-m", "600", lifetimeFifoPath], (error) =>
+      error ? fail(error) : done(),
+    );
   });
-  const address = probe.address();
-  const port = typeof address === "object" && address ? address.port : 0;
-  await new Promise((resolveClose) => probe.close(resolveClose));
-  if (!port) throw new Error("Could not allocate a loopback port for mecated");
-  return port;
+  try {
+    // Opening either end of a FIFO blocks until the other side opens, so the
+    // two opens must run concurrently; together they complete immediately.
+    const [readEnd, writeEnd] = await Promise.all([
+      open(lifetimeFifoPath, "r"),
+      open(lifetimeFifoPath, "w"),
+    ]);
+    return { readEnd, writeEnd };
+  } finally {
+    await rm(lifetimeFifoPath, { force: true });
+  }
+}
+
+/**
+ * Waits for THIS child's mecated-ready/1 document. The daemon publishes it
+ * atomically (temp + rename) and only after composition and every listener
+ * are up, so a successful read IS readiness — no connect polling, no
+ * stability window. A parse failure is a foreign file, never a torn write;
+ * a pid mismatch is the previous child's stale document (unlinked before the
+ * spawn, so only a pathological race shows one) and polling continues.
+ */
+async function waitForReadyDoc(proc) {
+  const deadline = Date.now() + readyWaitMs;
+  while (Date.now() < deadline) {
+    if (proc.exitCode !== null)
+      throw new Error(`mecatl exited during startup (code ${proc.exitCode})`);
+    if (child !== proc)
+      throw new Error("mecatl was replaced before it became ready");
+    let text = "";
+    try {
+      text = await readFile(readyFilePath, "utf8");
+    } catch {
+      /* not published yet */
+    }
+    if (text) {
+      let doc = null;
+      try {
+        doc = JSON.parse(text);
+      } catch {
+        /* not a ready document */
+      }
+      if (doc && doc.schema !== "mecated-ready/1")
+        throw new Error(
+          `mecated wrote an unsupported ready-file schema "${doc.schema}"`,
+        );
+      if (doc?.pid === proc.pid) {
+        if (typeof doc.http_address !== "string" || doc.http_address === "")
+          throw new Error("mecatl's ready file reports no HTTP listener");
+        return doc;
+      }
+    }
+    await delay(100);
+  }
+  throw new Error("mecatl did not publish its ready file in time");
 }
 
 function fetchMecatl(path, options = {}) {
@@ -502,14 +649,14 @@ const preferredKind = () =>
   activeProviderOverride || (toolhiveReady ? "toolhive" : "mock");
 
 /** Whether `kind` is safe to hand to startMecatl right now: the two
- *  synthetic kinds (mock always, toolhive only while the gateway answers) or
- *  a provider that actually has a block in auth.yaml — never an arbitrary
- *  string, so a typo can't reach mecated's fail-fast --default-provider
- *  check and crash the child. */
-function isSelectableProviderKind(kind, configuredNames) {
+ *  synthetic kinds (mock always, toolhive only while the gateway answers), a
+ *  provider that actually has a block in auth.yaml, or a settings-defined
+ *  custom provider (ADR 0238) — never an arbitrary string, so a typo can't
+ *  reach mecated's fail-fast --default-provider check and crash the child. */
+function isSelectableProviderKind(kind, selectableNames) {
   if (kind === "mock") return true;
   if (kind === "toolhive") return toolhiveReady;
-  return configuredNames.includes(kind);
+  return selectableNames.includes(kind);
 }
 
 function normalizeModelRouter(input) {
@@ -866,8 +1013,17 @@ async function startMecatl(kind) {
   await stopChild();
   startupLog = "";
   startupError = "";
-  const port = await pickLoopbackPort();
-  mecatlBaseURL = `http://127.0.0.1:${port}`;
+  // No listener is assigned until THIS child's ready file names one: the old
+  // base URL points at a dead port, and fetchMecatl's guard is the honest
+  // answer while the restart is in flight.
+  mecatlBaseURL = "";
+  readyInfo = null;
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  // The daemon never removes its ready file (a SIGKILLed one could not), so
+  // the previous child's document must go before the spawn — otherwise the
+  // wait below could read yesterday's addresses. The pid check is the
+  // backstop for the pathological race.
+  await rm(readyFilePath, { force: true });
   const args = [
     "serve",
     "--workspace",
@@ -876,8 +1032,12 @@ async function startMecatl(kind) {
     ".scratch/studio-sessions",
     "--grpc-addr",
     "127.0.0.1:0",
+    // An ephemeral HTTP port: the kernel picks it at bind(2) time and the
+    // ready file reports it RESOLVED — no pre-bind pick, no TOCTOU window.
     "--http-addr",
-    `127.0.0.1:${port}`,
+    "127.0.0.1:0",
+    "--ready-file",
+    readyFilePath,
   ];
   if (operatorSettingsActive)
     args.push("--permission-config", operatorSettingsFile);
@@ -898,7 +1058,8 @@ async function startMecatl(kind) {
     args.push("--default-provider", "toolhive");
   } else {
     // Any auth.yaml-configured provider (openrouter, anthropic, openai,
-    // opencode, …) — mecated validates the id fail-fast at startup.
+    // opencode, …) or a settings-defined custom provider (ADR 0238) —
+    // mecated validates the id fail-fast at startup.
     args.push("--default-provider", kind);
   }
   const env = { ...process.env, MECATL_AUTH_TOKEN: managedAuthToken };
@@ -912,12 +1073,39 @@ async function startMecatl(kind) {
       `${gateway.name}=http://127.0.0.1:8788/mcp-proxy/${mcpProxySecret}/${encodeURIComponent(gateway.name)}`,
     );
   }
+  // The lifetime pipe is best-effort: without mkfifo(1) the daemon still
+  // starts, it just loses the parent-crash cleanup (SIGINT/SIGTERM reaping
+  // below still covers the clean paths).
+  let lifetime = null;
+  try {
+    lifetime = await createLifetimePipe();
+    // The FIFO's read end lands at fd 3 in the child (stdio index 3 below).
+    args.push("--lifetime-pipe-fd", "3");
+  } catch (error) {
+    process.stderr.write(
+      `[supervisor] lifetime pipe unavailable (${error.message || error}); spawning without parent-crash protection\n`,
+    );
+  }
   const proc = spawn(binary, args, {
     cwd: mecatlDir,
     env,
-    stdio: ["ignore", "ignore", "pipe"],
+    stdio: [
+      "ignore",
+      "ignore",
+      "pipe",
+      ...(lifetime ? [lifetime.readEnd.fd] : []),
+    ],
   });
   child = proc;
+  if (lifetime) {
+    // The child owns its duplicate of the read end now; the controller keeps
+    // ONLY the write end, open and never written to, until this child exits.
+    void lifetime.readEnd.close().catch(() => undefined);
+    const writeEnd = lifetime.writeEnd;
+    const releaseWriteEnd = () => void writeEnd.close().catch(() => undefined);
+    proc.once("exit", releaseWriteEnd);
+    proc.once("error", releaseWriteEnd);
+  }
   proc.stderr.on("data", (chunk) => {
     const text = chunk.toString();
     startupLog = (startupLog + text).slice(-24_000);
@@ -928,53 +1116,42 @@ async function startMecatl(kind) {
     if (!expectedExits.has(proc)) scheduleMecatlRestart();
   });
   provider = providerLabel(kind);
-  await delay(250);
-  // Remote MCP gateways may cold-start and mecatl intentionally gives their
-  // initialize handshake up to 30 seconds. Keep the controller's readiness
-  // window longer than that so it never kills a valid in-flight connection.
-  for (let attempt = 0; attempt < 320; attempt += 1) {
-    if (proc.exitCode !== null)
-      throw startupFailure(
-        kind,
-        `mecatl exited during startup (code ${proc.exitCode})`,
-      );
-    await delay(125);
-    let ready = false;
-    try {
-      const response = await fetchMecatl("/v1/models");
-      ready = response.ok;
-    } catch {
-      /* server is still starting */
-    }
-    if (!ready) continue;
-    // A response from an older listener is not enough. Require this exact child
-    // to remain alive and answer again after a stability window.
-    await delay(450);
-    if (proc.exitCode !== null || child !== proc)
-      throw new Error("mecatl exited before the connection became stable");
-    if (gateway && /Unauthorized/i.test(startupLog)) {
-      throw new Error(
-        "MCP Gateway rejected the bearer token (Unauthorized). Paste a current gateway access token and try again.",
-      );
-    }
-    if (
-      gateway &&
-      /MCP manager construction failed|no servers could be connected/i.test(
-        startupLog,
-      )
-    ) {
-      throw new Error(
-        "MCP Gateway could not be initialized. Check that the URL is a Streamable HTTP endpoint and that its credential is valid.",
-      );
-    }
-    const stable = await fetchMecatl("/v1/models")
-      .then((response) => response.ok)
-      .catch(() => false);
-    if (!stable) continue;
-    restartFailures = 0;
-    return;
+  // The ready file replaces the old connect-poll + stability window: it is
+  // written atomically and only after composition and every listener are up,
+  // so its appearance IS readiness and its http_address arrives resolved.
+  let doc;
+  try {
+    doc = await waitForReadyDoc(proc);
+  } catch (error) {
+    throw startupFailure(kind, error.message || "mecatl did not become ready");
   }
-  throw startupFailure(kind, "mecatl did not become ready");
+  mecatlBaseURL = `http://${doc.http_address}`;
+  readyInfo = {
+    apiMajor: Number(doc.api_major ?? 0),
+    features: Array.isArray(doc.features)
+      ? doc.features.filter((feature) => typeof feature === "string")
+      : [],
+    deployment: typeof doc.deployment === "string" ? doc.deployment : "",
+  };
+  // MCP gateway construction happens during composition, BEFORE the ready
+  // file is written — so when the daemon came up degraded rather than dead,
+  // the handshake failure is already in the startup log.
+  if (gateway && /Unauthorized/i.test(startupLog)) {
+    throw new Error(
+      "MCP Gateway rejected the bearer token (Unauthorized). Paste a current gateway access token and try again.",
+    );
+  }
+  if (
+    gateway &&
+    /MCP manager construction failed|no servers could be connected/i.test(
+      startupLog,
+    )
+  ) {
+    throw new Error(
+      "MCP Gateway could not be initialized. Check that the URL is a Streamable HTTP endpoint and that its credential is valid.",
+    );
+  }
+  restartFailures = 0;
 }
 
 const server = http.createServer(async (request, response) => {
@@ -1313,7 +1490,7 @@ const server = http.createServer(async (request, response) => {
     return;
   }
   if (request.method === "GET" && requestURL.pathname === "/status") {
-    const configuredProviders = await listConfiguredProviderNames();
+    const configuredProviders = await listSelectableProviderNames();
     response.end(
       JSON.stringify({
         mode: "managed",
@@ -1322,9 +1499,22 @@ const server = http.createServer(async (request, response) => {
         running: Boolean(child),
         startupError,
         authFile,
+        // Where a custom `providers:` block lands (ADR 0238): the imported
+        // operator-settings.yaml when one is active (a CLI-tier file wins
+        // that section whole-block), otherwise the user-global settings.
+        settingsFile: operatorSettingsActive
+          ? operatorSettingsFile
+          : userSettingsFile,
+        // The child's ready-file compatibility descriptor (never a
+        // credential): api_major, feature identifiers, and the operator's
+        // deployment label, verbatim from mecated-ready/1.
+        apiMajor: readyInfo?.apiMajor ?? null,
+        features: readyInfo?.features ?? [],
+        deployment: readyInfo?.deployment ?? "",
         // Names only — never values. What MECATL_STUDIO_PROVIDER / the
-        // /providers/active switch may select among, and which one is
-        // active right now, if any.
+        // /providers/active switch may select among (auth.yaml blocks plus
+        // settings-defined custom providers), and which one is active right
+        // now, if any.
         configuredProviders,
         selectedProvider: activeProviderOverride,
         // The client has no other way to learn this: it is resolved from THIS
@@ -1349,22 +1539,42 @@ const server = http.createServer(async (request, response) => {
     );
     return;
   }
-  // Provider inventory: names + key-present booleans from auth.yaml, never
+  // Provider inventory: names + key-present booleans from auth.yaml, plus the
+  // settings-defined custom providers (ADR 0238) — a keyless custom provider
+  // has no auth.yaml block, so the auth scan alone would hide it. Never
   // values. Like the skill routes (and unlike /status) this is NOT in the
   // header-free read-only allowlist — it needs the server-set studio header.
   if (request.method === "GET" && requestURL.pathname === "/providers") {
-    const rows = listAuthFileProviders(await readAuthFileText());
-    response.end(
-      JSON.stringify({
-        providers: rows.map((row) => ({
-          name: row.name,
-          configured: true,
-          keyPresent: row.keyPresent,
-          source: "auth.yaml",
-          testable: Object.hasOwn(providerKeyProbes, row.name),
-        })),
-      }),
-    );
+    const authRows = listAuthFileProviders(await readAuthFileText());
+    const custom = await listCustomSettingsProviders();
+    const customNames = new Set(custom.map((definition) => definition.name));
+    const providers = authRows
+      .filter((row) => !customNames.has(row.name))
+      .map((row) => ({
+        name: row.name,
+        configured: true,
+        keyPresent: row.keyPresent,
+        source: "auth.yaml",
+        testable: Object.hasOwn(providerKeyProbes, row.name),
+      }));
+    for (const definition of custom) {
+      const keyed = definition.authMethod === "api_key";
+      const authRow = authRows.find((row) => row.name === definition.name);
+      providers.push({
+        name: definition.name,
+        configured: true,
+        // A keyless (auth.method: none) provider needs no credential — its
+        // requirement is satisfied by configuration alone.
+        keyPresent: keyed ? Boolean(authRow?.keyPresent) : true,
+        source:
+          keyed && authRow ? "settings.yaml + auth.yaml" : "settings.yaml",
+        testable:
+          keyed &&
+          customProviderProbeURL(definition.apiFlavor, definition.baseURL) !==
+            "",
+      });
+    }
+    response.end(JSON.stringify({ providers }));
     return;
   }
   // The provider kinds the daemon understands, with the guided-add snippet
@@ -1398,13 +1608,13 @@ const server = http.createServer(async (request, response) => {
       );
       const kind =
         typeof input?.kind === "string" ? input.kind.trim().toLowerCase() : "";
-      const configuredNames = await listConfiguredProviderNames();
-      if (!kind || !isSelectableProviderKind(kind, configuredNames)) {
+      const selectableNames = await listSelectableProviderNames();
+      if (!kind || !isSelectableProviderKind(kind, selectableNames)) {
         throw Object.assign(
           new Error(
             kind === "toolhive"
               ? "The ToolHive LLM gateway is not reachable right now"
-              : `"${kind || "(empty)"}" is not mock, toolhive, or a provider configured in ${authFile}`,
+              : `"${kind || "(empty)"}" is not mock, toolhive, a provider configured in ${authFile}, or a custom provider defined in the operator settings`,
           ),
           { statusCode: 400 },
         );
@@ -1456,8 +1666,37 @@ const server = http.createServer(async (request, response) => {
       // ONE cheap authenticated call with the STORED key, made entirely
       // server-side. The key never appears in the response, the logs, or an
       // error message; the probe is bounded (10s) and never follows a
-      // redirect with the credential attached.
-      if (!Object.hasOwn(providerKeyProbes, name)) {
+      // redirect with the credential attached. A settings-defined custom
+      // provider (ADR 0238) is probed against ITS OWN base URL with the
+      // header shape its api_flavor dictates.
+      const definition = (await listCustomSettingsProviders()).find(
+        (candidate) => candidate.name === name,
+      );
+      let buildProbe = null;
+      if (definition) {
+        if (definition.authMethod !== "api_key") {
+          jsonError(
+            response,
+            400,
+            `"${name}" uses auth.method none — there is no key to test.`,
+          );
+          return;
+        }
+        if (
+          customProviderProbeURL(definition.apiFlavor, definition.baseURL) ===
+          ""
+        ) {
+          jsonError(
+            response,
+            400,
+            `Key testing is not supported for "${name}" — its api_flavor or base_url cannot be probed; mecated will report an auth problem on first use instead.`,
+          );
+          return;
+        }
+        buildProbe = (key) => customProviderKeyProbe(definition, key);
+      } else if (Object.hasOwn(providerKeyProbes, name)) {
+        buildProbe = providerKeyProbes[name];
+      } else {
         jsonError(
           response,
           400,
@@ -1474,7 +1713,7 @@ const server = http.createServer(async (request, response) => {
         );
         return;
       }
-      response.end(JSON.stringify(await probeProviderKey(name, key)));
+      response.end(JSON.stringify(await probeProviderKey(buildProbe(key))));
       return;
     }
     if (request.method === "DELETE" && !action) {
@@ -1493,9 +1732,19 @@ const server = http.createServer(async (request, response) => {
           const current = await readAuthFileText();
           const { text, removed } = removeAuthFileProvider(current, name);
           if (!removed) {
+            // A settings-defined provider has no auth.yaml block to cut —
+            // its definition lives in an operator-owned settings file the
+            // controller never edits.
+            const settingsDefined = (await listCustomSettingsProviders()).some(
+              (definition) => definition.name === name,
+            );
             throw Object.assign(
-              new Error(`No provider named "${name}" in ${authFile}`),
-              { statusCode: 404 },
+              new Error(
+                settingsDefined
+                  ? `"${name}" is defined in the operator settings (providers: section), not ${authFile} — remove it from the settings file, then restart the daemon.`
+                  : `No provider named "${name}" in ${authFile}`,
+              ),
+              { statusCode: settingsDefined ? 409 : 404 },
             );
           }
           const temp = `${authFile}.tmp`;
@@ -1952,6 +2201,9 @@ server.listen(8788, "127.0.0.1", async () => {
   }
 });
 
+// Clean-exit reaping. The CRASH path needs none of this: the lifetime pipe's
+// write end dies with this process — SIGKILL included — and mecated reads EOF
+// and shuts itself down, so a controller crash can no longer orphan a daemon.
 for (const signal of ["SIGINT", "SIGTERM"]) {
   process.on(signal, async () => {
     shuttingDown = true;

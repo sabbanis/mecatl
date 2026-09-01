@@ -24,16 +24,20 @@ export type ProviderKeyHealth =
   | { state: "error"; detail: string };
 
 /**
- * The controller-owned provider management surface: the auth.yaml inventory
- * (names + key-present booleans, NEVER values), guided add (snippet +
- * re-check + restart), server-side key tests, and block removal. Managed
- * mode only — external mode owns nothing locally (`manageable` is false and
- * the controller would answer 409 anyway), and every mutation here restarts
- * the daemon, killing in-flight runs, so callers confirm first.
+ * The controller-owned provider management surface: the provider inventory
+ * (the auth.yaml blocks PLUS the operator settings' custom `providers:`
+ * definitions, ADR 0238 — names + key-present booleans, NEVER values),
+ * guided add (snippet + re-check + restart), server-side key tests (built-in
+ * kinds and api_key custom gateways alike), and auth.yaml block removal.
+ * Managed mode only — external mode owns nothing locally (`manageable` is
+ * false and the controller would answer 409 anyway), and every mutation here
+ * restarts the daemon, killing in-flight runs, so callers confirm first.
  *
  * There is deliberately NO "add provider with key" action: credentials never
  * cross the browser/controller boundary (Studio rule 3). Adding a provider
- * is a guided copy into auth.yaml on the daemon's machine.
+ * is a guided copy — auth.yaml for built-ins; the settings `providers:`
+ * block (and, for api_key auth, the auth.yaml key block) for custom
+ * gateways — on the daemon's machine.
  */
 export function useProviderManagement() {
   const { connected, mode } = useRuntimeStatus();
