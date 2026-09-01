@@ -59,9 +59,11 @@ func TestNoFSWorkspaceContract(t *testing.T) {
 	if _, err := ws.ReplaceFile(ctx, "a.txt", tool.FileVersion{}, []byte("data")); !errors.Is(err, nofs.ErrNoFilesystem) {
 		t.Errorf("ReplaceFile error = %v, want ErrNoFilesystem", err)
 	}
-	ws.RecordRead("a.txt", tool.NewFileVersion("v1"))
-	if _, ok := ws.RecordedVersion("a.txt"); ok {
-		t.Error("RecordedVersion reported ok=true; the ledger must be inert in a no-FS session")
+	if err := ws.RecordRead(ctx, "a.txt", tool.NewFileVersion("v1")); err != nil {
+		t.Errorf("RecordRead error = %v, want nil (a no-op)", err)
+	}
+	if _, ok, err := ws.RecordedVersion(ctx, "a.txt"); err != nil || ok {
+		t.Errorf("RecordedVersion = (ok=%v, err=%v), want (false, nil); the ledger must be inert in a no-FS session", ok, err)
 	}
 }
 

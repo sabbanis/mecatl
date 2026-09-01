@@ -55,9 +55,11 @@ func TestPathEscapePosture_EditLedgerPseudoFSGuarded(t *testing.T) {
 
 	// RecordRead must NOT silently store a pseudo-fs entry in the ledger: the
 	// record is guarded, so the entry stays unrecorded.
-	ws.RecordRead(procPath, tool.NewFileVersion("caller-token"))
-	if _, ok := ws.RecordedVersion(procPath); ok {
-		t.Fatalf("RecordedVersion(%q) reported ok=true after a guarded RecordRead", procPath)
+	if err := ws.RecordRead(context.Background(), procPath, tool.NewFileVersion("caller-token")); err != nil {
+		t.Fatalf("RecordRead(%q): %v", procPath, err)
+	}
+	if _, ok, err := ws.RecordedVersion(context.Background(), procPath); err != nil || ok {
+		t.Fatalf("RecordedVersion(%q) = (ok=%v, err=%v), want (false, nil) after a guarded RecordRead", procPath, ok, err)
 	}
 
 	// Even with a PLANTED ledger entry (as if the record half regressed to the
@@ -68,9 +70,11 @@ func TestPathEscapePosture_EditLedgerPseudoFSGuarded(t *testing.T) {
 	if !isEscape {
 		t.Fatalf("newEscapeWorkspace returned %T, want *escapeWorkspace", ws)
 	}
-	ews.Workspace.RecordRead(procPath, tool.NewFileVersion("caller-token"))
-	if _, ok := ws.RecordedVersion(procPath); ok {
-		t.Fatalf("RecordedVersion(%q) reported ok=true with a planted entry", procPath)
+	if err := ews.Workspace.RecordRead(context.Background(), procPath, tool.NewFileVersion("caller-token")); err != nil {
+		t.Fatalf("inner RecordRead(%q): %v", procPath, err)
+	}
+	if _, ok, err := ws.RecordedVersion(context.Background(), procPath); err != nil || ok {
+		t.Fatalf("RecordedVersion(%q) = (ok=%v, err=%v), want (false, nil) with a planted entry", procPath, ok, err)
 	}
 
 	// The guard never touches an ordinary in-root path: the ledger behaves
@@ -81,9 +85,11 @@ func TestPathEscapePosture_EditLedgerPseudoFSGuarded(t *testing.T) {
 	if _, ver, err := ws.ReadVersion(context.Background(), "in-root.txt"); err != nil {
 		t.Fatalf("ReadVersion(in-root.txt): %v — the ledger guard must leave ordinary paths untouched", err)
 	} else {
-		ws.RecordRead("in-root.txt", ver)
-		if got, ok := ws.RecordedVersion("in-root.txt"); !ok || !got.Equal(ver) {
-			t.Fatalf("in-root RecordedVersion did not return the recorded version (ok=%v)", ok)
+		if err := ws.RecordRead(context.Background(), "in-root.txt", ver); err != nil {
+			t.Fatalf("RecordRead(in-root.txt): %v", err)
+		}
+		if got, ok, err := ws.RecordedVersion(context.Background(), "in-root.txt"); err != nil || !ok || !got.Equal(ver) {
+			t.Fatalf("in-root RecordedVersion did not return the recorded version (ok=%v, err=%v)", ok, err)
 		}
 	}
 }

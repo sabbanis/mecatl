@@ -52,6 +52,7 @@ import (
 
 	"github.com/bmatcuk/doublestar/v4"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/hashutil"
 	"github.com/stacklok/mecatl/internal/adapter/procgroup"
@@ -718,21 +719,34 @@ func pathLock(canon string) *sync.Mutex {
 // the separate CommandRunner type (see NewCommandRunner) so the harness can run
 // without any shell at all.
 type Workspace struct {
-	fs *FileSystem
-
-	mu     sync.Mutex
-	ledger map[string]tool.FileVersion // canonical ledger key -> recorded version
+	fs     *FileSystem
+	ledger tool.ReadLedger
 }
 
-// NewWorkspace returns a Workspace rooted at the given directory. The root is
-// created if it does not already exist (NewFileSystem creates it before opening
-// the os.Root). Options are passed through to the underlying FileSystem.
+// NewWorkspace returns a Workspace rooted at the given directory, with a FRESH
+// in-memory ReadLedger (ADR 0278's default: no durable ledger selected). The
+// root is created if it does not already exist (NewFileSystem creates it
+// before opening the os.Root). Options are passed through to the underlying
+// FileSystem.
 func NewWorkspace(root string, opts ...Option) (*Workspace, error) {
 	fsys, err := NewFileSystem(root, opts...)
 	if err != nil {
 		return nil, err
 	}
-	return &Workspace{fs: fsys, ledger: make(map[string]tool.FileVersion)}, nil
+	return &Workspace{fs: fsys, ledger: memledger.New()}, nil
+}
+
+// NewWorkspaceWithLedger returns a Workspace rooted at the given directory,
+// composing the EXPLICITLY supplied ledger for its read-before-write evidence
+// (ADR 0278) instead of the default fresh in-memory one. This is what lets two
+// Workspaces over the same on-disk root select independent (or even durable)
+// ledger instances.
+func NewWorkspaceWithLedger(root string, ledger tool.ReadLedger, opts ...Option) (*Workspace, error) {
+	fsys, err := NewFileSystem(root, opts...)
+	if err != nil {
+		return nil, err
+	}
+	return &Workspace{fs: fsys, ledger: ledger}, nil
 }
 
 // Compile-time assertions that Workspace satisfies the filesystem and authority seams.
@@ -1298,29 +1312,25 @@ func (r *CommandRunner) run(ctx context.Context, command string, stdout, stderr 
 	return 0, nil
 }
 
-// RecordRead stores the EXACT authoritative version for path under the session
-// ledger. It performs NO I/O: it stores the FileVersion the caller supplies (the
-// one ReadVersion minted), so a later RecordedVersion lookup compares against the
-// recorded token without re-reading the file. The I/O-free lexical key
-// (tool.LedgerKey over the canonical root) makes ordinary absolute-root and
-// relative forms share one entry; symlink aliases may require a re-read.
-func (w *Workspace) RecordRead(path string, version tool.FileVersion) {
+// RecordRead stores the EXACT authoritative version for path in the SELECTED
+// ledger (ADR 0278). It performs NO file-content I/O: it stores the
+// FileVersion the caller supplies (the one ReadVersion minted), so a later
+// RecordedVersion lookup compares against the recorded token without
+// re-reading the file. The I/O-free lexical key (tool.LedgerKey over the
+// canonical root) makes ordinary absolute-root and relative forms share one
+// entry; symlink aliases may require a re-read.
+func (w *Workspace) RecordRead(ctx context.Context, path string, version tool.FileVersion) error {
 	key := tool.LedgerKey(w.fs.root, path)
-	w.mu.Lock()
-	w.ledger[key] = version
-	w.mu.Unlock()
+	return w.ledger.RecordRead(ctx, key, version)
 }
 
-// RecordedVersion returns the version previously recorded for path via RecordRead,
-// performing NO I/O. ok is false if path was never recorded. The lookup uses the
-// same lexical ledger key (tool.LedgerKey) as RecordRead, so an ordinary
-// absolute-root path and relative path agree without filesystem I/O.
-func (w *Workspace) RecordedVersion(path string) (tool.FileVersion, bool) {
+// RecordedVersion returns the version previously recorded for path via
+// RecordRead, from the SELECTED ledger, performing NO file-content I/O. The
+// lookup uses the same lexical ledger key (tool.LedgerKey) as RecordRead, so an
+// ordinary absolute-root path and relative path agree without filesystem I/O.
+func (w *Workspace) RecordedVersion(ctx context.Context, path string) (tool.FileVersion, bool, error) {
 	key := tool.LedgerKey(w.fs.root, path)
-	w.mu.Lock()
-	version, ok := w.ledger[key]
-	w.mu.Unlock()
-	return version, ok
+	return w.ledger.RecordedVersion(ctx, key)
 }
 
 // cappedBuffer is a bytes.Buffer-like writer that stops accepting bytes once cap

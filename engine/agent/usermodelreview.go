@@ -234,7 +234,7 @@ func (noopWorkspace) Glob(context.Context, string) ([]string, error) { return ni
 func (noopWorkspace) Grep(context.Context, string, string) ([]tool.GrepMatch, error) {
 	return nil, nil
 }
-func (noopWorkspace) RecordRead(string, tool.FileVersion) {}
-func (noopWorkspace) RecordedVersion(string) (tool.FileVersion, bool) {
-	return tool.FileVersion{}, false
+func (noopWorkspace) RecordRead(context.Context, string, tool.FileVersion) error { return nil }
+func (noopWorkspace) RecordedVersion(context.Context, string) (tool.FileVersion, bool, error) {
+	return tool.FileVersion{}, false, nil
 }

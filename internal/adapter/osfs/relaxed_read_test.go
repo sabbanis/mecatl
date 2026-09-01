@@ -307,8 +307,13 @@ func TestRelaxedWrites_LedgerKeysCleanAbsolute(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("ReadVersion(target): %v", rerr)
 	}
-	relaxed.RecordRead(target, targetVer)
-	got, ok := relaxed.RecordedVersion(alias)
+	if err := relaxed.RecordRead(t.Context(), target, targetVer); err != nil {
+		t.Fatalf("RecordRead(target): %v", err)
+	}
+	got, ok, rverr := relaxed.RecordedVersion(t.Context(), alias)
+	if rverr != nil {
+		t.Fatalf("RecordedVersion(alias): %v", rverr)
+	}
 	if !ok {
 		t.Fatalf("RecordedVersion(alias) not recorded — out-of-root absolute keys must use lexical cleaning")
 	}
@@ -323,8 +328,13 @@ func TestRelaxedWrites_LedgerKeysCleanAbsolute(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("ReadVersion(otherAlias): %v", rerr)
 	}
-	relaxed.RecordRead(otherAlias, otherVer)
-	got, ok = relaxed.RecordedVersion(other)
+	if err := relaxed.RecordRead(t.Context(), otherAlias, otherVer); err != nil {
+		t.Fatalf("RecordRead(otherAlias): %v", err)
+	}
+	got, ok, rverr = relaxed.RecordedVersion(t.Context(), other)
+	if rverr != nil {
+		t.Fatalf("RecordedVersion(other): %v", rverr)
+	}
 	if !ok {
 		t.Fatalf("RecordedVersion(canonical) after RecordRead(alias) not recorded — cross-form must match in BOTH directions")
 	}
@@ -356,8 +366,13 @@ func TestRelaxedWrites_LedgerKeysCleanAbsolute(t *testing.T) {
 	if rerr != nil {
 		t.Fatalf("ReadVersion(inAbs): %v", rerr)
 	}
-	relaxed.RecordRead(inAbs, inVer)
-	got, ok = relaxed.RecordedVersion("in.txt")
+	if err := relaxed.RecordRead(t.Context(), inAbs, inVer); err != nil {
+		t.Fatalf("RecordRead(inAbs): %v", err)
+	}
+	got, ok, rverr = relaxed.RecordedVersion(t.Context(), "in.txt")
+	if rverr != nil {
+		t.Fatalf("RecordedVersion(in.txt): %v", rverr)
+	}
 	if !ok {
 		t.Fatalf("in-root cross-form RecordedVersion not recorded — the canonical-absolute keying must not regress in-root matching")
 	}

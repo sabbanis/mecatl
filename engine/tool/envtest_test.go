@@ -32,8 +32,10 @@ func (stubWorkspace) Glob(context.Context, string) ([]string, error) { return ni
 func (stubWorkspace) Grep(context.Context, string, string) ([]GrepMatch, error) {
 	return nil, nil
 }
-func (stubWorkspace) RecordRead(string, FileVersion)             {}
-func (stubWorkspace) RecordedVersion(string) (FileVersion, bool) { return FileVersion{}, false }
+func (stubWorkspace) RecordRead(context.Context, string, FileVersion) error { return nil }
+func (stubWorkspace) RecordedVersion(context.Context, string) (FileVersion, bool, error) {
+	return FileVersion{}, false, nil
+}
 
 // testEnv builds a shell-less Environment over a stubWorkspace for tool-package
 // tests that need an Environment but never run tools against a real FS.

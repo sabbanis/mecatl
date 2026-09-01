@@ -258,9 +258,9 @@ func (judgeWorkspace) Glob(context.Context, string) ([]string, error) { return n
 func (judgeWorkspace) Grep(context.Context, string, string) ([]tool.GrepMatch, error) {
 	return nil, nil
 }
-func (judgeWorkspace) RecordRead(string, tool.FileVersion) {}
-func (judgeWorkspace) RecordedVersion(string) (tool.FileVersion, bool) {
-	return tool.FileVersion{}, false
+func (judgeWorkspace) RecordRead(context.Context, string, tool.FileVersion) error { return nil }
+func (judgeWorkspace) RecordedVersion(context.Context, string) (tool.FileVersion, bool, error) {
+	return tool.FileVersion{}, false, nil
 }
 
 // Compile-time assertions.

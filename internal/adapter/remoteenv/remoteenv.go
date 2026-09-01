@@ -39,6 +39,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 )
@@ -128,7 +129,7 @@ func NewBackend() *Backend {
 func (b *Backend) NewEnvironment(label string) (tool.Environment, error) {
 	id := b.mintID(label)
 	ns := b.createNamespace(id)
-	ws := &workspace{ns: ns}
+	ws := &workspace{ns: ns, ledger: memledger.New()}
 	runner := &runner{ns: ns}
 	return tool.NewEnvironment(session.EnvironmentRef{Kind: Kind, ID: id}, ws, runner)
 }
@@ -146,7 +147,7 @@ func (b *Backend) Resolve(_ context.Context, ref session.EnvironmentRef) (tool.E
 	if err != nil {
 		return tool.Environment{}, err
 	}
-	ws := &workspace{ns: ns}
+	ws := &workspace{ns: ns, ledger: memledger.New()}
 	runner := &runner{ns: ns}
 	return tool.NewEnvironment(ref, ws, runner)
 }
@@ -254,13 +255,12 @@ func (b *Backend) RehydrateForTest(id string, src tool.Workspace) error {
 
 // workspace is the tool.Workspace bound to a single namespace. Multiple
 // workspaces over the same namespace share the mutex-guarded file map, so the
-// version ledger is per-handle (RecordRead/RecordedVersion) while the
-// authoritative content+version lives on the shared namespace.
+// version ledger is per-handle (RecordRead/RecordedVersion, ADR 0278 —
+// a fresh in-memory tool.ReadLedger by default) while the authoritative
+// content+version lives on the shared namespace.
 type workspace struct {
-	ns *namespace
-
-	mu     sync.Mutex
-	ledger map[string]tool.FileVersion // clean path -> recorded version
+	ns     *namespace
+	ledger tool.ReadLedger
 }
 
 // Compile-time assertion that workspace satisfies the frozen seam.
@@ -389,32 +389,26 @@ func (w *workspace) Grep(ctx context.Context, pattern, pathGlob string) ([]tool.
 	return grepInMemory(ctx, w.ns, pattern, pathGlob)
 }
 
-// RecordRead stores the EXACT version for path under this handle's ledger (no
-// I/O). The ledger is per-handle: a second handle to the same namespace has its
-// own ledger, so a stale-version conflict between two handles is observable.
-func (w *workspace) RecordRead(p string, version tool.FileVersion) {
+// RecordRead stores the EXACT version for path under this handle's SELECTED
+// ledger (ADR 0278; no file-content I/O). The ledger is per-handle: a second
+// handle to the same namespace has its own ledger, so a stale-version conflict
+// between two handles is observable.
+func (w *workspace) RecordRead(ctx context.Context, p string, version tool.FileVersion) error {
 	key, err := cleanPath(p)
 	if err != nil {
-		return // fail-safe: an uncleanable path stays unrecorded
+		return nil // fail-safe: an uncleanable path stays unrecorded
 	}
-	w.mu.Lock()
-	if w.ledger == nil {
-		w.ledger = make(map[string]tool.FileVersion)
-	}
-	w.ledger[key] = version
-	w.mu.Unlock()
+	return w.ledger.RecordRead(ctx, key, version)
 }
 
-// RecordedVersion returns the version previously recorded for path (no I/O).
-func (w *workspace) RecordedVersion(p string) (tool.FileVersion, bool) {
+// RecordedVersion returns the version previously recorded for path, from this
+// handle's selected ledger (no file-content I/O).
+func (w *workspace) RecordedVersion(ctx context.Context, p string) (tool.FileVersion, bool, error) {
 	key, err := cleanPath(p)
 	if err != nil {
-		return tool.FileVersion{}, false
+		return tool.FileVersion{}, false, nil
 	}
-	w.mu.Lock()
-	v, ok := w.ledger[key]
-	w.mu.Unlock()
-	return v, ok
+	return w.ledger.RecordedVersion(ctx, key)
 }
 
 // namespaceFiles returns a snapshot of the namespace's current (path -> content)

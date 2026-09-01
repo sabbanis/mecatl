@@ -248,7 +248,7 @@ func TestFSWorkspaceEditInvariants(t *testing.T) {
 	if _, ver, err := ws.ReadVersion(ctx, "f.go"); err != nil {
 		t.Fatalf("ReadVersion: %v", err)
 	} else {
-		ws.RecordRead("f.go", ver)
+		ws.RecordRead(ctx, "f.go", ver)
 	}
 	peer.set(filepath.Join(root, "f.go"), "package x\nvar A = 999\n") // editor edited the buffer
 	res = runEdit(t, edit, ws, "f.go", "var A = 1", "var A = 2", false)
@@ -261,7 +261,7 @@ func TestFSWorkspaceEditInvariants(t *testing.T) {
 	if _, ver, err := ws2.ReadVersion(ctx, "f.go"); err != nil {
 		t.Fatalf("ReadVersion: %v", err)
 	} else {
-		ws2.RecordRead("f.go", ver)
+		ws2.RecordRead(ctx, "f.go", ver)
 	}
 	res = runEdit(t, edit, ws2, "f.go", "var A = 1", "var A = 2", false)
 	if res.IsError {
@@ -276,7 +276,7 @@ func TestFSWorkspaceEditInvariants(t *testing.T) {
 	if _, ver, err := ws3.ReadVersion(ctx, "f.go"); err != nil {
 		t.Fatalf("ReadVersion: %v", err)
 	} else {
-		ws3.RecordRead("f.go", ver)
+		ws3.RecordRead(ctx, "f.go", ver)
 	}
 	res = runEdit(t, edit, ws3, "f.go", "dup", "x", false)
 	if !res.IsError {
@@ -288,7 +288,7 @@ func TestFSWorkspaceEditInvariants(t *testing.T) {
 	if _, ver, err := ws4.ReadVersion(ctx, "f.go"); err != nil {
 		t.Fatalf("ReadVersion: %v", err)
 	} else {
-		ws4.RecordRead("f.go", ver)
+		ws4.RecordRead(ctx, "f.go", ver)
 	}
 	res = runEdit(t, edit, ws4, "f.go", "missing", "x", false)
 	if !res.IsError {
@@ -323,8 +323,12 @@ func TestFSWorkspaceBufferKeyedLedger(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadVersion: %v", err)
 	}
-	ws.RecordRead("a.txt", ver)
-	if got, ok := ws.RecordedVersion("a.txt"); !ok {
+	if err := ws.RecordRead(ctx, "a.txt", ver); err != nil {
+		t.Fatalf("RecordRead: %v", err)
+	}
+	if got, ok, err := ws.RecordedVersion(ctx, "a.txt"); err != nil {
+		t.Fatalf("RecordedVersion: %v", err)
+	} else if !ok {
 		t.Fatalf("RecordedVersion not recorded")
 	} else if !got.Equal(ver) {
 		t.Fatal("RecordedVersion did not return the recorded version")
@@ -340,7 +344,9 @@ func TestFSWorkspaceBufferKeyedLedger(t *testing.T) {
 	}
 
 	// A never-recorded path is not in the ledger (ok=false), not an error.
-	if _, ok := ws.RecordedVersion("never.txt"); ok {
+	if _, ok, err := ws.RecordedVersion(ctx, "never.txt"); err != nil {
+		t.Fatalf("RecordedVersion: %v", err)
+	} else if ok {
 		t.Fatalf("never-recorded path: ok=%v, want false", ok)
 	}
 }
@@ -352,6 +358,7 @@ func TestFSWorkspaceBufferKeyedLedger(t *testing.T) {
 // by a symlink (a perturbation that would change any absPath/confineSymlinks-
 // based key), because tool.LedgerKey is purely lexical.
 func TestFSWorkspaceLedgerKeyIsLexicalAndIOFree(t *testing.T) {
+	ctx := context.Background()
 	ws, peer, root := newTestFSWorkspace(t, nil)
 	moved := root + "-moved"
 	if err := os.Rename(root, moved); err != nil {
@@ -363,14 +370,24 @@ func TestFSWorkspaceLedgerKeyIsLexicalAndIOFree(t *testing.T) {
 	}
 
 	first := tool.NewFileVersion("first")
-	ws.RecordRead("dir/../one.txt", first)
-	got, ok := ws.RecordedVersion(filepath.Join(ws.Root(), "one.txt"))
+	if err := ws.RecordRead(ctx, "dir/../one.txt", first); err != nil {
+		t.Fatalf("RecordRead: %v", err)
+	}
+	got, ok, err := ws.RecordedVersion(ctx, filepath.Join(ws.Root(), "one.txt"))
+	if err != nil {
+		t.Fatalf("RecordedVersion: %v", err)
+	}
 	if !ok || !got.Equal(first) {
 		t.Fatalf("relative record / absolute lookup did not converge (ok=%v)", ok)
 	}
 	second := tool.NewFileVersion("second")
-	ws.RecordRead(filepath.Join(ws.Root(), "two.txt"), second)
-	got, ok = ws.RecordedVersion("two.txt")
+	if err := ws.RecordRead(ctx, filepath.Join(ws.Root(), "two.txt"), second); err != nil {
+		t.Fatalf("RecordRead: %v", err)
+	}
+	got, ok, err = ws.RecordedVersion(ctx, "two.txt")
+	if err != nil {
+		t.Fatalf("RecordedVersion: %v", err)
+	}
 	if !ok || !got.Equal(second) {
 		t.Fatalf("absolute record / relative lookup did not converge (ok=%v)", ok)
 	}
@@ -445,9 +462,12 @@ func TestFSWorkspaceConcurrentReads(t *testing.T) {
 				errs <- fmt.Errorf("ReadVersion %s: %w", rel, rerr)
 				return
 			}
-			ws.RecordRead(rel, ver)
-			if got, ok := ws.RecordedVersion(rel); !ok || !got.Equal(ver) {
-				errs <- fmt.Errorf("ledger %s did not return the recorded version (ok=%v)", rel, ok)
+			if err := ws.RecordRead(ctx, rel, ver); err != nil {
+				errs <- fmt.Errorf("RecordRead %s: %w", rel, err)
+				return
+			}
+			if got, ok, err := ws.RecordedVersion(ctx, rel); err != nil || !ok || !got.Equal(ver) {
+				errs <- fmt.Errorf("ledger %s did not return the recorded version (ok=%v, err=%v)", rel, ok, err)
 			}
 		}(i)
 	}
@@ -517,7 +537,7 @@ func TestFSWorkspaceBufferOnlyStatGatesWrite(t *testing.T) {
 	if _, ver, err := ws.ReadVersion(ctx, "buf.txt"); err != nil {
 		t.Fatalf("ReadVersion: %v", err)
 	} else {
-		ws.RecordRead("buf.txt", ver)
+		ws.RecordRead(ctx, "buf.txt", ver)
 	}
 	res = runWrite(t, write, ws, "buf.txt", "clobbered")
 	if res.IsError {
@@ -870,8 +890,13 @@ func TestFSWorkspaceLedgerCrossForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadVersion(abs): %v", err)
 	}
-	ws.RecordRead(abs, absVer)
-	got, ok := ws.RecordedVersion(rel)
+	if err := ws.RecordRead(ctx, abs, absVer); err != nil {
+		t.Fatalf("RecordRead(abs): %v", err)
+	}
+	got, ok, err := ws.RecordedVersion(ctx, rel)
+	if err != nil {
+		t.Fatalf("RecordedVersion(rel): %v", err)
+	}
 	if !ok {
 		t.Fatalf("read abs / lookup rel: not recorded")
 	}
@@ -893,8 +918,13 @@ func TestFSWorkspaceLedgerCrossForm(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ReadVersion(rel): %v", err)
 	}
-	ws.RecordRead(rel, relVer)
-	got, ok = ws.RecordedVersion(abs)
+	if err := ws.RecordRead(ctx, rel, relVer); err != nil {
+		t.Fatalf("RecordRead(rel): %v", err)
+	}
+	got, ok, err = ws.RecordedVersion(ctx, abs)
+	if err != nil {
+		t.Fatalf("RecordedVersion(abs): %v", err)
+	}
 	if !ok {
 		t.Fatalf("read rel / lookup abs: not recorded")
 	}
@@ -913,11 +943,14 @@ func TestFSWorkspaceLedgerCrossForm(t *testing.T) {
 }
 
 // TestFSWorkspaceLedgerNotBlockedByParkedRPC proves the split synchronization
-// (ADR 0208): the ledger mutex (ledgerMu) is independent of the RPC CAS mutex
-// (callMu), so a parked RPC mutation holding callMu NEVER blocks a ledger
-// RecordRead/RecordedVersion. Before the split (a single mu for both), a wedged
-// fs/* round-trip would have wedged the ledger too.
+// (ADR 0208, ADR 0278): the ledger (a SELECTED tool.ReadLedger, independently
+// synchronized) is independent of the RPC CAS mutex (callMu), so a parked RPC
+// mutation holding callMu NEVER blocks a ledger RecordRead/RecordedVersion.
+// Before the split (a single mu for both), a wedged fs/* round-trip would have
+// wedged the ledger too. AC3.8 (docs/adr/0278): ACP ledger record/lookup stays
+// independently synchronized from its file RPC path.
 func TestFSWorkspaceLedgerNotBlockedByParkedRPC(t *testing.T) {
+	ctx := context.Background()
 	ws, _, _ := newTestFSWorkspace(t, nil)
 
 	// Park callMu as a CreateFile/ReplaceFile would while it holds an in-flight
@@ -929,18 +962,22 @@ func TestFSWorkspaceLedgerNotBlockedByParkedRPC(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		ws.RecordRead("a.txt", ver)
-		if got, ok := ws.RecordedVersion("a.txt"); !ok || !got.Equal(ver) {
-			t.Errorf("RecordedVersion while callMu is parked = (ok=%v, got=%v), want the recorded version", ok, got)
+		if err := ws.RecordRead(ctx, "a.txt", ver); err != nil {
+			t.Errorf("RecordRead: %v", err)
+		}
+		if got, ok, err := ws.RecordedVersion(ctx, "a.txt"); err != nil || !ok || !got.Equal(ver) {
+			t.Errorf("RecordedVersion while callMu is parked = (ok=%v, got=%v, err=%v), want the recorded version", ok, got, err)
 		}
 		// A second record on a different path and a lookup of the first both
 		// succeed without touching callMu.
-		ws.RecordRead("b.txt", tool.NewFileVersion("second"))
-		if _, ok := ws.RecordedVersion("b.txt"); !ok {
-			t.Error("RecordedVersion(b.txt) not recorded while callMu is parked")
+		if err := ws.RecordRead(ctx, "b.txt", tool.NewFileVersion("second")); err != nil {
+			t.Errorf("RecordRead(b.txt): %v", err)
 		}
-		if got, ok := ws.RecordedVersion("a.txt"); !ok || !got.Equal(ver) {
-			t.Errorf("RecordedVersion(a.txt) after b record = (ok=%v, got=%v), want the first recorded version", ok, got)
+		if _, ok, err := ws.RecordedVersion(ctx, "b.txt"); err != nil || !ok {
+			t.Errorf("RecordedVersion(b.txt) not recorded while callMu is parked (err=%v)", err)
+		}
+		if got, ok, err := ws.RecordedVersion(ctx, "a.txt"); err != nil || !ok || !got.Equal(ver) {
+			t.Errorf("RecordedVersion(a.txt) after b record = (ok=%v, got=%v, err=%v), want the first recorded version", ok, got, err)
 		}
 	}()
 	select {

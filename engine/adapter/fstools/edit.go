@@ -104,8 +104,16 @@ func (EditTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envir
 
 	// Invariant #1a: read-before-edit. RecordedVersion is an I/O-free lookup of
 	// the version a prior Read recorded; ok=false means the file was not read
-	// this session.
-	recorded, recordedOK := ws.RecordedVersion(args.Path)
+	// this session. A non-nil err means the ledger lookup itself is
+	// UNAVAILABLE or CORRUPT (ADR 0278) — DISTINCT from ordinary absence — and
+	// must refuse BEFORE ReplaceFile is ever called; it is never treated as an
+	// unrecorded-but-otherwise-authorized read.
+	recorded, recordedOK, err := ws.RecordedVersion(ctx, args.Path)
+	if err != nil {
+		return session.NewToolError(in.ID, fmt.Sprintf(
+			"refusing to edit %q: could not verify it was read this session (%v). Read the file again, then retry the edit.",
+			args.Path, err)), nil
+	}
 	if !recordedOK {
 		return readConflict, nil
 	}
@@ -174,12 +182,20 @@ func (EditTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envir
 		return session.ToolResult{}, fmt.Errorf("edit: writing %q: %w", args.Path, err)
 	}
 
-	// Re-record the new version so subsequent edits in the same turn remain valid.
-	ws.RecordRead(args.Path, newVer)
-
 	replaced := 1
 	if args.ReplaceAll {
 		replaced = count
+	}
+
+	// Re-record the new version so subsequent edits in the same turn remain
+	// valid. The edit ALREADY SUCCEEDED (ReplaceFile above); a failure here is
+	// reported honestly WITHOUT rollback and without claiming the file is
+	// untouched (ADR 0278) — the next existing-file mutation on this path is
+	// refused until another successful Read records evidence.
+	if err := ws.RecordRead(ctx, args.Path, newVer); err != nil {
+		return session.NewToolError(in.ID, fmt.Sprintf(
+			"edited %q: replaced %d occurrence(s), but failed to retain read evidence for the new version: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
+			args.Path, replaced, err)), nil
 	}
 	return session.NewToolResult(in.ID, fmt.Sprintf("edited %q: replaced %d occurrence(s)", args.Path, replaced)), nil
 }

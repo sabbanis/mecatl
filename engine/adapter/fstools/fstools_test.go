@@ -177,7 +177,10 @@ func TestReadRecordsReadForEdit(t *testing.T) {
 	ws := memfs.NewWorkspace("/")
 	seed(t, ws, "a.txt", "hello\n")
 	exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), ws)
-	ver, ok := ws.RecordedVersion("a.txt")
+	ver, ok, err := ws.RecordedVersion(context.Background(), "a.txt")
+	if err != nil {
+		t.Fatalf("RecordedVersion: %v", err)
+	}
 	if !ok {
 		t.Fatal("Read did not record the read in the ledger")
 	}
@@ -306,6 +309,64 @@ func TestEditFailsWhenChangedSinceRead(t *testing.T) {
 	if !res.IsError {
 		t.Error("Edit must fail when the file changed since it was read")
 	}
+}
+
+// TestInvariant_read_before_edit pins AC3.3 (docs/adr/0278): an ABSENT ledger
+// entry preserves the existing read-before-edit/read-before-overwrite refusal
+// (Edit and existing-file Write both refuse an un-read path), while a STALE
+// recorded version — the file changed since the recorded read — preserves the
+// changed-since-read refusal. This holds regardless of ledger backend: the
+// checks (TestEditFailsWhenNotRead/TestEditFailsWhenChangedSinceRead and their
+// Write analogue) are pinned individually elsewhere; this test is the single
+// AC3.3 entry point exercising both axes (absent vs stale) for BOTH tools.
+func TestInvariant_read_before_edit(t *testing.T) {
+	t.Run("Edit refuses an unread file (absent ledger entry)", func(t *testing.T) {
+		ws := memfs.NewWorkspace("/")
+		seed(t, ws, "a.txt", "hello\n")
+		res := exec(t, EditTool{}, call(t, "Edit", map[string]any{
+			"path": "a.txt", "old_string": "hello", "new_string": "hi",
+		}), ws)
+		if !res.IsError {
+			t.Fatal("Edit on an unread file must be refused")
+		}
+	})
+
+	t.Run("Edit refuses a file that changed since the recorded read (stale version)", func(t *testing.T) {
+		ws := memfs.NewWorkspace("/")
+		seed(t, ws, "a.txt", "hello\n")
+		exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), ws)
+		seed(t, ws, "a.txt", "changed\n")
+		res := exec(t, EditTool{}, call(t, "Edit", map[string]any{
+			"path": "a.txt", "old_string": "changed", "new_string": "x",
+		}), ws)
+		if !res.IsError {
+			t.Fatal("Edit must refuse when the file changed since it was read")
+		}
+	})
+
+	t.Run("Write refuses an unread existing file (absent ledger entry)", func(t *testing.T) {
+		ws := memfs.NewWorkspace("/")
+		seed(t, ws, "a.txt", "old\n")
+		res := exec(t, WriteTool{}, call(t, "Write", map[string]any{
+			"path": "a.txt", "content": "new\n",
+		}), ws)
+		if !res.IsError {
+			t.Fatal("Write overwrite of an unread existing file must be refused")
+		}
+	})
+
+	t.Run("Write refuses an existing file that changed since the recorded read (stale version)", func(t *testing.T) {
+		ws := memfs.NewWorkspace("/")
+		seed(t, ws, "a.txt", "old\n")
+		exec(t, ReadTool{}, call(t, "Read", map[string]any{"path": "a.txt"}), ws)
+		seed(t, ws, "a.txt", "changed\n")
+		res := exec(t, WriteTool{}, call(t, "Write", map[string]any{
+			"path": "a.txt", "content": "new\n",
+		}), ws)
+		if !res.IsError {
+			t.Fatal("Write must refuse when the file changed since it was read")
+		}
+	})
 }
 
 func TestWriteNewFileNoReadNeeded(t *testing.T) {

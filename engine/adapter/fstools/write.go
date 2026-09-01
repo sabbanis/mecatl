@@ -95,7 +95,15 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 	switch {
 	case statErr == nil:
 		// Existing file: require read-before-overwrite via the version protocol.
-		recorded, recordedOK := ws.RecordedVersion(args.Path)
+		// A non-nil err from RecordedVersion means the ledger lookup itself is
+		// UNAVAILABLE or CORRUPT (ADR 0278) — DISTINCT from ordinary absence —
+		// and must refuse BEFORE ReplaceFile is ever called.
+		recorded, recordedOK, err := ws.RecordedVersion(ctx, args.Path)
+		if err != nil {
+			return session.NewToolError(in.ID, fmt.Sprintf(
+				"refusing to overwrite %q: could not verify it was read this session (%v). Read it first, then retry.",
+				args.Path, err)), nil
+		}
 		if !recordedOK {
 			return overwriteConflict, nil
 		}
@@ -126,8 +134,15 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 			}
 			return session.ToolResult{}, fmt.Errorf("write: writing %q: %w", args.Path, err)
 		}
-		// Re-record the new version so a subsequent Edit/Write in the same turn is valid.
-		ws.RecordRead(args.Path, newVer)
+		// Re-record the new version so a subsequent Edit/Write in the same turn
+		// is valid. The overwrite ALREADY SUCCEEDED; a failure here is reported
+		// honestly WITHOUT rollback (ADR 0278) — the next existing-file mutation
+		// on this path is refused until another successful Read records evidence.
+		if err := ws.RecordRead(ctx, args.Path, newVer); err != nil {
+			return session.NewToolError(in.ID, fmt.Sprintf(
+				"overwrote %q (%d bytes), but failed to retain read evidence for the new version: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
+				args.Path, len(args.Content), err)), nil
+		}
 		return session.NewToolResult(in.ID, fmt.Sprintf("overwrote %q (%d bytes)", args.Path, len(args.Content))), nil
 	case errors.Is(statErr, fs.ErrNotExist):
 		// New file: create-only (no prior read needed). A concurrent creation
@@ -141,7 +156,14 @@ func (WriteTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envi
 			}
 			return session.ToolResult{}, fmt.Errorf("write: creating %q: %w", args.Path, err)
 		}
-		ws.RecordRead(args.Path, newVer)
+		// The create ALREADY SUCCEEDED; a failure here is reported honestly
+		// WITHOUT rollback (ADR 0278) — a later mutation on this path is
+		// refused until another successful Read records evidence.
+		if err := ws.RecordRead(ctx, args.Path, newVer); err != nil {
+			return session.NewToolError(in.ID, fmt.Sprintf(
+				"wrote %q (%d bytes), but failed to retain read evidence for it: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
+				args.Path, len(args.Content), err)), nil
+		}
 		return session.NewToolResult(in.ID, fmt.Sprintf("wrote %q (%d bytes)", args.Path, len(args.Content))), nil
 	default:
 		return session.ToolResult{}, fmt.Errorf("write: stat %q: %w", args.Path, statErr)

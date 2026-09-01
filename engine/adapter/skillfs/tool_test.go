@@ -53,8 +53,10 @@ func (stubWS) Stat(context.Context, string) (tool.FileInfo, error) {
 }
 func (stubWS) Glob(context.Context, string) ([]string, error)                 { return nil, nil }
 func (stubWS) Grep(context.Context, string, string) ([]tool.GrepMatch, error) { return nil, nil }
-func (stubWS) RecordRead(string, tool.FileVersion)                            {}
-func (stubWS) RecordedVersion(string) (tool.FileVersion, bool)                { return tool.FileVersion{}, false }
+func (stubWS) RecordRead(context.Context, string, tool.FileVersion) error     { return nil }
+func (stubWS) RecordedVersion(context.Context, string) (tool.FileVersion, bool, error) {
+	return tool.FileVersion{}, false, nil
+}
 
 func newSourceTool(source tool.SkillSource) Tool {
 	return NewTool([]tool.SkillMeta{{Name: "review", Description: "Review code", Compatibility: "mecatl >= 1", AllowedTools: []string{"Grep"}}}, source)

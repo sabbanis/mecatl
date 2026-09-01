@@ -282,7 +282,7 @@ type AuthorityResourceResolver interface {
 // all paths to a single session root (rejecting escapes such as "../"), exposes
 // the read/search operations the 7 core tools need, and carries the per-session
 // read-ledger + the explicit, unambiguous mutation operations the built-in
-// Edit/Write tools enforce their invariants through (ADR 0208).
+// Edit/Write tools enforce their invariants through (ADR 0208, ADR 0278).
 //
 // All paths are relative to the session root unless documented otherwise;
 // adapters must reject any path that resolves outside the root.
@@ -293,8 +293,10 @@ type AuthorityResourceResolver interface {
 //
 //   - ReadVersion returns the content AND the authoritative FileVersion the
 //     adapter currently holds for path. The built-in Read tool records that
-//     version via RecordRead (a pure in-memory store, NO I/O) so a later
-//     Edit/Write can assert read-before-mutate-and-unchanged.
+//     version via RecordRead — against the Workspace's SELECTED ReadLedger
+//     (ADR 0278: a fresh in-memory ledger by default, or an explicitly
+//     injected durable one; the ledger performs NO file-content I/O) — so a
+//     later Edit/Write can assert read-before-mutate-and-unchanged.
 //   - Existing-file Write and Edit: require a recorded version, ReadVersion
 //     again to get the CURRENT version, compare the recorded version with the
 //     current version (unchanged-since), and finish with ReplaceFile against
@@ -355,26 +357,43 @@ type Workspace interface {
 	// an optional path glob. Results are capped/shaped by the adapter.
 	Grep(ctx context.Context, pattern, pathGlob string) ([]GrepMatch, error)
 
-	// RecordRead records that path was read at the authoritative version. It is
-	// a PURE IN-MEMORY store: it performs NO I/O and stores the EXACT version
-	// passed (the caller supplies the FileVersion its ReadVersion returned). A
-	// later RecordedVersion lookup compares against this stored token. The
-	// built-in Read tool calls it with the version ReadVersion minted; the
-	// built-in Edit/Write tools call it after a successful CreateFile/ReplaceFile
-	// so a subsequent same-turn Edit stays valid. Ledger-key normalization must
-	// also perform NO I/O: ordinary absolute <root>/<rel> and relative <rel>
-	// forms should converge lexically, while physical symlink aliases may
-	// conservatively miss and force another Read.
-	RecordRead(path string, version FileVersion)
+	// RecordRead records that path was read at the authoritative version,
+	// against the Workspace's SELECTED ReadLedger (ADR 0278 — a fresh
+	// in-memory ledger by default, or an explicitly injected one; see the
+	// Workspace's constructing adapter). It performs NO file-content I/O and
+	// stores the EXACT version passed (the caller supplies the FileVersion its
+	// ReadVersion returned), after applying the existing I/O-free ledger-key
+	// normalization (ordinary absolute <root>/<rel> and relative <rel> forms
+	// converge lexically; physical symlink aliases may conservatively miss and
+	// force another Read). A later RecordedVersion lookup compares against this
+	// stored token. The built-in Read tool calls it with the version
+	// ReadVersion minted; the built-in Edit/Write tools call it after a
+	// successful CreateFile/ReplaceFile so a subsequent same-turn Edit stays
+	// valid.
+	//
+	// err is non-nil ONLY on a genuine ledger storage/write failure (e.g. a
+	// durable backend is unreachable) — never on an ordinary successful record.
+	// File tools MUST fail closed on a non-nil err: the read's evidence was NOT
+	// retained, so a later Edit/existing-file-Write on the same path must be
+	// refused until a Read is recorded successfully again.
+	RecordRead(ctx context.Context, path string, version FileVersion) error
 
 	// RecordedVersion returns the version previously recorded for path via
-	// RecordRead, performing NO I/O. ok is false if path was never recorded or
-	// the live Workspace/ledger was rebuilt. It is the I/O-free
-	// read-before-mutate lookup: the agent-facing Edit/Write tools call it to
-	// assert the file was read this session; they then separately ReadVersion
-	// for the CURRENT version and compare, so a file that changed since the
-	// recorded read is caught by the version comparison, not by this lookup.
-	RecordedVersion(path string) (version FileVersion, ok bool)
+	// RecordRead, from the Workspace's selected ReadLedger, performing NO
+	// file-content I/O. It is the I/O-free read-before-mutate lookup: the
+	// agent-facing Edit/Write tools call it to assert the file was read this
+	// session; they then separately ReadVersion for the CURRENT version and
+	// compare, so a file that changed since the recorded read is caught by the
+	// version comparison, not by this lookup.
+	//
+	// Three outcomes, DISTINCT from each other:
+	//   - (version, true, nil): a valid recorded version was found.
+	//   - (zero, false, nil): path was never recorded (or the live
+	//     Workspace/ledger was rebuilt) — normal, ordinary absence.
+	//   - (zero, false, err): the ledger is UNAVAILABLE or the stored record is
+	//     CORRUPT. File tools MUST fail closed on this — it must NEVER be
+	//     treated as an unrecorded-but-otherwise-authorized read (case 2).
+	RecordedVersion(ctx context.Context, path string) (version FileVersion, ok bool, err error)
 }
 
 // VersionMismatchError is the error ReplaceFile returns when the file's current

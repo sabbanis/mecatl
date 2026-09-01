@@ -98,9 +98,16 @@ func (ReadTool) Execute(ctx context.Context, in session.ToolCall, env tool.Envir
 	}
 
 	// Record the read with the ADAPTER-MINTED authoritative version (ReadVersion
-	// returned it). RecordRead is a pure in-memory store with NO I/O; it stores
-	// this exact token so a later Edit/Write can assert read-before-mutate.
-	ws.RecordRead(args.Path, ver)
+	// returned it) against the Workspace's selected ledger (ADR 0278). It
+	// performs NO file-content I/O; it stores this exact token so a later
+	// Edit/Write can assert read-before-mutate. A failed record is reported so
+	// the model knows the read's evidence was NOT retained: a later Edit or
+	// existing-file Write on this path will be refused until a Read succeeds.
+	if err := ws.RecordRead(ctx, args.Path, ver); err != nil {
+		return session.NewToolError(in.ID, fmt.Sprintf(
+			"read %q, but failed to retain read evidence: %v. A later edit or overwrite of this file will be refused until a Read succeeds.",
+			args.Path, err)), nil
+	}
 
 	content := string(data)
 	lines := strings.Split(content, "\n")
