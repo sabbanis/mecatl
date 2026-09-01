@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	tea "charm.land/bubbletea/v2"
 
@@ -13,6 +14,49 @@ import (
 // connectAction is the shared "connect" literal for both the builtin/connection-mode
 // name and the workspace-enrollment action, avoiding a repeated untyped string.
 const connectAction = "connect"
+
+// workspaceEnrollmentPollInterval is how often a pending bundle is silently
+// rechecked while waiting for the browser-consent callback to land server-side.
+// Nothing pushes that callback's arrival on its own — ConnectWorkspaceServices
+// only OBSERVES a Connected transition when it happens to be called again, it
+// does not learn of one spontaneously — so something has to keep asking. This
+// ticker is that something; the push event (applyWorkspaceEnrollmentEvent)
+// still exists to fan the eventual observation out live to every subscriber
+// (including this tab, and any other attached client/session), not to replace
+// the need to ask at all.
+const workspaceEnrollmentPollInterval = 3 * time.Second
+
+// workspaceEnrollmentPollTickMsg drives the poll above. enrollmentID pins it
+// to the bundle it was scheduled for, so a tick from a superseded/resolved
+// bundle (cancelled, connected, or replaced by a fresh /tools-connect) is
+// silently dropped instead of restarting a chain nothing is waiting on.
+type workspaceEnrollmentPollTickMsg struct{ enrollmentID string }
+
+func workspaceEnrollmentPollTickCmd(enrollmentID string) tea.Cmd {
+	return tea.Tick(workspaceEnrollmentPollInterval, func(time.Time) tea.Msg {
+		return workspaceEnrollmentPollTickMsg{enrollmentID: enrollmentID}
+	})
+}
+
+// applyWorkspaceEnrollmentPollTick fires a silent "check" recheck for the
+// still-pending bundle the tick was scheduled for, then (via
+// applyWorkspaceEnrollment's own pending branch) reschedules the next tick —
+// the chain runs until the bundle resolves or is superseded. It never
+// overlaps a request already in flight (m.enrollment.busy) or interactive
+// action; the next reachable state simply reschedules from there instead.
+func (m Model) applyWorkspaceEnrollmentPollTick(msg workspaceEnrollmentPollTickMsg) (tea.Model, tea.Cmd) {
+	if m.enrollment.ID == "" || m.enrollment.ID != msg.enrollmentID {
+		return m, nil
+	}
+	if m.enrollment.busy {
+		// Something else (an interactive /tools-connect retry, or a previous
+		// tick still in flight) owns the next observation; do not double up —
+		// that call's own response reschedules the chain.
+		return m, nil
+	}
+	m.enrollment.busy = true
+	return m, workspaceEnrollmentCmd(m.deps.Ctx, m.deps.WorkspaceEnrollment, m.sessionID, m.enrollment.ID, "check")
+}
 
 // workspaceEnrollmentState is distinct from permission approval and per-tool MCP
 // authorization. It retains only safe whole-bundle correlation and counts.
@@ -82,18 +126,20 @@ func (m Model) applyWorkspaceEnrollment(msg workspaceEnrollmentMsg) (tea.Model, 
 		m.statusMsg = "workspace services connection cancelled"
 		return m, nil
 	}
-	// Pending: browser consent still required. No manual recheck needed — the
-	// push event (applyWorkspaceEnrollmentEvent) auto-resolves this.
+	// Pending: browser consent still required. workspaceEnrollmentPollTickCmd
+	// keeps silently rechecking; the push event (applyWorkspaceEnrollmentEvent)
+	// still fans the eventual resolution out live once ANY check observes it.
 	m.workspaceEnrollmentNotice = "waiting for browser consent — you'll be notified when connected"
+	pollCmd := workspaceEnrollmentPollTickCmd(m.enrollment.ID)
 	if presentationURL != "" && m.deps.OpenURL != nil {
-		return m, func() tea.Msg {
+		return m, tea.Batch(pollCmd, func() tea.Msg {
 			if err := m.deps.OpenURL(m.deps.Ctx, presentationURL); err != nil {
 				return workspaceEnrollmentMsg{action: "open", err: err}
 			}
 			return nil
-		}
+		})
 	}
-	return m, nil
+	return m, pollCmd
 }
 
 // applyWorkspaceEnrollmentEvent reduces a pushed EvWorkspaceEnrollmentResolved

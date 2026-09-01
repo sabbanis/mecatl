@@ -59,6 +59,54 @@ func TestWorkspaceEnrollmentIsNonBlocking(t *testing.T) {
 	}
 }
 
+// TestWorkspaceEnrollmentPendingReschedulesPoll pins the mechanism the push
+// event alone cannot provide: nothing pushes the browser-callback landing on
+// its own — ConnectWorkspaceServices only OBSERVES a Connected transition
+// when it happens to be called again. A pending result must therefore
+// schedule a recheck (workspaceEnrollmentPollTickCmd), and each subsequent
+// pending observation must reschedule the next one, or the "you'll be
+// notified when connected" promise silently never comes true.
+func TestWorkspaceEnrollmentPendingReschedulesPoll(t *testing.T) {
+	control := &workspaceEnrollmentControlFake{connect: client.WorkspaceEnrollment{
+		ID: "bundle-1", Status: client.WorkspaceEnrollmentPending, RequiredServices: 1,
+	}}
+	m, _ := builtinDispatchModel(t, client.Capabilities{WorkspaceEnrollment: true}, false)
+	m.deps.WorkspaceEnrollment = control
+
+	mm, cmd := m.runToolsConnect()
+	m = mm.(Model)
+	if cmd == nil {
+		t.Fatal("/tools-connect returned no command")
+	}
+	m = applyAll(m, cmd())
+	if m.enrollment.ID != "bundle-1" || m.enrollment.busy {
+		t.Fatalf("after the first pending response: enrollment=%+v", m.enrollment)
+	}
+
+	// The browser-consent callback "lands" server-side between polls; nothing
+	// notifies this client of that directly -- only a recheck observes it.
+	control.connect = client.WorkspaceEnrollment{ID: "bundle-1", Status: client.WorkspaceEnrollmentConnected}
+	mm, tickCmd := m.applyWorkspaceEnrollmentPollTick(workspaceEnrollmentPollTickMsg{enrollmentID: "bundle-1"})
+	m = mm.(Model)
+	if tickCmd == nil {
+		t.Fatal("poll tick for the pending bundle produced no recheck command")
+	}
+	m = applyAll(m, tickCmd())
+	if control.connectCalls != 2 {
+		t.Fatalf("connectCalls = %d, want 2 (the initial connect + the poll recheck)", control.connectCalls)
+	}
+	if m.enrollment.ID != "" {
+		t.Fatalf("poll-observed Connected did not finalize: enrollment=%+v", m.enrollment)
+	}
+
+	// A tick for a superseded/resolved bundle (this one already finalized)
+	// must be a silent no-op, not restart a chain nothing is waiting on.
+	stale, staleCmd := m.applyWorkspaceEnrollmentPollTick(workspaceEnrollmentPollTickMsg{enrollmentID: "bundle-1"})
+	if staleCmd != nil || stale.(Model).enrollment.ID != "" {
+		t.Fatal("stale poll tick was not a no-op")
+	}
+}
+
 // TestWorkspaceEnrollmentEventAutoResolves covers the pushed
 // EvWorkspaceEnrollmentResolved event (Part B): a matching Connected event must
 // auto-finalize (clear enrollment/notice, fire any queued initial prompt)

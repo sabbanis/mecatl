@@ -582,6 +582,9 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case workspaceEnrollmentMsg:
 		mm, cmd := m.applyWorkspaceEnrollment(msg)
 		return mm, cmd, true
+	case workspaceEnrollmentPollTickMsg:
+		mm, cmd := m.applyWorkspaceEnrollmentPollTick(msg)
+		return mm, cmd, true
 	case client.SessionCompactedMsg:
 		if msg.RequestToken != m.compactRequestToken || msg.SessionID != m.sessionID || !m.compactPending {
 			return m, nil, true
