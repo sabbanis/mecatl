@@ -49,6 +49,7 @@ $ go run ./cmd/mecak8s --redis-url redis:6379 --redis-allow-plaintext --session-
 
 | Flag | Default | Meaning |
 | --- | --- | --- |
+| `--log-level` | `info` | minimum severity for stderr logging; exact values are `debug`, `info`, `warn`, and `error`. Invalid values (including empty) use `info` and emit one warning. |
 | `--redis-url` | `""` | Redis address (`host:port`) for the session store + durable event log (ADRs 0048 and [0233](../adr/0233-secure-external-redis.md), storage-free). The `redisstore` `Store` doubles as its own `EventLog` (like `jsonlstore`). **Mutually exclusive with `--store-dir` / `--session-store-url`** (rejected at `Build`). Takes a bare `host:port`: a `redis://` or `rediss://` URL is rejected. An address alone is not a plaintext opt-in — see `--redis-allow-plaintext`. |
 | `--redis-allow-plaintext` | `false` | Explicitly allow unauthenticated plaintext Redis; disposable local/Kind use only. Without it an address-only `--redis-url` is **rejected at `Build`**. Never set it for a production external Redis. |
 | `--redis-username-file` / `--redis-password-file` | `""` | Paths to optional Redis ACL credentials in a mounted Kubernetes Secret. A password without a username authenticates as Redis's default ACL user; a username requires a password. Credential values are never accepted as command arguments. Any credential requires verified TLS — `--redis-tls` or `--redis-tls-ca`. When either file is configured, mecak8s watches its lexical parent and transactionally hot-reloads the complete configured Redis file set after a bounded successful probe. |
@@ -348,12 +349,16 @@ raw gRPC drivers are not yet caller-enforced (ADR 0213).
 
 #### Local optional Keycloak fixture
 
-The disposable `deploy/mecak8s-kind/` fixture keeps its base profile unauthenticated
-and `ClusterIP`. Its optional Keycloak layer is an explicit local validation aid:
-`task mecak8s:kind-keycloak-setup` installs it;
-`task mecak8s:kind-keycloak-port-forward` is the issuer's loopback-only browser
-path, and `task mecak8s:kind-port-forward` is the sole mecak8s host path, bound
-to `127.0.0.1`. Map `keycloak.mecatl.svc.cluster.local` to `127.0.0.1` locally
+The disposable `deploy/mecak8s-kind/` fixture keeps its base chart deployment
+unauthenticated and uses its fixture-only NodePort overlay. Its optional Keycloak
+layer is an explicit local validation aid:
+`task mecak8s:kind-keycloak-setup` installs it; the Kind cluster's static
+`extraPortMappings` expose the issuer at loopback `127.0.0.1:8443` and mecak8s at
+`127.0.0.1:18080`/`18081`. The mappings are installed only when the cluster is
+created; the fixture NodePort overlay is not part of shared `values-kind.yaml` or
+bare chart defaults. Only the host binding is loopback-only -- the NodePorts are
+also reachable on the Kind node's own address from the Docker network, which is
+accepted for a disposable fixture and is not a production isolation claim. Map `keycloak.mecatl.svc.cluster.local` to `127.0.0.1` locally
 before the browser flow so the configured issuer hostname and certificate remain
 intact.
 The mecak8s certificate covers `localhost` and `127.0.0.1`; verify the fixture
