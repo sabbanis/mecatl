@@ -1055,18 +1055,18 @@ func (s *Supervisor) selectMemberWorkspace(ctx context.Context, spec MemberSpec,
 		return forkOrWrap(ctx, s.roForker, s.base, spec.Name)
 	default:
 		// Base-sharing read-only member (no shell): re-view the shared base
-		// through the NON-relaxed child workspace when composition wired one —
-		// a relaxed base must never hand the shell-less member the main
-		// session's out-of-root reach (the path-escape-posture Scenario 5
-		// boundary). A nil view (or no wired re-view) keeps the historical
-		// verbatim base. The member Environment carries a NIL runner as
-		// defense-in-depth (issue #462 review): a base-sharing read-only
-		// member has NO shell — its catalog has no Bash (the composition root
-		// gates Bash registration on a runner being wired for the member), so
-		// a nil runner here is belt-and-suspenders that a future mis-wire
-		// cannot hand the member the PARENT's shell via the base Environment.
-		// It MUST NOT reuse s.base.CommandRunner() (the parent runner), even
-		// though the base Environment may carry one.
+		// through a fresh member workspace when composition wired one. Besides
+		// preserving the path-escape containment boundary, this gives local members
+		// an independent read ledger even when the parent selected durable storage.
+		// A nil view keeps the historical base workspace for custom/non-local
+		// backends that cannot be reconstructed from a local root. The member
+		// Environment carries a NIL runner as defense-in-depth (issue #462 review):
+		// a base-sharing read-only member has NO shell — its catalog has no Bash
+		// (the composition root gates Bash registration on a runner being wired for
+		// the member), so a nil runner here is belt-and-suspenders that a future
+		// mis-wire cannot hand the member the PARENT's shell via the base Environment.
+		// It MUST NOT reuse s.base.CommandRunner() (the parent runner), even though
+		// the base Environment may carry one.
 		if s.sharedBaseWS != nil {
 			if memberWS := s.sharedBaseWS(s.base.Workspace().Root()); memberWS != nil {
 				memberEnv, err := tool.NewEnvironment(s.base.Ref(), memberWS, nil)

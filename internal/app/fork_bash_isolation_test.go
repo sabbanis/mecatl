@@ -125,8 +125,8 @@ func TestForkBashWritesIntoForkNotBase(t *testing.T) {
 		t.Fatalf("base workspace: %v", err)
 	}
 
-	rf := &recordingForker{inner: forker.New(func(root string) (tool.Workspace, error) {
-		return osfs.NewWorkspace(root)
+	rf := &recordingForker{inner: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+		return osfs.NewWorkspaceWithLedger(root, ledger)
 	}, forker.WithRunner(func(root string) tool.CommandRunner {
 		childCfg := cfg
 		childCfg.Workspace = root
@@ -206,8 +206,8 @@ func TestForkGitCommitDoesNotTouchBaseRepo(t *testing.T) {
 	}
 
 	// Mirror the composition root: mutating Fork branches get FULLY isolated forks.
-	rf := &recordingForker{inner: forker.New(func(root string) (tool.Workspace, error) {
-		return osfs.NewWorkspace(root)
+	rf := &recordingForker{inner: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+		return osfs.NewWorkspaceWithLedger(root, ledger)
 	}, forker.WithForceCopy(), forker.WithRunner(func(root string) tool.CommandRunner {
 		childCfg := cfg
 		childCfg.Workspace = root

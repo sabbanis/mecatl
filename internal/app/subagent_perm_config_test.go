@@ -58,8 +58,8 @@ func runSubagentBash(t *testing.T, cfg Config, command string) session.ToolResul
 	provider := &bashWriteProvider{command: command, marker: "out.txt"}
 	childEngine := buildChildEngine(cfg, nil, provider, "", cfg.Model, runner)
 
-	rf := &recordingForker{inner: forker.New(func(root string) (tool.Workspace, error) {
-		return osfs.NewWorkspace(root)
+	rf := &recordingForker{inner: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+		return osfs.NewWorkspaceWithLedger(root, ledger)
 	}, forker.WithRunner(func(childRoot string) tool.CommandRunner {
 		if cfg.NoBash || cfg.Shell == "" || !cfg.TrustProject {
 			return nil

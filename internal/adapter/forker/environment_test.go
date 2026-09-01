@@ -56,7 +56,9 @@ func TestForkReturnsEnvironmentWithBoundRunner(t *testing.T) {
 
 	// WithRunner wires a bound runner for each child directory. The runner is
 	// bound to the child root so its cwd follows the fork.
-	f := forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) },
+	f := forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+		return osfs.NewWorkspaceWithLedger(root, ledger)
+	},
 		forker.WithRunner(func(childRoot string) tool.CommandRunner {
 			r, rerr := osfs.NewCommandRunnerShell(childRoot, "/bin/sh")
 			if rerr != nil {
@@ -133,7 +135,9 @@ func TestForkFallbackCopyAffinity(t *testing.T) {
 	tmpBase := t.TempDir()
 	var runnerRoots []string
 	f := forker.New(
-		func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) },
+		func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+			return osfs.NewWorkspaceWithLedger(root, ledger)
+		},
 		forker.WithTempBase(tmpBase),
 		forker.WithRunner(func(childRoot string) tool.CommandRunner {
 			runnerRoots = append(runnerRoots, childRoot)
@@ -217,7 +221,9 @@ func TestForkWithoutRunnerIsShellLess(t *testing.T) {
 		t.Fatalf("base ws: %v", err)
 	}
 	baseEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: base}, baseWS, nil)
-	f := forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) })
+	f := forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+		return osfs.NewWorkspaceWithLedger(root, ledger)
+	})
 
 	child, cleanup, _, ferr := f.Fork(context.Background(), baseEnv, "t")
 	if ferr != nil {

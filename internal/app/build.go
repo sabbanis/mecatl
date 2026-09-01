@@ -37,6 +37,7 @@ import (
 	"k8s.io/client-go/tools/clientcmd"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/memorypromotion"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/nofs"
@@ -6547,34 +6548,20 @@ func buildSubagentTool(ctx context.Context, cfg Config, provReg *providerRegistr
 			}))
 		opts = append(opts, agent.WithChildForker(taskForker))
 	}
-	// PATH-ESCAPE POSTURE (Scenario 5, AC5.1b): a BASE-SHARING child must never
-	// inherit the main session's relaxed workspace. Two child paths share the
-	// parent base verbatim: the SHELL-LESS read-only explorer (no sandboxed
-	// runner ⇒ no forker wired above — forkChildEnvironment returns the parent ws
-	// unchanged) and the mode:"read-write" direct-write child (ADR 0041 — it
-	// runs against the REAL parent tree by design). At auto/yolo the main
-	// session's workspace is relaxed (WithRelaxedReads/WithRelaxedWrites), so a
-	// verbatim share would hand the child the main session's out-of-root reach.
-	// Re-view the shared base through the NON-relaxed construction — the SAME
-	// root, the SAME per-skill read-only roots, NO relaxed options (the exact
-	// constructor newForkWorkspace uses) — so the child keeps the main
-	// session's containment posture without its escape reach. The FORKED child
-	// (childForker wired) never consults this — its worktree already comes from
-	// the non-relaxed newForkWorkspace. The main session's own relaxed
-	// workspace is untouched. Inert below auto (the parent ws is never relaxed
-	// there, so the re-view is a no-op). A root the constructor cannot open
-	// yields nil and the child falls back to the parent ws (fail-open to the
-	// historical shape — the constructor only fails on an unreadable root,
-	// which the parent workspace construction already surfaced).
-	if cfg.Posture >= PostureAuto {
-		opts = append(opts, agent.WithSharedChildWorkspace(func(root string) tool.Workspace {
-			ws, err := newForkWorkspace()(root)
-			if err != nil {
-				return nil
-			}
-			return ws
-		}))
-	}
+	// Every base-sharing child (shell-less read-only or direct-write) gets a
+	// fresh child-session read ledger by re-opening the SAME local namespace
+	// through the common fork-workspace constructor. This is required at every
+	// posture: a child must never inherit or write the parent session's selected
+	// durable ledger. The parent runner is retained by forkChildEnvironment, so
+	// direct-write Bash remains bound to the parent namespace. The same re-view
+	// also preserves the existing auto/yolo path-escape containment boundary.
+	opts = append(opts, agent.WithSharedChildWorkspace(func(root string) tool.Workspace {
+		ws, err := newForkWorkspace()(root, memledger.New())
+		if err != nil {
+			return nil
+		}
+		return ws
+	}))
 	// Per-call model override factory: mint an explorer child engine for a requested
 	// model through the SAME contamination-safe per-provider path (newChildEngineFor
 	// Provider re-derives Compactor/TokenCounter/Env.Model/ContextWindow for the
@@ -6989,31 +6976,18 @@ func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, p
 	mutatingRunner := buildForceCopyRunner(cfg)
 	roIsolationAvailable := memberRunner != nil && roFk != nil
 	factory := buildMemberEngine(cfg, provReg, provider, parentProviderID, parentModel, teamHooks, agentReg, skillIdx, memberRunner, mutatingRunner, roIsolationAvailable, mainMgr, a, false)
-	// PATH-ESCAPE POSTURE (Scenario 5, AC5.1d): a BASE-SHARING (shell-less)
-	// read-only member must never inherit the main session's relaxed workspace.
-	// The supervisor's base-share fallback otherwise hands the member the team
-	// base VERBATIM — and at auto/yolo that base is the escapeWorkspace-wrapped
-	// relaxed osfs (WithRelaxedReads/WithRelaxedWrites), giving the shell-less
-	// member the main session's out-of-root reach (the same leak task 05 closed
-	// for the Subagent nil-forker path). Re-view the shared base through the
-	// NON-relaxed construction — the SAME root, the SAME per-skill read-only
-	// roots, NO relaxed options (the exact constructor newForkWorkspace uses) —
-	// so the member keeps the main session's containment posture without its
-	// escape reach. The two FORKED tiers (Mutating force-copy, read-only
-	// worktree) never consult this — their forks already come from the
-	// non-relaxed newForkWorkspace. The main session's own relaxed workspace is
-	// untouched. Inert below auto (the base is never relaxed there). A root the
-	// constructor cannot open yields nil and the supervisor falls back to the
-	// verbatim base (fail-open to the historical shape).
-	var sharedBaseWS func(string) tool.Workspace
-	if cfg.Posture >= PostureAuto {
-		sharedBaseWS = func(root string) tool.Workspace {
-			ws, err := newForkWorkspace()(root)
-			if err != nil {
-				return nil
-			}
-			return ws
+	// Every base-sharing read-only member gets a fresh member-session read
+	// ledger by re-opening the SAME local namespace through the common fork
+	// constructor. This is unconditional across postures so a member cannot
+	// inherit or write the parent session's selected durable ledger. The nil
+	// runner keeps the existing shell-less semantics; the same re-view also
+	// preserves the auto/yolo path-escape containment boundary.
+	sharedBaseWS := func(root string) tool.Workspace {
+		ws, err := newForkWorkspace()(root, memledger.New())
+		if err != nil {
+			return nil
 		}
+		return ws
 	}
 	return factory, fk, roFk, sharedBaseWS, teamHooks
 }
@@ -8395,9 +8369,11 @@ func parseWorktreePorcelain(out string) []server.Worktree {
 
 // newForkWorkspace returns the ONE workspace constructor every fork family
 // (Subagent worktree, team member force-copy/worktree, Parallel branch) uses, so
-// their isolated workspaces cannot drift in construction semantics.
-func newForkWorkspace() func(string) (tool.Workspace, error) {
-	return func(root string) (tool.Workspace, error) {
-		return osfs.NewWorkspace(root)
+// their isolated workspaces cannot drift in construction semantics. The caller
+// supplies a freshly minted child-session ledger; this constructor always
+// composes it and never selects the parent session's ledger.
+func newForkWorkspace() func(string, tool.ReadLedger) (tool.Workspace, error) {
+	return func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+		return osfs.NewWorkspaceWithLedger(root, ledger)
 	}
 }

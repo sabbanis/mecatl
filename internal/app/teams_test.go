@@ -183,13 +183,17 @@ func TestMaxTeamTokensPropagates(t *testing.T) {
 		return ws
 	}
 	svc, err := server.NewService(server.Config{
-		Engine:          noopEngine(),
-		Store:           memstore.New(),
-		Workspaces:      osfsWS,
-		Now:             func() time.Time { return time.Unix(0, 0) },
-		MemberEngine:    svcCfg.MemberEngine,
-		Forker:          forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) }),
-		ReadOnlyForker:  forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) }),
+		Engine:       noopEngine(),
+		Store:        memstore.New(),
+		Workspaces:   osfsWS,
+		Now:          func() time.Time { return time.Unix(0, 0) },
+		MemberEngine: svcCfg.MemberEngine,
+		Forker: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+			return osfs.NewWorkspaceWithLedger(root, ledger)
+		}),
+		ReadOnlyForker: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+			return osfs.NewWorkspaceWithLedger(root, ledger)
+		}),
 		TeamTokenBudget: svcCfg.TeamTokenBudget,
 	})
 	if err != nil {
@@ -306,9 +310,13 @@ func TestReadOnlyMemberRunsGitInWorktreeEndToEnd(t *testing.T) {
 		}
 		return newHardenedRunnerForRoot(cfg, childRoot)
 	}
-	roFk := forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) },
+	roFk := forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+		return osfs.NewWorkspaceWithLedger(root, ledger)
+	},
 		forker.WithTempBase(worktreeBase), forker.WithRunner(sandboxedRunnerBuilder))
-	mutatingFk := forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) },
+	mutatingFk := forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+		return osfs.NewWorkspaceWithLedger(root, ledger)
+	},
 		forker.WithForceCopy(), forker.WithRunner(forceCopyRunnerBuilder))
 	runner := buildSandboxedCommandRunner(cfg)
 	if runner == nil {
@@ -456,7 +464,9 @@ func teamServiceWithFactory(t *testing.T, factory server.MemberEngineFactory) *s
 		Workspaces:   osfsWS,
 		Now:          func() time.Time { return time.Unix(0, 0) },
 		MemberEngine: factory,
-		Forker:       forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) }),
+		Forker: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+			return osfs.NewWorkspaceWithLedger(root, ledger)
+		}),
 	})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
@@ -503,7 +513,9 @@ func TestTeamReturnsConsolidatedReportEndToEnd(t *testing.T) {
 		Workspaces:   osfsWS,
 		Now:          func() time.Time { return time.Unix(0, 0) },
 		MemberEngine: factory,
-		Forker:       forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) }),
+		Forker: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+			return osfs.NewWorkspaceWithLedger(root, ledger)
+		}),
 	})
 	if err != nil {
 		t.Fatalf("new service: %v", err)
@@ -572,7 +584,9 @@ func TestTeamRunTeamPathSurfacesTeamID(t *testing.T) {
 		Workspaces:   osfsWS,
 		Now:          func() time.Time { return time.Unix(0, 0) },
 		MemberEngine: scriptedMemberFactory(t, scripts),
-		Forker:       forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) }),
+		Forker: forker.New(func(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+			return osfs.NewWorkspaceWithLedger(root, ledger)
+		}),
 	})
 	if err != nil {
 		t.Fatalf("new service: %v", err)

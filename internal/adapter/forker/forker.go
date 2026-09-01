@@ -102,6 +102,7 @@ import (
 	"sync"
 	"sync/atomic"
 
+	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/envscrub"
@@ -109,10 +110,13 @@ import (
 )
 
 // childRoot is the constructor the forker uses to build a child tool.Workspace
-// over an isolated directory. It is injected so this adapter does not import the
-// osfs adapter directly (avoiding an adapter→adapter dependency) and so tests can
-// substitute a workspace constructor. The composition root passes osfs.NewWorkspace.
-type childRoot func(root string) (tool.Workspace, error)
+// over an isolated directory with the supplied CHILD-SESSION ledger. It is
+// injected so this adapter does not import the osfs adapter directly (avoiding
+// an adapter→adapter dependency) and so tests can substitute a workspace
+// constructor. The composition root passes osfs.NewWorkspaceWithLedger.
+// Implementations must compose the supplied ledger rather than selecting or
+// inheriting the base Environment's ledger.
+type childRoot func(root string, ledger tool.ReadLedger) (tool.Workspace, error)
 
 // childRunner is the constructor the forker uses to build a BOUND tool.CommandRunner
 // for an isolated child directory (issue #462). It is injected so this adapter does
@@ -227,9 +231,11 @@ func WithRunner(r childRunner) Option {
 }
 
 // New constructs the default Forker. newWorkspace builds a child tool.Workspace
-// over an isolated directory (the composition root passes osfs.NewWorkspace);
-// it must be non-nil.
-func New(newWorkspace func(root string) (tool.Workspace, error), opts ...Option) *Forker {
+// over an isolated directory and composes the fresh child-session ReadLedger
+// supplied by Fork (the composition root passes osfs.NewWorkspaceWithLedger);
+// it must be non-nil. The constructor must not select or inherit the base
+// Environment's ledger.
+func New(newWorkspace func(root string, ledger tool.ReadLedger) (tool.Workspace, error), opts ...Option) *Forker {
 	if newWorkspace == nil {
 		panic("forker: New requires a non-nil newWorkspace constructor")
 	}
@@ -388,7 +394,7 @@ func (f *Forker) forkWorktree(ctx context.Context, repoRoot, childDir string) (t
 	if f.dirtyOverlay {
 		advisory = f.overlayDirty(ctx, repoRoot, childDir)
 	}
-	ws, err := f.newWorkspace(childDir)
+	ws, err := f.newWorkspace(childDir, memledger.New())
 	if err != nil {
 		_ = f.runGit(ctx, repoRoot, "worktree", "remove", "--force", childDir)
 		return nil, nil, "", fmt.Errorf("forker: open child workspace: %w", err)
@@ -421,7 +427,7 @@ func (f *Forker) forkCopyInto(baseRoot, childDir string) (tool.Workspace, func()
 		_ = os.RemoveAll(childDir)
 		return nil, nil, fmt.Errorf("forker: copy base tree: %w", err)
 	}
-	ws, err := f.newWorkspace(childDir)
+	ws, err := f.newWorkspace(childDir, memledger.New())
 	if err != nil {
 		_ = os.RemoveAll(childDir)
 		return nil, nil, fmt.Errorf("forker: open child workspace: %w", err)

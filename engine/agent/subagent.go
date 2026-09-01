@@ -4071,13 +4071,14 @@ func (t *SubagentTool) resolveResumeSession(ctx context.Context, callID session.
 func (t *SubagentTool) forkChildEnvironment(ctx context.Context, callID session.ToolCallID, env tool.Environment, label string, forker tool.EnvironmentForker) (runEnv tool.Environment, cleanup func() error, advisory string, errResult session.ToolResult, ok bool) {
 	if forker == nil {
 		// Base-sharing child (a shell-less read-only explorer, or the writable
-		// direct-write child): re-view the parent ws through the NON-relaxed
-		// child workspace when composition wired one — a relaxed parent base
-		// must never hand the child the main session's out-of-root reach (the
-		// path-escape-posture Scenario 5 boundary). A nil view (or no wired
-		// re-view) keeps the historical verbatim parent env. The child
-		// Environment reuses the PARENT's bound runner so a direct-write child's
-		// Bash still observes the parent namespace (issue #462).
+		// direct-write child): re-view the parent ws through a fresh child
+		// workspace when composition wired one. Besides preserving the
+		// path-escape containment boundary, this gives local children an independent
+		// read ledger even when the parent selected durable storage. A nil view keeps
+		// the historical verbatim environment for custom/non-local workspaces that
+		// cannot be reconstructed from a local root. The child Environment reuses
+		// the PARENT's bound runner so a direct-write child's Bash still observes the
+		// parent namespace (issue #462).
 		if t.sharedChildWS != nil {
 			if childWS := t.sharedChildWS(env.Workspace().Root()); childWS != nil {
 				childEnv := tool.MustEnvironment(env.Ref(), childWS, env.CommandRunner())

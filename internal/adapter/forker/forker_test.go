@@ -13,9 +13,9 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/osfs"
 )
 
-// osfsWorkspace adapts osfs.NewWorkspace to the forker's constructor signature.
-func osfsWorkspace(root string) (tool.Workspace, error) {
-	return osfs.NewWorkspace(root)
+// osfsWorkspace adapts osfs.NewWorkspaceWithLedger to the forker's constructor signature.
+func osfsWorkspace(root string, ledger tool.ReadLedger) (tool.Workspace, error) {
+	return osfs.NewWorkspaceWithLedger(root, ledger)
 }
 
 // TestForkGitWorktree exercises the git-repo path: forking a repo yields a real
