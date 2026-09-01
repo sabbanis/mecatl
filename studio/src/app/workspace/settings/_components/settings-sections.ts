@@ -2,6 +2,7 @@ import {
   Bot,
   Brain,
   FlaskConical,
+  GraduationCap,
   Network,
   Palette,
   Route,
@@ -53,6 +54,11 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/memory",
         label: "Memory",
         icon: Brain,
+      },
+      {
+        href: "/workspace/settings/learning",
+        label: "Learning",
+        icon: GraduationCap,
       },
       {
         href: "/workspace/settings/provider",

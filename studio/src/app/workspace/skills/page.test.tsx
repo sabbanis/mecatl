@@ -23,6 +23,16 @@ const state = vi.hoisted(() => ({
   fetchBody: vi.fn(() => Promise.resolve("---\nname: x\n---\nbody")),
 }));
 
+// The page reads capabilities for the Learned tab gate; the kebab tests run
+// against a daemon without learned_skills, so the tab stays hidden here.
+vi.mock("@/features/agent/runtime-status", () => ({
+  useRuntimeStatus: () => ({
+    connected: true,
+    mode: "managed",
+    serverCapabilities: {},
+  }),
+}));
+
 vi.mock("@/features/agent/hooks/use-agent-skills", () => ({
   useAgentSkills: () => ({
     skills: [

@@ -36,11 +36,13 @@ import {
   TableRow,
 } from "@/components/ui/table";
 import { useAgentSkills } from "@/features/agent/hooks/use-agent-skills";
+import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import type { HarnessSkillInfo } from "@/lib/harness/client";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
 import { CreateSkillDialog } from "./_components/create-skill-dialog";
 import { EditSkillDialog } from "./_components/edit-skill-dialog";
+import { LearnedSkillsPanel } from "./_components/learned-skills-panel";
 
 /** "pr-feedback" → "Pr Feedback"; the raw slug stays the id/route param. */
 function humanizeSkillName(name: string): string {
@@ -70,13 +72,17 @@ const SKILL_FILTERS = [
   { value: "enabled", label: "Enabled" },
   { value: "disabled", label: "Disabled" },
 ] as const;
-type SkillFilterValue = (typeof SKILL_FILTERS)[number]["value"];
+/** "learned" is a separate daemon-owned inventory (ADR 0110), not a filter
+ *  over the workspace rows — its pill renders only when the daemon reports
+ *  `capabilities.learned_skills`. */
+type SkillFilterValue = (typeof SKILL_FILTERS)[number]["value"] | "learned";
 
 function matchesSkillFilter(
   row: SkillListRow,
   filter: SkillFilterValue,
 ): boolean {
   if (filter === "all") return true;
+  if (filter === "learned") return false; // learned renders its own panel
   return filter === "enabled" ? row.enabled : !row.enabled;
 }
 
@@ -133,10 +139,23 @@ export default function WorkspaceSkillsPage() {
     setEnabled,
     remove,
   } = useAgentSkills();
+  const { serverCapabilities } = useRuntimeStatus();
+  const learnedSupported = serverCapabilities.learned_skills === true;
   const sort = useTableSort<"name" | "description" | "status">("name");
   const [filter, setFilter] = useState<SkillFilterValue>("all");
   const [pending, setPending] = useState<PendingAction | null>(null);
   const [editing, setEditing] = useState<SkillListRow | null>(null);
+
+  // A daemon restart can drop the capability mid-session; never strand the
+  // view on a pill that no longer renders.
+  const activeFilter: SkillFilterValue =
+    filter === "learned" && !learnedSupported ? "all" : filter;
+  const filterPills: { value: SkillFilterValue; label: string }[] = [
+    ...SKILL_FILTERS,
+    ...(learnedSupported
+      ? [{ value: "learned" as const, label: "Learned" }]
+      : []),
+  ];
 
   const rows = useMemo<SkillListRow[]>(
     () => [
@@ -154,8 +173,8 @@ export default function WorkspaceSkillsPage() {
   );
 
   const filtered = useMemo(
-    () => rows.filter((row) => matchesSkillFilter(row, filter)),
-    [rows, filter],
+    () => rows.filter((row) => matchesSkillFilter(row, activeFilter)),
+    [rows, activeFilter],
   );
 
   const sorted = useMemo(() => {
@@ -183,6 +202,24 @@ export default function WorkspaceSkillsPage() {
   const act = (action: Promise<void>) => {
     void action.catch(() => {});
   };
+
+  // Shared between the no-skills-at-all case and the workspace tabs of a
+  // daemon that still has a learned inventory to show.
+  const emptyState = (
+    <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-16 text-center">
+      <div className="flex size-11 items-center justify-center rounded-full bg-muted">
+        <Sparkles className="size-5 text-muted-foreground" />
+      </div>
+      <div className="space-y-1">
+        <p className="text-sm font-medium">No skills here yet</p>
+        <p className="max-w-sm text-sm text-muted-foreground">
+          Drop a <code className="font-mono text-xs">SKILL.md</code> into{" "}
+          <code className="font-mono text-xs">.mecatl/skills</code> and it'll
+          show up here, ready for the agent to use.
+        </p>
+      </div>
+    </div>
+  );
 
   return (
     <div className="h-full overflow-y-auto px-3 pt-6 pb-8 min-[500px]:px-4">
@@ -224,33 +261,21 @@ export default function WorkspaceSkillsPage() {
           <div className="rounded-lg border border-dashed border-destructive/40 py-12 text-center text-sm text-destructive">
             {error}
           </div>
-        ) : rows.length === 0 ? (
-          <div className="flex flex-col items-center gap-3 rounded-lg border border-dashed py-16 text-center">
-            <div className="flex size-11 items-center justify-center rounded-full bg-muted">
-              <Sparkles className="size-5 text-muted-foreground" />
-            </div>
-            <div className="space-y-1">
-              <p className="text-sm font-medium">No skills here yet</p>
-              <p className="max-w-sm text-sm text-muted-foreground">
-                Drop a <code className="font-mono text-xs">SKILL.md</code> into{" "}
-                <code className="font-mono text-xs">.mecatl/skills</code> and
-                it'll show up here, ready for the agent to use.
-              </p>
-            </div>
-          </div>
+        ) : rows.length === 0 && !learnedSupported ? (
+          emptyState
         ) : (
           <>
             {/* Segmented control: a filled track with the active pill lifted
                 (the schedules page's idiom). */}
             <div className="inline-flex items-center gap-0.5 rounded-full bg-muted p-1">
-              {SKILL_FILTERS.map((f) => (
+              {filterPills.map((f) => (
                 <button
                   key={f.value}
                   type="button"
                   onClick={() => setFilter(f.value)}
                   className={cn(
                     "h-7 rounded-full px-3.5 text-sm transition-colors",
-                    filter === f.value
+                    activeFilter === f.value
                       ? "bg-background font-medium text-foreground shadow-sm"
                       : "text-muted-foreground hover:text-foreground",
                   )}
@@ -260,7 +285,11 @@ export default function WorkspaceSkillsPage() {
               ))}
             </div>
 
-            {filtered.length === 0 ? (
+            {activeFilter === "learned" ? (
+              <LearnedSkillsPanel />
+            ) : rows.length === 0 ? (
+              emptyState
+            ) : filtered.length === 0 ? (
               <div className="rounded-lg border border-dashed py-12 text-center text-sm text-muted-foreground">
                 No skills match this filter.
               </div>

@@ -1,5 +1,6 @@
 import { TopNav } from "@/components/shell/top-nav";
 import { RuntimeStatusProvider } from "@/features/agent/runtime-status";
+import { StorageHealthBanner } from "@/features/agent/storage-health-banner";
 import { ShortcutsProvider } from "@/lib/shortcuts/use-shortcuts";
 
 /**
@@ -27,6 +28,10 @@ export default function WorkspaceLayout({
             under the clock, so the nav must start below it while the
             gradient still paints behind it. */}
         <div className="flex h-dvh min-w-0 flex-col bg-[radial-gradient(120%_140%_at_20%_30%,#006652_0%,#03433e_50%,#06202a_100%)] pt-[env(safe-area-inset-top)] dark:bg-[radial-gradient(120%_140%_at_20%_30%,#023d31_0%,#022723_50%,#02141b_100%)]">
+          {/* Storage health rides the same full-width banner band as the
+              runtime status banners: visible from every surface, because a
+              degraded store shows up as chats missing from the sidebar. */}
+          <StorageHealthBanner />
           <TopNav />
           {/* relative makes the card the containing block for absolutely-
               positioned descendants with no positioned ancestor of their own
