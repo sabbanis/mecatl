@@ -154,6 +154,9 @@ func toProto(ev session.Event) *mecatlv1.Event {
 	if ev.MCPAuthorization != nil {
 		out.McpAuthorization = toProtoMCPAuthorization(*ev.MCPAuthorization)
 	}
+	if ev.WorkspaceEnrollment != nil {
+		out.WorkspaceEnrollment = toProtoWorkspaceEnrollmentEvent(*ev.WorkspaceEnrollment)
+	}
 	if ev.Result != nil {
 		out.Result = toProtoResult(*ev.Result)
 	}
@@ -200,6 +203,18 @@ func toProtoMCPAuthorization(p session.MCPAuthorizationPayload) *mecatlv1.MCPAut
 		CallId:          valid(string(p.Call)),
 		ExpiresAt:       timestamppb.New(p.ExpiresAt),
 		Status:          string(p.Status),
+	}
+}
+
+func toProtoWorkspaceEnrollmentEvent(p session.WorkspaceEnrollmentPayload) *mecatlv1.WorkspaceEnrollmentEvent {
+	backends := make([]string, len(p.Backends))
+	for i, backend := range p.Backends {
+		backends[i] = valid(backend)
+	}
+	return &mecatlv1.WorkspaceEnrollmentEvent{
+		EnrollmentId: valid(p.EnrollmentID),
+		Backends:     backends,
+		Status:       string(p.Status),
 	}
 }
 

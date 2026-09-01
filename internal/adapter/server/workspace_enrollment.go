@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 )
@@ -99,6 +100,9 @@ func (s *Service) ConnectWorkspaceServices(ctx context.Context, id session.Sessi
 			s.cfg.VMCPBroker.RejectProtectedCatalogue(id)
 			return vmcpbroker.WorkspaceEnrollmentPresentation{}, fmt.Errorf("%w: persist workspace enrollment completion", ErrInternal)
 		}
+		s.recordWorkspaceEnrollmentEvent(ctx, id, session.Event{Type: session.EvWorkspaceEnrollmentResolved, WorkspaceEnrollment: &session.WorkspaceEnrollmentPayload{
+			EnrollmentID: presentation.ID, Backends: presentation.Backends, Status: session.WorkspaceEnrollmentConnected,
+		}})
 	default:
 		s.cfg.VMCPBroker.RejectProtectedCatalogue(id)
 		return vmcpbroker.WorkspaceEnrollmentPresentation{}, fmt.Errorf("%w: invalid workspace enrollment status", ErrInternal)
@@ -211,5 +215,19 @@ func (s *Service) clearWorkspaceEnrollment(ctx context.Context, id session.Sessi
 	if err := s.cfg.Store.Save(ctx, sess); err != nil {
 		return fmt.Errorf("%w: persist workspace enrollment control", ErrInternal)
 	}
+	s.recordWorkspaceEnrollmentEvent(ctx, id, session.Event{Type: session.EvWorkspaceEnrollmentResolved, WorkspaceEnrollment: &session.WorkspaceEnrollmentPayload{
+		EnrollmentID: enrollment.ID, Backends: enrollment.Backends, Status: session.WorkspaceEnrollmentStatus(outcome),
+	}})
 	return nil
+}
+
+// recordWorkspaceEnrollmentEvent durably appends and live-publishes a
+// resolved workspace-enrollment event, mirroring recordMCPAuthorizationEvent.
+func (s *Service) recordWorkspaceEnrollmentEvent(ctx context.Context, id session.SessionID, ev session.Event) {
+	appendCtx := context.WithoutCancel(ctx)
+	if err := s.appendEvent(appendCtx, id, ev); err != nil {
+		s.cfg.Diagnostics.Log(appendCtx, port.LevelWarn, "event log append failed",
+			"session", string(id), "event", string(ev.Type), "err", err.Error())
+	}
+	s.PublishSessionEvent(id, ev)
 }

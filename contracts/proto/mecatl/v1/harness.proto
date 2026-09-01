@@ -1872,6 +1872,11 @@ message Event {
   // mcp_authorization is the safe correlation for a durably parked broker
   // authorization. It carries no URL, credential, arguments, route, or config.
   MCPAuthorization mcp_authorization = 23;
+
+  // workspace_enrollment is the safe correlation for a resolved bundled
+  // workspace-enrollment attempt (ADR 0281). It carries no browser URL,
+  // credential, or discovered catalogue.
+  WorkspaceEnrollmentEvent workspace_enrollment = 24;
 }
 
 // ModelRetry identifies the failed-step retry intent being driven.
@@ -1889,6 +1894,17 @@ message MCPAuthorization {
   // status is pending on required/current status events, or one of connected,
   // cancelled, expired, interrupted, failed, or closed on resolved events.
   string status = 5;
+}
+
+// WorkspaceEnrollmentEvent is the safe projection of
+// session.WorkspaceEnrollmentPayload — always a terminal resolution
+// (EvWorkspaceEnrollmentResolved); pending state is learned synchronously
+// from the ConnectWorkspaceServices RPC response, never pushed.
+message WorkspaceEnrollmentEvent {
+  string enrollment_id = 1;
+  repeated string backends = 2;
+  // status is one of connected, denied, cancelled, expired, or failed.
+  string status = 3;
 }
 
 // SteerEcho is the proto projection of session.SteerPayload (EvSteer): the

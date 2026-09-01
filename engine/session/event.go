@@ -148,6 +148,13 @@ const (
 	// EvMCPAuthorizationResolved closes a required authorization marker. It carries
 	// the same safe correlation and a closed terminal status only.
 	EvMCPAuthorizationResolved EventType = "mcp.authorization.resolved"
+	// EvWorkspaceEnrollmentResolved closes a bundled workspace-enrollment attempt
+	// (ADR 0281). Unlike MCP authorization, enrollment has no "required" push: the
+	// pending state is already known synchronously from ConnectWorkspaceServices's
+	// own RPC response, so only the terminal resolution needs to be pushed live —
+	// this is what lets the client auto-transition without a manual recheck. It
+	// carries no broker handle, browser URL, or credential material.
+	EvWorkspaceEnrollmentResolved EventType = "workspace_enrollment.resolved"
 	// EvResult is the terminal event: success / limit / error / cancelled.
 	EvResult EventType = "result"
 	// EvUserPrompt is emitted when a USER-ROLE message is recorded into the
@@ -1411,6 +1418,18 @@ type MCPAuthorizationPayload struct {
 	Status          MCPAuthorizationStatus
 }
 
+// WorkspaceEnrollmentPayload is the safe client-facing correlation for a
+// bundled workspace-enrollment resolution (ADR 0281). It deliberately contains
+// only the bundle ID, the backend names it covers, and the closed terminal
+// status; browser URLs, credentials, and the discovered protected catalogue
+// stay private. Mirrors MCPAuthorizationPayload; WorkspaceEnrollmentPending
+// never appears here — see EvWorkspaceEnrollmentResolved.
+type WorkspaceEnrollmentPayload struct {
+	EnrollmentID string
+	Backends     []string
+	Status       WorkspaceEnrollmentStatus
+}
+
 // Event is the domain-owned, provider-neutral unit of the streaming model. The
 // loop runs as a producer writing Events to a channel; server adapters relay
 // them to the gRPC server-stream or HTTP SSE.
@@ -1442,6 +1461,11 @@ type Event struct {
 	// correlation required by an attached client to present the authorization;
 	// it never contains a URL, credential, arguments, route, or config ID.
 	MCPAuthorization *MCPAuthorizationPayload
+	// WorkspaceEnrollment is set on EvWorkspaceEnrollmentResolved. It is the safe
+	// bundle correlation an attached client uses to auto-resolve its own pending
+	// enrollment without a manual recheck; it never contains a browser URL,
+	// credential, or discovered catalogue.
+	WorkspaceEnrollment *WorkspaceEnrollmentPayload
 	// Result is set on EvResult.
 	Result *ResultPayload
 	// TurnEnd is set on EvTurnEnd (this turn's usage + elapsed time).

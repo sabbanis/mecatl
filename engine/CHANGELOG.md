@@ -154,6 +154,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 - **Bundled workspace-enrollment domain state** ([ADR 0248](../docs/adr/0248-bundled-mcp-workspace-enrollment.md)) — `session.WorkspaceEnrollmentState`, its status vocabulary, and the `Session` start/read/clear methods persist only safe pre-prompt bundle correlation without reusing permission or MCP tool-call authorization state. Added (minor).
 
+- **Pushed workspace-enrollment resolution** ([ADR 0281](../docs/adr/0281-bundled-mcp-workspace-enrollment.md)) — `session.EvWorkspaceEnrollmentResolved` and `session.WorkspaceEnrollmentPayload`, mirroring the existing `EvMCPAuthorizationRequired`/`Resolved` pattern: a live-forwarded, log-only-safe event so an attached client learns a bundle's terminal resolution (connected/denied/cancelled/expired/failed) without polling. Added (minor).
+
 - **Prepared post-resolution MCP continuation** —
   `agent.Engine.PrepareAfterMCPAuthorization` lets the Service register a
   cancellation or expiry continuation before releasing its execution goroutine.

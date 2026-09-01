@@ -125,6 +125,7 @@ const EvToolResult EventType = "tool.result"
 const EvTurnEnd EventType = "turn.end"
 const EvTurnStart EventType = "turn.start"
 const EvUserPrompt EventType = "user_prompt"
+const EvWorkspaceEnrollmentResolved EventType = "workspace_enrollment.resolved"
 const GrantTypeClientCredentials GrantType = "client_credentials"
 const GrantTypeSystem GrantType = "system"
 const GrantTypeUser GrantType = "user"
@@ -300,7 +301,7 @@ type Conversation struct{Messages []Message}
 type Counters struct{Turns int; ToolCalls int; ConsecutiveFailures int}
 type EnvironmentKind string
 type EnvironmentRef struct{Kind EnvironmentKind; ID string}
-type Event struct{Type EventType; Seq int64; Turn int; Text string; ToolCall *ToolCall; ToolResult *ToolResult; Ask *PendingAsk; ModelRetry *ModelRetryPayload; RequestManifest *RequestManifestPayload; NetworkAttempt *NetworkAttemptPayload; MCPAuthorization *MCPAuthorizationPayload; Result *ResultPayload; TurnEnd *TurnEndPayload; Hook *HookPayload; Approval *ApprovalPayload; CompactionArchive *CompactionArchivePayload; UserPrompt *UserPromptPayload; Usage *Usage; Subagent *SubagentPayload; Team *TeamPayload; Parallel *ParallelPayload; RunID string; Actor *Principal; Schedule *SchedulePayload; Steer *SteerPayload}
+type Event struct{Type EventType; Seq int64; Turn int; Text string; ToolCall *ToolCall; ToolResult *ToolResult; Ask *PendingAsk; ModelRetry *ModelRetryPayload; RequestManifest *RequestManifestPayload; NetworkAttempt *NetworkAttemptPayload; MCPAuthorization *MCPAuthorizationPayload; WorkspaceEnrollment *WorkspaceEnrollmentPayload; Result *ResultPayload; TurnEnd *TurnEndPayload; Hook *HookPayload; Approval *ApprovalPayload; CompactionArchive *CompactionArchivePayload; UserPrompt *UserPromptPayload; Usage *Usage; Subagent *SubagentPayload; Team *TeamPayload; Parallel *ParallelPayload; RunID string; Actor *Principal; Schedule *SchedulePayload; Steer *SteerPayload}
 type EventType string
 type GrantType string
 type HookDecision string
@@ -348,6 +349,7 @@ type Turn struct{Index int; Assistant Message; Results []ToolResult; Usage Usage
 type TurnEndPayload struct{Usage Usage; Estimated bool; DurationMs int64; TTFTMs int64; InterTokenMeanMs int64; InterTokenMaxMs int64}
 type Usage struct{InputTokens int; OutputTokens int; CacheReadTokens int; CacheWriteTokens int; ReasoningTokens int}
 type UserPromptPayload struct{Text string; Parts []Content}
+type WorkspaceEnrollmentPayload struct{EnrollmentID string; Backends []string; Status WorkspaceEnrollmentStatus}
 type WorkspaceEnrollmentState struct{ID string; Backends []string; Status WorkspaceEnrollmentStatus; ExpiresAt time.Time}
 type WorkspaceEnrollmentStatus string
 var ErrIllegalTransition error
