@@ -361,6 +361,13 @@ func (h *HarnessServer) startConverse(ctx context.Context, first *mecatlv1.Conve
 		if err := validateGRPCSessionAffinity(ctx, string(id)); err != nil {
 			return "", nil, false, err
 		}
+		if prompt.GetDetach() {
+			run, err := h.svc.StartDetachedRunContent(ctx, id, prompt.GetText(), parts)
+			if err != nil {
+				return "", nil, false, toStatus(err)
+			}
+			return id, run, true, nil
+		}
 		run, err := h.svc.StartInteractiveRunContent(ctx, id, prompt.GetText(), parts)
 		if err != nil {
 			return "", nil, false, toStatus(err)
@@ -403,9 +410,17 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 		}
 		return err
 	}
-	id, run, _, err := h.startConverse(ctx, first)
+	id, run, detached, err := h.startConverse(ctx, first)
 	if err != nil {
 		return err
+	}
+	if detached {
+		return stream.Send(&mecatlv1.ConverseResponse{Event: &mecatlv1.Event{
+			Type: "run.detached",
+			Result: &mecatlv1.Result{
+				Stop: "detached",
+			},
+		}})
 	}
 	defer h.svc.finishRelayRun(context.WithoutCancel(ctx), id, run)
 

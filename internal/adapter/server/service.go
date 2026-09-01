@@ -4251,6 +4251,38 @@ func (s *Service) StartScheduledRunContent(ctx context.Context, id session.Sessi
 	return s.startRunContent(ctx, id, text, parts, runPurposeScheduler, generation, false)
 }
 
+// StartDetachedRunContent is the detached chat-purpose entry. It starts a run
+// via the shared startRunContent path and spawns a server-owned drain goroutine
+// that records every event to the durable log and calls FinishRun on terminal
+// EvResult. The run continues after the caller's stream closes; the client
+// observes via WatchSessionEvents and controls via a control-only Converse
+// stream. Reuses runPurposeChat — a detached run is a normal chat run, just
+// drained server-side.
+func (s *Service) StartDetachedRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
+	generation := s.captureRunEntryGeneration(id)
+	run, err := s.startRunContent(ctx, id, text, parts, runPurposeChat, generation, false)
+	if err != nil {
+		return nil, err
+	}
+	// Spawn the server-owned drain goroutine: range run.Events(), record every
+	// event to the durable log with a cancel-detached ctx, break on terminal
+	// EvResult, then FinishRun. The goroutine joins on Service.Close (which
+	// cancels all in-flight runs).
+	logCtx := context.WithoutCancel(ctx)
+	recorder := NewRunEventRecorder(logCtx, s, id)
+	go func() {
+		for ev := range run.Events() {
+			recorder.Observe(ev)
+			if ev.Type == session.EvResult && ev.Result != nil {
+				break
+			}
+		}
+		recorder.Close()
+		s.FinishRun(id, run)
+	}()
+	return run, nil
+}
+
 // RetryFailedRun resumes the failed model step from the persisted conversation state
 // without submitting another prompt. Live system instructions and operator context are
 // resolved again for the retry. The caller owns draining the returned run and calling

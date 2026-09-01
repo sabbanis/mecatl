@@ -295,6 +295,7 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"StartRunContent":              {KindCallerOwned, "authorizes before the public chat-purpose kind gate and shared run-entry path"},
 	"StartInteractiveRunContent":   {KindCallerOwned, "same owner-checked run-entry path with browser-authorization presentation enabled for HTTP/gRPC"},
 	"StartScheduledRunContent":     {KindCallerOwned, "trusted scheduler-purpose entry; authorizes the schedule owner before its kind gate and shared run-entry path"},
+	"StartDetachedRunContent":      {KindCallerOwned, "detached chat-purpose entry; authorizes before the public chat-purpose kind gate and shared run-entry path"},
 	"Approve":                      {KindCallerOwned, "delegates to ApproveRun's authorization"},
 	"ApproveRun":                   {KindCallerOwned, "same-process path authorizes via the registered run's owning session; the cross-process resumeFromAwaiting path authorizes via loadAndReopen"},
 	"ApprovePlan":                  {KindCallerOwned, "authorizes the session before resolving the parked plan ask"},
