@@ -259,6 +259,195 @@ describe("translateEvent", () => {
     ]);
   });
 
+  it("decodes the typed retry disposition and stream progress off a failed terminal (ADR 0239)", () => {
+    // Numeric enums: stdlib encoding/json (mecated's HTTP surface).
+    const [failed] = translate({
+      type: "result",
+      result: {
+        stop: "error",
+        error: "stream died",
+        retry_disposition: 2,
+        stream_progress: 2,
+      },
+    });
+    expect(failed).toMatchObject({
+      type: "run_result",
+      stop: "error",
+      retryDisposition: "retryable",
+      streamProgress: "precommit",
+    });
+    // 3 = permanent, 4 = complete.
+    const [permanent] = translate({
+      type: "result",
+      result: {
+        stop: "error",
+        error: "bad request",
+        permanent: true,
+        retry_disposition: 3,
+        stream_progress: 4,
+      },
+    });
+    expect(permanent).toMatchObject({
+      retryDisposition: "permanent",
+      streamProgress: "complete",
+      permanent: true,
+    });
+    // SCREAMING_CASE names (a protojson relay) normalise the same way.
+    const [named] = translate({
+      type: "result",
+      result: {
+        stop: "error",
+        retry_disposition: "RETRY_DISPOSITION_RETRYABLE",
+        stream_progress: "STREAM_PROGRESS_VISIBLE",
+      },
+    });
+    expect(named).toMatchObject({
+      retryDisposition: "retryable",
+      streamProgress: "visible",
+    });
+  });
+
+  it("keeps the retry fields ABSENT against an old daemon, and degrades unrecognized values to unknown", () => {
+    // Presence-aware: an old server sends neither field.
+    const [legacy] = translate({
+      type: "result",
+      result: { stop: "error", error: "boom" },
+    });
+    expect(legacy).toMatchObject({ type: "run_result" });
+    expect(
+      (legacy as { retryDisposition?: string }).retryDisposition,
+    ).toBeUndefined();
+    expect(
+      (legacy as { streamProgress?: string }).streamProgress,
+    ).toBeUndefined();
+    // A present-but-unrecognized value must never read as retryable.
+    const [odd] = translate({
+      type: "result",
+      result: { stop: "error", retry_disposition: 99, stream_progress: 99 },
+    });
+    expect(odd).toMatchObject({
+      retryDisposition: "unknown",
+      streamProgress: "unknown",
+    });
+  });
+
+  it("renders model.retry as the quiet retrying line (B2.1)", () => {
+    expect(
+      translate({
+        type: "model.retry",
+        model_retry: { retry_disposition: 2, stream_progress: 2 },
+      }),
+    ).toEqual([{ type: "notice", text: "Retrying the failed step…" }]);
+  });
+
+  it("decodes the steer echo's committed media parts (ADR 0251)", () => {
+    const [echo] = translate({
+      type: "steer",
+      steer: {
+        text: "look at this",
+        message_id: "steer-3",
+        parts: [
+          { kind: 1, mime_type: "image/png", data: "aGk=" },
+          { kind: "KIND_AUDIO", mime_type: "audio/wav", url: "mecatl://a" },
+          { kind: 0, mime_type: "application/x-unknown", data: "ignored" },
+        ],
+      },
+    });
+    expect(echo).toEqual({
+      type: "steer",
+      text: "look at this",
+      messageId: "steer-3",
+      parts: [
+        { kind: "image", mimeType: "image/png", data: "aGk=", url: undefined },
+        {
+          kind: "audio",
+          mimeType: "audio/wav",
+          data: undefined,
+          url: "mecatl://a",
+        },
+      ],
+    });
+    // A part-less echo stays part-less (no empty array invented).
+    const [plain] = translate({
+      type: "steer",
+      steer: { text: "just text", message_id: "steer-4" },
+    });
+    expect((plain as { parts?: unknown }).parts).toBeUndefined();
+  });
+
+  it("translates subagent.tool into live delegation progress (D1)", () => {
+    expect(
+      translate({
+        type: "subagent.tool",
+        subagent: {
+          parent_call_id: "call-1",
+          child_id: "subagent-abc",
+          tool_name: "Read",
+          tool_count: 4,
+          usage: { input_tokens: "1200", output_tokens: 300 },
+        },
+      }),
+    ).toEqual([
+      {
+        type: "delegation_progress",
+        childId: "subagent-abc",
+        toolCount: 4,
+        inputTokens: 1200,
+        outputTokens: 300,
+        toolName: "Read",
+      },
+    ]);
+    // A frame with no child id has nothing to key on and stays quiet.
+    expect(translate({ type: "subagent.tool", subagent: {} })).toEqual([]);
+  });
+
+  it("translates subagent.end into the terminal card update — a failed child carries its cause (D1)", () => {
+    expect(
+      translate({
+        type: "subagent.end",
+        subagent: {
+          child_id: "subagent-abc",
+          stop: "error",
+          tool_count: 7,
+          duration_ms: 4200,
+          cause: "provider rejected the request",
+          usage: { input_tokens: 9000, output_tokens: 1500 },
+        },
+      }),
+    ).toEqual([
+      {
+        type: "delegation_end",
+        childId: "subagent-abc",
+        stop: "error",
+        toolCount: 7,
+        inputTokens: 9000,
+        outputTokens: 1500,
+        durationMs: 4200,
+        cause: "provider rejected the request",
+      },
+    ]);
+  });
+
+  it("carries child_id, background, and routing_reason on the subagent start badge (D1/D2.1)", () => {
+    const [start] = translate({
+      type: "subagent.start",
+      subagent: {
+        child_id: "subagent-abc",
+        goal: "explore the repo",
+        background: true,
+        routing_reason: "pinned-model",
+      },
+    });
+    expect(start).toMatchObject({
+      type: "delegation",
+      kind: "subagent",
+      label: "explore the repo",
+      childId: "subagent-abc",
+      background: true,
+      routingReason: "pinned-model",
+    });
+  });
+
   it("pretty-prints tool args on the call card", () => {
     expect(
       translate({

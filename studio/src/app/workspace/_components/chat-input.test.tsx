@@ -16,8 +16,7 @@ describe("resolveComposerAction", () => {
     shift: boolean,
     isStreaming: boolean,
     behavior: "queue" | "steer",
-    hasAttachments = false,
-  ) => resolveComposerAction({ shift, isStreaming, behavior, hasAttachments });
+  ) => resolveComposerAction({ shift, isStreaming, behavior });
 
   it("sends on idle Enter, whatever the preference", () => {
     expect(resolve(false, false, "queue")).toBe("send");
@@ -42,17 +41,9 @@ describe("resolveComposerAction", () => {
     expect(resolve(true, true, "steer")).toBe("queue");
   });
 
-  it("always queues while streaming with files attached — a steer carries text only", () => {
-    expect(resolve(false, true, "queue", true)).toBe("queue");
-    expect(resolve(true, true, "queue", true)).toBe("queue");
-    expect(resolve(false, true, "steer", true)).toBe("queue");
-    expect(resolve(true, true, "steer", true)).toBe("queue");
-  });
-
-  it("sends attachments normally when idle", () => {
-    expect(resolve(false, false, "queue", true)).toBe("send");
-    expect(resolve(false, false, "steer", true)).toBe("send");
-  });
+  // Attachments no longer force the queue path: a steer carries staged image
+  // parts (ADR 0251). Availability is the handler's business — performAction
+  // degrades steer→queue when onSteer is absent, keeping the files attached.
 });
 
 describe("AttachmentPill", () => {

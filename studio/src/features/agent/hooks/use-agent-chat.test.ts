@@ -1,6 +1,8 @@
 import { describe, expect, it } from "vitest";
 import type { AgentMessage, StreamEvent } from "../types";
 import {
+  applyDelegationUpdate,
+  attachmentsFromSteerParts,
   reduceWatchEvent,
   splitPendingSteersOnWatermark,
 } from "./use-agent-chat";
@@ -174,5 +176,134 @@ describe("reduceWatchEvent", () => {
         nextId,
       ),
     ).toBe(before);
+  });
+});
+
+// ── delegation cards (D1) ────────────────────────────────────────────────────
+
+describe("applyDelegationUpdate", () => {
+  const base = (): AgentMessage[] => [
+    { id: "u1", role: "user", content: "go", timestamp: 0 },
+    {
+      id: "a1",
+      role: "assistant",
+      content: "",
+      timestamp: 0,
+      delegations: [
+        {
+          kind: "subagent",
+          label: "explore the repo",
+          detail: "",
+          childId: "subagent-abc",
+        },
+      ],
+    },
+  ];
+
+  it("ticks the running counters on delegation_progress, keyed by childId", () => {
+    let messages = applyDelegationUpdate(base(), {
+      type: "delegation_progress",
+      childId: "subagent-abc",
+      toolCount: 3,
+      inputTokens: 1200,
+      outputTokens: 80,
+      toolName: "Read",
+    });
+    messages = applyDelegationUpdate(messages, {
+      type: "delegation_progress",
+      childId: "subagent-abc",
+      toolCount: 4,
+      toolName: "Grep",
+    });
+    expect(messages[1].delegations?.[0]).toMatchObject({
+      childId: "subagent-abc",
+      toolCount: 4,
+      inputTokens: 1200,
+      outputTokens: 80,
+      lastTool: "Grep",
+    });
+    // The card is still running: no stop yet.
+    expect(messages[1].delegations?.[0].stop).toBeUndefined();
+  });
+
+  it("stamps stop, duration, and the failure cause on delegation_end — a failed child never vanishes", () => {
+    const messages = applyDelegationUpdate(base(), {
+      type: "delegation_end",
+      childId: "subagent-abc",
+      stop: "error",
+      toolCount: 7,
+      durationMs: 4200,
+      cause: "provider rejected the request",
+    });
+    expect(messages[1].delegations?.[0]).toMatchObject({
+      stop: "error",
+      toolCount: 7,
+      durationMs: 4200,
+      cause: "provider rejected the request",
+    });
+  });
+
+  it("returns the SAME array when no card carries the child (progress without a start)", () => {
+    const before = base();
+    expect(
+      applyDelegationUpdate(before, {
+        type: "delegation_progress",
+        childId: "subagent-unknown",
+        toolCount: 1,
+      }),
+    ).toBe(before);
+  });
+});
+
+// ── steer echo attachments (ADR 0251 / C2.2) ─────────────────────────────────
+
+describe("attachmentsFromSteerParts", () => {
+  it("renders inline bytes as data: URLs and passes url parts through", () => {
+    expect(
+      attachmentsFromSteerParts([
+        { kind: "image", mimeType: "image/png", data: "aGk=" },
+        { kind: "audio", mimeType: "audio/wav", url: "mecatl://a" },
+      ]),
+    ).toEqual([
+      {
+        name: "image-1.png",
+        type: "image/png",
+        url: "data:image/png;base64,aGk=",
+      },
+      { name: "audio-2.wav", type: "audio/wav", url: "mecatl://a" },
+    ]);
+  });
+
+  it("returns undefined for an empty bundle", () => {
+    expect(attachmentsFromSteerParts(undefined)).toBeUndefined();
+    expect(attachmentsFromSteerParts([])).toBeUndefined();
+  });
+});
+
+describe("reduceWatchEvent steer parts", () => {
+  it("keeps the committed steer's media on the rebuilt user bubble", () => {
+    let serial = 100;
+    const messages = reduceWatchEvent(
+      [],
+      {
+        type: "steer",
+        text: "look at this",
+        messageId: "m-1",
+        parts: [{ kind: "image", mimeType: "image/png", data: "aGk=" }],
+      },
+      () => `id-${++serial}`,
+    );
+    expect(messages).toHaveLength(1);
+    expect(messages[0]).toMatchObject({
+      role: "user",
+      content: "look at this",
+      attachments: [
+        {
+          name: "image-1.png",
+          type: "image/png",
+          url: "data:image/png;base64,aGk=",
+        },
+      ],
+    });
   });
 });

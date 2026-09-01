@@ -20,6 +20,7 @@ export type {
   CreateSessionOpts,
   CronJob,
   CronRunRecord,
+  DelegationInfo,
   FileContent,
   FileEntry,
   GitInfo,

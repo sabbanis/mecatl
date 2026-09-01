@@ -330,6 +330,35 @@ export async function streamHarnessPrompt(
       signal,
     },
   );
+  await relayEventStream(response, sessionId, onEvent);
+}
+
+/**
+ * Drives the failed-step retry endpoint (`POST /v1/sessions/{id}/retry`,
+ * ADR 0239): no request body — the daemon re-drives the recorded failed step
+ * itself, so nothing is re-sent — and the response is the run's SSE stream,
+ * relayed exactly like a prompt's. An ineligible session answers 409 with the
+ * stable code `failed_step_retry_ineligible` (a HarnessApiError here).
+ */
+export async function retryHarnessRun(
+  sessionId: string,
+  onEvent: (event: StreamEvent) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const response = await fetch(
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/retry`,
+    { method: "POST", signal },
+  );
+  await relayEventStream(response, sessionId, onEvent);
+}
+
+/** The shared prompt-shaped SSE relay: frame buffering, idle timeout, and the
+ *  terminal-result guard — one discipline for /prompt and /retry. */
+async function relayEventStream(
+  response: Response,
+  sessionId: string,
+  onEvent: (event: StreamEvent) => void,
+): Promise<void> {
   if (!response.ok) throw await apiError(response);
   if (!response.body) throw new Error("harness returned no event stream");
 
@@ -1348,22 +1377,41 @@ export async function cancelHarnessRun(
 export type HarnessSteerOutcome = "accepted" | "appended" | "too_late";
 
 /**
- * Injects a message into a session's in-flight run. `messageId` is the
- * client-minted correlation id: the stream's later `steer` echo names the id
- * of the LAST message merged into the drained bundle, and the client splits
- * its ordered pending list on that watermark.
+ * Injects a message into a session's in-flight run (ADR 0252). `messageId` is
+ * the client-minted correlation id: the stream's later `steer` echo names the
+ * id of the LAST message merged into the drained bundle, and the client
+ * splits its ordered pending list on that watermark.
+ *
+ * `expectedRunId` makes the steer STRICT (ADR 0249): the daemon refuses with
+ * 409 `stale_run_control` (a HarnessApiError here) when that run already
+ * ended, instead of PROMOTING the text into a fresh follow-up run behind
+ * Studio's back — the caller keeps the text and requeues it, exactly the
+ * too_late outcome. Studio always sends it; an unqualified steer's promotion
+ * relays a whole run as SSE on this response, which this JSON decode cannot
+ * carry.
+ *
+ * `parts` carries staged image attachments in the same validated wire shape
+ * as the prompt body (ADR 0251) — a media-only steer is legal.
  */
 export async function steerHarnessRun(
   sessionId: string,
   text: string,
   messageId: string,
+  options?: { expectedRunId?: string; parts?: PromptPart[] },
 ): Promise<{ outcome: HarnessSteerOutcome; messageId: string }> {
   const response = await fetch(
     `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/steer`,
     {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text, message_id: messageId }),
+      body: JSON.stringify({
+        text,
+        message_id: messageId,
+        ...(options?.parts?.length ? { parts: options.parts } : {}),
+        ...(options?.expectedRunId
+          ? { expected_run_id: options.expectedRunId }
+          : {}),
+      }),
     },
   );
   if (!response.ok) throw await apiError(response);
@@ -1384,15 +1432,87 @@ export async function steerHarnessRun(
  * Retracts the whole pending steer bundle (the daemon models one bundle per
  * run, not per-message retraction). `none_pending` means nothing was waiting
  * — the bundle already drained into the run or none was ever sent.
+ *
+ * ADR 0252 names the route `cancel-steer` (mirroring cancel-child); the
+ * pre-ADR `steer-cancel` spelling is a deprecated alias server-side.
  */
 export async function cancelHarnessSteer(
   sessionId: string,
 ): Promise<"retracted" | "none_pending"> {
   const response = await fetch(
-    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/steer-cancel`,
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/cancel-steer`,
     { method: "POST" },
   );
   if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as { outcome?: string };
   return body.outcome === "retracted" ? "retracted" : "none_pending";
+}
+
+/**
+ * Manually compacts a session's conversation (`POST .../compact`, ADR 0244):
+ * bodyless request, `{"compacted": bool}` answer — true means the model
+ * history was rewritten (refetch the transcript), false means there was
+ * nothing to compact. 412 while the session is active/awaiting; gate the
+ * affordance on the `manual_compaction` capability.
+ */
+export async function compactHarnessSession(
+  sessionId: string,
+): Promise<boolean> {
+  const response = await fetch(
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}/compact`,
+    { method: "POST" },
+  );
+  if (!response.ok) throw await apiError(response);
+  const body = (await response.json()) as { compacted?: boolean };
+  return body.compacted === true;
+}
+
+/**
+ * The provider+model a session actually resolved to (`GET /v1/sessions/{id}`
+ * echoes `resolved_model`, ADR 0244): the effective model label and the
+ * context window the context meter is measured against. Null when the daemon
+ * reports none (older daemon / unresolved model).
+ */
+export interface HarnessResolvedModel {
+  providerId: string;
+  modelId: string;
+  contextWindow: number;
+}
+
+/** GET-session detail Studio consumes beyond the mode string. */
+export interface HarnessSessionDetail {
+  resolvedModel: HarnessResolvedModel | null;
+  /** The server capabilities echo when the daemon stamps one on the session
+   *  response (B1.4); older daemons omit it — fall back to /compatibility. */
+  capabilities: Record<string, unknown>;
+}
+
+export async function fetchHarnessSessionDetail(
+  sessionId: string,
+  signal?: AbortSignal,
+): Promise<HarnessSessionDetail> {
+  const response = await fetch(
+    `${HARNESS_API}/sessions/${encodeURIComponent(sessionId)}`,
+    { signal, cache: "no-store" },
+  );
+  if (!response.ok) throw await apiError(response);
+  const body = (await response.json()) as {
+    resolved_model?: {
+      provider_id?: string;
+      model_id?: string;
+      context_window?: number | string;
+    } | null;
+    capabilities?: Record<string, unknown> | null;
+  };
+  const resolved = body.resolved_model;
+  return {
+    resolvedModel: resolved
+      ? {
+          providerId: resolved.provider_id ?? "",
+          modelId: resolved.model_id ?? "",
+          contextWindow: Number(resolved.context_window ?? 0) || 0,
+        }
+      : null,
+    capabilities: body.capabilities ?? {},
+  };
 }

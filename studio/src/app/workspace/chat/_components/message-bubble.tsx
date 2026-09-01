@@ -27,10 +27,11 @@ import type {
   AgentMessage,
   Artifact,
   Attachment,
+  DelegationInfo,
   ToolCallInfo,
 } from "@/features/agent";
 import { fileKindMeta } from "@/lib/file-meta";
-import { formatMessageTime } from "@/lib/formatters";
+import { formatMessageTime, formatTokens } from "@/lib/formatters";
 import {
   useAgentAvatar,
   useUserAvatar,
@@ -317,6 +318,90 @@ function AttachmentChip({
   );
 }
 
+/** Wall-clock child duration, humanized ("850ms", "12s", "3m 20s"). */
+export function formatChildDuration(ms: number): string {
+  if (!Number.isFinite(ms) || ms <= 0) return "";
+  if (ms < 1000) return `${Math.round(ms)}ms`;
+  const seconds = Math.round(ms / 1000);
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
+}
+
+/**
+ * One delegated child on a turn (D1): the start-time badge upgraded into a
+ * live card. While the child runs it ticks cumulative tool/token counters
+ * (fed by the redacted `subagent.tool` projection); on end it shows the stop
+ * reason and duration — and a failed child renders its failure cause instead
+ * of silently vanishing. `routingReason` (D2.1) rides the tooltip.
+ */
+function DelegationCard({ delegation }: { delegation: DelegationInfo }) {
+  const running = delegation.childId !== undefined && !delegation.stop;
+  const failed = delegation.stop === "error";
+  const counters: string[] = [];
+  if (delegation.toolCount !== undefined && delegation.toolCount > 0) {
+    counters.push(
+      `${delegation.toolCount} ${delegation.toolCount === 1 ? "tool" : "tools"}`,
+    );
+  }
+  const totalTokens =
+    (delegation.inputTokens ?? 0) + (delegation.outputTokens ?? 0);
+  if (totalTokens > 0) counters.push(`${formatTokens(totalTokens)} tok`);
+  if (running && delegation.lastTool) counters.push(delegation.lastTool);
+  if (delegation.stop && !failed) {
+    const duration = formatChildDuration(delegation.durationMs ?? 0);
+    counters.push(
+      duration ? `done in ${duration}` : `done (${delegation.stop})`,
+    );
+  }
+  const tooltip = [
+    delegation.routingReason && `routing: ${delegation.routingReason}`,
+    delegation.detail,
+    failed && delegation.cause,
+  ]
+    .filter(Boolean)
+    .join(" · ");
+
+  return (
+    <div className="flex min-w-0 flex-col">
+      <Badge
+        variant="secondary"
+        title={tooltip || undefined}
+        className={cn(
+          "max-w-full gap-1 border-transparent text-xs font-normal text-muted-foreground",
+          failed && "bg-destructive/10 text-destructive",
+        )}
+      >
+        {running ? (
+          <span
+            role="status"
+            aria-label="running"
+            className="size-2 shrink-0 animate-pulse rounded-full bg-brand"
+          />
+        ) : failed ? (
+          <AlertCircle className="size-3 shrink-0" />
+        ) : (
+          <GitBranch className="size-3 shrink-0" />
+        )}
+        <span className="truncate">
+          {delegation.kind}: {delegation.label}
+          {delegation.background ? " · background" : ""}
+          {delegation.detail ? ` · ${delegation.detail}` : ""}
+          {counters.length > 0 ? ` · ${counters.join(" · ")}` : ""}
+          {failed ? " · failed" : ""}
+        </span>
+      </Badge>
+      {failed && delegation.cause && (
+        <p
+          className="mt-0.5 truncate pl-1 text-xs text-destructive/90"
+          title={delegation.cause}
+        >
+          {delegation.cause}
+        </p>
+      )}
+    </div>
+  );
+}
+
 function ArtifactCard({
   artifact,
   onClick,
@@ -418,7 +503,7 @@ export function MessageBubble({
   }));
   const delegations = (message.delegations ?? []).map((d, index) => ({
     ...d,
-    id: `${index}:${d.kind}:${d.label}`,
+    id: d.childId ?? `${index}:${d.kind}:${d.label}`,
   }));
   // A failed turn must always render (never look like an empty success), as
   // must one that only carries notices or delegation badges.
@@ -493,15 +578,7 @@ export function MessageBubble({
         {delegations.length > 0 && (
           <div className="mt-1.5 flex flex-wrap gap-1.5">
             {delegations.map((d) => (
-              <Badge
-                key={d.id}
-                variant="secondary"
-                className="gap-1 border-transparent text-xs font-normal text-muted-foreground"
-              >
-                <GitBranch className="size-3" />
-                {d.kind}: {d.label}
-                {d.detail ? ` · ${d.detail}` : ""}
-              </Badge>
+              <DelegationCard key={d.id} delegation={d} />
             ))}
           </div>
         )}

@@ -30,13 +30,17 @@ import {
   MOCK_TOUR_MESSAGES,
   MOCK_TOUR_SESSION,
 } from "@/features/agent/mock-tour";
+import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import { useConfirm } from "@/hooks/use-confirm";
 import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
 import { usePanelWidth } from "@/hooks/use-panel-width";
 import { usePrompt } from "@/hooks/use-prompt";
 import {
+  compactHarnessSession,
+  fetchHarnessSessionDetail,
   forkHarnessSessionToModel,
+  type HarnessResolvedModel,
   ThreadSourceBusyError,
 } from "@/lib/harness/client";
 import { useDisabledModels } from "@/lib/model-preferences";
@@ -526,6 +530,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     harnessLive,
     sendMessage,
     retryLast,
+    refreshTranscript,
     pendingApproval,
     respondToApproval,
     pendingClarification,
@@ -537,6 +542,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     takeQueued,
     steerQueued,
     steerMessage,
+    steerSupported,
     cancelChat,
   } = useAgentChat(hookSessionId, {
     onSessionCreated: handleSessionCreated,
@@ -553,6 +559,47 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const handleCancelRun = useCallback(() => {
     void cancelChat();
   }, [cancelChat]);
+
+  // The daemon's operator-enabled capabilities (A3 caches /v1/compatibility).
+  const { connected, serverCapabilities } = useRuntimeStatus();
+
+  // The session's effective model + context window (B1.1): GET-session's
+  // resolved_model echo. Per selected chat; a fetch failure just hides the
+  // meter (it is an approximation, never load-bearing).
+  const [resolvedModel, setResolvedModel] =
+    useState<HarnessResolvedModel | null>(null);
+  useEffect(() => {
+    setResolvedModel(null);
+    if (!selectedId || isMockTourSession(selectedId) || !connected) return;
+    const controller = new AbortController();
+    void fetchHarnessSessionDetail(selectedId, controller.signal)
+      .then((detail) => {
+        if (!controller.signal.aborted) setResolvedModel(detail.resolvedModel);
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [selectedId, connected]);
+
+  // Manual compaction (B1.2-B1.4): gated on the daemon's manual_compaction
+  // capability (the compatibility document is the live source; the GET-session
+  // echo is its per-session sibling once daemons stamp it).
+  const compactSupported = serverCapabilities.manual_compaction === true;
+  const handleCompact = useCallback(async () => {
+    const id = selectedIdRef.current;
+    if (!id || isMockTourSession(id)) return;
+    try {
+      const compacted = await compactHarnessSession(id);
+      toast.success(
+        compacted ? "Conversation compacted" : "Nothing to compact",
+      );
+      if (compacted) {
+        // The model history was rewritten; the transcript must refetch.
+        await refreshTranscript();
+      }
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [refreshTranscript]);
 
   useNavReopenSidebar(setSidebarOpen);
 
@@ -793,8 +840,19 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onSteerQueued={steerQueued}
           onDeleteQueued={deleteQueued}
           onTakeQueued={takeQueued}
-          onSteerMessage={steerMessage}
+          // Steer is capability-gated (C1.2): absent, mid-run sends queue and
+          // the composer's steer action degrades to queue.
+          onSteerMessage={steerSupported ? steerMessage : undefined}
           onCancelRun={handleCancelRun}
+          onCompact={compactSupported ? handleCompact : undefined}
+          contextInfo={
+            resolvedModel && resolvedModel.contextWindow > 0
+              ? {
+                  modelLabel: resolvedModel.modelId,
+                  contextWindow: resolvedModel.contextWindow,
+                }
+              : null
+          }
           botName={agentName}
           sidebarOpen={open}
           sidebarSide={sidebarSide}

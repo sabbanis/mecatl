@@ -69,18 +69,47 @@ export interface AgentMessage {
   replies?: AgentMessage[];
   /** One-line advisories from the daemon (tool progress, unrendered events). */
   notices?: string[];
-  /** Delegation badges: work this turn handed to child agents. */
-  delegations?: Array<{
-    kind: "subagent" | "team" | "parallel";
-    label: string;
-    detail: string;
-  }>;
+  /** Delegation cards: work this turn handed to child agents. */
+  delegations?: DelegationInfo[];
   /**
    * The turn ended with result.stop === "error". A failed turn renders as
    * failed — never as an empty success.
    */
   failed?: boolean;
   failureDetail?: string;
+}
+
+/**
+ * One delegated child on an assistant turn. Starts as a badge (subagent.start
+ * & friends), then live-updates while the child works — `subagent.tool`
+ * frames tick `toolCount`/token counters — and settles on `subagent.end`
+ * with the stop reason, duration, and (for a failed child) the cause, so a
+ * failed child never silently vanishes. Keyed by `childId` where the daemon
+ * names one; team/parallel entries may not carry an id and stay static.
+ */
+export interface DelegationInfo {
+  kind: "subagent" | "team" | "parallel";
+  label: string;
+  detail: string;
+  /** The child session id (`subagent.start` child_id) — the update key. */
+  childId?: string;
+  /** Detached-delivery child: the parent run continues while it works. */
+  background?: boolean;
+  /** Why the model router did NOT route this delegation (bare metadata). */
+  routingReason?: string;
+  /** Cumulative child tool-call count (running, then final). */
+  toolCount?: number;
+  /** Cumulative child token accounting (live per turn, final on end). */
+  inputTokens?: number;
+  outputTokens?: number;
+  /** The child's most recent tool, from the bounded activity projection. */
+  lastTool?: string;
+  /** Terminal stop reason; presence means the child has ended. */
+  stop?: string;
+  /** Wall-clock child duration in milliseconds (end only, best-effort). */
+  durationMs?: number;
+  /** Failure detail when stop === "error" (harness metadata, clamped). */
+  cause?: string;
 }
 
 export interface ToolCallInfo {
@@ -164,8 +193,10 @@ type StreamEventBody =
    * Mid-run steer drain echo: the daemon merged the pending steer bundle into
    * the in-flight run. `text` is the drained bundle; `messageId` is the
    * watermark — the client-minted id of the LAST message the bundle absorbed.
+   * `parts` is the committed media bundle (ADR 0251), byte-identical to what
+   * history recorded, so a rebuilt transcript keeps the steer's attachments.
    */
-  | { type: "steer"; text: string; messageId: string }
+  | { type: "steer"; text: string; messageId: string; parts?: SteerEchoPart[] }
   /** A one-line advisory (tool progress, compaction, unrendered event kinds). */
   | { type: "notice"; text: string }
   /**
@@ -191,10 +222,44 @@ type StreamEventBody =
       kind: "subagent" | "team" | "parallel";
       label: string;
       detail: string;
+      /** Child session id (subagent.start), keying later live updates. */
+      childId?: string;
+      background?: boolean;
+      /** Why the router did not route this delegation (D2.1). */
+      routingReason?: string;
+    }
+  /**
+   * Live child activity (subagent.tool): cumulative tool/token counters for
+   * the delegation card keyed by `childId`. Redacted metadata only.
+   */
+  | {
+      type: "delegation_progress";
+      childId: string;
+      toolCount?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      toolName?: string;
+    }
+  /**
+   * Child terminal (subagent.end): final counters, the stop reason, the
+   * wall-clock duration, and — when stop === "error" — the failure cause,
+   * so a failed child renders as failed instead of vanishing.
+   */
+  | {
+      type: "delegation_end";
+      childId: string;
+      stop: string;
+      toolCount?: number;
+      inputTokens?: number;
+      outputTokens?: number;
+      durationMs?: number;
+      cause?: string;
     }
   /**
    * The run's terminal frame. `stop === "error"` is a FAILED turn and must
-   * render as one, even when no token ever streamed.
+   * render as one, even when no token ever streamed. `retryDisposition` /
+   * `streamProgress` are the typed failed-terminal classification (ADR 0239),
+   * presence-aware: absent against a daemon that predates them.
    */
   | {
       type: "run_result";
@@ -202,7 +267,23 @@ type StreamEventBody =
       text: string;
       errorText: string;
       permanent: boolean;
+      retryDisposition?: RetryDisposition;
+      streamProgress?: StreamProgress;
     };
+
+/** Typed failed-terminal classification (ADR 0239). */
+export type RetryDisposition = "unknown" | "retryable" | "permanent";
+/** How far the failed step's stream got before it died (ADR 0239). */
+export type StreamProgress = "unknown" | "precommit" | "visible" | "complete";
+
+/** One committed media part off the steer drain echo (ADR 0251). */
+export interface SteerEchoPart {
+  kind: "image" | "audio";
+  mimeType: string;
+  /** Standard base64 (inline bytes); empty when url-sourced. */
+  data?: string;
+  url?: string;
+}
 
 // ── Projects ────────────────────────────────────────────────────────────────
 

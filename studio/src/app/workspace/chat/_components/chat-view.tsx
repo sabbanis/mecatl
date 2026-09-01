@@ -7,6 +7,7 @@ import {
   CirclePlus,
   Ellipsis,
   FileText,
+  FoldVertical,
   ListEnd,
   Loader2,
   MessageCircle,
@@ -79,6 +80,7 @@ import {
 } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
 import { ClarificationPanel } from "./clarification-panel";
+import { ContextMeter } from "./context-meter";
 import { FilePreview } from "./file-preview";
 import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
 import { MessageBubble } from "./message-bubble";
@@ -243,12 +245,18 @@ function MobileChatMenu({
   onToggleActivity,
   onRename,
   onDelete,
+  onCompact,
+  compactDisabled,
   usage,
 }: {
   showActivity: boolean;
   onToggleActivity: () => void;
   onRename?: () => void;
   onDelete?: () => void;
+  /** Manual compaction (B1.2): present only when the daemon supports it. */
+  onCompact?: () => void;
+  /** True while a run streams — the daemon 412s a mid-run compact. */
+  compactDisabled?: boolean;
   usage?: { inputTokens: number; outputTokens: number } | null;
 }) {
   const [open, setOpen] = useState(false);
@@ -279,6 +287,20 @@ function MobileChatMenu({
               <Wrench className="size-4 text-muted-foreground" />
               {showActivity ? "Hide Tools" : "Show Tools"}
             </button>
+            {onCompact && (
+              <button
+                type="button"
+                disabled={compactDisabled}
+                onClick={() => {
+                  onCompact();
+                  setOpen(false);
+                }}
+                className="flex w-full items-center gap-3 px-4 py-3 text-sm hover:bg-muted/50 transition-colors disabled:opacity-50"
+              >
+                <FoldVertical className="size-4 text-muted-foreground" />
+                Compact conversation
+              </button>
+            )}
             {onRename && (
               <button
                 type="button"
@@ -828,6 +850,8 @@ export function ChatView({
   onTakeQueued,
   onSteerMessage,
   onCancelRun,
+  onCompact,
+  contextInfo,
   readOnlyPlaceholder,
   mode,
   onModeChange,
@@ -872,11 +896,19 @@ export function ChatView({
   /** Removes a queued message and returns its text (the Edit action). */
   onTakeQueued?: (id: string) => string | null;
   /** Steers the daemon accepted but has not yet applied to the run. */
-  /** Injects composer text into the in-flight run at the next step. */
-  onSteerMessage?: (text: string) => void;
+  /** Injects composer text (plus staged image attachments, ADR 0251) into
+      the in-flight run at the next step. Absent when the daemon lacks the
+      steer capability — mid-run sends then queue. */
+  onSteerMessage?: (text: string, files?: File[]) => void;
   /** Retracts the whole pending steer bundle. */
   /** Cancels the in-flight run (Esc with no panel open). */
   onCancelRun?: () => void;
+  /** Manually compacts the conversation (B1.2); present only when the
+      daemon's manual_compaction capability is on. Disabled while streaming. */
+  onCompact?: () => void;
+  /** The session's effective model + context window (B1.1): feeds the slim
+      approximate context meter near the composer. */
+  contextInfo?: { modelLabel: string; contextWindow: number } | null;
   /** Disables the composer and shows this placeholder instead (the Labs
       mock chat is read-only demo content). */
   readOnlyPlaceholder?: string;
@@ -1132,6 +1164,12 @@ export function ChatView({
                   <Wrench className="size-4 mr-2 text-muted-foreground" />
                   {showActivity ? "Hide Tools" : "Show Tools"}
                 </DropdownMenuItem>
+                {onCompact && (
+                  <DropdownMenuItem disabled={isStreaming} onClick={onCompact}>
+                    <FoldVertical className="size-4 mr-2 text-muted-foreground" />
+                    Compact conversation
+                  </DropdownMenuItem>
+                )}
                 {onRename && (
                   <DropdownMenuItem onClick={onRename}>
                     <Pencil className="size-4 mr-2 text-muted-foreground" />
@@ -1153,6 +1191,8 @@ export function ChatView({
               onToggleActivity={() => setShowToolCalls(!showActivity)}
               onRename={onRename}
               onDelete={onDelete}
+              onCompact={onCompact}
+              compactDisabled={isStreaming}
               usage={usage}
             />
           )}
@@ -1229,6 +1269,16 @@ export function ChatView({
               </div>
             )}
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
+              {/* B1.1: effective model + approximate context utilisation,
+                  visible only when the window is known and tokens counted. */}
+              {contextInfo && contextInfo.contextWindow > 0 && (
+                <ContextMeter
+                  modelLabel={contextInfo.modelLabel}
+                  contextWindow={contextInfo.contextWindow}
+                  inputTokens={usage?.inputTokens ?? 0}
+                  outputTokens={usage?.outputTokens ?? 0}
+                />
+              )}
               <QueuedMessageStrip
                 queued={queuedMessages}
                 onSteer={(id) => onSteerQueued?.(id)}
@@ -1290,7 +1340,9 @@ export function ChatView({
                   placeholder={
                     readOnlyPlaceholder ??
                     (isStreaming
-                      ? enterBehavior === "steer"
+                      ? // "Steer" is only an honest promise while the daemon
+                        // actually supports it (C1.2) — absent, sends queue.
+                        enterBehavior === "steer" && onSteerMessage
                         ? "Steer the agent..."
                         : "Queue a message..."
                       : "Send a message...")

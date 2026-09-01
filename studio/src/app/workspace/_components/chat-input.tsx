@@ -75,9 +75,11 @@ interface ChatInputProps {
   focusKey?: string;
   onSend?: (content: string, files?: File[]) => void;
   onQueue?: (content: string) => void;
-  /** Injects the text into the in-flight run at the next step (mid-run
-      steering). Only meaningful while `isStreaming`. */
-  onSteer?: (content: string) => void;
+  /** Injects the text — plus any staged image attachments (ADR 0251) — into
+      the in-flight run at the next step (mid-run steering). Only meaningful
+      while `isStreaming`; absent when the daemon lacks the steer capability
+      (mid-run sends then queue and files stay attached). */
+  onSteer?: (content: string, files?: File[]) => void;
   onModelChange?: (alias: string) => void;
   /** Live daemon models for the picker; absent = the sentinel only. */
   models?: ComposerModelOption[];
@@ -1084,20 +1086,18 @@ export type ComposerEnterAction = "send" | "queue" | "steer" | "newline";
  *
  * - Idle: Enter sends; Shift+Enter inserts a newline (fall through to the
  *   editor's hardBreak).
- * - Streaming with files attached: ALWAYS queue, on both keys. A steer
- *   carries text only, so files force the queue path; the files stay attached
- *   in the composer (never silently dropped) and ride the next real send.
  * - Streaming: Enter performs the preferred action (Settings → Personalize) and
- *   Shift+Enter the opposite.
+ *   Shift+Enter the opposite. Attachments no longer force the queue path —
+ *   steers carry image parts (ADR 0251), so a mid-run send with files steers
+ *   when steering is available (and degrades to queue when it is not, via
+ *   performAction's missing-handler fallback, keeping the files attached).
  */
 export function resolveComposerAction(input: {
   shift: boolean;
   isStreaming: boolean;
   behavior: EnterSendBehavior;
-  hasAttachments: boolean;
 }): ComposerEnterAction {
   if (!input.isStreaming) return input.shift ? "newline" : "send";
-  if (input.hasAttachments) return "queue";
   if (!input.shift) return input.behavior;
   return input.behavior === "queue" ? "steer" : "queue";
 }
@@ -1344,20 +1344,26 @@ export function ChatInput({
       if (action === "newline") return;
       const trimmed = editor ? composerText(editor) : "";
       if (!trimmed || disabled) return;
+      const files = attachedFiles.length > 0 ? attachedFiles : undefined;
       const resolved = action === "steer" && !onSteer ? "queue" : action;
-      if (
-        (resolved === "steer" && onSteer) ||
-        (resolved === "queue" && onQueue)
-      ) {
-        if (resolved === "steer") onSteer?.(trimmed);
-        else onQueue?.(trimmed);
+      if (resolved === "steer" && onSteer) {
+        // A steer carries the staged attachments as image parts (ADR 0251);
+        // they leave the composer with the text.
+        onSteer(trimmed, files);
         editor?.commands.clearContent();
         setText("");
-        // Attached files deliberately stay attached: neither a queued text
-        // nor a steer can carry them, so they ride the next real send.
+        setAttachedFiles([]);
         return;
       }
-      onSend?.(trimmed, attachedFiles.length > 0 ? attachedFiles : undefined);
+      if (resolved === "queue" && onQueue) {
+        onQueue(trimmed);
+        editor?.commands.clearContent();
+        setText("");
+        // Attached files deliberately stay attached: a queued text cannot
+        // carry them, so they ride the next real send.
+        return;
+      }
+      onSend?.(trimmed, files);
       editor?.commands.clearContent();
       setText("");
       setAttachedFiles([]);
@@ -1374,11 +1380,10 @@ export function ChatInput({
           shift,
           isStreaming,
           behavior: enterBehavior,
-          hasAttachments: attachedFiles.length > 0,
         }),
       );
     },
-    [performAction, isStreaming, enterBehavior, attachedFiles],
+    [performAction, isStreaming, enterBehavior],
   );
 
   const handleSend = useCallback(() => actOnEnter(false), [actOnEnter]);

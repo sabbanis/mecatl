@@ -9,10 +9,16 @@
  * and throw-on-missing-type so a malformed frame fails loudly in tests.
  */
 
-import type { StreamEvent } from "@/features/agent/types";
+import type {
+  RetryDisposition,
+  SteerEchoPart,
+  StreamEvent,
+  StreamProgress,
+} from "@/features/agent/types";
 import { fileFromToolCall } from "@/lib/file-meta";
 import {
   asRecord,
+  enumNumber,
   optionalNumber,
   optionalString,
   stringFields,
@@ -25,6 +31,19 @@ type MecatlUsage = {
   cache_read_tokens?: string | number;
   cache_write_tokens?: string | number;
   reasoning_tokens?: string | number;
+};
+
+/** A wire enum: a NUMBER under stdlib encoding/json (mecated's HTTP surface),
+ *  a SCREAMING_CASE name under protojson (a relay). */
+type WireEnum = string | number;
+
+/** One raw Content part off the steer drain echo (proto Content). */
+type MecatlContentPart = {
+  kind?: WireEnum;
+  mime_type?: string;
+  /** Standard base64 under stdlib encoding/json ([]byte). */
+  data?: string;
+  url?: string;
 };
 
 export type MecatlEvent = {
@@ -49,16 +68,25 @@ export type MecatlEvent = {
     tool?: string;
   };
   ask?: { ask_id?: string; tool?: string; args?: string; reason?: string };
-  /** Drain echo for mid-run steering: `text` is the drained bundle and
+  /** Drain echo for mid-run steering: `text` is the drained bundle,
    *  `message_id` the client-minted id of the LAST message merged into it
-   *  (the watermark the client splits its pending list on). */
-  steer?: { text?: string; message_id?: string };
+   *  (the watermark the client splits its pending list on), and `parts` the
+   *  committed media bundle (ADR 0251). */
+  steer?: { text?: string; message_id?: string; parts?: MecatlContentPart[] };
+  /** The typed failed-terminal being retried (EvModelRetry, ADR 0239). */
+  model_retry?: {
+    retry_disposition?: WireEnum;
+    stream_progress?: WireEnum;
+  };
   result?: {
     text?: string;
     stop?: string;
     error?: string;
     permanent?: boolean;
     usage?: MecatlUsage;
+    /** Presence-aware (proto3 optional): absent on an older daemon. */
+    retry_disposition?: WireEnum;
+    stream_progress?: WireEnum;
   };
   subagent?: {
     parent_call_id?: string;
@@ -67,6 +95,14 @@ export type MecatlEvent = {
     routed_category?: string;
     routed_model?: string;
     model?: string;
+    routing_reason?: string;
+    tool_name?: string;
+    stop?: string;
+    cause?: string;
+    background?: boolean;
+    tool_count?: number;
+    duration_ms?: number;
+    usage?: MecatlUsage;
   };
   team?: {
     parent_call_id?: string;
@@ -131,7 +167,31 @@ function parseMecatlEventValue(raw: UnknownRecord | undefined): MecatlEvent {
           : undefined,
     };
   event.ask = stringFields(raw.ask, ["ask_id", "tool", "args", "reason"]);
-  event.steer = stringFields(raw.steer, ["text", "message_id"]);
+  const steer = asRecord(raw.steer);
+  if (steer)
+    event.steer = {
+      ...stringFields(steer, ["text", "message_id"]),
+      parts: Array.isArray(steer.parts)
+        ? steer.parts.flatMap((part): MecatlContentPart[] => {
+            const record = asRecord(part);
+            if (!record) return [];
+            return [
+              {
+                kind: wireEnum(record.kind),
+                mime_type: optionalString(record.mime_type),
+                data: optionalString(record.data),
+                url: optionalString(record.url),
+              },
+            ];
+          })
+        : undefined,
+    };
+  const modelRetry = asRecord(raw.model_retry);
+  if (modelRetry)
+    event.model_retry = {
+      retry_disposition: wireEnum(modelRetry.retry_disposition),
+      stream_progress: wireEnum(modelRetry.stream_progress),
+    };
   const result = asRecord(raw.result);
   if (result)
     event.result = {
@@ -139,15 +199,29 @@ function parseMecatlEventValue(raw: UnknownRecord | undefined): MecatlEvent {
       permanent:
         typeof result.permanent === "boolean" ? result.permanent : undefined,
       usage: asRecord(result.usage) as MecatlUsage | undefined,
+      retry_disposition: wireEnum(result.retry_disposition),
+      stream_progress: wireEnum(result.stream_progress),
     };
-  event.subagent = stringFields(raw.subagent, [
-    "parent_call_id",
-    "child_id",
-    "goal",
-    "routed_category",
-    "routed_model",
-    "model",
-  ]);
+  const subagent = asRecord(raw.subagent);
+  if (subagent)
+    event.subagent = {
+      ...stringFields(subagent, [
+        "parent_call_id",
+        "child_id",
+        "goal",
+        "routed_category",
+        "routed_model",
+        "model",
+        "routing_reason",
+        "tool_name",
+        "stop",
+        "cause",
+      ]),
+      background: subagent.background === true ? true : undefined,
+      tool_count: numericField(subagent.tool_count),
+      duration_ms: numericField(subagent.duration_ms),
+      usage: asRecord(subagent.usage) as MecatlUsage | undefined,
+    };
   const team = asRecord(raw.team);
   if (team)
     event.team = {
@@ -232,6 +306,89 @@ const tokens = (value: string | number | undefined) => {
   return Number.isFinite(parsed) ? parsed : 0;
 };
 
+/** Passes an enum through presence-aware: number or name kept, else absent. */
+const wireEnum = (value: unknown): WireEnum | undefined =>
+  typeof value === "number" || typeof value === "string" ? value : undefined;
+
+/** An int field that may ride as a string through a protojson relay. */
+const numericField = (value: unknown): number | undefined => {
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  if (typeof value === "string" && value !== "") {
+    const parsed = Number(value);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  }
+  return undefined;
+};
+
+// The ADR-0239 failed-terminal enums. The Go mapper always stamps both on new
+// servers (UNKNOWN=1 is a real value, distinct from ABSENT = old server), so
+// the decode is presence-aware and an unrecognized value degrades to
+// "unknown" — never to "retryable".
+const RETRY_DISPOSITION_NAMES = {
+  RETRY_DISPOSITION_UNKNOWN: 1,
+  RETRY_DISPOSITION_RETRYABLE: 2,
+  RETRY_DISPOSITION_PERMANENT: 3,
+};
+const RETRY_DISPOSITION_LABELS: Record<number, RetryDisposition> = {
+  1: "unknown",
+  2: "retryable",
+  3: "permanent",
+};
+const STREAM_PROGRESS_NAMES = {
+  STREAM_PROGRESS_UNKNOWN: 1,
+  STREAM_PROGRESS_PRECOMMIT: 2,
+  STREAM_PROGRESS_VISIBLE: 3,
+  STREAM_PROGRESS_COMPLETE: 4,
+};
+const STREAM_PROGRESS_LABELS: Record<number, StreamProgress> = {
+  1: "unknown",
+  2: "precommit",
+  3: "visible",
+  4: "complete",
+};
+
+const retryDispositionLabel = (
+  value: WireEnum | undefined,
+): RetryDisposition | undefined =>
+  value === undefined
+    ? undefined
+    : (RETRY_DISPOSITION_LABELS[enumNumber(value, RETRY_DISPOSITION_NAMES)] ??
+      "unknown");
+
+const streamProgressLabel = (
+  value: WireEnum | undefined,
+): StreamProgress | undefined =>
+  value === undefined
+    ? undefined
+    : (STREAM_PROGRESS_LABELS[enumNumber(value, STREAM_PROGRESS_NAMES)] ??
+      "unknown");
+
+// Steer-echo media parts (proto Content). KIND_UNSPECIFIED and unknown kinds
+// are dropped — a part Studio cannot classify cannot be rendered either.
+const CONTENT_KIND_NAMES = { KIND_IMAGE: 1, KIND_AUDIO: 2 };
+const CONTENT_KIND_LABELS: Record<number, SteerEchoPart["kind"]> = {
+  1: "image",
+  2: "audio",
+};
+
+function decodeSteerParts(
+  parts: MecatlContentPart[] | undefined,
+): SteerEchoPart[] | undefined {
+  if (!parts?.length) return undefined;
+  const decoded: SteerEchoPart[] = [];
+  for (const part of parts) {
+    const kind = CONTENT_KIND_LABELS[enumNumber(part.kind, CONTENT_KIND_NAMES)];
+    if (!kind) continue;
+    decoded.push({
+      kind,
+      mimeType: part.mime_type ?? "",
+      data: part.data || undefined,
+      url: part.url || undefined,
+    });
+  }
+  return decoded.length > 0 ? decoded : undefined;
+}
+
 const routingDetail = (source: {
   routed_category?: string;
   routed_model?: string;
@@ -256,8 +413,6 @@ const SILENT_EVENT_KINDS = new Set([
   // The pre-compaction conversation archive: audit history for the durable
   // log, deliberately not re-rendered into the live transcript.
   "compaction.archive",
-  "subagent.tool",
-  "subagent.end",
   "team.member",
   "team.tasks",
   "team.findings",
@@ -357,15 +512,21 @@ function translateEventBody(
         : [];
     case "steer":
       // The daemon drained the pending steer bundle into the run. The echo
-      // carries the merged text and the watermark id of the last message it
-      // absorbed — the hook splits its pending list on that id.
+      // carries the merged text, the watermark id of the last message it
+      // absorbed — the hook splits its pending list on that id — and the
+      // committed media bundle (ADR 0251).
       return [
         {
           type: "steer",
           text: event.steer?.text ?? "",
           messageId: event.steer?.message_id ?? "",
+          parts: decodeSteerParts(event.steer?.parts),
         },
       ];
+    case "model.retry":
+      // The daemon is re-driving the failed step (ADR 0239): a quiet system
+      // line, mirroring the other advisory kinds.
+      return [{ type: "notice", text: "Retrying the failed step…" }];
     case "subagent.start": {
       const subagent = event.subagent;
       if (!subagent) return [];
@@ -375,6 +536,45 @@ function translateEventBody(
           kind: "subagent",
           label: subagent.goal || "subagent",
           detail: routingDetail(subagent),
+          childId: subagent.child_id,
+          background: subagent.background,
+          routingReason: subagent.routing_reason || undefined,
+        },
+      ];
+    }
+    case "subagent.tool": {
+      // Live child activity (D1): cumulative counters for the delegation
+      // card. Only redacted metadata crosses — never child content.
+      const subagent = event.subagent;
+      if (!subagent?.child_id) return [];
+      const usage = subagent.usage;
+      return [
+        {
+          type: "delegation_progress",
+          childId: subagent.child_id,
+          toolCount: subagent.tool_count,
+          inputTokens: usage ? tokens(usage.input_tokens) : undefined,
+          outputTokens: usage ? tokens(usage.output_tokens) : undefined,
+          toolName: subagent.tool_name || undefined,
+        },
+      ];
+    }
+    case "subagent.end": {
+      // Child terminal (D1): the stop reason, duration, final counters, and
+      // the failure cause — a failed child must render, never vanish.
+      const subagent = event.subagent;
+      if (!subagent?.child_id) return [];
+      const usage = subagent.usage;
+      return [
+        {
+          type: "delegation_end",
+          childId: subagent.child_id,
+          stop: subagent.stop ?? "",
+          toolCount: subagent.tool_count,
+          inputTokens: usage ? tokens(usage.input_tokens) : undefined,
+          outputTokens: usage ? tokens(usage.output_tokens) : undefined,
+          durationMs: subagent.duration_ms,
+          cause: subagent.cause || undefined,
         },
       ];
     }
@@ -449,6 +649,8 @@ function translateEventBody(
         text: result?.text ?? "",
         errorText: result?.error ?? "",
         permanent: result?.permanent === true,
+        retryDisposition: retryDispositionLabel(result?.retry_disposition),
+        streamProgress: streamProgressLabel(result?.stream_progress),
       });
       return events;
     }
