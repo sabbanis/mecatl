@@ -32,6 +32,17 @@ export interface AgentSession {
   canDelete?: boolean;
   renameReason?: string;
   deleteReason?: string;
+  /**
+   * Title provenance off the inventory row (F4): "operator" (hand-set — an
+   * auto-rename must never clobber it), "first-prompt" (seeded, replaceable),
+   * "" (unknown/older daemon — do not auto-rename).
+   */
+  titleProvenance?: string;
+  /**
+   * Non-empty on an AI-debug session (ADR 0254): the stored session this chat
+   * diagnoses. Drives the sidebar's "debug" badge.
+   */
+  debugTargetSessionId?: string;
 }
 
 export interface CreateSessionOpts {

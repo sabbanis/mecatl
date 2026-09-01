@@ -95,6 +95,63 @@ describe("decodeSessionInventory", () => {
     expect(page.sessions[0].renameReason).toBe("busy_running");
     expect(page.sessions[0].deleteReason).toBe("no_pruning");
   });
+
+  it("decodes title_provenance verbatim, defaulting an absent field to unknown (F4)", () => {
+    const page = decodeSessionInventory({
+      sessions: [
+        { session_id: "s1", title: "Hand-set", title_provenance: "operator" },
+        { session_id: "s2", title: "Seeded", title_provenance: "first-prompt" },
+        { session_id: "s3", title: "Legacy row" },
+      ],
+    });
+    expect(page.sessions.map((s) => s.titleProvenance)).toEqual([
+      "operator",
+      "first-prompt",
+      "",
+    ]);
+  });
+
+  it("decodes the debug relationship and treats a debug row as a chat despite inspect_only_kind (ADR 0254)", () => {
+    const page = decodeSessionInventory({
+      sessions: [
+        {
+          // The live daemon stamps debug rows inspect_only_kind (the KIND is
+          // not main) yet drives them as ordinary chats; the relationship is
+          // the honest chat signal. Rename/delete stay denied per the row.
+          session_id: "dbg-1",
+          kind: "debug",
+          relationship: { debug_target_session_id: "target-9" },
+          capabilities: {
+            view_transcript: true,
+            reasons: {
+              public_chat: "inspect_only_kind",
+              rename: "inspect_only_kind",
+              delete: "inspect_only_kind",
+            },
+          },
+        },
+        {
+          // A relationship WITHOUT the debug binding (a scheduled fire) stays
+          // inspect-only — the exception is the debug field, not any
+          // relationship.
+          session_id: "sched-1",
+          kind: "scheduled",
+          relationship: { schedule_name: "nightly" },
+          capabilities: {
+            reasons: { public_chat: "inspect_only_kind" },
+          },
+        },
+      ],
+    });
+    const debug = page.sessions[0];
+    expect(debug.debugTargetSessionId).toBe("target-9");
+    expect(debug.isChat).toBe(true);
+    expect(debug.canRename).toBe(false);
+    expect(debug.canDelete).toBe(false);
+    const scheduled = page.sessions[1];
+    expect(scheduled.debugTargetSessionId).toBe("");
+    expect(scheduled.isChat).toBe(false);
+  });
 });
 
 describe("decodeSessionTranscript", () => {

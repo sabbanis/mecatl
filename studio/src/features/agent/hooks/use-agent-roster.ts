@@ -8,6 +8,14 @@ import { useRuntimeStatus } from "../runtime-status";
 export interface RosterAgent {
   name: string;
   description: string;
+  /** Pinned model id; empty = "auto" (inherits the session model / router). */
+  model: string;
+  /** Effective read-only tool scope at the delegation call site. */
+  tools: string[];
+  /** Raw frontmatter permission mode ("" means default). */
+  permissionMode: string;
+  /** Optional def color hint — a UX tint only, never execution-relevant. */
+  color: string;
 }
 
 /**

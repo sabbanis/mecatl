@@ -4,6 +4,7 @@ import {
   createThreadHarnessSession,
   forkHarnessSessionToModel,
 } from "./client";
+import { createHarnessDebugSession } from "./debug";
 
 /**
  * Compatibility pin (requirement H4): the daemon strictly decodes the
@@ -20,6 +21,23 @@ const ALLOWED = new Set([
   "provider_id",
   "source_session_id",
 ]);
+
+/**
+ * The debug create (ADR 0254) is pinned as its OWN exact set rather than by
+ * widening ALLOWED: it is the one create that may carry `workspace` (and only
+ * as ""), `profile`, and the debug fields — the daemon accepts all of them —
+ * while the chat/thread/fork bodies must stay workspace-free (rule 2: the
+ * workspace is proxy-injected, never browser-supplied). Folding these keys
+ * into the shared allowlist would let a stray workspace on a PLAIN create
+ * pass this suite silently.
+ */
+const DEBUG_ALLOWED = [
+  "debug_mcp_servers",
+  "debug_target_session_id",
+  "mode",
+  "profile",
+  "workspace",
+] as const;
 
 function captureBody(): { body: () => Record<string, unknown> } {
   const captured: { value?: Record<string, unknown> } = {};
@@ -89,6 +107,21 @@ describe("session create bodies stay inside the daemon's strict field set", () =
       );
       const keys = Object.keys(captured.body());
       expect(keys.every((k) => ALLOWED.has(k))).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
+  it("debug create (ADR 0254) stays inside its own exact set", async () => {
+    const captured = captureBody();
+    try {
+      await createHarnessDebugSession("target-1", { mcpServers: ["fetch"] });
+      const body = captured.body();
+      expect(Object.keys(body).sort()).toEqual([...DEBUG_ALLOWED]);
+      // The workspace this one create carries must be the EMPTY one the
+      // daemon requires — never a path.
+      expect(body.workspace).toBe("");
+      expect(body.profile).toBe("no-fs");
     } finally {
       vi.unstubAllGlobals();
     }

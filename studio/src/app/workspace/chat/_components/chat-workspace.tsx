@@ -43,6 +43,7 @@ import {
   type HarnessResolvedModel,
   ThreadSourceBusyError,
 } from "@/lib/harness/client";
+import { createHarnessDebugSession } from "@/lib/harness/debug";
 import { useDisabledModels } from "@/lib/model-preferences";
 import {
   type SessionListSide,
@@ -687,8 +688,42 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     [selectedId, router],
   );
 
+  // "Debug with AI" (F1, ADR 0254): creates a SEPARATE no-fs diagnostic
+  // session bound to the picked chat, after the mandated consent dialog —
+  // invoking the debugger sends the target's STORED transcript and event
+  // evidence (secrets included) to the model, even though the target itself
+  // can never be modified. Gated on the daemon's session_debug capability.
+  const debugSupported = serverCapabilities.session_debug === true;
+  const handleDebugSession = useCallback(
+    async (id: string) => {
+      // The Labs mock row is local demo content — never a daemon target.
+      if (isMockTourSession(id)) return;
+      const ok = await confirm({
+        title: "Debug with AI",
+        description:
+          "This creates a separate diagnostic chat bound to this session. " +
+          "The session's stored transcript and event evidence — including " +
+          "anything sensitive it contains — will be sent to the model as " +
+          "debugging evidence. The session itself is read-only to the " +
+          "debugger and is never modified.",
+        confirmText: "Send evidence & debug",
+      });
+      if (!ok) return;
+      try {
+        const debugId = await createHarnessDebugSession(id);
+        await refreshSessions();
+        handleSelectSession(debugId);
+        toast.success("Debug session created");
+      } catch (caught) {
+        toast.error(caught instanceof Error ? caught.message : String(caught));
+      }
+    },
+    [confirm, refreshSessions, handleSelectSession],
+  );
+
   const sessionActions: SessionActions = useMemo(
     () => ({
+      onDebug: debugSupported ? handleDebugSession : undefined,
       onRename: async (id: string) => {
         const s = sessions.find((x) => x.id === id);
         const name = await prompt({
@@ -712,7 +747,16 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         deselectIfActive(id);
       },
     }),
-    [sessions, prompt, renameSession, confirm, deleteSession, deselectIfActive],
+    [
+      sessions,
+      prompt,
+      renameSession,
+      confirm,
+      deleteSession,
+      deselectIfActive,
+      debugSupported,
+      handleDebugSession,
+    ],
   );
 
   // Flattened, in-display-order chat ids for keyboard navigation.

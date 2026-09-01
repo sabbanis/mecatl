@@ -2,6 +2,7 @@
 
 import {
   Bot,
+  Bug,
   ChevronDown,
   ChevronUp,
   Ellipsis,
@@ -33,6 +34,13 @@ import { cn } from "@/lib/utils";
 export interface SessionActions {
   onRename: (id: string) => void;
   onDelete: (id: string) => void;
+  /**
+   * "Debug with AI" (ADR 0254): present only when the daemon reports
+   * `capabilities.session_debug` — the caller gates it, the menus render it.
+   * The handler owns the consent dialog; a row that already IS a debug
+   * session never offers it (no debugging the debugger).
+   */
+  onDebug?: (id: string) => void;
 }
 
 export function SidebarGroup({
@@ -68,6 +76,10 @@ function SessionContextMenu({
   // (disabled menu items swallow pointer events, so a tooltip can't open).
   const canRename = session.canRename === true;
   const canDelete = session.canDelete === true;
+  const offerDebug =
+    actions.onDebug !== undefined &&
+    !session.debugTargetSessionId &&
+    !isMockTourSession(session.id);
 
   return (
     <DropdownMenu modal={false} onOpenChange={onOpenChange}>
@@ -78,6 +90,12 @@ function SessionContextMenu({
         sideOffset={4}
         className="w-56"
       >
+        {offerDebug && (
+          <DropdownMenuItem onClick={() => actions.onDebug?.(session.id)}>
+            <Bug className="size-4 mr-2 shrink-0 text-muted-foreground" />
+            <span className="min-w-0">Debug with AI</span>
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           disabled={!canRename}
           onClick={() => actions.onRename(session.id)}
@@ -185,6 +203,10 @@ function SessionActionsSheet({
 }) {
   const canRename = session.canRename === true;
   const canDelete = session.canDelete === true;
+  const offerDebug =
+    actions.onDebug !== undefined &&
+    !session.debugTargetSessionId &&
+    !isMockTourSession(session.id);
   const row =
     "flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50 disabled:opacity-50";
 
@@ -201,6 +223,19 @@ function SessionActionsSheet({
           <p className="truncate px-4 pt-1 pb-2 text-sm font-semibold">
             {session.title || "Untitled"}
           </p>
+          {offerDebug && (
+            <button
+              type="button"
+              className={row}
+              onClick={() => {
+                onClose();
+                actions.onDebug?.(session.id);
+              }}
+            >
+              <Bug className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 text-left">Debug with AI</span>
+            </button>
+          )}
           <button
             type="button"
             className={row}
@@ -311,6 +346,17 @@ function SessionRow({
               Mock
             </Badge>
           )}
+          {/* An AI-debug session (ADR 0254) reads as an ordinary chat except
+              for this label — the relationship is the daemon's signal. */}
+          {session.debugTargetSessionId && (
+            <Badge
+              variant="outline"
+              className="h-4 shrink-0 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+              title={`Debugging session ${session.debugTargetSessionId}`}
+            >
+              Debug
+            </Badge>
+          )}
         </span>
       </button>
       <div className="shrink-0 ml-2 grid w-8 items-center justify-items-center [grid-template-areas:'slot']">
@@ -416,8 +462,57 @@ export function SessionList({
 }
 
 /**
+ * The def color hint is frontmatter relayed verbatim, so only a small safe
+ * subset is honored as a CSS color: common named colors or a hex literal.
+ * Anything else falls back to the default muted tint.
+ */
+const AGENT_COLOR_NAMES = new Set([
+  "red",
+  "orange",
+  "amber",
+  "yellow",
+  "lime",
+  "green",
+  "emerald",
+  "teal",
+  "cyan",
+  "sky",
+  "blue",
+  "indigo",
+  "violet",
+  "purple",
+  "magenta",
+  "fuchsia",
+  "pink",
+  "rose",
+  "brown",
+  "gray",
+  "grey",
+]);
+
+function safeAgentColor(color: string): string | undefined {
+  const value = color.trim().toLowerCase();
+  if (AGENT_COLOR_NAMES.has(value)) return value;
+  return /^#(?:[0-9a-f]{3}|[0-9a-f]{6})$/.test(value) ? value : undefined;
+}
+
+/** Title-attribute tooltip: description, then the def's scope details. */
+function agentRowTooltip(agent: RosterAgent): string | undefined {
+  const lines: string[] = [];
+  if (agent.description) lines.push(agent.description);
+  const details: string[] = [];
+  details.push(`permissions: ${agent.permissionMode || "default"}`);
+  if (agent.tools.length > 0) details.push(`tools: ${agent.tools.join(", ")}`);
+  lines.push(details.join(" · "));
+  return lines.join("\n");
+}
+
+/**
  * The daemon's real agent roster, listed below the chat groups. Agents are
- * not chat containers — selecting one simply starts a new chat draft.
+ * not chat containers — selecting one simply starts a new chat draft. Each
+ * row shows the def's pinned model ("auto" when it inherits), tints its
+ * avatar with the def's color hint, and carries tools + permission mode in
+ * the tooltip (D2.2).
  */
 export function AgentList({
   agents,
@@ -428,23 +523,32 @@ export function AgentList({
 }) {
   return (
     <div className="flex flex-col">
-      {agents.map((agent) => (
-        <button
-          key={agent.name}
-          type="button"
-          onClick={onStartChat}
-          title={agent.description || undefined}
-          aria-label={`New chat with ${agent.name}`}
-          className="group flex items-center gap-2.5 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left transition-colors hover:bg-accent"
-        >
-          <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
-            <Bot className="size-3.5" />
-          </span>
-          <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground group-hover:text-foreground select-none">
-            {agent.name}
-          </span>
-        </button>
-      ))}
+      {agents.map((agent) => {
+        const tint = safeAgentColor(agent.color);
+        return (
+          <button
+            key={agent.name}
+            type="button"
+            onClick={onStartChat}
+            title={agentRowTooltip(agent)}
+            aria-label={`New chat with ${agent.name}`}
+            className="group flex items-center gap-2.5 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left transition-colors hover:bg-accent"
+          >
+            <span
+              className="flex size-6 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground"
+              style={tint ? { color: tint } : undefined}
+            >
+              <Bot className="size-3.5" />
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground group-hover:text-foreground select-none">
+              {agent.name}
+            </span>
+            <span className="max-w-[45%] shrink-0 truncate font-mono text-[10px] text-muted-foreground/50 select-none">
+              {agent.model || "auto"}
+            </span>
+          </button>
+        );
+      })}
     </div>
   );
 }

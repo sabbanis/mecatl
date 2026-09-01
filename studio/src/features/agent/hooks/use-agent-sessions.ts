@@ -38,6 +38,8 @@ function toAgentSession(summary: SessionSummary): AgentSession {
     canDelete: summary.canDelete,
     renameReason: summary.renameReason,
     deleteReason: summary.deleteReason,
+    titleProvenance: summary.titleProvenance,
+    debugTargetSessionId: summary.debugTargetSessionId,
   };
 }
 
@@ -149,13 +151,29 @@ export function useAgentSessions() {
     setSessions((previous) => previous.filter((s) => s.id !== id));
   }, []);
 
+  // Title-provenance rule (F4): renames HERE are always operator-initiated
+  // (the rename dialog), so clobbering is impossible by construction — the
+  // daemon stamps the echo `title_provenance: "operator"`, mirrored in the
+  // optimistic update below. Any FUTURE auto-titling (background summarizers,
+  // unread-driven renames, …) must instead check the row first and skip when
+  // `titleProvenance === "operator"` — an auto-rename must never clobber a
+  // hand-set title. (Today's other rename callers — the model-switch fork and
+  // thread creation — rename only their own freshly-minted session, so no
+  // clobber path exists; this note is the guard for the next caller.)
   const renameSession = useCallback(async (id: string, title: string) => {
     let previousTitle = "";
+    let previousProvenance: string | undefined;
     setSessions((previous) =>
       previous.map((session) => {
         if (session.id !== id) return session;
         previousTitle = session.title;
-        return { ...session, title, updatedAt: Date.now() };
+        previousProvenance = session.titleProvenance;
+        return {
+          ...session,
+          title,
+          titleProvenance: "operator",
+          updatedAt: Date.now(),
+        };
       }),
     );
     try {
@@ -169,7 +187,13 @@ export function useAgentSessions() {
     } catch (caught) {
       setSessions((previous) =>
         previous.map((session) =>
-          session.id === id ? { ...session, title: previousTitle } : session,
+          session.id === id
+            ? {
+                ...session,
+                title: previousTitle,
+                titleProvenance: previousProvenance,
+              }
+            : session,
         ),
       );
       setError(caught instanceof Error ? caught.message : String(caught));

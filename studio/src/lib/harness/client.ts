@@ -1288,21 +1288,48 @@ export async function deleteHarnessSkill(name: string): Promise<void> {
   if (!response.ok) throw await apiError(response);
 }
 
+/** One row of the daemon's resolved agent inventory (proto AgentInfo). */
+export interface HarnessAgentInfo {
+  name: string;
+  description: string;
+  /** Resolved pinned model id; empty = inherit ("auto": session model or routed). */
+  model: string;
+  /** The def's effective read-only tool scope at the delegation call site. */
+  tools: string[];
+  /** Raw frontmatter permission mode; empty means "default". */
+  permissionMode: string;
+  /** Optional UX color hint from the def; never affects execution. */
+  color: string;
+}
+
 /** Reads the daemon's RESOLVED agent inventory (what it can delegate to now). */
 export async function listHarnessAgents(
   signal?: AbortSignal,
-): Promise<{ name: string; description: string }[]> {
+): Promise<HarnessAgentInfo[]> {
   const response = await fetch(`${HARNESS_API}/agents`, {
     signal,
     cache: "no-store",
   });
   if (!response.ok) throw await apiError(response);
   const body = (await response.json()) as {
-    agents?: { name?: string; description?: string }[];
+    agents?: {
+      name?: string;
+      description?: string;
+      model?: string;
+      tools?: unknown;
+      permission_mode?: string;
+      color?: string;
+    }[];
   };
   return (body.agents ?? []).map((agent) => ({
     name: agent.name ?? "",
     description: agent.description ?? "",
+    model: agent.model ?? "",
+    tools: Array.isArray(agent.tools)
+      ? agent.tools.filter((tool): tool is string => typeof tool === "string")
+      : [],
+    permissionMode: agent.permission_mode ?? "",
+    color: agent.color ?? "",
   }));
 }
 

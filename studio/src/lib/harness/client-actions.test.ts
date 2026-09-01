@@ -4,6 +4,7 @@ import {
   cancelHarnessSteer,
   compactHarnessSession,
   fetchHarnessSessionDetail,
+  listHarnessAgents,
   retryHarnessRun,
   steerHarnessRun,
 } from "./client";
@@ -192,5 +193,48 @@ describe("fetchHarnessSessionDetail", () => {
       resolvedModel: null,
       capabilities: {},
     });
+  });
+});
+
+describe("listHarnessAgents", () => {
+  it("decodes the full AgentInfo row: model, tools, permission_mode, color (D2.2)", async () => {
+    stubFetch(200, {
+      agents: [
+        {
+          name: "reviewer",
+          description: "Reviews diffs",
+          model: "anthropic/claude-opus-4.6",
+          tools: ["Read", "Grep", 7, "Glob"],
+          permission_mode: "plan",
+          color: "cyan",
+        },
+        // A minimal def: the live daemon omits every empty field.
+        { name: "explorer" },
+      ],
+    });
+    await expect(listHarnessAgents()).resolves.toEqual([
+      {
+        name: "reviewer",
+        description: "Reviews diffs",
+        model: "anthropic/claude-opus-4.6",
+        // Non-string entries are dropped, never rendered.
+        tools: ["Read", "Grep", "Glob"],
+        permissionMode: "plan",
+        color: "cyan",
+      },
+      {
+        name: "explorer",
+        description: "",
+        model: "",
+        tools: [],
+        permissionMode: "",
+        color: "",
+      },
+    ]);
+  });
+
+  it("reads an empty roster off the live daemon's bare {} response", async () => {
+    stubFetch(200, {});
+    await expect(listHarnessAgents()).resolves.toEqual([]);
   });
 });
