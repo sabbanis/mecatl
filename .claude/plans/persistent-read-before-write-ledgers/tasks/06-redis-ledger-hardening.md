@@ -2,8 +2,8 @@
 id: 06-redis-ledger-hardening
 title: Fail closed on corrupt Redis state and delete evidence atomically
 blocked_by: [05-environment-ledger-separation]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-persistent-read-before-write-ledgers/06-redis-ledger-hardening"
 worktree: ""
 issue: "888"
 retries: 0

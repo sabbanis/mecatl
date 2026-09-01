@@ -2,7 +2,7 @@
 id: 07-repair-docs-and-acceptance
 title: Reconcile acceptance and architecture after panel repairs
 blocked_by: [06-redis-ledger-hardening]
-status: pending
+status: in-progress
 branch: ""
 worktree: ""
 issue: "888"
