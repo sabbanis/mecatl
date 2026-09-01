@@ -666,7 +666,7 @@ func (o *MCPOAuthProfile) upstreamOrigins() []string {
 }
 
 func (u *MCPOAuthUpstreamProfile) strictFields() map[string]any {
-	return map[string]any{modeKey: &u.Mode, "oauth2": &u.OAuth2}
+	return map[string]any{modeKey: &u.Mode, "oauth2": newPermconfigNodePointer(&u.OAuth2)}
 }
 
 // UnmarshalYAML strictly decodes an optional upstream protocol selector.
