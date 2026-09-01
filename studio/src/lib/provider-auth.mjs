@@ -142,6 +142,17 @@ const yamlQuote = (value) => JSON.stringify(String(value ?? ""));
  * construction: the credential, if any, goes in auth.yaml via
  * customProviderAuthSnippet.
  */
+/**
+ * The settings.yaml provider_overrides block routing a BUILT-IN provider
+ * through a gateway/proxy base URL (ADR 0238's settings equivalent of the
+ * --*-base-url flags). Operator-tier only, like the providers: section.
+ * Returns "" when the URL fails the same validation custom gateways use.
+ */
+export function providerOverrideSnippet(name, baseURL) {
+  if (!name || !validCustomProviderBaseURL(baseURL)) return "";
+  return `provider_overrides:\n  ${name}:\n    base_url: "${baseURL.trim()}"\n`;
+}
+
 export function customProviderSettingsSnippet({
   id,
   baseURL,

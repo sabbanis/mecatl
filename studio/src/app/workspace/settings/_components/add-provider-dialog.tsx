@@ -28,6 +28,7 @@ import {
   CUSTOM_PROVIDER_API_FLAVORS,
   customProviderAuthSnippet,
   customProviderSettingsSnippet,
+  providerOverrideSnippet,
   validCustomProviderBaseURL,
   validCustomProviderId,
 } from "@/lib/provider-auth.mjs";
@@ -95,6 +96,8 @@ export function AddProviderDialog({
   const [customBaseURL, setCustomBaseURL] = useState("");
   const [customModel, setCustomModel] = useState("");
   const [customAuth, setCustomAuth] = useState<"api_key" | "none">("api_key");
+  // Optional base-URL override for a BUILT-IN provider (provider_overrides).
+  const [overrideURL, setOverrideURL] = useState("");
 
   const selected = known.find((provider) => provider.name === kind) ?? null;
   const isCustom = kind === CUSTOM_KIND;
@@ -126,6 +129,9 @@ export function AddProviderDialog({
       })
     : "";
   const authSnippet = customComplete ? customProviderAuthSnippet(customId) : "";
+  const overrideSnippet = selected
+    ? providerOverrideSnippet(selected.name, overrideURL)
+    : "";
 
   function handleOpenChange(next: boolean) {
     setOpen(next);
@@ -406,6 +412,43 @@ export function AddProviderDialog({
                   copied={copied === "known"}
                   onCopy={() => void copyText("known", selected.snippet)}
                 />
+                {/* provider_overrides (ADR 0238): route this built-in through
+                    a gateway/proxy without redefining it — optional, and a
+                    settings.yaml (operator-tier) block, unlike the key. */}
+                <div className="flex flex-col gap-3 pt-1">
+                  <Label htmlFor="add-provider-override">
+                    Route through a gateway
+                    <span className="block text-xs font-normal text-muted-foreground">
+                      Optional. A base-URL override sends {selected.label}
+                      &nbsp;traffic through your proxy or gateway.
+                    </span>
+                  </Label>
+                  <Input
+                    id="add-provider-override"
+                    value={overrideURL}
+                    onChange={(event) => setOverrideURL(event.target.value)}
+                    placeholder="https://gateway.example/v1"
+                    autoComplete="off"
+                    spellCheck={false}
+                  />
+                  {overrideSnippet && (
+                    <>
+                      <p className="text-xs text-muted-foreground">
+                        Add to <code className="font-mono">{settingsPath}</code>
+                        {operatorSettings &&
+                          " — or the imported operator settings file, which wins the whole section"}
+                        :
+                      </p>
+                      <CopyableSnippet
+                        text={overrideSnippet}
+                        copied={copied === "override"}
+                        onCopy={() =>
+                          void copyText("override", overrideSnippet)
+                        }
+                      />
+                    </>
+                  )}
+                </div>
               </div>
             )}
 
