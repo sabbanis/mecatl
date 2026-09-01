@@ -54,7 +54,11 @@ Each rule is backed by a test; break the rule and its test names you.
    (`tests/rendered-html.test.mjs`: unreachable daemon → friendly 503.)
 2. **The workspace is resolved, never hardcoded and never browser-supplied.**
    Managed: controller `/status`; external: `MECATL_WORKSPACE`; injected
-   server-side into session/team/schedule creation.
+   server-side into session/team/schedule creation. SERVER-ASSIGNED remote
+   deployments (ADR 0237 — any network-facing listener) refuse a client
+   workspace outright: leave `MECATL_WORKSPACE` unset there, and the proxy
+   deliberately injects nothing (the correct empty-workspace create); a
+   refused injection is rewritten with the unset-the-variable fix.
    (hermetic: session creation carries the deployment workspace.)
 3. **Credentials never cross the browser/controller boundary.** No key-paste
    UI anywhere; `mecated` reads `~/.config/mecatl/auth.yaml`. The proxy's
@@ -90,7 +94,11 @@ Each rule is backed by a test; break the rule and its test names you.
 - `npm test` runs vitest in watch mode; CI and `task studio:test` use
   `npx vitest run` + `npm run test:server`.
 - The controller restarts `mecated` on every config write; in-flight runs and
-  session ids die with it. Surfaces warn before writes that restart.
+  session ids die with it. Surfaces warn before writes that restart. Startup
+  rides the daemon's ready file (`--ready-file` + an ephemeral `--http-addr`
+  + a mkfifo lifetime pipe — Node's stdio "pipe" is a socketpair mecated
+  rejects); `/status` reports the ready doc's `apiMajor`/`features`/
+  `deployment`.
 - FireNow (`POST /v1/schedules/{name}/fire`) is synchronous — the request lasts
   the whole agent run.
 - Live re-attach to a running session rides the durable watch
