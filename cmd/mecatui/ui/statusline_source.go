@@ -138,7 +138,7 @@ func (m Model) statusLineInput(now time.Time) statusline.Input {
 	}
 	workspace := statusline.Workspace{Location: "unknown"}
 	if m.activeWorkspace != "" {
-		if m.deps.ConnectionMode == "connect" {
+		if m.deps.ConnectionMode == connectAction {
 			workspace.Location = "remote"
 		} else {
 			workspace = statusline.Workspace{Location: "local", Path: m.activeWorkspace, Basename: filepath.Base(m.activeWorkspace)}
