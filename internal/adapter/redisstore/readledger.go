@@ -63,11 +63,10 @@ func (st *Store) ReadLedger(id session.SessionID) tool.ReadLedger {
 }
 
 // DeleteReadLedger removes every entry for the session's read-ledger scope
-// (the whole Redis hash). This is correctness cleanup, not an age-based
-// retention policy (ADR 0278): a caller must invoke it when a session is
-// deleted, so a REUSED session id starts with an empty ledger and can never
-// inherit a deleted session's prior-read authorization evidence. It is
-// idempotent — deleting an already-empty or never-used scope is a no-op.
+// (the whole Redis hash). Canonical session deletion already removes this key
+// atomically with the other session sidecars; this method supports an explicit
+// ledger-only reset. It is idempotent — deleting an already-empty or never-used
+// scope is a no-op.
 func (st *Store) DeleteReadLedger(ctx context.Context, id session.SessionID) error {
 	client, release, err := st.clients.acquire()
 	if err != nil {
@@ -132,14 +131,20 @@ func (l *redisLedger) RecordedVersion(ctx context.Context, key string) (tool.Fil
 		}
 		return tool.FileVersion{}, false, fmt.Errorf("redisstore: lookup read ledger entry: %w: %w", tool.ErrLedgerUnavailable, err)
 	}
-	var rec ledgerRecord
+	var rec struct {
+		V string  `json:"v"`
+		T *string `json:"t"`
+	}
 	if err := json.Unmarshal(raw, &rec); err != nil {
 		return tool.FileVersion{}, false, fmt.Errorf("redisstore: decode read ledger entry: %w: %w", tool.ErrLedgerUnavailable, err)
 	}
 	if rec.V != ledgerFormat {
 		return tool.FileVersion{}, false, fmt.Errorf("redisstore: unknown read ledger format %q (want %q): %w", rec.V, ledgerFormat, tool.ErrLedgerUnavailable)
 	}
-	return tool.NewFileVersion(rec.T), true, nil
+	if rec.T == nil {
+		return tool.FileVersion{}, false, fmt.Errorf("redisstore: read ledger entry has no string token: %w", tool.ErrLedgerUnavailable)
+	}
+	return tool.DecodeFileVersion(*rec.T), true, nil
 }
 
 func ledgerKey(id session.SessionID) string { return ledgerKeyPrefix + string(id) }

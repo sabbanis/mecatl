@@ -2,6 +2,7 @@ package memledger_test
 
 import (
 	"context"
+	"errors"
 	"testing"
 
 	"github.com/stacklok/mecatl/engine/adapter/ledgerconformance"
@@ -15,6 +16,16 @@ func TestMemledgerConformance(t *testing.T) {
 	ledgerconformance.Run(t, func(*testing.T) tool.ReadLedger {
 		return memledger.New()
 	})
+}
+
+func TestPersistentReadLedgers_InvalidVersionRejected(t *testing.T) {
+	ledger := memledger.New()
+	if err := ledger.RecordRead(context.Background(), "invalid.txt", tool.FileVersion{}); !errors.Is(err, tool.ErrInvalidFileVersion) {
+		t.Fatalf("RecordRead(zero) error = %v, want ErrInvalidFileVersion", err)
+	}
+	if _, ok, err := ledger.RecordedVersion(context.Background(), "invalid.txt"); err != nil || ok {
+		t.Fatalf("RecordedVersion after rejected zero = (ok=%v, err=%v), want (false, nil)", ok, err)
+	}
 }
 
 // TestInvariant_persistent_read_ledger_exact_version pins AC1.1 (ADR 0278):

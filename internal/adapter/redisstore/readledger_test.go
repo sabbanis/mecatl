@@ -10,6 +10,7 @@ import (
 	"github.com/alicebob/miniredis/v2"
 
 	"github.com/stacklok/mecatl/engine/adapter/ledgerconformance"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/redisstore"
@@ -327,6 +328,151 @@ func TestPersistentReadLedgers_Scenario2_RedisFailureClassification(t *testing.T
 		}
 		if ok {
 			t.Fatal("RecordedVersion(unknown format tag) ok = true, want false on error")
+		}
+	})
+}
+
+func TestPersistentReadLedgers_RedisCorruptStateFailsClosed(t *testing.T) {
+	mr, err := miniredis.Run()
+	if err != nil {
+		t.Fatalf("miniredis: %v", err)
+	}
+	t.Cleanup(mr.Close)
+	st, err := redisstore.New(mr.Addr())
+	if err != nil {
+		t.Fatalf("redisstore.New: %v", err)
+	}
+	t.Cleanup(func() { _ = st.Close() })
+
+	ctx := context.Background()
+	const id session.SessionID = "corrupt-state"
+	ledger := st.ReadLedger(id)
+	for name, raw := range map[string]string{
+		"malformed":        `not-json`,
+		"missing-token":    `{"v":"redisstore-ledger/1"}`,
+		"null-token":       `{"v":"redisstore-ledger/1","t":null}`,
+		"wrong-token-type": `{"v":"redisstore-ledger/1","t":7}`,
+		"missing-format":   `{"t":"token"}`,
+		"unknown-format":   `{"v":"redisstore-ledger/99","t":"token"}`,
+	} {
+		t.Run(name, func(t *testing.T) {
+			mr.HSet("mecatl:ledger:"+string(id), name, raw)
+			got, ok, err := ledger.RecordedVersion(ctx, name)
+			if err == nil || !errors.Is(err, tool.ErrLedgerUnavailable) {
+				t.Fatalf("RecordedVersion = (%v, %v, %v), want zero, false, ErrLedgerUnavailable", got, ok, err)
+			}
+			if ok {
+				t.Fatal("RecordedVersion corrupt state returned ok=true")
+			}
+			if _, encodeErr := tool.EncodeFileVersion(got); encodeErr == nil {
+				t.Fatal("RecordedVersion corrupt state returned a valid FileVersion")
+			}
+		})
+	}
+
+	empty := tool.NewFileVersion("")
+	if err := ledger.RecordRead(ctx, "empty-token", empty); err != nil {
+		t.Fatalf("RecordRead(valid empty token): %v", err)
+	}
+	got, ok, err := ledger.RecordedVersion(ctx, "empty-token")
+	if err != nil || !ok || !got.Equal(empty) {
+		t.Fatalf("RecordedVersion(valid empty token) = (ok=%v, err=%v), want exact valid token", ok, err)
+	}
+}
+
+func TestPersistentReadLedgers_RedisSessionDeletionRemovesLedger(t *testing.T) {
+	st := newLedgerTestStore(t)
+	ctx := context.Background()
+	const id session.SessionID = "delete-ledger-session"
+	if err := st.Save(ctx, session.New(id, session.ModeAccept, "/work", session.Limits{}, time.Now().UTC())); err != nil {
+		t.Fatalf("Save: %v", err)
+	}
+	if err := st.ReadLedger(id).RecordRead(ctx, "a.txt", tool.NewFileVersion("v1")); err != nil {
+		t.Fatalf("RecordRead: %v", err)
+	}
+	if err := st.Delete(ctx, id); err != nil {
+		t.Fatalf("Delete: %v", err)
+	}
+	if _, ok, err := st.ReadLedger(id).RecordedVersion(ctx, "a.txt"); err != nil || ok {
+		t.Fatalf("RecordedVersion after Delete = (ok=%v, err=%v), want (false, nil)", ok, err)
+	}
+
+	if err := st.Save(ctx, session.New(id, session.ModeAccept, "/reused", session.Limits{}, time.Now().UTC())); err != nil {
+		t.Fatalf("Save(reused id): %v", err)
+	}
+	if _, ok, err := st.ReadLedger(id).RecordedVersion(ctx, "a.txt"); err != nil || ok {
+		t.Fatalf("RecordedVersion after session-ID reuse = (ok=%v, err=%v), want (false, nil)", ok, err)
+	}
+}
+
+func TestPersistentReadLedgers_RedisConditionalDeletionRemovesLedger(t *testing.T) {
+	st := newLedgerTestStore(t)
+	ctx := context.Background()
+
+	t.Run("successful deletion removes evidence", func(t *testing.T) {
+		const id session.SessionID = "conditional-delete-success"
+		if err := st.Save(ctx, session.New(id, session.ModeAccept, "/work", session.Limits{}, time.Now().UTC())); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		if err := st.ReadLedger(id).RecordRead(ctx, "a.txt", tool.NewFileVersion("v1")); err != nil {
+			t.Fatalf("RecordRead: %v", err)
+		}
+		page, err := st.PageSessionMetadata(ctx, port.SessionMetadataPageRequest{Limit: 10})
+		if err != nil {
+			t.Fatalf("PageSessionMetadata: %v", err)
+		}
+		var expected port.SessionDiscoveryMeta
+		for _, row := range page.Sessions {
+			if row.ID == id {
+				expected = row
+			}
+		}
+		if expected.ID == "" {
+			t.Fatal("saved session missing from metadata page")
+		}
+		deleted, err := st.DeleteSessionIfUnchanged(ctx, expected)
+		if err != nil || !deleted {
+			t.Fatalf("DeleteSessionIfUnchanged = (%v, %v), want (true, nil)", deleted, err)
+		}
+		if _, ok, err := st.ReadLedger(id).RecordedVersion(ctx, "a.txt"); err != nil || ok {
+			t.Fatalf("RecordedVersion after conditional delete = (ok=%v, err=%v), want (false, nil)", ok, err)
+		}
+	})
+
+	t.Run("failed deletion preserves evidence", func(t *testing.T) {
+		const id session.SessionID = "conditional-delete-failed"
+		sess := session.New(id, session.ModeAccept, "/work", session.Limits{}, time.Now().UTC())
+		if err := st.Save(ctx, sess); err != nil {
+			t.Fatalf("Save: %v", err)
+		}
+		if err := st.ReadLedger(id).RecordRead(ctx, "a.txt", tool.NewFileVersion("v1")); err != nil {
+			t.Fatalf("RecordRead: %v", err)
+		}
+		page, err := st.PageSessionMetadata(ctx, port.SessionMetadataPageRequest{Limit: 10})
+		if err != nil {
+			t.Fatalf("PageSessionMetadata: %v", err)
+		}
+		var stale port.SessionDiscoveryMeta
+		for _, row := range page.Sessions {
+			if row.ID == id {
+				stale = row
+			}
+		}
+		if stale.ID == "" {
+			t.Fatal("saved session missing from metadata page")
+		}
+		sess.SetTitle("changed")
+		if err := st.Save(ctx, sess); err != nil {
+			t.Fatalf("Save(changed): %v", err)
+		}
+		deleted, err := st.DeleteSessionIfUnchanged(ctx, stale)
+		if err != nil || deleted {
+			t.Fatalf("DeleteSessionIfUnchanged(stale) = (%v, %v), want (false, nil)", deleted, err)
+		}
+		got, ok, err := st.ReadLedger(id).RecordedVersion(ctx, "a.txt")
+		want := tool.NewFileVersion("v1")
+		if err != nil || !ok || !got.Equal(want) {
+			t.Fatalf("RecordedVersion after failed conditional delete = (ok=%v, err=%v), want preserved evidence", ok, err)
 		}
 	})
 }

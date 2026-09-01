@@ -18,6 +18,7 @@ package ledgerconformance
 
 import (
 	"context"
+	"errors"
 	"sync"
 	"testing"
 
@@ -30,6 +31,17 @@ import (
 func Run(t *testing.T, newLedger func(t *testing.T) tool.ReadLedger) {
 	t.Helper()
 	ctx := context.Background()
+
+	t.Run("invalid zero version is rejected", func(t *testing.T) {
+		l := newLedger(t)
+		if err := l.RecordRead(ctx, "invalid.txt", tool.FileVersion{}); !errors.Is(err, tool.ErrInvalidFileVersion) {
+			t.Fatalf("RecordRead(zero) error = %v, want ErrInvalidFileVersion", err)
+		}
+		got, ok, err := l.RecordedVersion(ctx, "invalid.txt")
+		if err != nil || ok {
+			t.Fatalf("RecordedVersion after rejected zero = (%v, %v, %v), want (zero, false, nil)", got, ok, err)
+		}
+	})
 
 	t.Run("record and lookup round trip exact token", func(t *testing.T) {
 		l := newLedger(t)

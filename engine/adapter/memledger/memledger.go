@@ -30,9 +30,11 @@ func New() *Ledger {
 	return &Ledger{entries: make(map[string]tool.FileVersion)}
 }
 
-// RecordRead stores version under key. It performs no file-content I/O and
-// never fails.
+// RecordRead stores a valid version under key. It performs no file-content I/O.
 func (l *Ledger) RecordRead(_ context.Context, key string, version tool.FileVersion) error {
+	if _, err := tool.EncodeFileVersion(version); err != nil {
+		return err
+	}
 	l.mu.Lock()
 	l.entries[key] = version
 	l.mu.Unlock()
