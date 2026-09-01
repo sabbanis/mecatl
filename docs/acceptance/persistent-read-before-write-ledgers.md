@@ -1,7 +1,7 @@
 # Persistent read-before-write ledgers — acceptance plan
 
 **Phase:** storage-independent file-mutation safety
-**Status:** landed, 2026-08-26. Synthesised from stacklok/mecatl#888 and the existing ADR-0208 version protocol.
+**Status:** in-progress, 2026-08-26. Reopened for the panel-review repair wave: Workspace and ReadLedger ownership are being separated at Environment.
 **Issue:** [stacklok/mecatl#888](https://github.com/stacklok/mecatl/issues/888).
 **ADR:** [ADR-0278](../adr/0278-persistent-read-before-write-ledgers.md) — separates session-scoped ledger storage from file-content storage while preserving fail-closed mutation and final filesystem CAS.
 **Accumulator branch:** `acc/persistent-read-ledgers` (off `main`).
