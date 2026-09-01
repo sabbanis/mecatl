@@ -26,11 +26,12 @@ Implement only broker-process/runtime construction:
    tool namespaces and never project the private mapping.
 3. Set each vMCP backend's `UpstreamInject.ProviderName` to its matching private provider key,
    so backend A can never receive backend B's credential.
-4. Preserve eager anonymous discovery. For a protected profile without a reviewed static
-   catalogue, do not construct an MCP manager or call anonymous discovery during build/start;
-   leave its protected route deferred to Task 11.
-5. Keep static `auth.oauth.tools` optional. Do not require it and do not implement the
-   bootstrap-discovery CLI.
+4. Preserve eager anonymous discovery. Never construct an MCP manager or call anonymous
+   discovery for a protected profile during build/start; Task 11 admits only authenticated
+   provider-scoped discovery after bundled consent.
+5. Keep static `auth.oauth.tools` optional and parseable as a compatibility/comparison artifact,
+   but do not copy it into protected `Process`/`Runtime` catalogue construction. Do not implement
+   the bootstrap-discovery CLI.
 6. Add one process-owned cancelable context for ToolHive incoming-auth/JWKS work. Close order
    is vMCP server stop, authserver close, then auth-context cancel. Prove bounded lifecycle
    without a goleak exclusion.
@@ -49,9 +50,9 @@ do not emulate independent `ConnectUpstream` behavior.
   provider key, and each backend's `UpstreamInject.ProviderName` selects only its matching
   credential while model-visible namespaces remain unchanged.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_ProviderNameMapping`
-- AC11.5: Broker startup performs no anonymous `initialize` or `tools/list` against a
-  protected backend without a reviewed static catalogue; a 401-capable protected upstream
-  therefore cannot prevent process startup, and its route stays deferred.
+- AC11.5: Broker startup performs no anonymous `initialize` or `tools/list` against any
+  protected backend; a protected upstream that rejects anonymous access cannot prevent process
+  startup, and no static protected candidate enters the Runtime catalogue.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_ProtectedStartupSkipsAnonymousDiscovery`
 - AC11.6: ToolHive incoming-auth/JWKS work uses one process-owned cancelable context; process
   close stops vMCP, closes authserver, then cancels that context without a goleak exclusion.

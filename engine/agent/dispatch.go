@@ -370,7 +370,7 @@ func (e *Engine) driveFromAwaiting(ctx context.Context, r *Run, sess *session.Se
 			return
 		}
 		e.save(ctx, r, sess)
-		e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
+		e.runLoop(ctx, r, sess, env, false)
 		return
 	}
 
@@ -405,7 +405,7 @@ func (e *Engine) driveFromAwaiting(ctx context.Context, r *Run, sess *session.Se
 	// recorded no model usage; the budget brake reads the persisted cumulative
 	// sess.Usage directly). lastText seeds empty (the prior assistant text, if any,
 	// is in history and replays).
-	e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
+	e.runLoop(ctx, r, sess, env, false)
 }
 
 // pendingCallID picks the tool call id the pending ask refers to. The ask does not

@@ -11,6 +11,8 @@ import (
 // ConnectWorkspaceServices starts or observes the one client-owned pre-prompt
 // enrollment bundle. Ownership is checked before process-local broker state is
 // consulted; an existing live pending bundle is observed rather than duplicated.
+//
+//nolint:gocyclo // ownership, state, lease, and bundle correlation remain one ordered admission transaction.
 func (s *Service) ConnectWorkspaceServices(ctx context.Context, id session.SessionID) (vmcpbroker.WorkspaceEnrollmentPresentation, error) {
 	if _, err := s.GetSession(ctx, id); err != nil {
 		return vmcpbroker.WorkspaceEnrollmentPresentation{}, ErrNotFound
@@ -86,16 +88,16 @@ func (s *Service) ConnectWorkspaceServices(ctx context.Context, id session.Sessi
 			s.cfg.VMCPBroker.RejectProtectedCatalogue(id)
 			return vmcpbroker.WorkspaceEnrollmentPresentation{}, fmt.Errorf("%w: connected bundle has no pending enrollment", ErrFailedPrecondition)
 		}
-		// Persist no catalogue or grant. Clearing the safe correlation before the
-		// factory rebuild means a crash at any later instruction requires reenrollment.
+		if err := s.installWorkspaceCatalogue(ctx, sess); err != nil {
+			s.cfg.VMCPBroker.RejectProtectedCatalogue(id)
+			return vmcpbroker.WorkspaceEnrollmentPresentation{}, err
+		}
+		// Persist no catalogue or grant. Clearing the safe correlation after the
+		// authority and engine are prepared means a crash still requires reenrollment.
 		sess.ClearWorkspaceEnrollment()
 		if err := s.cfg.Store.Save(ctx, sess); err != nil {
 			s.cfg.VMCPBroker.RejectProtectedCatalogue(id)
 			return vmcpbroker.WorkspaceEnrollmentPresentation{}, fmt.Errorf("%w: persist workspace enrollment completion", ErrInternal)
-		}
-		if err := s.installWorkspaceCatalogue(ctx, sess); err != nil {
-			s.cfg.VMCPBroker.RejectProtectedCatalogue(id)
-			return vmcpbroker.WorkspaceEnrollmentPresentation{}, err
 		}
 	default:
 		s.cfg.VMCPBroker.RejectProtectedCatalogue(id)
@@ -148,6 +150,13 @@ func (s *Service) installWorkspaceCatalogue(ctx context.Context, sess *session.S
 	brokerTools := entry.opened.Tools()
 	if len(brokerTools) == 0 || s.brokerToolsCollideWithSharedCatalog(brokerTools) {
 		return fmt.Errorf("%w: protected catalogue collides with shared catalog", ErrFailedPrecondition)
+	}
+	toolNames := make([]string, len(brokerTools))
+	for i, brokerTool := range brokerTools {
+		toolNames[i] = brokerTool.Spec().Name
+	}
+	if err := sess.AdmitAuthorityTools(toolNames); err != nil {
+		return fmt.Errorf("%w: admit protected catalogue authority", ErrFailedPrecondition)
 	}
 	sel := ProviderSelector{ProviderID: sess.ProviderID, ModelID: sess.ModelID, ReasoningEffort: sess.ReasoningEffort}
 	_, err := s.buildAndRegisterSessionEngine(ctx, sess, sel, nil, profileForSession(sess), sess.Mode, replace)

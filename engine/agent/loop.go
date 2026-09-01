@@ -1035,7 +1035,7 @@ func (e *Engine) RetryFailedStep(ctx context.Context, sess *session.Session, env
 			Disposition: disposition,
 			Progress:    progress,
 		}})
-		e.runLoop(ctx, r, sess, env, session.Usage{}, "", true)
+		e.runLoop(ctx, r, sess, env, true)
 	})
 }
 
@@ -1172,7 +1172,7 @@ func (e *Engine) PrepareMCPAuthorizationContinuation(ctx context.Context, sess *
 		e.save(ctx, r, sess)
 		// The continuation has a fresh per-run usage delta; cumulative usage stays
 		// on the aggregate for budget accounting only.
-		e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
+		e.runLoop(ctx, r, sess, env, false)
 	})
 }
 
@@ -1188,7 +1188,7 @@ func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Ses
 // Run before Start so cancellation and expiry cannot lose the continuation.
 func (e *Engine) PrepareAfterMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *PreparedRun {
 	return e.prepareRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
-		e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
+		e.runLoop(ctx, r, sess, env, false)
 	})
 }
 
@@ -1368,7 +1368,7 @@ func (e *Engine) drive(ctx context.Context, r *Run, sess *session.Session, env t
 	// brake is evaluated against the AGGREGATE's cumulative Usage (sess.Usage) instead
 	// — which RecordUsage below keeps in lock-step and which the snapshot persists —
 	// so the budget survives reopen/restart while EvResult.Usage stays per-run.
-	e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
+	e.runLoop(ctx, r, sess, env, false)
 }
 
 // runLoop is the SHARED turn-loop body driven by both the prompt entry (drive,
@@ -1378,16 +1378,17 @@ func (e *Engine) drive(ctx context.Context, r *Run, sess *session.Session, env t
 // the exact same compaction / budget / no-progress / dispatch machinery as a
 // fresh prompt, so the two paths cannot drift.
 //
-// total seeds the per-run usage delta (zero for a fresh prompt; the
-// already-spent-this-re-entry delta for driveFromAwaiting, so the EvResult figure
-// the team supervisor sums stays accurate). lastText seeds the last meaningful
-// assistant text. The budget brake reads sess.Usage directly (persisted spend is
-// honoured), independent of total. skipFirstBoundaryInjections is used only by
-// failed-step retry reuses conversation state; live instruction sources are re-resolved.
-// while every later iteration resumes the ordinary boundary drains.
+// The per-run usage delta and last meaningful assistant text start empty for each
+// re-entry, so the EvResult figure the team supervisor sums stays accurate. The
+// budget brake reads sess.Usage directly (persisted spend is honoured), independent
+// of the per-run total. skipFirstBoundaryInjections is used only when failed-step
+// retry reuses conversation state; live instruction sources are re-resolved while every
+// later iteration resumes the ordinary boundary drains.
 //
 //nolint:gocyclo // The loop's ordered state machine is intentionally kept in one place.
-func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, total session.Usage, lastText string, skipFirstBoundaryInjections bool) {
+func (e *Engine) runLoop(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, skipFirstBoundaryInjections bool) {
+	var total session.Usage
+	var lastText string
 	// no-progress nudge accounting (Workstream A). noProgressNudges counts the
 	// continuation messages injected this run; nudgeCap is the budget (defaulted in
 	// NewEngine to defaultNoProgressNudges; a negative cap DISABLES nudging).

@@ -15,14 +15,14 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
-func TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedQueryCapabilities(t *testing.T) {
-	runtime, opened := catalogueTestRuntime(t, nil, nil, "backend-a", "backend-b")
+func TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedDiscovery(t *testing.T) {
+	runtime, opened := catalogueTestRuntime(t, nil, "backend-a", "backend-b")
 	tokens := &recordingUpstreamTokens{credentials: map[string]upstreamtoken.UpstreamCredential{
 		"auth-session-a/provider-a": {AccessToken: "credential-a"},
 		"auth-session-b/provider-b": {AccessToken: "credential-b"},
 	}}
 	queries := &recordingCapabilityQuerier{wantTokens: map[string]string{"backend-a": "credential-a", "backend-b": "credential-b"}}
-	queries.beforeQuery = func(backend string) error {
+	queries.beforeQuery = func(_ string) error {
 		if runtime.ProtectedCatalogueReady("session") || len(opened.Tools()) != 0 {
 			return errors.New("protected catalogue admitted before every provider-scoped query succeeded")
 		}
@@ -35,7 +35,7 @@ func TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedQueryCapabilities(t 
 	if _, available := reflect.TypeOf(queries).MethodByName("QueryAllCapabilities"); available {
 		t.Fatal("provider-scoped capability seam unexpectedly exposes QueryAllCapabilities")
 	}
-	runtime.configureAuthenticatedDiscovery(process.QueryAuthenticatedCapabilities, nil)
+	runtime.configureAuthenticatedDiscovery(process.QueryAuthenticatedCapabilities)
 
 	grantCatalogueBackend(runtime, "session", "backend-a", "auth-session-a")
 	if _, err := runtime.ConnectWorkspaceServices(t.Context(), "session"); err == nil {
@@ -107,14 +107,14 @@ func TestBundledWorkspaceEnrollment_Scenario11_DiscoveryFailsClosed(t *testing.T
 	}
 	for name, query := range tests {
 		t.Run(name, func(t *testing.T) {
-			runtime, opened := catalogueTestRuntime(t, nil, nil, "backend-a", "backend-b")
+			runtime, opened := catalogueTestRuntime(t, nil, "backend-a", "backend-b")
 			runtime.configureAuthenticatedDiscovery(func(_ context.Context, _ ToolHiveAuthSessionID, backend string) (AuthenticatedCapabilities, error) {
 				result, err := query(backend)
 				if err != nil {
 					return AuthenticatedCapabilities{}, err
 				}
 				return *result, nil
-			}, nil)
+			})
 			grantCatalogueBundle(runtime, "session", "auth-session", "backend-a", "backend-b")
 
 			if _, err := runtime.ConnectWorkspaceServices(t.Context(), "session"); err == nil {
@@ -126,10 +126,10 @@ func TestBundledWorkspaceEnrollment_Scenario11_DiscoveryFailsClosed(t *testing.T
 
 	t.Run("anonymous collision", func(t *testing.T) {
 		anonymous := Route{BackendID: "public", Tool: tool.ToolSpec{Name: "mcp__backend-a__status", Schema: json.RawMessage(`{"type":"object"}`)}}
-		runtime, opened := catalogueTestRuntime(t, []Route{anonymous}, nil, "backend-a")
+		runtime, opened := catalogueTestRuntime(t, []Route{anonymous}, "backend-a")
 		runtime.configureAuthenticatedDiscovery(func(context.Context, ToolHiveAuthSessionID, string) (AuthenticatedCapabilities, error) {
 			return *validAuthenticatedCandidate("backend-a", "status"), nil
-		}, nil)
+		})
 		grantCatalogueBundle(runtime, "session", "auth-session", "backend-a")
 		if _, err := runtime.ConnectWorkspaceServices(t.Context(), "session"); err == nil {
 			t.Fatal("anonymous collision admitted")
@@ -147,8 +147,8 @@ func TestBundledWorkspaceEnrollment_Scenario11_RestartRequiresEnrollment(t *test
 	query := func(context.Context, ToolHiveAuthSessionID, string) (AuthenticatedCapabilities, error) {
 		return *validAuthenticatedCandidate("backend-a", "status"), nil
 	}
-	original, opened := catalogueTestRuntime(t, nil, nil, "backend-a")
-	original.configureAuthenticatedDiscovery(query, nil)
+	original, opened := catalogueTestRuntime(t, nil, "backend-a")
+	original.configureAuthenticatedDiscovery(query)
 	grantCatalogueBundle(original, "session", "auth-session", "backend-a")
 	if _, err := original.ConnectWorkspaceServices(t.Context(), "session"); err != nil {
 		t.Fatalf("original enrollment: %v", err)
@@ -157,8 +157,8 @@ func TestBundledWorkspaceEnrollment_Scenario11_RestartRequiresEnrollment(t *test
 		t.Fatal("original catalogue was not admitted")
 	}
 
-	restarted, reopened := catalogueTestRuntime(t, nil, nil, "backend-a")
-	restarted.configureAuthenticatedDiscovery(query, nil)
+	restarted, reopened := catalogueTestRuntime(t, nil, "backend-a")
+	restarted.configureAuthenticatedDiscovery(query)
 	if restarted.ProtectedCatalogueReady("session") || len(reopened.Tools()) != 0 {
 		t.Fatal("restart replayed a grant, catalogue, or executable route")
 	}
@@ -171,32 +171,40 @@ func TestBundledWorkspaceEnrollment_Scenario11_RestartRequiresEnrollment(t *test
 	}
 }
 
-func TestBundledWorkspaceEnrollment_Scenario11_NoPartialStaticCatalogue(t *testing.T) {
-	static := []Route{{BackendID: "backend-a", Protected: true, ReadOnly: true, Tool: tool.ToolSpec{
-		Name: "mcp__backend-a__reviewed", Description: "reviewed", Schema: json.RawMessage(`{"type":"object"}`),
-	}}}
-	runtime, opened := catalogueTestRuntime(t, nil, static, "backend-a", "backend-b")
+func TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedMetadataIsAdmitted(t *testing.T) {
+	runtime, opened := catalogueTestRuntime(t, nil, "backend-a", "backend-b")
 	runtime.configureAuthenticatedDiscovery(func(_ context.Context, _ ToolHiveAuthSessionID, backend string) (AuthenticatedCapabilities, error) {
-		return *validAuthenticatedCandidate(backend, "discovered"), nil
-	}, static)
+		candidate := validAuthenticatedCandidate(backend, "discovered")
+		candidate.Tools[0].Description = "authenticated description"
+		candidate.Tools[0].Schema = json.RawMessage(`{"type":"object","properties":{"discovered":{"type":"string"}}}`)
+		candidate.Tools[0].ReadOnly = true
+		return *candidate, nil
+	})
 	if got := opened.Tools(); len(got) != 0 {
 		t.Fatalf("static pre-consent catalogue = %v, want empty", namesOfCatalogue(got))
 	}
 
 	grantCatalogueBundle(runtime, "session", "auth-session", "backend-a")
 	if runtime.ProtectedCatalogueReady("session") || len(opened.Tools()) != 0 {
-		t.Fatal("partial bundle exposed reviewed static tools")
+		t.Fatal("partial bundle exposed protected tools")
 	}
 	grantCatalogueBundle(runtime, "session", "auth-session", "backend-b")
 	if _, err := runtime.ConnectWorkspaceServices(t.Context(), "session"); err != nil {
 		t.Fatalf("complete enrollment: %v", err)
 	}
-	if got, want := namesOfCatalogue(opened.Tools()), []string{"mcp__backend-a__reviewed", "mcp__backend-b__discovered"}; !reflect.DeepEqual(got, want) {
-		t.Fatalf("admitted static/discovered catalogue = %v, want %v", got, want)
+	tools := opened.Tools()
+	if got, want := namesOfCatalogue(tools), []string{"mcp__backend-a__discovered", "mcp__backend-b__discovered"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("admitted catalogue = %v, want authenticated discovery %v", got, want)
+	}
+	for _, wrapped := range tools {
+		spec := wrapped.Spec()
+		if spec.Description != "authenticated description" || string(spec.Schema) != `{"type":"object","properties":{"discovered":{"type":"string"}}}` || !wrapped.ReadOnly() {
+			t.Fatalf("authenticated metadata changed by static configuration: spec=%+v read_only=%t", spec, wrapped.ReadOnly())
+		}
 	}
 }
 
-func catalogueTestRuntime(t *testing.T, routes, static []Route, backends ...string) (*Runtime, *SessionTools) {
+func catalogueTestRuntime(t *testing.T, routes []Route, backends ...string) (*Runtime, *SessionTools) {
 	t.Helper()
 	runtime, err := NewRuntime(routes, func(context.Context, session.SessionID, Route, json.RawMessage) (session.ToolResult, error) {
 		return session.NewToolResult("", "ok"), nil

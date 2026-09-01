@@ -110,6 +110,7 @@ func resolveBrokerAuthority(section *permconfig.MCPSection) (MCPAuthority, error
 	return MCPAuthority{Mode: MCPAuthorityBroker, BrokerProfiles: profiles, CallbackURL: callback}, nil
 }
 
+//nolint:gocyclo // strict broker OAuth validation keeps mutually exclusive OIDC/OAuth2 authority in one audit path.
 func validateBrokerOAuth(profile permconfig.MCPServerProfile) error {
 	oauth := profile.Auth.OAuth
 	if oauth == nil || len(oauth.Scopes) == 0 || oauth.Network == nil || oauth.Client.Mode == "" {

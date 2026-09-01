@@ -15,11 +15,14 @@
 ## Limits
 
 This is a single-process/single-replica broker proof. There is no transparent routing
-from a non-holder to a holder. One protected backend is supported; protected-backend
-reconnect is an explicit limitation. Runtime grants, transports, pending browser
-transactions, refresh operations, and downstream tokens are process-local and reset
-on restart; only the opaque enrollment identity and pending session continuation are
-durable. The event log records the normal continuation, not OAuth material.
+from a non-holder to a holder. Bundled protected backends are admitted all-or-nothing;
+independent protected-backend reconnect remains an explicit limitation. Runtime grants, transports, pending browser transactions, and refresh operations remain
+process-local and reset on restart; retained ToolHive upstream-token rows are explicitly deleted
+provider-by-provider on terminal refresh failure and backend disconnect, and session-wide after
+wrapper transport/lifecycle drain on session forget and process close. Cleanup is bounded and
+cancel-detached; failed deletion never preserves live in-memory session state and is reported only
+as a fixed generic error while its private identity remains available for idempotent retry.
+Only the opaque enrollment identity and pending session continuation are durable. The event log records the normal continuation, not OAuth material.
 `engine/adapter/eventsource` cannot reconstruct an unresolved private broker
 authorization: it returns `eventsource.ErrPrivateStateRequired`, so recovery requires
 the authoritative session snapshot. ToolHive owns upstream OAuth and its upstream HTTP
@@ -33,7 +36,11 @@ composes the exact ToolHive `EmbeddedAuthServer`, ordered `UpstreamRunConfig` li
 incoming-auth middleware, `InProcessService`, outgoing `UpstreamInject` strategy,
 immutable registry, HTTP backend client, aggregator, session factory, and vMCP server
 handler. `QueryAuthenticatedCapabilities` retains provider-scoped
-`Aggregator.QueryCapabilities`; `QueryAllCapabilities` is documented as continuing after
+`Aggregator.QueryCapabilities`; authenticated results are the sole protected catalogue source,
+while optional static `auth.oauth.tools` remains configuration-only compatibility data.
+`IDPTokenStorage` is retained only through its provider-scoped and session-wide deletion
+methods for terminal refresh, disconnect, forget, and shutdown cleanup.
+`QueryAllCapabilities` is documented as continuing after
 backend failures and cannot satisfy fail-closed atomic catalogue admission.
 
 The earlier Stage 2 duplication findings are resolved. `exchangeDownstreamCode` and
@@ -116,16 +123,13 @@ operator-declared static tool catalogue (`permconfig.MCPOAuthProfile.Tools`) for
 **Two pre-existing bugs surfaced and fixed during this run** (unrelated to the
 broker's OAuth2/session-authorization logic itself):
 
-1. `discoverRoutes` (`internal/adapter/vmcpbroker/runtime.go`) unconditionally
-   attempted a live, anonymous `initialize` against every configured backend,
-   including protected ones — fatal for any upstream (like GitHub) that 401s on
-   an unauthenticated `initialize`. Fixed with an optional static tool
-   declaration (`permconfig.MCPOAuthProfile.Tools`) that lets an operator
-   declare a protected backend's tool catalogue instead of requiring live
-   discovery; backends without a declaration keep the old live-discovery
-   behavior unchanged. A follow-up design for an *authenticated* discovery
-   bootstrap (removing the hand-transcription step) is written up at
-   `.scratch/task09/AUTHENTICATED-DISCOVERY-BOOTSTRAP-HANDOVER.md`.
+1. `discoverRoutes` (`internal/adapter/vmcpbroker/runtime.go`) previously attempted
+   a live, anonymous `initialize` against every configured backend, including protected
+   ones. The historical qualification used an operator-declared static catalogue to bypass
+   that startup failure. The shipped repair now keeps protected startup discovery disabled
+   and admits only post-consent, provider-scoped authenticated `QueryCapabilities` results;
+   static `auth.oauth.tools` remains accepted configuration but cannot enter or override the
+   protected Runtime catalogue.
 2. The GitHub App callback path documented in the original task handover
    (`/v1/mcp/authorization/callback`) collided with mecak8s's own reserved
    `/v1/` route prefix (`cmd/mecak8s/serve.go`'s `ValidateCallbackPath` call),

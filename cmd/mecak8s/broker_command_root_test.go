@@ -102,29 +102,20 @@ func TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical(t *testin
 			t.Fatalf("%s status = %d, want health route untouched", path, response.StatusCode)
 		}
 	}
+	// Workspace enrollment is a client-owned prerequisite, not a model-selected
+	// tool authorization. Drive it before the first prompt, then keep the prompt
+	// and protected tool execution on the authenticated HTTP command root.
 	sessionID := createCommandRootSession(t, client, base)
-	parked := postSSE(t, client, base+"/v1/sessions/"+sessionID+"/prompt", `{"text":"read protected data scenario10-private-input"}`)
-	assertCommandRootSafeProjection(t, parked, "scenario10-client-secret-canary", "scenario10-upstream-token-canary", "scenario10-private-input", "scenario10-private-arguments")
-	if got := fixture.calls.Load(); got != 0 {
-		t.Fatalf("protected upstream calls before callback = %d, want 0", got)
+	ownerCtx := session.WithPrincipal(t.Context(), &session.Principal{Issuer: "https://identity.example", Subject: "test", GrantType: session.GrantTypeUser})
+	enrollment, err := built.Service.ConnectWorkspaceServices(ownerCtx, session.SessionID(sessionID))
+	if err != nil || enrollment.BrowserURL == "" {
+		t.Fatalf("start workspace enrollment = %+v, %v", enrollment, err)
 	}
-	authorizationID := authorizationIDFromSSE(t, parked)
-	if got := fixture.discoveryCalls.Load(); got != 0 {
-		t.Fatalf("OIDC discovery calls before presentation = %d, want 0", got)
+	browserURL := enrollment.BrowserURL
+	if !strings.HasPrefix(browserURL, base+"/v1/mcp/broker/oauth/authorize?") || strings.Contains(browserURL, "scenario10-client-secret-canary") {
+		t.Fatalf("safe browser presentation = %q", browserURL)
 	}
-
-	presentation := mustGet(t, client, base+"/v1/sessions/"+sessionID+"/mcp-authorizations/"+authorizationID+"/presentation", "")
-	defer presentation.Body.Close()
-	var browser struct {
-		URL string `json:"url"`
-	}
-	if err := json.NewDecoder(presentation.Body).Decode(&browser); err != nil || presentation.StatusCode != http.StatusOK || browser.URL == "" {
-		t.Fatalf("presentation = status %d, url %q, err %v", presentation.StatusCode, browser.URL, err)
-	}
-	if !strings.HasPrefix(browser.URL, base+"/v1/mcp/broker/oauth/authorize?") || strings.Contains(browser.URL, "scenario10-client-secret-canary") {
-		t.Fatalf("safe browser presentation = %q", browser.URL)
-	}
-	response, err := client.Get(browser.URL)
+	response, err := client.Get(browserURL)
 	if err != nil {
 		t.Fatalf("follow browser redirect chain: %v", err)
 	}
@@ -132,25 +123,24 @@ func TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical(t *testin
 	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Request.URL.String(), base+"/exact/callback?") {
 		t.Fatalf("callback response/request = %d/%q, want exact mounted callback", response.StatusCode, response.Request.URL)
 	}
-	if got := fixture.calls.Load(); got != 0 {
-		t.Fatalf("protected upstream calls after callback but before recheck = %d, want 0", got)
-	}
 	if fixture.state == "" || fixture.verifier == "" {
 		t.Fatalf("generic OAuth2 state/verifier = %q/%q, want both present", fixture.state, fixture.verifier)
 	}
+	connected, err := built.Service.ConnectWorkspaceServices(ownerCtx, session.SessionID(sessionID))
+	if err != nil || connected.Status != "connected" {
+		t.Fatalf("complete workspace enrollment = %+v, %v", connected, err)
+	}
+	if got := fixture.calls.Load(); got != 0 {
+		t.Fatalf("protected upstream tool calls before prompt = %d, want 0", got)
+	}
 
-	continued := postSSE(t, client, base+"/v1/sessions/"+sessionID+"/mcp-authorizations/"+authorizationID+":recheck", "{}")
-	assertCommandRootSafeProjection(t, continued, "scenario10-client-secret-canary", "scenario10-upstream-token-canary", "scenario10-private-input", "scenario10-private-arguments", "scenario10-code-canary", fixture.state, fixture.verifier, browser.URL)
+	result := postSSE(t, client, base+"/v1/sessions/"+sessionID+"/prompt", `{"text":"read protected data scenario10-private-input"}`)
+	assertCommandRootSafeProjection(t, result, "scenario10-client-secret-canary", "scenario10-upstream-token-canary", "scenario10-private-input", "scenario10-private-arguments", "scenario10-code-canary", fixture.state, fixture.verifier, browserURL)
 	if got := fixture.calls.Load(); got != 1 {
-		t.Fatalf("protected upstream calls = %d, want exactly one", got)
+		t.Fatalf("protected upstream calls = %d, want exactly one; SSE=%s", got, result)
 	}
 	if got := fixture.discoveryCalls.Load(); got != 0 {
 		t.Fatalf("OIDC discovery calls = %d, want 0 for configured OAuth2", got)
-	}
-	duplicate := mustPost(t, client, base+"/v1/sessions/"+sessionID+"/mcp-authorizations/"+authorizationID+":recheck", "{}")
-	duplicate.Body.Close()
-	if duplicate.StatusCode != http.StatusNotFound || fixture.calls.Load() != 1 {
-		t.Fatalf("duplicate recheck status/calls = %d/%d, want 404 and one call", duplicate.StatusCode, fixture.calls.Load())
 	}
 
 	// The root, not a second listener, owns the complete fixed broker table.
@@ -317,21 +307,6 @@ func waitForCommandRoot(t *testing.T, client *http.Client, rawURL string) {
 		time.Sleep(10 * time.Millisecond)
 	}
 	t.Fatalf("command root did not start at %s", rawURL)
-}
-func authorizationIDFromSSE(t *testing.T, s string) string {
-	t.Helper()
-	var frame struct {
-		McpAuthorization struct {
-			AuthorizationID string `json:"authorization_id"`
-		} `json:"mcp_authorization"`
-	}
-	for _, line := range strings.Split(s, "\n") {
-		if strings.HasPrefix(line, "data: ") && json.Unmarshal([]byte(strings.TrimPrefix(line, "data: ")), &frame) == nil && frame.McpAuthorization.AuthorizationID != "" {
-			return frame.McpAuthorization.AuthorizationID
-		}
-	}
-	t.Fatalf("authorization id absent from SSE: %s", s)
-	return ""
 }
 func assertCommandRootSafeProjection(t *testing.T, s string, forbidden ...string) {
 	t.Helper()

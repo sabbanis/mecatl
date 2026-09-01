@@ -605,6 +605,11 @@ type Config struct {
 	// VMCPBroker is root-internal, process-lifetime composition state. Its
 	// per-session wrappers are never persisted or reattached after restart.
 	VMCPBroker *vmcpbroker.Runtime
+	// VMCPBrokerGeneration and VMCPBrokerBindings are the ephemeral, same-process
+	// binding fast path: a live session's binding is checked before falling back
+	// to the durable BrokerEnrollmentID identity check.
+	VMCPBrokerGeneration string
+	VMCPBrokerBindings   *vmcpbroker.BindingIndex
 
 	// ModeNeedsEngine reports whether a given session PermissionMode resolves a model
 	// that DIFFERS from the shared engine's model (ADR 0030 Layer 3) — i.e. whether a
@@ -1338,6 +1343,8 @@ func normalizeServerImplementation(value string) string {
 
 // NewService validates cfg and constructs a Service. It returns ErrConfig if
 // Engine, Store or Workspaces is nil.
+//
+//nolint:gocyclo // construction validates independent optional subsystems before publishing one Service.
 func NewService(cfg Config) (*Service, error) {
 	if cfg.Engine == nil {
 		return nil, fmt.Errorf("%w: Engine is required", ErrConfig)
@@ -2199,6 +2206,29 @@ func (s *Service) openBrokerSession(id session.SessionID, bind bool) ([]tool.Too
 		s.mu.Unlock()
 		return brokerTools, entry, func() error { return s.releaseBrokerSession(id, entry) }, nil
 	}
+}
+
+// brokerEnabled reports a persisted root binding and rejects an absent or changed
+// runtime instead of silently selecting the shared engine.
+func (s *Service) brokerEnabled(id session.SessionID, enrollmentID string) (bool, error) {
+	if s.cfg.VMCPBrokerBindings != nil {
+		generation, bound := s.cfg.VMCPBrokerBindings.Generation(id)
+		if bound {
+			if s.cfg.VMCPBroker == nil || generation != s.cfg.VMCPBrokerGeneration {
+				return false, fmt.Errorf("%w: broker configuration for persisted session %q cannot be reattached", ErrFailedPrecondition, id)
+			}
+			return true, nil
+		}
+	}
+	if enrollmentID == "" {
+		return false, nil
+	}
+	if s.cfg.VMCPBroker == nil || enrollmentID != s.brokerEnrollmentID() {
+		return false, fmt.Errorf("%w: broker configuration for persisted session %q cannot be reattached", ErrFailedPrecondition, id)
+	}
+	// A same-process CloseSession removes the ephemeral binding, but the durable
+	// enrollment identity can reattach to the still-live exact Runtime.
+	return true, nil
 }
 
 func (s *Service) releaseBrokerSession(id session.SessionID, entry *brokerSession) error {
@@ -4356,6 +4386,7 @@ const (
 	scheduleFireSessionPrefix = "sched--"
 )
 
+//nolint:gocyclo // run entry keeps authorization, recovery, lease, enrollment, and launch gates in one ordered transaction.
 func (s *Service) startRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content, purpose runPurpose, authorizationPresentation bool) (*agent.Run, error) {
 	if text == "" && len(parts) == 0 {
 		return nil, fmt.Errorf("%w: prompt text or parts is required", ErrInvalidArgument)
@@ -4393,7 +4424,7 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	if err := admitRunPurpose(sess, purpose); err != nil {
 		return nil, err
 	}
-	if s.cfg.VMCPBroker != nil && s.cfg.VMCPBroker.WorkspaceEnrollmentRequired() && !s.cfg.VMCPBroker.ProtectedCatalogueReady(id) {
+	if s.cfg.VMCPBroker != nil && s.cfg.VMCPBroker.WorkspaceEnrollmentRequired() && !s.cfg.VMCPBroker.ProtectedCatalogueReady(id) && sess.State != session.StateAuthorizing {
 		return nil, fmt.Errorf("%w: workspace services must be connected before prompting", ErrFailedPrecondition)
 	}
 	if _, _, pending := sess.FailedStepRetryPending(); pending {
@@ -4458,6 +4489,9 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	sess, interruptedAuthorization, err = s.reconcileAuthorizingPrompt(ctx, id, sess)
 	if err != nil {
 		return nil, err
+	}
+	if s.cfg.VMCPBroker != nil && s.cfg.VMCPBroker.WorkspaceEnrollmentRequired() && !s.cfg.VMCPBroker.ProtectedCatalogueReady(id) {
+		return nil, fmt.Errorf("%w: workspace services must be connected before prompting", ErrFailedPrecondition)
 	}
 	if sess.State == session.StateRunning && !interruptedAuthorization {
 		if err := sess.Abandon(); err != nil {
@@ -4821,6 +4855,10 @@ func admitRunPurpose(sess *session.Session, purpose runPurpose) error {
 //     keeps the shared engine — BYTE-IDENTICAL to pre-Phase-3.
 func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Session) (*agent.Engine, tool.Environment, error) { //nolint:gocyclo // the per-session engine/environment resolution is inherently branched
 	id := sess.ID
+	brokerBound, err := s.brokerEnabled(id, sess.BrokerEnrollmentID)
+	if err != nil {
+		return nil, tool.Environment{}, err
+	}
 	engine := s.cfg.Engine
 	s.mu.Lock()
 	se, hasEngine := s.sessionEngines[id]
@@ -4854,7 +4892,7 @@ func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Ses
 		s.mu.Lock()
 		envOverride, hasEnvOverride = s.sessionEnvironments[id]
 		s.mu.Unlock()
-	case !hasEngine && !s.needsRehydration(sess) && s.cfg.ModeNeedsEngine != nil && s.cfg.SessionEngine != nil && s.cfg.ModeNeedsEngine(sess.Mode):
+	case !hasEngine && !s.needsRehydration(sess, brokerBound) && s.cfg.ModeNeedsEngine != nil && s.cfg.SessionEngine != nil && s.cfg.ModeNeedsEngine(sess.Mode):
 		// CASE 2 (ADR 0030 Layer 3): a DEFAULT-FS session that would otherwise ride the
 		// shared engine, but its mode (plan) resolves a DIFFERENT model — promote it to a
 		// per-session factory engine. A default-FS session has the empty selector + a real
@@ -4867,7 +4905,7 @@ func (s *Service) engineAndEnvironmentFor(ctx context.Context, sess *session.Ses
 		}
 		se, hasEngine = promoted, true
 	}
-	if !hasEngine && s.needsRehydration(sess) {
+	if !hasEngine && s.needsRehydration(sess, brokerBound) {
 		// RESTART REHYDRATION (issue #55, widened in the cloud-native Phase 1): a
 		// PERSISTED session that needed a PER-SESSION engine — a non-default
 		// provider/model selector, OR the no-fs profile — has its engine + (for no-fs)
@@ -5130,9 +5168,9 @@ func (s *Service) sessionNeedsPerFactory(sel ProviderSelector, specs []mcp.Serve
 // it — a session created before a restart into a still-down proxy would
 // keep riding whatever engine gets (re)built for it without ever picking up
 // a heal that lands after the restart.
-func (s *Service) needsRehydration(sess *session.Session) bool {
+func (s *Service) needsRehydration(sess *session.Session, brokerBound bool) bool {
 	return sess.Kind == session.SessionKindDebug ||
-		sess.BrokerEnrollmentID != "" ||
+		brokerBound ||
 		s.cfg.LearnedSkills != nil && sess.Owner != nil && sess.Owner.Issuer != "" && sess.Owner.Subject != "" ||
 		sess.Profile == string(ProfileNoFS) ||
 		sess.ProviderID != "" || sess.ModelID != "" ||
@@ -5244,15 +5282,21 @@ func (s *Service) buildAndRegisterSessionEngine(ctx context.Context, sess *sessi
 			return nil, fmt.Errorf("%w: %d", ErrTooManySessionEngines, s.cfg.MaxSessionEngines)
 		}
 	}
-	if sess.BrokerEnrollmentID != "" && sess.BrokerEnrollmentID != s.brokerEnrollmentID() {
+	brokerBound, err := s.brokerEnabled(id, sess.BrokerEnrollmentID)
+	if err != nil {
+		return nil, err
+	}
+	if brokerBound && sess.BrokerEnrollmentID != "" && sess.BrokerEnrollmentID != s.brokerEnrollmentID() {
 		return nil, fmt.Errorf("%w: persisted broker session %q has an incompatible enrollment identity", ErrFailedPrecondition, id)
 	}
+	if brokerBound && sess.BrokerEnrollmentID == "" {
+		return nil, fmt.Errorf("%w: broker binding for persisted session %q has no enrollment identity", ErrFailedPrecondition, id)
+	}
 	var res SessionEngineResult
-	var err error
 	var brokerTools []tool.Tool
 	var brokerEntry *brokerSession
 	var brokerClose func() error
-	if sess.BrokerEnrollmentID != "" {
+	if brokerBound {
 		brokerTools, brokerEntry, brokerClose, err = s.reopenBrokerSession(id)
 		if err != nil {
 			return nil, fmt.Errorf("%w: broker session %q: %v", ErrFailedPrecondition, id, err)
@@ -6461,13 +6505,20 @@ func (s *Service) renewLoop(renewCtx context.Context, id session.SessionID) {
 	}
 }
 
-// onLeaseLost handles a declared lease loss: WARN, cancel the renewer's own ctx
-// (so the goroutine's WithCancel child is not leaked), cancel the session's live
-// run so a competitor can take over, and drop the hold. The cancelled run
-// terminates cleanly (StopCancelled is recoverable), so this is fail-safe.
+// onLeaseLost handles a declared lease loss: WARN, cancel and remove the held
+// lease first so any management mutation blocked under runEntryMu is unwound,
+// then serialize parked-authorization invalidation and cancel a live run. Once
+// renewal reports loss this process must not release or persist through that hold.
 func (s *Service) onLeaseLost(ctx context.Context, id session.SessionID, cause error) {
 	s.cfg.Diagnostics.Log(ctx, port.LevelWarn, "lost session lease; cancelling run",
 		"session", string(id), "owner", s.cfg.LeaseOwner, "err", cause.Error())
+	s.mu.Lock()
+	if h, ok := s.heldLeases[id]; ok {
+		h.cancel() // also cancels any mutationLeaseContext derived from this hold.
+		delete(s.heldLeases, id)
+	}
+	s.mu.Unlock()
+
 	// Once renewal reports loss, this process no longer owns durable state. Stop its
 	// local expiry worker and invalidate only its process-local Runtime handle; the
 	// new holder performs the lease-gated interruption repair on re-entry.
@@ -6477,12 +6528,6 @@ func (s *Service) onLeaseLost(ctx context.Context, id session.SessionID, cause e
 	if run, ok := s.LookupRun(id); ok {
 		run.Cancel()
 	}
-	s.mu.Lock()
-	if h, ok := s.heldLeases[id]; ok {
-		h.cancel() // release the renewer's WithCancel child (self-cancel is harmless).
-		delete(s.heldLeases, id)
-	}
-	s.mu.Unlock()
 	unlock()
 }
 

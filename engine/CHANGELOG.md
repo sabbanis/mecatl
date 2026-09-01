@@ -150,6 +150,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   unusable when precise cancellation cannot confirm removal, so a failed durable
   parking transition cannot orphan a reusable broker transaction. Added (minor).
 
+- **`session.Session.AdmitAuthorityTools`** ([ADR 0248](../docs/adr/0248-bundled-mcp-workspace-enrollment.md)) — admits the exact authenticated, frozen protected MCP tool names into a bound session before its first turn without widening any non-tool authority. Added (minor).
+
 - **Bundled workspace-enrollment domain state** ([ADR 0248](../docs/adr/0248-bundled-mcp-workspace-enrollment.md)) — `session.WorkspaceEnrollmentState`, its status vocabulary, and the `Session` start/read/clear methods persist only safe pre-prompt bundle correlation without reusing permission or MCP tool-call authorization state. Added (minor).
 
 - **Prepared post-resolution MCP continuation** —

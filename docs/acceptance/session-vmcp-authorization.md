@@ -154,10 +154,11 @@ with ToolHive's deterministic all-or-nothing bundled chain
 ### Scenario 2 — Real operator settings construct one process-owned broker
 
 The canonical loader validates one mode-specific result. In broker mode, `app.Build`
-uses the declarations to discover anonymous and curated static ToolHive definitions,
-compile private routes, and construct one process-owned Runtime plus a root-internal HTTP
-handler bundle. Protected backends without curated static definitions enter Scenario 11's
-authenticated discovery only after complete bundled enrollment. `app.Built` owns that bundle
+uses the declarations to discover anonymous ToolHive definitions, compile private routes,
+and construct one process-owned Runtime plus a root-internal HTTP handler bundle. Protected
+backends never contribute startup definitions: after Scenario 11's complete bundled
+enrollment, authenticated provider-scoped discovery is their sole catalogue source. Static
+protected declarations remain parseable comparison data only. `app.Built` owns that bundle
 and its cleanup; supported command roots mount its fixed public auth/vMCP/callback routes
 separately from owner-authenticated application controls. Broker profiles never enter the
 global credential lifecycle
@@ -168,11 +169,11 @@ global credential lifecycle
   canonical profile loader into one broker construction; no package reparses YAML or
   reads project configuration for broker authority.
   - verify: `TestSessionMCPAuthorization_Scenario2_SettingsConstructBroker`
-- AC2.2: Startup eagerly discovers anonymous backends and validates curated static
-  protected definitions, compiles private backend routes, and fails before serving on an
-  unconfigured discovery result, duplicate tool, unsupported auth mode, or failed eager
-  discovery. Protected backends requiring authenticated discovery remain unavailable until
-  Scenario 11 completes.
+- AC2.2: Startup eagerly discovers anonymous backends, compiles their private routes, and
+  fails before serving on an unconfigured discovery result, duplicate tool, unsupported auth
+  mode, or failed eager discovery. Protected backends perform no startup discovery and admit no
+  static definitions; they remain unavailable until Scenario 11 completes authenticated
+  provider-scoped discovery.
   - verify: `TestSessionMCPAuthorization_Scenario2_CompilesDiscoveredRoutes`
 - AC2.3: `app.Build` returns one owned broker handler bundle; `mecated` and `mecak8s`
   mount its fixed authorization, token, vMCP, and callback routes without overlapping
@@ -572,24 +573,25 @@ one ToolHive `UpstreamRunConfig` per protected profile in configured order; the 
 protected provider is ToolHive's bundle identity anchor. Adapter-private DNS-label provider
 keys are collision-checked and bind each vMCP backend's `UpstreamInject.ProviderName` to its
 own credential without changing model-visible tool names. Anonymous routes remain eagerly
-discovered, while a protected backend with no reviewed static catalogue is not contacted
-anonymously and its route remains deferred.
+discovered, while every protected backend is left untouched at startup and its routes remain
+deferred regardless of optional static `auth.oauth.tools` comparison data.
 
 After the complete consent chain succeeds, the broker calls ToolHive's provider-scoped
 `QueryCapabilities(ctx, backend)` separately for every protected backend. It never uses
 `QueryAllCapabilities`, whose partial-failure behavior cannot prove all-or-nothing admission.
-All candidate definitions are staged, validated, and collision-checked before one
-session-local multi-backend catalogue is atomically admitted and frozen. Denial, cancellation,
-expiry, restart, process loss, refresh failure, malformed discovery, or a tool-name collision
-admits no partial protected catalogue or executable protected route. A restart replays neither
-grants nor the catalogue and requires fresh bundled enrollment.
+All authenticated candidate definitions are staged, validated, and collision-checked before one
+session-local multi-backend catalogue is atomically admitted and frozen; they are the sole
+admitted protected definitions. Denial, cancellation, expiry, restart, process loss, refresh
+failure, malformed discovery, or a tool-name collision admits no partial protected catalogue or
+executable protected route. A restart replays neither grants nor the catalogue and requires fresh
+bundled enrollment.
 
 A process-owned cancelable context bounds ToolHive incoming-auth/JWKS work and is cancelled
 only after vMCP and authserver shutdown. Independent per-backend connect, retry, and cancel
 remain deferred because ToolHive exposes only the bundled chain. Static protected `tools:`
-remains an optional reviewed definition source, never permission to expose tools before the
-bundle succeeds; a bootstrap-discovery CLI is deferred. The supported Stage 3 deployment
-remains one process and one replica. Task 09 Mode A remains valid. Its Mode B becomes a
+remains optional parseable compatibility/comparison data but is never a definition source and
+cannot alter authenticated name, schema, description, or read-only metadata. A bootstrap-discovery
+CLI is deferred. The supported Stage 3 deployment remains one process and one replica. Task 09 Mode A remains valid. Its Mode B becomes a
 one-provider live qualification of this scenario only after Task 12; the already-recorded
 GitHub run predates Scenario 11 and is not evidence that bundled enrollment passed.
 
@@ -611,9 +613,9 @@ GitHub run predates Scenario 11 and is not evidence that bundled enrollment pass
   provider key, and each backend's `UpstreamInject.ProviderName` selects only its matching
   credential while model-visible namespaces remain unchanged.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_ProviderNameMapping`
-- AC11.5: Broker startup performs no anonymous `initialize` or `tools/list` against a
-  protected backend without a reviewed static catalogue; a 401-capable protected upstream
-  therefore cannot prevent process startup, and its route stays deferred.
+- AC11.5: Broker startup performs no anonymous `initialize` or `tools/list` against any
+  protected backend, regardless of optional static configuration; a 401-capable protected
+  upstream therefore cannot prevent process startup, and its route stays deferred.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_ProtectedStartupSkipsAnonymousDiscovery`
 - AC11.6: ToolHive incoming-auth/JWKS work uses one process-owned cancelable context; process
   close stops vMCP, closes authserver, then cancels that context without a goleak exclusion.
@@ -624,18 +626,22 @@ GitHub run predates Scenario 11 and is not evidence that bundled enrollment pass
 - AC11.8: After ToolHive reports the complete chain connected, each protected backend is
   queried separately through provider-scoped authenticated `QueryCapabilities(ctx, backend)`;
   `QueryAllCapabilities` is never used.
-  - verify: `TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedQueryCapabilities`
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedDiscovery`
 - AC11.9: Tool name, schema, description, and read-only metadata are validated for every
   candidate; collision or malformed/failing discovery against any protected, anonymous, or
-  global tool rejects the complete protected candidate set.
-  - verify: `TestBundledWorkspaceEnrollment_Scenario11_DiscoveryFailsClosed`
+  global tool rejects the complete protected candidate set. On success, the session's durable
+  capability set admits exactly the frozen protected tool names before prompting without
+  widening filesystem, direct-write, delegation-depth, provenance, or definition identity.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_DiscoveryFailsClosed`,
+    `TestSessionMCPAuthorization_Scenario10_Mecak8sCommandRootVertical`
 - AC11.10: After process loss or restart, a session exposes no prior protected grant,
   catalogue, or executable route and requires fresh complete bundled enrollment.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_RestartRequiresEnrollment`
-- AC11.11: A reviewed static protected `tools:` declaration may supply definitions, but no
-  static or discovered protected subset becomes visible or executable before the complete
-  bundle succeeds and the whole catalogue is atomically admitted.
-  - verify: `TestBundledWorkspaceEnrollment_Scenario11_NoPartialStaticCatalogue`
+- AC11.11: Static protected `tools:` declarations remain parseable comparison data only. They
+  never enter protected `Process`/`Runtime` catalogue construction and cannot replace or alter
+  the authenticated discovered name, schema, description, or read-only metadata.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_StaticCandidatesStayConfigurationOnly`,
+    `TestBundledWorkspaceEnrollment_Scenario11_TwoBackendVertical`
 - AC11.12: Mecatui renders workspace enrollment separately from permission approval, offers
   no Allow/Always/Deny controls for it, and exposes no OAuth secret, browser URL, callback
   data, code, state, verifier, token, backend-private provider key, or private user data.
@@ -671,7 +677,9 @@ The planned core surface is additive: `session.StateAuthorizing`,
 `session.PendingMCPAuthorization`, aggregate methods
 `PauseForMCPAuthorization`, `PendingMCPAuthorization`,
 `ClaimMCPAuthorization`, `AbortMCPAuthorization`, and
-`InterruptMCPAuthorization`; neutral `tool.MCPAuthorizationRequired`; optional
+`InterruptMCPAuthorization`; `session.Session.AdmitAuthorityTools` for the pre-first-turn,
+tool-only authority extension after authenticated workspace discovery; neutral
+`tool.MCPAuthorizationRequired`; optional
 `tool.DispatchSerial`; and `agent.RunOutcome`/
 `agent.RunOutcomeAuthorizationParked` with a read-only Run accessor. Exact signatures
 must preserve the behavior above, but existing `tool.Tool.Execute`, permission approval,

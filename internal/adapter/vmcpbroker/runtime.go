@@ -11,6 +11,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/url"
 	"sort"
@@ -52,7 +53,7 @@ var ErrClosed = errors.New("vmcpbroker: closed")
 // safely perform with the embedded ToolHive runtime.
 var ErrUnsupportedCapability = errors.New("vmcpbroker: unsupported capability")
 
-// ErrInvalidRoute reports invalid static broker catalogue input.
+// ErrInvalidRoute reports invalid broker catalogue input.
 var ErrInvalidRoute = errors.New("vmcpbroker: invalid route")
 
 // BindingIndex records which persisted parent sessions require broker
@@ -109,6 +110,9 @@ func (i *BindingIndex) Unbind(id session.SessionID) {
 var ErrInvalidControlTarget = errors.New("vmcpbroker: invalid control target")
 
 var errDownstreamRefreshRejected = errors.New("vmcpbroker: downstream refresh rejected")
+var errAuthorizationCleanup = errors.New("vmcpbroker: authorization cleanup failed")
+
+const tokenCleanupTimeout = 5 * time.Second
 
 const profileAuthOAuth = "oauth"
 
@@ -128,7 +132,7 @@ type Route struct {
 	Protected bool
 }
 
-// ToolDefinition is the neutral result of ToolHive's static tool discovery.
+// ToolDefinition is the neutral result of MCP tool discovery.
 // ToolHive-specific values must be reduced to this form before they reach the
 // Runtime catalogue.
 type ToolDefinition struct {
@@ -309,12 +313,161 @@ type AuthenticatedCapabilities struct {
 	SupportsSampling bool
 }
 
-type upstreamCredentialReader interface {
-	GetValidTokens(context.Context, string, string) (*upstreamtoken.UpstreamCredential, error)
+type upstreamTokenService interface {
+	upstreamtoken.Service
+	upstreamtoken.TokenReader
+}
+
+type upstreamTokenDeleter interface {
+	DeleteUpstreamTokens(context.Context, string) error
+	DeleteUpstreamTokensForProvider(context.Context, string, string) error
+}
+
+type cleaningUpstreamTokens struct {
+	service upstreamTokenService
+	cleanup func(context.Context, ToolHiveAuthSessionID, []string)
+	deleter upstreamTokenDeleter
+}
+
+func (s *cleaningUpstreamTokens) GetValidTokens(ctx context.Context, authSession, providerName string) (*upstreamtoken.UpstreamCredential, error) {
+	credential, err := s.service.GetValidTokens(ctx, authSession, providerName)
+	if err != nil && (errors.Is(err, upstreamtoken.ErrNoRefreshToken) || errors.Is(err, upstreamtoken.ErrRefreshFailed)) {
+		s.cleanupProviders(ctx, ToolHiveAuthSessionID(authSession), []string{providerName})
+	}
+	return credential, err
+}
+
+func (s *cleaningUpstreamTokens) GetAllUpstreamCredentials(ctx context.Context, authSession string) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
+	credentials, failed, err := s.service.GetAllUpstreamCredentials(ctx, authSession)
+	s.cleanupProviders(ctx, ToolHiveAuthSessionID(authSession), failed)
+	return credentials, failed, err
+}
+
+func (s *cleaningUpstreamTokens) cleanupProviders(parent context.Context, authSession ToolHiveAuthSessionID, providers []string) {
+	if s == nil || authSession == "" || len(providers) == 0 {
+		return
+	}
+	if s.cleanup != nil {
+		s.cleanup(parent, authSession, providers)
+		return
+	}
+	if s.deleter == nil {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), tokenCleanupTimeout)
+	defer cancel()
+	for _, providerName := range providers {
+		if providerName == "" {
+			continue
+		}
+		_ = s.deleter.DeleteUpstreamTokensForProvider(ctx, string(authSession), providerName)
+	}
+}
+
+type tokenCleanupTarget struct {
+	owner       session.SessionID
+	authSession ToolHiveAuthSessionID
+	provider    string
+}
+
+func runTokenCleanupWithContext(parent context.Context, deleter upstreamTokenDeleter, targets []tokenCleanupTarget) []tokenCleanupTarget {
+	if len(targets) == 0 {
+		return nil
+	}
+	if deleter == nil {
+		return append([]tokenCleanupTarget(nil), targets...)
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(parent), tokenCleanupTimeout)
+	defer cancel()
+	failed := make([]tokenCleanupTarget, 0)
+	for _, target := range targets {
+		var err error
+		if target.provider == "" {
+			err = deleter.DeleteUpstreamTokens(ctx, string(target.authSession))
+		} else {
+			err = deleter.DeleteUpstreamTokensForProvider(ctx, string(target.authSession), target.provider)
+		}
+		if err != nil && !errors.Is(err, storage.ErrNotFound) {
+			failed = append(failed, target)
+		}
+	}
+	return failed
+}
+
+func (r *Runtime) cleanupProviderTokens(parent context.Context, authSession ToolHiveAuthSessionID, providers []string) {
+	targets := make([]tokenCleanupTarget, 0, len(providers))
+	for _, provider := range providers {
+		if provider != "" {
+			targets = append(targets, tokenCleanupTarget{authSession: authSession, provider: provider})
+		}
+	}
+	_ = r.cleanupTokenTargetsWithContext(parent, targets)
+}
+
+func (r *Runtime) cleanupTokenTargets(targets []tokenCleanupTarget) error {
+	return r.cleanupTokenTargetsWithContext(context.Background(), targets)
+}
+
+func (r *Runtime) cleanupTokenTargetsWithContext(parent context.Context, targets []tokenCleanupTarget) error {
+	if len(targets) == 0 {
+		return nil
+	}
+	r.tokenCleanupMu.Lock()
+	defer r.tokenCleanupMu.Unlock()
+	r.mu.RLock()
+	deleter := r.tokenDeleter
+	r.mu.RUnlock()
+	failed := runTokenCleanupWithContext(parent, deleter, targets)
+	failedSet := make(map[tokenCleanupTarget]struct{}, len(failed))
+	for _, target := range failed {
+		failedSet[target] = struct{}{}
+	}
+	r.mu.Lock()
+	for _, target := range failed {
+		r.tokenCleanup[target] = struct{}{}
+	}
+	for _, target := range targets {
+		if _, failed := failedSet[target]; failed {
+			continue
+		}
+		for retained := range r.tokenCleanup {
+			if tokenCleanupCovers(target, retained) {
+				delete(r.tokenCleanup, retained)
+			}
+		}
+	}
+	r.mu.Unlock()
+	if len(failed) > 0 {
+		return errAuthorizationCleanup
+	}
+	return nil
+}
+
+func tokenCleanupCovers(completed, retained tokenCleanupTarget) bool {
+	if completed.authSession != retained.authSession {
+		return false
+	}
+	return completed.provider == "" || completed.provider == retained.provider
+}
+
+func (r *Runtime) retryTokenCleanup(owner session.SessionID, all bool) error {
+	r.mu.RLock()
+	targets := make([]tokenCleanupTarget, 0, len(r.tokenCleanup))
+	for target := range r.tokenCleanup {
+		if all || target.owner == owner {
+			targets = append(targets, target)
+		}
+	}
+	r.mu.RUnlock()
+	return r.cleanupTokenTargets(targets)
 }
 
 type capabilityQuerier interface {
 	QueryCapabilities(context.Context, vmcp.Backend) (*aggregator.BackendCapabilities, error)
+}
+
+type upstreamCredentialReader interface {
+	GetValidTokens(context.Context, string, string) (*upstreamtoken.UpstreamCredential, error)
 }
 
 type authenticatedDiscovery struct {
@@ -326,14 +479,15 @@ type authenticatedDiscovery struct {
 
 // Process owns a broker Runtime and its root-internal handlers.
 type Process struct {
-	Runtime                 *Runtime
-	Handlers                HandlerBundle
-	deferredProtectedRoutes []Route
-	discovery               *authenticatedDiscovery
+	Runtime   *Runtime
+	Handlers  HandlerBundle
+	discovery *authenticatedDiscovery
 }
 
 // QueryAuthenticatedCapabilities performs exactly one provider-scoped ToolHive
 // capability query. Provider names and credentials stay inside this adapter.
+//
+//nolint:gocyclo // fail-closed validation keeps private credential use and neutral projection in one auditable boundary.
 func (p *Process) QueryAuthenticatedCapabilities(ctx context.Context, authSession ToolHiveAuthSessionID, backendID string) (AuthenticatedCapabilities, error) {
 	if p == nil || p.discovery == nil || authSession == "" || backendID == "" {
 		return AuthenticatedCapabilities{}, ErrInvalidControlTarget
@@ -348,7 +502,10 @@ func (p *Process) QueryAuthenticatedCapabilities(ctx context.Context, authSessio
 		return AuthenticatedCapabilities{}, ErrInvalidControlTarget
 	}
 	credential, err := discovery.tokens.GetValidTokens(ctx, string(authSession), providerName)
-	if err != nil || credential == nil || credential.AccessToken == "" {
+	if err != nil {
+		return AuthenticatedCapabilities{}, ErrAuthenticatedDiscovery
+	}
+	if credential == nil || credential.AccessToken == "" {
 		return AuthenticatedCapabilities{}, ErrAuthenticatedDiscovery
 	}
 	queryCtx := toolhiveauth.WithIdentity(ctx, &toolhiveauth.Identity{
@@ -379,14 +536,10 @@ func (p *Process) QueryAuthenticatedCapabilities(ctx context.Context, authSessio
 	return result, nil
 }
 
-func (r *Runtime) configureAuthenticatedDiscovery(query func(context.Context, ToolHiveAuthSessionID, string) (AuthenticatedCapabilities, error), static []Route) {
+func (r *Runtime) configureAuthenticatedDiscovery(query func(context.Context, ToolHiveAuthSessionID, string) (AuthenticatedCapabilities, error)) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	r.authenticatedQuery = query
-	r.protectedStatic = make([]Route, len(static))
-	for i, route := range static {
-		r.protectedStatic[i] = copyRoute(route)
-	}
 }
 
 func containsPrivateCapabilityMaterial(candidate vmcp.Tool, privateValues []string) bool {
@@ -500,7 +653,13 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		return nil, err
 	}
 	reader := upstreamtoken.NewInProcessService(auth.IDPTokenStorage(), auth.UpstreamTokenRefresher())
-	incoming, _, authInfo, err := factory.NewIncomingAuthMiddleware(authCtx, &vmcpconfig.IncomingAuthConfig{Type: "oidc", OIDC: &vmcpconfig.OIDCConfig{Issuer: issuer, Audience: issuer, Resource: issuer, JWKSURL: issuer + "/.well-known/jwks.json", CABundlePath: config.caBundlePathForTesting}}, "mecatl-broker", nil, reader, auth.KeyProvider())
+	var runtime *Runtime
+	cleaningReader := &cleaningUpstreamTokens{service: reader, cleanup: func(ctx context.Context, authSession ToolHiveAuthSessionID, providers []string) {
+		if runtime != nil {
+			runtime.cleanupProviderTokens(ctx, authSession, providers)
+		}
+	}}
+	incoming, _, authInfo, err := factory.NewIncomingAuthMiddleware(authCtx, &vmcpconfig.IncomingAuthConfig{Type: "oidc", OIDC: &vmcpconfig.OIDCConfig{Issuer: issuer, Audience: issuer, Resource: issuer, JWKSURL: issuer + "/.well-known/jwks.json", CABundlePath: config.caBundlePathForTesting}}, "mecatl-broker", nil, cleaningReader, auth.KeyProvider())
 	if err != nil {
 		return fail(err)
 	}
@@ -532,7 +691,7 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		_ = server.Stop(context.Background())
 		return fail(err)
 	}
-	runtime, err := NewToolHiveStreamingHTTPRuntime(routes, issuer+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: issuer, Resource: issuer, AuthorizationEndpoint: issuer + "/oauth/authorize", TokenEndpoint: issuer + "/oauth/token", CallbackURL: callback.String(), ProtectedBackends: construction.protectedBackends, HTTPClient: config.httpClient, Diagnostics: diag}, 5*time.Minute)
+	runtime, err = NewToolHiveStreamingHTTPRuntime(routes, issuer+"/mcp", ToolHiveRuntimeConfig{AuthServer: auth, Storage: store, Issuer: issuer, Resource: issuer, AuthorizationEndpoint: issuer + "/oauth/authorize", TokenEndpoint: issuer + "/oauth/token", CallbackURL: callback.String(), ProtectedBackends: construction.protectedBackends, HTTPClient: config.httpClient, Diagnostics: diag}, 5*time.Minute)
 	if err != nil {
 		_ = server.Stop(context.Background())
 		return fail(err)
@@ -541,22 +700,27 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	installToolHiveProcessClosers(runtime, func() error { return server.Stop(context.Background()) }, auth.Close, cancelAuth)
 	embedded := http.StripPrefix(brokerBasePath, auth.Handler())
 	process := &Process{
-		Runtime:                 runtime,
-		Handlers:                HandlerBundle{Authorization: embedded, Token: embedded, UpstreamCallback: embedded, Discovery: embedded, JWKS: embedded, ProtectedResource: authInfo, VMCP: vmcpHandler, Callback: CallbackHandler(runtime.Callback)},
-		deferredProtectedRoutes: construction.deferredProtectedRoutes,
-		discovery:               &authenticatedDiscovery{capabilities: capabilityAggregator, backends: backendRegistry, tokens: reader, providerNames: construction.providerNames},
+		Runtime:  runtime,
+		Handlers: HandlerBundle{Authorization: embedded, Token: embedded, UpstreamCallback: embedded, Discovery: embedded, JWKS: embedded, ProtectedResource: authInfo, VMCP: vmcpHandler, Callback: CallbackHandler(runtime.Callback)},
+		discovery: &authenticatedDiscovery{
+			capabilities:  capabilityAggregator,
+			backends:      backendRegistry,
+			tokens:        cleaningReader,
+			providerNames: construction.providerNames,
+		},
 	}
-	runtime.configureAuthenticatedDiscovery(process.QueryAuthenticatedCapabilities, construction.deferredProtectedRoutes)
+	runtime.tokenDeleter = auth.IDPTokenStorage()
+	runtime.providerNames = maps.Clone(construction.providerNames)
+	runtime.configureAuthenticatedDiscovery(process.QueryAuthenticatedCapabilities)
 	return process, nil
 }
 
 type protectedToolHiveConstruction struct {
-	upstreams               []authserver.UpstreamRunConfig
-	backends                []vmcp.Backend
-	protectedBackends       []string
-	providerNames           map[string]string
-	anonymousProfiles       []permconfig.MCPServerProfile
-	deferredProtectedRoutes []Route
+	upstreams         []authserver.UpstreamRunConfig
+	backends          []vmcp.Backend
+	protectedBackends []string
+	providerNames     map[string]string
+	anonymousProfiles []permconfig.MCPServerProfile
 }
 
 // newProtectedToolHiveConstruction preserves configured protected-profile order:
@@ -570,8 +734,6 @@ func newProtectedToolHiveConstruction(profiles []permconfig.MCPServerProfile, is
 		anonymousProfiles: make([]permconfig.MCPServerProfile, 0),
 	}
 	providers := make(map[string]string)
-	protectedProfiles := make([]permconfig.MCPServerProfile, 0)
-	staticCandidates := make([]ToolDefinition, 0)
 	for _, profile := range profiles {
 		backend := vmcp.Backend{ID: profile.Name, Name: profile.Name, BaseURL: profile.URL, TransportType: "streamable-http"}
 		if profile.Auth.Mode == profileAuthOAuth {
@@ -587,29 +749,14 @@ func newProtectedToolHiveConstruction(profiles []permconfig.MCPServerProfile, is
 			}
 			providers[provider] = profile.Name
 			construction.providerNames[profile.Name] = provider
-			protectedProfiles = append(protectedProfiles, profile)
 			construction.upstreams = append(construction.upstreams, newUpstreamRunConfig(profile, provider, issuer, options))
 			construction.protectedBackends = append(construction.protectedBackends, profile.Name)
 			backend.AuthConfig = &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: provider}}
-			for _, candidate := range profile.Auth.OAuth.Tools {
-				staticCandidates = append(staticCandidates, ToolDefinition{
-					BackendID:   profile.Name,
-					Name:        "mcp__" + profile.Name + "__" + candidate.Name,
-					Description: candidate.Description,
-					Schema:      append(json.RawMessage(nil), candidate.InputSchema...),
-					ReadOnly:    candidate.ReadOnly,
-				})
-			}
 		} else {
 			construction.anonymousProfiles = append(construction.anonymousProfiles, profile)
 		}
 		construction.backends = append(construction.backends, backend)
 	}
-	deferred, err := CompileProfiles(protectedProfiles, staticCandidates)
-	if err != nil {
-		return protectedToolHiveConstruction{}, fmt.Errorf("vmcpbroker: compile deferred protected tools: %w", err)
-	}
-	construction.deferredProtectedRoutes = deferred
 	return construction, nil
 }
 
@@ -807,38 +954,42 @@ func (p *Process) Close() error {
 
 // Runtime owns the stable catalogue and opens session-local executable wrappers.
 type Runtime struct {
-	mu                 sync.RWMutex
-	routes             []Route
-	caller             Caller
-	opener             sessionOpener
-	sessions           map[session.SessionID]*SessionTools
-	lifecycles         map[session.SessionID]*sessionLifecycle
-	tombstones         map[session.SessionID]struct{}
-	authorizeEndpoint  string
-	callbackURL        string
-	transactionTTL     time.Duration
-	transactions       map[controlTarget]authorizationTransaction
-	authorizations     map[controlTarget]string
-	grants             map[controlTarget]downstreamGrant
-	disconnected       map[controlTarget]struct{}
-	refreshes          map[controlTarget]*refreshOperation
-	oauthBackend       string
-	protectedBackends  []string
-	protectedStatic    []Route
-	authenticatedQuery func(context.Context, ToolHiveAuthSessionID, string) (AuthenticatedCapabilities, error)
-	clientID           string
-	httpClient         *http.Client
-	tokenEndpoint      string
-	resource           string
-	diagnostics        port.Diagnostics
-	now                func() time.Time
-	lifecycleCtx       context.Context
-	cancelLifecycle    context.CancelFunc
-	sharedClosers      []namedCloser
-	authContext        context.Context
-	closeOnce          sync.Once
-	closeErr           error
-	closed             bool
+	mu                  sync.RWMutex
+	routes              []Route
+	caller              Caller
+	opener              sessionOpener
+	sessions            map[session.SessionID]*SessionTools
+	lifecycles          map[session.SessionID]*sessionLifecycle
+	tombstones          map[session.SessionID]struct{}
+	authorizeEndpoint   string
+	callbackURL         string
+	transactionTTL      time.Duration
+	transactions        map[controlTarget]authorizationTransaction
+	authorizations      map[controlTarget]string
+	grants              map[controlTarget]downstreamGrant
+	disconnected        map[controlTarget]struct{}
+	refreshes           map[controlTarget]*refreshOperation
+	oauthBackend        string
+	protectedBackends   []string
+	workspaceEnrollment bool
+	providerNames       map[string]string
+	tokenDeleter        upstreamTokenDeleter
+	tokenCleanupMu      sync.Mutex
+	tokenCleanup        map[tokenCleanupTarget]struct{}
+	authenticatedQuery  func(context.Context, ToolHiveAuthSessionID, string) (AuthenticatedCapabilities, error)
+	clientID            string
+	httpClient          *http.Client
+	tokenEndpoint       string
+	resource            string
+	diagnostics         port.Diagnostics
+	now                 func() time.Time
+	lifecycleCtx        context.Context
+	cancelLifecycle     context.CancelFunc
+	sharedClosers       []namedCloser
+	authContext         context.Context
+	closeOnce           sync.Once
+	closeErr            error
+	closed              bool
 }
 
 // ToolHiveRuntimeConfig binds the broker to its already-composed embedded
@@ -907,9 +1058,10 @@ type refreshOperation struct {
 }
 
 type sessionLifecycle struct {
-	ctx    context.Context
-	cancel context.CancelFunc
-	wg     sync.WaitGroup
+	ctx          context.Context
+	cancel       context.CancelFunc
+	wg           sync.WaitGroup
+	authSessions map[ToolHiveAuthSessionID]map[string]struct{}
 }
 
 type namedCloser struct {
@@ -970,22 +1122,25 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 	sort.Slice(copied, func(i, j int) bool { return copied[i].Tool.Name < copied[j].Tool.Name })
 	lifecycleCtx, cancelLifecycle := context.WithCancel(context.Background())
 	return &Runtime{
-		routes:            copied,
-		caller:            caller,
-		sessions:          make(map[session.SessionID]*SessionTools),
-		lifecycles:        make(map[session.SessionID]*sessionLifecycle),
-		tombstones:        make(map[session.SessionID]struct{}),
-		transactions:      make(map[controlTarget]authorizationTransaction),
-		authorizations:    make(map[controlTarget]string),
-		grants:            make(map[controlTarget]downstreamGrant),
-		disconnected:      make(map[controlTarget]struct{}),
-		refreshes:         make(map[controlTarget]*refreshOperation),
-		oauthBackend:      oauthBackend,
-		protectedBackends: protectedBackends,
-		diagnostics:       port.NopDiagnostics{},
-		now:               time.Now,
-		lifecycleCtx:      lifecycleCtx,
-		cancelLifecycle:   cancelLifecycle,
+		routes:              copied,
+		caller:              caller,
+		sessions:            make(map[session.SessionID]*SessionTools),
+		lifecycles:          make(map[session.SessionID]*sessionLifecycle),
+		tombstones:          make(map[session.SessionID]struct{}),
+		transactions:        make(map[controlTarget]authorizationTransaction),
+		authorizations:      make(map[controlTarget]string),
+		grants:              make(map[controlTarget]downstreamGrant),
+		disconnected:        make(map[controlTarget]struct{}),
+		refreshes:           make(map[controlTarget]*refreshOperation),
+		oauthBackend:        oauthBackend,
+		protectedBackends:   protectedBackends,
+		workspaceEnrollment: len(protectedBackends) > 0,
+		providerNames:       make(map[string]string),
+		tokenCleanup:        make(map[tokenCleanupTarget]struct{}),
+		diagnostics:         port.NopDiagnostics{},
+		now:                 time.Now,
+		lifecycleCtx:        lifecycleCtx,
+		cancelLifecycle:     cancelLifecycle,
 	}, nil
 }
 
@@ -1036,7 +1191,8 @@ func NewToolHiveRuntime(routes []Route, caller Caller, config ToolHiveRuntimeCon
 	if err != nil {
 		return nil, err
 	}
-	if len(config.ProtectedBackends) > 0 {
+	runtime.workspaceEnrollment = len(config.ProtectedBackends) > 0
+	if runtime.workspaceEnrollment {
 		runtime.protectedBackends = append([]string(nil), config.ProtectedBackends...)
 		runtime.oauthBackend = runtime.protectedBackends[0]
 	}
@@ -1354,7 +1510,7 @@ func (r *Runtime) OpenSession(id session.SessionID) (*SessionTools, error) {
 	}
 	r.sessions[id] = opened
 	lifecycleCtx, cancel := context.WithCancel(r.lifecycleCtx)
-	r.lifecycles[id] = &sessionLifecycle{ctx: lifecycleCtx, cancel: cancel}
+	r.lifecycles[id] = &sessionLifecycle{ctx: lifecycleCtx, cancel: cancel, authSessions: make(map[ToolHiveAuthSessionID]map[string]struct{})}
 	r.mu.Unlock()
 	return opened, nil
 }
@@ -1532,9 +1688,30 @@ func (r *Runtime) Disconnect(sessionID session.SessionID, backendID string) erro
 	if refresh != nil {
 		refresh.cancel()
 	}
+	providerName := r.providerNames[backendID]
+	targets := make([]tokenCleanupTarget, 0)
+	lifecycle := r.lifecycles[sessionID]
+	if lifecycle != nil && providerName != "" {
+		for authSession, providers := range lifecycle.authSessions {
+			if _, ok := providers[providerName]; ok {
+				targets = append(targets, tokenCleanupTarget{owner: sessionID, authSession: authSession, provider: providerName})
+			}
+		}
+	}
 	r.mu.Unlock()
 	if refresh != nil {
 		<-refresh.done
+	}
+	cleanupErr := r.cleanupTokenTargets(targets)
+	if cleanupErr == nil && lifecycle != nil {
+		r.mu.Lock()
+		for _, target := range targets {
+			delete(lifecycle.authSessions[target.authSession], providerName)
+		}
+		r.mu.Unlock()
+	}
+	if cleanupErr != nil {
+		return errAuthorizationCleanup
 	}
 	return nil
 }
@@ -1604,10 +1781,28 @@ func (r *Runtime) Callback(ctx context.Context, code, state string) error {
 	if len(backends) == 0 {
 		backends = []string{target.backendID}
 	}
+	r.recordAuthSessionLocked(target.sessionID, grant.authSession, backends)
 	for _, backend := range backends {
 		r.grants[controlTarget{sessionID: target.sessionID, backendID: backend}] = grant
 	}
 	return nil
+}
+
+func (r *Runtime) recordAuthSessionLocked(id session.SessionID, authSession ToolHiveAuthSessionID, backends []string) {
+	lifecycle := r.lifecycles[id]
+	if lifecycle == nil || authSession == "" {
+		return
+	}
+	providers := lifecycle.authSessions[authSession]
+	if providers == nil {
+		providers = make(map[string]struct{})
+		lifecycle.authSessions[authSession] = providers
+	}
+	for _, backend := range backends {
+		if providerName := r.providerNames[backend]; providerName != "" {
+			providers[providerName] = struct{}{}
+		}
+	}
 }
 
 func (r *Runtime) beginOperation(parent context.Context, id session.SessionID) (context.Context, func(), error) {
@@ -1840,16 +2035,17 @@ func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, grant downstrea
 // work, then removes its state after its wrappers have drained. It is idempotent.
 func (r *Runtime) ForgetSession(id session.SessionID) error {
 	opened, lifecycle, err := r.tombstoneAndCancel(id, nil)
-	if err != nil || opened == nil {
-		if errors.Is(err, ErrInvalidControlTarget) {
-			return nil
-		}
+	if err != nil && !errors.Is(err, ErrInvalidControlTarget) {
 		return err
+	}
+	if opened == nil {
+		return r.retryTokenCleanup(id, false)
 	}
 	closeErr := opened.closeOwned()
 	lifecycle.wg.Wait()
+	cleanupErr := r.cleanupLifecycleTokens(id, lifecycle)
 	r.finishForget(id, opened)
-	return closeErr
+	return errors.Join(closeErr, cleanupErr)
 }
 
 func (r *Runtime) tombstoneAndCancel(id session.SessionID, owner *SessionTools) (*SessionTools, *sessionLifecycle, error) {
@@ -1874,6 +2070,19 @@ func (r *Runtime) tombstoneAndCancel(id session.SessionID, owner *SessionTools) 
 		}
 	}
 	return opened, lifecycle, nil
+}
+
+func (r *Runtime) cleanupLifecycleTokens(id session.SessionID, lifecycle *sessionLifecycle) error {
+	if lifecycle == nil {
+		return nil
+	}
+	r.mu.RLock()
+	targets := make([]tokenCleanupTarget, 0, len(lifecycle.authSessions))
+	for authSession := range lifecycle.authSessions {
+		targets = append(targets, tokenCleanupTarget{owner: id, authSession: authSession})
+	}
+	r.mu.RUnlock()
+	return r.cleanupTokenTargets(targets)
 }
 
 func (r *Runtime) finishForget(id session.SessionID, owner *SessionTools) {
@@ -2022,14 +2231,18 @@ func (r *Runtime) Close() error {
 		r.closed = true
 		r.cancelLifecycle()
 		sessions := make([]*SessionTools, 0, len(r.sessions))
-		lifecycles := make([]*sessionLifecycle, 0, len(r.lifecycles))
+		type lifecycleEntry struct {
+			id        session.SessionID
+			lifecycle *sessionLifecycle
+		}
+		lifecycles := make([]lifecycleEntry, 0, len(r.lifecycles))
 		for id, opened := range r.sessions {
 			r.tombstones[id] = struct{}{}
 			sessions = append(sessions, opened)
 		}
-		for _, lifecycle := range r.lifecycles {
+		for id, lifecycle := range r.lifecycles {
 			lifecycle.cancel()
-			lifecycles = append(lifecycles, lifecycle)
+			lifecycles = append(lifecycles, lifecycleEntry{id: id, lifecycle: lifecycle})
 		}
 		for _, transaction := range r.transactions {
 			if transaction.cancel != nil {
@@ -2044,9 +2257,11 @@ func (r *Runtime) Close() error {
 		for _, opened := range sessions {
 			r.closeErr = errors.Join(r.closeErr, opened.closeOwned())
 		}
-		for _, lifecycle := range lifecycles {
-			lifecycle.wg.Wait()
+		for _, entry := range lifecycles {
+			entry.lifecycle.wg.Wait()
+			_ = r.cleanupLifecycleTokens(entry.id, entry.lifecycle)
 		}
+		r.closeErr = errors.Join(r.closeErr, r.retryTokenCleanup("", true))
 		r.mu.Lock()
 		r.sessions = make(map[session.SessionID]*SessionTools)
 		r.lifecycles = make(map[session.SessionID]*sessionLifecycle)
@@ -2101,6 +2316,7 @@ func (s *SessionTools) Close() error {
 			return
 		}
 		lifecycle.wg.Wait()
+		s.closeErr = errors.Join(s.closeErr, s.runtime.cleanupLifecycleTokens(s.sessionID, lifecycle))
 		s.runtime.finishForget(s.sessionID, s)
 	})
 	return s.closeErr

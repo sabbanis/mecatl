@@ -418,12 +418,9 @@ func TestInvariant_restarted_authorization_never_executes_old_call(t *testing.T)
 	restarted := brokerRegistryService(t, fixture.store, fresh, nil)
 	t.Cleanup(restarted.Close)
 	run, err := restarted.StartRunContent(context.Background(), fixture.id, "new prompt", nil)
-	if err != nil || run == nil {
-		t.Fatalf("StartRunContent after restart = %v, %v", run, err)
+	if run != nil || !errors.Is(err, ErrFailedPrecondition) {
+		t.Fatalf("StartRunContent after restart = %v, %v; want enrollment precondition", run, err)
 	}
-	for range run.Events() {
-	}
-	restarted.FinishRun(fixture.id, run)
 	assertAuthorizationPaired(t, fixture.store, fixture.id, "restart")
 	if fixture.calls != 0 {
 		t.Fatalf("original protected caller ran %d times after restart", fixture.calls)
@@ -446,12 +443,9 @@ func TestSessionMCPAuthorization_Scenario8_NewRuntimeIsNotContinuity(t *testing.
 	restarted := brokerRegistryService(t, fixture.store, fresh, nil)
 	t.Cleanup(restarted.Close)
 	run, err := restarted.StartRunContent(context.Background(), fixture.id, "new prompt", nil)
-	if err != nil || run == nil {
-		t.Fatalf("StartRunContent with a fresh Runtime = %v, %v", run, err)
+	if run != nil || !errors.Is(err, ErrFailedPrecondition) {
+		t.Fatalf("StartRunContent with a fresh Runtime = %v, %v; want enrollment precondition", run, err)
 	}
-	for range run.Events() {
-	}
-	restarted.FinishRun(fixture.id, run)
 	assertAuthorizationPaired(t, fixture.store, fixture.id, "restart")
 	if fixture.calls != 0 {
 		t.Fatalf("original Runtime executed %d calls after replacement", fixture.calls)

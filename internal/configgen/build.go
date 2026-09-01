@@ -413,7 +413,7 @@ func mcpSubtree(docs Docs) *Subtree {
 	return &Subtree{
 		Key:          "mcp",
 		Tier:         TierOperator,
-		Doc:          "Strict OPERATOR-TIER Streamable HTTP MCP authority configuration. Command roots default to broker for mecak8s and global for mecated, embedded mecatui, and mecatequi (which rejects broker mode); existing mecak8s deployments must set mode: global to preserve direct profiles. Broker mode permits anonymous backends and at most one OAuth backend, whose broker.callback_url is required exactly when it is present. Broker OAuth defaults to OIDC discovery; its explicit generic OAuth2 variant is broker-only, requires exact HTTPS authorization/token endpoints, and rejects ToolHive-unenforceable additional/private origin and redirect controls. Authentication is a closed none/static_bearer/oauth union. All secret-shaped values are MECATL_* environment references, never values in YAML. Project mcp blocks are ignored with a value-free warning.",
+		Doc:          "Strict OPERATOR-TIER Streamable HTTP MCP authority configuration. Command roots default to broker for mecak8s and global for mecated, embedded mecatui, and mecatequi (which rejects broker mode); existing mecak8s deployments must set mode: global to preserve direct profiles. Broker mode permits anonymous backends plus ordered OAuth-protected backends enrolled as one ToolHive bundle. Broker OAuth defaults to OIDC discovery; its explicit generic OAuth2 variant is broker-only, requires exact HTTPS authorization/token endpoints, and rejects ToolHive-unenforceable additional/private origin and redirect controls. Static protected tools remain optional compatibility/comparison data and never override authenticated discovery. Authentication is a closed none/static_bearer/oauth union. All secret-shaped values are MECATL_* environment references, never values in YAML. Project mcp blocks are ignored with a value-free warning.",
 		CommentedOut: true,
 		Fields:       fields,
 		Example: []string{
@@ -443,6 +443,12 @@ func mcpSubtree(docs Docs) *Subtree {
 			"              secret_env: MECATL_GITHUB_MCP_CLIENT_SECRET",
 			"          scopes: [repo]",
 			"          network: {}",
+			"          # Optional compatibility/comparison metadata; authenticated discovery remains authoritative.",
+			"          tools:",
+			"            - name: get_me",
+			"              description: Read the authenticated user",
+			"              input_schema: {type: object}",
+			"              read_only: true",
 			"  # Existing mecak8s direct/global profiles must instead set mode: global.",
 			"  # Separate global-only vocabulary (not part of the broker example above):",
 			"  # static_bearer:",

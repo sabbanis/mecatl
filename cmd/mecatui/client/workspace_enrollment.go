@@ -11,10 +11,14 @@ import (
 type WorkspaceEnrollmentStatus string
 
 const (
-	WorkspaceEnrollmentPending   WorkspaceEnrollmentStatus = "pending"
+	// WorkspaceEnrollmentPending means bundled consent is still in progress.
+	WorkspaceEnrollmentPending WorkspaceEnrollmentStatus = "pending"
+	// WorkspaceEnrollmentConnected means every provider connected and discovery succeeded.
 	WorkspaceEnrollmentConnected WorkspaceEnrollmentStatus = "connected"
+	// WorkspaceEnrollmentCancelled means the client cancelled the whole bundle.
 	WorkspaceEnrollmentCancelled WorkspaceEnrollmentStatus = "cancelled"
-	WorkspaceEnrollmentFailed    WorkspaceEnrollmentStatus = "failed"
+	// WorkspaceEnrollmentFailed means the whole bundle failed without partial admission.
+	WorkspaceEnrollmentFailed WorkspaceEnrollmentStatus = "failed"
 )
 
 // WorkspaceEnrollment contains only whole-bundle progress. PresentationURL is
@@ -34,6 +38,7 @@ type WorkspaceEnrollmentController interface {
 	CancelWorkspaceEnrollment(context.Context, string, string) (WorkspaceEnrollment, error)
 }
 
+// ConnectWorkspaceServices starts or observes the caller-owned enrollment bundle.
 func (c *Client) ConnectWorkspaceServices(ctx context.Context, sessionID string) (WorkspaceEnrollment, error) {
 	response, err := c.svc.ConnectWorkspaceServices(ctx, &mecatlv1.WorkspaceEnrollmentConnectRequest{SessionId: sessionID})
 	if err != nil {
@@ -42,6 +47,7 @@ func (c *Client) ConnectWorkspaceServices(ctx context.Context, sessionID string)
 	return workspaceEnrollmentFrom(response), nil
 }
 
+// RetryWorkspaceEnrollment replaces one exact failed or cancelled bundle attempt.
 func (c *Client) RetryWorkspaceEnrollment(ctx context.Context, sessionID, enrollmentID string) (WorkspaceEnrollment, error) {
 	response, err := c.svc.RetryWorkspaceEnrollment(ctx, &mecatlv1.WorkspaceEnrollmentControlRequest{SessionId: sessionID, EnrollmentId: enrollmentID})
 	if err != nil {
@@ -50,6 +56,7 @@ func (c *Client) RetryWorkspaceEnrollment(ctx context.Context, sessionID, enroll
 	return workspaceEnrollmentFrom(response), nil
 }
 
+// CancelWorkspaceEnrollment cancels one exact whole-bundle attempt.
 func (c *Client) CancelWorkspaceEnrollment(ctx context.Context, sessionID, enrollmentID string) (WorkspaceEnrollment, error) {
 	response, err := c.svc.CancelWorkspaceEnrollment(ctx, &mecatlv1.WorkspaceEnrollmentControlRequest{SessionId: sessionID, EnrollmentId: enrollmentID})
 	if err != nil {

@@ -1328,8 +1328,11 @@ func (h *HarnessServer) CancelWorkspaceEnrollment(ctx context.Context, req *meca
 
 func workspaceEnrollmentToProto(result vmcpbroker.WorkspaceEnrollmentPresentation) *mecatlv1.WorkspaceEnrollment {
 	return &mecatlv1.WorkspaceEnrollment{
-		EnrollmentId: result.ID, Status: valid(string(result.Status)),
-		RequiredServices: uint32(len(result.Backends)), PresentationUrl: valid(result.BrowserURL),
+		EnrollmentId: result.ID,
+		Status:       valid(string(result.Status)),
+		// Profile count is configuration-bounded far below uint32.
+		RequiredServices: uint32(len(result.Backends)), //nolint:gosec
+		PresentationUrl:  valid(result.BrowserURL),
 	}
 }
 

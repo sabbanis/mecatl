@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/internal/adapter/memory"
 	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
@@ -139,7 +140,11 @@ func mcpAuthorizationControlResult(pending session.PendingMCPAuthorization, stat
 }
 
 func (s *Service) recordMCPAuthorizationEvent(ctx context.Context, id session.SessionID, ev session.Event) {
-	s.appendEvent(context.WithoutCancel(ctx), id, ev)
+	appendCtx := context.WithoutCancel(ctx)
+	if err := s.appendEvent(appendCtx, id, ev); err != nil {
+		s.cfg.Diagnostics.Log(appendCtx, port.LevelWarn, "event log append failed",
+			"session", string(id), "event", string(ev.Type), "err", err.Error())
+	}
 	s.PublishSessionEvent(id, ev)
 }
 

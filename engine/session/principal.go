@@ -283,6 +283,31 @@ func (s *Session) BindAuthority(authority Authority) error {
 	return nil
 }
 
+// AdmitAuthorityTools extends a bound session's exact tool capabilities before
+// its first turn. It is the narrow post-enrollment exception to write-once
+// authority binding: verified workspace discovery may add tools, but it cannot
+// alter filesystem, direct-write, delegation-depth, provenance, or definition
+// identity authority.
+func (s *Session) AdmitAuthorityTools(names []string) error {
+	if s.State != StateIdle || s.Conversation == nil || len(s.Conversation.Messages) != 0 {
+		return fmt.Errorf("%w: AdmitAuthorityTools after the first turn", ErrIllegalTransition)
+	}
+	if !s.authorityBound {
+		return errors.New("session: authority is not bound")
+	}
+	for _, name := range names {
+		if name == "" {
+			return errors.New("session: admitted tool name is empty")
+		}
+	}
+	for _, name := range names {
+		if !s.Authority.CapabilitySet.AllowsTool(name) {
+			s.Authority.CapabilitySet.Tools = append(s.Authority.CapabilitySet.Tools, name)
+		}
+	}
+	return nil
+}
+
 // BoundAuthority returns the copied durable authority payload and whether this
 // session was explicitly bound. An absent payload is a documented pre-feature
 // legacy session, never an empty bound set.

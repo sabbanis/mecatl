@@ -369,16 +369,10 @@ type MCPOAuthProfile struct {
 	Credentials MCPOAuthCredentialProfile `yaml:"credentials"`
 	// Network is required and declares immutable exact-origin egress policy.
 	Network *MCPOAuthNetworkProfile `yaml:"network"`
-	// Tools declares this backend's model-facing tool catalog statically,
-	// bypassing live discovery for this backend. It is optional: a backend that
-	// tolerates an anonymous discovery connection can leave it empty and keep
-	// today's live-discovery behavior. Declare it when the upstream rejects an
-	// unauthenticated discovery call outright (e.g. GitHub's remote MCP server
-	// 401s on `initialize` itself), so the broker cannot discover its tools
-	// live before any grant exists. The operator is the source of truth for
-	// accuracy; a stale declaration surfaces as an ordinary failed tool call
-	// against the real upstream at execution time, never a broker construction
-	// failure.
+	// Tools optionally retains reviewed protected-backend metadata for
+	// compatibility and comparison. It never enters the Runtime catalogue and
+	// cannot admit or override a definition; authenticated provider-scoped
+	// discovery after complete bundled enrollment remains authoritative.
 	Tools []MCPStaticToolProfile `yaml:"tools"`
 }
 

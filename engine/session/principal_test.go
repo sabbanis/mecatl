@@ -6,12 +6,57 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/session"
 )
 
 func newLabelSession(t *testing.T) *session.Session {
 	t.Helper()
 	return session.New("s1", session.ModeDefault, "/w", session.Limits{}, time.Unix(0, 0).UTC())
+}
+
+func TestAdmitAuthorityToolsBeforeFirstTurn(t *testing.T) {
+	t.Parallel()
+
+	s := newLabelSession(t)
+	if err := s.RestoreLabels(nil, session.Authority{
+		Provenance:    "server-root",
+		CapabilitySet: governance.CapabilitySet{Tools: []string{"Read"}, FileSystem: true, RemainingDelegationDepth: 2},
+	}); err != nil {
+		t.Fatalf("RestoreLabels: %v", err)
+	}
+	if err := s.AdmitAuthorityTools([]string{"mcp__github__issues", "Read"}); err != nil {
+		t.Fatalf("AdmitAuthorityTools: %v", err)
+	}
+	authority, bound := s.BoundAuthority()
+	if !bound || !authority.CapabilitySet.AllowsTool("Read") || !authority.CapabilitySet.AllowsTool("mcp__github__issues") {
+		t.Fatalf("admitted authority = %+v, bound=%t", authority, bound)
+	}
+	if !authority.CapabilitySet.FileSystem || authority.CapabilitySet.RemainingDelegationDepth != 2 {
+		t.Fatalf("non-tool authority changed: %+v", authority.CapabilitySet)
+	}
+	if err := s.BeginTurn(); err != nil {
+		t.Fatalf("BeginTurn: %v", err)
+	}
+	if err := s.AdmitAuthorityTools([]string{"mcp__github__late"}); !errors.Is(err, session.ErrIllegalTransition) {
+		t.Fatalf("late AdmitAuthorityTools = %v, want ErrIllegalTransition", err)
+	}
+}
+
+func TestAdmitAuthorityToolsRejectsInvalidInputAtomically(t *testing.T) {
+	t.Parallel()
+
+	s := newLabelSession(t)
+	if err := s.RestoreLabels(nil, session.Authority{Provenance: "server-root", CapabilitySet: governance.CapabilitySet{Tools: []string{"Read"}}}); err != nil {
+		t.Fatalf("RestoreLabels: %v", err)
+	}
+	if err := s.AdmitAuthorityTools([]string{"mcp__github__issues", ""}); err == nil {
+		t.Fatal("AdmitAuthorityTools accepted an empty tool name")
+	}
+	authority, _ := s.BoundAuthority()
+	if authority.CapabilitySet.AllowsTool("mcp__github__issues") {
+		t.Fatal("invalid admission partially mutated authority")
+	}
 }
 
 // TestRestoreLabelsIsWriteOnce pins the write-once contract of the owner label

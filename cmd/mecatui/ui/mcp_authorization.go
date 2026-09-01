@@ -101,6 +101,7 @@ func (mcpAuthorizationEventIntent) isSurfaceIntent()        {}
 func (mcpAuthorizationStreamClosedIntent) isSurfaceIntent() {}
 func (mcpAuthorizationStreamIntent) isSurfaceIntent()       {}
 
+//nolint:unparam // the fourth result preserves the common surface-intent reducer contract.
 func (m Model) applyMCPSurfaceIntent(intent surfaceIntent) (model tea.Model, cmd tea.Cmd, handled bool, stopSurfaceDispatch bool) {
 	switch intent := intent.(type) {
 	case mcpAuthorizationEventIntent:

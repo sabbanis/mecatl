@@ -2362,6 +2362,7 @@ func (t *SubagentTool) validateRunArgs(call session.ToolCall, caps parentCaps) (
 	return args, writable, forkHistory, errResult, ok
 }
 
+//nolint:gocyclo // child validation, lifecycle, persistence, and foreground/background delivery remain one ordered transaction.
 func (t *SubagentTool) run(ctx context.Context, call session.ToolCall, env tool.Environment, emit func(session.Event), caps parentCaps) (session.ToolResult, error) {
 	args, writable, forkHistory, errResult, ok := t.validateRunArgs(call, caps)
 	if !ok {

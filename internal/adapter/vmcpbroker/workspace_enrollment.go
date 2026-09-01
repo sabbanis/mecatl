@@ -74,11 +74,11 @@ func (r *Runtime) ConnectWorkspaceServices(ctx context.Context, id session.Sessi
 	return presentation, nil
 }
 
+//nolint:gocyclo // all providers must remain in one fail-closed staging and freeze transaction.
 func (r *Runtime) freezeProtectedCatalogue(ctx context.Context, id session.SessionID) error {
 	r.mu.RLock()
 	opened := r.sessions[id]
 	backends := append([]string(nil), r.protectedBackends...)
-	static := append([]Route(nil), r.protectedStatic...)
 	query := r.authenticatedQuery
 	closed := r.closed
 	r.mu.RUnlock()
@@ -124,13 +124,6 @@ func (r *Runtime) freezeProtectedCatalogue(ctx context.Context, id session.Sessi
 		}
 	}
 
-	staticByBackend := make(map[string][]Route)
-	for _, route := range static {
-		if err := validateProtectedRoute(route); err != nil {
-			return err
-		}
-		staticByBackend[route.BackendID] = append(staticByBackend[route.BackendID], copyRoute(route))
-	}
 	staged := make([]Route, 0)
 	seen := make(map[string]struct{})
 	r.mu.RLock()
@@ -139,11 +132,7 @@ func (r *Runtime) freezeProtectedCatalogue(ctx context.Context, id session.Sessi
 	}
 	r.mu.RUnlock()
 	for _, backend := range backends {
-		selected := discovered[backend]
-		if reviewed := staticByBackend[backend]; len(reviewed) > 0 {
-			selected = reviewed
-		}
-		for _, route := range selected {
+		for _, route := range discovered[backend] {
 			if _, collision := seen[route.Tool.Name]; collision {
 				return fmt.Errorf("%w: protected tool collision", ErrInvalidRoute)
 			}
@@ -194,6 +183,7 @@ func routeFromAuthenticatedDefinition(backend string, definition ToolDefinition)
 	return route, nil
 }
 
+//nolint:gocyclo // validation deliberately keeps every protected-definition trust-boundary check together.
 func validateProtectedRoute(route Route) error {
 	prefix := "mcp__" + route.BackendID + "__"
 	name := strings.TrimPrefix(route.Tool.Name, prefix)
@@ -201,7 +191,7 @@ func validateProtectedRoute(route Route) error {
 		return fmt.Errorf("%w: malformed protected tool identity", ErrInvalidRoute)
 	}
 	for _, char := range name {
-		if !(char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_' || char == '-' || char == '.') {
+		if !validProtectedToolNameChar(char) {
 			return fmt.Errorf("%w: malformed protected tool name", ErrInvalidRoute)
 		}
 	}
@@ -213,6 +203,10 @@ func validateProtectedRoute(route Route) error {
 		return fmt.Errorf("%w: malformed protected tool schema", ErrInvalidRoute)
 	}
 	return nil
+}
+
+func validProtectedToolNameChar(char rune) bool {
+	return char >= 'a' && char <= 'z' || char >= 'A' && char <= 'Z' || char >= '0' && char <= '9' || char == '_' || char == '-' || char == '.'
 }
 
 func (r *Runtime) invalidateProtectedAdmission(id session.SessionID) {
@@ -246,19 +240,31 @@ func (r *Runtime) RejectProtectedCatalogue(id session.SessionID) { r.invalidateP
 func (r *Runtime) WorkspaceEnrollmentRequired() bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
-	return !r.closed && len(r.protectedBackends) > 0
+	return !r.closed && r.workspaceEnrollment && len(r.protectedBackends) > 0
 }
 
 // WorkspaceEnrollmentLive reports whether the exact safe pending correlation still
-// has a process-local ToolHive transaction. It exposes no backend or OAuth data.
+// has either a process-local ToolHive transaction or the complete connected grant
+// bundle awaiting authenticated discovery. It exposes no backend or OAuth data.
 func (r *Runtime) WorkspaceEnrollmentLive(id session.SessionID, enrollmentID string) bool {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 	if r.closed || enrollmentID == "" || len(r.protectedBackends) == 0 || !r.openSessionLocked(id) {
 		return false
 	}
-	transaction, ok := r.transactions[controlTarget{sessionID: id, backendID: r.protectedBackends[0]}]
-	return ok && transaction.handle == enrollmentID && transaction.expiresAt.After(r.now())
+	primary := controlTarget{sessionID: id, backendID: r.protectedBackends[0]}
+	if transaction, ok := r.transactions[primary]; ok {
+		return transaction.handle == enrollmentID && transaction.expiresAt.After(r.now())
+	}
+	if r.authorizations[primary] != enrollmentID {
+		return false
+	}
+	for _, backend := range r.protectedBackends {
+		if _, ok := r.grants[controlTarget{sessionID: id, backendID: backend}]; !ok {
+			return false
+		}
+	}
+	return true
 }
 
 // AbortWorkspaceEnrollment invalidates the complete bundle. No terminal outcome

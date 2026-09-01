@@ -1,10 +1,9 @@
 package eventsource
 
 import (
+	"errors"
 	"testing"
 	"time"
-
-	"github.com/stretchr/testify/require"
 
 	"github.com/stacklok/mecatl/engine/session"
 )
@@ -18,7 +17,9 @@ func TestSessionMCPAuthorization_Scenario9_EventFoldRequiresPrivateState(t *test
 			ExpiresAt: time.Date(2026, 8, 29, 12, 0, 0, 0, time.UTC), Status: session.MCPAuthorizationPending,
 		},
 	}}
-	require.ErrorIs(t, foldMCPAuthorizationEvents(events), ErrPrivateStateRequired)
+	if err := foldMCPAuthorizationEvents(events); !errors.Is(err, ErrPrivateStateRequired) {
+		t.Fatalf("fold error = %v, want ErrPrivateStateRequired", err)
+	}
 }
 
 func TestSessionMCPAuthorization_Scenario9_EventFoldRejectsMalformedLifecycle(t *testing.T) {
@@ -29,7 +30,9 @@ func TestSessionMCPAuthorization_Scenario9_EventFoldRejectsMalformedLifecycle(t 
 		{{Type: session.EvMCPAuthorizationRequired, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: "auth-1", Status: session.MCPAuthorizationConnected}}},
 		{{Type: session.EvMCPAuthorizationRequired, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: "auth-1", Status: session.MCPAuthorizationPending}}, {Type: session.EvMCPAuthorizationResolved, MCPAuthorization: &session.MCPAuthorizationPayload{AuthorizationID: "auth-1", Status: session.MCPAuthorizationPending}}},
 	} {
-		require.ErrorIs(t, foldMCPAuthorizationEvents(events), ErrPrivateStateRequired)
+		if err := foldMCPAuthorizationEvents(events); !errors.Is(err, ErrPrivateStateRequired) {
+			t.Fatalf("fold error = %v, want ErrPrivateStateRequired", err)
+		}
 	}
 }
 

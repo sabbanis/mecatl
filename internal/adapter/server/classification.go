@@ -299,6 +299,9 @@ var serviceAccessTable = map[string]ClassificationEntry{
 	"ControlMCPAuthorization":      {KindCallerOwned, "authorizes via GetSession before exact Runtime control lookup and continuation claim"},
 	"RecheckMCPAuthorization":      {KindCallerOwned, "authorizes via GetSession before exact Runtime status lookup and continuation claim"},
 	"CancelMCPAuthorization":       {KindCallerOwned, "authorizes via GetSession before exact Runtime cancellation and paired history repair"},
+	"ConnectWorkspaceServices":     {KindCallerOwned, "authorizes via GetSession before starting or observing the exact Runtime bundle enrollment"},
+	"CancelWorkspaceEnrollment":    {KindCallerOwned, "authorizes via GetSession before exact Runtime bundle cancellation"},
+	"RetryWorkspaceEnrollment":     {KindCallerOwned, "delegates to ConnectWorkspaceServices after its caller-ownership check"},
 	"Persist":                      {KindCallerOwned, "authorizes via GetSession before consulting the live run registry"},
 
 	// --- caller-owned: schedules ---

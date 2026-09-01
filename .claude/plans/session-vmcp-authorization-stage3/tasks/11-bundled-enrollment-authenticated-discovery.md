@@ -52,7 +52,7 @@ Authorization header, callback-based ad-hoc discovery, or independent upstream e
 - AC11.8: After ToolHive reports the complete chain connected, each protected backend is
   queried separately through provider-scoped authenticated `QueryCapabilities(ctx, backend)`;
   `QueryAllCapabilities` is never used.
-  - verify: `TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedQueryCapabilities`
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedDiscovery`
 - AC11.9: Tool name, schema, description, and read-only metadata are validated for every
   candidate; collision or malformed/failing discovery against any protected, anonymous, or
   global tool rejects the complete protected candidate set.
@@ -60,7 +60,9 @@ Authorization header, callback-based ad-hoc discovery, or independent upstream e
 - AC11.10: After process loss or restart, a session exposes no prior protected grant,
   catalogue, or executable route and requires fresh complete bundled enrollment.
   - verify: `TestBundledWorkspaceEnrollment_Scenario11_RestartRequiresEnrollment`
-- AC11.11: A reviewed static protected `tools:` declaration may supply definitions, but no
-  static or discovered protected subset becomes visible or executable before the complete
-  bundle succeeds and the whole catalogue is atomically admitted.
-  - verify: `TestBundledWorkspaceEnrollment_Scenario11_NoPartialStaticCatalogue`
+- AC11.11: Static protected `tools:` declarations remain accepted operator configuration for
+  compatibility/comparison only. They never enter `Process`/`Runtime` catalogue construction;
+  the admitted protected name, schema, description, and read-only metadata come solely from
+  authenticated provider-scoped discovery after complete bundled consent.
+  - verify: `TestBundledWorkspaceEnrollment_Scenario11_TwoBackendVertical` and
+    `TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedMetadataIsAdmitted`

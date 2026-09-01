@@ -8,7 +8,6 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"encoding/pem"
-	"errors"
 	"io"
 	"math/big"
 	"net/http"
@@ -28,12 +27,11 @@ import (
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/session"
-	"github.com/stacklok/mecatl/internal/adapter/server"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
 
-func TestSessionMCPAuthorization_Scenario10_ConfigDrivenVertical(t *testing.T) {
+func TestBundledWorkspaceEnrollment_Scenario11_ConfigDrivenVertical(t *testing.T) {
 	const (
 		callID       = "mcp-call-safe-01"
 		secretCanary = "scenario10-client-secret-canary"
@@ -111,80 +109,65 @@ func TestSessionMCPAuthorization_Scenario10_ConfigDrivenVertical(t *testing.T) {
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
-	run, err := built.Service.StartInteractiveRunContent(ownerCtx, sess.ID, "read protected data", nil)
-	if err != nil {
-		t.Fatalf("StartInteractiveRunContent: %v", err)
+	pending, err := built.Service.ConnectWorkspaceServices(ownerCtx, sess.ID)
+	if err != nil || pending.ID == "" || pending.BrowserURL == "" {
+		t.Fatalf("ConnectWorkspaceServices pending = %+v, %v", pending, err)
 	}
-	var parkedEvents []session.Event
-	for event := range run.Events() {
-		parkedEvents = append(parkedEvents, event)
+	if pending.Status != "pending" {
+		t.Fatalf("workspace enrollment status = %q, want pending", pending.Status)
 	}
-	built.Service.FinishRun(sess.ID, run)
-	if run.Outcome() != agent.RunOutcomeAuthorizationParked {
-		t.Fatalf("parked outcome = %v, want authorization parked", run.Outcome())
-	}
-	assertScenario10SafeEvents(t, parkedEvents, []string{secretCanary, tokenCanary, "scenario10-private-arguments", callbackServer.URL, fixture.gateway.URL})
 	if got := fixture.calls.Load(); got != 0 {
-		t.Fatalf("protected upstream calls before callback = %d, want 0", got)
+		t.Fatalf("protected upstream calls before enrollment = %d, want 0", got)
 	}
 	if got := fixture.discoveryCalls.Load(); got != 0 {
 		t.Fatalf("OIDC discovery calls before presentation = %d, want 0", got)
 	}
-
-	parked, err := built.Service.GetSession(ownerCtx, sess.ID)
-	if err != nil {
-		t.Fatalf("GetSession parked: %v", err)
-	}
-	pending, ok := parked.PendingMCPAuthorization()
-	if !ok || pending.Call.ID != callID || pending.Call.Name != "mcp__github__protected" {
-		t.Fatalf("pending authorization = %#v, want exact protected call", pending)
-	}
-	control := server.MCPAuthorizationControl{SessionID: sess.ID, AuthorizationID: pending.AuthorizationID}
-	browserURL, err := built.Service.MCPAuthorizationPresentation(ownerCtx, sess.ID, control)
-	if err != nil || browserURL == "" {
-		t.Fatalf("presentation = %q, %v", browserURL, err)
-	}
-	if !strings.HasPrefix(browserURL, callbackServer.URL+"/v1/mcp/broker/oauth/authorize?") {
-		t.Fatalf("browser URL = %q, want configured callback authority", browserURL)
-	}
-	if strings.Contains(browserURL, secretCanary) || strings.Contains(browserURL, tokenCanary) {
-		t.Fatalf("browser URL leaked a secret: %q", browserURL)
+	if strings.Contains(pending.BrowserURL, secretCanary) || strings.Contains(pending.BrowserURL, tokenCanary) {
+		t.Fatalf("browser URL leaked a secret: %q", pending.BrowserURL)
 	}
 
-	response, err := fixture.browserClient(callbackServer).Get(browserURL)
+	response, err := fixture.browserClient(callbackServer).Get(pending.BrowserURL)
 	if err != nil {
-		t.Fatalf("follow real OAuth redirect chain: %v", err)
+		t.Fatalf("follow bundled OAuth redirect chain: %v", err)
 	}
 	defer response.Body.Close()
 	callbackPrefix := callbackServer.URL + "/exact/callback"
 	if response.StatusCode != http.StatusOK || !strings.HasPrefix(response.Request.URL.String(), callbackPrefix) {
 		t.Fatalf("callback response/request = %d/%q, want exact configured callback", response.StatusCode, response.Request.URL)
 	}
-	if got := fixture.calls.Load(); got != 0 {
-		t.Fatalf("protected upstream calls after callback but before recheck = %d, want 0", got)
-	}
 	if fixture.state == "" || fixture.verifier == "" {
 		t.Fatalf("generic OAuth2 state/verifier = %q/%q, want both present", fixture.state, fixture.verifier)
 	}
 
-	continued, err := built.Service.RecheckMCPAuthorization(ownerCtx, sess.ID, control)
-	if err != nil || continued == nil {
-		t.Fatalf("recheck after callback = %v, %v", continued, err)
+	connected, err := built.Service.ConnectWorkspaceServices(ownerCtx, sess.ID)
+	if err != nil || connected.Status != "connected" {
+		t.Fatalf("ConnectWorkspaceServices connected = %+v, %v", connected, err)
 	}
-	var continuedEvents []session.Event
-	for event := range continued.Events() {
-		continuedEvents = append(continuedEvents, event)
-	}
-	assertScenario10SafeEvents(t, continuedEvents, []string{secretCanary, tokenCanary, "scenario10-private-arguments", "scenario10-code-canary", fixture.state, fixture.verifier, browserURL, callbackServer.URL, fixture.gateway.URL})
-	built.Service.FinishRun(sess.ID, continued)
-	if got := fixture.calls.Load(); got != 1 {
-		t.Fatalf("protected upstream calls = %d, want 1", got)
+	if got := fixture.calls.Load(); got != 0 {
+		t.Fatalf("protected tool calls during authenticated discovery = %d, want 0", got)
 	}
 	if got := fixture.discoveryCalls.Load(); got != 0 {
 		t.Fatalf("OIDC discovery calls = %d, want 0 for configured OAuth2", got)
 	}
-	if rerun, err := built.Service.RecheckMCPAuthorization(ownerCtx, sess.ID, control); !errors.Is(err, server.ErrNotFound) || rerun != nil || fixture.calls.Load() != 1 {
-		t.Fatalf("duplicate recheck = (%v, %v), calls=%d; want absent and exactly once", rerun, err, fixture.calls.Load())
+
+	run, err := built.Service.StartInteractiveRunContent(ownerCtx, sess.ID, "read protected data", nil)
+	if err != nil {
+		t.Fatalf("StartInteractiveRunContent after enrollment: %v", err)
+	}
+	var events []session.Event
+	for event := range run.Events() {
+		events = append(events, event)
+		if event.MCPAuthorization != nil || event.Ask != nil {
+			t.Fatalf("workspace enrollment was projected as a tool/permission approval: %#v", event)
+		}
+	}
+	built.Service.FinishRun(sess.ID, run)
+	if run.Outcome() != agent.RunOutcomeCompleted {
+		t.Fatalf("run outcome = %v, want completed", run.Outcome())
+	}
+	assertScenario10SafeEvents(t, events, []string{secretCanary, tokenCanary, "scenario10-private-arguments", "scenario10-code-canary", fixture.state, fixture.verifier, pending.BrowserURL, callbackServer.URL, fixture.gateway.URL})
+	if got := fixture.calls.Load(); got != 1 {
+		t.Fatalf("protected upstream calls = %d, want 1", got)
 	}
 
 	finished, err := built.Service.GetSession(ownerCtx, sess.ID)

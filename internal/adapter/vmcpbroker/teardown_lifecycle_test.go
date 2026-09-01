@@ -16,6 +16,192 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
+func TestDisconnectDeletesOnlyKnownProviderRows(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	for _, provider := range []string{"github-provider", "calendar-provider"} {
+		if err := store.StoreUpstreamTokens(t.Context(), "auth-session", provider, &storage.UpstreamTokens{ProviderID: provider, AccessToken: provider, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatalf("StoreUpstreamTokens: %v", err)
+		}
+	}
+	runtime := newLifecycleRuntime(t, []Route{
+		{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "github", Schema: json.RawMessage(`{}`)}},
+		{BackendID: "calendar", Protected: true, Tool: tool.ToolSpec{Name: "calendar", Schema: json.RawMessage(`{}`)}},
+	})
+	openLifecycleSession(t, runtime, "parent")
+	runtime.mu.Lock()
+	runtime.tokenDeleter = store
+	runtime.providerNames = map[string]string{"github": "github-provider", "calendar": "calendar-provider"}
+	runtime.lifecycles["parent"].authSessions["auth-session"] = map[string]struct{}{"github-provider": {}, "calendar-provider": {}}
+	runtime.mu.Unlock()
+
+	if err := runtime.Disconnect("parent", "github"); err != nil {
+		t.Fatalf("Disconnect: %v", err)
+	}
+	remaining, err := store.GetAllUpstreamTokens(t.Context(), "auth-session")
+	if err != nil || remaining["github-provider"] != nil || remaining["calendar-provider"] == nil {
+		t.Fatalf("provider rows after disconnect = %v, err=%v", mapKeys(remaining), err)
+	}
+}
+
+func TestForgetDeletesRetainedAuthSessionsAfterTransportDrain(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	for _, authSession := range []string{"auth-generation-one", "auth-generation-two"} {
+		if err := store.StoreUpstreamTokens(t.Context(), authSession, "provider", &storage.UpstreamTokens{ProviderID: "provider", AccessToken: authSession, ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatalf("StoreUpstreamTokens: %v", err)
+		}
+	}
+	var drained atomic.Bool
+	runtime := newLifecycleRuntime(t, []Route{{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "github", Schema: json.RawMessage(`{}`)}}})
+	opened := openLifecycleSession(t, runtime, "parent")
+	opened.closeFunc = func() error { drained.Store(true); return nil }
+	runtime.mu.Lock()
+	runtime.tokenDeleter = drainCheckingTokenStorage{UpstreamTokenStorage: store, drained: &drained}
+	runtime.lifecycles["parent"].authSessions["auth-generation-one"] = map[string]struct{}{"provider": {}}
+	runtime.lifecycles["parent"].authSessions["auth-generation-two"] = map[string]struct{}{"provider": {}}
+	// Grant invalidation must not erase the retained cleanup identities.
+	runtime.grants[controlTarget{sessionID: "parent", backendID: "github"}] = downstreamGrant{authSession: "auth-generation-two"}
+	runtime.mu.Unlock()
+	runtime.invalidateProtectedAdmission("parent")
+
+	if err := runtime.ForgetSession("parent"); err != nil {
+		t.Fatalf("ForgetSession: %v", err)
+	}
+	for _, authSession := range []string{"auth-generation-one", "auth-generation-two"} {
+		remaining, err := store.GetAllUpstreamTokens(t.Context(), authSession)
+		if err != nil || len(remaining) != 0 {
+			t.Fatalf("retained rows for forgotten auth session: rows=%v err=%v", mapKeys(remaining), err)
+		}
+	}
+	if err := runtime.ForgetSession("parent"); err != nil {
+		t.Fatalf("idempotent ForgetSession: %v", err)
+	}
+}
+
+func TestForgetCleanupFailureTearsDownAndRetriesIdempotently(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.StoreUpstreamTokens(t.Context(), "private-auth-session", "private-provider", &storage.UpstreamTokens{ProviderID: "private-provider", AccessToken: "private-token", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("StoreUpstreamTokens: %v", err)
+	}
+	flaky := &failOnceTokenStorage{UpstreamTokenStorage: store}
+	runtime := newLifecycleRuntime(t, []Route{{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "github", Schema: json.RawMessage(`{}`)}}})
+	openLifecycleSession(t, runtime, "parent")
+	runtime.mu.Lock()
+	runtime.tokenDeleter = flaky
+	runtime.lifecycles["parent"].authSessions["private-auth-session"] = map[string]struct{}{"private-provider": {}}
+	runtime.tokenCleanup[tokenCleanupTarget{authSession: "private-auth-session", provider: "private-provider"}] = struct{}{}
+	runtime.mu.Unlock()
+
+	err := runtime.ForgetSession("parent")
+	if !errors.Is(err, errAuthorizationCleanup) || err.Error() != errAuthorizationCleanup.Error() || strings.Contains(err.Error(), "private-") {
+		t.Fatalf("first ForgetSession error = %q, want fixed private cleanup error", err)
+	}
+	runtime.mu.RLock()
+	_, sessionExists := runtime.sessions["parent"]
+	_, lifecycleExists := runtime.lifecycles["parent"]
+	_, tombstoned := runtime.tombstones["parent"]
+	runtime.mu.RUnlock()
+	if sessionExists || lifecycleExists || tombstoned {
+		t.Fatalf("failed cleanup retained in-memory state: session/lifecycle/tombstone=%t/%t/%t", sessionExists, lifecycleExists, tombstoned)
+	}
+
+	if err := runtime.ForgetSession("parent"); err != nil {
+		t.Fatalf("retry ForgetSession: %v", err)
+	}
+	remaining, err := store.GetAllUpstreamTokens(t.Context(), "private-auth-session")
+	if err != nil || len(remaining) != 0 {
+		t.Fatalf("retry retained token rows: rows=%v err=%v", mapKeys(remaining), err)
+	}
+	runtime.mu.RLock()
+	remainingBacklog := len(runtime.tokenCleanup)
+	runtime.mu.RUnlock()
+	if remainingBacklog != 0 {
+		t.Fatalf("retry retained %d cleanup targets", remainingBacklog)
+	}
+}
+
+func TestSuccessfulProviderCleanupClearsCoveredBacklogOnly(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	runtime := newLifecycleRuntime(t, nil)
+	runtime.mu.Lock()
+	runtime.tokenDeleter = store
+	runtime.tokenCleanup[tokenCleanupTarget{authSession: "auth-session", provider: "provider-a"}] = struct{}{}
+	runtime.tokenCleanup[tokenCleanupTarget{owner: "parent", authSession: "auth-session", provider: "provider-a"}] = struct{}{}
+	sibling := tokenCleanupTarget{owner: "parent", authSession: "auth-session", provider: "provider-b"}
+	runtime.tokenCleanup[sibling] = struct{}{}
+	runtime.mu.Unlock()
+
+	if err := runtime.cleanupTokenTargets([]tokenCleanupTarget{{owner: "other", authSession: "auth-session", provider: "provider-a"}}); err != nil {
+		t.Fatalf("cleanupTokenTargets: %v", err)
+	}
+	runtime.mu.RLock()
+	_, siblingRetained := runtime.tokenCleanup[sibling]
+	remaining := len(runtime.tokenCleanup)
+	runtime.mu.RUnlock()
+	if !siblingRetained || remaining != 1 {
+		t.Fatalf("provider cleanup backlog count/sibling = %d/%t, want 1/true", remaining, siblingRetained)
+	}
+}
+
+func TestSuccessfulBundleCleanupClearsAllCoveredBacklog(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	runtime := newLifecycleRuntime(t, nil)
+	other := tokenCleanupTarget{authSession: "other-auth-session", provider: "provider"}
+	runtime.mu.Lock()
+	runtime.tokenDeleter = store
+	for _, target := range []tokenCleanupTarget{
+		{authSession: "auth-session", provider: "provider-a"},
+		{owner: "parent", authSession: "auth-session", provider: "provider-b"},
+		{owner: "parent", authSession: "auth-session"},
+		other,
+	} {
+		runtime.tokenCleanup[target] = struct{}{}
+	}
+	runtime.mu.Unlock()
+
+	if err := runtime.cleanupTokenTargets([]tokenCleanupTarget{{owner: "parent", authSession: "auth-session"}}); err != nil {
+		t.Fatalf("cleanupTokenTargets: %v", err)
+	}
+	runtime.mu.RLock()
+	_, otherRetained := runtime.tokenCleanup[other]
+	remaining := len(runtime.tokenCleanup)
+	runtime.mu.RUnlock()
+	if !otherRetained || remaining != 1 {
+		t.Fatalf("bundle cleanup backlog count/other = %d/%t, want 1/true", remaining, otherRetained)
+	}
+}
+
+func TestRuntimeCloseRetriesAllCleanupBacklog(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.StoreUpstreamTokens(t.Context(), "auth-session", "provider", &storage.UpstreamTokens{ProviderID: "provider", AccessToken: "token", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("StoreUpstreamTokens: %v", err)
+	}
+	counting := &countingTokenStorage{upstreamTokenDeleter: store}
+	runtime := newLifecycleRuntime(t, nil)
+	runtime.mu.Lock()
+	runtime.tokenDeleter = counting
+	runtime.tokenCleanup[tokenCleanupTarget{authSession: "auth-session", provider: "provider"}] = struct{}{}
+	runtime.mu.Unlock()
+
+	if err := runtime.Close(); err != nil {
+		t.Fatalf("Runtime.Close: %v", err)
+	}
+	if got := counting.providerDeletes.Load(); got != 1 {
+		t.Fatalf("Runtime.Close provider deletion attempts = %d, want 1", got)
+	}
+	runtime.mu.RLock()
+	remainingBacklog := len(runtime.tokenCleanup)
+	runtime.mu.RUnlock()
+	if remainingBacklog != 0 {
+		t.Fatalf("Runtime.Close retained %d cleanup targets", remainingBacklog)
+	}
+}
+
 func TestSessionVMCPBroker_Scenario4_DisconnectIsBackendScoped(t *testing.T) {
 	runtime := newLifecycleRuntime(t, []Route{
 		{BackendID: "github", Protected: true, Tool: tool.ToolSpec{Name: "github", Schema: json.RawMessage(`{}`)}},
@@ -202,6 +388,37 @@ func TestToolHiveClientRegistry_HasNoRemovalAPI(t *testing.T) {
 	if _, exists := registry.MethodByName("RemoveClient"); exists {
 		t.Fatal("ToolHive ClientRegistry now exposes RemoveClient; Runtime.Close must use it directly")
 	}
+}
+
+type failOnceTokenStorage struct {
+	storage.UpstreamTokenStorage
+	failed atomic.Bool
+}
+
+func (s *failOnceTokenStorage) DeleteUpstreamTokens(ctx context.Context, authSession string) error {
+	if s.failed.CompareAndSwap(false, true) {
+		return errors.New("private storage failure")
+	}
+	return s.UpstreamTokenStorage.DeleteUpstreamTokens(ctx, authSession)
+}
+
+type drainCheckingTokenStorage struct {
+	storage.UpstreamTokenStorage
+	drained *atomic.Bool
+}
+
+func (s drainCheckingTokenStorage) DeleteUpstreamTokens(ctx context.Context, authSession string) error {
+	if !s.drained.Load() {
+		return errors.New("cleanup ran before transport drain")
+	}
+	return s.UpstreamTokenStorage.DeleteUpstreamTokens(ctx, authSession)
+}
+
+func (s drainCheckingTokenStorage) DeleteUpstreamTokensForProvider(ctx context.Context, authSession, provider string) error {
+	if !s.drained.Load() {
+		return errors.New("cleanup ran before transport drain")
+	}
+	return s.UpstreamTokenStorage.DeleteUpstreamTokensForProvider(ctx, authSession, provider)
 }
 
 func newLifecycleRuntime(t *testing.T, routes []Route) *Runtime {

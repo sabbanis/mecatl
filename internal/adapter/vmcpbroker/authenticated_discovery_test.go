@@ -8,10 +8,12 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 	toolhiveauth "github.com/stacklok/toolhive/pkg/auth"
 	"github.com/stacklok/toolhive/pkg/auth/upstreamtoken"
+	"github.com/stacklok/toolhive/pkg/authserver/storage"
 	"github.com/stacklok/toolhive/pkg/vmcp"
 	"github.com/stacklok/toolhive/pkg/vmcp/aggregator"
 	vmcpauth "github.com/stacklok/toolhive/pkg/vmcp/auth"
@@ -125,6 +127,89 @@ func TestBundledWorkspaceEnrollment_Scenario11_AuthenticatedDiscoveryFailsClosed
 	}
 }
 
+func TestAuthenticatedDiscovery_TerminalRefreshDeletesOnlyProvider(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	for _, provider := range []string{"provider-a", "provider-b"} {
+		if err := store.StoreUpstreamTokens(t.Context(), "auth-session", provider, &storage.UpstreamTokens{ProviderID: provider, AccessToken: provider + "-credential", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatalf("StoreUpstreamTokens: %v", err)
+		}
+	}
+	deleter := &countingTokenStorage{upstreamTokenDeleter: store}
+	wrapped := &cleaningUpstreamTokens{service: bulkTokenService{err: upstreamtoken.ErrRefreshFailed}, deleter: deleter}
+	process := discoveryTestProcess(wrapped, &recordingCapabilityQuerier{})
+
+	if _, err := process.QueryAuthenticatedCapabilities(t.Context(), "auth-session", "backend-a"); !errors.Is(err, ErrAuthenticatedDiscovery) {
+		t.Fatalf("QueryAuthenticatedCapabilities: %v", err)
+	}
+	if got := deleter.providerDeletes.Load(); got != 1 {
+		t.Fatalf("provider deletion attempts = %d, want exactly 1", got)
+	}
+	remaining, err := store.GetAllUpstreamTokens(t.Context(), "auth-session")
+	if err != nil {
+		t.Fatalf("GetAllUpstreamTokens: %v", err)
+	}
+	if _, deleted := remaining["provider-a"]; deleted || remaining["provider-b"] == nil {
+		t.Fatalf("provider-scoped cleanup retained rows = %v, want provider-b only", mapKeys(remaining))
+	}
+}
+
+func TestCleaningUpstreamTokens_BulkRefreshFailureDeletesOnlyFailedProvider(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	for _, provider := range []string{"provider-a", "provider-b"} {
+		if err := store.StoreUpstreamTokens(t.Context(), "auth-session", provider, &storage.UpstreamTokens{ProviderID: provider, AccessToken: provider + "-credential", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+			t.Fatalf("StoreUpstreamTokens: %v", err)
+		}
+	}
+	deleter := &countingTokenStorage{upstreamTokenDeleter: store}
+	wrapped := &cleaningUpstreamTokens{
+		service: bulkTokenService{credentials: map[string]upstreamtoken.UpstreamCredential{"provider-b": {AccessToken: "credential-b"}}, failed: []string{"provider-a"}},
+		deleter: deleter,
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	credentials, failed, err := wrapped.GetAllUpstreamCredentials(ctx, "auth-session")
+	if err != nil || credentials["provider-b"].AccessToken != "credential-b" || len(failed) != 1 || failed[0] != "provider-a" {
+		t.Fatalf("GetAllUpstreamCredentials = %#v/%v/%v", credentials, failed, err)
+	}
+	if got := deleter.providerDeletes.Load(); got != 1 {
+		t.Fatalf("bulk provider deletion attempts = %d, want exactly 1", got)
+	}
+	remaining, err := store.GetAllUpstreamTokens(t.Context(), "auth-session")
+	if err != nil || remaining["provider-a"] != nil || remaining["provider-b"] == nil {
+		t.Fatalf("bulk terminal cleanup retained rows = %v, want provider-b only (err=%v)", mapKeys(remaining), err)
+	}
+}
+
+func TestAuthenticatedDiscovery_GenericFailureDoesNotDelete(t *testing.T) {
+	store := storage.NewMemoryStorage()
+	t.Cleanup(func() { _ = store.Close() })
+	if err := store.StoreUpstreamTokens(t.Context(), "auth-session", "provider-a", &storage.UpstreamTokens{ProviderID: "provider-a", AccessToken: "credential", ExpiresAt: time.Now().Add(time.Hour)}); err != nil {
+		t.Fatalf("StoreUpstreamTokens: %v", err)
+	}
+	deleter := &countingTokenStorage{upstreamTokenDeleter: store}
+	wrapped := &cleaningUpstreamTokens{service: bulkTokenService{err: context.Canceled}, deleter: deleter}
+	process := discoveryTestProcess(wrapped, &recordingCapabilityQuerier{})
+
+	_, _ = process.QueryAuthenticatedCapabilities(t.Context(), "auth-session", "backend-a")
+	if got := deleter.providerDeletes.Load(); got != 0 {
+		t.Fatalf("generic failure deletion attempts = %d, want 0", got)
+	}
+	remaining, err := store.GetAllUpstreamTokens(t.Context(), "auth-session")
+	if err != nil || remaining["provider-a"] == nil {
+		t.Fatalf("generic failure deleted provider row: remaining=%v err=%v", mapKeys(remaining), err)
+	}
+}
+
+func mapKeys[V any](values map[string]V) []string {
+	keys := make([]string, 0, len(values))
+	for key := range values {
+		keys = append(keys, key)
+	}
+	return keys
+}
+
 func discoveryTestProcess(tokens upstreamCredentialReader, queries capabilityQuerier) *Process {
 	backends := []vmcp.Backend{
 		{ID: "backend-a", Name: "backend-a", AuthConfig: upstreamInject("provider-a")},
@@ -141,6 +226,36 @@ func discoveryTestProcess(tokens upstreamCredentialReader, queries capabilityQue
 
 func upstreamInject(provider string) *authtypes.BackendAuthStrategy {
 	return &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: provider}}
+}
+
+type countingTokenStorage struct {
+	upstreamTokenDeleter
+	providerDeletes atomic.Int32
+	sessionDeletes  atomic.Int32
+}
+
+func (s *countingTokenStorage) DeleteUpstreamTokens(ctx context.Context, authSession string) error {
+	s.sessionDeletes.Add(1)
+	return s.upstreamTokenDeleter.DeleteUpstreamTokens(ctx, authSession)
+}
+
+func (s *countingTokenStorage) DeleteUpstreamTokensForProvider(ctx context.Context, authSession, provider string) error {
+	s.providerDeletes.Add(1)
+	return s.upstreamTokenDeleter.DeleteUpstreamTokensForProvider(ctx, authSession, provider)
+}
+
+type bulkTokenService struct {
+	credentials map[string]upstreamtoken.UpstreamCredential
+	failed      []string
+	err         error
+}
+
+func (s bulkTokenService) GetValidTokens(context.Context, string, string) (*upstreamtoken.UpstreamCredential, error) {
+	return nil, s.err
+}
+
+func (s bulkTokenService) GetAllUpstreamCredentials(context.Context, string) (map[string]upstreamtoken.UpstreamCredential, []string, error) {
+	return s.credentials, s.failed, s.err
 }
 
 type recordingUpstreamTokens struct {

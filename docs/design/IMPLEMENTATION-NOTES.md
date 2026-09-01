@@ -96,16 +96,28 @@ canonical parent session. Its wrappers expose neutral `tool.ToolSpec` values, ke
 the broker-private `BackendID` route and every bearer/ToolHive/OAuth value out of the
 engine, session snapshot, events, tool metadata, tool arguments, and results.
 
-The static catalogue is derived from strict operator-profile auth modes: `none` is
-usable without connection; `oauth` is protected but remains visible and returns the
-bounded `authorization required for this broker tool` result until a trusted
-composition-private `Connect(sessionID, backendID)` succeeds. `Disconnect`, callback,
-and refresh work operate only on an opened non-delegation parent session. Closing a
-`SessionTools` tombstones it, rejects new calls, drains its calls and transport, then
-forgets it. `Runtime.Close` rejects new work, cancels and joins per-session work,
-closes transports, then closes the shared ToolHive resources. Runtime grants,
-transports, browser transactions, and refresh state do not persist: process restart
-builds a new Runtime and requires a new explicit connection.
+Anonymous `none` profiles retain eager startup discovery. Protected `oauth` definitions are
+absent until bundled consent completes; the Runtime then performs one authenticated,
+provider-scoped ToolHive `QueryCapabilities` call per backend, validates and collision-checks
+the complete staged set, and freezes it once into that session. Optional static
+`auth.oauth.tools` configuration remains parseable for compatibility/comparison but never
+enters `Process`/`Runtime` catalogue construction and cannot override discovered name, schema,
+description, or read-only metadata. Before prompt input becomes available, the session aggregate
+admits those exact frozen tool names into its durable capability set; the narrow operation cannot
+widen filesystem, direct-write, delegation-depth, provenance, or definition-identity authority.
+Protected wrappers remain unusable without their private
+grant. `Disconnect`, callback, and refresh work operate only on an opened non-delegation parent
+session. Closing a `SessionTools` tombstones it, rejects new calls, drains its calls and
+transport, deletes every retained ToolHive auth-session token bundle, then forgets it.
+Provider disconnect and terminal ToolHive refresh failures delete only the affected provider
+row. Runtime retains auth-session cleanup identities independently from grants and across
+multiple enrollment generations; bounded cancel-detached storage I/O runs outside its mutex.
+Deletion failure does not preserve live session state: teardown completes with a fixed generic
+error and the private cleanup target remains available for an idempotent retry.
+`Runtime.Close` rejects new work, cancels and joins per-session work, closes transports, deletes
+retained token rows, then closes the shared ToolHive resources. Runtime grants, transports,
+browser transactions, and refresh state do not persist: process restart builds a new Runtime
+and requires a new explicit connection.
 
 `app.Build` constructs the optional Runtime and returns its complete
 `vmcpbroker.HandlerBundle`. Only `mecated` and `mecak8s` mount that bundle, before

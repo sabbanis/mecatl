@@ -6,6 +6,7 @@
     method func (*Principal).SameIdentity(other *Principal) bool
     method func (*Session).Abandon() error
     method func (*Session).AbortMCPAuthorization(reason string) ([]ToolResult, error)
+    method func (*Session).AdmitAuthorityTools(names []string) error
     method func (*Session).BeginRun(runID string)
     method func (*Session).BeginTurn() error
     method func (*Session).BindAuthority(authority Authority) error

@@ -2316,6 +2316,10 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		svcCfg.UndoProposal = nil
 	}
 	applyTeamConfig(&svcCfg, cfg, reg, provider, mainMgr, agentReg, assets.skillIndex, assets)
+	if cfg.VMCPBroker != nil {
+		svcCfg.VMCPBrokerGeneration = cfg.VMCPBroker.EnrollmentID()
+		svcCfg.VMCPBrokerBindings = vmcpbroker.NewBindingIndex()
+	}
 
 	svc, err := server.NewService(svcCfg)
 	if err != nil {

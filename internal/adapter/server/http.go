@@ -768,7 +768,10 @@ func (h *HTTPHandler) relayMCPAuthorizationControlSSE(w http.ResponseWriter, r *
 	defer recorder.Close()
 	for event := range result.Run.Events() {
 		if failed {
-			h.svc.appendEvent(logCtx, id, event)
+			if err := h.svc.appendEvent(logCtx, id, event); err != nil {
+				h.svc.cfg.Diagnostics.Log(logCtx, port.LevelWarn, "event log append failed",
+					"session", string(id), "event", string(event.Type), "err", err.Error())
+			}
 			continue
 		}
 		if !h.svc.relayEvent(r.Context(), id, event, false, recorder) {

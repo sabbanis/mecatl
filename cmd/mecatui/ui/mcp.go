@@ -364,7 +364,7 @@ func (*mcpState) HandleWheel(tea.MouseWheelMsg) (cmd tea.Cmd, handled bool) {
 func (s *mcpState) HandleMsg(msg tea.Msg) (cmd tea.Cmd, handled bool, closed bool) {
 	switch msg := msg.(type) {
 	case mcpAuthorizationEventMsg:
-		s.intent = mcpAuthorizationEventIntent{msg: msg.msg}
+		s.intent = mcpAuthorizationEventIntent(msg)
 		return nil, true, false
 	case mcpAuthorizationStreamClosedMsg:
 		s.intent = mcpAuthorizationStreamClosedIntent{}

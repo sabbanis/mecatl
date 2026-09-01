@@ -24,7 +24,9 @@ public ToolHive API does not provide.
 - one ordered `[]authserver.UpstreamRunConfig`, containing the real
   `OIDCUpstreamRunConfig` or `OAuth2UpstreamRunConfig` for every protected profile;
 - `upstreamtoken.NewInProcessService` and `GetValidTokens` for provider-scoped access to
-  ToolHive's stored/refreshed upstream credentials;
+  ToolHive's stored/refreshed upstream credentials; plus the narrow
+  `IDPTokenStorage().DeleteUpstreamTokensForProvider` and `DeleteUpstreamTokens` methods for
+  provider disconnect/terminal-refresh cleanup and final session teardown, respectively;
 - `factory.NewIncomingAuthMiddleware` for incoming vMCP authentication and auth metadata;
 - `vmcpauth.NewDefaultOutgoingAuthRegistry` with
   `strategies.NewUpstreamInjectStrategy` for backend bearer injection;
@@ -37,7 +39,10 @@ public ToolHive API does not provide.
 `internal/adapter/vmcpbroker/runtime.go` (`QueryAuthenticatedCapabilities`) deliberately
 retains the provider-scoped `aggregator.Aggregator.QueryCapabilities(ctx, backend)` API.
 ToolHive documents `QueryAllCapabilities` as gracefully continuing after backend failures,
-so it cannot implement bundle-wide fail-closed admission.
+so it cannot implement bundle-wide fail-closed admission. Authenticated query results are the
+sole admitted protected definitions. Optional static `auth.oauth.tools` configuration remains
+accepted for compatibility/comparison, but it is not copied into `Process` or `Runtime` and
+cannot replace discovered name, schema, description, or read-only metadata.
 
 ## Resolved findings from the Stage 2 review
 
@@ -94,6 +99,15 @@ injection.
   collision-checks the whole set against anonymous and protected tools, and mutates the
   session catalogue only after all candidates pass. ToolHive's aggregate convenience path
   is partial-tolerant and does not provide mecatl's atomic, session-local freeze.
+- `internal/adapter/vmcpbroker/runtime.go` (`Disconnect`, `ForgetSession`, `Runtime.Close`)
+  retains private auth-session identities across grant invalidation and enrollment generations.
+  Cleanup runs only after the affected refresh/transport/lifecycle work drains: disconnect uses
+  provider-scoped deletion, terminal `GetValidTokens` refresh failures delete only that provider,
+  and forget/close use session-wide deletion after wrapper transport and lifecycle work drains.
+  Only then is the session's in-memory lifecycle cleared. Storage I/O is bounded,
+  cancel-detached, and outside the Runtime mutex; a failed deletion is retained privately for
+  an idempotent retry while teardown still completes and reports only the fixed generic cleanup
+  error.
 - `internal/adapter/vmcpbroker/runtime.go` (`Runtime.Close`) retains explicit shutdown
   ordering because the ToolHive components are individually constructed public APIs; no
   public aggregate owner exposes the required mecatl session-drain-before-process-close

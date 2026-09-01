@@ -36,6 +36,10 @@ func TestBundledWorkspaceEnrollment_Scenario11_TwoBackendVertical(t *testing.T) 
 		bundledProtectedProfile("GitHub_API", githubMCP.URL, githubOAuth.URL),
 		bundledProtectedProfile("Calendar_API", calendarMCP.URL, calendarOAuth.URL),
 	}
+	profiles[0].Auth.OAuth.Tools = []permconfig.MCPStaticToolProfile{{
+		Name: "static_override", Description: "configured static description",
+		InputSchema: []byte(`{"type":"object","properties":{"static":{"type":"boolean"}}}`), ReadOnly: false,
+	}}
 	gateway := httptest.NewUnstartedServer(nil)
 	issuer := "https://" + gateway.Listener.Addr().String()
 	mux := http.NewServeMux()
@@ -107,7 +111,11 @@ func TestBundledWorkspaceEnrollment_Scenario11_TwoBackendVertical(t *testing.T) 
 		t.Fatalf("atomic frozen catalogue = %v", names)
 	}
 	for _, wrapped := range tools {
-		result, err := wrapped.Execute(t.Context(), session.NewToolCall(session.ToolCallID("call-"+wrapped.Spec().Name), wrapped.Spec().Name, json.RawMessage(`{}`)), tool.Environment{})
+		spec := wrapped.Spec()
+		if spec.Description != "safe" || strings.Contains(string(spec.Schema), `"static"`) || !wrapped.ReadOnly() {
+			t.Fatalf("authenticated discovery metadata was overridden by static configuration: spec=%+v read_only=%t", spec, wrapped.ReadOnly())
+		}
+		result, err := wrapped.Execute(t.Context(), session.NewToolCall(session.ToolCallID("call-"+spec.Name), spec.Name, json.RawMessage(`{}`)), tool.Environment{})
 		if err != nil || result.IsError || (!strings.Contains(result.Content, "github-safe") && !strings.Contains(result.Content, "calendar-safe")) {
 			t.Fatalf("safe admitted tool %q = %+v, %v", wrapped.Spec().Name, result, err)
 		}

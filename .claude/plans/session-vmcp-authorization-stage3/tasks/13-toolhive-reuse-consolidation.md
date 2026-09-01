@@ -2,7 +2,7 @@
 id: 13-toolhive-reuse-consolidation
 title: ToolHive reuse consolidation
 blocked_by: [12-mecatui-enrollment-controls-and-multi-backend-vertical]
-status: in-progress
+status: done
 branch: ""
 worktree: ""
 issue: ""
@@ -11,9 +11,11 @@ last_error: ""
 accumulator: acc/session-vmcp-authorization
 ---
 
-After the amended Task 09 Mode B live GitHub qualification, compare the final bundled
+After Task 12's deterministic two-backend vertical, compare the final bundled
 multi-upstream construction, consent, provider-scoped `QueryCapabilities`, and catalogue
-admission path with ToolHive v0.45.0's public APIs and `TOOLHIVE-REUSE-REVIEW.md`.
+admission path with ToolHive v0.45.0's public APIs and `TOOLHIVE-REUSE-REVIEW.md`. Complete
+this consolidation before Task 09 Mode B, so the live GitHub qualification exercises the
+consolidated result.
 
 Consolidate only genuine duplicated OAuth/authserver/vMCP/capability behavior that ToolHive
 already owns. Preserve mecatl's necessary adapter-private provider-name mapping, owner/session
