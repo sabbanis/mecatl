@@ -387,6 +387,21 @@ func (m Model) finishStartupResume() (tea.Model, tea.Cmd) {
 	if liveCmd := (&m).armLiveFeed(); liveCmd != nil {
 		cmd = tea.Batch(cmd, liveCmd)
 	}
+	// A resumed session whose protected catalogue is not yet admitted (fresh, or
+	// re-required after a broker restart wiped its grants — see
+	// WORKSPACE-ENROLLMENT-RECONNECT-GAP.md) must not have its CLI-seeded prompt
+	// fired blind: that would record a message on the session BEFORE enrollment,
+	// permanently tripping the server's "must precede the first prompt" gate.
+	// m.caps was already set from resume.Snapshot.Capabilities (session-scoped,
+	// via capabilitiesForSession) at Init(), so this mirrors applySessionReady's
+	// deferral exactly, without needing a fresh RPC.
+	if m.caps.WorkspaceEnrollment {
+		m.phase = phaseWorkspaceEnrollment
+		m.enrollment = workspaceEnrollmentState{}
+		m.prompt.Blur()
+		m.statusMsg = "workspace services require connection"
+		return m, cmd
+	}
 	if mm, submitCmd, ok := m.startInitialPrompt(); ok {
 		return mm, tea.Batch(cmd, submitCmd)
 	}
