@@ -2,8 +2,8 @@
 id: 04-docs-and-layering
 title: Accept ADR 0278 and reconcile architecture and lifecycle docs
 blocked_by: [02-fork-ledger-isolation, 03-redis-ledger]
-status: in-progress
-branch: ""
+status: done
+branch: "plan-persistent-read-before-write-ledgers/04-docs-and-layering"
 worktree: ""
 issue: "888"
 retries: 0
