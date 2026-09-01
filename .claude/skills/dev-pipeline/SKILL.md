@@ -3,11 +3,11 @@ name: dev-pipeline
 description: >-
   Drives substantial issue/feature work as a multi-agent pipeline:
   architect plans → separate agent implements → review panel scrutinises →
-  findings loop back → commit per iteration. Use when the user says "let's
-  work on these issues", "let's go", "let's pick up issue N", "implement this
-  feature", or hands over an issue/PRD for end-to-end delivery.
-  NOT for trivial edits, one-off questions, or pure-docs/config tweaks
-  (just do those directly).
+  findings loop back → commit per iteration. Use only when the user explicitly
+  selects the full development pipeline. Work-item context, issue numbers,
+  estimates, and exploratory questions are not implementation authorization.
+  NOT for advisory questions, lightweight work, acceptance-plan orchestration,
+  trivial edits, or pure-docs/config tweaks.
 ---
 
 # Dev Pipeline
@@ -18,26 +18,36 @@ the agent that plans is not the agent that implements, and neither judges its
 own work — an independent review panel does, adversarially, before anything
 lands.
 
-Run the full pipeline **per issue**. Honor the repository's `CLAUDE.md` for
-build/test/commit conventions throughout — this skill describes the *process*,
-not project-specific commands.
+Run this skill only after the user explicitly selects **full development pipeline**. A work-item ID, issue body, PRD, estimate, or exploratory question supplies context; it does not authorize implementation or delegation. For advisory questions, recommend a route and stop. For small changes, use the lightweight route instead: classify complexity, give a brief plan, obtain approval, edit directly, run focused verification, then offer broader gates.
 
-## When to run this
+## Route and complexity gate
 
-Trigger phrases: "let's work on these issues", "let's go", "let's pick up
-issue N", "implement this feature/issue", or when handed an issue number, PRD,
-or spec for end-to-end delivery. For several issues, run the pipeline once per
-issue in sequence — finish one before starting the next.
+Before any implementation, classify the request as advisory, lightweight, full
+pipeline, or acceptance-plan orchestration. Do not automatically run an
+implementation subagent, panel review, QA review, or full test suite.
 
-**Complexity gate.** This pipeline trades latency for rigor — it earns its
-keep on multi-file, non-obvious, or unfamiliar work. If the change is a
-one-sentence diff (a typo, a single-line fix, a pure-docs/config tweak), skip
-the pipeline and just make the edit. When unsure, ask whether the scope is
-worth the ceremony.
+The full pipeline earns its ceremony on multi-file, non-obvious, or unfamiliar
+work. If a change is small, route it to lightweight work rather than silently
+running this skill. Pause and ask before continuing if the hand-written diff is
+roughly twice its estimate or reveals unexpected complexity.
 
-## The pipeline
+### Lightweight route (small changes)
 
-### 1. Approach (plan, no code)
+For small or mechanical changes, do not run this pipeline. Use this sequence:
+
+1. classify complexity and give a brief plan;
+2. obtain user approval for that plan;
+3. edit directly (do not spawn an implementation subagent);
+4. run formatting, touched-package compilation, focused tests, required
+   generation, and relevant safety checks;
+5. offer, but do not automatically run, broader gates or panel/QA review.
+
+Require E2E coverage only when focused tests cannot prove the real wiring; manual
+verification is acceptable for terminal-only behavior. Prefer structural fixes
+over branch-by-branch implementation and duplicated tests.
+
+### Full pipeline
+
 Spawn an **architect** agent (`Plan` or `software-architect`, on a high-reasoning model) to
 investigate the issue and produce a concrete, file-level implementation plan.
 It reads code and writes a plan — it writes **no production code**. The plan is
@@ -107,27 +117,13 @@ The implementer:
   its documentation land together, not in a follow-up,
 - does **NOT** commit — leaves changes in the working tree for review.
 
-### 3. Review (panel, parallel)
-Invoke the **`panel-review`** skill (spec + standards + domain specialists,
-fanned out in parallel) over the working-tree diff. The reviewers run in
-**fresh contexts that see only the diff + the plan**, never the implementer's
-reasoning — that independence is what makes the review worth running. Scope
-them to **correctness and stated-requirement gaps**, not style nits or
-speculative hardening: a gap-hunting reviewer will always find *something*, and
-chasing every finding leads to over-engineering. It returns a tiered findings
-report.
+### 3. Review (optional unless selected as part of this route)
 
-**Also review the tests, not just the production code.** The panel above
-scrutinises the diff's *logic*; nobody on it is asking "are the tests
-adequate?" Run a **QA / test-expert agent** in its own fresh context to
-adversarially review the **test suite**: does coverage match what changed, is
-there an **end-to-end / wiring gap** (the feature unit-tested but never driven
-through the real harness), would any assertion still pass if the behaviour
-broke, and are there **determinism / flake risks** (ordering, time, randomised
-map iteration)? Have it first learn the repo's test conventions so its
-recommendations match them, and return a tiered gap list (must-add /
-should-add), not a wishlist. If no QA agent is installed, brief a
-general-purpose agent for the role.
+Invoke the **`panel-review`** skill only when the user explicitly requests it or
+has explicitly selected this full pipeline. A QA/test review is likewise part of
+this route only when the user approved the full pipeline; it is not an automatic
+follow-up to implementation. Scope both to correctness and stated-requirement
+gaps, not style nits or speculative hardening.
 
 ### 4. Iterate (fix confirmed findings)
 Feed the **cross-confirmed, actionable** findings — from both the code panel
@@ -142,40 +138,27 @@ explicitly accepted with the user, or after ~3 iterations — whichever comes
 first. If it hasn't converged by then, surface the state to the user rather
 than looping indefinitely.
 
-### 5. Commit (one per iteration)
-Commit the verified change with explicit paths and the project's commit
-trailer (per `CLAUDE.md`). **One commit per iteration**, not one giant commit
-at the end. Commit directly to the working branch the repo conventions specify.
+### 5. Commit (only with explicit authorization)
 
-Auto-committing per iteration is the **deliberate, preferred posture** here —
-don't stop at a summary and wait to be told to commit. The gate stays on
-*outward-facing* actions only (opening PRs, filing/closing issues, posting
-comments): those are the user's call. Local commits are not gated.
+Commit only when the user explicitly requests it or explicitly selected a full
+pipeline whose consent includes commits. Use explicit paths and the project's
+commit trailer; never infer commit permission from implementation approval.
 
 ## Standing rules (apply throughout)
 
-- **Finish, don't defer.** Don't silently drop pieces of an issue. If
-  something genuinely must wait, flag it explicitly and get agreement — the
-  default is to finish it.
-- **Probe assumptions hard.** Investigate orthogonal questions that surface
-  mid-stream ("is X actually true?", "should we use a library here?") rather
-  than hand-waving them. Bring findings back, don't bury them.
+- **Respect the route boundary.** Do not silently escalate from advisory to implementation, from lightweight to full pipeline, or from focused verification to broad review/gates. Ask before crossing a boundary.
+- **Pause on scope drift.** If the hand-written diff is roughly twice its estimate or reveals unexpected complexity, stop and ask whether to reclassify the work.
+- **Prefer the smallest sufficient proof.** Require E2E coverage only when focused tests cannot prove the real wiring; manual verification is acceptable for terminal-only behavior.
+- **Keep the change focused.** Prefer structural fixes over branch-by-branch implementation and duplicated tests. Keep comments and narrow ADRs concise and avoid repeating rationale.
 - **Outward-facing GitHub writes are the user's call.** Filing or closing
-  issues, opening PRs, posting comments — confirm with the user first. Local
-  commits are fine per repo convention.
-- **Leave it better than found.** Add nil guards, backfill tests for code you
-  touch, tidy adjacent rough edges — kept relevant to the change, no sprawl.
-- **Sync the docs as part of the change.** Shipping a feature makes its design
-  notes, READMEs, capability lists, and help/log strings stale — flip "planned"
-  or "deferred" to *shipped*, and reconcile any design that the as-built code
-  diverged from. Stale docs are a finishing gap, not a separate task; the user
-  shouldn't have to ask.
-- **Tests are a reviewed deliverable.** Cover the change at the right level —
-  including an end-to-end test through the real harness for user-reachable
-  capabilities, not just unit tests — and have the test suite itself reviewed
-  by a QA/test agent, separate from the production-code panel. "The tests pass"
-  is not the bar; "the tests would fail if this broke, and nothing reachable is
-  left uncovered" is. The user shouldn't have to ask whether e2e tests exist.
+  issues, opening PRs, posting comments, and similar actions always require
+  confirmation. Do not infer commit permission from implementation approval.
+- **Sync the docs as part of the change** when the selected route includes
+  implementation; do not invent unrelated cleanup.
+- **Tests are sufficient, not maximal.** Require E2E coverage only when
+  focused tests cannot prove the real wiring; manual verification is acceptable
+  for terminal-only behavior. Do not automatically run QA review or the full
+  suite outside an explicitly selected full pipeline.
 - **One purpose per Bash call.** Never bundle a destructive op (`rm`, `mv`)
   with read-only exploration; keep each approval prompt easy to reason about.
 - **Stage explicit paths** — never `git add -A`.

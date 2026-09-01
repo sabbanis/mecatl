@@ -5,40 +5,19 @@ description: >-
   issue/PRD?), Standards (matches repo conventions?), Domain (what
   installed specialist reviewer agents say — security, K8s, DevOps,
   duplication, library-reuse, project architects). Fans all three out
-  in parallel; three-tier report.
+  in parallel; three-tier report. Use only when the user explicitly asks
+  for review or selects the full development pipeline.
 
-  Use PROACTIVELY after the user finishes implementing, modifying,
-  refactoring, fixing, porting, or shipping code — before they ask.
-  Implementation should be followed by review.
-
-  Auto-trigger on: "review", "code review", "panel review", "audit",
-  "check this", "scrutinise", "look at my changes", "review the diff",
-  "review since X", "review against the spec", "did this implement the
-  issue", "check against the PRD", "done", "finished", "implemented",
-  "wrote", "added", "refactored", "fixed", "shipped", "ready for
-  review", "PR ready", "/panel-review".
-
-  NOT for: trivial edits (use /code-review), cloud review (use
-  /code-review ultra), drafting code, posting GitHub comments (use
-  /pr-review-post), pure-config diffs.
+  NOT for automatic post-implementation review, advisory questions,
+  lightweight work unless separately requested, or pure-config diffs.
 ---
 
 # Panel review
 
-A workflow skill. The user has just changed code (or explicitly asked
-for a review), and the change needs to be reviewed across three
-**orthogonal axes** — spec adherence, project standards, and specialist
-domain expertise — with each axis able to disagree with the others
-without being silenced.
-
-**Proactive trigger discipline.** This skill is meant to auto-fire
-after implementation, not on every chat message. Fire when there's a
-plausible code-change checkpoint — a finished feature, a fixed bug, a
-landed refactor, an "I think that's done" — but not on conversation,
-questions, planning, or tiny one-line edits the user clearly didn't
-want reviewed. When in doubt, run a quick `git diff --stat` and ask:
-"Want me to run a panel review on this?" rather than firing
-unilaterally on an ambiguous message.
+A workflow skill. Run it only after the user explicitly requests a review or
+selects the full development pipeline. A changed working tree or completed
+implementation is context, not permission. Lightweight work should receive a
+review offer rather than an automatic panel.
 
 Each axis catches a different failure mode:
 

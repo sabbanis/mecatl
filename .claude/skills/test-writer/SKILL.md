@@ -7,8 +7,10 @@ description: >-
   mockllm / memfs / memstore — plus the shared conformance suites, never a
   live network call or a mock-framework mock of a port). Use when adding
   tests, writing a new package's test surface, porting a failing scenario
-  into a regression test, or pinning an ADR rule / AGENTS.md invariant. NOT
-  for authoring the acceptance plan (use /to-acceptance-plan).
+  into a regression test, or pinning an ADR rule / AGENTS.md invariant. Use
+  only when the user explicitly asks to write or update tests. Advisory
+  test-design questions should produce a recommendation or stub without
+  editing. NOT for authoring the acceptance plan (use /to-acceptance-plan).
 ---
 
 # test-writer
@@ -18,7 +20,9 @@ description: >-
 Every mecatl test answers four questions in order: what invariant or ADR
 does it defend? what layer does it live at? what naming convention does it
 follow? what fake or fixture does it need? This skill walks you through
-those four questions and emits a test stub.
+those questions and emits a test stub. Writing files requires an explicit user
+request; test design, focused test execution, and broader verification are
+separate steps.
 
 ## Prerequisites
 
@@ -151,11 +155,17 @@ step before you trust a green result:
 Every test carries at least one assertion that can fail on a real
 regression. `_ = err` is not verification.
 
-### Step 5: Verify with the Taskfile
+### Step 5: Focused verification
+
+Run formatting, touched-package compilation, the focused test, required
+regeneration, and relevant safety checks. Start with the narrowest affected
+test command; offer `task lint`, `task test`, and broader suites rather than
+running them automatically. Require an E2E test only when focused tests cannot
+prove the real wiring. Manual verification is acceptable for terminal-only
+behavior.
 
 ```bash
-task test          # both modules + the engine-standalone hygiene proof
-cd engine && go test ./agent/ -run TestYourNewTest   # a single engine test
+cd engine && go test ./agent/ -run TestYourNewTest   # focused example
 ```
 
 Then check: did the work introduce a new invariant or ADR claim along the

@@ -46,6 +46,25 @@ will fight every workflow below. At minimum:
 Tell the user which are already in context and offer to load the rest
 before starting the workflow they asked about.
 
+## Choose a route before execution
+
+Work-item context, issue bodies, estimates, and exploratory questions are
+read-only context, not authorization. Recommend one route, explain its scope,
+and stop until the user explicitly selects it:
+
+- **Advisory** — investigate, explain, or review without editing.
+- **Lightweight implementation** — classify complexity, give a brief plan, get
+  approval, edit directly, run focused tests and required checks, then offer
+  broader gates.
+- **Full development pipeline** — explicitly authorize delegated implementation,
+  panel/QA review, and the broader pipeline gates.
+- **Acceptance-plan orchestration** — explicitly authorize drafting and
+  orchestrating an acceptance plan.
+
+Do not automatically invoke implementation subagents, panel reviews, QA reviews,
+or full test suites. If lightweight work grows to roughly twice its estimate or
+reveals unexpected complexity, pause and ask whether to reclassify it.
+
 ## The spine — idea → trusted implementation
 
 Three steps, in order. Each ends at a checkpoint; you type the next command.
@@ -68,11 +87,11 @@ to want a design contract and a verification gate.
 3. **Human merge** — the single human gate. Review and merge the PR.
    Gaps found at review → back to step 2 as new/updated tasks.
 
-**Skip rules:** for issue-scale work (a bug, a focused feature with an
-issue as the spec), skip the spine and use **`/dev-pipeline`** — the
-lightweight approach → implement → panel-review → iterate → commit loop.
-Never skip the human gate — merging the PR is what makes the agent-driven
-build trustworthy.
+**Route boundary:** `/to-acceptance-plan` and `/plan-orchestrate` are separate
+explicit-consent routes. For issue-scale work, recommend the lightweight route
+first; do not silently upgrade it to the full pipeline. Do not automatically
+invoke implementation subagents, panel reviews, QA reviews, or full test suites.
+Never skip the human gate for a PR.
 
 ## Verification, tracked
 

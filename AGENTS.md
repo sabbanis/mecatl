@@ -26,6 +26,19 @@ Driven over gRPC + HTTP; an optional Bubble Tea TUI (`mecatui`) is a client.
 Be token-efficient by avoiding needless context, tool calls, and delegation—not by prematurely constraining useful work. When invoking `Subagent`, omit `max_run_tokens`/`max_tokens`, `max_turns`, `max_tool_calls`, and `timeout_ms` unless the user or task explicitly requests a bound. Omit `authority` too unless a task requires a deliberate, documented reduction of the child’s derived authority; an unnecessary `remaining_delegation_depth` or tool/filesystem restriction can prevent the delegation from running. Unnecessary limits can terminate a child after spending tokens without producing its deliverable.
 For unfamiliar code, use `Grep` to locate symbols, then bounded `Read` calls (`offset` + `limit`); do not issue parallel full-file reads. Pass known ranges to a delegated worker and stop discovery once there is enough context for its next edit.
 
+## Workflow consent and routing
+
+Work items, issue bodies, PRDs, estimates, and pasted context provide requirements and context; they do **not** authorize implementation, delegation, broad verification, commits, or outward-facing actions. Treat exploratory questions such as “How could we…?” and estimates as read-only requests.
+
+Before execution, require the user to explicitly choose one route:
+
+- **Advisory** — investigate, explain, or review without editing.
+- **Lightweight implementation** — classify complexity, give a brief plan, get approval, edit directly, run focused verification, and offer broader gates.
+- **Full development pipeline** — explicitly authorize delegated implementation, panel/QA review, and the broader gates defined by the pipeline.
+- **Acceptance-plan orchestration** — explicitly authorize drafting and orchestrating an acceptance plan.
+
+Do not automatically run implementation subagents, panel reviews, QA reviews, or full test suites. Lightweight work must still run formatting, touched-package compilation, focused tests, required generation, and relevant safety checks. Pause for confirmation if the hand-written diff exceeds roughly twice its estimate or reveals unexpected complexity. Prefer structural fixes over branch-by-branch implementation or duplicated tests. Require an E2E test only when focused tests cannot prove the real wiring; manual verification is acceptable for terminal-only behavior. Keep comments, tests, and narrow ADRs concise and avoid repeating rationale. Detailed subsystem guidance belongs in path-scoped rules or the owning skill, not in this contract.
+
 ## Commands
 
 **Always build through the Taskfile** — a bare `go build` in the repo root drops stray
