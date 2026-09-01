@@ -91,14 +91,15 @@ and `curl` examples, see the [HTTP/SSE API reference](https://github.com/stacklo
 
 ### Important difference: steering
 
-gRPC sends control frames on the live `Converse` stream itself, and a steer
-that loses the race against the run's end is auto-promoted into a follow-up
-run. HTTP/SSE steers through a unary pair instead —
-`POST /v1/sessions/{id}/steer` and `POST /v1/sessions/{id}/steer-cancel` —
-gated on the `steer` capability bit. The HTTP tier never promotes: a
-`too_late` outcome means nothing was enqueued, and the caller re-sends the
-text as an ordinary prompt. Use gRPC when your client needs in-stream control
-frames or server-side promotion.
+gRPC sends control frames on the live `Converse` stream itself. HTTP/SSE
+steers through a unary pair — `POST /v1/sessions/{id}/steer` (text and/or
+multimodal `parts`, an optional strict `expected_run_id`) and
+`POST /v1/sessions/{id}/cancel-steer` — gated on the `steer` capability bit
+and advertised as `http_steer` in `GET /v1/compatibility`. An unqualified
+steer that loses the race against the run's end is promoted into a follow-up
+run and relayed as SSE on the same response; a strict steer never promotes —
+it answers `409` (`stale_run_control`) and the caller keeps the text. Use
+gRPC when your client needs in-stream control frames.
 
 ## Connect securely
 

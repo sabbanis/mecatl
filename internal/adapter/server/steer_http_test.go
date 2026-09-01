@@ -148,13 +148,12 @@ func TestHTTPSteer_AcceptedEchoesMessageID(t *testing.T) {
 	}
 }
 
-// TestHTTPSteer_TooLateNeverPromotes: a steer against a session with NO live
-// run reports 200 {"outcome":"too_late"} and starts NOTHING — the session's
-// terminal state is untouched, no run registers, and no extra model call fires.
-// The caller kept the text; the follow-up prompt is the caller's own move
-// (unlike Service.Steer, whose gRPC composition promotes in-server).
-func TestHTTPSteer_TooLateNeverPromotes(t *testing.T) {
-	llm := mockllm.New(mockllm.TextTurn("first"))
+// TestHTTPSteer_TooLatePromotesAndRelays (ADR 0252): an UNQUALIFIED steer
+// against a session with no live run is promoted to a follow-up run —
+// Service.Steer's ADR 0232 contract — and the promoted run is relayed as SSE
+// on this same response, terminal result included, leaving nothing registered.
+func TestHTTPSteer_TooLatePromotesAndRelays(t *testing.T) {
+	llm := mockllm.New(mockllm.TextTurn("first"), mockllm.TextTurn("promoted answer"))
 	svc := newSteerService(t, llm, nil)
 	srv := httptest.NewServer(server.NewHTTPHandler(svc))
 	defer srv.Close()
@@ -171,22 +170,72 @@ func TestHTTPSteer_TooLateNeverPromotes(t *testing.T) {
 		t.Fatalf("precondition: state = %q, want completed", got)
 	}
 
-	status, body := postSteer(t, srv, id, "steer", `{"text":"late follow-up"}`)
-	if status != http.StatusOK {
-		t.Fatalf("steer status = %d, want 200", status)
+	promoteResp, err := http.Post(srv.URL+"/v1/sessions/"+id+"/steer", "application/json",
+		strings.NewReader(`{"text":"late follow-up"}`))
+	if err != nil {
+		t.Fatalf("POST steer: %v", err)
 	}
-	if body.Outcome != "too_late" {
-		t.Fatalf("steer outcome = %q, want too_late", body.Outcome)
+	defer promoteResp.Body.Close()
+	if promoteResp.StatusCode != http.StatusOK {
+		t.Fatalf("steer status = %d, want 200", promoteResp.StatusCode)
 	}
-	// NO promotion: no live run registered, state unchanged, no second model call.
+	if ct := promoteResp.Header.Get("Content-Type"); !strings.HasPrefix(ct, "text/event-stream") {
+		t.Fatalf("promoted steer Content-Type = %q, want an SSE relay", ct)
+	}
+	events := parseSSE(t, bufio.NewReader(promoteResp.Body))
+	if res := lastResult(t, events); res.GetText() != "promoted answer" {
+		t.Fatalf("promoted run result text = %q, want the second turn", res.GetText())
+	}
 	if _, live := svc.LookupRun(session.SessionID(id)); live {
-		t.Fatalf("a too_late HTTP steer must NOT register a promoted run")
+		t.Fatalf("the promoted run must be deregistered after the relay")
 	}
-	if got := httpSessionState(t, srv, id); got != "completed" {
-		t.Fatalf("state after too_late steer = %q, want completed (unchanged)", got)
+	if calls := llm.Calls(); calls != 2 {
+		t.Fatalf("provider calls = %d, want 2 (the promoted follow-up drives one)", calls)
+	}
+}
+
+// TestHTTPSteer_StrictNeverPromotes (ADR 0249/0252): expected_run_id names a
+// run that already ended — the steer is refused 409 (stale_run_control),
+// nothing is promoted, the state and call count are untouched. The caller
+// keeps the text.
+func TestHTTPSteer_StrictNeverPromotes(t *testing.T) {
+	llm := mockllm.New(mockllm.TextTurn("first"))
+	svc := newSteerService(t, llm, nil)
+	srv := httptest.NewServer(server.NewHTTPHandler(svc))
+	defer srv.Close()
+
+	id := createHTTPSession(t, srv)
+	resp, err := http.Post(srv.URL+"/v1/sessions/"+id+"/prompt", "application/json",
+		strings.NewReader(`{"text":"hello"}`))
+	if err != nil {
+		t.Fatalf("POST prompt: %v", err)
+	}
+	parseSSE(t, bufio.NewReader(resp.Body))
+	resp.Body.Close()
+
+	strictResp, err := http.Post(srv.URL+"/v1/sessions/"+id+"/steer", "application/json",
+		strings.NewReader(`{"text":"late follow-up","expected_run_id":"r-gone"}`))
+	if err != nil {
+		t.Fatalf("POST strict steer: %v", err)
+	}
+	defer strictResp.Body.Close()
+	if strictResp.StatusCode != http.StatusConflict {
+		t.Fatalf("strict steer status = %d, want 409", strictResp.StatusCode)
+	}
+	var problem struct {
+		Code string `json:"code"`
+	}
+	if err := json.NewDecoder(strictResp.Body).Decode(&problem); err != nil {
+		t.Fatalf("decode problem body: %v", err)
+	}
+	if problem.Code != "stale_run_control" {
+		t.Fatalf("problem code = %q, want stale_run_control", problem.Code)
+	}
+	if _, live := svc.LookupRun(session.SessionID(id)); live {
+		t.Fatalf("a strict too_late steer must NOT register a promoted run")
 	}
 	if calls := llm.Calls(); calls != 1 {
-		t.Fatalf("provider calls = %d, want 1 (a promoted run would have driven a second)", calls)
+		t.Fatalf("provider calls = %d, want 1", calls)
 	}
 }
 

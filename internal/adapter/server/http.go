@@ -34,8 +34,8 @@ import (
 //	POST   /v1/sessions/{id}/approve  -> resolve the paused ask on the run
 //	POST   /v1/sessions/{id}/cancel   -> cancel the in-flight run
 //	POST   /v1/sessions/{id}/cancel-child -> cancel ONE child (subagent) of the run
-//	POST   /v1/sessions/{id}/steer    -> enqueue a mid-run steer (unary; outcome JSON)
-//	POST   /v1/sessions/{id}/steer-cancel -> retract the pending (un-drained) steer
+//	POST   /v1/sessions/{id}/steer    -> enqueue a mid-run steer (unary; outcome JSON; promoted follow-up relayed as SSE)
+//	POST   /v1/sessions/{id}/cancel-steer -> retract the pending (un-drained) steer (steer-cancel kept as a deprecated alias)
 //	POST   /v1/sessions/{id}/fork     -> ForkSession (peer session from a history snapshot; 201)
 //	GET    /v1/sessions/{id}/events   -> replay the durable event log; the stream ENDS
 //	GET    /v1/sessions/{id}/watch    -> durable replay-then-follow; the stream STAYS OPEN
@@ -68,6 +68,9 @@ func NewHTTPHandler(svc *Service) *HTTPHandler {
 	h.mux.HandleFunc("POST /v1/sessions/{id}/cancel", h.cancel)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/cancel-child", h.cancelChild)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/steer", h.steer)
+	h.mux.HandleFunc("POST /v1/sessions/{id}/cancel-steer", h.steerCancel)
+	// Deprecated alias for cancel-steer (the pre-ADR-0252 name); remove after
+	// clients migrate.
 	h.mux.HandleFunc("POST /v1/sessions/{id}/steer-cancel", h.steerCancel)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/fork", h.forkSession)
 	h.mux.HandleFunc("POST /v1/sessions/{id}/adoption:preflight", h.preflightSessionAdoption)
@@ -1157,17 +1160,28 @@ func (h *HTTPHandler) cancelChild(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// steerBody is the JSON body of POST /v1/sessions/{id}/steer.
+// steerBody is the JSON body of POST /v1/sessions/{id}/steer (ADR 0252):
+// the same contract as the gRPC steer frame, parts included.
 type steerBody struct {
 	// Text is the operator instruction to inject into the in-flight run, drained
-	// at the next turn boundary. Required.
+	// at the next turn boundary. Optional when Parts is non-empty (a media-only
+	// steer is legal, ADR 0251).
 	Text string `json:"text"`
+	// Parts carries the same multimodal content the prompt body accepts,
+	// decoded and validated through the ONE wire→domain choke point
+	// (toContentParts) — never a second validation path.
+	Parts []promptContentBody `json:"parts,omitempty"`
 	// MessageID is the CLIENT-MINTED correlation id for THIS send ("" =
 	// uncorrelated). It is echoed verbatim on the response and, when the steer
 	// lands, on the EvSteer drain echo's message_id (a WATERMARK — the latest
 	// contributing send's id of the bundle that drained), so the client splits
 	// its ordered pending queue positionally, never by text-match.
 	MessageID string `json:"message_id,omitempty"`
+	// ExpectedRunID pins the steer to a specific run (ADR 0249 strict steer).
+	// A mismatch — or a named run that has already gone terminal — is a 409
+	// problem (code stale_run_control), never a promotion: the caller asked to
+	// say something to run X, not to start a new run.
+	ExpectedRunID string `json:"expected_run_id,omitempty"`
 }
 
 // steerResp is the JSON response of POST /v1/sessions/{id}/steer and
@@ -1178,19 +1192,24 @@ type steerBody struct {
 type steerResp struct {
 	Outcome   string `json:"outcome"`
 	MessageID string `json:"message_id,omitempty"`
+	// Promoted is true when an unqualified too_late steer was promoted to a
+	// follow-up run that could not be relayed on this response (the
+	// non-streaming fallback) — the run drains into the durable event log.
+	Promoted bool `json:"promoted,omitempty"`
 }
 
-// steer handles POST /v1/sessions/{id}/steer — the unary HTTP tier of
-// steer-while-running (ADR 0232's deferred follow-up): enqueue an operator
-// instruction into the session's IN-FLIGHT run via Service.SteerEnqueue, to be
-// drained at the next turn boundary. 200 {"outcome": "accepted"|"appended",
-// "message_id": <echoed>} parks the text on the live run (the EvSteer echo on
-// the run's SSE stream carries the message_id when it drains); 200
-// {"outcome": "too_late"} means the run is already terminal, no run is live, or
-// the server's steer knob is off (capabilities "steer" false) — unlike the bidi
-// gRPC Steer frame it is NEVER auto-promoted to a follow-up run: the caller
-// keeps the text (never-drop holds caller-side) and re-sends it as an ordinary
-// POST /prompt. Unknown/foreign session → 404; oversized body → 413.
+// steer handles POST /v1/sessions/{id}/steer (ADR 0252) — the unary HTTP tier
+// of steer-while-running, on the same terms as the gRPC frame: text and/or
+// multimodal parts enqueue into the session's IN-FLIGHT run (drained at the
+// next turn boundary), answered 200 {"outcome": "accepted"|"appended",
+// "message_id": <echoed>}. An UNQUALIFIED steer that loses the terminal race
+// is PROMOTED to a follow-up run (Service.Steer's ADR 0232 contract) and the
+// promoted run is relayed as SSE on this same response — or, without a
+// flusher, background-drained into the durable event log with a
+// {"outcome":"too_late","promoted":true} ack — never handed back bare. A
+// STRICT steer (expected_run_id set) never promotes: a mismatch or a named
+// run already terminal is a 409 problem (stale_run_control). Unknown/foreign
+// session → 404; oversized body → 413.
 func (h *HTTPHandler) steer(w http.ResponseWriter, r *http.Request) {
 	id := session.SessionID(r.PathValue("id"))
 	// Bound the body read exactly like /prompt (CWE-770): an oversized payload
@@ -1206,20 +1225,48 @@ func (h *HTTPHandler) steer(w http.ResponseWriter, r *http.Request) {
 		writeError(w, http.StatusBadRequest, "invalid JSON body")
 		return
 	}
-	if body.Text == "" {
-		writeError(w, http.StatusBadRequest, "text is required")
+	if body.Text == "" && len(body.Parts) == 0 {
+		writeError(w, http.StatusBadRequest, "text or parts is required")
 		return
 	}
-	outcome, err := h.svc.SteerEnqueue(r.Context(), id, body.Text, body.MessageID)
+	parts, perr := toContentParts(body.Parts)
+	if perr != nil {
+		writeError(w, http.StatusBadRequest, perr.Error())
+		return
+	}
+	outcome, promoted, run, err := h.svc.Steer(r.Context(), id, body.Text, parts, body.MessageID, body.ExpectedRunID)
 	if err != nil {
 		writeServiceError(w, err)
 		return
 	}
-	writeJSON(w, http.StatusOK, steerResp{Outcome: string(outcome), MessageID: body.MessageID})
+	if !promoted || run == nil {
+		writeJSON(w, http.StatusOK, steerResp{Outcome: string(outcome), MessageID: body.MessageID})
+		return
+	}
+	// Promoted follow-up: the run is registered and this caller owns the drain
+	// (Service.Steer's contract). Mirror approve's REHYDRATE precedent: relay
+	// as SSE when the writer can stream, else background-drain into the
+	// durable log and ack — the run must never be left with nothing draining.
+	flusher, ok := w.(http.Flusher)
+	if !ok {
+		logCtx := context.WithoutCancel(r.Context())
+		recorder := NewRunEventRecorder(logCtx, h.svc, id)
+		go func() {
+			defer recorder.Close()
+			for ev := range run.Events() {
+				recorder.Observe(ev)
+			}
+			h.svc.deregister(id, run)
+		}()
+		writeJSON(w, http.StatusOK, steerResp{Outcome: string(outcome), MessageID: body.MessageID, Promoted: true})
+		return
+	}
+	h.relayRunSSE(w, r, id, run, flusher, "", false)
 }
 
-// steerCancel handles POST /v1/sessions/{id}/steer-cancel (mirroring the
-// cancel-child naming), retracting the session's live run's PENDING
+// steerCancel handles POST /v1/sessions/{id}/cancel-steer (ADR 0252,
+// mirroring the cancel-child naming; steer-cancel is a deprecated alias),
+// retracting the session's live run's PENDING
 // (un-drained) steer via Service.CancelSteer: 200 {"outcome": "retracted"}
 // (the pending bundle is gone, its message-id correlation dropped) or
 // {"outcome": "none_pending"} (nothing parked — already drained at a boundary,

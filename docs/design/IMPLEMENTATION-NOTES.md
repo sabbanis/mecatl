@@ -8078,18 +8078,23 @@ the client renders the echoed truth (recorded == streamed == model-view).
 (gRPC, v1), a `ServerCapabilities.steer` bit (additive grow, computed once in
 composition, mirrored onto the HTTP capabilities echo's `steer` field), the
 `EvSteer` echo, and — the ADR-0232 named follow-up, landed — the unary HTTP pair
-`POST /v1/sessions/{id}/steer` / `POST /v1/sessions/{id}/steer-cancel`
-(`internal/adapter/server/http.go` (`steer`)/(`steerCancel`), mirroring
-`approve`/`cancel`/`cancel-child`). The routing has ONE owner —
-`Service.SteerEnqueue` is the live-run fast path (authorize → enqueue → track
-the message id; NEVER promotes), `Service.Steer` composes it with the gRPC-only
-promote (`promotedSteerRun`), and `Service.CancelSteer` owns the retract
+`POST /v1/sessions/{id}/steer` / `POST /v1/sessions/{id}/cancel-steer`
+(ADR 0252; `steer-cancel` kept as a deprecated alias;
+`internal/adapter/server/http.go` (`steer`)/(`steerCancel`), mirroring
+`approve`/`cancel`/`cancel-child`). The HTTP body carries the SAME contract as
+the gRPC frame — text and/or multimodal `parts` (decoded through the one
+`toContentParts` choke point) plus an optional strict `expected_run_id` — and
+routes into the SAME `Service.Steer` the gRPC handler invokes.
+`Service.SteerEnqueue` remains the exported live-run fast path;
+`Service.CancelSteer` owns the retract
 (`internal/adapter/server/service.go`); both wire handlers are dumb
-frame/body→Service mappers. **The HTTP tier never promotes:** a too_late steer
-returns `{"outcome":"too_late"}` and the CALLER keeps the text (never-drop holds
-caller-side — an ordinary follow-up `POST /prompt` is the re-send), whereas a
-gRPC `steer` frame's text has no other home once the ack is sent, so only the
-`Service.Steer` composition auto-promotes. **Correlation (watermark).** Every
+frame/body→Service mappers. **Promotion over HTTP follows ADR 0252:** an
+UNQUALIFIED too_late steer is promoted and the follow-up run is relayed as SSE
+on the same response (or background-drained into the durable event log behind
+a `{"outcome":"too_late","promoted":true}` ack when the writer cannot stream);
+a STRICT steer (`expected_run_id` set) never promotes — a mismatch or a named
+run already terminal answers `409` `stale_run_control` and the caller keeps
+the text. The pair self-describes as `http_steer` in the feature registry. **Correlation (watermark).** Every
 frame carries a client-minted `message_id`; the ack lane echoes its own frame's
 id on each outcome (HTTP: the response body's `message_id`). The engine inbox
 parks text and media parts together, and the Service keeps a per-session FIFO of the ordered frame

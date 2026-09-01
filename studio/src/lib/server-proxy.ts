@@ -99,10 +99,16 @@ async function forward(
 }
 
 // Session and team creation require a workspace — the directory every file and
-// shell tool is rooted at — and the daemon rejects a create without one. It is
-// resolved server-side (managed: from the controller's /status; external: from
-// MECATL_WORKSPACE) so a machine-specific absolute path never reaches the
-// client bundle, and so the browser can never choose it.
+// shell tool is rooted at. It is resolved server-side (managed: from the
+// controller's /status; external: from MECATL_WORKSPACE) so a machine-specific
+// absolute path never reaches the client bundle, and so the browser can never
+// choose it.
+//
+// SERVER-ASSIGNED deployments (ADR 0237): a daemon with a network-facing
+// listener assigns the workspace itself and REJECTS any non-empty client
+// workspace with 400 "deployment assigns the workspace". Against such a
+// daemon, leave MECATL_WORKSPACE unset in external mode — an unset value
+// deliberately injects nothing, which is the correct empty-workspace create.
 const workspaceInjectionPaths = new Set([
   "v1/sessions",
   "v1/teams",
@@ -164,6 +170,7 @@ export async function proxyMecatl(request: Request, path: string[]) {
   }
 
   let bodyOverride: BodyInit | undefined;
+  let injectedWorkspace = false;
   if (
     request.method === "POST" &&
     workspaceInjectionPaths.has(path.join("/"))
@@ -171,6 +178,7 @@ export async function proxyMecatl(request: Request, path: string[]) {
     bodyOverride = await withWorkspace(request, external);
     if (typeof bodyOverride === "string") {
       headers.set("content-type", "application/json");
+      injectedWorkspace = bodyOverride.includes('"workspace"');
     }
   }
   // Slash-command discovery scans the workspace's command directories; the
@@ -184,7 +192,28 @@ export async function proxyMecatl(request: Request, path: string[]) {
     const workspace = await resolveWorkspace(external);
     if (workspace) target.searchParams.set("workspace", workspace);
   }
-  return forward(request, target, headers, bodyOverride);
+  const response = await forward(request, target, headers, bodyOverride);
+  // A server-assigned deployment refusing OUR injected workspace is a
+  // configuration problem this tier created — name the fix instead of
+  // relaying a bare 400 the user cannot act on (ADR 0237).
+  if (injectedWorkspace && response.status === 400) {
+    try {
+      const clone = response.clone();
+      const body = (await clone.json()) as { error?: string };
+      if (body.error?.includes("deployment assigns the workspace")) {
+        return Response.json(
+          {
+            ...body,
+            error: `${body.error} — this deployment assigns its own workspace: unset MECATL_WORKSPACE in Studio's environment so creates are sent workspace-free.`,
+          },
+          { status: 400 },
+        );
+      }
+    } catch {
+      // Not JSON — relay untouched.
+    }
+  }
+  return response;
 }
 
 export async function proxyControl(request: Request, path: string[]) {
