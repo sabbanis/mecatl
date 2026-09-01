@@ -4259,8 +4259,16 @@ func (s *Service) StartScheduledRunContent(ctx context.Context, id session.Sessi
 // stream. Reuses runPurposeChat — a detached run is a normal chat run, just
 // drained server-side.
 func (s *Service) StartDetachedRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
+	// A detached run must outlive the caller's stream: the Converse handler
+	// returns (and gRPC cancels its stream context) the moment the ack is sent,
+	// but the run keeps driving server-side. Derive a cancel-detached context so
+	// the run is NOT cancelled when the caller's stream closes, while preserving
+	// the context VALUES (principal, etc.) for ownership/lease checks. The run
+	// stays cancellable via Run.Cancel — which Service.Close drives for every
+	// registered non-awaiting run — so a server shutdown still reaps it.
+	runCtx := context.WithoutCancel(ctx)
 	generation := s.captureRunEntryGeneration(id)
-	run, err := s.startRunContent(ctx, id, text, parts, runPurposeChat, generation, false)
+	run, err := s.startRunContent(runCtx, id, text, parts, runPurposeChat, generation, false)
 	if err != nil {
 		return nil, err
 	}
@@ -4278,6 +4286,17 @@ func (s *Service) StartDetachedRunContent(ctx context.Context, id session.Sessio
 			}
 		}
 		recorder.Close()
+		// The drain goroutine is the authoritative owner of a detached run, so
+		// it — not the engine's own save — guarantees the terminal session
+		// state is durably persisted. In composition (app.Build) the engine's
+		// Deps.Store is wired and terminate/terminateComplete already persist;
+		// Persist here is an idempotent re-save in that case and the ONLY
+		// persistence path when the engine has no store (tests, or a store-less
+		// composition). It must run BEFORE FinishRun, while the run is still
+		// registered so Persist can read the live aggregate the engine mutated
+		// to its terminal state. A cancel-detached ctx keeps the save alive even
+		// after the caller's stream context is gone.
+		s.Persist(logCtx, id)
 		s.FinishRun(id, run)
 	}()
 	return run, nil
