@@ -50,6 +50,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0251 — Multimodal steer preserves prompt content](./0251-multimodal-steer.md)
 - [0252 — HTTP steer endpoint: `POST /v1/sessions/{id}/steer`](./0252-http-steer-endpoint.md)
 - [0253 — SDK mocking testkit: vendor the proven unary pattern, defer streaming](./0253-sdk-mocking-testkit.md)
+- [0278 — Persistent read-before-write ledgers are independent storage](./0278-persistent-read-before-write-ledgers.md) *(supersedes ADR 0208 decision 6 only)*
 - [0036 — `engine/` is its own Go module (monorepo via `go.work`)](./0036-engine-module.md)
 - [0037 — Engine public-API stability contract](./0037-engine-stability-contract.md)
 - [0038 — Event-sourced SessionStore rehydration (the reference fold)](./0038-event-sourced-rehydration.md)
