@@ -10,12 +10,6 @@ surfaces on one rail — **Chats**, **Scheduled**, **Skills**, **Memory**, and
 **Settings**. It is a client like `mecatui`: the daemon owns every record, and
 Studio reads and writes the daemon's state rather than keeping its own.
 
-:::note Landing in progress
-Studio is landing as a stacked series of pull requests; the full workspace,
-including the mobile round, is now in the tree, with a closing documentation
-pass to follow.
-:::
-
 ## Starting it
 
 Managed mode (the default) supervises a `mecated` from your checkout:
@@ -38,105 +32,52 @@ MECATL_WORKSPACE=/srv/workspace \
 npm run start
 ```
 
-In external mode there is no local controller: every local control surface
-answers 409 as owned by the deployment.
+In external mode there is no local controller: provider, model-router, and
+MCP-gateway settings show as owned by the deployment.
 
-Studio is **daemon-only** by design: when the daemon is unreachable it renders
-an offline state that names the fix — never simulated content. The browser
-never holds a daemon address or credential; Studio's own server tier pins
-Host/Origin, injects the bearer and the session workspace server-side, and
-allowlists headers in both directions. The decision record is ADR 0288
-(`docs/adr/0288-studio-atrium-module.md` in the repo).
+Studio is **daemon-only**. If the daemon is unreachable you get an offline
+banner naming the fix — never simulated content.
 
-## Chats
+## What each surface does
 
-Chats are the daemon's sessions — there is no separate Studio store. The
-sidebar lists the daemon's session inventory bucketed by recency, with
-capability-gated rename and delete. A new chat is a draft until you send:
-the session is minted on first send, so abandoned drafts never litter the
-daemon. The transcript streams live (text, reasoning, tool activity, and
-delegation badges), failed turns surface as alerts instead of vanishing, and
-permission asks render as three-way approvals (allow once / always / deny)
-that withdraw if the daemon retracts them. @-mentions offer the daemon's
-agent roster and slash commands its command list.
+- **Chats** — the daemon's session store, live. The sidebar is the session
+  inventory (a chat renamed or deleted here is renamed or deleted for every
+  client); opening a chat reads its authoritative transcript; a new chat
+  creates its daemon session on the first message. Streaming shows tool calls,
+  reasoning, delegation badges when the run hands work to subagents or teams,
+  and permission asks with three-way verdicts (allow once / always / deny). A
+  failed run renders as failed, with a retry.
+- **Scheduled** — the schedule registry: create and edit schedules (cron with
+  timezone, or one-shot), pause/resume/fire, and audit each schedule's fire
+  history down to the per-fire session transcript. Write-capable schedules
+  require an explicit opt-in; the default posture is read-only plan mode.
+- **Skills** — the daemon's resolved skill inventory (name, summary,
+  provenance). Read-only today; authoring is a follow-up.
+- **Memory** — the user model: durable facts the agent has stored about you.
+  Read-only by design — the agent curates memory through injection-scanned
+  tool calls, so Studio never offers an editor.
+- **Settings** — appearance and notifications, plus (managed mode) the
+  provider status, the semantic model router, and the MCP gateway connection
+  (bearer token or OAuth). Credentials are never typed into Studio: `mecated`
+  reads them from `~/.config/mecatl/auth.yaml`.
 
-## Scheduled
+## Environment variables
 
-Scheduled tasks live on the daemon; Studio's Scheduled surface lists them
-with their fire history. Authoring supports the two real shapes — a cron
-schedule (with timezone and an optional max-fires cap) or a one-shot (with
-retry) — and mutating runs are an explicit opt-in in the form, so the
-invalid mutating/plan pairing cannot be constructed. Editing round-trips the
-schedule's carried spec (the daemon's update replaces the whole spec), and
-each fire links its real transcript.
+| Variable | Meaning |
+| --- | --- |
+| `MECATL_BASE_URL` | External daemon base URL; presence selects external mode |
+| `MECATL_AUTH_TOKEN` | Bearer for the external daemon (server-side only) |
+| `MECATL_WORKSPACE` | Workspace path in external mode (server-side only) |
+| `MECATL_STUDIO_PUBLIC_ORIGIN` | Comma-separated origins Studio is served from (CSRF gate) |
+| `MECATL_STUDIO_ORIGINS` | Controller's Origin allowlist (managed mode) |
+| `MECATL_STUDIO_PROVIDER` | Managed provider: `mock`, `openrouter`, or `toolhive` |
+| `MECATL_ALLOW_INSECURE_LOOPBACK_MCP` | `1` permits a loopback-HTTP MCP gateway |
 
-## Skills
+## Limits worth knowing
 
-The Skills surface lists the daemon's skills with provenance, browses folder
-skills (including the SKILL.md inline), and — in managed mode — authors them
-through the local controller: create a skill in two steps, upload a zip or a
-folder, enable/disable (a disabled skill moves to a holding area rather than
-being deleted), or delete. Skill names pass one shared validator on both the
-browser and the controller. In external mode the list is read-only: skill
-management belongs to the deployment.
-
-## Memory and Settings
-
-Memory is read-only by design: the daemon has no memory write API (a
-hand-typed value would enter turn-0 context without injection scanning), so
-Studio shows the memory table with honest disabled/empty states, per-entry
-detail, the store footprint, and the consolidate action. Settings carries
-Personalize (text size, interface scale, session-list side, notifications),
-the agent identity card (name and avatar are browser-local cosmetics — the
-agent learns your name in conversation), and the learning review page.
-
-## Providers, model router, MCP gateway
-
-In managed mode Studio administers the daemon's runtime configuration
-through the local controller: add a provider (built-in kinds take a base-URL
-override; custom gateways are validated), test a key, switch the active
-provider, remove one, and edit the model router over the daemon's whole
-model inventory. Provider credentials live in the daemon's auth file, owned
-server-side — Studio shows status booleans and key-shape hints, and key
-material never crosses to the browser. The MCP gateway URL is user-entered
-but always validated, and egress is HTTPS-only (loopback HTTP sits behind an
-operator env opt-in). In external mode all of this reads as owned by the
-deployment. The About-this-daemon card reports the safe identity probe.
-
-## External-mode sign-in (OIDC)
-
-When an external daemon sits behind an OIDC-aware gateway, the settings
-provider page offers sign-in: Studio's server tier runs the PKCE flow itself
-and holds tokens in process memory only — nothing token-shaped reaches the
-browser or disk. With OIDC unconfigured, the static `MECATL_AUTH_TOKEN` path
-is untouched. Managed mode never uses either.
-
-## Live re-attach
-
-Open a driving session in a second tab (or refresh mid-run) and Studio
-re-attaches to the live run through the daemon's durable session watch. One
-limit to know: the tab that *started* the run still cancels it if that tab's
-prompt connection drops — re-attach covers every other tab.
-
-## Modes, model switching, debug sessions
-
-The composer's mode selector switches the session's permission mode live
-(with rollback if the daemon refuses), and the model selector forks the
-conversation onto another model mid-chat, keeping the transcript. Where the
-daemon advertises session debugging, a chat's menu offers Debug with AI
-behind an explicit consent dialog; debug sessions carry a badge in the
-sidebar.
-
-## Labs
-
-Settings → Labs holds the clearly-labeled mock extras, default-off: a mock
-Projects section in the chat sidebar and a canned feature tour. These are
-browser-local demo content only — a mock id is hard-gated from ever reaching
-the daemon — and with the toggle off none of it exists at runtime.
-
-## On a phone
-
-Studio installs as a PWA and adapts below tablet width: bottom tab
-navigation, sheet-based side panels, a docked composer that plays well with
-the on-screen keyboard, long-press row actions, and swipe-to-dismiss.
-Desktop rendering is unchanged.
+- Studio re-attaches live to running sessions through the daemon's durable
+  session watch (any tab, including a scheduled fire in progress). One
+  residual: the tab that *started* a run still cancels it if that tab's
+  prompt connection drops.
+- Config writes in managed mode restart the daemon, which ends in-flight runs.
+- There is no cost display: the daemon accounts tokens, not currency.

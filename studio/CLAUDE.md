@@ -1,22 +1,123 @@
-# CLAUDE.md — studio/
+# CLAUDE.md — Mecatl Studio
 
-Studio is mecatl's web client (the Atrium workspace): a Next.js **Node module,
-never a Go module** — not in `go.work`, the layering DAG, depguard, or the
-api-compat gate. It consumes only the daemon's public HTTP/SSE API. See ADR
-0287 (`docs/adr/0288-studio-atrium-module.md`).
+The web client for the mecatl harness: a Next.js app (App Router) serving the
+Atrium workspace — Chats · Scheduled · Skills · Memory · Settings — against a
+`mecated` daemon. See ADR 0288 (module + posture) and ADR 0289 (server-backed
+chats).
 
-> Studio is landing as a stacked PR series; this file grows with the module.
-> Until the series completes, the rules below cover what is in the tree.
+## Commands
+
+Run through the root Taskfile, not bare npm:
+
+```sh
+task build          # repo root first — studio's managed mode spawns ../bin/mecated
+task studio:dev     # start Studio + its mecated supervisor (background; logs in studio/dev.log)
+task studio:stop    # stop web server + controller + the mecated it supervises
+task studio:test    # vitest run + the hermetic server-tier suite (builds first)
+task studio:lint    # biome
+task studio:typecheck
+```
+
+`npm run dev` = managed mode via `scripts/dev-local.mjs` (controller on :8788,
+web on :3000). `npm run dev:web` = bare `next dev` (external mode or against an
+already-running controller). Setting `MECATL_BASE_URL` selects external mode.
+The hermetic suite (`npm run test:server`) builds Next first — a stale build is
+the usual reason it fails mysteriously.
+
+## Module shape
+
+- `src/lib/protocol/` — the ONLY reader of raw daemon JSON: event decode +
+  StreamEvent translation, session inventory/transcript decoders, schedule
+  decode/encode. Generated TS proto bindings are deferred; this seam plus its
+  vitest suite is the stopgap.
+- `src/lib/harness/client.ts` — browser transport: fetch + SSE buffering +
+  stream robustness (120s idle timeout, saw-result guard).
+- `src/lib/server-proxy.ts` + `src/app/api/mecatl{,-control}/[...path]` — the
+  server tier: origin trust, header allowlists, bearer + workspace injection,
+  external-mode 409 policy.
+- `scripts/local-controller.mjs` — managed-mode sidecar (supervises `mecated`,
+  owns model-router/MCP-gateway config + OAuth); policy helpers in
+  `src/lib/controller-security.mjs`.
+- `src/features/agent/` — runtime-status provider + the daemon-backed hooks;
+  `src/app/workspace/**` — the five surfaces.
 
 ## Rules that have teeth
 
-- **Daemon-only.** No mock layer, no demo fallbacks: an unreachable daemon is a
-  rendered offline state. Never add fixture content behind a probe failure.
-- **npm, pinned.** Node from `.nvmrc`; the lockfile is regenerated only with
-  the pinned npm (`npx -y npm@10.9.4 install`) — npm 11 rewrites it into a
-  shape CI's npm 10 rejects. Installs run `--ignore-scripts`.
-- **License headers.** Everything under `studio/` is `Apache-2.0`; CI greps
-  away any stray Proprietary SPDX header regression.
-- **Gates.** `npm run lint` (Biome), `npm run typecheck`, `npm run knip`
-  (dead code/exports/deps), `npx vitest run`, `npm run build` — all green
-  before commit. Root docs gates still apply to any Markdown change.
+Each rule is backed by a test; break the rule and its test names you.
+
+1. **Daemon-only: an unreachable daemon renders offline, never demo data.**
+   There are no fixtures to fall back to — do not add any. The one sanctioned
+   exception is the explicit, default-off, clearly-labeled Labs mock content
+   (Settings → Labs → "Show mock features", `src/features/agent/mock-tour.ts`)
+   — an opt-in demo the user turns on, never a fallback for an unreachable
+   daemon.
+   (`tests/rendered-html.test.mjs`: unreachable daemon → friendly 503.)
+2. **The workspace is resolved, never hardcoded and never browser-supplied.**
+   Managed: controller `/status`; external: `MECATL_WORKSPACE`; injected
+   server-side into session/team/schedule creation. SERVER-ASSIGNED remote
+   deployments (ADR 0237 — any network-facing listener) refuse a client
+   workspace outright: leave `MECATL_WORKSPACE` unset there, and the proxy
+   deliberately injects nothing (the correct empty-workspace create); a
+   refused injection is rewritten with the unset-the-variable fix.
+   (hermetic: session creation carries the deployment workspace.)
+3. **Credentials never cross the browser/controller boundary.** No key-paste
+   UI anywhere; `mecated` reads `~/.config/mecatl/auth.yaml`. The proxy's
+   header allowlist excludes `authorization` from the browser.
+   (hermetic: bearer injected server-side.)
+4. **Controller mutations are server-only.** They require the server-set
+   `x-mecatl-studio-request` header, a loopback Host, and an allowlisted
+   Origin. (hermetic: CSRF/DNS-rebinding truth table.)
+5. **External mode owns nothing locally.** Every control write answers 409.
+   (hermetic: control writes 409.)
+6. **A failed turn renders as failed.** `result.stop === "error"` with no text
+   must never become a quiet success — the run_result event always reaches the
+   UI. (`src/lib/protocol/events.test.ts`.)
+7. **Unknown event kinds are surfaced, never dropped.** A new daemon
+   capability shows up as "not rendered yet". (`events.test.ts`.)
+8. **The memory panel is read-only.** A value typed into the UI would land in
+   turn-0 context bypassing injection scanning; the daemon has no write API by
+   design. Do not add an editor.
+9. **Session rows obey the store.** Eligibility comes from row capabilities
+   (omitted = denied); a row is removed only by a complete inventory walk or a
+   404; renames adopt the daemon's clamped echo.
+   (`src/lib/protocol/sessions.test.ts` + `use-agent-sessions`.)
+10. **Schedule PUT replaces the whole spec.** Fields the form cannot edit ride
+    the row's `carried` spec and are re-encoded, or they are silently deleted.
+    (`src/lib/protocol/schedules.test.ts`: carried round-trip.)
+11. **Requests are protojson; responses are stdlib JSON.** Never echo a decoded
+    response back as a request body. (`schedules.test.ts`: the asymmetry test.)
+12. **Skills are project-scoped only.** The controller pins `--skills-dir` and
+    never passes `--skills-conventional`.
+
+## Gotchas
+
+- `npm test` runs vitest in watch mode; CI and `task studio:test` use
+  `npx vitest run` + `npm run test:server`.
+- The controller restarts `mecated` on every config write; in-flight runs and
+  session ids die with it. Surfaces warn before writes that restart. Startup
+  rides the daemon's ready file (`--ready-file` + an ephemeral `--http-addr`
+  + a mkfifo lifetime pipe — Node's stdio "pipe" is a socketpair mecated
+  rejects); `/status` reports the ready doc's `apiMajor`/`features`/
+  `deployment`.
+- FireNow (`POST /v1/schedules/{name}/fire`) is synchronous — the request lasts
+  the whole agent run.
+- Live re-attach to a running session rides the durable watch
+  (`GET /v1/sessions/{id}/watch`, ADR 0250; gate on the
+  `watch_session_events` feature): SSE `{event, cursor, phase}` envelopes —
+  replay from the cursor (empty = the beginning), one event-less
+  `phase: "live"` boundary frame, then live follow. The client is
+  `src/lib/harness/watch.ts`; `use-agent-chat` attaches it when the
+  inventory reads running/awaiting and Studio is not itself driving the run.
+  Residual: `POST /prompt` still cancels its run on client disconnect, so a
+  reload of the DRIVING tab still ends the run — the watch covers runs
+  driven elsewhere (schedules, other tabs/clients) and parked approvals.
+
+<!-- BEGIN:nextjs-agent-rules -->
+
+# This is NOT the Next.js you know
+
+This version has breaking changes — APIs, conventions, and file structure may all differ from your training data. Read the relevant guide in `node_modules/next/dist/docs/` (resolved from this file's directory; in monorepos the `next` package may not be visible from the repo root) before writing any code. Heed deprecation notices.
+
+This block is written and re-added by `next dev` — verify at `node_modules/next/dist/server/lib/generate-agent-files.js`. Removing it from a diff only re-creates the uncommitted change; committing it with your work keeps the tree clean.
+
+<!-- END:nextjs-agent-rules -->
