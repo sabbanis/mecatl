@@ -12,8 +12,8 @@ Studio reads and writes the daemon's state rather than keeping its own.
 
 :::note Landing in progress
 Studio is landing as a stacked series of pull requests. This page grows with
-each one; right now everything except external-mode sign-in and the advanced chat
-tiers is in the tree.
+each one; right now everything except the advanced chat tiers (attachments, steering,
+threads, live re-attach, modes, mobile) is in the tree.
 :::
 
 ## Starting it
@@ -102,3 +102,11 @@ material never crosses to the browser. The MCP gateway URL is user-entered
 but always validated, and egress is HTTPS-only (loopback HTTP sits behind an
 operator env opt-in). In external mode all of this reads as owned by the
 deployment. The About-this-daemon card reports the safe identity probe.
+
+## External-mode sign-in (OIDC)
+
+When an external daemon sits behind an OIDC-aware gateway, the settings
+provider page offers sign-in: Studio's server tier runs the PKCE flow itself
+and holds tokens in process memory only — nothing token-shaped reaches the
+browser or disk. With OIDC unconfigured, the static `MECATL_AUTH_TOKEN` path
+is untouched. Managed mode never uses either.

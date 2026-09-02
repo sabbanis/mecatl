@@ -37,7 +37,7 @@ describe("studioAllowedOrigins", () => {
 
 /** The CSRF/DNS-rebinding truth table, mirroring the hermetic suite's idiom
  * (tests/rendered-html.test.mjs) for the shared server-tier check the proxy
- * routes run. */
+ * routes AND the OIDC auth routes run. */
 describe("requestIsTrusted", () => {
   const allowed = new Set(["http://localhost:3000"]);
   const table: Array<{
@@ -47,7 +47,7 @@ describe("requestIsTrusted", () => {
   }> = [
     {
       name: "same-origin navigation with no Origin header",
-      request: fakeRequest("http://localhost:3000/api/mecatl-control/status", {
+      request: fakeRequest("http://localhost:3000/api/auth/oidc/start", {
         host: "localhost:3000",
       }),
       trusted: true,
@@ -62,7 +62,7 @@ describe("requestIsTrusted", () => {
     },
     {
       name: "cross-site request (CSRF): hostile Origin",
-      request: fakeRequest("http://localhost:3000/api/mecatl/v1/sessions", {
+      request: fakeRequest("http://localhost:3000/api/auth/oidc/logout", {
         host: "localhost:3000",
         origin: "https://evil.example",
       }),
@@ -77,7 +77,7 @@ describe("requestIsTrusted", () => {
     },
     {
       name: "host absent falls back to the request URL's host",
-      request: fakeRequest("http://localhost:3000/api/mecatl-control/status"),
+      request: fakeRequest("http://localhost:3000/api/auth/oidc/status"),
       trusted: true,
     },
   ];
@@ -92,7 +92,7 @@ describe("requestIsTrusted", () => {
     const https = new Set(["https://studio.example"]);
     expect(
       requestIsTrusted(
-        fakeRequest("http://studio.example/api/mecatl/v1/models", {
+        fakeRequest("http://studio.example/api/auth/oidc/status", {
           host: "studio.example",
           "x-forwarded-proto": "https",
         }),
@@ -101,7 +101,7 @@ describe("requestIsTrusted", () => {
     ).toBe(true);
     expect(
       requestIsTrusted(
-        fakeRequest("http://studio.example/api/mecatl/v1/models", {
+        fakeRequest("http://studio.example/api/auth/oidc/status", {
           host: "studio.example",
           "x-forwarded-proto": "http",
         }),
