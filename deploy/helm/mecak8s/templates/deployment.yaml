@@ -8,8 +8,13 @@
 {{- range .Values.mcp.servers -}}{{- if eq .auth.mode "oauth" -}}{{- $mcpOAuth = true -}}{{- end -}}{{- end -}}
 {{/* mecak8s.mcpOAuthSettings renders a settings.yaml either way (oauth broker
      profiles, or an explicit mode: global opt-out for an empty server list -
-     see the helper's doc comment); mount it whenever either applies. */}}
-{{- $mcpSettings := or $mcpOAuth (not .Values.mcp.servers) -}}
+     see the helper's doc comment); mount it whenever either applies - unless
+     the operator already supplies their own --permission-config via
+     extraArgs, since permconfig's operator-tier mcp: block is first-file-wins
+     (never merged) and the chart's own file would silently win by load order. */}}
+{{- $operatorPermConfig := false -}}
+{{- range .Values.extraArgs -}}{{- if hasPrefix "--permission-config=" (toString .) -}}{{- $operatorPermConfig = true -}}{{- end -}}{{- end -}}
+{{- $mcpSettings := and (not $operatorPermConfig) (or $mcpOAuth (not .Values.mcp.servers)) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:

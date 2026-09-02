@@ -1,6 +1,8 @@
 {{- $oauth := false -}}
 {{- range .Values.mcp.servers -}}{{- if eq .auth.mode "oauth" -}}{{- $oauth = true -}}{{- end -}}{{- end -}}
-{{- if or $oauth (not .Values.mcp.servers) }}
+{{- $operatorPermConfig := false -}}
+{{- range .Values.extraArgs -}}{{- if hasPrefix "--permission-config=" (toString .) -}}{{- $operatorPermConfig = true -}}{{- end -}}{{- end -}}
+{{- if and (not $operatorPermConfig) (or $oauth (not .Values.mcp.servers)) }}
 apiVersion: v1
 kind: ConfigMap
 metadata:

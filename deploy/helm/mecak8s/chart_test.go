@@ -1332,6 +1332,94 @@ func TestMecak8sHelmChart_MCPDefaultsAreEmpty(t *testing.T) {
 	}
 }
 
+// TestMecak8sHelmChart_OperatorPermissionConfigSuppressesAutoMount pins the
+// fix for permconfig's operator-tier mcp: block being first-file-wins, never
+// merged (internal/adapter/permconfig/resolve.go's captureMCP): when the
+// operator already supplies their own --permission-config via extraArgs, the
+// chart must not also auto-mount its own settings.yaml, or the chart's file
+// silently wins by container-args load order and the operator's real broker
+// config is discarded.
+func TestMecak8sHelmChart_OperatorPermissionConfigSuppressesAutoMount(t *testing.T) {
+	extraArgsOverride := []string{"--set-json", `extraArgs=["--permission-config=/etc/mecatl/operator/settings.yaml"]`}
+
+	t.Run("empty mcp.servers", func(t *testing.T) {
+		rendered, err := helm(t, append(productionArgs(), extraArgsOverride...)...)
+		if err != nil {
+			t.Fatalf("render with operator extraArgs: %v", err)
+		}
+		assertOnlyOperatorPermissionConfig(t, rendered)
+	})
+
+	t.Run("oauth mcp.servers", func(t *testing.T) {
+		values := `
+mcp:
+  servers:
+    - name: oauth
+      url: https://mcp.example/mcp
+      auth:
+        mode: oauth
+        oauth:
+          profile: cluster
+          principal: service-account:mecak8s
+          issuer: https://issuer.example
+          client:
+            mode: cimd
+            cimd: {documentURL: https://issuer.example/client.json}
+          scopes: [mcp.read]
+          credentials:
+            secretKeyRef: {name: oauth, key: credential}
+          network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
+`
+		path := filepath.Join(t.TempDir(), "mcp-values.yaml")
+		if err := os.WriteFile(path, []byte(values), 0o600); err != nil {
+			t.Fatalf("write MCP values: %v", err)
+		}
+		withoutOverride, err := helm(t, append(productionArgs(), "-f", path)...)
+		if err != nil {
+			t.Fatalf("render oauth without operator extraArgs: %v", err)
+		}
+		if !strings.Contains(withoutOverride, "--permission-config=/etc/mecatl-mcp/settings.yaml") {
+			t.Fatal("oauth render without operator extraArgs should still auto-mount the chart's own settings.yaml")
+		}
+
+		withOverride, err := helm(t, append(append(productionArgs(), "-f", path), extraArgsOverride...)...)
+		if err != nil {
+			t.Fatalf("render oauth with operator extraArgs: %v", err)
+		}
+		assertOnlyOperatorPermissionConfig(t, withOverride)
+	})
+}
+
+func assertOnlyOperatorPermissionConfig(t *testing.T, rendered string) {
+	t.Helper()
+	deployment := deploymentFromRender(t, rendered)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if !slices.Contains(container.Args, "--permission-config=/etc/mecatl/operator/settings.yaml") {
+		t.Fatal("operator's own --permission-config missing from rendered args")
+	}
+	if slices.ContainsFunc(container.Args, func(arg string) bool {
+		return arg == "--permission-config=/etc/mecatl-mcp/settings.yaml"
+	}) {
+		t.Fatal("chart must not also render its own --permission-config when the operator supplies one via extraArgs")
+	}
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		if volume.Name == "mcp-profile" {
+			t.Fatal("chart must not mount its own mcp-profile volume when the operator supplies --permission-config via extraArgs")
+		}
+	}
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == "mcp-profile" {
+			t.Fatal("chart must not mount its own mcp-profile volumeMount when the operator supplies --permission-config via extraArgs")
+		}
+	}
+	if strings.Contains(rendered, "kind: ConfigMap") && strings.Contains(rendered, deployment.Name+"-mcp") {
+		t.Fatal("chart must not render its own -mcp ConfigMap when the operator supplies --permission-config via extraArgs")
+	}
+	if _, ok := deployment.Spec.Template.Annotations["checksum/mcp-profile"]; ok {
+		t.Fatal("chart must not stamp a checksum/mcp-profile annotation when it does not own the settings.yaml")
+	}
+}
+
 func TestMecak8sHelmChart_MCPStaticBearerNoneAndInsecureHTTP(t *testing.T) {
 	rendered, err := renderMCPValues(t, `
 mcp:
