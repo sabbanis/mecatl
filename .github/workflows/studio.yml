@@ -47,9 +47,9 @@ jobs:
         working-directory: studio
         run: npx vitest run
 
-      - name: Build
+      - name: Build + hermetic server-tier suite
         working-directory: studio
-        run: npm run build
+        run: npm run test:server
 
       - name: Audit
         working-directory: studio
