@@ -30,15 +30,13 @@ describe("contextUtilisation", () => {
 });
 
 /**
- * The rendered strip lives at the right end of the composer toolbar: a plain
- * "N% used" (the tooltip owns the approximation caveat and explains what a
- * context window is), text matching the toolbar pills' value typography
- * (text-sm, muted — the "On" in "Memory On"), and a bar spanning 40% of the
- * toolbar's container width.
+ * The rendered strip lives at the right end of the composer toolbar: a short
+ * bar plus a plain "N% used" (the tooltip owns the approximation caveat and
+ * explains what a context window is), text matching the toolbar pills' value
+ * typography (text-sm, muted — the "On" in "Memory On"), no model name.
  */
 describe("ContextMeter render", () => {
   const props = {
-    modelLabel: "claude-sonnet-5",
     contextWindow: 400_000,
     inputTokens: 80_000,
     outputTokens: 8_000,
@@ -52,11 +50,12 @@ describe("ContextMeter render", () => {
     expect(container.textContent).not.toContain("approximate");
   });
 
-  it("sizes the bar to 40% of the toolbar container and docks right", () => {
+  it("docks right with a short fixed bar and no model name", () => {
     const { container } = render(createElement(ContextMeter, props));
     const root = container.firstElementChild;
     expect(root?.className).toContain("ml-auto");
-    expect(root?.innerHTML).toContain("w-[40cqw]");
+    expect(root?.innerHTML).toContain("w-16");
+    expect(container.textContent?.trim()).toBe("22% used");
   });
 
   it("uses the toolbar pills' value typography", () => {

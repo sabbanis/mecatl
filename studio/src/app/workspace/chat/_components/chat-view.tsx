@@ -1314,7 +1314,6 @@ export function ChatView({
                   contextMeter={
                     contextInfo && contextInfo.contextWindow > 0 ? (
                       <ContextMeter
-                        modelLabel={contextInfo.modelLabel}
                         contextWindow={contextInfo.contextWindow}
                         inputTokens={usage?.inputTokens ?? 0}
                         outputTokens={usage?.outputTokens ?? 0}

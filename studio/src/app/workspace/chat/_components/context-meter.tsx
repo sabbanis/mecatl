@@ -1,15 +1,14 @@
 "use client";
 
 /**
- * The context strip at the right end of the composer toolbar (B1.1): the
- * session's effective model and an APPROXIMATE context-utilisation meter —
- * cumulative input+output tokens this visit counted (summed from the runs'
- * terminal usage frames) vs the model's `resolved_model.context_window`. The
- * reading is approximate — the daemon's true compaction trigger also counts
- * the system prompt and tool schemas, which the client never sees, and a page
- * reload loses the visit's running total — which the tooltip explains.
- * Typography matches the toolbar pills' value text (the "On" in "Memory On");
- * the bar spans 40% of the toolbar's width (cqw against its @container).
+ * The context strip at the right end of the composer toolbar (B1.1): a short
+ * bar plus an APPROXIMATE context-utilisation figure — cumulative input+output
+ * tokens this visit counted (summed from the runs' terminal usage frames) vs
+ * the model's `resolved_model.context_window`. The reading is approximate —
+ * the daemon's true compaction trigger also counts the system prompt and tool
+ * schemas, which the client never sees, and a page reload loses the visit's
+ * running total — which the tooltip explains. Typography matches the toolbar
+ * pills' value text (the "On" in "Memory On").
  */
 
 import {
@@ -35,13 +34,10 @@ export function contextUtilisation(
 }
 
 export function ContextMeter({
-  modelLabel,
   contextWindow,
   inputTokens,
   outputTokens,
 }: {
-  /** The effective model (resolved_model.model_id). */
-  modelLabel: string;
   contextWindow: number;
   inputTokens: number;
   outputTokens: number;
@@ -55,9 +51,8 @@ export function ContextMeter({
     <Tooltip>
       <TooltipTrigger asChild>
         <div className="ml-auto flex shrink-0 items-center gap-2 px-2 text-sm text-muted-foreground">
-          {modelLabel && <span className="truncate">{modelLabel}</span>}
           <span
-            className="h-1 w-[40cqw] shrink-0 overflow-hidden rounded-full bg-border"
+            className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-border"
             aria-hidden="true"
           >
             <span
