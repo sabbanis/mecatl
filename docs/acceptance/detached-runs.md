@@ -1,7 +1,7 @@
 # Detached runs — acceptance plan
 
 **Phase:** remote connect — leave it running
-**Status:** draft, 2026-09-01. Synthesised from the design discussion on connect-and-leave-running for mecatui ↔ remote mecated.
+**Status:** landed, 2026-09-01. Synthesised from the design discussion on connect-and-leave-running for mecatui ↔ remote mecated.
 **Issue:** [stacklok/mecatl#NNN](https://github.com/stacklok/mecatl/issues/NNN) (to be created).
 **ADR:** [ADR-0278](../adr/0278-detached-runs.md) — pins the detach-on-Ctrl+C + control-only-Converse + WatchSessionEvents-reattach decisions.
 **Accumulator branch:** `acc/detached-runs` (off `main`).
