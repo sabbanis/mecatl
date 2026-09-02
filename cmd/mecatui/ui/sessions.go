@@ -87,6 +87,11 @@ func (m Model) bindSessionID(id string) Model {
 	if id != m.sessionID {
 		m.compactPending = false
 		m.compactRequestToken++
+		if m.authorization.controlCancel != nil {
+			m.authorization.controlCancel()
+		}
+		m.authorization = mcpAuthorizationState{}
+		m.authorizationEvents = nil
 	}
 	m.sessionID = id
 	m.sessionState = ""

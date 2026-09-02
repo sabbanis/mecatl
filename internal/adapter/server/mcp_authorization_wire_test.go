@@ -1,13 +1,10 @@
 package server
 
 import (
-	"context"
 	"strings"
 	"testing"
 	"time"
 
-	"google.golang.org/grpc/codes"
-	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/reflect/protoreflect"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
@@ -74,11 +71,6 @@ func TestAuthorizationWireControlsAreCorrelationOnly(t *testing.T) {
 	assertAuthorizationMethod(t, service, "RecheckMcpAuthorization", "mecatl.v1.RecheckMcpAuthorizationRequest", "mecatl.v1.RecheckMcpAuthorizationResponse", true, true)
 	assertAuthorizationMethod(t, service, "CancelMcpAuthorization", "mecatl.v1.CancelMcpAuthorizationRequest", "mecatl.v1.CancelMcpAuthorizationResponse", true, true)
 
-	// P13 owns the handlers. Until then the generated embedding must fail neutrally
-	// rather than accidentally exposing the already-implemented Service controls.
-	if _, err := NewHarnessServer(nil).GetMcpAuthorizationPresentation(context.Background(), &mecatlv1.GetMcpAuthorizationPresentationRequest{}); status.Code(err) != codes.Unimplemented {
-		t.Fatalf("presentation before P13 code = %v, want %v", status.Code(err), codes.Unimplemented)
-	}
 }
 
 func assertAuthorizationControlRequest(t *testing.T, request protoreflect.MessageDescriptor) {

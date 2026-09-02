@@ -24,6 +24,7 @@ type MCPAuthorizationControl struct {
 // Run is non-nil only when that control won and registered a continuation.
 type MCPAuthorizationResult struct {
 	Status session.AuthorizationStatus
+	Event  session.Event
 	Run    *agent.Run
 }
 
@@ -178,10 +179,24 @@ func (s *Service) CancelMCPAuthorization(ctx context.Context, id session.Session
 	return s.applyAuthorizationStatusLocked(ctx, sess, pending, status)
 }
 
+func mcpAuthorizationResult(pending session.PendingAuthorization, status session.AuthorizationStatus, run *agent.Run) MCPAuthorizationResult {
+	typ := session.EvAuthorizationResolved
+	if status == session.AuthorizationPending {
+		typ = session.EvAuthorizationRequired
+	}
+	return MCPAuthorizationResult{Status: status, Event: session.Event{Type: typ, Authorization: &session.AuthorizationPayload{
+		AuthorizationID: pending.Authorization.ID,
+		DisplayName:     pending.Authorization.DisplayName,
+		Call:            pending.Call.ID,
+		ExpiresAt:       pending.Authorization.ExpiresAt,
+		Status:          status,
+	}}, Run: run}
+}
+
 func (s *Service) applyAuthorizationStatusLocked(ctx context.Context, sess *session.Session, pending session.PendingAuthorization, status session.AuthorizationStatus) (MCPAuthorizationResult, error) {
 	switch status {
 	case session.AuthorizationPending:
-		return MCPAuthorizationResult{Status: status}, nil
+		return mcpAuthorizationResult(pending, status, nil), nil
 	case session.AuthorizationGranted:
 		return s.continueGrantedAuthorizationLocked(ctx, sess)
 	case session.AuthorizationDenied, session.AuthorizationCancelled, session.AuthorizationExpired,
@@ -293,7 +308,7 @@ func (s *Service) continueGrantedAuthorizationLocked(ctx context.Context, sess *
 		s.repairAuthorizationRegistration(ctx, sess)
 		return MCPAuthorizationResult{}, fmt.Errorf("%w: start authorization continuation: %s", ErrInternal, transition)
 	}
-	return MCPAuthorizationResult{Status: session.AuthorizationGranted, Run: run}, nil
+	return mcpAuthorizationResult(claimed, session.AuthorizationGranted, run), nil
 }
 
 func (s *Service) resolveAuthorizationLocked(ctx context.Context, sess *session.Session, pending session.PendingAuthorization, status session.AuthorizationStatus) (MCPAuthorizationResult, error) {
@@ -324,7 +339,7 @@ func (s *Service) resolveAuthorizationLocked(ctx context.Context, sess *session.
 				"session", string(sess.ID), "status", string(status), "continuation_err", err.Error(), "err", appendErr.Error())
 			return MCPAuthorizationResult{}, fmt.Errorf("%w: continuation unavailable (%v); persist terminal authorization lifecycle: %v", ErrInternal, err, appendErr)
 		}
-		return MCPAuthorizationResult{Status: status}, nil
+		return mcpAuthorizationResult(pending, status, nil), nil
 	}
 	prepared := engine.PrepareAfterAuthorization(memory.WithWorkspace(ctx, sess.Workspace), sess, env, pending.Authorization, pending.Call.ID, results, status)
 	if !s.registerPrepared(sess.ID, prepared.Run(), sess) {
@@ -340,7 +355,7 @@ func (s *Service) resolveAuthorizationLocked(ctx context.Context, sess *session.
 		s.repairAuthorizationRegistration(ctx, sess)
 		return MCPAuthorizationResult{}, fmt.Errorf("%w: start authorization resolution: %s", ErrInternal, transition)
 	}
-	return MCPAuthorizationResult{Status: status, Run: run}, nil
+	return mcpAuthorizationResult(pending, status, run), nil
 }
 
 // appendAuthorizationResolution is the no-continuation fallback for an already

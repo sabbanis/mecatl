@@ -164,6 +164,10 @@ func (d *lifecycleDiagnostics) contains(message string) bool {
 }
 
 func newLifecycleFixture(t *testing.T, status session.AuthorizationStatus, attachErr error, now func() time.Time, timer AuthorizationTimerFactory) lifecycleFixture {
+	return newLifecycleFixtureWithTurns(t, status, attachErr, now, timer, mockllm.TextTurn("continued"))
+}
+
+func newLifecycleFixtureWithTurns(t *testing.T, status session.AuthorizationStatus, attachErr error, now func() time.Time, timer AuthorizationTimerFactory, turns ...mockllm.Turn) lifecycleFixture {
 	t.Helper()
 	store := memstore.New()
 	mutation := &lifecycleTool{}
@@ -174,7 +178,7 @@ func newLifecycleFixture(t *testing.T, status session.AuthorizationStatus, attac
 		for _, one := range tools {
 			catalog.MustRegister(one)
 		}
-		return agent.NewEngine(agent.Deps{LLM: mockllm.New(mockllm.TextTurn("continued")), Catalog: catalog, Policy: permpolicy.NewPolicy(nil, nil), Store: store, Model: "mock"})
+		return agent.NewEngine(agent.Deps{LLM: mockllm.New(turns...), Catalog: catalog, Policy: permpolicy.NewPolicy(nil, nil), Store: store, Model: "mock"})
 	}
 	shared := buildEngine(nil)
 	cfg := Config{
