@@ -104,12 +104,15 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0111 — Hardened publication and recovery for agent-owned skills](./0111-hardened-agent-owned-skill-publication.md)
 
 ### Core tools & shell
+- [0281 — Managed temporary command leases and deterministic reaping](./0281-managed-temporary-command-leases.md) *(proposed)*
+- [0282 — Managed workspace scratch cache](./0282-managed-workspace-scratch-cache.md) *(proposed; depends on 0281)*
 - [0201 — Background Bash commands](./0201-background-bash.md)
 - [0208 — Execution environments and version-aware file mutation](./0208-execution-environment.md) *(runtime-seam deferral superseded by 0211; version protocol authoritative)*
 - [0211 — Execution-environment runtime seam](./0211-execution-environment-runtime-seam.md) *(supersedes 0208 decisions 1–3; phase-3 persistence deferral superseded by 0214)*
 - [0214 — Execution-environment persistence and reattachment](./0214-environment-persistence.md) *(supersedes 0211 decision 6 only)*
 
 ### Agents, teams & delegation
+- [0283 — Managed delegation-fork lifecycle](./0283-managed-delegation-fork-lifecycle.md) *(proposed; depends on 0281)*
 - [0013 — Agent definitions](./0013-agent-definitions.md)
 - [0014 — Agent teams](./0014-agent-teams.md)
 - [0015 — Background subagents](./0015-background-subagents.md)
@@ -213,6 +216,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0280 — Studio: the Atrium workspace as mecatl's daemon-only web client](./0280-studio-atrium-module.md)
 - [0281 — Studio's chat list is the daemon's session store](./0281-studio-server-backed-chats.md)
 - [0247 — mecatui generated status lines](./0247-mecatui-status-line.md)
+- [0280 — Automatic light theme selection in mecatui](./0280-mecatui-light-theme-autodetect.md)
 
 ### Retired
 - [0029 — Repo-map tree-sitter](./0029-repomap-tree-sitter.md) *(retired)*
