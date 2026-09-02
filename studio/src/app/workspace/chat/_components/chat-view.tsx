@@ -3,6 +3,7 @@
 import {
   AlertCircle,
   ArrowDown,
+  ArrowLeft,
   CirclePlus,
   Ellipsis,
   FileText,
@@ -28,6 +29,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   Tooltip,
   TooltipContent,
@@ -46,6 +48,7 @@ import {
 } from "@/features/agent";
 import type { QueuedMessage } from "@/features/agent/hooks/use-agent-chat";
 import { isMockTourSession } from "@/features/agent/mock-tour";
+import { useIsMobile } from "@/hooks/use-mobile";
 import { formatTokens } from "@/lib/formatters";
 import {
   createThreadHarnessSession,
@@ -237,16 +240,112 @@ function QueuedMessageStrip({
   );
 }
 
+function MobileChatMenu({
+  showActivity,
+  onToggleActivity,
+  onRename,
+  onDelete,
+  onCompact,
+  compactDisabled,
+  usage,
+}: {
+  showActivity: boolean;
+  onToggleActivity: () => void;
+  onRename?: () => void;
+  onDelete?: () => void;
+  /** Manual compaction (B1.2): present only when the daemon supports it. */
+  onCompact?: () => void;
+  /** True while a run streams — the daemon 412s a mid-run compact. */
+  compactDisabled?: boolean;
+  usage?: { inputTokens: number; outputTokens: number } | null;
+}) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <>
+      <Button
+        variant="ghost"
+        size="icon"
+        className="size-8 shrink-0 text-muted-foreground"
+        onClick={() => setOpen(true)}
+      >
+        <Ellipsis className="size-4" />
+      </Button>
+      <Sheet open={open} onOpenChange={setOpen}>
+        <SheetContent side="bottom" className="p-0">
+          <SheetTitle className="sr-only">Chat options</SheetTitle>
+          <div className="py-2">
+            <UsageMenuRow usage={usage} />
+            <button
+              type="button"
+              onClick={() => {
+                onToggleActivity();
+                setOpen(false);
+              }}
+              className="flex w-full items-center gap-3 px-4 py-3 text-sm hover:bg-muted/50 transition-colors"
+            >
+              <Wrench className="size-4 text-muted-foreground" />
+              {showActivity ? "Hide Tools" : "Show Tools"}
+            </button>
+            {onCompact && (
+              <button
+                type="button"
+                disabled={compactDisabled}
+                onClick={() => {
+                  onCompact();
+                  setOpen(false);
+                }}
+                className="flex w-full items-center gap-3 px-4 py-3 text-sm hover:bg-muted/50 transition-colors disabled:opacity-50"
+              >
+                <FoldVertical className="size-4 text-muted-foreground" />
+                Compact conversation
+              </button>
+            )}
+            {onRename && (
+              <button
+                type="button"
+                onClick={() => {
+                  onRename();
+                  setOpen(false);
+                }}
+                className="flex w-full items-center gap-3 px-4 py-3 text-sm hover:bg-muted/50 transition-colors"
+              >
+                <Pencil className="size-4 text-muted-foreground" />
+                Rename
+              </button>
+            )}
+            {onDelete && (
+              <button
+                type="button"
+                onClick={() => {
+                  onDelete();
+                  setOpen(false);
+                }}
+                className="flex w-full items-center gap-3 px-4 py-3 text-sm text-muted-foreground hover:bg-muted/50 transition-colors"
+              >
+                <Trash2 className="size-4" />
+                Delete
+              </button>
+            )}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </>
+  );
+}
+
 function AttachmentPanel({
   attachment,
   onClose,
   maximized,
   onToggleMaximize,
+  windowControls,
 }: {
   attachment: Attachment;
   onClose: () => void;
   maximized: boolean;
   onToggleMaximize: () => void;
+  windowControls?: boolean;
 }) {
   return (
     <SidePanel
@@ -256,6 +355,7 @@ function AttachmentPanel({
       maximized={maximized}
       onToggleMaximize={onToggleMaximize}
       onClose={onClose}
+      windowControls={windowControls}
     >
       <div className="flex-1 overflow-auto">
         <FilePreview
@@ -286,6 +386,7 @@ function ThreadPanel({
   onConvertToChat,
   maximized,
   onToggleMaximize,
+  windowControls,
 }: {
   parentSessionId: string;
   rootMessage: AgentMessage;
@@ -295,6 +396,7 @@ function ThreadPanel({
   onConvertToChat?: (threadSessionId: string) => void;
   maximized: boolean;
   onToggleMaximize: () => void;
+  windowControls?: boolean;
 }) {
   // The global Show Tools preference — shared with the chat's ··· menu.
   const { showToolCalls: showTools, setShowToolCalls } = useShowToolCalls();
@@ -423,6 +525,7 @@ function ThreadPanel({
       onToggleMaximize={onToggleMaximize}
       onClose={onClose}
       minWidth={340}
+      windowControls={windowControls}
       headerExtra={
         <DropdownMenu modal={false}>
           <DropdownMenuTrigger asChild>
@@ -546,6 +649,7 @@ function ThreadPanel({
               onInitialTextConsumed={() => setSeedText(null)}
               onModelChange={() => {}}
               placeholder={isStreaming ? "Queue a reply…" : "Reply in thread…"}
+              mobileDocked
             />
           </div>
         </div>
@@ -565,12 +669,14 @@ function MockThreadPanel({
   onClose,
   maximized,
   onToggleMaximize,
+  windowControls,
 }: {
   rootMessage: AgentMessage;
   botName: string;
   onClose: () => void;
   maximized: boolean;
   onToggleMaximize: () => void;
+  windowControls?: boolean;
 }) {
   const replies = rootMessage.replies ?? [];
   return (
@@ -582,6 +688,7 @@ function MockThreadPanel({
       onToggleMaximize={onToggleMaximize}
       onClose={onClose}
       minWidth={340}
+      windowControls={windowControls}
     >
       <div className="flex-1 min-h-0 overflow-y-auto px-3 pt-3 pb-4 lg:px-4">
         <div className="rounded-lg border border-dashed border-border/70 px-1 py-1">
@@ -841,6 +948,7 @@ export function ChatView({
   // When maximized, the panel fills the pane and the conversation column is
   // hidden. Always reset when the panel is closed.
   const [panelMaximized, setPanelMaximized] = useState(false);
+  const isMobile = useIsMobile();
   const handleAppendConsumed = useCallback(() => setAppendText(null), []);
   // Threads branched off this chat's messages (browser-local), for the
   // Slack-style reply indicators under their root messages.
@@ -930,7 +1038,9 @@ export function ChatView({
   // autocomplete — consume their own Escape before the dispatcher sees it
   // (`defaultPrevented`), so by the time this fires nothing transient is
   // open. Close the side panel if one is up; otherwise interrupt a streaming
-  // run (the Claude Code convention: Esc cancels).
+  // run (the Claude Code convention: Esc cancels). On mobile the panel lives
+  // in a Radix Sheet that owns its own Escape, so only the cancel arm fires
+  // there.
   useShortcut("close.esc", () => {
     if (panel !== null) {
       closeSidePanel();
@@ -939,9 +1049,9 @@ export function ChatView({
     if (isStreaming) onCancelRun?.();
   });
 
-  // Let the parent collapse the chat list while the side panel is open so
-  // both panels fit side by side.
-  const sidePanelOpen = panel !== null;
+  // The right-hand panel only renders on non-mobile layouts; let the parent
+  // collapse the chat list while it's open so both panels fit side by side.
+  const sidePanelOpen = !isMobile && panel !== null;
   useEffect(() => {
     onSidePanelOpenChange?.(sidePanelOpen);
   }, [sidePanelOpen, onSidePanelOpenChange]);
@@ -951,8 +1061,9 @@ export function ChatView({
   // With the list docked right, an open side panel occupies its slot — the
   // toggle then means "give me the list back": close the panel, and the
   // workspace restores the sidebar to its pre-panel state.
-  const panelHoldsSidebarSlot = sidebarSide === "right" && activePanel !== null;
-  const sidebarToggle = (
+  const panelHoldsSidebarSlot =
+    sidebarSide === "right" && activePanel !== null && !isMobile;
+  const sidebarToggle = !isMobile && (
     <Tooltip>
       <TooltipTrigger asChild>
         <Button
@@ -1006,6 +1117,17 @@ export function ChatView({
         )}
       >
         <div className="flex h-[60px] items-center gap-2 border-b border-border px-3 max-[499px]:h-14 lg:gap-3 lg:px-6">
+          {isMobile && (
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 text-muted-foreground"
+              onClick={onToggleSidebar}
+              aria-label="Back to chats"
+            >
+              <ArrowLeft className="size-4" />
+            </Button>
+          )}
           {sidebarSide === "left" && sidebarToggle}
           {isStreaming && (
             <Loader2
@@ -1021,44 +1143,59 @@ export function ChatView({
             {session.title || "Untitled"}
           </h2>
           {sidebarSide === "right" && sidebarToggle}
-          <DropdownMenu>
-            <DropdownMenuTrigger asChild>
-              <Button
-                variant="ghost"
-                size="icon"
-                className="size-8 shrink-0 text-muted-foreground"
-              >
-                <Ellipsis className="size-4" />
-              </Button>
-            </DropdownMenuTrigger>
-            <DropdownMenuContent align="end" className="w-52">
-              {/* Token usage as the daemon reported it (was a header pill;
-                  it lives in the menu now). Hidden until any lands. */}
-              <UsageMenuRow usage={usage} />
-              <DropdownMenuItem onClick={() => setShowToolCalls(!showActivity)}>
-                <Wrench className="size-4 mr-2 text-muted-foreground" />
-                {showActivity ? "Hide Tools" : "Show Tools"}
-              </DropdownMenuItem>
-              {onCompact && (
-                <DropdownMenuItem disabled={isStreaming} onClick={onCompact}>
-                  <FoldVertical className="size-4 mr-2 text-muted-foreground" />
-                  Compact conversation
+          {!isMobile && (
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-8 shrink-0 text-muted-foreground"
+                >
+                  <Ellipsis className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-52">
+                {/* Token usage as the daemon reported it (was a header pill;
+                    it lives in the menu now). Hidden until any lands. */}
+                <UsageMenuRow usage={usage} />
+                <DropdownMenuItem
+                  onClick={() => setShowToolCalls(!showActivity)}
+                >
+                  <Wrench className="size-4 mr-2 text-muted-foreground" />
+                  {showActivity ? "Hide Tools" : "Show Tools"}
                 </DropdownMenuItem>
-              )}
-              {onRename && (
-                <DropdownMenuItem onClick={onRename}>
-                  <Pencil className="size-4 mr-2 text-muted-foreground" />
-                  Rename
-                </DropdownMenuItem>
-              )}
-              {onDelete && (
-                <DropdownMenuItem onClick={onDelete}>
-                  <Trash2 className="size-4 mr-2" />
-                  Delete
-                </DropdownMenuItem>
-              )}
-            </DropdownMenuContent>
-          </DropdownMenu>
+                {onCompact && (
+                  <DropdownMenuItem disabled={isStreaming} onClick={onCompact}>
+                    <FoldVertical className="size-4 mr-2 text-muted-foreground" />
+                    Compact conversation
+                  </DropdownMenuItem>
+                )}
+                {onRename && (
+                  <DropdownMenuItem onClick={onRename}>
+                    <Pencil className="size-4 mr-2 text-muted-foreground" />
+                    Rename
+                  </DropdownMenuItem>
+                )}
+                {onDelete && (
+                  <DropdownMenuItem onClick={onDelete}>
+                    <Trash2 className="size-4 mr-2" />
+                    Delete
+                  </DropdownMenuItem>
+                )}
+              </DropdownMenuContent>
+            </DropdownMenu>
+          )}
+          {isMobile && (
+            <MobileChatMenu
+              showActivity={showActivity}
+              onToggleActivity={() => setShowToolCalls(!showActivity)}
+              onRename={onRename}
+              onDelete={onDelete}
+              onCompact={onCompact}
+              compactDisabled={isStreaming}
+              usage={usage}
+            />
+          )}
         </div>
 
         <div className="relative flex-1 min-h-0">
@@ -1179,6 +1316,8 @@ export function ChatView({
                   onQueue={onQueueMessage}
                   onSteer={onSteerMessage}
                   onPreviewAttachment={handlePreviewFile}
+                  focusKey={session.id}
+                  mobileDocked
                   modelLockedLabel={
                     live ? session.model || "Auto-routed" : undefined
                   }
@@ -1214,7 +1353,7 @@ export function ChatView({
           </div>
         </div>
       </div>
-      {activePanel !== null && (
+      {!isMobile && activePanel !== null && (
         <SidePanelForKind
           panel={activePanel}
           parentSessionId={session.id}
@@ -1224,6 +1363,41 @@ export function ChatView({
           maximized={panelMaximized}
           onToggleMaximize={toggleMaximize}
         />
+      )}
+      {/* On mobile the same panels render as a full-height bottom sheet: the
+          grab handle owns dismissal (no window controls), and dvh keeps the
+          thread composer above the on-screen keyboard. */}
+      {isMobile && activePanel !== null && (
+        <Sheet
+          open
+          onOpenChange={(open) => {
+            if (!open) closeSidePanel();
+          }}
+        >
+          <SheetContent side="bottom" className="flex h-[94dvh] flex-col p-0">
+            <SheetTitle className="sr-only">
+              {activePanel.kind === "thread"
+                ? "Thread"
+                : activePanel.kind === "attachment"
+                  ? activePanel.attachment.name
+                  : activePanel.kind === "toolcall"
+                    ? activePanel.call.name
+                    : activePanel.artifact.name}
+            </SheetTitle>
+            <div className="flex min-h-0 flex-1 flex-col">
+              <SidePanelForKind
+                panel={activePanel}
+                parentSessionId={session.id}
+                botName={botName}
+                onClose={closeSidePanel}
+                onConvertToChat={handleConvertThread}
+                maximized
+                onToggleMaximize={() => {}}
+                windowControls={false}
+              />
+            </div>
+          </SheetContent>
+        </Sheet>
       )}
     </div>
   );
@@ -1238,6 +1412,7 @@ function SidePanelForKind({
   onConvertToChat,
   maximized,
   onToggleMaximize,
+  windowControls,
 }: {
   panel: ActivePanel;
   parentSessionId: string;
@@ -1246,8 +1421,9 @@ function SidePanelForKind({
   onConvertToChat?: (threadSessionId: string) => void;
   maximized: boolean;
   onToggleMaximize: () => void;
+  windowControls?: boolean;
 }) {
-  const shared = { onClose, maximized, onToggleMaximize };
+  const shared = { onClose, maximized, onToggleMaximize, windowControls };
   switch (panel.kind) {
     case "artifact":
       return <MarkdownCanvasPanel artifact={panel.artifact} {...shared} />;

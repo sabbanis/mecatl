@@ -32,7 +32,7 @@ import {
 } from "@/features/agent/mock-tour";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import { useConfirm } from "@/hooks/use-confirm";
-import { useIsCompact } from "@/hooks/use-mobile";
+import { useIsCompact, useIsMobile } from "@/hooks/use-mobile";
 import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
 import { usePanelWidth } from "@/hooks/use-panel-width";
 import { usePrompt } from "@/hooks/use-prompt";
@@ -333,6 +333,7 @@ function DraftView({
               initialText={seed}
               onInitialTextConsumed={onSeedConsumed}
               placeholder="Start a new chat..."
+              mobileDocked
               mode={mode}
               onModeChange={onModeChange}
               models={models}
@@ -370,6 +371,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // mock UNCONDITIONALLY below (never handed to the daemon) — the toggle
   // only controls whether the row is offered.
   const { enabled: mockFeatures } = useMockFeatures();
+  const isMobile = useIsMobile();
   const isCompact = useIsCompact();
   const { confirm, ConfirmDialog } = useConfirm();
   const { prompt, PromptDialog } = usePrompt();
@@ -406,7 +408,14 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     window.history.pushState(null, "", chatHref(id));
   }, []);
 
-  const [sidebarOpen, setSidebarOpen] = useState(!isCompact);
+  const [sidebarOpen, setSidebarOpen] = useState(!isMobile && !isCompact);
+  // The init above runs before the viewport is measured (useIsMobile is
+  // undefined on the first render), so a phone mounts with the list open even
+  // over a deep-linked chat. Once mobile is a measured fact, the selection
+  // wins; a list the user opens later is untouched.
+  useEffect(() => {
+    if (isMobile && selectedIdRef.current) setSidebarOpen(false);
+  }, [isMobile]);
   const wasCompactRef = useRef(isCompact);
   // Mirrors `sidebarOpen` for reads inside the stable side-panel handler.
   const sidebarOpenRef = useRef(sidebarOpen);
@@ -657,17 +666,17 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const handleSelectSession = useCallback(
     (id: string) => {
       selectId(id);
-      if (isCompact) setSidebarOpen(false);
+      if (isMobile || isCompact) setSidebarOpen(false);
     },
-    [selectId, isCompact],
+    [selectId, isMobile, isCompact],
   );
 
   /** "New chat" opens the draft route; the daemon session is minted on send. */
   const handleNewChat = useCallback(() => {
     setSelectedIdState("");
     router.push(chatHref());
-    if (isCompact) setSidebarOpen(false);
-  }, [router, isCompact]);
+    if (isMobile || isCompact) setSidebarOpen(false);
+  }, [router, isMobile, isCompact]);
 
   const deselectIfActive = useCallback(
     (id: string) => {
@@ -855,7 +864,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           onRespondApproval={() => {}}
           pendingClarification={null}
           onRespondClarification={() => {}}
-          onSidePanelOpenChange={handleSidePanelOpenChange}
+          onSidePanelOpenChange={
+            isMobile ? undefined : handleSidePanelOpenChange
+          }
         />
       ) : (
         <ChatView
@@ -904,7 +915,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
               ? () => sessionActions.onDelete(selectedSession.id)
               : undefined
           }
-          onSidePanelOpenChange={handleSidePanelOpenChange}
+          onSidePanelOpenChange={
+            isMobile ? undefined : handleSidePanelOpenChange
+          }
           mode={mode}
           onModeChange={changeMode}
           models={modelOptions}
@@ -913,6 +926,37 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         />
       )
     ) : null;
+
+  if (isMobile) {
+    return (
+      <div className="flex h-full flex-col">
+        {dialogs}
+        {sidebarOpen ? (
+          <div className="flex h-full flex-col bg-background">
+            <SidebarContent {...sidebarContentProps} />
+          </div>
+        ) : selectedSession ? (
+          chatView(false, () => setSidebarOpen(true))
+        ) : (
+          <DraftView
+            models={modelOptions}
+            autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
+            onModelChange={handleDraftModelChange}
+            onSend={sendMessage}
+            seed={draftSeed}
+            onSeedConsumed={clearDraftSeed}
+            onPickSeed={setDraftSeed}
+            error={turnError}
+            showSidebarButton
+            sidebarSide={sidebarSide}
+            onShowSidebar={() => setSidebarOpen(true)}
+            mode={mode}
+            onModeChange={changeMode}
+          />
+        )}
+      </div>
+    );
+  }
 
   return (
     <div className="relative flex h-full">

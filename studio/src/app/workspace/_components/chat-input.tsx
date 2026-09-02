@@ -7,14 +7,18 @@ import type { SuggestionProps } from "@tiptap/suggestion";
 import {
   ArrowUp,
   Bot,
+  Brain,
   Check,
   ChevronDown,
+  ChevronRight,
   FolderClosed,
   FolderPlus,
   Mic,
   Paperclip,
   Plus,
   RotateCcw,
+  Shield,
+  SlidersHorizontal,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -30,6 +34,7 @@ import {
   DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   getAgentMentions,
   getSlashCommands,
@@ -63,6 +68,11 @@ interface ChatInputProps {
   onSelectProject?: (id: string | null) => void;
   onCreateProject?: (name: string) => void;
   compact?: boolean;
+  /** Docked at a screen edge on mobile: full-bleed single row with only a
+      hairline top border, instead of the floating rounded box. */
+  mobileDocked?: boolean;
+  /** Refocuses the field when this changes (e.g. the open chat's id). */
+  focusKey?: string;
   onSend?: (content: string, files?: File[]) => void;
   onQueue?: (content: string) => void;
   /** Injects the text — plus any staged image attachments (ADR 0251) — into
@@ -145,6 +155,17 @@ function FilesDropdown({
   );
 }
 
+/**
+ * On mobile the composer must NOT grab focus when a chat opens — the keyboard
+ * would pop over the transcript the user came to read. Read the breakpoint
+ * synchronously (module-stable, so focus effects need not depend on it): the
+ * useIsMobile hook reports undefined for a render, which would race the
+ * mount-time autofocus.
+ */
+const mobileViewport = () =>
+  typeof window !== "undefined" &&
+  window.matchMedia("(max-width: 499px)").matches;
+
 /** The daemon-picks sentinel (model_id omitted at create). Its label is
  *  supplied by the caller: "Auto-routed" only while the router is really on. */
 const AUTO_MODEL_ID = "";
@@ -171,11 +192,60 @@ type EffortId = (typeof EFFORT_LEVELS)[number]["id"];
 
 const DEFAULT_EFFORT_ID: EffortId = "medium";
 
+/** One tappable choice row inside a mobile picker sheet (MobileChatMenu's
+ *  row idiom plus a trailing checkmark). */
+function SheetOptionRow({
+  label,
+  description,
+  selected,
+  onSelect,
+}: {
+  label: string;
+  description?: string;
+  selected: boolean;
+  onSelect: () => void;
+}) {
+  return (
+    <button
+      type="button"
+      onClick={onSelect}
+      className="flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50"
+    >
+      <span className="flex min-w-0 flex-1 flex-col text-left">
+        <span className="truncate font-medium">{label}</span>
+        {description && (
+          <span className="truncate text-xs text-muted-foreground">
+            {description}
+          </span>
+        )}
+      </span>
+      <Check
+        className={cn(
+          "size-4 shrink-0",
+          selected ? "text-foreground" : "text-transparent",
+        )}
+      />
+    </button>
+  );
+}
+
+/** Muted section heading inside a mobile picker sheet. */
+function SheetSectionLabel({ children }: { children: React.ReactNode }) {
+  return (
+    <p className="px-4 pt-3 pb-1 text-xs font-medium text-muted-foreground">
+      {children}
+    </p>
+  );
+}
+
 /**
  * Combined model + effort picker in a single menu: the trigger reads
  * "{model} {effort}", and the menu drills into a Model submenu and an Effort
  * submenu, with a reset. When `lockedLabel` is set (a live harness routes the
- * model server-side) the trigger is display-only.
+ * model server-side) the trigger is display-only. On mobile the menu is a
+ * bottom sheet instead (the MobileChatMenu convention) with the submenus
+ * flattened into sections — it stays open across taps so model and effort
+ * can be set in one visit.
  */
 function ModelEffortSelector({
   onModelChange,
@@ -485,6 +555,273 @@ function MemoryToggle() {
         ))}
       </DropdownMenuContent>
     </DropdownMenu>
+  );
+}
+
+/**
+ * The mobile composer's left-hand options button: a + that opens a bottom
+ * sheet with the composer's secondary actions — Add a file, Model, Memory —
+ * replacing the desktop toolbar row (hidden on mobile). Model and Memory
+ * drill into their own sheets; a routed model renders display-only.
+ */
+function MobileComposerMenu({
+  onFilesSelected,
+  onModelChange,
+  modelLockedLabel,
+  onSwitchModel,
+  currentModelId,
+  mode,
+  onModeChange,
+  modeDisabled,
+  models,
+  autoModelLabel,
+}: {
+  onFilesSelected: (files: File[]) => void;
+  onModelChange?: (id: string) => void;
+  modelLockedLabel?: string;
+  /** Present in a live chat: picking forks the chat onto the model (the
+   *  daemon fixes a session's model at create). null = auto-routed. */
+  onSwitchModel?: (option: ComposerModelOption | null) => void;
+  /** The live session's current model id ("" = auto), for the checkmark. */
+  currentModelId?: string;
+  mode?: SessionPermissionMode;
+  onModeChange?: (mode: SessionPermissionMode) => void;
+  modeDisabled?: boolean;
+  models?: ComposerModelOption[];
+  autoModelLabel?: string;
+}) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  const [sub, setSub] = useState<"mode" | "model" | "memory" | null>(null);
+  const [model, setModel] = useState<string>(AUTO_MODEL_ID);
+  const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
+  const [memoryOn, setMemoryOn] = useState(true);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
+  const selectedModel =
+    modelOptions.find((m) => m.id === model) ?? modelOptions[0];
+  // Switch mode ignores the local pick state — the session's model is the
+  // truth, and a stale/disabled id still labels honestly as itself.
+  const switchId = currentModelId ?? AUTO_MODEL_ID;
+  const switchSelected = modelOptions.find((m) => m.id === switchId) ?? {
+    id: switchId,
+    label: switchId || autoModel(autoModelLabel).label,
+  };
+  const selectedEffort =
+    EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
+
+  const menuRow =
+    "flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50 disabled:opacity-50";
+
+  return (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept="image/*"
+        className="hidden"
+        onChange={(event) => {
+          const files = Array.from(event.target.files ?? []);
+          event.target.value = "";
+          if (files.length > 0) onFilesSelected(files);
+        }}
+      />
+      <Button
+        size="icon"
+        className="size-8 rounded-full border-0 bg-transparent text-muted-foreground shadow-none hover:bg-muted/60"
+        onClick={() => setMenuOpen(true)}
+        aria-label="Composer options"
+      >
+        {/* Not a +: on desktop + means attach, here it opens the options
+            menu, so it gets a distinct options glyph. */}
+        <SlidersHorizontal className="size-4" />
+      </Button>
+
+      <Sheet open={menuOpen} onOpenChange={setMenuOpen}>
+        <SheetContent side="bottom" className="p-0">
+          <SheetTitle className="sr-only">Composer options</SheetTitle>
+          <div className="py-2">
+            <button
+              type="button"
+              className={menuRow}
+              onClick={() => {
+                setMenuOpen(false);
+                fileInputRef.current?.click();
+              }}
+            >
+              <Paperclip className="size-4 text-muted-foreground" />
+              Add a file
+            </button>
+            {onModeChange && (
+              <button
+                type="button"
+                className={menuRow}
+                disabled={modeDisabled}
+                onClick={() => {
+                  setMenuOpen(false);
+                  setSub("mode");
+                }}
+              >
+                <Shield className="size-4 text-muted-foreground" />
+                <span className="flex-1 text-left">Mode</span>
+                <span className="text-muted-foreground">
+                  {permissionModeLabel(mode ?? "default")}
+                </span>
+                {!modeDisabled && (
+                  <ChevronRight className="size-4 text-muted-foreground/60" />
+                )}
+              </button>
+            )}
+            <button
+              type="button"
+              className={menuRow}
+              disabled={!!modelLockedLabel && !onSwitchModel}
+              onClick={() => {
+                setMenuOpen(false);
+                setSub("model");
+              }}
+            >
+              <Bot className="size-4 text-muted-foreground" />
+              <span className="flex-1 text-left">Model</span>
+              <span className="text-muted-foreground">
+                {onSwitchModel
+                  ? switchSelected.label
+                  : (modelLockedLabel ??
+                    `${selectedModel.label} ${selectedEffort.label}`)}
+              </span>
+              {(!modelLockedLabel || onSwitchModel) && (
+                <ChevronRight className="size-4 text-muted-foreground/60" />
+              )}
+            </button>
+            <button
+              type="button"
+              className={menuRow}
+              onClick={() => {
+                setMenuOpen(false);
+                setSub("memory");
+              }}
+            >
+              <Brain className="size-4 text-muted-foreground" />
+              <span className="flex-1 text-left">Memory</span>
+              <span className="text-muted-foreground">
+                {memoryOn ? "On" : "Off"}
+              </span>
+              <ChevronRight className="size-4 text-muted-foreground/60" />
+            </button>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet
+        open={sub === "mode"}
+        onOpenChange={(open) => {
+          if (!open) setSub(null);
+        }}
+      >
+        <SheetContent side="bottom" className="p-0">
+          <SheetTitle className="sr-only">Permission mode</SheetTitle>
+          <div className="py-2">
+            {PERMISSION_MODE_OPTIONS.map((option) => (
+              <SheetOptionRow
+                key={option.id}
+                label={option.label}
+                description={option.description}
+                selected={(mode ?? "default") === option.id}
+                onSelect={() => {
+                  onModeChange?.(option.id);
+                  setSub(null);
+                }}
+              />
+            ))}
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet
+        open={sub === "model"}
+        onOpenChange={(open) => {
+          if (!open) setSub(null);
+        }}
+      >
+        <SheetContent side="bottom" className="p-0">
+          <SheetTitle className="sr-only">Model and effort</SheetTitle>
+          <div className="max-h-[70dvh] overflow-y-auto pb-2">
+            <SheetSectionLabel>Model</SheetSectionLabel>
+            {onSwitchModel && (
+              <p className="px-4 pb-1 text-xs text-muted-foreground">
+                Picking a model continues this chat in a copy on it.
+              </p>
+            )}
+            {modelOptions.map((m) => (
+              <SheetOptionRow
+                key={m.id}
+                label={m.label}
+                selected={m.id === (onSwitchModel ? switchId : model)}
+                onSelect={() => {
+                  if (onSwitchModel) {
+                    setSub(null);
+                    if (m.id !== switchId)
+                      onSwitchModel(m.id === AUTO_MODEL_ID ? null : m);
+                    return;
+                  }
+                  setModel(m.id);
+                  onModelChange?.(m.id);
+                }}
+              />
+            ))}
+            {!onSwitchModel && <SheetSectionLabel>Effort</SheetSectionLabel>}
+            {!onSwitchModel &&
+              EFFORT_LEVELS.map((e) => (
+                <SheetOptionRow
+                  key={e.id}
+                  label={e.label}
+                  selected={e.id === effort}
+                  onSelect={() => setEffort(e.id)}
+                />
+              ))}
+            <div className="mx-4 my-1 h-px bg-border" />
+            <button
+              type="button"
+              disabled={model === AUTO_MODEL_ID && effort === DEFAULT_EFFORT_ID}
+              onClick={() => {
+                setModel(AUTO_MODEL_ID);
+                setEffort(DEFAULT_EFFORT_ID);
+                onModelChange?.(AUTO_MODEL_ID);
+                setSub(null);
+              }}
+              className={cn(menuRow, "text-muted-foreground")}
+            >
+              <RotateCcw className="size-4" />
+              Reset to default
+            </button>
+          </div>
+        </SheetContent>
+      </Sheet>
+
+      <Sheet
+        open={sub === "memory"}
+        onOpenChange={(open) => {
+          if (!open) setSub(null);
+        }}
+      >
+        <SheetContent side="bottom" className="p-0">
+          <SheetTitle className="sr-only">Memory</SheetTitle>
+          <div className="py-2">
+            {[true, false].map((value) => (
+              <SheetOptionRow
+                key={String(value)}
+                label={value ? "On" : "Off"}
+                selected={memoryOn === value}
+                onSelect={() => {
+                  setMemoryOn(value);
+                  setSub(null);
+                }}
+              />
+            ))}
+          </div>
+        </SheetContent>
+      </Sheet>
+    </>
   );
 }
 
@@ -817,6 +1154,8 @@ export function ChatInput({
   onSelectProject,
   onCreateProject,
   compact = false,
+  mobileDocked = false,
+  focusKey,
   onSend,
   onQueue,
   onSteer,
@@ -897,7 +1236,7 @@ export function ChatInput({
 
   const editor = useEditor({
     immediatelyRender: false,
-    autofocus: "end",
+    autofocus: mobileViewport() ? false : "end",
     extensions: [
       // A deliberately plain field: keep the editing primitives (undo, hard
       // break, drop/gap cursors) but drop every rich-text mark and block so
@@ -922,6 +1261,14 @@ export function ChatInput({
     ],
     onUpdate: ({ editor }) => setText(editor.getText({ blockSeparator: "\n" })),
   });
+
+  // Entering a chat or thread puts the caret in the field; autofocus only
+  // covers the first mount, so a change of target refocuses explicitly.
+  // Desktop only — see mobileViewport above.
+  useEffect(() => {
+    if (focusKey !== undefined && !mobileViewport())
+      editor?.commands.focus("end");
+  }, [focusKey, editor]);
 
   useEffect(() => {
     editor?.setEditable(!disabled);
@@ -1114,7 +1461,10 @@ export function ChatInput({
           setAttachedFiles((prev) => [...prev, ...droppedFiles]);
         }
       }}
-      className="relative rounded-2xl bg-zinc-50 dark:bg-zinc-900"
+      className={cn(
+        "relative rounded-2xl bg-zinc-50 dark:bg-zinc-900",
+        mobileDocked && "max-[499px]:rounded-none max-[499px]:bg-transparent",
+      )}
     >
       {/* Autocomplete popover (agent @-mentions or slash commands), floating
           above the input box. Driven by TipTap's suggestion lifecycle. */}
@@ -1164,6 +1514,13 @@ export function ChatInput({
       <div
         className={cn(
           "relative rounded-2xl border bg-background transition-colors focus-within:border-zinc-400 dark:focus-within:border-zinc-600",
+          // Docked mobile composer: full-bleed, only the top hairline
+          // separates it from the conversation above; it owns the
+          // home-indicator safe area now that it touches the screen edge.
+          // The hairline matches the chat title bar's divider (border-border),
+          // steady across focus — the docked bar is chrome, not a field.
+          mobileDocked &&
+            "max-[499px]:rounded-none max-[499px]:border-x-0 max-[499px]:border-b-0 max-[499px]:border-border max-[499px]:focus-within:border-border max-[499px]:pb-[env(safe-area-inset-bottom)]",
           isDragOver
             ? "border-brand bg-brand/5 dark:bg-brand/10 ring-2 ring-brand/20"
             : isWindowDrag
@@ -1206,21 +1563,73 @@ export function ChatInput({
             ))}
           </div>
         )}
-        <div className="flex flex-wrap items-start gap-1.5 px-4 pt-4 pb-2">
+        {/* Mobile consolidates to ONE line — + on the left, the field, and a
+            single right slot that is the mic until there is text, then the
+            send button (native messaging convention). Desktop keeps the
+            two-row layout below. */}
+        {/* min-h-14 mirrors the chat header bar, so the docked composer and
+            the title bar read as symmetric top/bottom bands. */}
+        <div className="flex flex-wrap items-start gap-1.5 px-4 pt-4 pb-2 max-[499px]:min-h-14 max-[499px]:flex-nowrap max-[499px]:items-center max-[499px]:gap-1 max-[499px]:px-2 max-[499px]:py-1.5">
+          <div className="hidden max-[499px]:block">
+            <MobileComposerMenu
+              models={models}
+              autoModelLabel={autoModelLabel}
+              onFilesSelected={(newFiles) =>
+                setAttachedFiles((prev) => [...prev, ...newFiles])
+              }
+              onModelChange={onModelChange}
+              modelLockedLabel={modelLockedLabel}
+              onSwitchModel={onSwitchModel}
+              currentModelId={currentModelId}
+              mode={mode}
+              onModeChange={onModeChange}
+              modeDisabled={disabled || isStreaming}
+            />
+          </div>
           {/* TipTap composer: resolved @agent / /skill mentions are atomic
               green chips (Backspace removes a whole chip); Enter sends and
               Shift+Enter inserts a newline (handled in the editor keymap). */}
           <div
             className={cn(
-              "relative flex-1 min-w-[120px] self-center",
+              "relative flex-1 min-w-[120px] self-center max-[499px]:py-1",
               disabled && "opacity-50",
             )}
           >
             <EditorContent editor={editor} className="composer-editor" />
           </div>
+          <div className="hidden max-[499px]:block">
+            {!hasText && voice.isSupported ? (
+              <Button
+                size="icon"
+                className={cn(
+                  "size-8 rounded-full border-0 shadow-none",
+                  voice.isListening
+                    ? "bg-brand/10 text-brand hover:bg-brand/20"
+                    : "bg-transparent text-muted-foreground hover:bg-muted/60",
+                )}
+                onClick={voice.toggle}
+                disabled={disabled}
+                aria-label={
+                  voice.isListening ? "Stop listening" : "Voice input"
+                }
+              >
+                <Mic className="size-4" />
+              </Button>
+            ) : (
+              <Button
+                size="icon"
+                className="size-8 rounded-full bg-brand text-brand-foreground hover:bg-brand/90 disabled:opacity-50"
+                onClick={handleSend}
+                disabled={disabled || !hasText}
+                aria-label="Send message"
+              >
+                <ArrowUp className="size-4" />
+              </Button>
+            )}
+          </div>
         </div>
-        {/* Bottom row: attach (+), mic on the left; send right */}
-        <div className="flex items-center gap-1 px-2 pb-2">
+        {/* Desktop-only bottom row: attach (+), mic on the left; send right */}
+        <div className="flex items-center gap-1 px-2 pb-2 max-[499px]:hidden">
           <FilesDropdown
             onFilesSelected={(newFiles) =>
               setAttachedFiles((prev) => [...prev, ...newFiles])
@@ -1256,10 +1665,11 @@ export function ChatInput({
       {/* Toolbar sits BEHIND the input box: negative top margin pulls it up
           so its top edge overlaps the input box's bottom rounded corners,
           making the two boxes appear to share a single outline. */}
+      {/* Hidden on mobile: Model and Memory live in the + options sheet. */}
       {/* @container: the Model/Memory pills collapse their value labels via
           container queries when THIS row runs narrow (a ~400px side-panel
           composer), independent of the viewport width. */}
-      <div className="@container -mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1 rounded-b-2xl border border-t-0 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 overflow-x-auto hide-scrollbar">
+      <div className="@container -mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1 rounded-b-2xl border border-t-0 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 overflow-x-auto hide-scrollbar max-[499px]:hidden">
         {projects && (
           <ProjectsDropdown
             projects={projects}

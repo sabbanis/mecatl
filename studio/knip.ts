@@ -16,8 +16,6 @@ const config: KnipConfig = {
     "src/components/ui/**",
     // Feature modules: internal exports consumed within the feature
     "src/features/**",
-    // Reached only through the UI kit until later PRs in the stacked series
-    // land their first app-level consumers; each line leaves with that PR.
   ],
   ignoreDependencies: [
     // Tailwind v4 is imported via CSS (@import "tailwindcss"), not JS
@@ -25,10 +23,6 @@ const config: KnipConfig = {
     // Used by shadcn/ui Form and Label components (in src/components/ui/ which knip ignores)
     "react-hook-form",
     // Used by shadcn/ui components (in src/components/ui/ which knip ignores)
-    // (these leave the list as their first reached consumers land later in
-    // the stacked series: lucide-react/cmdk/tooltip with the workspace shell,
-    // select/switch/tabs with the surface pages)
-    "@radix-ui/react-switch",
     "@radix-ui/react-avatar",
     "@radix-ui/react-checkbox",
     "@radix-ui/react-popover",

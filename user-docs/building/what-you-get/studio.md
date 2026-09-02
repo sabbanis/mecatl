@@ -11,8 +11,9 @@ surfaces on one rail — **Chats**, **Scheduled**, **Skills**, **Memory**, and
 Studio reads and writes the daemon's state rather than keeping its own.
 
 :::note Landing in progress
-Studio is landing as a stacked series of pull requests. This page grows with
-each one; right now everything except the mobile round is in the tree.
+Studio is landing as a stacked series of pull requests; the full workspace,
+including the mobile round, is now in the tree, with a closing documentation
+pass to follow.
 :::
 
 ## Starting it
@@ -132,3 +133,10 @@ Settings → Labs holds the clearly-labeled mock extras, default-off: a mock
 Projects section in the chat sidebar and a canned feature tour. These are
 browser-local demo content only — a mock id is hard-gated from ever reaching
 the daemon — and with the toggle off none of it exists at runtime.
+
+## On a phone
+
+Studio installs as a PWA and adapts below tablet width: bottom tab
+navigation, sheet-based side panels, a docked composer that plays well with
+the on-screen keyboard, long-press row actions, and swipe-to-dismiss.
+Desktop rendering is unchanged.

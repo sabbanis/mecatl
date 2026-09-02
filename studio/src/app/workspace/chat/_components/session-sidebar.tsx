@@ -11,7 +11,7 @@ import {
   Pencil,
   Trash2,
 } from "lucide-react";
-import { useState } from "react";
+import { useRef, useState } from "react";
 import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
@@ -19,6 +19,7 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
+import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import type { AgentSession, RosterAgent } from "@/features/agent";
 import {
   MOCK_PROJECTS,
@@ -130,6 +131,155 @@ function SessionContextMenu({
   );
 }
 
+/**
+ * Touch long-press detection for a row. Mouse pointers are ignored (desktop
+ * has the hover "…" menu); a hold of ~450ms without moving past the slop
+ * fires, and the click that follows the release is swallowed by the caller
+ * via `firedRef`. Android's native long-press contextmenu is suppressed for
+ * touch so the sheet is the one menu.
+ */
+function useLongPress(onLongPress: () => void) {
+  const firedRef = useRef(false);
+  const state = useRef<{
+    timer: ReturnType<typeof setTimeout> | null;
+    startX: number;
+    startY: number;
+    touch: boolean;
+  }>({ timer: null, startX: 0, startY: 0, touch: false });
+
+  const clear = () => {
+    if (state.current.timer) {
+      clearTimeout(state.current.timer);
+      state.current.timer = null;
+    }
+  };
+
+  const handlers = {
+    onPointerDown: (event: React.PointerEvent) => {
+      state.current.touch = event.pointerType !== "mouse";
+      if (!state.current.touch) return;
+      firedRef.current = false;
+      state.current.startX = event.clientX;
+      state.current.startY = event.clientY;
+      clear();
+      state.current.timer = setTimeout(() => {
+        state.current.timer = null;
+        firedRef.current = true;
+        onLongPress();
+      }, 450);
+    },
+    onPointerMove: (event: React.PointerEvent) => {
+      if (
+        state.current.timer &&
+        Math.hypot(
+          event.clientX - state.current.startX,
+          event.clientY - state.current.startY,
+        ) > 10
+      ) {
+        clear();
+      }
+    },
+    onPointerUp: clear,
+    onPointerCancel: clear,
+    onPointerLeave: clear,
+    onContextMenu: (event: React.MouseEvent) => {
+      if (state.current.touch) event.preventDefault();
+    },
+  };
+
+  return { firedRef, handlers };
+}
+
+/** The long-press bottom sheet: the same rename/delete actions as the
+ *  hover "…" menu, honoring the daemon row's capabilities and reasons. */
+function SessionActionsSheet({
+  session,
+  actions,
+  onClose,
+}: {
+  session: AgentSession;
+  actions: SessionActions;
+  onClose: () => void;
+}) {
+  const canRename = session.canRename === true;
+  const canDelete = session.canDelete === true;
+  const offerDebug =
+    actions.onDebug !== undefined &&
+    !session.debugTargetSessionId &&
+    !isMockTourSession(session.id);
+  const row =
+    "flex w-full items-center gap-3 px-4 py-3 text-sm transition-colors hover:bg-muted/50 disabled:opacity-50";
+
+  return (
+    <Sheet
+      open
+      onOpenChange={(open) => {
+        if (!open) onClose();
+      }}
+    >
+      <SheetContent side="bottom" className="p-0">
+        <SheetTitle className="sr-only">Chat options</SheetTitle>
+        <div className="py-2">
+          <p className="truncate px-4 pt-1 pb-2 text-sm font-semibold">
+            {session.title || "Untitled"}
+          </p>
+          {offerDebug && (
+            <button
+              type="button"
+              className={row}
+              onClick={() => {
+                onClose();
+                actions.onDebug?.(session.id);
+              }}
+            >
+              <Bug className="size-4 shrink-0 text-muted-foreground" />
+              <span className="min-w-0 text-left">Debug with AI</span>
+            </button>
+          )}
+          <button
+            type="button"
+            className={row}
+            disabled={!canRename}
+            onClick={() => {
+              onClose();
+              actions.onRename(session.id);
+            }}
+          >
+            <Pencil className="size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 text-left">
+              Rename
+              {!canRename && session.renameReason && (
+                <span className="block truncate text-xs text-muted-foreground">
+                  {session.renameReason}
+                </span>
+              )}
+            </span>
+          </button>
+          <button
+            type="button"
+            className={row}
+            disabled={!canDelete}
+            onClick={() => {
+              onClose();
+              actions.onDelete(session.id);
+            }}
+          >
+            <Trash2 className="size-4 shrink-0 text-muted-foreground" />
+            <span className="min-w-0 text-left">
+              Delete
+              {!canDelete && session.deleteReason && (
+                <span className="block truncate text-xs text-muted-foreground">
+                  {session.deleteReason}
+                </span>
+              )}
+            </span>
+          </button>
+        </div>
+      </SheetContent>
+    </Sheet>
+  );
+}
+
 function SessionRow({
   session,
   isSelected,
@@ -142,7 +292,9 @@ function SessionRow({
   actions: SessionActions;
 }) {
   const [menuOpen, setMenuOpen] = useState(false);
+  const [sheetOpen, setSheetOpen] = useState(false);
   const isRunning = session.isStreaming || session.state === "running";
+  const longPress = useLongPress(() => setSheetOpen(true));
 
   return (
     <div
@@ -155,12 +307,20 @@ function SessionRow({
     >
       <button
         type="button"
-        onClick={() => onSelect(session.id)}
+        onClick={() => {
+          // A click that ends a long-press is the release, not a selection.
+          if (longPress.firedRef.current) {
+            longPress.firedRef.current = false;
+            return;
+          }
+          onSelect(session.id);
+        }}
         onDoubleClick={
           session.canRename === true
             ? () => actions.onRename(session.id)
             : undefined
         }
+        {...longPress.handlers}
         aria-current={isSelected ? "true" : undefined}
         aria-label={`Open chat: ${session.title || "Untitled"}${
           isRunning ? " (running)" : ""
@@ -244,6 +404,13 @@ function SessionRow({
           </button>
         </SessionContextMenu>
       </div>
+      {sheetOpen && (
+        <SessionActionsSheet
+          session={session}
+          actions={actions}
+          onClose={() => setSheetOpen(false)}
+        />
+      )}
     </div>
   );
 }
