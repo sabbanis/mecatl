@@ -395,6 +395,7 @@ func runTokenCleanupWithContext(parent context.Context, deleter upstreamTokenDel
 }
 
 func (r *Runtime) cleanupProviderTokens(parent context.Context, authSession ToolHiveAuthSessionID, providers []string) {
+	r.revokeGrantsForProviders(authSession)
 	targets := make([]tokenCleanupTarget, 0, len(providers))
 	for _, provider := range providers {
 		if provider != "" {
@@ -604,15 +605,26 @@ const (
 type ProcessOption func(*processOptions)
 
 type processOptions struct {
-	httpClient                  *http.Client
-	insecureAllowHTTPForTesting bool
-	caBundlePathForTesting      string
+	httpClient                    *http.Client
+	insecureAllowHTTPForTesting   bool
+	caBundlePathForTesting        string
+	accessTokenLifespanForTesting time.Duration
 }
 
 // WithHTTPClient supplies the client for the broker's own downstream token exchange.
 // It is useful when a local TLS listener uses a private test CA.
 func WithHTTPClient(client *http.Client) ProcessOption {
 	return func(options *processOptions) { options.httpClient = client }
+}
+
+// WithAccessTokenLifespanForTesting overrides the embedded auth server's
+// client-facing access-token lifespan (ToolHive defaults to one hour, with no
+// production-facing knob to shorten it). It exists so a test can force the
+// front-door grant Callback stores in Runtime.grants to genuinely expire on a
+// short, deterministic timeline, instead of waiting on (or faking) a real
+// hour. Production composition never calls this.
+func WithAccessTokenLifespanForTesting(lifespan time.Duration) ProcessOption {
+	return func(options *processOptions) { options.accessTokenLifespanForTesting = lifespan }
 }
 
 // NewToolHiveProcess builds the process-owned embedded authorization server and
@@ -642,7 +654,19 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 	}
 	store := storage.NewMemoryStorage()
 	authCtx, cancelAuth := context.WithCancel(context.Background())
-	auth, err := runner.NewEmbeddedAuthServerWithStorage(authCtx, &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: construction.upstreams}, store)
+	runConfig := &authserver.RunConfig{SchemaVersion: "v1", Issuer: issuer, AllowedAudiences: []string{issuer}, Upstreams: construction.upstreams}
+	if config.accessTokenLifespanForTesting > 0 {
+		// RefreshTokenLifespan is pinned to the SAME short value: the embedded
+		// auth server re-mints its own session JWT from ITS OWN refresh token
+		// independent of real upstream credential health, so a test forcing
+		// a genuine Runtime.grants regression needs its refresh token to run
+		// out too, not just its access token.
+		runConfig.TokenLifespans = &authserver.TokenLifespanRunConfig{
+			AccessTokenLifespan:  config.accessTokenLifespanForTesting.String(),
+			RefreshTokenLifespan: config.accessTokenLifespanForTesting.String(),
+		}
+	}
+	auth, err := runner.NewEmbeddedAuthServerWithStorage(authCtx, runConfig, store)
 	if err != nil {
 		cancelAuth()
 		return nil, fmt.Errorf("vmcpbroker: create embedded auth server: %w", err)
@@ -1325,7 +1349,8 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 	if route.Protected {
 		_, ok := c.runtime.grant(c.sessionID, route.BackendID)
 		if !ok {
-			return session.NewToolError("", "authorization required for this broker tool"), nil
+			c.protected = nil // stale conn built on a now-revoked grant
+			return session.NewToolError("", "broker authorization expired; re-run this tool to re-authorize"), nil
 		}
 		server = c.protected
 		if server == nil {
@@ -1940,6 +1965,37 @@ func (r *Runtime) oauthConfig() oauth2.Config {
 	}
 }
 
+// invalidateBundleGrantsLocked revokes every protected backend's grant for
+// sessionID. Callers must already hold r.mu. A terminal credential failure
+// revokes the whole executable bundle, not just the target that surfaced
+// it: the already-admitted model catalogue remains frozen, so leaving a
+// sibling backend's grant in place would have it keep claiming "connected"
+// while every call against it silently fails with no way back to
+// re-authorization.
+func (r *Runtime) invalidateBundleGrantsLocked(sessionID session.SessionID) {
+	for _, backend := range r.protectedBackends {
+		delete(r.grants, controlTarget{sessionID: sessionID, backendID: backend})
+	}
+}
+
+// revokeGrantsForProviders revokes every protected grant belonging to
+// authSession. It is called when ToolHive's own upstream-token refresh for
+// that auth session has terminally failed — a signal mecatl already
+// receives (via the cleanup callback wired into its cleaningUpstreamTokens
+// wrapper) but previously used only to clean up ToolHive's own token
+// storage, never to invalidate mecatl's own Runtime.grants. Without this,
+// RequestAuthorization keeps reporting "connected" after a real credential
+// death, and the mid-turn authorization park never fires.
+func (r *Runtime) revokeGrantsForProviders(authSession ToolHiveAuthSessionID) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for target, grant := range r.grants {
+		if grant.authSession == authSession {
+			r.invalidateBundleGrantsLocked(target.sessionID)
+		}
+	}
+}
+
 func (r *Runtime) refreshDownstreamGrant(ctx context.Context, target controlTarget, expected downstreamGrant) (downstreamGrant, error) {
 	r.mu.Lock()
 	if r.closed {
@@ -1994,13 +2050,7 @@ func (r *Runtime) refreshDownstreamGrant(ctx context.Context, target controlTarg
 		}
 	} else if errors.Is(err, errDownstreamRefreshRejected) {
 		if current, ok := r.grants[target]; ok && current == expected {
-			// A terminal provider refresh failure revokes the whole executable
-			// bundle. The already-admitted model catalogue remains frozen: the
-			// Service refuses reenrollment after prompting, and retained wrappers
-			// fail their grant check rather than changing a running catalogue.
-			for _, backend := range r.protectedBackends {
-				delete(r.grants, controlTarget{sessionID: target.sessionID, backendID: backend})
-			}
+			r.invalidateBundleGrantsLocked(target.sessionID)
 		}
 	}
 	operation.err = err
