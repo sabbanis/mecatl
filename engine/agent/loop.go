@@ -1206,9 +1206,11 @@ func (p *PreparedRun) Abort() PreparedRunTransition {
 
 // PrepareAuthorizationContinuation prepares an already durably claimed
 // external-authorization continuation without executing it. The caller must
-// register Run before Start.
+// register Run before Start. It may present another authorization because its
+// sole production caller has already authenticated the owner at the Service
+// boundary.
 func (e *Engine) PrepareAuthorizationContinuation(ctx context.Context, sess *session.Session, env tool.Environment, pending session.PendingAuthorization, status session.AuthorizationStatus) *PreparedRun {
-	return e.prepareRun(ctx, sess, RunRequest{RunID: sess.RunID()}, func(ctx context.Context, r *Run) {
+	return e.prepareRun(ctx, sess, RunRequest{RunID: sess.RunID(), CanPresentAuthorization: true}, func(ctx context.Context, r *Run) {
 		e.emit(r, session.Event{Type: session.EvSessionInit})
 		toolToRun, ok := e.deps.Catalog.Lookup(pending.Call.Name)
 		if !ok {
@@ -1245,9 +1247,10 @@ func (e *Engine) PrepareAuthorizationContinuation(ctx context.Context, sess *ses
 // PrepareAfterAuthorization prepares the ordinary model loop after a terminal
 // external-authorization outcome has been durably paired. Results must be the
 // exact ordered ToolResults already recorded on sess. The caller must register
-// Run before Start.
+// Run before Start. It may present another authorization because its sole
+// production caller has already authenticated the owner at the Service boundary.
 func (e *Engine) PrepareAfterAuthorization(ctx context.Context, sess *session.Session, env tool.Environment, authorization session.ExternalAuthorization, callID session.ToolCallID, results []session.ToolResult, status session.AuthorizationStatus) *PreparedRun {
-	return e.prepareRun(ctx, sess, RunRequest{RunID: sess.RunID()}, func(ctx context.Context, r *Run) {
+	return e.prepareRun(ctx, sess, RunRequest{RunID: sess.RunID(), CanPresentAuthorization: true}, func(ctx context.Context, r *Run) {
 		e.emit(r, session.Event{Type: session.EvSessionInit})
 		e.emitAuthorizationResolution(r, sess.Counters.Turns, authorization, callID, status, results)
 		e.runLoop(ctx, r, sess, env, session.Usage{}, "", false)
