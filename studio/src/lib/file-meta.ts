@@ -11,7 +11,7 @@ import {
  * (composer attachment pills, message attachment chips, file cards): one
  * icon + label per kind, so the surfaces agree on what a file "is".
  */
-interface FileKindMeta {
+export interface FileKindMeta {
   icon: LucideIcon;
   label: string;
 }
@@ -21,7 +21,7 @@ interface FileKindMeta {
  * file-preview code viewer and the file-kind icons share ONE list (the
  * preview panel previously kept its own copy).
  */
-const CODE_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
+export const CODE_FILE_EXTENSIONS: ReadonlySet<string> = new Set([
   "ts",
   "tsx",
   "js",
@@ -71,7 +71,7 @@ const IMAGE_EXTENSIONS: ReadonlySet<string> = new Set([
 ]);
 
 /** Lower-cased extension of a file name, "" when it has none. */
-function extensionOf(name: string): string {
+export function extensionOf(name: string): string {
   const dot = name.lastIndexOf(".");
   return dot === -1 ? "" : name.slice(dot + 1).toLowerCase();
 }
@@ -82,7 +82,7 @@ function extensionOf(name: string): string {
  * glyph, recognised source files → code glyph, everything else keeps the
  * paperclip fallback.
  */
-function fileKindMeta(name: string, mime?: string): FileKindMeta {
+export function fileKindMeta(name: string, mime?: string): FileKindMeta {
   const ext = extensionOf(name);
   if (mime?.startsWith("image/") || IMAGE_EXTENSIONS.has(ext)) {
     return { icon: ImageIcon, label: "Image" };

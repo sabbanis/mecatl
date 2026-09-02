@@ -4,7 +4,15 @@ import Placeholder from "@tiptap/extension-placeholder";
 import { EditorContent, useEditor } from "@tiptap/react";
 import StarterKit from "@tiptap/starter-kit";
 import type { SuggestionProps } from "@tiptap/suggestion";
-import { ArrowUp, Bot, Check, ChevronDown, Mic } from "lucide-react";
+import {
+  ArrowUp,
+  Bot,
+  Check,
+  ChevronDown,
+  Mic,
+  Paperclip,
+  Plus,
+} from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
@@ -17,6 +25,7 @@ import {
   getAgentMentions,
   getSlashCommands,
 } from "@/features/agent/composer-capabilities";
+import { fileKindMeta } from "@/lib/file-meta";
 import { cn } from "@/lib/utils";
 import {
   type ComposerMenuItem,
@@ -29,7 +38,9 @@ interface ChatInputProps {
   placeholder?: string;
   rows?: number;
   compact?: boolean;
-  onSend?: (content: string) => void;
+  onSend?: (content: string, files?: File[]) => void;
+  /** Preview an attached file in the canvas panel. */
+  onPreviewAttachment?: (file: File) => void;
   disabled?: boolean;
   isStreaming?: boolean;
   appendText?: string | null;
@@ -48,6 +59,42 @@ interface ChatInputProps {
  */
 const GHOST_TRIGGER_CLASS =
   "h-7 gap-1 rounded-full px-2.5 text-sm font-normal text-foreground bg-transparent hover:bg-zinc-200 dark:hover:bg-zinc-700 border-0 shadow-none";
+
+/** The composer's "+" button: opens the file picker directly to attach files. */
+function FilesDropdown({
+  onFilesSelected,
+}: {
+  onFilesSelected?: (files: File[]) => void;
+}) {
+  const fileInputRef = useRef<HTMLInputElement>(null);
+
+  return (
+    <>
+      <input
+        ref={fileInputRef}
+        type="file"
+        multiple
+        accept="image/*"
+        className="hidden"
+        onChange={(e) => {
+          const selected = e.target.files;
+          if (selected && selected.length > 0) {
+            onFilesSelected?.(Array.from(selected));
+          }
+          e.target.value = "";
+        }}
+      />
+      <Button
+        size="icon"
+        className="size-8 rounded-full text-muted-foreground bg-transparent hover:bg-muted/60 border-0 shadow-none"
+        onClick={() => fileInputRef.current?.click()}
+        aria-label="Attach files"
+      >
+        <Plus className="size-4" />
+      </Button>
+    </>
+  );
+}
 
 /**
  * Controls whether the agent draws on (and writes to) its long-term memory for
@@ -205,6 +252,74 @@ function commandMenuItems(query: string): ComposerMenuItem[] {
     }));
 }
 
+/**
+ * One attached-file chip. Image files show a small thumbnail of the file
+ * itself (an object URL — cheaper than a data-URL read) before the name; the
+ * URL is revoked when the pill unmounts (remove/send), so attach/remove
+ * cycles never leak blob URLs. Non-image files (and an image whose thumbnail
+ * has not resolved yet) show their file-kind glyph — image/PDF/code — with
+ * the paperclip as the fallback. Exported for its unit test.
+ */
+export function AttachmentPill({
+  file,
+  onRemove,
+  onPreview,
+}: {
+  file: File;
+  onRemove: () => void;
+  /** Opens the file in the canvas panel (main composer only). */
+  onPreview?: () => void;
+}) {
+  const [previewUrl, setPreviewUrl] = useState<string | null>(null);
+  useEffect(() => {
+    if (!file.type.startsWith("image/")) {
+      setPreviewUrl(null);
+      return;
+    }
+    const url = URL.createObjectURL(file);
+    setPreviewUrl(url);
+    return () => URL.revokeObjectURL(url);
+  }, [file]);
+  const kind = fileKindMeta(file.name, file.type);
+  const KindIcon = kind.icon;
+
+  return (
+    <span
+      className={cn(
+        "inline-flex h-7 items-center gap-1.5 rounded-full border border-brand/30 bg-brand/5 pr-1.5 text-xs text-brand dark:text-brand",
+        previewUrl ? "pl-1" : "pl-2.5",
+      )}
+    >
+      <button
+        type="button"
+        onClick={onPreview}
+        disabled={!onPreview}
+        className="inline-flex min-w-0 items-center gap-1.5 disabled:cursor-default"
+        title={onPreview ? `Preview ${file.name}` : undefined}
+      >
+        {previewUrl ? (
+          // biome-ignore lint/performance/noImgElement: object URLs need a plain img
+          <img
+            src={previewUrl}
+            alt=""
+            className="size-5 shrink-0 rounded-full object-cover"
+          />
+        ) : (
+          <KindIcon aria-label={kind.label} className="size-3" />
+        )}
+        <span className="max-w-40 truncate">{file.name}</span>
+      </button>
+      <button
+        type="button"
+        onClick={onRemove}
+        className="flex items-center justify-center size-4 rounded-full hover:bg-brand/10"
+      >
+        ×
+      </button>
+    </span>
+  );
+}
+
 /** Open autocomplete menu state, mirrored from TipTap's suggestion lifecycle. */
 interface ComposerMenu {
   kind: "agent" | "command";
@@ -259,12 +374,18 @@ export function ChatInput({
   onAppendConsumed,
   initialText,
   onInitialTextConsumed,
+  onPreviewAttachment,
 }: ChatInputProps) {
   const placeholder = placeholderProp ?? DEFAULT_PLACEHOLDER;
   // Plain-text mirror of the editor, kept in sync via onUpdate. Used only for
   // "is there something to send" checks; the editor document is the source of
   // truth for the message itself.
   const [text, setText] = useState("");
+  const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
+  const [isDragOver, setIsDragOver] = useState(false);
+  const [isWindowDrag, setIsWindowDrag] = useState(false);
+  const dragCountRef = useRef(0);
+  const windowDragCountRef = useRef(0);
 
   // Autocomplete menu, mirrored from TipTap's suggestion lifecycle so we can
   // render the same full-width popover the pre-TipTap composer used. `menuRef`
@@ -366,6 +487,34 @@ export function ChatInput({
     }
   }, [initialText, onInitialTextConsumed, editor]);
 
+  useEffect(() => {
+    const onEnter = (e: DragEvent) => {
+      if (e.dataTransfer?.types.includes("Files")) {
+        windowDragCountRef.current++;
+        setIsWindowDrag(true);
+      }
+    };
+    const onLeave = () => {
+      windowDragCountRef.current--;
+      if (windowDragCountRef.current <= 0) {
+        windowDragCountRef.current = 0;
+        setIsWindowDrag(false);
+      }
+    };
+    const onDrop = () => {
+      windowDragCountRef.current = 0;
+      setIsWindowDrag(false);
+    };
+    window.addEventListener("dragenter", onEnter);
+    window.addEventListener("dragleave", onLeave);
+    window.addEventListener("drop", onDrop);
+    return () => {
+      window.removeEventListener("dragenter", onEnter);
+      window.removeEventListener("dragleave", onLeave);
+      window.removeEventListener("drop", onDrop);
+    };
+  }, []);
+
   const voice = useVoiceInput(
     useCallback(
       (transcript: string) => {
@@ -379,10 +528,12 @@ export function ChatInput({
   const handleSend = useCallback(() => {
     const trimmed = editor ? composerText(editor) : "";
     if (!trimmed || disabled) return;
-    onSend?.(trimmed);
+    const files = attachedFiles.length > 0 ? attachedFiles : undefined;
+    onSend?.(trimmed, files);
     editor?.commands.clearContent();
     setText("");
-  }, [editor, disabled, onSend]);
+    setAttachedFiles([]);
+  }, [editor, disabled, onSend, attachedFiles]);
 
   // Menu nav + Enter-to-send are wired with a native capture-phase keydown
   // listener on the editor DOM, re-subscribed each render with fresh closures
@@ -414,7 +565,40 @@ export function ChatInput({
   const hasText = text.trim().length > 0;
 
   return (
-    <div className="relative rounded-2xl bg-zinc-50 dark:bg-zinc-900">
+    // biome-ignore lint/a11y/noStaticElementInteractions: drop zone for file attachments
+    <div
+      onDragEnter={(e) => {
+        e.preventDefault();
+        dragCountRef.current++;
+        setIsDragOver(true);
+      }}
+      onDragOver={(e) => {
+        e.preventDefault();
+        e.dataTransfer.dropEffect = "copy";
+      }}
+      onDragLeave={(e) => {
+        e.preventDefault();
+        dragCountRef.current--;
+        if (dragCountRef.current <= 0) {
+          dragCountRef.current = 0;
+          setIsDragOver(false);
+        }
+      }}
+      onDrop={(e) => {
+        e.preventDefault();
+        dragCountRef.current = 0;
+        setIsDragOver(false);
+        // Only images can cross the wire (the daemon's prompt parts are
+        // image/audio only), so only images attach.
+        const droppedFiles = Array.from(e.dataTransfer.files).filter((f) =>
+          f.type.startsWith("image/"),
+        );
+        if (droppedFiles.length > 0) {
+          setAttachedFiles((prev) => [...prev, ...droppedFiles]);
+        }
+      }}
+      className="relative rounded-2xl bg-zinc-50 dark:bg-zinc-900"
+    >
       {/* Autocomplete popover (agent @-mentions or slash commands), floating
           above the input box. Driven by TipTap's suggestion lifecycle. */}
       {menu && menu.items.length > 0 && (
@@ -460,13 +644,47 @@ export function ChatInput({
           Has its own rounded border. The toolbar row below has a matching
           border on its top/sides/bottom; the two borders meet along the
           input box's bottom edge, sharing a single visible line. */}
-      <div className="relative rounded-2xl border bg-background transition-colors focus-within:border-zinc-400 dark:focus-within:border-zinc-600 border-zinc-300 dark:border-zinc-700">
+      <div
+        className={cn(
+          "relative rounded-2xl border bg-background transition-colors focus-within:border-zinc-400 dark:focus-within:border-zinc-600",
+          isDragOver
+            ? "border-brand bg-brand/5 dark:bg-brand/10 ring-2 ring-brand/20"
+            : isWindowDrag
+              ? "border-brand/50 ring-1 ring-brand/10"
+              : "border-zinc-300 dark:border-zinc-700",
+        )}
+      >
         {voice.isListening && (
           <div className="flex items-center gap-2 px-4 pt-3 pb-1">
             <span className="size-2 rounded-full bg-brand animate-pulse" />
             <span className="text-xs font-medium text-brand dark:text-brand">
               Listening
             </span>
+          </div>
+        )}
+        {isDragOver && (
+          <div className="absolute inset-0 z-20 flex items-center justify-center rounded-2xl bg-brand/10 dark:bg-brand/15 pointer-events-none">
+            <div className="flex items-center gap-2 text-brand dark:text-brand">
+              <Paperclip className="size-5" />
+              <span className="text-sm font-medium">Drop files to attach</span>
+            </div>
+          </div>
+        )}
+        {attachedFiles.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 px-4 pt-3">
+            {attachedFiles.map((f, i) => (
+              <AttachmentPill
+                onPreview={
+                  onPreviewAttachment ? () => onPreviewAttachment(f) : undefined
+                }
+                // biome-ignore lint/suspicious/noArrayIndexKey: files may share names
+                key={`${f.name}-${i}`}
+                file={f}
+                onRemove={() =>
+                  setAttachedFiles((prev) => prev.filter((_, j) => j !== i))
+                }
+              />
+            ))}
           </div>
         )}
         <div className="flex flex-wrap items-start gap-1.5 px-4 pt-4 pb-2">
@@ -482,8 +700,13 @@ export function ChatInput({
             <EditorContent editor={editor} className="composer-editor" />
           </div>
         </div>
-        {/* Bottom row: mic on the left; send right */}
+        {/* Bottom row: attach (+), mic on the left; send right */}
         <div className="flex items-center gap-1 px-2 pb-2">
+          <FilesDropdown
+            onFilesSelected={(newFiles) =>
+              setAttachedFiles((prev) => [...prev, ...newFiles])
+            }
+          />
           {voice.isSupported && (
             <Button
               size="icon"

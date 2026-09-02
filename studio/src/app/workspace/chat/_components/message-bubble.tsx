@@ -21,7 +21,13 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type { AgentMessage, Artifact } from "@/features/agent";
+import type {
+  AgentMessage,
+  Artifact,
+  Attachment,
+  ToolCallInfo,
+} from "@/features/agent";
+import { fileKindMeta } from "@/lib/file-meta";
 import { formatMessageTime } from "@/lib/formatters";
 import {
   useAgentAvatar,
@@ -178,6 +184,56 @@ const ARTIFACT_META: Record<
   },
 };
 
+/**
+ * One attachment chip on a message: the file-kind glyph (image/PDF/markdown/
+ * code, paperclip fallback) and, for an image with a displayable source, a
+ * small thumbnail of the image itself — mirroring the composer's
+ * AttachmentPill so a sent file keeps the look it had while attached.
+ */
+function AttachmentChip({
+  attachment,
+  onOpen,
+  title,
+}: {
+  attachment: Attachment;
+  onOpen?: () => void;
+  title?: string;
+}) {
+  const kind = fileKindMeta(attachment.name, attachment.type);
+  const KindIcon = kind.icon;
+  const thumbSrc =
+    kind.label === "Image"
+      ? (attachment.url ??
+        (attachment.content?.startsWith("data:")
+          ? attachment.content
+          : undefined))
+      : undefined;
+
+  return (
+    <button
+      type="button"
+      onClick={onOpen}
+      title={title}
+      className={cn(
+        "inline-flex h-7 items-center gap-1.5 rounded-full border border-brand/30 bg-brand/5 pr-3 text-xs text-brand transition-colors hover:border-brand/60 hover:bg-brand/10 cursor-pointer",
+        thumbSrc ? "pl-1" : "pl-3",
+      )}
+    >
+      {thumbSrc ? (
+        // biome-ignore lint/performance/noImgElement: a data/object URL thumbnail, not a remote image
+        <img
+          src={thumbSrc}
+          alt=""
+          className="size-5 shrink-0 rounded-full object-cover"
+        />
+      ) : (
+        <KindIcon aria-label={kind.label} className="size-3" />
+      )}
+      {attachment.name}
+    </button>
+  );
+}
+
 function ArtifactCard({
   artifact,
   onClick,
@@ -217,11 +273,13 @@ function ArtifactCard({
 export function MessageBubble({
   message,
   onOpenArtifact,
+  onOpenAttachment,
   botName = "Mecatl",
   showActivity = true,
 }: {
   message: AgentMessage;
   onOpenArtifact?: (artifact: Artifact) => void;
+  onOpenAttachment?: (attachment: Attachment) => void;
   botName?: string;
   showActivity?: boolean;
 }) {
@@ -231,6 +289,15 @@ export function MessageBubble({
   if (message.role === "tool") return null;
 
   const hasToolCalls = message.toolCalls && message.toolCalls.length > 0;
+  // Files this turn produced (Write calls), rendered as attachment chips —
+  // deduped by path, the LAST write of a path wins (it is the final content).
+  const producedFiles = (() => {
+    const byPath = new Map<string, NonNullable<ToolCallInfo["file"]>>();
+    for (const call of message.toolCalls ?? []) {
+      if (call.file) byPath.set(call.file.path, call.file);
+    }
+    return [...byPath.values()];
+  })();
   const hasContent = message.content?.trim();
   // Notices and delegations can repeat verbatim within a turn, so rows get
   // positional ids up front to keep React keys unique.
@@ -266,6 +333,39 @@ export function MessageBubble({
             {formatMessageTime(message.timestamp)}
           </span>
         </div>
+        {message.attachments && message.attachments.length > 0 && (
+          <div className="flex flex-wrap gap-1.5 my-1.5">
+            {message.attachments.map((att) => (
+              <AttachmentChip
+                key={att.name}
+                attachment={att}
+                onOpen={() => onOpenAttachment?.(att)}
+              />
+            ))}
+          </div>
+        )}
+        {producedFiles.length > 0 && (
+          <div className="my-1.5 flex flex-wrap gap-1.5">
+            {producedFiles.map((file) => (
+              <AttachmentChip
+                key={file.path}
+                attachment={{
+                  name: file.name,
+                  type: "",
+                  content: file.content,
+                }}
+                title={file.path}
+                onOpen={() =>
+                  onOpenAttachment?.({
+                    name: file.name,
+                    type: "",
+                    content: file.content,
+                  })
+                }
+              />
+            ))}
+          </div>
+        )}
         {hasToolCalls && showActivity && message.toolCalls && (
           <ToolCallList toolCalls={message.toolCalls} />
         )}

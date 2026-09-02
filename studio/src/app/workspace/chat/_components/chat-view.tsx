@@ -5,6 +5,7 @@ import {
   ArrowDown,
   CirclePlus,
   Ellipsis,
+  FileText,
   Loader2,
   MessageCircle,
   PanelLeftClose,
@@ -34,15 +35,22 @@ import type {
   AgentSession,
   ApprovalChoice,
   ApprovalRequest,
+  Attachment,
   ClarificationRequest,
 } from "@/features/agent";
 import { formatTokens } from "@/lib/formatters";
 import type { SessionListSide } from "@/lib/profile-preferences";
+import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
 import { ClarificationPanel } from "./clarification-panel";
+import { FilePreview } from "./file-preview";
 import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
+import { SidePanel } from "./side-panel";
+
+/** The single right-hand panel: exactly one kind is open at a time, or none. */
+type ActivePanel = { kind: "attachment"; attachment: Attachment };
 
 /**
  * Bottom-of-transcript activity line while a turn is running: three
@@ -116,6 +124,37 @@ function UsageMenuRow({
         {formatTokens(usage.outputTokens)} output
       </p>
     </div>
+  );
+}
+
+function AttachmentPanel({
+  attachment,
+  onClose,
+  maximized,
+  onToggleMaximize,
+}: {
+  attachment: Attachment;
+  onClose: () => void;
+  maximized: boolean;
+  onToggleMaximize: () => void;
+}) {
+  return (
+    <SidePanel
+      icon={FileText}
+      title={attachment.name}
+      closeLabel="Close file"
+      maximized={maximized}
+      onToggleMaximize={onToggleMaximize}
+      onClose={onClose}
+    >
+      <div className="flex-1 overflow-auto">
+        <FilePreview
+          name={attachment.name}
+          content={attachment.content}
+          url={attachment.url}
+        />
+      </div>
+    </SidePanel>
   );
 }
 
@@ -245,6 +284,7 @@ export function ChatView({
   onRespondClarification,
   onRename,
   onDelete,
+  onSidePanelOpenChange,
   initialDraft,
   onInitialDraftConsumed,
 }: {
@@ -285,8 +325,43 @@ export function ChatView({
   const atBottomRef = useRef(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
   const [showActivity, setShowActivity] = useState(false);
+  // The single right-hand panel — a discriminated union makes "one panel at a
+  // time" structural rather than something to coordinate by hand.
+  const [panel, setPanel] = useState<ActivePanel | null>(null);
   const [appendText, setAppendText] = useState<string | null>(null);
+  // When maximized, the panel fills the pane and the conversation column is
+  // hidden. Always reset when the panel is closed.
+  const [panelMaximized, setPanelMaximized] = useState(false);
   const handleAppendConsumed = useCallback(() => setAppendText(null), []);
+
+  const closeSidePanel = useCallback(() => {
+    setPanel(null);
+    setPanelMaximized(false);
+  }, []);
+  const toggleMaximize = useCallback(() => setPanelMaximized((v) => !v), []);
+  // Previewing a composer attachment opens the canvas on an object URL; the
+  // previous URL is revoked when replaced or on unmount so attach/preview
+  // cycles never leak blobs.
+  const previewUrlRef = useRef<string | null>(null);
+  const releasePreviewUrl = useCallback(() => {
+    if (previewUrlRef.current) {
+      URL.revokeObjectURL(previewUrlRef.current);
+      previewUrlRef.current = null;
+    }
+  }, []);
+  useEffect(() => releasePreviewUrl, [releasePreviewUrl]);
+  const handlePreviewFile = useCallback(
+    (file: File) => {
+      releasePreviewUrl();
+      const url = URL.createObjectURL(file);
+      previewUrlRef.current = url;
+      setPanel({
+        kind: "attachment",
+        attachment: { name: file.name, type: file.type, url },
+      });
+    },
+    [releasePreviewUrl],
+  );
 
   // Jump to the latest message whenever the active chat changes so users
   // always land at the bottom (most-recent) of the conversation.
@@ -307,8 +382,19 @@ export function ChatView({
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
 
+  // Let the parent collapse the chat list while the side panel is open so
+  // both panels fit side by side.
+  const sidePanelOpen = panel !== null;
+  useEffect(() => {
+    onSidePanelOpenChange?.(sidePanelOpen);
+  }, [sidePanelOpen, onSidePanelOpenChange]);
+
   // The sidebar toggle renders on the header edge nearest the panel it
   // controls: leading when the session list docks left, trailing when right.
+  // With the list docked right, an open side panel occupies its slot — the
+  // toggle then means "give me the list back": close the panel, and the
+  // workspace restores the sidebar to its pre-panel state.
+  const panelHoldsSidebarSlot = sidebarSide === "right" && panel !== null;
   const sidebarToggle = (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -316,8 +402,20 @@ export function ChatView({
           variant="ghost"
           size="icon"
           className="size-8 shrink-0 text-muted-foreground"
-          onClick={onToggleSidebar}
-          aria-label={sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+          onClick={() => {
+            if (panelHoldsSidebarSlot) {
+              closeSidePanel();
+              return;
+            }
+            onToggleSidebar();
+          }}
+          aria-label={
+            panelHoldsSidebarSlot
+              ? "Close preview"
+              : sidebarOpen
+                ? "Hide sidebar"
+                : "Show sidebar"
+          }
         >
           {sidebarOpen ? (
             sidebarSide === "left" ? (
@@ -333,14 +431,23 @@ export function ChatView({
         </Button>
       </TooltipTrigger>
       <TooltipContent side="bottom">
-        {sidebarOpen ? "Hide sidebar" : "Show sidebar"}
+        {panelHoldsSidebarSlot
+          ? "Close preview"
+          : sidebarOpen
+            ? "Hide sidebar"
+            : "Show sidebar"}
       </TooltipContent>
     </Tooltip>
   );
 
   return (
     <div className="flex h-full">
-      <div className="flex min-w-0 flex-1 flex-col bg-background">
+      <div
+        className={cn(
+          "flex min-w-0 flex-1 flex-col bg-background",
+          panelMaximized && "hidden",
+        )}
+      >
         <div className="flex h-[60px] items-center gap-2 border-b border-border px-3 max-[499px]:h-14 lg:gap-3 lg:px-6">
           {sidebarSide === "left" && sidebarToggle}
           {isStreaming && (
@@ -412,6 +519,9 @@ export function ChatView({
                 <MessageBubble
                   key={msg.id}
                   message={msg}
+                  onOpenAttachment={(attachment) =>
+                    setPanel({ kind: "attachment", attachment })
+                  }
                   botName={botName}
                   showActivity={showActivity}
                 />
@@ -480,6 +590,7 @@ export function ChatView({
               ) : (
                 <ChatInput
                   onSend={onSend}
+                  onPreviewAttachment={handlePreviewFile}
                   isStreaming={isStreaming}
                   disabled={!!pendingApproval}
                   appendText={appendText}
@@ -493,6 +604,33 @@ export function ChatView({
           </div>
         </div>
       </div>
+      {panel !== null && (
+        <SidePanelForKind
+          panel={panel}
+          onClose={closeSidePanel}
+          maximized={panelMaximized}
+          onToggleMaximize={toggleMaximize}
+        />
+      )}
     </div>
   );
+}
+
+/** Renders the right-hand panel for the active kind. */
+function SidePanelForKind({
+  panel,
+  onClose,
+  maximized,
+  onToggleMaximize,
+}: {
+  panel: ActivePanel;
+  onClose: () => void;
+  maximized: boolean;
+  onToggleMaximize: () => void;
+}) {
+  const shared = { onClose, maximized, onToggleMaximize };
+  switch (panel.kind) {
+    case "attachment":
+      return <AttachmentPanel attachment={panel.attachment} {...shared} />;
+  }
 }

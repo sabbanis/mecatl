@@ -2,9 +2,15 @@
 
 import { useCallback, useEffect, useRef, useState } from "react";
 import {
+  loadSentAttachments,
+  saveSentAttachments,
+} from "@/lib/attachment-store";
+import { fileFromToolCall } from "@/lib/file-meta";
+import {
   cancelHarnessRun,
   createHarnessSession,
   fetchSessionTranscriptMessages,
+  type PromptPart,
   respondToHarnessApproval,
   streamHarnessPrompt,
 } from "@/lib/harness/client";
@@ -18,6 +24,7 @@ import type {
   AgentMessage,
   ApprovalChoice,
   ApprovalRequest,
+  Attachment,
   ClarificationRequest,
   StreamEvent,
   ToolCallInfo,
@@ -29,6 +36,84 @@ type ChatStatus =
   | "waiting_approval"
   | "waiting_clarification"
   | "error";
+
+/** Formats every vision provider accepts; anything else gets re-encoded. */
+const WIRE_IMAGE_TYPES = new Set([
+  "image/png",
+  "image/jpeg",
+  "image/webp",
+  "image/gif",
+]);
+/** Above this, re-encode: phone photos are 4–12 MB and base64 inflates by
+ *  a third — big payloads 413 at the daemon's byte budget. */
+const MAX_INLINE_BYTES = 1_500_000;
+/** Longest edge after a re-encode; ample for vision models. */
+const MAX_IMAGE_EDGE = 1600;
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  const CHUNK = 0x8000;
+  for (let i = 0; i < bytes.length; i += CHUNK) {
+    binary += String.fromCharCode(...bytes.subarray(i, i + CHUNK));
+  }
+  return btoa(binary);
+}
+
+/**
+ * Encode one picked image as a daemon prompt part. A small image in a
+ * provider-friendly format goes as-is; everything else — big photos, HEIC
+ * from iPhones — is downscaled onto a canvas and re-encoded as JPEG (the
+ * browser decodes whatever the platform can, so Safari transcodes HEIC
+ * here; a browser that cannot decode the format fails loudly instead).
+ */
+async function imageToPart(file: File): Promise<PromptPart> {
+  if (WIRE_IMAGE_TYPES.has(file.type) && file.size <= MAX_INLINE_BYTES) {
+    return {
+      kind: "image",
+      mime_type: file.type,
+      data: bytesToBase64(new Uint8Array(await file.arrayBuffer())),
+    };
+  }
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((resolve, reject) => {
+      const el = new Image();
+      el.onload = () => resolve(el);
+      el.onerror = () =>
+        reject(
+          new Error(
+            `${file.name}: this browser cannot decode ${file.type || "that format"} — attach a JPEG or PNG instead.`,
+          ),
+        );
+      el.src = url;
+    });
+    const scale = Math.min(
+      1,
+      MAX_IMAGE_EDGE / Math.max(img.naturalWidth, img.naturalHeight),
+    );
+    const width = Math.max(1, Math.round(img.naturalWidth * scale));
+    const height = Math.max(1, Math.round(img.naturalHeight * scale));
+    const canvas = document.createElement("canvas");
+    canvas.width = width;
+    canvas.height = height;
+    const ctx = canvas.getContext("2d");
+    if (!ctx) throw new Error("canvas unavailable");
+    ctx.fillStyle = "#ffffff";
+    ctx.fillRect(0, 0, width, height);
+    ctx.drawImage(img, 0, 0, width, height);
+    const blob = await new Promise<Blob | null>((resolve) =>
+      canvas.toBlob(resolve, "image/jpeg", 0.85),
+    );
+    if (!blob) throw new Error(`${file.name}: could not encode the image.`);
+    return {
+      kind: "image",
+      mime_type: "image/jpeg",
+      data: bytesToBase64(new Uint8Array(await blob.arrayBuffer())),
+    };
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
 
 function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
   const messages: AgentMessage[] = [];
@@ -55,6 +140,7 @@ function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
               callId: call.id,
               name: call.name,
               input: call.args,
+              file: fileFromToolCall(call.name, call.args),
               status: "completed" as const,
             }))
           : undefined,
@@ -131,6 +217,12 @@ export function useAgentChat(
   const daemonIdRef = useRef<string | null>(sessionId);
   const abortRef = useRef<AbortController | null>(null);
   const lastPromptRef = useRef<string | null>(null);
+  // Attachments sent this visit, keyed by session: the daemon's transcript
+  // carries no attachment bytes, so every rehydrate would strip the chips —
+  // this ref re-attaches them by matching user turns in send order.
+  const sentAttachmentsRef = useRef(
+    new Map<string, { content: string; attachments: Attachment[] }[]>(),
+  );
 
   const onSessionCreatedRef = useRef(options?.onSessionCreated);
   onSessionCreatedRef.current = options?.onSessionCreated;
@@ -140,12 +232,36 @@ export function useAgentChat(
   createModelRef.current = options?.createModel;
 
   /**
-   * Rebuilds the message list from the daemon's authoritative transcript.
+   * Rebuilds the message list from the daemon's authoritative transcript,
+   * re-attaching this visit's sent-attachment bytes.
    */
   const rehydrate = useCallback(async (id: string, signal?: AbortSignal) => {
     const transcript = await fetchSessionTranscriptMessages(id, signal);
     if (signal?.aborted) return;
     const rebuilt = messagesFromTranscript(transcript);
+    let sent = sentAttachmentsRef.current.get(id);
+    if (!sent?.length) {
+      // A fresh visit: the bytes live only in IndexedDB.
+      const stored = await loadSentAttachments(id);
+      if (signal?.aborted) return;
+      if (stored.length) {
+        sentAttachmentsRef.current.set(id, stored);
+        sent = stored;
+      }
+    }
+    if (sent?.length) {
+      const pool = [...sent];
+      for (const message of rebuilt) {
+        if (message.role !== "user") continue;
+        const index = pool.findIndex(
+          (record) => record.content === message.content,
+        );
+        if (index !== -1) {
+          message.attachments = pool[index].attachments;
+          pool.splice(index, 1);
+        }
+      }
+    }
     setMessages(rebuilt);
   }, []);
 
@@ -207,6 +323,7 @@ export function useAgentChat(
               callId: event.callId,
               name: event.name,
               input: event.input,
+              file: event.file,
               status: "running",
             };
             patch((message) => ({
@@ -324,19 +441,56 @@ export function useAgentChat(
   );
 
   const sendMessage = useCallback(
-    async (content: string) => {
+    async (content: string, files?: File[]) => {
       if (!connected) return;
       if (status === "streaming" || status === "waiting_approval") return;
+
+      // Only images cross the wire — the daemon's prompt parts are
+      // image/audio only (documents are a daemon capability gap).
+      const images = (files ?? []).filter((file) =>
+        file.type.startsWith("image/"),
+      );
+      let parts: PromptPart[];
+      try {
+        parts = await Promise.all(images.map(imageToPart));
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+        return;
+      }
+      // Each image attachment carries the SAME bytes the wire part holds (a
+      // data: URL), so the chip's thumbnail and the canvas preview work on
+      // the live message. Rehydrated transcripts have no bytes — the daemon
+      // never echoes attachment content — so old messages stay preview-less.
+      const attachments: Attachment[] | undefined =
+        images.length > 0
+          ? images.map((file, index) => {
+              const part = parts[index];
+              return {
+                name: file.name,
+                type: file.type,
+                url: part
+                  ? `data:${part.mime_type};base64,${part.data}`
+                  : undefined,
+              };
+            })
+          : undefined;
 
       const userMessage: AgentMessage = {
         id: `user-${Date.now()}`,
         role: "user",
         content,
         timestamp: Date.now(),
+        attachments,
       };
 
       setMessages((prev) => [...prev, userMessage]);
       setStatus("streaming");
+      if (attachments && daemonIdRef.current) {
+        const log = sentAttachmentsRef.current.get(daemonIdRef.current) ?? [];
+        log.push({ content, attachments });
+        sentAttachmentsRef.current.set(daemonIdRef.current, log);
+        void saveSentAttachments(daemonIdRef.current, log);
+      }
       setError(null);
       lastPromptRef.current = content;
 
@@ -377,12 +531,28 @@ export function useAgentChat(
               : {},
           );
           daemonIdRef.current = daemonId;
+          // The pre-mint record above keyed nothing; re-key it now.
+          if (attachments) {
+            const log = sentAttachmentsRef.current.get(daemonId) ?? [];
+            if (
+              !log.some(
+                (r) => r.content === content && r.attachments === attachments,
+              )
+            ) {
+              log.push({ content, attachments });
+            }
+            sentAttachmentsRef.current.set(daemonId, log);
+            void saveSentAttachments(
+              daemonId,
+              sentAttachmentsRef.current.get(daemonId) ?? [],
+            );
+          }
           onSessionCreatedRef.current?.(daemonId);
         }
         await streamHarnessPrompt(
           daemonId,
           content,
-          [],
+          parts,
           makeStreamHandler(daemonId, ids),
           controller.signal,
         );
