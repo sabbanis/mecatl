@@ -92,6 +92,7 @@ func newServiceMutable(t *testing.T, llm *mockllm.Provider, rules []governance.R
 
 		PlacementProvider: testPlacementProvider{},
 		PlacementScope:    "test",
+		SharedEngineRoot:  "/ws",
 		Now:               func() time.Time { return time.Unix(0, 0) },
 		// The server reads DefaultCapabilities (composition-computed), not the engine.
 		// In these tests there is no catalog/selector, so the intersection is the bare
@@ -135,7 +136,9 @@ func newServiceEngineStoreMutable(t *testing.T, llm *mockllm.Provider, rules []g
 		Engine:              engine,
 		BuildID:             "test-build",
 		Store:               store,
-		Workspaces:          func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		PlacementProvider:   testPlacementProvider{root: "/ws"},
+		PlacementScope:      "test",
+		SharedEngineRoot:    "/ws",
 		Now:                 func() time.Time { return time.Unix(0, 0) },
 		DefaultCapabilities: llm.Capabilities(),
 	}

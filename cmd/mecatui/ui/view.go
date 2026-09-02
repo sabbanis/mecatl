@@ -553,7 +553,7 @@ func (m Model) footerActivity() string {
 	case phaseConnecting:
 		left = m.sp.View() + " connecting…"
 	case phaseFollowing:
-		// A reattach (ADR 0278 Scenario 3): the ui is FOLLOWING a server-owned
+		// A reattach (ADR 0321 Scenario 3): the ui is FOLLOWING a server-owned
 		// detached run via WatchSessionEvents. During replay the footer shows
 		// `⟳ replaying N events…`; on the live boundary it switches to the
 		// normal live spinner; while reconnecting it shows the degraded cue.

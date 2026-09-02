@@ -147,7 +147,7 @@ PR after verification. There is no cleanup or status-only PR.
 - [Detached runs](detached-runs.md) — connect-and-leave-running for mecatui ↔
   remote mecated: the `Prompt.detach` field, the server-owned drain goroutine,
   control-only Converse streams (cancel/approve), WatchSessionEvents reattach,
-  and Ctrl+C detach/double-Ctrl+C cancel (ADR 0278). Status: in-progress.
+  and Ctrl+C detach/double-Ctrl+C cancel (ADR 0321). Status: in-progress.
 - [Local mecak8s Kind fixture](mecak8s-kind-fixture.md) — cleanly separates an
   operator-run mock/real-provider mecak8s fixture, optional Keycloak caller
   identity, and the deferred ToolHive/vMCP delegation extension. Status: draft.

@@ -10,7 +10,7 @@ import (
 )
 
 // TestDetachedRunFlagGatesAttachIsByteIdentical asserts the --detached-runs gate
-// (ADR 0278 Scenario 4): when the flag is OFF, a server IGNORES the
+// (ADR 0321 Scenario 4): when the flag is OFF, a server IGNORES the
 // Prompt{Detach:true} field — it takes the ATTACHED Converse path, byte-identical
 // to a client that never sent the field (run relays normally and cancels on
 // stream close). The ServerCapabilities.detached_runs bit is likewise NOT
@@ -37,7 +37,7 @@ func TestDetachedRunFlagGatesAttachIsByteIdentical(t *testing.T) {
 		t.Fatal("detached_runs bit advertised while the flag is off — must not advertise")
 	}
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -78,7 +78,7 @@ func TestDetachedRunFlagGatesAttachIsByteIdentical(t *testing.T) {
 		t.Fatal("flag ON: detached_runs bit not advertised — must advertise it")
 	}
 
-	cs2, err := client2.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs2, err := client2.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

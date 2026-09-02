@@ -199,7 +199,7 @@ type sessionsTranscriptAdoptionIntent struct {
 func (sessionsTranscriptAdoptionIntent) isSurfaceIntent() {}
 
 // sessionsReattachIntent asks the Model to REATTACH to a RUNNING server-owned
-// detached run (ADR 0278 Scenario 3) via WatchSessionEvents, rather than adopting
+// detached run (ADR 0321 Scenario 3) via WatchSessionEvents, rather than adopting
 // a terminal transcript. Set when `enter` is pressed on a running row in the
 // sessions browser; the Model transitions to phaseFollowing + arms the watch.
 // The row's state is verified via GetSession in the intent handler (a row whose
@@ -585,7 +585,7 @@ func (s *sessionsState) handleActionKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 			s.setNotice(reason)
 			return nil, true
 		}
-		// A RUNNING row is a reattach candidate (ADR 0278 Scenario 3): the server
+		// A RUNNING row is a reattach candidate (ADR 0321 Scenario 3): the server
 		// owns the detached run, so `enter` reattaches via WatchSessionEvents
 		// (replay-then-follow) rather than adopting a terminal transcript. The
 		// Model's intent handler verifies the state via GetSession (a row whose
@@ -1247,7 +1247,7 @@ func stateBadge(state string) string {
 	switch state {
 	case "running":
 		// A filled circle (●) distinguishes a RUNNING detached run (a reattach
-		// candidate, ADR 0278 Scenario 3) from the play-triangle cursor marker
+		// candidate, ADR 0321 Scenario 3) from the play-triangle cursor marker
 		// (▶) other surfaces use; `enter` on a running row reattaches via
 		// WatchSessionEvents rather than continuing a terminal transcript.
 		return "●"

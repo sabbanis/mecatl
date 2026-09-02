@@ -2,7 +2,7 @@
 id: 07-repair-watch-cursor-race
 title: Repair — cursorSink closure races the Bubble Tea model (panel-review High)
 blocked_by: []
-status: pending
+status: done
 branch: "plan-detached-runs/07-repair-watch-cursor-race"
 worktree: ""
 issue: ""

@@ -72,7 +72,7 @@ var flagApplicabilityByFlag = map[string]flagApplicability{
 	"debug-mcp":     {group: groupSession, common: true, local: true, connect: true},
 	"resume":        {group: groupSession, common: true, local: true, connect: true},
 	"resume-latest": {group: groupSession, common: true, local: true, connect: true},
-	"new":           {group: groupSession, common: false, local: true, connect: true}, // ADR 0278: force fresh session
+	"new":           {group: groupSession, common: false, local: true, connect: true}, // ADR 0321: force fresh session
 	"prompt":        {group: groupSession, common: true, local: true, connect: true},
 	"p":             {group: groupSession, common: false, local: true, connect: true}, // alias for --prompt
 	"prompt-file":   {group: groupSession, common: true, local: true, connect: true},

@@ -216,7 +216,7 @@ func runWithOptions(argv []string, options runOptions) error {
 		return runDisconnectedRecovery(context.Background(), argv, th, themeAutoDetect, options)
 	}
 
-	// Manual two-signal handler (ADR 0278 Scenario 4): the shared DetachSignalState
+	// Manual two-signal handler (ADR 0321 Scenario 4): the shared DetachSignalState
 	// bridge feeds the ui's current follow state so the first Ctrl+C detaches when
 	// the server supports it; the second Ctrl+C then sends the control-only Converse
 	// `cancel` frame. cfg.connectAddress != "" is the embedded flag (reverse of
@@ -257,7 +257,7 @@ func runWithOptions(argv []string, options runOptions) error {
 		resumeCfg.resumeID = options.connectResumeSessionID
 		resumeCfg.resumeLatest = false
 	}
-	// The detached-runs capability seam (ADR 0278 Scenario 4): reads the REAL
+	// The detached-runs capability seam (ADR 0321 Scenario 4): reads the REAL
 	// capability from the server. Older servers (pre-ADR-0248, or without the
 	// detached_runs bit) degrade to false — the reattach affordance on the
 	// PERSISTED-POINTER path stays honest, and the --resume-latest LISTING
@@ -267,7 +267,7 @@ func runWithOptions(argv []string, options runOptions) error {
 	detachable := compatErr == nil && compatCaps.DetachedRuns
 	detachSupported := func() bool { return detachable }
 
-	// The control-only Converse cancel (ADR 0278 Scenario 4): the second-Ctrl+C
+	// The control-only Converse cancel (ADR 0321 Scenario 4): the second-Ctrl+C
 	// path wires a closure that opens a FRESH Converse stream and sends
 	// Cancel{SessionId}, then closes shortly after. The server's task-02
 	// control-only Converse path acks with `run.cancelled`; the ack is read-only
@@ -280,7 +280,7 @@ func runWithOptions(argv []string, options runOptions) error {
 	// Ctrl+C would otherwise call CancelDetachedRun with an already-cancelled
 	// context — Converse(ctx) fails immediately with context.Canceled and the
 	// Cancel{SessionId} frame never reaches the server, leaving the detached run
-	// running (ADR 0278 Scenario 4 / AC4.2). wireDetachCancel's fresh bounded
+	// running (ADR 0321 Scenario 4 / AC4.2). wireDetachCancel's fresh bounded
 	// context is independent of the handler's lifecycle and mirrors the
 	// server-side appendEvent/lease-release cancel-detached discipline.
 	detachSignal.SetCancel(wireDetachCancel(detachSignal.Following, cl.CancelDetachedRun))
@@ -709,7 +709,7 @@ func emitAuthFileWarning(writer io.Writer, warning string) {
 
 // setupSignalHandler installs the manual two-signal handler. The FIRST signal's
 // handling depends on the detach capability + the ui's current follow state
-// (ADR 0278 Scenario 4):
+// (ADR 0321 Scenario 4):
 //
 //   - Detached-capable (connect mode, server advertised detached_runs, and the
 //     ui is FOLLOWING a detached run — DetachSignal.Following): the first signal
@@ -790,7 +790,7 @@ func setupSignalHandler(embedded bool, detach *ui.DetachSignalState) (context.Co
 	return ctx, forceExit
 }
 
-// detachable is the FIRST-signal detach decision (ADR 0278 Scenario 4): can the
+// detachable is the FIRST-signal detach decision (ADR 0321 Scenario 4): can the
 // first Ctrl+C detach (keep the run, quit without cancelling)? TRUE only when
 // the connection is remote (embedded mode dies with the process — a detach there
 // is meaningless), a DetachSignal state exists (a detached-capable server AND the
@@ -806,7 +806,7 @@ func detachable(embedded bool, detach *ui.DetachSignalState) bool {
 }
 
 // detachControlCancel sends the control-only Converse `cancel` frame for the
-// session (ADR 0278 Scenario 4): Cancel{SessionId} on a FRESH stream, then
+// session (ADR 0321 Scenario 4): Cancel{SessionId} on a FRESH stream, then
 // drains to the `run.cancelled` ack with a 5s bound. It owns its own Stream +
 // client because the ui's Conv (a Converser) is not reachable here — main wires
 // DetachSignal.SetCancel with a client-owning closure at startup. FALSE means
@@ -828,7 +828,7 @@ func detachControlCancel(detach *ui.DetachSignalState) bool {
 type detachCanceler func(ctx context.Context, sessionID string) error
 
 // wireDetachCancel binds the DetachSignalState's control-only cancel closure
-// (ADR 0278 Scenario 4). The closure MUST run on a FRESH, bounded context per
+// (ADR 0321 Scenario 4). The closure MUST run on a FRESH, bounded context per
 // invocation, independent of the signal handler's lifecycle (repair task 06,
 // panel-review Critical): the first Ctrl+C cancels the handler's ctx in
 // setupSignalHandler, and forwarding that ctx to CancelDetachedRun on the

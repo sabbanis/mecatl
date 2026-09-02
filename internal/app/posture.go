@@ -219,7 +219,7 @@ func applyPosture(cfg Config) Config {
 	case PostureYolo:
 		cfg.AllowAllTools = true
 		cfg.LooseChildSubstitution = true
-		// DetachedRunsRefused (ADR 0278 decision 6): a yolo run implicitly assumes
+		// DetachedRunsRefused (ADR 0321 decision 6): a yolo run implicitly assumes
 		// a human is watching; a DETACHED run removes that last human checkpoint,
 		// so it is strictly worse than what the yolo contract assumes. The ADR says
 		// "WARN or refuse" — we REFUSE (fail-closed), pinned by

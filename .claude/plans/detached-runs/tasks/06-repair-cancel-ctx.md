@@ -19,7 +19,7 @@ captures the signal handler's `ctx` — which the FIRST Ctrl+C cancels (line
 ~683). On the second Ctrl+C, `cl.CancelDetachedRun(ctx, id)` is called with an
 already-cancelled context, so `Converse(ctx)` fails immediately with
 `context.Canceled` and the `Cancel{SessionId}` frame never reaches the server.
-The detached run keeps running — the headline safety control (ADR 0278 Scenario
+The detached run keeps running — the headline safety control (ADR 0321 Scenario
 4 / AC4.2) is broken in production while the test passes (the test wires a
 no-op `SetCancel(func(){})` spy).
 

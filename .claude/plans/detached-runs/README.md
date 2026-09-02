@@ -1,6 +1,6 @@
 # detached-runs — task index
 
-Plan: `docs/acceptance/detached-runs.md` (ADR 0278). Accumulator: `acc/detached-runs`.
+Plan: `docs/acceptance/detached-runs.md` (ADR 0321). Accumulator: `acc/detached-runs`.
 
 A user connects mecatui to a remote mecated, submits a prompt, walks away (Ctrl+C),
 and comes back later to find the run still going. 3 waves: server surface (1–2),

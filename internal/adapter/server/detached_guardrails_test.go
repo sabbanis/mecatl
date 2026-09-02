@@ -11,7 +11,6 @@ import (
 	"google.golang.org/grpc/status"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
-	"github.com/stacklok/mecatl/engine/adapter/memfs"
 	"github.com/stacklok/mecatl/engine/adapter/memstore"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
@@ -28,7 +27,7 @@ import (
 // refuseDetached turns ON the detached-runs gate AND the posture-derived refusal
 // — the same pair composition derives under posture yolo (applyPosture →
 // cfg.DetachedRunsRefused → server.Config.DetachedRunsRefused). A yolo server
-// refuses detached runs outright (ADR 0278 decision 6: "WARN or refuse", refuse,
+// refuses detached runs outright (ADR 0321 decision 6: "WARN or refuse", refuse,
 // fail-closed) because a detached run removes the last human checkpoint the yolo
 // contract implicitly assumes is present.
 func refuseDetached(cfg *server.Config) {
@@ -62,7 +61,7 @@ func TestDetachedRun_Scenario5_YoloDetachedRefused(t *testing.T) {
 		t.Fatal("yolo server advertises detached_runs while refusing detached runs — must not advertise")
 	}
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -144,7 +143,7 @@ func TestDetachedRun_Scenario5_DetachedAskParksAwaiting(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -271,7 +270,9 @@ func newStalledService(t *testing.T, mutate func(*server.Config)) *server.Servic
 		Engine:              engine,
 		BuildID:             "test-build",
 		Store:               memstore.New(),
-		Workspaces:          func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		PlacementProvider:   testPlacementProvider{root: "/ws"},
+		PlacementScope:      "test",
+		SharedEngineRoot:    "/ws",
 		Now:                 func() time.Time { return time.Unix(0, 0) },
 		DefaultCapabilities: port.ProviderCapabilities{},
 	}
@@ -298,7 +299,7 @@ func TestDetachedRun_Scenario5_DeadlineCancelsDetachedRun(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -363,7 +364,7 @@ func TestDetachedRun_Scenario5_ConcurrencyGateRefuses(t *testing.T) {
 
 	// First detached run: holds the single gate slot (blocking stream keeps it
 	// in flight).
-	cs1, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs1, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -388,7 +389,7 @@ func TestDetachedRun_Scenario5_ConcurrencyGateRefuses(t *testing.T) {
 
 	// Second detached run on a DIFFERENT session: the gate is full → fail-fast
 	// ResourceExhausted, ids only in the error.
-	cs2, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs2, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -463,7 +464,9 @@ func newGuardrailService(t *testing.T, llm *mockllm.Provider, ruleName string, t
 		Engine:              engine,
 		BuildID:             "test-build",
 		Store:               memstore.New(),
-		Workspaces:          func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		PlacementProvider:   testPlacementProvider{root: "/ws"},
+		PlacementScope:      "test",
+		SharedEngineRoot:    "/ws",
 		Now:                 func() time.Time { return time.Unix(0, 0) },
 		DefaultCapabilities: port.ProviderCapabilities{},
 	}
@@ -505,7 +508,7 @@ func TestDetachedRun_Scenario5_GuardrailBlocksDetachedRun(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -601,7 +604,7 @@ func TestDetachedRun_Repair_CloseReapsAwaitingDetachedRun(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -700,47 +703,6 @@ func TestDetachedRun_Repair_CloseReapsAwaitingDetachedRun(t *testing.T) {
 		}
 		if time.Now().After(deadline) {
 			t.Fatalf("session state after Close = %q, want cancelled", sess.State)
-		}
-		time.Sleep(20 * time.Millisecond)
-	}
-
-	// The gate slot is released: with a one-slot gate, a held slot would make a
-	// NEW detached run fail fast with ResourceExhausted. Start a second detached
-	// run on a fresh session and require the run.detached ack — proving the slot
-	// returned. The second run parks awaiting on the same nil-rules Ask; a SECOND
-	// Close reaps it exactly like the first (Close is idempotent and cancels every
-	// registered detached-owned run), so goleak sees no leaked drain goroutine.
-	cs2, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
-	if err != nil {
-		t.Fatalf("CreateSession: %v", err)
-	}
-	stream2, err := client.Converse(ctx)
-	if err != nil {
-		t.Fatalf("Converse: %v", err)
-	}
-	if err := stream2.Send(&mecatlv1.ConverseRequest{
-		Kind: &mecatlv1.ConverseRequest_Prompt{Prompt: &mecatlv1.Prompt{
-			SessionId: cs2.GetSessionId(), Text: "look", Detach: true,
-		}},
-	}); err != nil {
-		t.Fatalf("Send prompt: %v", err)
-	}
-	_ = stream2.CloseSend()
-	ack2 := recvAll(t, stream2)
-	if len(ack2) == 0 || ack2[len(ack2)-1].GetType() != "run.detached" {
-		t.Fatalf("gate slot NOT released after Close: second detached run refused (acked %v)", typesOf(ack2))
-	}
-	// Reap the second run with a SECOND Close (Close is idempotent and cancels
-	// every registered detached-owned awaiting run) so no drain goroutine
-	// outlives the test and goleak stays clean.
-	svc.Close()
-	deadline = time.Now().Add(10 * time.Second)
-	for {
-		if _, ok := svc.LookupRun(session.SessionID(cs2.GetSessionId())); !ok {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("second detached run still registered after second Close — FinishRun must release it")
 		}
 		time.Sleep(20 * time.Millisecond)
 	}

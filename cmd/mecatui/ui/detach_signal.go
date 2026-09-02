@@ -4,7 +4,7 @@ import "sync"
 
 // DetachSignalState is the main-owned bridge between the ui (which knows when a
 // detached run is being followed, and the session it follows) and the process
-// signal handler (which must decide detach-vs-cancel on OS Ctrl+C, ADR 0278
+// signal handler (which must decide detach-vs-cancel on OS Ctrl+C, ADR 0321
 // Scenario 4). main creates it BEFORE the Bubble Tea program starts and passes
 // it to BOTH the ui Deps and setupSignalHandler; the ui flips it as it enters /
 // leaves phaseFollowing, so the signal handler reads the CURRENT follow state.

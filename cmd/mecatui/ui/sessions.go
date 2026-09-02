@@ -274,7 +274,7 @@ func (m Model) loadSessionTranscript(row client.SessionListItem, inspect bool) (
 	return m, cmd, true
 }
 
-// applyReattachIntent handles a sessionsReattachIntent (ADR 0278 Scenario 3):
+// applyReattachIntent handles a sessionsReattachIntent (ADR 0321 Scenario 3):
 // `enter` on a RUNNING row in the sessions browser reattaches via
 // WatchSessionEvents. It binds the session, transitions to phaseFollowing (the
 // read-only live view of a server-owned detached run), marks detached, and arms
@@ -299,7 +299,6 @@ func (m Model) applyReattachIntent(row client.SessionListItem) (tea.Model, tea.C
 	m.sessionState = row.State
 	m.sessionCreatedAt = row.CreatedAt
 	m.sessionModifiedAt = row.ModifiedAt
-	m.activeWorkspace = row.Workspace
 	m.detached = true
 	m.restartedThisRun = true
 	m.closeModal()

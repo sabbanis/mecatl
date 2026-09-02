@@ -423,7 +423,7 @@ type Config struct {
 	// leak with no consenting author. Bounded and validated at the composition
 	// root (mecated --deployment-id), not here. See ADR 0248.
 	DeploymentID string
-	// DetachedRuns is the operator-tier gate for detached runs (ADR 0278,
+	// DetachedRuns is the operator-tier gate for detached runs (ADR 0321,
 	// mecated --detached-runs, default OFF). When false, the server IGNORES the
 	// `detach` field on a Converse Prompt (attached behaviour, byte-identical for
 	// older clients) AND does not advertise ServerCapabilities.detached_runs, so
@@ -433,7 +433,7 @@ type Config struct {
 	// runStartDispatch.
 	DetachedRuns bool
 	// MaxDetachedRuns caps how many detached runs may be in flight SERVER-WIDE at
-	// once (ADR 0278 decision 6: the concurrency gate, mirroring the engine's
+	// once (ADR 0321 decision 6: the concurrency gate, mirroring the engine's
 	// Subagent childGate). Each detached run holds an in-flight engine run + an
 	// LLM slot + a drain goroutine for its whole wall-clock lifetime, and with no
 	// client watching there is no natural backpressure — so the cap is a counting
@@ -445,7 +445,7 @@ type Config struct {
 	// (unlimited — not recommended).
 	MaxDetachedRuns int
 	// DetachedRunDeadline is the mandatory wall-clock bound on a detached run —
-	// the "forgot to come back" bound (ADR 0278 decision 6). A detached run has
+	// the "forgot to come back" bound (ADR 0321 decision 6). A detached run has
 	// no client watching, so it must not run forever: StartDetachedRunContent
 	// arms a time.AfterFunc that calls Service.Cancel on lapse (the
 	// scheduler_fire.go:169-179 watchdog pattern, verbatim — unconditional), and
@@ -462,7 +462,7 @@ type Config struct {
 	// when zero; NEGATIVE disables the deadline (unlimited — a detached run then
 	// runs until it completes, parks awaiting, or the server shuts down).
 	DetachedRunDeadline time.Duration
-	// DetachedRunsRefused is the POSTURE-derived detached-run refusal (ADR 0278
+	// DetachedRunsRefused is the POSTURE-derived detached-run refusal (ADR 0321
 	// decision 6, set by composition from applyPosture under PostureYolo ONLY).
 	// A yolo run implicitly assumes a human is watching; a detached run removes
 	// that last checkpoint, so under yolo the server REFUSES detached runs
@@ -833,7 +833,7 @@ const defaultMaxSessionEngines = 1024
 // slow store, while keeping a crashed holder's lease recoverable within ~30s.
 const defaultLeaseTTL = 30 * time.Second
 
-// applyDetachedRunDefaults fills the zero-value detached-run defaults (ADR 0278
+// applyDetachedRunDefaults fills the zero-value detached-run defaults (ADR 0321
 // decision 6) onto a Config copy: a zero MaxDetachedRuns applies
 // defaultMaxDetachedRuns (4) and a zero DetachedRunDeadline applies
 // defaultDetachedRunDeadline (24h). NEGATIVE values deliberately keep the gate
@@ -849,7 +849,7 @@ func applyDetachedRunDefaults(cfg *Config) {
 }
 
 // defaultMaxDetachedRuns is the server-wide detached-run concurrency cap applied
-// when Config.MaxDetachedRuns is zero (ADR 0278, the task brief's "~4"). Four
+// when Config.MaxDetachedRuns is zero (ADR 0321, the task brief's "~4"). Four
 // concurrent unattended engine runs is a sane default bound for a single server:
 // each costs an in-flight run + an LLM slot + a drain goroutine for its whole
 // wall-clock lifetime, and there is no client watching to provide natural
@@ -857,7 +857,7 @@ func applyDetachedRunDefaults(cfg *Config) {
 const defaultMaxDetachedRuns = 4
 
 // defaultDetachedRunDeadline is the wall-clock bound applied to every detached
-// run when Config.DetachedRunDeadline is zero (ADR 0278 decision 6: the
+// run when Config.DetachedRunDeadline is zero (ADR 0321 decision 6: the
 // mandatory "forgot to come back" deadline; the task brief says "check the
 // ADR/plan for guidance; if silent, choose 24h" — the ADR is silent, so 24h it
 // is: a detached long task is a multi-hour job, and a full day is the generous
@@ -1211,7 +1211,7 @@ type Service struct {
 	// watchLog read.
 	cursorLog port.CursorEventLog
 
-	// detachedGate is the server-wide detached-run counting semaphore (ADR 0278
+	// detachedGate is the server-wide detached-run counting semaphore (ADR 0321
 	// decision 6, mirroring the engine's Subagent childGate): a buffered channel
 	// of capacity cfg.MaxDetachedRuns, acquired at the TOP of
 	// StartDetachedRunContent (fail-fast, ids only in the error) and released by
@@ -1293,7 +1293,7 @@ type sessionEngine struct {
 // preserve.
 //
 // detached marks an AWAITING run whose ownership is DETACHED-OWNED
-// (StartDetachedRunContent's drain goroutine, ADR 0278): the drain goroutine is
+// (StartDetachedRunContent's drain goroutine, ADR 0321): the drain goroutine is
 // the run's sole consumer — it ranges run.Events(), Persists on every ask (the
 // same relayEvent projection a wire relay uses, autoApprove=false), and has no
 // client stream whose absence could ever need shielding. Close therefore CANCELS
@@ -1497,7 +1497,7 @@ func NewServiceContext(ctx context.Context, cfg Config) (*Service, error) {
 		subscriptions:       make(map[session.SessionID]map[int64]chan session.Event),
 		detachedRuns:        make(map[session.SessionID]struct{}),
 	}
-	// Size the detached-run concurrency gate (ADR 0278 decision 6). A negative
+	// Size the detached-run concurrency gate (ADR 0321 decision 6). A negative
 	// Config.MaxDetachedRuns disables the gate (nil = always-available).
 	if cfg.MaxDetachedRuns > 0 {
 		svc.detachedGate = make(chan struct{}, cfg.MaxDetachedRuns)
@@ -3314,7 +3314,7 @@ func (s *Service) OwnershipEnforced() bool {
 	return s.cfg.OwnershipEnforced
 }
 
-// DetachedRuns reports the operator-tier detached-runs gate (ADR 0278,
+// DetachedRuns reports the operator-tier detached-runs gate (ADR 0321,
 // mecated --detached-runs). The Converse handler consults it to decide whether
 // a Prompt's `detach` field is honoured; false means the field is ignored and
 // the run is attached (byte-identical to the pre-detached-runs build).
@@ -4400,7 +4400,7 @@ func (s *Service) StartScheduledRunContent(ctx context.Context, id session.Sessi
 // stream. Reuses runPurposeChat — a detached run is a normal chat run, just
 // drained server-side.
 //
-// Security guardrails (ADR 0278 decision 6 — Scenario 5 hardening):
+// Security guardrails (ADR 0321 decision 6 — Scenario 5 hardening):
 //   - POSTURE GATE: under posture yolo (Config.DetachedRunsRefused) the run is
 //     REFUSED with ErrDetachedRunsRefused (fail-closed) — a yolo run implicitly
 //     assumes a human is watching, and a detached run removes that checkpoint.
@@ -4504,7 +4504,7 @@ func (s *Service) StartDetachedRunContent(ctx context.Context, id session.Sessio
 }
 
 // acquireDetachedSlot acquires one slot of the server-wide detached-run
-// concurrency gate (ADR 0278 decision 6), failing FAST when the gate is full. It
+// concurrency gate (ADR 0321 decision 6), failing FAST when the gate is full. It
 // returns a release func (idempotent — the caller owns calling it EXACTLY once,
 // either via the error path in StartDetachedRunContent or the drain goroutine's
 // defer). A nil gate (Config.MaxDetachedRuns < 0 — gate disabled) is

@@ -3,7 +3,7 @@
 **Phase:** remote connect — leave it running
 **Status:** landed, 2026-09-01. Synthesised from the design discussion on connect-and-leave-running for mecatui ↔ remote mecated.
 **Issue:** [stacklok/mecatl#NNN](https://github.com/stacklok/mecatl/issues/NNN) (to be created).
-**ADR:** [ADR-0278](../adr/0278-detached-runs.md) — pins the detach-on-Ctrl+C + control-only-Converse + WatchSessionEvents-reattach decisions.
+**ADR:** [ADR-0321](../adr/0321-detached-runs.md) — pins the detach-on-Ctrl+C + control-only-Converse + WatchSessionEvents-reattach decisions.
 **Accumulator branch:** `acc/detached-runs` (off `main`).
 
 The smallest set of work that lets a user **connect mecatui to a remote mecated, submit a prompt, walk away (Ctrl+C), and come back later to find the run still going** — so "start a long task, close the laptop, check it tomorrow" works without the user remembering session IDs, flags, or which mode they're in.

@@ -105,7 +105,7 @@ func newReattachModel(t *testing.T, fw *fakeWatchStreamer) Model {
 		Watch: fw,
 		Reattach: &client.ReattachSelection{
 			SessionID: "sess-running",
-			Snapshot:  client.SessionSnapshot{State: "running", Workspace: "/ws"},
+			Snapshot:  client.SessionSnapshot{State: "running"},
 		},
 		Theme:       theme.New("aztec", theme.AztecPalette()),
 		Workspace:   "/ws",
@@ -363,5 +363,108 @@ func TestDetachedRun_Scenario3_RunningRowRendersFilledCircleBadge(t *testing.T) 
 	}
 	if got := stateBadge("completed"); got != "✓" {
 		t.Fatalf("stateBadge(completed) = %q, want ✓", got)
+	}
+}
+
+// TestDetachedRun_Repair_WatchReconnectCursorStaysOnUpdateGoroutine is the
+// AC7.1 verify test for the panel-review High fix: NO model field may be
+// written from any watch goroutine — the reconnect loop advances only its own
+// goroutine-local cursor, and m.watchCursor advances ONLY via Update messages
+// (watchMsg envelopes / watchReconnectMsg catch-up envelopes). The shape of the
+// fix is the strongest structural pin: ReconnectWatchCmd no longer takes a
+// cursor sink, so there is no closure capturing &m/m in the watch-reconnect
+// path that could mutate the model off the Update goroutine (mirroring
+// ReconnectLiveCmd, which has no sink). The behavioral pin drives a REAL
+// reconnect sequence through the ui reducer with a fake WatchStreamer and
+// asserts every model cursor transition happens through a reduced message, and
+// that the re-arm resumes from the furthest cursor the Update goroutine
+// observed (at-least-once, AC7.2/AC3.1).
+func TestDetachedRun_Repair_WatchReconnectCursorStaysOnUpdateGoroutine(t *testing.T) {
+	// The fake replays the SAME script for every open, so the drop (act 1) and
+	// the reconnect probe + re-arm (acts 2-3) all deliver the same c1..c3
+	// envelopes: the furthest cursor the reducer can observe is "c3".
+	script := []*mecatlv1.WatchSessionEventsResponse{
+		watchEnvForUI(&mecatlv1.Event{Type: "session.init", Seq: 1}, "c1", client.WatchPhaseReplay),
+		watchEnvForUI(&mecatlv1.Event{Type: "turn.start", Seq: 2, Turn: 1}, "c2", client.WatchPhaseReplay),
+		watchEnvForUI(&mecatlv1.Event{Type: "message.delta", Seq: 3, Turn: 1, Text: "one"}, "c3", client.WatchPhaseReplay),
+		phaseEnvForUI("c3", client.WatchPhaseLive),
+	}
+	fw := &fakeWatchStreamer{script: script}
+	m := newReattachModel(t, fw)
+	defer (&m).disarmWatch() // disarms whatever is armed at the end
+
+	if m.watchCursor != "" {
+		t.Fatalf("initial watchCursor = %q, want \"\" (beginning of log)", m.watchCursor)
+	}
+
+	// Phase 1 — the immediately-armed watch reader: drive the watchMsg fan-in
+	// envelope by envelope until the reader closes (the script EOFs → the
+	// reducer tears the reader down and arms the reconnect loop). Every
+	// envelope reduce here is the ONLY place m.watchCursor may advance.
+	// waitWatchCmd wraps each pull as watchMsg{gen, inner}; unwrap it.
+	var next tea.Cmd
+	reconnectArmed := false
+	for !reconnectArmed {
+		msg := runCmdTimeout(t, m.waitWatchCmd())
+		if msg == nil {
+			t.Fatal("watch fan-in produced nil")
+		}
+		inner := msg
+		if wm, ok := msg.(watchMsg); ok {
+			inner = wm.msg
+		}
+		mm, cmd := m.Update(msg)
+		m = mm.(Model)
+		next = cmd
+		if _, ok := inner.(client.StreamClosedMsg); ok {
+			reconnectArmed = m.watchReconCh != nil
+			break
+		}
+	}
+	if !reconnectArmed {
+		t.Fatal("reconnect loop was not armed after the watch reader closed")
+	}
+	_ = next
+
+	// The reconnect loop (goroutine-owned) now probes: it re-opens the watch
+	// with ITS OWN loop-local cursor ("" — the pre-drop position the ui passed
+	// as initialCursor), drains the probe's catch-up envelopes onto the
+	// reconnect channel, advances its OWN local cursor (never the model's), and
+	// emits WatchReconnectedMsg. Phase 2 — drive the watchReconnectMsg fan-in
+	// from the reducer until the re-arm: each catch-up envelope reduce sets
+	// m.watchCursor (Update goroutine only); WatchReconnectedMsg re-arms a
+	// FRESH watch reader threading m.watchCursor.
+	rearmed := false
+	for i := 0; i < 8 && !rearmed; i++ { // bounded: the loop is finite
+		msg := runCmdTimeout(t, m.waitWatchReconnectCmd())
+		if msg == nil {
+			t.Fatal("watch-reconnect fan-in produced nil")
+		}
+		inner := msg
+		if rm, ok := msg.(watchReconnectMsg); ok {
+			inner = rm.msg
+		}
+		mm, _ := m.Update(msg)
+		m = mm.(Model)
+		if _, ok := inner.(client.WatchReconnectedMsg); ok {
+			rearmed = true
+		}
+	}
+	if !rearmed {
+		t.Fatal("reconnect did not emit WatchReconnectedMsg (loop stuck?)")
+	}
+	if fw.calls < 3 {
+		t.Fatalf("WatchSessionEvents calls = %d, want >= 3 (initial arm, probe, re-arm)", fw.calls)
+	}
+	// The re-arm open carried the FURTHEST cursor the model reduced — threaded
+	// through updateWatchReconnectMsg's re-arm, never written by a goroutine.
+	if fw.lastCur != "c3" {
+		t.Fatalf("re-arm open cursor = %q, want c3 (the ui's furthest observed cursor)", fw.lastCur)
+	}
+	if m.watchCursor != "c3" {
+		t.Fatalf("watchCursor after reconnect = %q, want c3 (advanced only via reduced envelope messages)", m.watchCursor)
+	}
+	if m.watchCh == nil {
+		t.Fatal("watch not re-armed after WatchReconnectedMsg")
 	}
 }

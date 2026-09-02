@@ -191,24 +191,24 @@ type Config struct {
 	NoBash              bool
 	temporaryStorage    temporaryStorageConfig
 	managedTemp         *managedTemporaryStorage
-	// DetachedRuns is the operator-tier detached-runs gate (ADR 0278,
+	// DetachedRuns is the operator-tier detached-runs gate (ADR 0321,
 	// mecated --detached-runs, default OFF). When true, a Converse Prompt with
 	// detach:true starts a server-owned run that survives the client stream.
 	DetachedRuns bool
-	// DetachedRunsRefused is the POSTURE-derived detached-run refusal (ADR 0278
+	// DetachedRunsRefused is the POSTURE-derived detached-run refusal (ADR 0321
 	// decision 6, derived by applyPosture under PostureYolo ONLY): a yolo run
 	// implicitly assumes a human is watching, and a detached run removes that
 	// last checkpoint. Derived — NEVER set directly (the same discipline as the
 	// other posture knobs AllowAllTools/LooseChildSubstitution).
 	DetachedRunsRefused bool
 	// MaxDetachedRuns caps how many detached runs may be in flight server-wide
-	// (ADR 0278 decision 6's concurrency gate; server.Config.MaxDetachedRuns).
+	// (ADR 0321 decision 6's concurrency gate; server.Config.MaxDetachedRuns).
 	// Zero (the default) applies server defaultMaxDetachedRuns (4) in
 	// NewService; a NEGATIVE value disables the gate. Operator-tier
 	// (--max-detached-runs).
 	MaxDetachedRuns int
 	// DetachedRunDeadline is the mandatory wall-clock bound on a detached run
-	// (ADR 0278 decision 6's "forgot to come back" deadline;
+	// (ADR 0321 decision 6's "forgot to come back" deadline;
 	// server.Config.DetachedRunDeadline). Zero (the default) applies
 	// server defaultDetachedRunDeadline (24h); a NEGATIVE value disables the
 	// deadline. Operator-tier (--detached-run-deadline).

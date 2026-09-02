@@ -22,7 +22,7 @@ var detachSupportedOff = func() bool { return false }
 func TestDetachedRun_Scenario3_AutoReattachToRunningSession(t *testing.T) {
 	source := &fakeStartupResumeSource{
 		snapshots: map[string]client.SessionSnapshot{
-			"sess-running": {State: "running", Workspace: "/ws"},
+			"sess-running": {State: "running"},
 		},
 	}
 	store := newSessionStateStore(fakeStateEnv(t.TempDir()))
@@ -51,7 +51,7 @@ func TestDetachedRun_Scenario3_AutoResumeIdleSession(t *testing.T) {
 		t.Run(state, func(t *testing.T) {
 			source := &fakeStartupResumeSource{
 				snapshots: map[string]client.SessionSnapshot{
-					"sess-term": {State: state, Workspace: "/ws"},
+					"sess-term": {State: state},
 				},
 				transcripts: map[string]client.SessionTranscript{
 					"sess-term": {SessionID: "sess-term", Complete: true, Kind: client.SessionKindMain},
@@ -102,7 +102,7 @@ func TestDetachedRun_Scenario3_NoPointerFallsThroughToListing(t *testing.T) {
 			rows: []client.SessionListItem{
 				{ID: "live", ModifiedAt: 90, Kind: client.SessionKindMain, State: "running", Capabilities: client.SessionInventoryCapabilities{PublicChat: true}},
 			},
-			snapshots: map[string]client.SessionSnapshot{"live": {State: "running", Workspace: "/ws"}},
+			snapshots: map[string]client.SessionSnapshot{"live": {State: "running"}},
 		}
 		store := newSessionStateStore(fakeStateEnv(t.TempDir()))
 		cfg := config{workspace: "/default"}
@@ -122,7 +122,7 @@ func TestDetachedRun_Scenario3_NoPointerFallsThroughToListing(t *testing.T) {
 func TestDetachedRun_Scenario3_NewFlagForcesFresh(t *testing.T) {
 	source := &fakeStartupResumeSource{
 		snapshots: map[string]client.SessionSnapshot{
-			"sess-running": {State: "running", Workspace: "/ws"},
+			"sess-running": {State: "running"},
 		},
 	}
 	store := newSessionStateStore(fakeStateEnv(t.TempDir()))
@@ -182,7 +182,7 @@ func TestDetachedRun_Scenario3_ResumeIDAutoBranchesReattach(t *testing.T) {
 	t.Run("running → reattach", func(t *testing.T) {
 		source := &fakeStartupResumeSource{
 			snapshots: map[string]client.SessionSnapshot{
-				"sess-running": {State: "running", Workspace: "/ws"},
+				"sess-running": {State: "running"},
 			},
 		}
 		cfg := config{resumeID: "sess-running", workspace: "/default"}
@@ -197,7 +197,7 @@ func TestDetachedRun_Scenario3_ResumeIDAutoBranchesReattach(t *testing.T) {
 	t.Run("terminal → resume", func(t *testing.T) {
 		source := &fakeStartupResumeSource{
 			snapshots: map[string]client.SessionSnapshot{
-				"sess-term": {State: "completed", Workspace: "/ws"},
+				"sess-term": {State: "completed"},
 			},
 			transcripts: map[string]client.SessionTranscript{
 				"sess-term": {SessionID: "sess-term", Complete: true, Kind: client.SessionKindMain},
@@ -230,7 +230,7 @@ func TestDetachedRun_Scenario3_ResumeLatestExcludesRunningWithoutCapability(t *t
 		transcripts: map[string]client.SessionTranscript{
 			"term": {SessionID: "term", Complete: true, Kind: client.SessionKindMain},
 		},
-		snapshots: map[string]client.SessionSnapshot{"term": {State: "completed", Workspace: "/ws"}},
+		snapshots: map[string]client.SessionSnapshot{"term": {State: "completed"}},
 	}
 	cfg := config{resumeLatest: true, workspace: "/default"}
 	outcome, _, err := startupResumeConfigWithPointer(context.Background(), source, cfg, nil, "", detachSupportedOff)
@@ -259,7 +259,7 @@ func TestDetachedRun_Scenario3_StalePointerDegradesToListing(t *testing.T) {
 		transcripts: map[string]client.SessionTranscript{
 			"term": {SessionID: "term", Complete: true, Kind: client.SessionKindMain},
 		},
-		snapshots: map[string]client.SessionSnapshot{"term": {State: "completed", Workspace: "/ws"}},
+		snapshots: map[string]client.SessionSnapshot{"term": {State: "completed"}},
 	}
 	store := newSessionStateStore(fakeStateEnv(t.TempDir()))
 	if err := store.SavePointer("target-1", "gone", "running"); err != nil {
@@ -283,7 +283,7 @@ func TestDetachedRun_Scenario3_StalePointerDegradesToListing(t *testing.T) {
 func TestDetachedRun_Scenario3_RunningPointerWithoutCapabilityDegrades(t *testing.T) {
 	source := &fakeStartupResumeSource{
 		snapshots: map[string]client.SessionSnapshot{
-			"sess-running": {State: "running", Workspace: "/ws"},
+			"sess-running": {State: "running"},
 		},
 		// No listing rows → degraded fresh session.
 	}

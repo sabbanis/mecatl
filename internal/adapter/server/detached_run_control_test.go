@@ -35,7 +35,7 @@ func TestDetachedRun_Scenario2_ControlOnlyCancel(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -116,7 +116,7 @@ func TestDetachedRun_Scenario2_ControlOnlyApprove(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -254,7 +254,7 @@ func TestDetachedRun_Scenario2_ControlOnlyNoActiveRun(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -312,7 +312,7 @@ func TestDetachedRun_Scenario2_ExistingFirstFramePathsUnchanged(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

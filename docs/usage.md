@@ -334,14 +334,14 @@ Model/mode/session-changing affordances are disabled. See
 `mecatui connect ADDRESS` with no flags reads a persisted last-session pointer for the
 target and auto-branches: a `running` session is reattached via `WatchSessionEvents`
 (replay what you missed, then follow live); an idle/terminal session is resumed as today;
-no pointer starts fresh ([ADR 0278](adr/0278-detached-runs.md)). `--new` forces a fresh
+no pointer starts fresh ([ADR 0321](adr/0321-detached-runs.md)). `--new` forces a fresh
 session even when a running one exists; `--resume <id>` also auto-branches (reattach if
 running, resume if terminal). The pointer is fail-soft — a corrupt/missing file degrades
 to the session listing.
 
 ### Detached runs (`--detached-runs`)
 
-`mecated --detached-runs` (default OFF, [ADR 0278](adr/0278-detached-runs.md)) enables
+`mecated --detached-runs` (default OFF, [ADR 0321](adr/0321-detached-runs.md)) enables
 server-owned detached runs on the server's Converse API. When on, a `Prompt` frame that
 sets `detach: true` starts a server-side drain goroutine that records every event
 (including the terminal `EvResult`) to the durable log, acks once, and closes the
@@ -357,9 +357,9 @@ continues" message and quits without cancelling (the run continues server-side),
 while the second Ctrl+C sends the control-only `cancel` frame and exits. Embedded
 mode (the bare `mecatui` hosting an in-process server) is unchanged — Ctrl+C kills
 the process, so a detach there is meaningless. This flag is operator-tier; see
-[ADR 0278](adr/0278-detached-runs.md).
+[ADR 0321](adr/0321-detached-runs.md).
 
-Detached runs are hardened (ADR 0278 decision 6, Scenario 5): they are **refused
+Detached runs are hardened (ADR 0321 decision 6, Scenario 5): they are **refused
 under posture `yolo`** (a yolo run implicitly assumes a human is watching, and a
 detached run removes that last checkpoint — fail-closed, `FailedPrecondition`),
 bounded by a **server-wide concurrency gate** (`--max-detached-runs`, default 4;

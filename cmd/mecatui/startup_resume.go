@@ -43,7 +43,7 @@ func (e *startupResumeError) Unwrap() error { return e.cause }
 // Resume (adopt a terminal transcript) or Reattach (arm a WatchSessionEvents
 // stream against a running server-owned detached run) is set; when neither is,
 // the run starts a FRESH session (the cfg.workspace). The reattach arm is new
-// (ADR 0278 Scenario 3); the resume arm is byte-identical to the pre-reattach
+// (ADR 0321 Scenario 3); the resume arm is byte-identical to the pre-reattach
 // path. Workspace is the session's stored workspace for a resume, the cfg
 // workspace for a fresh session, and the session's stored workspace for a
 // reattach (a detached run keeps its workspace).
@@ -56,7 +56,7 @@ type startupResumeOutcome struct {
 // It returns the outcome (resume OR reattach OR neither=fresh) + the workspace
 // the ui should bind (a resume/reattach's stored workspace, else cfg.workspace).
 //
-// The no-flag default path (ADR 0278 Scenario 3) reads the persisted last-session
+// The no-flag default path (ADR 0321 Scenario 3) reads the persisted last-session
 // pointer for the connect target, calls GetSession(id), and auto-branches on
 // state: running → reattach via WatchSessionEvents (replay-then-follow); idle/
 // terminal → resume as today; missing/gone → fall through to the listing path
@@ -116,10 +116,10 @@ func startupResumeConfigWithPointer(ctx context.Context, source startupResumeSou
 		return startupResumeOutcome{}, "", err
 	}
 	if resume != nil {
-		return startupResumeOutcome{Resume: resume}, resume.Snapshot.Workspace, nil
+		return startupResumeOutcome{Resume: resume}, cfg.workspace, nil
 	}
 	if reattach != nil {
-		return startupResumeOutcome{Reattach: reattach}, reattach.Snapshot.Workspace, nil
+		return startupResumeOutcome{Reattach: reattach}, cfg.workspace, nil
 	}
 	return startupResumeOutcome{}, cfg.workspace, nil
 }
@@ -167,7 +167,7 @@ func resolveStartupResumeWithPointer(ctx context.Context, source startupResumeSo
 	if cfg.resumeLatest {
 		return resolveResumeLatest(ctx, source, detachSupported)
 	}
-	// No flags: the persisted-pointer auto-branch (ADR 0278 Scenario 3). Reads the
+	// No flags: the persisted-pointer auto-branch (ADR 0321 Scenario 3). Reads the
 	// last-session pointer for the connect target, calls GetSession(id), and
 	// branches on state. Fail-soft: a missing/corrupt pointer (or a gone session)
 	// falls through to the listing path (the --resume-latest shape, now including

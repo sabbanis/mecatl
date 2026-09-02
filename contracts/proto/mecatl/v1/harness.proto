@@ -787,7 +787,7 @@ message ServerCapabilities {
   // admitted as one complete bundle before the first prompt.
   bool workspace_enrollment = 28;
   // detached_runs is true when the operator has enabled detached runs
-  // (mecated --detached-runs, ADR 0278): a `Prompt` with `detach: true` starts
+  // (mecated --detached-runs, ADR 0321): a `Prompt` with `detach: true` starts
   // a server-owned run that continues after the Converse stream closes, and the
   // server accepts control-only Converse streams (a first frame of `cancel` /
   // `resume_approval`). When false (the default, and an older server), a client

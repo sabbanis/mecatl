@@ -13,7 +13,7 @@ import (
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 )
 
-// The durable watch surface (ADR 0250, ADR 0278 Scenario 3): the
+// The durable watch surface (ADR 0250, ADR 0321 Scenario 3): the
 // replay-then-follow stream a reconnecting mecatui consumes to reattach to a
 // server-owned detached run. It is the WatchSessionEvents analogue of the
 // LiveStreamCmd/ReconnectLiveCmd pair: WatchCmd opens the stream synchronously
@@ -58,10 +58,10 @@ func newAuthenticatedWatchStream(recv WatchRecver, bearerBacked bool) *WatchStre
 	return &WatchStream{recv: recv, bearerBacked: bearerBacked}
 }
 
-// bearerBackedStream reports the transport provenance the auth classifier reads.
+// BearerBackedStream reports the transport provenance the auth classifier reads.
 // It satisfies the liveAuthProvenance interface so AuthFailure on a watch
 // receive error classifies the same way a live-stream error does.
-func (s *WatchStream) bearerBackedStream() bool {
+func (s *WatchStream) BearerBackedStream() bool {
 	return s != nil && s.bearerBacked
 }
 
@@ -238,7 +238,7 @@ func WatchCmd(ctx context.Context, w WatchStreamer, id, cursor string) (ch chan 
 // open does. It is the watch analogue of liveBearerBacked.
 func watchBearerBacked(w WatchStreamer) bool {
 	p, ok := w.(liveAuthProvenance)
-	return ok && p.bearerBackedStream()
+	return ok && p.BearerBackedStream()
 }
 
 // ReconnectWatchCmd opens the watch reconnect loop for session id: a
@@ -252,22 +252,25 @@ func watchBearerBacked(w WatchStreamer) bool {
 // TUI exit). It is the watch analogue of ReconnectLiveCmd, differing in that it
 // threads the cursor (the live feed has no cursor — it is process-local and
 // non-durable) so a watch reconnect loses NOTHING the durable log recorded.
-// cursorSink is called by the ui on every WatchEnvelopeMsg it receives so a
-// multi-attempt reconnect resumes from the furthest position the ui observed,
-// not the stale initial cursor. Parallels ReconnectLiveCmd.
-func ReconnectWatchCmd(ctx context.Context, w WatchStreamer, id, initialCursor string, cursorSink func(string)) (ch chan tea.Msg, stop func()) {
-	return reconnectWatchCmd(ctx, w, id, initialCursor, cursorSink, 0)
+// The reconnect loop advances ITS OWN local cursor per envelope it drains, so a
+// multi-attempt reconnect resumes from the furthest position this loop reached,
+// never falling back to the stale initial cursor — no caller-supplied sink, so
+// no model state can be mutated off the Update goroutine (the ui threads its
+// own watchCursor into initialCursor and advances it only in its reducer).
+// Parallels ReconnectLiveCmd.
+func ReconnectWatchCmd(ctx context.Context, w WatchStreamer, id, initialCursor string) (ch chan tea.Msg, stop func()) {
+	return reconnectWatchCmd(ctx, w, id, initialCursor, 0)
 }
 
 // ReconnectWatchCmdFromAttempt continues the watch reconnect sequence after a
 // successful probe/re-arm. The first-ever failure remains immediate; a later
 // reader failure keeps its attempt number and backoff. Parallels
 // ReconnectLiveCmdFromAttempt.
-func ReconnectWatchCmdFromAttempt(ctx context.Context, w WatchStreamer, id, initialCursor string, cursorSink func(string), priorAttempt int) (ch chan tea.Msg, stop func()) {
-	return reconnectWatchCmd(ctx, w, id, initialCursor, cursorSink, priorAttempt)
+func ReconnectWatchCmdFromAttempt(ctx context.Context, w WatchStreamer, id, initialCursor string, priorAttempt int) (ch chan tea.Msg, stop func()) {
+	return reconnectWatchCmd(ctx, w, id, initialCursor, priorAttempt)
 }
 
-func reconnectWatchCmd(ctx context.Context, w WatchStreamer, id, initialCursor string, cursorSink func(string), priorAttempt int) (ch chan tea.Msg, stop func()) {
+func reconnectWatchCmd(ctx context.Context, w WatchStreamer, id, initialCursor string, priorAttempt int) (ch chan tea.Msg, stop func()) {
 	ctx, cancel := context.WithCancel(ctx)
 	ch = make(chan tea.Msg, 64)
 	done := make(chan struct{})
@@ -280,7 +283,7 @@ func reconnectWatchCmd(ctx context.Context, w WatchStreamer, id, initialCursor s
 	}
 	go func() {
 		defer close(done)
-		reconnectWatchLoop(ctx, w, id, initialCursor, cursorSink, ch, priorAttempt)
+		reconnectWatchLoop(ctx, w, id, initialCursor, ch, priorAttempt)
 	}()
 	return ch, stop
 }
@@ -289,13 +292,15 @@ func reconnectWatchCmd(ctx context.Context, w WatchStreamer, id, initialCursor s
 // reconnect loop for the watch stream. It mirrors reconnectLiveLoop's shape
 // (emit WatchReconnectingMsg, backoff, probe, emit WatchReconnectedMsg on
 // success) but threads the CURSOR so a re-attach resumes from exactly the next
-// record. The cursor it re-opens with is the FURTHEST the ui observed
-// (cursorSink is called by the ui on every WatchEnvelopeMsg it receives; the
-// loop reads the sink's latest value before each re-open) — so a multi-attempt
-// reconnect that delivered envelopes on an earlier attempt resumes from past
-// them, not from the stale initial cursor. A phase-only frame (the replay→live
-// boundary) carries a cursor too, so the sink advances past it.
-func reconnectWatchLoop(ctx context.Context, w WatchStreamer, id string, initialCursor string, cursorSink func(string), out chan<- tea.Msg, priorAttempt int) {
+// record. The cursor it re-opens with is the FURTHEST THIS LOOP has delivered
+// (its goroutine-local `cursor` is advanced per envelope in drainWatchProbe; a
+// multi-attempt reconnect that delivered envelopes on an earlier attempt
+// resumes from past them, not from the stale initial cursor). A phase-only
+// frame (the replay→live boundary) carries a cursor too, so the local cursor
+// advances past it. The cursor is loop-local by design: nothing may mutate
+// caller/model state from this goroutine (the ui's watchCursor is advanced only
+// by the Update goroutine and threaded in as initialCursor).
+func reconnectWatchLoop(ctx context.Context, w WatchStreamer, id string, initialCursor string, out chan<- tea.Msg, priorAttempt int) {
 	defer close(out)
 	attempt := priorAttempt
 	var lastErr error
@@ -318,14 +323,14 @@ func reconnectWatchLoop(ctx context.Context, w WatchStreamer, id string, initial
 		if !emit(ctx, out, WatchReconnectingMsg{Attempt: attempt, Err: lastErr}) {
 			return
 		}
-		// Re-open the watch threading the furthest cursor the ui observed.
+		// Re-open the watch threading the furthest cursor this loop has reached.
 		ws, err := w.WatchSessionEvents(ctx, id, cursor)
 		if err == nil {
 			// Success. Drain the probe stream's envelopes onto out so the
 			// reconnect delivers the resumed events (at-least-once) BEFORE the
 			// ui re-arms a fresh channel. The probe stream's ctx is the loop's
 			// ctx, so the ui's stop (cancel) cleans it up once it has re-armed.
-			if !drainWatchProbe(ctx, ws, out, cursorSink) {
+			if !drainWatchProbe(ctx, ws, out, &cursor) {
 				return
 			}
 			if !emit(ctx, out, WatchReconnectedMsg{}) {
@@ -342,14 +347,15 @@ func reconnectWatchLoop(ctx context.Context, w WatchStreamer, id string, initial
 }
 
 // drainWatchProbe drains the probe stream's envelopes onto out, forwarding each
-// to the ui via the SAME WatchEnvelopeMsg path a fresh watch uses, and threading
-// the cursor through cursorSink so a subsequent re-drop resumes from the
-// furthest position. It returns false if ctx was cancelled (the loop stops).
-// A clean EOF (StreamClosedMsg) or an error (StreamErrMsg) ends the drain — the
-// loop then emits WatchReconnectedMsg (a clean re-attach) and returns, so the
-// ui re-arms a fresh channel; the probe's terminal marker is SWALLOWED here
-// (the reconnect owns its lifecycle markers, mirroring catchUpReplay).
-func drainWatchProbe(ctx context.Context, ws *WatchStream, out chan<- tea.Msg, cursorSink func(string)) bool {
+// to the ui via the SAME WatchEnvelopeMsg path a fresh watch uses, and advancing
+// *cursor past each delivered envelope so a subsequent re-open resumes from the
+// furthest position THIS LOOP reached. It returns false if ctx was cancelled
+// (the loop stops). A clean EOF (StreamClosedMsg) or an error (StreamErrMsg)
+// ends the drain — the loop then emits WatchReconnectedMsg (a clean re-attach)
+// and returns, so the ui re-arms a fresh channel; the probe's terminal marker
+// is SWALLOWED here (the reconnect owns its lifecycle markers, mirroring
+// catchUpReplay).
+func drainWatchProbe(ctx context.Context, ws *WatchStream, out chan<- tea.Msg, cursor *string) bool {
 	tmp := make(chan tea.Msg, 64)
 	go ws.ReadLoop(ctx, tmp)
 	for m := range tmp {
@@ -358,8 +364,8 @@ func drainWatchProbe(ctx context.Context, ws *WatchStream, out chan<- tea.Msg, c
 			// Swallow the probe's terminal; the reconnect owns its markers.
 			return true
 		case WatchEnvelopeMsg:
-			if msg.Envelope.Cursor != "" && cursorSink != nil {
-				cursorSink(msg.Envelope.Cursor)
+			if msg.Envelope.Cursor != "" {
+				*cursor = msg.Envelope.Cursor
 			}
 			if !emit(ctx, out, msg) {
 				return false

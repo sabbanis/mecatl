@@ -70,7 +70,7 @@ func TestDetachedRun_Scenario4_DoubleCtrlCCancels(t *testing.T) {
 // and the SECOND Ctrl+C then runs the wired cancel closure. The closure must
 // NOT forward that cancelled ctx — CancelDetachedRun's Converse(ctx) would fail
 // immediately with context.Canceled and the Cancel{SessionId} frame would never
-// reach the server, leaving the detached run running (ADR 0278 Scenario 4 /
+// reach the server, leaving the detached run running (ADR 0321 Scenario 4 /
 // AC4.2). It must instead mint a FRESH context.WithTimeout(Background, 5s) per
 // invocation, mirroring the server-side cancel-detached discipline.
 func TestDetachedRun_Repair_SecondCtrlCCancelUsesFreshContext(t *testing.T) {

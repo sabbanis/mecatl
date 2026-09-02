@@ -521,7 +521,7 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 }
 
 // runStartDispatch resolves the Converse stream's first frame into the run to
-// relay (ADR 0278). A control-only or detached first frame finishes the stream
+// relay (ADR 0321). A control-only or detached first frame finishes the stream
 // here and reports handled=true; otherwise the caller relays the returned run.
 func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_ConverseServer, first *mecatlv1.ConverseRequest) (id session.SessionID, run *agent.Run, retrying bool, handled bool, err error) {
 	ctx := stream.Context()
@@ -549,7 +549,7 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 		// default OFF): when the feature is disabled the server ignores the
 		// detach field and preserves attached behaviour.
 		if prompt.GetDetach() && h.svc.DetachedRuns() {
-			// Detached run (ADR 0278): the server-owned drain goroutine takes
+			// Detached run (ADR 0321): the server-owned drain goroutine takes
 			// ownership; this stream only acks and closes.
 			if _, derr := h.svc.StartDetachedRunContent(ctx, id, prompt.GetText(), parts); derr != nil {
 				return "", nil, false, false, errToStatus(derr)
@@ -573,7 +573,7 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 		run, err = h.svc.RetryFailedRun(ctx, id)
 		return id, run, true, false, errToStatus(err)
 	case first.GetCancel() != nil:
-		// Control-only stream (ADR 0278): cancel an in-flight run. No run starts.
+		// Control-only stream (ADR 0321): cancel an in-flight run. No run starts.
 		cancel := first.GetCancel()
 		if cancel.GetSessionId() == "" {
 			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: cancel session_id is required on a control-only stream"))
@@ -586,7 +586,7 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 		}
 		return "", nil, false, true, errToStatus(stream.Send(detachedAck("run.cancelled", "cancelled")))
 	case first.GetResumeApproval() != nil:
-		// Control-only stream (ADR 0278): resolve a paused ask from a detached
+		// Control-only stream (ADR 0321): resolve a paused ask from a detached
 		// client. No run starts unless the rehydrate path returns one to relay.
 		resume := first.GetResumeApproval()
 		if resume.GetSessionId() == "" {

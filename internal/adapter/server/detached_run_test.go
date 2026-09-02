@@ -25,7 +25,7 @@ func TestDetachedRun_Scenario1_DetachedRunSurvivesStreamClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -102,7 +102,7 @@ func TestDetachedRun_Scenario1_AttachedRunCancelledOnStreamClose(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -155,7 +155,7 @@ func TestDetachedRun_Scenario1_DrainGoroutineFinishesRun(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -225,7 +225,7 @@ func TestDetachedRun_Scenario1_ServiceCloseCancelsDetachedRuns(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -275,7 +275,7 @@ func TestDetachedRun_Scenario1_DetachedLogSurvivesClientDisconnect(t *testing.T)
 	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 	defer cancel()
 
-	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

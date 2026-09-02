@@ -272,7 +272,7 @@ type fakeWatchStreamerBearer struct {
 	bearer bool
 }
 
-func (f *fakeWatchStreamerBearer) bearerBackedStream() bool { return f.bearer }
+func (f *fakeWatchStreamerBearer) BearerBackedStream() bool { return f.bearer }
 
 // TestReconnectWatchCmd_RetriesThenSucceeds asserts the reconnect loop emits
 // WatchReconnectingMsg per failed attempt, then drains the successful probe's
@@ -286,7 +286,7 @@ func TestReconnectWatchCmd_RetriesThenSucceeds(t *testing.T) {
 	liveReconnectJitterFrac = 0
 
 	w := &fakeWatchStreamer{failN: 2, script: watchScript()}
-	ch, stop := ReconnectWatchCmd(context.Background(), w, "sess", "", func(string) {})
+	ch, stop := ReconnectWatchCmd(context.Background(), w, "sess", "")
 	defer stop()
 	msgs := drainReconWatch(t, ch)
 
@@ -315,14 +315,16 @@ func TestReconnectWatchCmd_RetriesThenSucceeds(t *testing.T) {
 	}
 }
 
-// TestReconnectWatchCmd_ThreadsCursorAcrossAttempts asserts the reconnect loop
-// threads the LAST RECEIVED CURSOR through cursorSink so a multi-attempt
-// reconnect resumes from the furthest position the ui observed, not the stale
-// initial cursor. It uses a streamer that delivers ONE envelope (cursor
-// "adv-1") per open then EOFs; the loop's first open delivers that envelope,
-// the sink advances to "adv-1", and the loop's SECOND open (a re-attempt after
-// the first probe EOFed) is handed the advanced cursor.
-func TestReconnectWatchCmd_ThreadsCursorAcrossAttempts(t *testing.T) {
+// TestReconnectWatchCmd_ResumesFromFurthestReceivedCursor asserts the AC3.1
+// at-least-once contract at the loop level (AC7.2): a reconnect delivers the
+// resumed envelopes — each CARRYING the cursor the ui advances from — and a
+// follow-up reconnect opened with the FURTHEST received cursor threads it to
+// WatchSessionEvents verbatim. Cursor threading is the UI's job (its
+// watchCursor advances only on the Update goroutine and is passed as
+// initialCursor); the loop itself never mutates caller/model state — it
+// advances only its own goroutine-local cursor (see
+// TestDrainWatchProbe_AdvancesLoopLocalCursor).
+func TestReconnectWatchCmd_ResumesFromFurthestReceivedCursor(t *testing.T) {
 	restore := RestoreBackoffForTest()
 	defer restore()
 	liveReconnectBaseBackoff = time.Millisecond
@@ -333,27 +335,58 @@ func TestReconnectWatchCmd_ThreadsCursorAcrossAttempts(t *testing.T) {
 		watchEnv(&mecatlv1.Event{Type: "session.init", Seq: 1}, "adv-1", WatchPhaseReplay),
 	}
 	w := &fakeWatchStreamer{script: script1}
-	var lastCursor string
-	sink := func(c string) {
-		if c != "" {
-			lastCursor = c
+
+	// First reconnect from the beginning: the probe delivers ONE envelope with
+	// cursor "adv-1" before EOF. That cursor rides the delivered
+	// WatchEnvelopeMsg — the ONLY channel the ui reducer advances its
+	// watchCursor from.
+	ch, stop := ReconnectWatchCmd(context.Background(), w, "sess", "")
+	defer stop()
+	cursor := ""
+	for _, m := range drainReconWatch(t, ch) {
+		if em, ok := m.(WatchEnvelopeMsg); ok {
+			cursor = em.Envelope.Cursor
 		}
 	}
-	ch, stop := ReconnectWatchCmd(context.Background(), w, "sess", "", sink)
-	defer stop()
-	_ = drainReconWatch(t, ch)
-	// The first open delivered the envelope (cursor "adv-1"); the sink advanced.
-	if lastCursor != "adv-1" {
-		t.Fatalf("sink lastCursor = %q, want adv-1 (the first envelope's cursor)", lastCursor)
+	if cursor != "adv-1" {
+		t.Fatalf("delivered envelope cursor = %q, want adv-1", cursor)
 	}
-	// The loop's last open carried the initial cursor (""); a subsequent
-	// ReconnectWatchCmd opened with the FURTHEST cursor threads it to
-	// WatchSessionEvents verbatim.
-	ch2, stop2 := ReconnectWatchCmd(context.Background(), w, "sess", lastCursor, sink)
+	// A follow-up reconnect opened with the FURTHEST cursor (what the ui
+	// threads from its reduced watchCursor) passes it to WatchSessionEvents
+	// verbatim, so the re-attach resumes from exactly the next record.
+	ch2, stop2 := ReconnectWatchCmd(context.Background(), w, "sess", cursor)
 	defer stop2()
 	_ = drainReconWatch(t, ch2)
-	if w.lastCur != lastCursor {
-		t.Errorf("reconnect open cursor = %q, want %q (the furthest cursor)", w.lastCur, lastCursor)
+	if w.lastCur != cursor {
+		t.Errorf("reconnect open cursor = %q, want %q (the furthest received cursor)", w.lastCur, cursor)
+	}
+}
+
+// TestDrainWatchProbe_AdvancesLoopLocalCursor pins the loop's goroutine-local
+// cursor advance (AC7.1): drainWatchProbe moves the loop's OWN cursor past each
+// delivered envelope — there is no caller-supplied sink, so a watch goroutine
+// can never reach model state — and the probe's re-open (or a FromAttempt
+// continuation) resumes from the furthest position THIS LOOP reached, past the
+// phase-only boundary too.
+func TestDrainWatchProbe_AdvancesLoopLocalCursor(t *testing.T) {
+	ws := NewWatchStream(newFakeWatchRecver(
+		watchEnv(&mecatlv1.Event{Type: "session.init", Seq: 1}, "c1", WatchPhaseReplay),
+		watchEnv(&mecatlv1.Event{Type: "turn.start", Seq: 2, Turn: 1}, "c2", WatchPhaseReplay),
+		phaseEnv("c2", WatchPhaseLive),
+	))
+	out := make(chan tea.Msg, 64)
+	cursor := ""
+	if !drainWatchProbe(context.Background(), ws, out, &cursor) {
+		t.Fatal("drainWatchProbe returned false (context cancelled?)")
+	}
+	// The envelopes forwarded onto out carry the cursors the ui reducer
+	// advances from; the loop-local cursor advanced past ALL of them, including
+	// the phase-only boundary frame (which carries a cursor too).
+	if cursor != "c2" {
+		t.Fatalf("loop-local cursor = %q, want c2 (advanced past every delivered envelope)", cursor)
+	}
+	if len(out) != 3 {
+		t.Fatalf("drained msgs = %d, want 3 (2 envelopes + the phase-only boundary)", len(out))
 	}
 }
 
@@ -393,11 +426,11 @@ func TestWatchBearerBacked_ClassifiesAuth(t *testing.T) {
 // liveAuthProvenance interface so AuthFailure on a watch error classifies
 // consistently.
 func TestWatchStream_BearerBackedStream(t *testing.T) {
-	if !newAuthenticatedWatchStream(newFakeWatchRecver(), true).bearerBackedStream() {
-		t.Error("authenticated watch stream bearerBackedStream = false, want true")
+	if !newAuthenticatedWatchStream(newFakeWatchRecver(), true).BearerBackedStream() {
+		t.Error("authenticated watch stream BearerBackedStream = false, want true")
 	}
-	if newAuthenticatedWatchStream(newFakeWatchRecver(), false).bearerBackedStream() {
-		t.Error("anonymous watch stream bearerBackedStream = true, want false")
+	if newAuthenticatedWatchStream(newFakeWatchRecver(), false).BearerBackedStream() {
+		t.Error("anonymous watch stream BearerBackedStream = true, want false")
 	}
 }
 
