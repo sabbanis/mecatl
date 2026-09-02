@@ -1,4 +1,13 @@
-import { Bot, Brain, GraduationCap, Palette, UserRound } from "lucide-react";
+import {
+  Bot,
+  Brain,
+  GraduationCap,
+  Network,
+  Palette,
+  Route,
+  Server,
+  UserRound,
+} from "lucide-react";
 
 export interface SettingsSection {
   href: string;
@@ -49,6 +58,21 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/learning",
         label: "Learning",
         icon: GraduationCap,
+      },
+      {
+        href: "/workspace/settings/provider",
+        label: "Provider",
+        icon: Server,
+      },
+      {
+        href: "/workspace/settings/model-router",
+        label: "Model router",
+        icon: Route,
+      },
+      {
+        href: "/workspace/settings/gateway",
+        label: "MCP gateway",
+        icon: Network,
       },
     ],
   },

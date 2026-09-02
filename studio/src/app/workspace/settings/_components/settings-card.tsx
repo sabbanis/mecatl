@@ -84,7 +84,7 @@ export function Note({ children }: { children: React.ReactNode }) {
 /** Shown in place of a form when the configuration is owned elsewhere: the
  * controller answers 409 for every write in external mode, so offering the
  * form would only manufacture errors. */
-function ExternalManagedNote() {
+export function ExternalManagedNote() {
   return (
     <Note>
       Managed by the external mecated deployment. Configuration writes are not
@@ -94,7 +94,7 @@ function ExternalManagedNote() {
   );
 }
 
-function OfflineNote() {
+export function OfflineNote() {
   return (
     <Note>
       The runtime is offline — its configuration cannot be read right now.

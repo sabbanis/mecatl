@@ -12,8 +12,8 @@ Studio reads and writes the daemon's state rather than keeping its own.
 
 :::note Landing in progress
 Studio is landing as a stacked series of pull requests. This page grows with
-each one; right now everything except provider/model-router/gateway settings,
-external-mode sign-in, and the advanced chat tiers is in the tree.
+each one; right now everything except external-mode sign-in and the advanced chat
+tiers is in the tree.
 :::
 
 ## Starting it
@@ -89,3 +89,16 @@ detail, the store footprint, and the consolidate action. Settings carries
 Personalize (text size, interface scale, session-list side, notifications),
 the agent identity card (name and avatar are browser-local cosmetics — the
 agent learns your name in conversation), and the learning review page.
+
+## Providers, model router, MCP gateway
+
+In managed mode Studio administers the daemon's runtime configuration
+through the local controller: add a provider (built-in kinds take a base-URL
+override; custom gateways are validated), test a key, switch the active
+provider, remove one, and edit the model router over the daemon's whole
+model inventory. Provider credentials live in the daemon's auth file, owned
+server-side — Studio shows status booleans and key-shape hints, and key
+material never crosses to the browser. The MCP gateway URL is user-entered
+but always validated, and egress is HTTPS-only (loopback HTTP sits behind an
+operator env opt-in). In external mode all of this reads as owned by the
+deployment. The About-this-daemon card reports the safe identity probe.

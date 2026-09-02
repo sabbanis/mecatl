@@ -21,9 +21,12 @@ import {
   validSkillName,
 } from "../src/lib/controller-security.mjs";
 import {
+  customProviderProbeURL,
   KNOWN_AUTH_PROVIDERS,
   listAuthFileProviders,
   listSettingsProviders,
+  removeAuthFileProvider,
+  validProviderName,
 } from "../src/lib/provider-auth.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -142,6 +145,142 @@ async function listSelectableProviderNames() {
     if (!names.includes(provider.name)) names.push(provider.name);
   }
   return names;
+}
+
+// ── Provider management ─────────────────────────────────────────────────────
+// The provider inventory, guided add, key test, and removal are controller-
+// owned for the same reason the skills routes are: mecated reads auth.yaml
+// once at startup and has no HTTP write API for it. Every route keeps Studio
+// rule 3 intact — a credential is read SERVER-SIDE here for exactly one
+// outbound probe or removed from the file; no response body ever carries a
+// key, not even a redacted preview, and there is no route that ACCEPTS one.
+
+/**
+ * One cheap authenticated read per testable provider, mirroring the base
+ * URLs the daemon itself defaults to (internal/cliconfig: the controller
+ * spawns mecated without --*-base-url overrides, so these defaults are what
+ * the key will actually be used against). OpenRouter's /models is public
+ * (the daemon's own lister is deliberately keyless), so its keyed metadata
+ * endpoint /key is the probe there.
+ */
+const providerKeyProbes = {
+  openrouter: (key) => ({
+    url: "https://openrouter.ai/api/v1/key",
+    headers: { Authorization: `Bearer ${key}` },
+  }),
+  openai: (key) => ({
+    url: "https://api.openai.com/v1/models",
+    headers: { Authorization: `Bearer ${key}` },
+  }),
+  anthropic: (key) => ({
+    url: "https://api.anthropic.com/v1/models?limit=1",
+    headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
+  }),
+  opencode: (key) => ({
+    url: "https://opencode.ai/zen/go/v1/models",
+    headers: { Authorization: `Bearer ${key}` },
+  }),
+};
+
+/**
+ * The named provider's api_key value, read server-side for the one outbound
+ * key probe. Deliberately controller-local (NOT in provider-auth.mjs, which
+ * the browser bundle imports) and deliberately api_key-only: openai-codex's
+ * oauth block is not key-testable. The value is never logged or echoed.
+ */
+function readProviderCredential(text, name) {
+  const lines = String(text ?? "").split("\n");
+  const providersAt = lines.findIndex((line) => /^providers:\s*$/.test(line));
+  if (providersAt === -1) return "";
+  let inBlock = false;
+  for (const line of lines.slice(providersAt + 1)) {
+    if (/^\S/.test(line)) break; // dedented past the providers block
+    const key = line.match(/^ {2}([A-Za-z0-9_-]+):/);
+    if (key) {
+      inBlock = key[1] === name;
+      continue;
+    }
+    if (!inBlock) continue;
+    const credential = line.match(/^\s+api_key:\s*(.+)$/);
+    if (!credential) continue;
+    let value = credential[1].trim();
+    const quote = value[0];
+    if ((quote === '"' || quote === "'") && value.endsWith(quote)) {
+      value = value.slice(1, -1);
+    }
+    return value.startsWith("#") ? "" : value;
+  }
+  return "";
+}
+
+/** Provider error text, bounded and de-control-charred before it reaches a
+ *  response body (it is provider-authored, not ours). */
+function clampProviderError(text) {
+  return (
+    String(text ?? "")
+      // biome-ignore lint/suspicious/noControlCharactersInRegex: stripping them is the point
+      .replace(/[\u0000-\u001f\u007f]+/g, " ")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 300)
+  );
+}
+
+/**
+ * The one keyed probe request for a CUSTOM (settings-defined, ADR 0238)
+ * provider: a models listing against ITS configured base URL, with the
+ * header shape its api_flavor dictates. Controller-local for the same reason
+ * readProviderCredential is — it carries the key.
+ */
+function customProviderKeyProbe(definition, key) {
+  const url = customProviderProbeURL(definition.apiFlavor, definition.baseURL);
+  if (definition.apiFlavor === "anthropic-messages") {
+    return {
+      url,
+      headers: { "x-api-key": key, "anthropic-version": "2023-06-01" },
+    };
+  }
+  return { url, headers: { Authorization: `Bearer ${key}` } };
+}
+
+/**
+ * Runs the one bounded probe ({url, headers}) for a provider's stored key.
+ * Returns the JSON the route answers with:
+ * {ok:true} | {ok:false, status, rejected?, error}.
+ * A 401/403 is the provider saying the KEY is bad; anything else (5xx,
+ * timeout, DNS) is an infrastructure answer, reported distinctly so a red
+ * "key rejected" dot is never shown for a provider outage.
+ */
+async function probeProviderKey(probe) {
+  let response;
+  try {
+    response = await fetch(probe.url, {
+      headers: { Accept: "application/json", ...probe.headers },
+      redirect: "manual", // never replay the credential to a redirect target
+      signal: AbortSignal.timeout(10_000),
+    });
+  } catch (error) {
+    return {
+      ok: false,
+      status: 0,
+      error: clampProviderError(error?.message || "provider unreachable"),
+    };
+  }
+  const body = await response.text().catch(() => "");
+  if (response.ok) return { ok: true };
+  if (response.status === 401 || response.status === 403) {
+    return {
+      ok: false,
+      status: response.status,
+      rejected: true,
+      error: `key rejected (HTTP ${response.status})`,
+    };
+  }
+  return {
+    ok: false,
+    status: response.status,
+    error: clampProviderError(body) || `HTTP ${response.status}`,
+  };
 }
 // ── Workspace skills management ────────────────────────────────────────────
 // The daemon has no HTTP write API for skills (Studio shipped them read-only;
@@ -509,6 +648,17 @@ async function detectToolhiveGateway() {
 const preferredKind = () =>
   activeProviderOverride || (toolhiveReady ? "toolhive" : "mock");
 
+/** Whether `kind` is safe to hand to startMecatl right now: the two
+ *  synthetic kinds (mock always, toolhive only while the gateway answers), a
+ *  provider that actually has a block in auth.yaml, or a settings-defined
+ *  custom provider (ADR 0238) — never an arbitrary string, so a typo can't
+ *  reach mecated's fail-fast --default-provider check and crash the child. */
+function isSelectableProviderKind(kind, selectableNames) {
+  if (kind === "mock") return true;
+  if (kind === "toolhive") return toolhiveReady;
+  return selectableNames.includes(kind);
+}
+
 function normalizeModelRouter(input) {
   const classifierModel =
     typeof input?.classifierModel === "string"
@@ -563,6 +713,45 @@ function normalizeModelRouter(input) {
     defaultCategory,
     categories,
   };
+}
+
+const yamlString = (value) => JSON.stringify(String(value));
+
+function renderModelRouterYAML(config) {
+  const categories = config.categories
+    .map((category) =>
+      [
+        `      - name: ${yamlString(category.name)}`,
+        `        description: ${yamlString(category.description)}`,
+        `        model: ${yamlString(category.model)}`,
+      ].join("\n"),
+    )
+    .join("\n");
+  return [
+    "# Managed by Mecatl Studio. This is loaded at the trusted CLI/operator tier.",
+    "models:",
+    "  slots:",
+    `    router: ${yamlString(config.classifierModel)}`,
+    "  router:",
+    `    disabled: ${config.enabled ? "false" : "true"}`,
+    "    classifier-slot: router",
+    `    default-category: ${yamlString(config.defaultCategory)}`,
+    "    categories:",
+    categories,
+    "",
+  ].join("\n");
+}
+
+async function persistModelRouter(config) {
+  await mkdir(studioStateDir, { recursive: true, mode: 0o700 });
+  const yamlTemp = `${routerSettingsFile}.tmp`;
+  const jsonTemp = `${routerStateFile}.tmp`;
+  await writeFile(yamlTemp, renderModelRouterYAML(config), { mode: 0o600 });
+  await writeFile(jsonTemp, `${JSON.stringify(config, null, 2)}\n`, {
+    mode: 0o600,
+  });
+  await rename(yamlTemp, routerSettingsFile);
+  await rename(jsonTemp, routerStateFile);
 }
 
 async function loadModelRouter() {
@@ -1350,6 +1539,233 @@ const server = http.createServer(async (request, response) => {
     );
     return;
   }
+  // Provider inventory: names + key-present booleans from auth.yaml, plus the
+  // settings-defined custom providers (ADR 0238) — a keyless custom provider
+  // has no auth.yaml block, so the auth scan alone would hide it. Never
+  // values. Like the skill routes (and unlike /status) this is NOT in the
+  // header-free read-only allowlist — it needs the server-set studio header.
+  if (request.method === "GET" && requestURL.pathname === "/providers") {
+    const authRows = listAuthFileProviders(await readAuthFileText());
+    const custom = await listCustomSettingsProviders();
+    const customNames = new Set(custom.map((definition) => definition.name));
+    const providers = authRows
+      .filter((row) => !customNames.has(row.name))
+      .map((row) => ({
+        name: row.name,
+        configured: true,
+        keyPresent: row.keyPresent,
+        source: "auth.yaml",
+        testable: Object.hasOwn(providerKeyProbes, row.name),
+      }));
+    for (const definition of custom) {
+      const keyed = definition.authMethod === "api_key";
+      const authRow = authRows.find((row) => row.name === definition.name);
+      providers.push({
+        name: definition.name,
+        configured: true,
+        // A keyless (auth.method: none) provider needs no credential — its
+        // requirement is satisfied by configuration alone.
+        keyPresent: keyed ? Boolean(authRow?.keyPresent) : true,
+        source:
+          keyed && authRow ? "settings.yaml + auth.yaml" : "settings.yaml",
+        testable:
+          keyed &&
+          customProviderProbeURL(definition.apiFlavor, definition.baseURL) !==
+            "",
+      });
+    }
+    response.end(JSON.stringify({ providers }));
+    return;
+  }
+  // The provider kinds the daemon understands, with the guided-add snippet
+  // (a <YOUR_KEY> placeholder — this route never sees a real credential).
+  if (request.method === "GET" && requestURL.pathname === "/providers/known") {
+    response.end(JSON.stringify({ known: KNOWN_AUTH_PROVIDERS }));
+    return;
+  }
+  // Live provider switch: POST /providers/active { kind }. Unlike
+  // MECATL_STUDIO_PROVIDER (fixed for the process's lifetime), this
+  // reassigns activeProviderOverride and restarts mecated on the spot — the
+  // Studio settings UI's "switch to mock" / "switch to <provider>" control.
+  // Checked BEFORE the /providers/{name} regex below, which would otherwise
+  // match "active" as a provider name and 404 it first.
+  if (
+    request.method === "POST" &&
+    requestURL.pathname === "/providers/active"
+  ) {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw Object.assign(
+          new Error("Content-Type must be application/json"),
+          { statusCode: 415 },
+        );
+      const input = JSON.parse(
+        (await readBody(request, 4096)).toString("utf8"),
+      );
+      const kind =
+        typeof input?.kind === "string" ? input.kind.trim().toLowerCase() : "";
+      const selectableNames = await listSelectableProviderNames();
+      if (!kind || !isSelectableProviderKind(kind, selectableNames)) {
+        throw Object.assign(
+          new Error(
+            kind === "toolhive"
+              ? "The ToolHive LLM gateway is not reachable right now"
+              : `"${kind || "(empty)"}" is not mock, toolhive, a provider configured in ${authFile}, or a custom provider defined in the operator settings`,
+          ),
+          { statusCode: 400 },
+        );
+      }
+      await queueRestart(async () => {
+        const previous = activeProviderOverride;
+        activeProviderOverride = kind;
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          activeProviderOverride = previous;
+          await startMecatl(preferredKind());
+          throw error;
+        }
+      });
+      response.end(
+        JSON.stringify({
+          ok: true,
+          provider,
+          selectedProvider: activeProviderOverride,
+        }),
+      );
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Could not switch provider",
+      );
+    }
+    return;
+  }
+  // Key test + removal: POST /providers/{name}/test, DELETE /providers/{name}.
+  const providerRoute = requestURL.pathname.match(
+    /^\/providers\/([^/]+?)(?:\/(test))?$/,
+  );
+  if (providerRoute) {
+    const [, rawName, action] = providerRoute;
+    let name = rawName;
+    try {
+      name = decodeURIComponent(rawName);
+    } catch {
+      // Malformed escape: the grammar below rejects percent-shaped names.
+    }
+    if (!validProviderName(name)) {
+      jsonError(response, 400, "not a valid provider name");
+      return;
+    }
+    if (request.method === "POST" && action === "test") {
+      // ONE cheap authenticated call with the STORED key, made entirely
+      // server-side. The key never appears in the response, the logs, or an
+      // error message; the probe is bounded (10s) and never follows a
+      // redirect with the credential attached. A settings-defined custom
+      // provider (ADR 0238) is probed against ITS OWN base URL with the
+      // header shape its api_flavor dictates.
+      const definition = (await listCustomSettingsProviders()).find(
+        (candidate) => candidate.name === name,
+      );
+      let buildProbe = null;
+      if (definition) {
+        if (definition.authMethod !== "api_key") {
+          jsonError(
+            response,
+            400,
+            `"${name}" uses auth.method none — there is no key to test.`,
+          );
+          return;
+        }
+        if (
+          customProviderProbeURL(definition.apiFlavor, definition.baseURL) ===
+          ""
+        ) {
+          jsonError(
+            response,
+            400,
+            `Key testing is not supported for "${name}" — its api_flavor or base_url cannot be probed; mecated will report an auth problem on first use instead.`,
+          );
+          return;
+        }
+        buildProbe = (key) => customProviderKeyProbe(definition, key);
+      } else if (Object.hasOwn(providerKeyProbes, name)) {
+        buildProbe = providerKeyProbes[name];
+      } else {
+        jsonError(
+          response,
+          400,
+          `Key testing is not supported for "${name}" — mecated will report an auth problem on first use instead.`,
+        );
+        return;
+      }
+      const key = readProviderCredential(await readAuthFileText(), name);
+      if (!key) {
+        jsonError(
+          response,
+          400,
+          `No api_key found for providers.${name} in ${authFile}`,
+        );
+        return;
+      }
+      response.end(JSON.stringify(await probeProviderKey(buildProbe(key))));
+      return;
+    }
+    if (request.method === "DELETE" && !action) {
+      // Removing a provider block is a conservative line-range cut of the
+      // named top-level key (provider-auth.mjs), written temp-file+rename
+      // with owner-only permissions, then a daemon restart so the change is
+      // real. Removing the LAST provider is allowed: mecated runs on the
+      // offline mock without providers (the state the user already sees on
+      // first run) — the UI's confirm warns, the controller doesn't refuse.
+      // If the restart then fails (e.g. MECATL_STUDIO_PROVIDER still names
+      // the removed provider), the removal STANDS — the operator asked for
+      // the credential to be gone — and the startup error surfaces both in
+      // this response and on /status.startupError.
+      try {
+        await queueRestart(async () => {
+          const current = await readAuthFileText();
+          const { text, removed } = removeAuthFileProvider(current, name);
+          if (!removed) {
+            // A settings-defined provider has no auth.yaml block to cut —
+            // its definition lives in an operator-owned settings file the
+            // controller never edits.
+            const settingsDefined = (await listCustomSettingsProviders()).some(
+              (definition) => definition.name === name,
+            );
+            throw Object.assign(
+              new Error(
+                settingsDefined
+                  ? `"${name}" is defined in the operator settings (providers: section), not ${authFile} — remove it from the settings file, then restart the daemon.`
+                  : `No provider named "${name}" in ${authFile}`,
+              ),
+              { statusCode: settingsDefined ? 409 : 404 },
+            );
+          }
+          const temp = `${authFile}.tmp`;
+          await writeFile(temp, text, { mode: 0o600 });
+          await rename(temp, authFile);
+          await startMecatl(preferredKind());
+        });
+        response.end(JSON.stringify({ ok: true, restarted: true }));
+      } catch (error) {
+        jsonError(
+          response,
+          error.statusCode || 400,
+          error.message || "Provider removal failed",
+        );
+      }
+      return;
+    }
+    response.statusCode = 404;
+    response.end(JSON.stringify({ error: "not found" }));
+    return;
+  }
   // The disabled-skill inventory. Like every controller route this sits
   // behind requestIsAllowed (loopback Host + allowlisted Origin + the
   // server-set studio header) — the Next server proxy is the only caller.
@@ -1670,7 +2086,19 @@ const server = http.createServer(async (request, response) => {
     }
     return;
   }
-  if (request.method !== "POST" || requestURL.pathname !== "/mcp") {
+  if (request.method === "GET" && requestURL.pathname === "/model-router") {
+    response.end(
+      JSON.stringify({
+        config: modelRouterConfig,
+        managedBy: operatorSettingsActive ? "operator-settings" : "studio",
+      }),
+    );
+    return;
+  }
+  if (
+    request.method !== "POST" ||
+    !["/mcp", "/model-router"].includes(requestURL.pathname)
+  ) {
     response.statusCode = 404;
     response.end(JSON.stringify({ error: "not found" }));
     return;
@@ -1688,6 +2116,33 @@ const server = http.createServer(async (request, response) => {
     const input = JSON.parse(
       (await readBody(request, 16_384)).toString("utf8"),
     );
+    if (requestURL.pathname === "/model-router") {
+      if (operatorSettingsActive)
+        throw new Error(
+          "Routing is managed by the imported operator settings. Update the complete settings file to preserve its aliases, slots, and guardrails.",
+        );
+      const nextConfig = normalizeModelRouter(input);
+      await queueRestart(async () => {
+        const previousConfig = modelRouterConfig;
+        modelRouterConfig = nextConfig;
+        await persistModelRouter(nextConfig);
+        try {
+          await startMecatl(preferredKind());
+        } catch (error) {
+          modelRouterConfig = previousConfig;
+          if (previousConfig) await persistModelRouter(previousConfig);
+          else
+            await Promise.all([
+              rm(routerSettingsFile, { force: true }),
+              rm(routerStateFile, { force: true }),
+            ]);
+          await startMecatl(preferredKind());
+          throw error;
+        }
+      });
+      response.end(JSON.stringify({ ok: true, config: modelRouterConfig }));
+      return;
+    }
     if (!/^[A-Za-z0-9_]+$/.test(input.name || ""))
       throw new Error(
         "Gateway name may contain only letters, numbers, and underscores",
