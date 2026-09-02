@@ -7,6 +7,7 @@ export {
   decodeScheduleFires,
   decodeScheduleRows,
   encodeScheduleSpec,
+  PERMISSION_MODES,
   type ScheduleCarriedSpec,
   type ScheduleFireRow,
   type ScheduleRow,

@@ -134,7 +134,7 @@ export type ScheduleSpecDraft = {
   oneShotMaxRetries: number;
 };
 
-const PERMISSION_MODES: Record<string, number> = {
+export const PERMISSION_MODES: Record<string, number> = {
   PERMISSION_MODE_UNSPECIFIED: 0,
   PERMISSION_MODE_DEFAULT: 1,
   PERMISSION_MODE_PLAN: 2,

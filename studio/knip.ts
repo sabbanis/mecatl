@@ -18,9 +18,7 @@ const config: KnipConfig = {
     "src/features/**",
     // Reached only through the UI kit until later PRs in the stacked series
     // land their first app-level consumers; each line leaves with that PR.
-    "src/hooks/use-is-truncated.ts",
     "src/hooks/use-mobile.ts",
-    "src/lib/typography.ts",
   ],
   ignoreDependencies: [
     // Tailwind v4 is imported via CSS (@import "tailwindcss"), not JS
@@ -31,17 +29,13 @@ const config: KnipConfig = {
     // (these leave the list as their first reached consumers land later in
     // the stacked series: lucide-react/cmdk/tooltip with the workspace shell,
     // select/switch/tabs with the surface pages)
-    "lucide-react",
-    "cmdk",
     "@radix-ui/react-alert-dialog",
-    "@radix-ui/react-dialog",
     "@radix-ui/react-dropdown-menu",
     "@radix-ui/react-label",
     "@radix-ui/react-scroll-area",
     "@radix-ui/react-select",
     "@radix-ui/react-switch",
     "@radix-ui/react-tabs",
-    "@radix-ui/react-tooltip",
     "@radix-ui/react-avatar",
     "@radix-ui/react-checkbox",
     "@radix-ui/react-popover",
