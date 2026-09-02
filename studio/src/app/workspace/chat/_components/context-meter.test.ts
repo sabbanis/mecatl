@@ -54,7 +54,7 @@ describe("ContextMeter render", () => {
     const { container } = render(createElement(ContextMeter, props));
     const root = container.firstElementChild;
     expect(root?.className).toContain("ml-auto");
-    expect(root?.innerHTML).toContain("w-16");
+    expect(root?.innerHTML).toContain("w-10");
     expect(container.textContent?.trim()).toBe("22% used");
   });
 

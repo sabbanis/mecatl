@@ -52,7 +52,7 @@ export function ContextMeter({
       <TooltipTrigger asChild>
         <div className="ml-auto flex shrink-0 items-center gap-2 px-2 text-sm text-muted-foreground">
           <span
-            className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-border"
+            className="h-1 w-10 shrink-0 overflow-hidden rounded-full bg-border"
             aria-hidden="true"
           >
             <span
