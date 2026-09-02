@@ -36,6 +36,13 @@ import (
 //     goleak's retry budget. Not mecatl-owned; the real code path owns it
 //     correctly (the connection is process-scoped and cleaned at exit).
 //
+//   - net/http persistConn read/writeLoop: a real e2e test against the embedded
+//     ToolHive broker (TestSessionMCPAuthorization_GrantRegressionParksAndResumes)
+//     drives actual HTTP keep-alive connections to httptest fixtures and the
+//     embedded ToolHive OAuth/vmcp stack. Go's Transport pools/half-closes these
+//     asynchronously; teardown (server.Close + client CloseIdleConnections) races
+//     goleak's retry budget on a slow CI host. Not mecatl-owned control flow.
+//
 // All are narrowly pinned by top-of-stack so the gate still catches ANY other
 // leak — including, crucially, a live-model refresh leak.
 func TestMain(m *testing.M) {
@@ -44,5 +51,7 @@ func TestMain(m *testing.M) {
 		goleak.IgnoreTopFunction("github.com/stacklok/mecatl/engine/agent.(*askRegistry).await"),
 		goleak.IgnoreTopFunction("github.com/godbus/dbus/v5.newConn.func1"),
 		goleak.IgnoreAnyFunction("github.com/godbus/dbus/v5.(*Conn).inWorker"),
+		goleak.IgnoreTopFunction("net/http.(*persistConn).readLoop"),
+		goleak.IgnoreTopFunction("net/http.(*persistConn).writeLoop"),
 	)
 }

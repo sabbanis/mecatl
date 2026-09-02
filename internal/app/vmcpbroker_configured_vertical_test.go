@@ -275,7 +275,7 @@ func (f *scenario10Fixture) browserClient(callback *httptest.Server) *http.Clien
 
 func configureScenario10SystemRoots(t *testing.T, certs ...*x509.Certificate) {
 	t.Helper()
-	roots := x509.NewCertPool()
+	roots := installSystemRootsOnce()
 	var pemRoots []byte
 	for _, cert := range certs {
 		roots.AddCert(cert)
@@ -287,7 +287,6 @@ func configureScenario10SystemRoots(t *testing.T, certs ...*x509.Certificate) {
 	}
 	t.Setenv("SSL_CERT_FILE", path)
 	t.Setenv("GODEBUG", "x509usefallbackroots=1")
-	x509.SetFallbackRoots(roots)
 }
 
 func assertScenario10SafeEvents(t *testing.T, events []session.Event, forbidden []string) {
