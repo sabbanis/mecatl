@@ -274,11 +274,16 @@ func runWithOptions(argv []string, options runOptions) error {
 	// and best-effort (the cancel targets the session, and the stream's lifetime
 	// ends when the process exits). DetachSignal.SetCancel receives the session
 	// id so the closure captures it directly (no re-lookup at cancel time).
-	detachSignal.SetCancel(func() {
-		if id, active := detachSignal.Following(); active && id != "" {
-			_ = cl.CancelDetachedRun(ctx, id) //nolint:errcheck // best-effort cancel
-		}
-	})
+	//
+	// The closure must NOT capture the signal handler's ctx (repair task 06,
+	// panel-review Critical): the FIRST Ctrl+C cancels that ctx, so the second
+	// Ctrl+C would otherwise call CancelDetachedRun with an already-cancelled
+	// context — Converse(ctx) fails immediately with context.Canceled and the
+	// Cancel{SessionId} frame never reaches the server, leaving the detached run
+	// running (ADR 0278 Scenario 4 / AC4.2). wireDetachCancel's fresh bounded
+	// context is independent of the handler's lifecycle and mirrors the
+	// server-side appendEvent/lease-release cancel-detached discipline.
+	detachSignal.SetCancel(wireDetachCancel(detachSignal.Following, cl.CancelDetachedRun))
 	ptrStore := newSessionStateStore(xdgconfig.OSEnv)
 	outcome, uiWorkspace, err := startupResumeConfigWithPointer(ctx, cl, resumeCfg, ptrStore, target, detachSupported)
 	resume, reattach := outcome.Resume, outcome.Reattach
@@ -814,6 +819,32 @@ func detachControlCancel(detach *ui.DetachSignalState) bool {
 	}
 	cancel()
 	return true
+}
+
+// detachCanceler is the client seam the second-Ctrl+C cancel closure drives:
+// a fresh control-only Converse `cancel` frame for the session id. Production
+// wires cl.CancelDetachedRun; tests substitute a recording fake to assert the
+// ctx passed at call time is live and bounded.
+type detachCanceler func(ctx context.Context, sessionID string) error
+
+// wireDetachCancel binds the DetachSignalState's control-only cancel closure
+// (ADR 0278 Scenario 4). The closure MUST run on a FRESH, bounded context per
+// invocation, independent of the signal handler's lifecycle (repair task 06,
+// panel-review Critical): the first Ctrl+C cancels the handler's ctx in
+// setupSignalHandler, and forwarding that ctx to CancelDetachedRun on the
+// second Ctrl+C made Converse fail immediately with context.Canceled — the
+// Cancel{SessionId} frame never reached the server and the detached run kept
+// running. A fresh context.WithTimeout(context.Background(), 5s) mirrors the
+// server-side appendEvent/lease-release cancel-detached discipline, and is
+// created per call so a timed-out previous attempt never poisons the next.
+func wireDetachCancel(following func() (string, bool), cancelRun detachCanceler) func() {
+	return func() {
+		if id, active := following(); active && id != "" {
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_ = cancelRun(ctx, id) //nolint:errcheck // best-effort cancel
+		}
+	}
 }
 
 // runCleanup runs the post-Run cleanup under a 45s hard deadline, retiring the

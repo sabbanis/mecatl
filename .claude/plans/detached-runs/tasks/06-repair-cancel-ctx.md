@@ -2,7 +2,7 @@
 id: 06-repair-cancel-ctx
 title: Repair — second-Ctrl+C cancel must use a fresh context (panel-review Critical)
 blocked_by: []
-status: pending
+status: done
 branch: "plan-detached-runs/06-repair-cancel-ctx"
 worktree: ""
 issue: ""
