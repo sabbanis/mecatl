@@ -1,3 +1,25 @@
+export function formatRelativeTime(ts: number): string {
+  if (!ts || ts < 1000) return "";
+  try {
+    const diffMs = Date.now() - ts;
+    const diffMin = Math.floor(diffMs / 60000);
+    if (diffMin < 1) return "<1m";
+    if (diffMin < 60) return `${diffMin}m`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr}h`;
+    const diffDay = Math.floor(diffHr / 24);
+    return `${diffDay}d`;
+  } catch {
+    return "";
+  }
+}
+
+export function formatTokens(n: number): string {
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
+  return String(n);
+}
+
 const CRON_DAYS = [
   "Sunday",
   "Monday",
@@ -59,4 +81,14 @@ export function describeCron(expr: string): string {
     }
   }
   return expr;
+}
+
+export function formatMessageTime(ts: number): string {
+  if (!ts || ts < 1000) return "";
+  const d = new Date(ts);
+  return d.toLocaleTimeString(undefined, {
+    hour: "2-digit",
+    minute: "2-digit",
+    hour12: false,
+  });
 }

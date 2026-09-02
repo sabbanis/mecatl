@@ -29,8 +29,6 @@ const config: KnipConfig = {
     // (these leave the list as their first reached consumers land later in
     // the stacked series: lucide-react/cmdk/tooltip with the workspace shell,
     // select/switch/tabs with the surface pages)
-    "@radix-ui/react-alert-dialog",
-    "@radix-ui/react-dropdown-menu",
     "@radix-ui/react-label",
     "@radix-ui/react-scroll-area",
     "@radix-ui/react-select",

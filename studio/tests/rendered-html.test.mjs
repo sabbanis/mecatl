@@ -46,10 +46,8 @@ async function waitForServer(url, child) {
     if (child.exitCode !== null)
       throw new Error(`Next exited during test startup (${child.exitCode})`);
     try {
-      // Any HTTP answer means Next is up (the root renders the branded
-      // not-found page — a 404 — until the chat route lands in the stack).
       const response = await fetch(url);
-      if (response.status) return;
+      if (response.ok) return;
     } catch {
       /* still starting */
     }
@@ -125,9 +123,8 @@ after(async () => {
 });
 
 test("server-renders Mecatl Studio", async () => {
-  // No status assertion: the root redirects into the branded not-found page
-  // until the chat route lands in the stack — the SSR proof is the body.
-  const response = await fetch(`${studioBaseURL}/`);
+  const response = await fetch(`${studioBaseURL}/workspace/chat`);
+  assert.equal(response.status, 200);
   assert.match(response.headers.get("content-type") ?? "", /^text\/html\b/i);
   const html = await response.text();
   assert.match(html, /Mecatl Studio/);
@@ -214,8 +211,8 @@ test("an unreachable daemon is a friendly 503, never demo content", async () => 
 
   // The page itself still serves — the offline state is the UI's to render —
   // and carries no fabricated inventory.
-  const page = await fetch(`${offlineBaseURL}/`);
-  assert.match(await page.text(), /Mecatl Studio/);
+  const page = await fetch(`${offlineBaseURL}/workspace/chat`);
+  assert.equal(page.status, 200);
 });
 
 test("controller policy rejects CSRF and DNS-rebinding requests", () => {

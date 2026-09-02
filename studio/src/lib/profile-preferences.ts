@@ -8,6 +8,12 @@ import { useCallback, useEffect, useState } from "react";
  * server-side "agent name" or user-identity record — so these live in
  * localStorage only, same as the appearance/notification prefs on this page.
  */
+const AGENT_NAME_KEY = "mecatl-studio.agent-name";
+const AVATAR_KEY = "mecatl-studio.user-avatar";
+const USER_NAME_KEY = "mecatl-studio.user-name";
+const AGENT_AVATAR_KEY = "mecatl-studio.agent-avatar";
+const SESSION_LIST_SIDE_KEY = "mecatl-studio.session-list-side";
+const DEFAULT_AGENT_NAME = "Mecatl";
 
 function readLocalStorage(key: string): string | null {
   if (typeof window === "undefined") return null;
@@ -26,6 +32,51 @@ function writeLocalStorage(key: string, value: string | null) {
   } catch {
     // Storage disabled or full — the preference just doesn't persist.
   }
+}
+
+/** The agent's display name shown in chat, e.g. "Mecatl" or "Astra". */
+export function useAgentDisplayName() {
+  const [name, setNameState] = useState(DEFAULT_AGENT_NAME);
+  useEffect(() => {
+    const stored = readLocalStorage(AGENT_NAME_KEY);
+    if (stored) setNameState(stored);
+  }, []);
+
+  const setName = useCallback((next: string) => {
+    const trimmed = next.trim();
+    const value = trimmed || DEFAULT_AGENT_NAME;
+    setNameState(value);
+    writeLocalStorage(AGENT_NAME_KEY, trimmed ? value : null);
+  }, []);
+
+  return { name, setName, defaultName: DEFAULT_AGENT_NAME };
+}
+
+function useStoredAvatar(key: string) {
+  const [avatarUrl, setAvatarUrlState] = useState<string | null>(null);
+  useEffect(() => {
+    setAvatarUrlState(readLocalStorage(key));
+  }, [key]);
+
+  const setAvatarUrl = useCallback(
+    (next: string | null) => {
+      setAvatarUrlState(next);
+      writeLocalStorage(key, next);
+    },
+    [key],
+  );
+
+  return { avatarUrl, setAvatarUrl };
+}
+
+/** The user's profile picture, stored as a data URL (no upload endpoint exists). */
+export function useUserAvatar() {
+  return useStoredAvatar(AVATAR_KEY);
+}
+
+/** The agent's picture, replacing the default bot mark in chat when set. */
+export function useAgentAvatar() {
+  return useStoredAvatar(AGENT_AVATAR_KEY);
 }
 
 const UI_SCALE_MIN = 0.85;
@@ -75,4 +126,46 @@ export function useUiScale() {
   }, []);
 
   return { scale, setScale };
+}
+
+export type SessionListSide = "left" | "right";
+
+/**
+ * Which side of the chat the session list docks on. The thread and document
+ * panels stay on the right regardless — only the list moves.
+ */
+export function useSessionListSide() {
+  const [side, setSideState] = useState<SessionListSide>("right");
+  useEffect(() => {
+    if (readLocalStorage(SESSION_LIST_SIDE_KEY) === "left") {
+      setSideState("left");
+    }
+  }, []);
+
+  const setSide = useCallback((next: SessionListSide) => {
+    setSideState(next);
+    writeLocalStorage(SESSION_LIST_SIDE_KEY, next === "left" ? "left" : null);
+  }, []);
+
+  return { side, setSide };
+}
+
+/**
+ * The user's display name — browser-local, cosmetic. It labels your chat
+ * messages in Studio; the AGENT learns your name in conversation (its memory
+ * stores user/identity/name itself — Studio has no write path into the
+ * daemon's user model by design).
+ */
+export function useUserDisplayName() {
+  const [name, setNameState] = useState("");
+  useEffect(() => {
+    const stored = readLocalStorage(USER_NAME_KEY);
+    if (stored) setNameState(stored);
+  }, []);
+  const setName = useCallback((value: string) => {
+    setNameState(value);
+    const trimmed = value.trim();
+    writeLocalStorage(USER_NAME_KEY, trimmed ? value : null);
+  }, []);
+  return { name, setName };
 }
