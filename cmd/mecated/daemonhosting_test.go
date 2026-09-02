@@ -37,6 +37,7 @@ import (
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/server"
+	"github.com/stacklok/mecatl/internal/adapter/vmcpbroker"
 )
 
 // ---------------------------------------------------------------------------
@@ -166,7 +167,9 @@ func startServeWith(t *testing.T, cfg config, svc *server.Service) *servedDaemon
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, cfg, svc, prometheus.NewRegistry(), nil, nil) }()
+	go func() {
+		done <- serve(ctx, cfg, svc, prometheus.NewRegistry(), nil, nil, vmcpbroker.HandlerBundle{}, "")
+	}()
 
 	d := &servedDaemon{cfg: cfg, done: done, stop: cancel}
 	t.Cleanup(func() {
@@ -808,7 +811,9 @@ func startupRejection(t *testing.T, cfg config) error {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	done := make(chan error, 1)
-	go func() { done <- serve(ctx, cfg, newOfflineService(t), prometheus.NewRegistry(), nil, nil) }()
+	go func() {
+		done <- serve(ctx, cfg, newOfflineService(t), prometheus.NewRegistry(), nil, nil, vmcpbroker.HandlerBundle{}, "")
+	}()
 	select {
 	case err := <-done:
 		if err == nil {
@@ -852,7 +857,9 @@ func TestSDKServerEnablers_Scenario8_LifetimePipeEOFStops(t *testing.T) {
 	// A context that is NEVER cancelled: the pipe must be what stops serve, so
 	// a passing test cannot be explained by the signal path.
 	done := make(chan error, 1)
-	go func() { done <- serve(context.Background(), cfg, svc, prometheus.NewRegistry(), nil, nil) }()
+	go func() {
+		done <- serve(context.Background(), cfg, svc, prometheus.NewRegistry(), nil, nil, vmcpbroker.HandlerBundle{}, "")
+	}()
 	waitForReadyFile(t, cfg.readyFile, done)
 
 	dialCompatibilityOverSocket(t, sock)

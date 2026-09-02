@@ -2692,8 +2692,8 @@ func (s *Service) capabilities() *mecatlv1.ServerCapabilities {
 		// Manual compaction uses the configured engine, or a per-session engine
 		// derived under the same service construction semantics.
 		ManualCompaction: s.cfg.Engine != nil,
-		SessionDebug: s.cfg.DebugSessionEngine != nil,
-		DebugMcp:     s.cfg.DebugMCP,
+		SessionDebug:     s.cfg.DebugSessionEngine != nil,
+		DebugMcp:         s.cfg.DebugMCP,
 		WorkspaceEnrollment: s.cfg.VMCPBroker != nil &&
 			s.cfg.VMCPBroker.WorkspaceEnrollmentRequired(),
 	}
