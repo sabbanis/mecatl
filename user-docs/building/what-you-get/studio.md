@@ -14,7 +14,7 @@ Studio reads and writes the daemon's state rather than keeping its own.
 Studio is landing as a stacked series of pull requests. This page grows with
 each one; right now the module foundation, the server tier (proxy + managed-mode
 controller), the typed protocol seam, the workspace shell, and the Chats
-surface are in the tree; the remaining surfaces arrive next.
+and Scheduled surfaces are in the tree; the remaining surfaces arrive next.
 :::
 
 ## Starting it
@@ -60,3 +60,13 @@ delegation badges), failed turns surface as alerts instead of vanishing, and
 permission asks render as three-way approvals (allow once / always / deny)
 that withdraw if the daemon retracts them. @-mentions offer the daemon's
 agent roster and slash commands its command list.
+
+## Scheduled
+
+Scheduled tasks live on the daemon; Studio's Scheduled surface lists them
+with their fire history. Authoring supports the two real shapes — a cron
+schedule (with timezone and an optional max-fires cap) or a one-shot (with
+retry) — and mutating runs are an explicit opt-in in the form, so the
+invalid mutating/plan pairing cannot be constructed. Editing round-trips the
+schedule's carried spec (the daemon's update replaces the whole spec), and
+each fire links its real transcript.

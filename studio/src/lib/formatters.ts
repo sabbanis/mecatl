@@ -14,6 +14,25 @@ export function formatRelativeTime(ts: number): string {
   }
 }
 
+/**
+ * Future counterpart of formatRelativeTime: how long until `ts`, as a bare
+ * duration ("5m", "2h", "3d") the caller frames ("in 5m"). A due-or-past
+ * instant reads "<1m" rather than a negative.
+ */
+export function formatUntilTime(ts: number): string {
+  if (!ts || ts < 1000) return "";
+  try {
+    const diffMin = Math.floor((ts - Date.now()) / 60000);
+    if (diffMin < 1) return "<1m";
+    if (diffMin < 60) return `${diffMin}m`;
+    const diffHr = Math.floor(diffMin / 60);
+    if (diffHr < 24) return `${diffHr}h`;
+    return `${Math.floor(diffHr / 24)}d`;
+  } catch {
+    return "";
+  }
+}
+
 export function formatTokens(n: number): string {
   if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
   if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
@@ -31,7 +50,7 @@ const CRON_DAYS = [
 ];
 
 /** 1 → "1st", 22 → "22nd", 13 → "13th" — day-of-month labels. */
-function ordinal(n: number): string {
+export function ordinal(n: number): string {
   const rem10 = n % 10;
   const rem100 = n % 100;
   if (rem10 === 1 && rem100 !== 11) return `${n}st`;

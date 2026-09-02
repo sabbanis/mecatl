@@ -29,11 +29,7 @@ const config: KnipConfig = {
     // (these leave the list as their first reached consumers land later in
     // the stacked series: lucide-react/cmdk/tooltip with the workspace shell,
     // select/switch/tabs with the surface pages)
-    "@radix-ui/react-label",
-    "@radix-ui/react-scroll-area",
-    "@radix-ui/react-select",
     "@radix-ui/react-switch",
-    "@radix-ui/react-tabs",
     "@radix-ui/react-avatar",
     "@radix-ui/react-checkbox",
     "@radix-ui/react-popover",

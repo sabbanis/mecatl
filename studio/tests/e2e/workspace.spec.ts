@@ -17,3 +17,18 @@ test("the chat list and transcript come from the daemon", async ({ page }) => {
     page.getByText("the test races the claim sentinel", { exact: false }),
   ).toBeVisible();
 });
+
+test("schedules render the registry with humanized triggers", async ({
+  page,
+}) => {
+  await page.goto("/workspace/schedules");
+  // The responsive tables render each row twice (desktop columns + the
+  // CSS-collapsed mobile cell), so scope to the visible instance.
+  await expect(
+    page.getByText("nightly-fixture-digest").filter({ visible: true }),
+  ).toBeVisible();
+  // The fixture's cron is "0 9 * * *" — the table renders it in plain English.
+  await expect(
+    page.getByText("Daily at", { exact: false }).first(),
+  ).toBeVisible();
+});

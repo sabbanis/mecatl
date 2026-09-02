@@ -12,6 +12,7 @@ export {
   type ScheduleFireRow,
   type ScheduleRow,
   type ScheduleSpecDraft,
+  scheduleDraftFromRow,
 } from "./schedules";
 export {
   decodeSessionInventory,
