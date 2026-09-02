@@ -2,7 +2,7 @@
 
 **Phase:** capability — session-scoped brokered streaming-HTTP MCP
 **Status:** in-progress, 2026-08-26. Synthesized from the Stage 0/1 proofs and the settled Stage 2 broker design.
-**ADR:** [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) — broker ownership, stable tool routing, and the control/data-plane boundary.
+**ADR:** [ADR-0245](../adr/0288-session-scoped-vmcp-broker.md) — broker ownership, stable tool routing, and the control/data-plane boundary.
 **Accumulator branch:** `acc/session-vmcp-broker` (off `main`).
 
 The smallest set of work that lets one mecatl session use configured MCP tools
@@ -29,7 +29,7 @@ mecatl session can demonstrate, not which packages happen to exist.
   ordinary MCP tool; it never sees a backend ID, token, or OAuth action.
   Connection changes whether a pre-existing tool can execute, not the tool set.
   This keeps the model-facing catalogue fixed and preserves eager MCP tool
-  registration ([ADR-0245](../adr/0284-session-scoped-vmcp-broker.md)).
+  registration ([ADR-0245](../adr/0288-session-scoped-vmcp-broker.md)).
 - **One OAuth backend only.** ToolHive does not yet expose the targeted
   `ConnectUpstream(existingSession, upstream)` operation needed to safely attach a
   second provider without creating a second lineage. The second backend therefore
@@ -93,7 +93,7 @@ selects `mcp__github__list_issues`, whose wrapper already carries the
 broker-private route to `github`. The callback proves knowledge of
 broker-created state only: it cannot choose the mecatl session, backend, issuer,
 scopes, client, or storage key. This keeps browser input out of the authorization
-decision ([ADR-0245](../adr/0284-session-scoped-vmcp-broker.md)) and preserves
+decision ([ADR-0245](../adr/0288-session-scoped-vmcp-broker.md)) and preserves
 the repository's no-stdio-MCP invariant ([AGENTS.md](../../AGENTS.md)).
 
 **Acceptance:**
@@ -143,7 +143,7 @@ its own HTTP transport; the engine and session record never receive a general
 access-token value. The broker adopts an explicit no-proxy, exact-origin,
 DNS-pinned, redirect-bounded OAuth egress profile rather than inheriting the
 direct-MCP controller implicitly; this is pinned by
-[ADR-0245](../adr/0284-session-scoped-vmcp-broker.md). Its operational messages
+[ADR-0245](../adr/0288-session-scoped-vmcp-broker.md). Its operational messages
 use injected diagnostics and its secret-shaped values are never projected or
 logged ([ADR-0020](../adr/0020-diagnostics.md)).
 
@@ -229,13 +229,13 @@ because the repository test suite is offline ([AGENTS.md](../../AGENTS.md)).
 
 | Item | Defer-to | ADR / decision |
 |---|---|---|
-| Agent-loop parking and exact original-tool-call replay | Stage 3 conversation integration | [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) |
-| Mecatui command and public control protocol | later UI/API slice | [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) |
-| Second OAuth backend under one ToolHive auth session | ToolHive `ConnectUpstream` capability | [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) |
-| Owner/principal matrix, delegation, and tenant authorization | later identity stage | [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) |
-| Durable/multi-replica broker storage | later sidecar storage stage | [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) |
-| Sidecar binary, Helm, Kind, ConfigMap mounting, RPC, and production sidecar authentication | deployment stage | [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) |
-| Dynamic configuration or catalogue reload | later operations stage | [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) |
+| Agent-loop parking and exact original-tool-call replay | Stage 3 conversation integration | [ADR-0245](../adr/0288-session-scoped-vmcp-broker.md) |
+| Mecatui command and public control protocol | later UI/API slice | [ADR-0245](../adr/0288-session-scoped-vmcp-broker.md) |
+| Second OAuth backend under one ToolHive auth session | ToolHive `ConnectUpstream` capability | [ADR-0245](../adr/0288-session-scoped-vmcp-broker.md) |
+| Owner/principal matrix, delegation, and tenant authorization | later identity stage | [ADR-0245](../adr/0288-session-scoped-vmcp-broker.md) |
+| Durable/multi-replica broker storage | later sidecar storage stage | [ADR-0245](../adr/0288-session-scoped-vmcp-broker.md) |
+| Sidecar binary, Helm, Kind, ConfigMap mounting, RPC, and production sidecar authentication | deployment stage | [ADR-0245](../adr/0288-session-scoped-vmcp-broker.md) |
+| Dynamic configuration or catalogue reload | later operations stage | [ADR-0245](../adr/0288-session-scoped-vmcp-broker.md) |
 
 ## Sequencing recommendation
 

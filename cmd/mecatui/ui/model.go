@@ -941,7 +941,7 @@ type Model struct {
 	gatewayNoticeShown bool
 
 	// workspaceEnrollmentNotice is the rendered idle footer-left notice shown while
-	// bundled workspace services (ADR 0287) are not yet connected. Unlike
+	// bundled workspace services (ADR 0291) are not yet connected. Unlike
 	// gatewayNotice it is NOT dismissed by activity — it persists across keypresses
 	// and prompts until the bundle actually resolves (applyWorkspaceEnrollmentEvent
 	// / the finalize path in workspace_enrollment.go clear it), since the fact it

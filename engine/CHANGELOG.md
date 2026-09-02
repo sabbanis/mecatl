@@ -150,11 +150,11 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   unusable when precise cancellation cannot confirm removal, so a failed durable
   parking transition cannot orphan a reusable broker transaction. Added (minor).
 
-- **`session.Session.AdmitAuthorityTools`** ([ADR 0248](../docs/adr/0287-bundled-mcp-workspace-enrollment.md)) — admits the exact authenticated, frozen protected MCP tool names into a bound session before its first turn without widening any non-tool authority. Added (minor).
+- **`session.Session.AdmitAuthorityTools`** ([ADR 0248](../docs/adr/0291-bundled-mcp-workspace-enrollment.md)) — admits the exact authenticated, frozen protected MCP tool names into a bound session before its first turn without widening any non-tool authority. Added (minor).
 
-- **Bundled workspace-enrollment domain state** ([ADR 0248](../docs/adr/0287-bundled-mcp-workspace-enrollment.md)) — `session.WorkspaceEnrollmentState`, its status vocabulary, and the `Session` start/read/clear methods persist only safe pre-prompt bundle correlation without reusing permission or MCP tool-call authorization state. Added (minor).
+- **Bundled workspace-enrollment domain state** ([ADR 0248](../docs/adr/0291-bundled-mcp-workspace-enrollment.md)) — `session.WorkspaceEnrollmentState`, its status vocabulary, and the `Session` start/read/clear methods persist only safe pre-prompt bundle correlation without reusing permission or MCP tool-call authorization state. Added (minor).
 
-- **Pushed workspace-enrollment resolution** ([ADR 0281](../docs/adr/0287-bundled-mcp-workspace-enrollment.md)) — `session.EvWorkspaceEnrollmentResolved` and `session.WorkspaceEnrollmentPayload`, mirroring the existing `EvMCPAuthorizationRequired`/`Resolved` pattern: a live-forwarded, log-only-safe event so an attached client learns a bundle's terminal resolution (connected/denied/cancelled/expired/failed) without polling. Added (minor).
+- **Pushed workspace-enrollment resolution** ([ADR 0281](../docs/adr/0291-bundled-mcp-workspace-enrollment.md)) — `session.EvWorkspaceEnrollmentResolved` and `session.WorkspaceEnrollmentPayload`, mirroring the existing `EvMCPAuthorizationRequired`/`Resolved` pattern: a live-forwarded, log-only-safe event so an attached client learns a bundle's terminal resolution (connected/denied/cancelled/expired/failed) without polling. Added (minor).
 
 - **Prepared post-resolution MCP continuation** —
   `agent.Engine.PrepareAfterMCPAuthorization` lets the Service register a
@@ -195,7 +195,7 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   run-scoped `agent.RunRequest.AuthorizationPresentation` capability, let an
   attached interactive main run durably park after ordinary gates without
   changing a tool's `ReadOnly` semantics. Added (minor).
-- **Durable broker-authorization parking** ([ADR 0283](../docs/adr/0285-configured-resumable-mcp-authorization.md)) —
+- **Durable broker-authorization parking** ([ADR 0283](../docs/adr/0289-configured-resumable-mcp-authorization.md)) —
   `session.StateAuthorizing`, `PendingMCPAuthorization`, and the dedicated
   pause/claim/abort/interruption aggregate seams preserve and validate an exact
   broker-protected call plus its deferred siblings across snapshots. Added (minor).

@@ -148,4 +148,4 @@ broker's OAuth2/session-authorization logic itself):
 ## Related documents
 
 - [Session vMCP authorization acceptance](docs/acceptance/session-vmcp-authorization.md)
-- [ADR 0286 — Broker-only explicit generic OAuth2 upstreams](docs/adr/0286-broker-generic-oauth2-upstreams.md)
+- [ADR 0286 — Broker-only explicit generic OAuth2 upstreams](docs/adr/0290-broker-generic-oauth2-upstreams.md)

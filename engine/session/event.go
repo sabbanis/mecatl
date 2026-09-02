@@ -149,7 +149,7 @@ const (
 	// the same safe correlation and a closed terminal status only.
 	EvMCPAuthorizationResolved EventType = "mcp.authorization.resolved"
 	// EvWorkspaceEnrollmentResolved closes a bundled workspace-enrollment attempt
-	// (ADR 0287). Unlike MCP authorization, enrollment has no "required" push: the
+	// (ADR 0291). Unlike MCP authorization, enrollment has no "required" push: the
 	// pending state is already known synchronously from ConnectWorkspaceServices's
 	// own RPC response, so only the terminal resolution needs to be pushed live —
 	// this is what lets the client auto-transition without a manual recheck. It
@@ -1419,7 +1419,7 @@ type MCPAuthorizationPayload struct {
 }
 
 // WorkspaceEnrollmentPayload is the safe client-facing correlation for a
-// bundled workspace-enrollment resolution (ADR 0287). It deliberately contains
+// bundled workspace-enrollment resolution (ADR 0291). It deliberately contains
 // only the bundle ID, the backend names it covers, and the closed terminal
 // status; browser URLs, credentials, and the discovered protected catalogue
 // stay private. Mirrors MCPAuthorizationPayload; WorkspaceEnrollmentPending

@@ -150,9 +150,9 @@ lineage is supported and reconnect after disconnect is an explicit typed limitat
 The final reuse review also records that ToolHive has no public PKCE-client
 registration lifecycle API, so the isolated Fosite client registration remains
 necessary. Production sidecar exposure, ingress/Helm/Kind topology, and external
-callback deployment remain Stage 5. See [ADR 0245](../adr/0284-session-scoped-vmcp-broker.md),
-[ADR 0246](../adr/0285-configured-resumable-mcp-authorization.md),
-[ADR 0247](../adr/0286-broker-generic-oauth2-upstreams.md), and
+callback deployment remain Stage 5. See [ADR 0245](../adr/0288-session-scoped-vmcp-broker.md),
+[ADR 0246](../adr/0289-configured-resumable-mcp-authorization.md),
+[ADR 0247](../adr/0290-broker-generic-oauth2-upstreams.md), and
 [`STAGE3-RESULTS.md`](../../STAGE3-RESULTS.md).
 
 ---

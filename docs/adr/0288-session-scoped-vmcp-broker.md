@@ -1,4 +1,4 @@
-# ADR 0284 — Session-scoped vMCP broker for protected MCP backends
+# ADR 0288 — Session-scoped vMCP broker for protected MCP backends
 
 - Status: Proposed
 - Date: 2026-08-26
