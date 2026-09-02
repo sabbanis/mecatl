@@ -1268,7 +1268,7 @@ export function ChatView({
                 </Button>
               </div>
             )}
-            <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
+            <div className="w-full space-y-1.5">
               <QueuedMessageStrip
                 queued={queuedMessages}
                 onSteer={(id) => onSteerQueued?.(id)}

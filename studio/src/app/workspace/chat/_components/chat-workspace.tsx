@@ -325,7 +325,7 @@ function DraftView({
           </div>
         </div>
         <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
-          <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
+          <div className="w-full space-y-1.5">
             {error && <p className="px-1 text-sm text-destructive">{error}</p>}
             <ChatInput
               rows={1}
