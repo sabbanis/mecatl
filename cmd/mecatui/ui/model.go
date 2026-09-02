@@ -207,6 +207,12 @@ type Deps struct {
 	// OpenURL opens a presentation URL obtained only through MCPAuthorization.
 	// Composition owns the OS integration; nil leaves the action unavailable.
 	OpenURL func(context.Context, string) error
+	// DetachSignal is the main-owned state the ui flips on entering/leaving
+	// phaseFollowing so the process signal handler can decide detach-vs-cancel on
+	// OS Ctrl+C (ADR 0278 Scenario 4). Set when a detached run is followed
+	// (applyDetachedAck), cleared on terminal/reset. nil disables the
+	// signal-handler detach affordance entirely.
+	DetachSignal *DetachSignalState
 	// SelectionStore persists the picked model (last-used). nil disables persistence
 	// (the pick still applies to the next create this run, just isn't remembered).
 	SelectionStore SelectionStore
@@ -960,6 +966,11 @@ type Model struct {
 	watchReplayCount      int  // events replayed so far in the current replay phase
 	watchReplaying        bool // true while in the WatchPhaseReplay phase
 	detached              bool // true while following a server-owned detached run
+	// pendingDetachedSubmit marks an in-flight detached submit (ADR 0278
+	// Scenario 4): the prompt was sent with detach:true, and the stream's
+	// `run.detached` ack (or a defensive close) flips the ui into
+	// phaseFollowing (the watch feed owns the view) rather than calling endRun.
+	pendingDetachedSubmit bool
 
 	// seenFireIDs is the per-session delivery-note dedup set (issue #387): a
 	// fire-result delivery note that arrives BOTH via the durable catch-up AND the

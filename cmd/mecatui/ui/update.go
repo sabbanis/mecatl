@@ -900,6 +900,14 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			}
 			return m, m.refreshCmd(), true
 		}
+		// Clean close on a pending DETACH path (ADR 0278 Scenario 4): the
+		// `run.detached` ack was lost (stream closed before the projection
+		// landed), so don't call endRun — transition to phaseFollowing via
+		// applyDetachedAck exactly as the ack reducer would.
+		if m.pendingDetachedSubmit && m.phase == phaseRunning {
+			mm, cmd := m.applyDetachedAck()
+			return mm, cmd, true
+		}
 		// Clean close. If a run was still active (no terminal result seen),
 		// finalise it; otherwise it's the expected post-result close (no-op).
 		if m.phase == phaseRunning || m.phase == phaseAwaitingApproval {
@@ -1159,6 +1167,47 @@ func (m Model) applyDeliveryNote(msg client.DeliveryNoteMsg) (tea.Model, tea.Cmd
 	return m.afterEvent()
 }
 
+// applyDetachedAck reduces the `run.detached` ack (ADR 0278 Scenario 4): the
+// pending detached submit is confirmed server-owned, so the ui transitions from
+// the in-flight phaseRunning view into phaseFollowing — the read-only live view
+// — and arms the watch from the beginning of the log (the operator wants what
+// they missed). StreamClosedMsg after this sees phase != phaseRunning and is a
+// no-op; endRun is never called on this path. Also persists the last-session
+// pointer (target, sessionID, "running") and marks the OS-signal follow state,
+// so Ctrl+C detaches (closes the watch, prints "run continues") and a second
+// Ctrl+C cancels the run via a control-only Converse `cancel` frame. The
+// follow-command baseline the status line reads (phaseFollowing's footer).
+func (m Model) applyDetachedAck() (tea.Model, tea.Cmd) {
+	m.pendingDetachedSubmit = false
+	m.detached = true
+	m.phase = phaseFollowing
+	m.statusMsg = "run continues in the background (session " + m.sessionID + ")"
+	(&m).detachAckSideEffects()
+	// Arm the watch from the beginning of the log (the operator wants the full
+	// run's events). Parallel to applyReattachIntent's armWatch("").
+	if watchCmd := (&m).armWatch(""); watchCmd != nil {
+		m.refreshView()
+		return m, watchCmd
+	}
+	m.refreshView()
+	return m, nil
+}
+
+// detachAckSideEffects is the applyDetachedAck mutation tail: persist the
+// last-session pointer (target, sessionID, "running") AND mark the OS-signal
+// follow state. Called via &m so it survives on the same model the reducer
+// returns (pointer-receiver mutation).
+func (m *Model) detachAckSideEffects() {
+	if m.deps.SessionStateStore != nil && m.deps.Server != "" {
+		if err := m.deps.SessionStateStore.SavePointer(m.deps.Server, m.sessionID, "running"); err != nil {
+			m.statusMsg = "could not persist the detached-run pointer: " + err.Error()
+		}
+	}
+	if m.deps.DetachSignal != nil {
+		m.deps.DetachSignal.Follow(m.sessionID)
+	}
+}
+
 func (m *Model) beginTurnEvent() {
 	if m.failedStepRetryRun {
 		m.failedStepRetryAuthoritative = true
@@ -1178,6 +1227,11 @@ func (m Model) updateStreamSecondary(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case client.MCPAuthorizationMsg:
 		return m.applyMCPAuthorization(msg)
+	case client.RunDetachedMsg:
+		// Detached-run ack (ADR 0278 Scenario 4): the server confirmed the
+		// detached submit; flip into phaseFollowing. Like delegation events, it
+		// isn't the big happy path — keep it in the second branch.
+		return m.applyDetachedAck()
 	case client.PermissionRetractMsg:
 		// An active approval surface consumes retractions through HandleMsg. A
 		// stale retraction after close is transport-only and needs no approval state.
@@ -3316,9 +3370,30 @@ func (m Model) submitPrompt() (tea.Model, tea.Cmd) {
 	m.statusMsg = "running…"
 	m.refreshView()
 
+	// Detached-run fork (ADR 0278 Scenario 4): in connect mode against a server
+	// that advertised detached_runs, the prompt rides the detached Converse path
+	// (Prompt.detach=true) — the server owns the drain goroutine and acks
+	// `run.detached`; the ui then FOLLOWS the run via WatchSessionEvents rather
+	// than driving it on this stream (see pendingDetachedSubmit + applyDetachedAck).
+	if m.detachedSubmitEnabled() {
+		m.pendingDetachedSubmit = true
+		return m.openRun(false, func(stream *client.Stream) error {
+			return stream.SendPromptDetached(m.sessionID, text, media.Parts)
+		})
+	}
 	return m.openRun(false, func(stream *client.Stream) error {
 		return stream.SendPrompt(m.sessionID, text, media.Parts)
 	})
+}
+
+// detachedSubmitEnabled reports whether the NEXT prompt should ride the detached
+// Converse path (ADR 0278 Scenario 4). Connect mode ONLY (an embedded server dies
+// with the process, so detach is meaningless there) and ONLY when the server
+// advertised ServerCapabilities.detached_runs at session-ready. Older servers and
+// --detached-runs-off deployments stay on the attached path — byte-identical to
+// the pre-detached-runs build.
+func (m Model) detachedSubmitEnabled() bool {
+	return m.deps.ConnectionMode == "connect" && m.caps.DetachedRuns
 }
 
 // submitProceedPrompt opens a fresh Converse run carrying the plan-approved
@@ -3756,9 +3831,14 @@ func (m *Model) disarmLiveFeed() {
 	// A session switch / reset ALSO tears down the watch feed (ADR 0278): a
 	// reattach's watch is abandoned with the live feed, and the gen bump
 	// invalidates any stale watch reader so it cannot route into the fresh
-	// session. detach is cleared so the fresh session drives its own run.
+	// session. detach is cleared so the fresh session drives its own run, and
+	// the OS-signal follow state is cleared (Ctrl+C reverts to the graceful
+	// cancel path — there is nothing detached to follow).
 	m.disarmWatch()
 	m.detached = false
+	if m.deps.DetachSignal != nil {
+		m.deps.DetachSignal.Clear()
+	}
 }
 
 // ── Watch feed (WatchSessionEvents) — detached-run reattach (ADR 0278 Scenario 3)
@@ -4102,6 +4182,13 @@ func (m Model) endRun(stop string) Model {
 	m.streamGen++ // invalidate any reader still bound to the torn-down run's channel
 	m.activeTool = ""
 	m.closeModal()
+	// Clear a pending detached submit + the OS-signal follow state: a terminal
+	// (or interrupted) run must not leave the signal handler believing it may
+	// still detach — Ctrl+C then reverts to the regular graceful cancel path.
+	m.pendingDetachedSubmit = false
+	if m.deps.DetachSignal != nil {
+		m.deps.DetachSignal.Clear()
+	}
 	// The run is terminal: its steer inbox is closed, so any in-flight steer state is
 	// over. A pending/sent (un-drained, un-acked) steer simply clears — it is lost
 	// with the run (the honest best-effort contract); a promoted/retracted terminal

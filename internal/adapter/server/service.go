@@ -423,6 +423,15 @@ type Config struct {
 	// leak with no consenting author. Bounded and validated at the composition
 	// root (mecated --deployment-id), not here. See ADR 0248.
 	DeploymentID string
+	// DetachedRuns is the operator-tier gate for detached runs (ADR 0278,
+	// mecated --detached-runs, default OFF). When false, the server IGNORES the
+	// `detach` field on a Converse Prompt (attached behaviour, byte-identical for
+	// older clients) AND does not advertise ServerCapabilities.detached_runs, so
+	// a client keeps its existing cancel-on-Ctrl+C behaviour. When true, a
+	// `detach: true` prompt starts a server-owned drain-goroutine run and the
+	// capability bit is advertised. See service.go DetachedRuns / grpc.go
+	// runStartDispatch.
+	DetachedRuns bool
 
 	// DefaultResolvedModel is the EFFECTIVE provider+model the DEFAULT/shared engine
 	// resolved to (the registry default provider + cfg.Model + the default context
@@ -2526,6 +2535,8 @@ func (s *Service) capabilities() *mecatlv1.ServerCapabilities {
 		SessionDebug:        s.cfg.DebugSessionEngine != nil,
 		DebugMcp:            s.cfg.DebugMCP,
 		WorkspaceEnrollment: s.cfg.WorkspaceEnrollment,
+		// DetachedRuns is the operator-tier gate (mecated --detached-runs).
+		DetachedRuns: s.cfg.DetachedRuns,
 	}
 }
 
@@ -3179,6 +3190,14 @@ func (s *Service) Diagnostics() port.Diagnostics {
 // ownsResource/authorizeSession.
 func (s *Service) OwnershipEnforced() bool {
 	return s.cfg.OwnershipEnforced
+}
+
+// DetachedRuns reports the operator-tier detached-runs gate (ADR 0278,
+// mecated --detached-runs). The Converse handler consults it to decide whether
+// a Prompt's `detach` field is honoured; false means the field is ignored and
+// the run is attached (byte-identical to the pre-detached-runs build).
+func (s *Service) DetachedRuns() bool {
+	return s.cfg.DetachedRuns
 }
 
 // IsDraining reports whether the drain gate is armed. It is the read-side

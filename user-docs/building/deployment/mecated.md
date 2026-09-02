@@ -159,6 +159,7 @@ loopback-only server. Flags not covered here are advanced operator tuning; run
 | `--client-ca` | `""` | PEM client-CA bundle; enables mTLS (requires `--tls-cert`/`--tls-key`) |
 | `--cors-origins` | `""` (off) | Allow a browser at this **exact** origin to call the HTTP API; repeatable. Local development only — see [Browsers and CORS](#browsers-and-cors) |
 | `--deployment-id` | `""` | Optional opaque label for this deployment, echoed on `GetCompatibilityInfo`. Never inferred from the host |
+| `--detached-runs` | `false` | Enable detached runs on the Converse API (ADR 0278): a `Prompt{detach:true}` first frame starts a server-owned drain goroutine that continues the run after the client disconnects, acks once, and closes the stream; the client watches via `WatchSessionEvents` and controls via a control-only Converse stream (a first frame of `cancel` / `resume_approval`). Off keeps the ATTACHED path and omits the `detached_runs` capability bit |
 | `--rate-limit` | `0` (off) | Sustained per-client request rate in req/s; with OIDC, also limits rejected bearer validation per direct transport peer IP |
 | `--rate-burst` | `0` (derived) | Token-bucket burst; zero derives a sane default from `--rate-limit`, including the OIDC rejected-token bucket |
 | `--oidc-issuer` | `""` (off) | OIDC issuer URL whose tokens identify callers; setting it turns caller identity on. See [Caller identity](#caller-identity-oidc) |

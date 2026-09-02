@@ -11,7 +11,15 @@ import (
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/governance"
+	"github.com/stacklok/mecatl/internal/adapter/server"
 )
+
+// detachOn is the newServiceMutable mutator: it turns ON the DetachedRuns
+// gate — the same option mecated --detached-runs applies. Without it these
+// tests would exercise the attached-only path the gate allows by default.
+func detachOn(cfg *server.Config) {
+	cfg.DetachedRuns = true
+}
 
 // TestDetachedRun_Scenario2_ControlOnlyCancel verifies AC2.1: a Converse stream
 // whose first frame is cancel with a valid session_id cancels the session's
@@ -20,7 +28,7 @@ func TestDetachedRun_Scenario2_ControlOnlyCancel(t *testing.T) {
 	// A blocking stream keeps the detached run in-flight until the cancel
 	// arrives — a completing mock would race the cancel to "no active run".
 	llm := mockllm.New(mockllm.ChunksTurn(blockingChunks()...))
-	svc := newService(t, llm, allowRules())
+	svc := newServiceMutable(t, llm, allowRules(), "", detachOn)
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 
@@ -101,7 +109,7 @@ func TestDetachedRun_Scenario2_ControlOnlyApprove(t *testing.T) {
 		{Scope: governance.ScopeBuiltinDefault, Tool: "Write", Effect: governance.Ask},
 		{Scope: governance.ScopeBuiltinDefault, Tool: "Read", Effect: governance.Allow},
 	}
-	svc := newServiceWithEngineStore(t, llm, floor, read, write)
+	svc := newServiceEngineStoreMutable(t, llm, floor, detachOn, read, write)
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 
@@ -193,7 +201,7 @@ func TestDetachedRun_Scenario2_ControlOnlyApprove(t *testing.T) {
 // Converse stream whose first frame is cancel or resume_approval with an empty
 // session_id is rejected with InvalidArgument.
 func TestDetachedRun_Scenario2_ControlOnlyRequiresSessionID(t *testing.T) {
-	svc := newService(t, mockllm.New(), allowRules())
+	svc := newServiceMutable(t, mockllm.New(), allowRules(), "", detachOn)
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 
@@ -239,7 +247,7 @@ func TestDetachedRun_Scenario2_ControlOnlyRequiresSessionID(t *testing.T) {
 // stream whose first frame is cancel or resume_approval for a session with no
 // in-flight run returns FailedPrecondition.
 func TestDetachedRun_Scenario2_ControlOnlyNoActiveRun(t *testing.T) {
-	svc := newService(t, mockllm.New(), allowRules())
+	svc := newServiceMutable(t, mockllm.New(), allowRules(), "", detachOn)
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 
@@ -297,7 +305,7 @@ func TestDetachedRun_Scenario2_ExistingFirstFramePathsUnchanged(t *testing.T) {
 		mockllm.ToolCallTurn(call("c1", "Read", `{"path":"a.go"}`)),
 		mockllm.TextTurn("all done"),
 	)
-	svc := newService(t, llm, allowRules(), read)
+	svc := newServiceMutable(t, llm, allowRules(), "", detachOn, read)
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 

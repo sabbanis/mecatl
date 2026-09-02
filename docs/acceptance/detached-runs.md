@@ -169,7 +169,7 @@ A detached run executes tools with no client watching. The guardrails are: postu
 | Item | Defer-to | ADR / decision |
 |---|---|---|
 | Steer while detached | a later wave | [ADR-0232](../adr/0232-steer-while-running.md) — steer rides the Converse control frame; a detached run needs the unary path (a new `SteerRun` RPC or a control-only Converse `steer` frame) |
-| Retry while detached | a later wave | [ADR-0239](../adr/0239-semantic-retry.md) — `RetryStart` is a first-frame option; a detached retry is the same shape as a detached prompt |
+| Retry while detached | a later wave | [ADR-0239](../adr/0239-semantic-stream-retry.md) — `RetryStart` is a first-frame option; a detached retry is the same shape as a detached prompt |
 | Server-crash auto-resume | never | [ADR-0027](../adr/0027-cloud-native.md) Phase 6 — a crashed detached run is a `running` snapshot handled by `Abandon` + `startStaleSessionReconcile`; the user retries. Same residual scheduled fires have. |
 | Embedded-mode detach | never | The embedded server dies with mecatui; detach is meaningless there. |
 | Auto-approve on detached runs | never | A detached run that hits a main-session mutating ask parks awaiting; auto-approve is explicitly NOT in v1. |

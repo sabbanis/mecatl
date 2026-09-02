@@ -60,6 +60,13 @@ func newService(t *testing.T, llm *mockllm.Provider, rules []governance.Rule, to
 }
 
 func newServiceWithImplementation(t *testing.T, llm *mockllm.Provider, rules []governance.Rule, implementation string, tools ...tool.Tool) *server.Service {
+	return newServiceMutable(t, llm, rules, implementation, nil, tools...)
+}
+
+// newServiceMutable is newServiceWithImplementation + an optional final
+// Config mutation seam (so detached-run tests can turn on the
+// DetachedRuns gate, mirroring mecated --detached-runs).
+func newServiceMutable(t *testing.T, llm *mockllm.Provider, rules []governance.Rule, implementation string, mutate func(*server.Config), tools ...tool.Tool) *server.Service {
 	t.Helper()
 	cat := tool.NewCatalog()
 	for _, tl := range tools {
@@ -71,7 +78,7 @@ func newServiceWithImplementation(t *testing.T, llm *mockllm.Provider, rules []g
 		Policy:  permpolicy.NewPolicy(rules, nil),
 		Model:   "test-model",
 	})
-	svc, err := newPlacementTeamTestService(server.Config{
+	cfg := server.Config{
 		Engine:               engine,
 		BuildID:              "test-build",
 		ServerImplementation: implementation,
@@ -90,22 +97,27 @@ func newServiceWithImplementation(t *testing.T, llm *mockllm.Provider, rules []g
 		// In these tests there is no catalog/selector, so the intersection is the bare
 		// adapter caps — mirror that by sourcing them from the wired provider.
 		DefaultCapabilities: llm.Capabilities(),
-	})
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	svc, err := server.NewService(cfg)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}
 	return svc
 }
 
-// newServiceWithEngineStore mirrors newService but wires the engine's
+// newServiceEngineStoreMutable mirrors newService but wires the engine's
 // Deps.Store to the SAME store as server.Config.Store, so the engine persists
-// mid-run + terminal state the way app.Build does in production. Tests that
-// observe the session's persisted state via GetSession after an
+// mid-run + terminal state the way app.Build does in production, with an
+// optional final Config mutation seam (e.g. turning on DetachedRuns). Tests
+// that observe the session's persisted state via GetSession after an
 // out-of-band control-only approval need this: the relay's EvPermissionAsk
 // Persist only snapshots the awaiting state, and the terminal completed state
 // is persisted by the engine (Deps.Store), NOT the relay — so without it the
 // store stays awaiting forever even though the in-memory loop completed.
-func newServiceWithEngineStore(t *testing.T, llm *mockllm.Provider, rules []governance.Rule, tools ...tool.Tool) *server.Service {
+func newServiceEngineStoreMutable(t *testing.T, llm *mockllm.Provider, rules []governance.Rule, mutate func(*server.Config), tools ...tool.Tool) *server.Service {
 	t.Helper()
 	cat := tool.NewCatalog()
 	for _, tl := range tools {
@@ -119,14 +131,18 @@ func newServiceWithEngineStore(t *testing.T, llm *mockllm.Provider, rules []gove
 		Model:   "test-model",
 		Store:   store,
 	})
-	svc, err := server.NewService(server.Config{
+	cfg := server.Config{
 		Engine:              engine,
 		BuildID:             "test-build",
 		Store:               store,
 		Workspaces:          func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
 		Now:                 func() time.Time { return time.Unix(0, 0) },
 		DefaultCapabilities: llm.Capabilities(),
-	})
+	}
+	if mutate != nil {
+		mutate(&cfg)
+	}
+	svc, err := server.NewService(cfg)
 	if err != nil {
 		t.Fatalf("new service: %v", err)
 	}

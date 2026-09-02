@@ -339,6 +339,26 @@ session even when a running one exists; `--resume <id>` also auto-branches (reat
 running, resume if terminal). The pointer is fail-soft — a corrupt/missing file degrades
 to the session listing.
 
+### Detached runs (`--detached-runs`)
+
+`mecated --detached-runs` (default OFF, [ADR 0278](adr/0278-detached-runs.md)) enables
+server-owned detached runs on the server's Converse API. When on, a `Prompt` frame that
+sets `detach: true` starts a server-side drain goroutine that records every event
+(including the terminal `EvResult`) to the durable log, acks once, and closes the
+stream — the run keeps going after the client disconnects. The client observes via
+`WatchSessionEvents` and controls via a control-only Converse stream (a first frame
+of `cancel` or `resume_approval`).
+
+The `ServerCapabilities.detached_runs` bit is advertised only while the flag is on;
+when off, the server ignores the `detach` field and the client keeps today's
+cancel-on-Ctrl+C behaviour. This also gates mecatui's detach-on-Ctrl+C: on a
+detached-capable server in connect mode the first Ctrl+C prints a one-line "run
+continues" message and quits without cancelling (the run continues server-side),
+while the second Ctrl+C sends the control-only `cancel` frame and exits. Embedded
+mode (the bare `mecatui` hosting an in-process server) is unchanged — Ctrl+C kills
+the process, so a detach there is meaningless. This flag is operator-tier; see
+[ADR 0278](adr/0278-detached-runs.md).
+
 ## Scheduled tasks
 
 `mecated` and `mecak8s` run scheduled agent fires autonomously (issue #189,

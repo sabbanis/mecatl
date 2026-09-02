@@ -542,7 +542,10 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 		if aerr := validateGRPCSessionAffinity(ctx, string(id)); aerr != nil {
 			return "", nil, false, false, aerr
 		}
-		if prompt.GetDetach() {
+		// The detach affordance is OPERATOR-GATED (mecated --detached-runs,
+		// default OFF): when the feature is disabled the server ignores the
+		// detach field and preserves attached behaviour.
+		if prompt.GetDetach() && h.svc.DetachedRuns() {
 			// Detached run (ADR 0278): the server-owned drain goroutine takes
 			// ownership; this stream only acks and closes.
 			if _, derr := h.svc.StartDetachedRunContent(ctx, id, prompt.GetText(), parts); derr != nil {

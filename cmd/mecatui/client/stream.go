@@ -193,6 +193,24 @@ func (s *Stream) SendPrompt(sessionID, text string, parts []*mecatlv1.Content) e
 	})
 }
 
+// SendPromptDetached sends the mandatory first frame with detach:true (ADR
+// 0278): the server starts the run and OWNS its drain goroutine — this stream
+// receives only a single `run.detached` ack and then closes, and the run
+// continues server-side long after the client stream is gone. The caller MUST
+// only use this when the server advertised ServerCapabilities.detached_runs
+// (an older server, or a --detached-runs-off deployment, ignores the field and
+// runs attached — sending it there would silently re-couple the run to this
+// stream). After the ack the client observes the run via WatchSessionEvents and
+// controls it via a control-only Converse stream (Cancel{SessionId} first
+// frame).
+func (s *Stream) SendPromptDetached(sessionID, text string, parts []*mecatlv1.Content) error {
+	return s.sendFrame(&mecatlv1.ConverseRequest{
+		Kind: &mecatlv1.ConverseRequest_Prompt{
+			Prompt: &mecatlv1.Prompt{SessionId: sessionID, Text: text, Parts: parts, Detach: true},
+		},
+	})
+}
+
 // SendRetryStart sends the mandatory first frame for a failed-step retry. It
 // contains no prompt text: the server reuses persisted conversation/tool state while
 // resolving live instruction and system-prompt sources for the new model attempt.

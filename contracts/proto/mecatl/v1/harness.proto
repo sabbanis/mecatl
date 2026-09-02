@@ -786,6 +786,13 @@ message ServerCapabilities {
   // workspace_enrollment is true when protected workspace services must be
   // admitted as one complete bundle before the first prompt.
   bool workspace_enrollment = 28;
+  // detached_runs is true when the operator has enabled detached runs
+  // (mecated --detached-runs, ADR 0278): a `Prompt` with `detach: true` starts
+  // a server-owned run that continues after the Converse stream closes, and the
+  // server accepts control-only Converse streams (a first frame of `cancel` /
+  // `resume_approval`). When false (the default, and an older server), a client
+  // MUST keep the existing attached behaviour.
+  bool detached_runs = 29;
 }
 
 // CreateSessionResponse carries the newly-allocated session id.

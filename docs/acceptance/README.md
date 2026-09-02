@@ -144,7 +144,10 @@ PR after verification. There is no cleanup or status-only PR.
 - [Session title generation and token usage](session-title-generation.md) — mecatui `/title`, an opt-in routed model title after up to three genuine prompts, and durable title-model token attribution. Status: draft.
 - [Per-upstream MCP broker OAuth grants](mcp-broker-multi-upstream-oauth.md) — accept multiple broker OAuth upstreams while keeping grants, callback state, authenticated discovery, and workspace-enrollment progression backend-scoped. Status: draft.
 - [MCP broker DCR client](mcp-broker-dcr-client.md) — a third `mcp.servers[].auth.oauth.client.mode: dcr`, exposing ToolHive's existing RFC 7591 Dynamic Client Registration upstream-client support for protected MCP servers with no preregistered client or hosted CIMD document. Status: draft.
-
+- [Detached runs](detached-runs.md) — connect-and-leave-running for mecatui ↔
+  remote mecated: the `Prompt.detach` field, the server-owned drain goroutine,
+  control-only Converse streams (cancel/approve), WatchSessionEvents reattach,
+  and Ctrl+C detach/double-Ctrl+C cancel (ADR 0278). Status: in-progress.
 - [Local mecak8s Kind fixture](mecak8s-kind-fixture.md) — cleanly separates an
   operator-run mock/real-provider mecak8s fixture, optional Keycloak caller
   identity, and the deferred ToolHive/vMCP delegation extension. Status: draft.

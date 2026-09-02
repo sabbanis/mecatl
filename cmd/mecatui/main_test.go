@@ -258,3 +258,59 @@ func TestSingleSignalGracefulExit(t *testing.T) {
 		t.Errorf("expected output to mention 'shutting down gracefully', got %q", out.String())
 	}
 }
+
+// TestDetachedFirstSignalExitsZero spawns a child with
+// MECATUI_TEST_SIGNAL_HANDLER=detach-first, sends one SIGINT, and asserts the
+// run-continues line + exit 0 in the detached-capable+following mode (AC4.1 at
+// the process boundary: quits after printing "run continues", run stays
+// server-owned).
+func TestDetachedFirstSignalExitsZero(t *testing.T) {
+	cmd, out := startSignalChild(t, "detach-first")
+
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatalf("signal: %v", err)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("expected exit 0, got %v (output: %q)", err, out.String())
+	}
+
+	if !strings.Contains(out.String(), "run continues") {
+		t.Errorf("expected output to mention 'run continues', got %q", out.String())
+	}
+}
+
+// TestDetachedSecondSignalCancelsAndExits spawns a child with
+// MECATUI_TEST_SIGNAL_HANDLER=detach-second, sends two SIGINTs, and asserts the
+// run-continues line, the cancel branch firing the wired closure, and exit 0
+// (AC4.2 at the process boundary: the double-Ctrl+C cancel ran before exit; a
+// non-detached branch would have printed "forcing immediate exit" without a
+// cancel).
+func TestDetachedSecondSignalCancelsAndExits(t *testing.T) {
+	cmd, out := startSignalChild(t, "detach-second")
+
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatalf("first signal: %v", err)
+	}
+	// Wait for the detach line to order the second SIGINT behind the branch latch.
+	deadline := time.Now().Add(5 * time.Second)
+	for !strings.Contains(out.String(), "run continues") {
+		if time.Now().After(deadline) {
+			_ = cmd.Process.Kill()
+			t.Fatalf("child never handled first signal; output: %q", out.String())
+		}
+		time.Sleep(10 * time.Millisecond)
+	}
+
+	if err := cmd.Process.Signal(syscall.SIGINT); err != nil {
+		t.Fatalf("second signal: %v", err)
+	}
+
+	if err := cmd.Wait(); err != nil {
+		t.Fatalf("expected exit 0, got %v (output: %q)", err, out.String())
+	}
+
+	if !strings.Contains(out.String(), "detached run cancelled") {
+		t.Errorf("expected the cancel branch (wired closure) to fire, got %q", out.String())
+	}
+}

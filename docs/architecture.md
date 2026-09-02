@@ -201,7 +201,12 @@ tools, enforce permissions and hooks, and emit a single typed event stream.
 There is no TUI. Clients drive it over **gRPC** (a bidirectional `Converse`
 stream) or **HTTP/SSE**. Both surfaces speak one provider-neutral domain
 `session.Event` and call the same application service; neither ever sees an
-OpenAI type.
+OpenAI type. The Converse stream additionally supports a **detached mode** (ADR
+0278, operator-gated by `mecated --detached-runs`): a `Prompt{detach:true}`
+first frame starts a server-owned drain goroutine that continues a run after
+the client disconnects, acks once, and closes the stream — the client observes
+via `WatchSessionEvents` and controls via a control-only Converse stream
+(a first frame of `cancel` / `resume_approval`).
 
 The system is built **hexagonally (ports & adapters) with a DDD core**.
 Dependencies point inward only: a domain of pure value objects and aggregates

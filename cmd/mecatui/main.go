@@ -216,9 +216,14 @@ func runWithOptions(argv []string, options runOptions) error {
 		return runDisconnectedRecovery(context.Background(), argv, th, themeAutoDetect, options)
 	}
 
-	// Manual two-signal handler: first signal = graceful shutdown (cancels ctx →
-	// Bubble Tea quits); second signal during cleanup = immediate hard os.Exit(130).
-	ctx, forceExit := setupSignalHandler()
+	// Manual two-signal handler (ADR 0278 Scenario 4): the shared DetachSignalState
+	// bridge feeds the ui's current follow state so the first Ctrl+C detaches when
+	// the server supports it; the second Ctrl+C then sends the control-only Converse
+	// `cancel` frame. cfg.connectAddress != "" is the embedded flag (reverse of
+	// resolveConnectionMode — embedded is "host in-process", so a detach is
+	// meaningless there and the first-signal path stays graceful-cancel).
+	detachSignal := &ui.DetachSignalState{}
+	ctx, forceExit := setupSignalHandler(cfg.connectAddress == "", detachSignal)
 
 	// Resolve where to connect: an explicit external server, a server already
 	// running on the loopback default, or an embedded server we host in-process.
@@ -252,18 +257,28 @@ func runWithOptions(argv []string, options runOptions) error {
 		resumeCfg.resumeID = options.connectResumeSessionID
 		resumeCfg.resumeLatest = false
 	}
-	// The detached-runs capability seam (ADR 0278 Scenario 3): task 04 adds the
-	// ServerCapabilities.detached_runs proto field and wires this closure to read
-	// it. For task 03 it is a constant false — the reattach affordance on the
-	// PERSISTED-POINTER path is still gated on the pointer's verified state (a
-	// running session IS a real detached run, since tasks 01/02 shipped the server
-	// surface), but the --resume-latest LISTING expansion to include running rows
-	// stays conservative (an older server keeps the exclusion). The pointer path
-	// itself resolves a running pointer to a reattach only when detachSupported()
-	// reports true, so under the constant false a running pointer degrades to the
-	// listing — which is the honest pre-capability behaviour. Task 04 flips this
-	// to read the advertised capability.
-	detachSupported := func() bool { return false }
+	// The detached-runs capability seam (ADR 0278 Scenario 4): reads the REAL
+	// capability from the server. Older servers (pre-ADR-0248, or without the
+	// detached_runs bit) degrade to false — the reattach affordance on the
+	// PERSISTED-POINTER path stays honest, and the --resume-latest LISTING
+	// expansion stays conservative. The client's detached-submit fork and the
+	// signal handler's detach branch are also gated on this same capability.
+	compatCaps, compatErr := cl.CompatibilityInfo(ctx)
+	detachable := compatErr == nil && compatCaps.DetachedRuns
+	detachSupported := func() bool { return detachable }
+
+	// The control-only Converse cancel (ADR 0278 Scenario 4): the second-Ctrl+C
+	// path wires a closure that opens a FRESH Converse stream and sends
+	// Cancel{SessionId}, then closes shortly after. The server's task-02
+	// control-only Converse path acks with `run.cancelled`; the ack is read-only
+	// and best-effort (the cancel targets the session, and the stream's lifetime
+	// ends when the process exits). DetachSignal.SetCancel receives the session
+	// id so the closure captures it directly (no re-lookup at cancel time).
+	detachSignal.SetCancel(func() {
+		if id, active := detachSignal.Following(); active && id != "" {
+			_ = cl.CancelDetachedRun(ctx, id) //nolint:errcheck // best-effort cancel
+		}
+	})
 	ptrStore := newSessionStateStore(xdgconfig.OSEnv)
 	outcome, uiWorkspace, err := startupResumeConfigWithPointer(ctx, cl, resumeCfg, ptrStore, target, detachSupported)
 	resume, reattach := outcome.Resume, outcome.Reattach
@@ -325,6 +340,7 @@ func runWithOptions(argv []string, options runOptions) error {
 		Watch:                  cl,
 		Reattach:               reattach,
 		SessionStateStore:      ptrStore,
+		DetachSignal:           detachSignal,
 		SelectionStore:         store,
 		Learning:               learningSettingsForConfig(cfg),
 		Connect:                savedConnectController{},
@@ -686,11 +702,26 @@ func emitAuthFileWarning(writer io.Writer, warning string) {
 	}
 }
 
-// setupSignalHandler installs the manual two-signal handler: first signal =
-// graceful shutdown (cancels the returned ctx → Bubble Tea quits); a second
-// signal before cleanup completes = immediate hard os.Exit(130). It returns the
-// ctx plus a forceExit channel the caller closes ONLY after the post-Run cleanup
-// has finished (see runCleanup) to retire the handler on the normal path.
+// setupSignalHandler installs the manual two-signal handler. The FIRST signal's
+// handling depends on the detach capability + the ui's current follow state
+// (ADR 0278 Scenario 4):
+//
+//   - Detached-capable (connect mode, server advertised detached_runs, and the
+//     ui is FOLLOWING a detached run — DetachSignal.Following): the first signal
+//     prints the one-line "run continues" message and quits WITHOUT cancelling
+//     (the server-owned run keeps going). The second signal then sends a
+//     control-only Converse `cancel` frame (Cancel{SessionId} on a fresh stream)
+//     and exits.
+//   - Otherwise (embedded mode — the server dies with this process — or a
+//     non-detached-capable server, or no detached run being followed): the first
+//     signal cancels the returned ctx (graceful quit — the attached run is
+//     cancelled on stream break, or the embedded server with it), and the SECOND
+//     signal during cleanup is the immediate hard os.Exit(130) — byte-identical
+//     to the pre-detached-runs build.
+//
+// The detach state (DetachSignal) is main-owned and shared with the ui, which
+// flips it on phaseFollowing entry/exit, so the signal handler sees the CURRENT
+// follow state. A nil detach state keeps the legacy behaviour byte-identical.
 //
 // The signal goroutine is the SOLE owner of sigCh (signal.Notify's channel): no
 // other code reads it, and NOTHING calls signal.Stop on the force-exit path, so
@@ -703,7 +734,7 @@ func emitAuthFileWarning(writer io.Writer, warning string) {
 // deterministic, forceExit is closed only AFTER cleanup finishes — never while
 // the goroutine is still parked listening for the second signal — so there is no
 // select race between "second signal" and "cleanup done" mid-cleanup.
-func setupSignalHandler() (context.Context, chan struct{}) {
+func setupSignalHandler(embedded bool, detach *ui.DetachSignalState) (context.Context, chan struct{}) {
 	sigCh := make(chan os.Signal, 2)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
 
@@ -712,11 +743,19 @@ func setupSignalHandler() (context.Context, chan struct{}) {
 	forceExit := make(chan struct{})
 	go func() {
 		defer signal.Stop(sigCh)
+		// detachFollow is latched at the FIRST signal's classify: whether this
+		// was a "run continues" detach (a second Ctrl+C then sends the authoritative
+		// cancel frame before exit, rather than the forced-exit-only behaviour).
+		detachFollow := detachable(embedded, detach)
 		defer cancel()
 		// First: graceful signal, or clean quit before any signal.
 		select {
 		case sig := <-sigCh:
-			fmt.Fprintf(os.Stderr, "mecatui: received %s, shutting down gracefully (press again to force exit)...\n", sig)
+			if detachFollow {
+				fmt.Fprintln(os.Stderr, "mecatui: run continues in the background — press Ctrl+C again to cancel + exit")
+			} else {
+				fmt.Fprintf(os.Stderr, "mecatui: received %s, shutting down gracefully (press again to force exit)...\n", sig)
+			}
 			cancel()
 		case <-forceExit:
 			return
@@ -724,19 +763,57 @@ func setupSignalHandler() (context.Context, chan struct{}) {
 		// Past the first signal: keep listening for the SECOND signal through the
 		// whole cleanup. forceExit closes only after cleanup completes, so while
 		// cleanup is still running a second signal deterministically wins (it is
-		// the only ready case) and hard-exits; once cleanup is done, forceExit
-		// retires the handler. A signal buffered before forceExit closes is still
-		// honoured — the select prefers neither, but forceExit is not closed until
-		// cleanup returns, so a signal sitting in sigCh during cleanup is read
-		// first.
+		// the only ready case) and hard-exits (or cancels-then-exits, on the
+		// detach branch); once cleanup is done, forceExit retires the handler. A
+		// signal buffered before forceExit closes is still honoured — the select
+		// prefers neither, but forceExit is not closed until cleanup returns, so
+		// a signal sitting in sigCh during cleanup is read first.
 		select {
 		case <-sigCh:
+			if detachFollow && detach != nil {
+				if _, active := detach.Following(); active {
+					if detachControlCancel(detach) {
+						fmt.Fprintln(os.Stderr, "mecatui: detached run cancelled")
+					}
+				}
+			}
 			fmt.Fprintln(os.Stderr, "mecatui: forcing immediate exit")
 			os.Exit(130)
 		case <-forceExit:
 		}
 	}()
 	return ctx, forceExit
+}
+
+// detachable is the FIRST-signal detach decision (ADR 0278 Scenario 4): can the
+// first Ctrl+C detach (keep the run, quit without cancelling)? TRUE only when
+// the connection is remote (embedded mode dies with the process — a detach there
+// is meaningless), a DetachSignal state exists (a detached-capable server AND the
+// ui is currently following a detached run — detached-capable only ever Follow(s)
+// after a successful detached submit that the server honoured). The decision is a
+// pure function; the os/signal plumbing in setupSignalHandler stays thin.
+func detachable(embedded bool, detach *ui.DetachSignalState) bool {
+	if embedded || detach == nil {
+		return false
+	}
+	_, active := detach.Following()
+	return active
+}
+
+// detachControlCancel sends the control-only Converse `cancel` frame for the
+// session (ADR 0278 Scenario 4): Cancel{SessionId} on a FRESH stream, then
+// drains to the `run.cancelled` ack with a 5s bound. It owns its own Stream +
+// client because the ui's Conv (a Converser) is not reachable here — main wires
+// DetachSignal.SetCancel with a client-owning closure at startup. FALSE means
+// it couldn't reach the server (force-exit then proceeds without cancel — the
+// terminal contract the teardown path relies on).
+func detachControlCancel(detach *ui.DetachSignalState) bool {
+	cancel := detach.Cancel()
+	if cancel == nil {
+		return false
+	}
+	cancel()
+	return true
 }
 
 // runCleanup runs the post-Run cleanup under a 45s hard deadline, retiring the
@@ -769,9 +846,19 @@ func wireManualCompaction(deps *ui.Deps, compactor client.SessionCompactor) {
 // testSignalHandler is the MECATUI_TEST_SIGNAL_HANDLER test seam: a minimal
 // signal-handler path with no TUI or server. Valid modes:
 //
-//	"first"  — block until one signal, print the graceful-shutdown line, return nil.
-//	"second" — spawn a goroutine that fires os.Exit(130) on the second signal;
-//	           the caller blocks forever so the goroutine's os.Exit terminates the process.
+//	"first"         — block until one signal, print the graceful-shutdown line, return nil.
+//	"second"        — spawn a goroutine that fires os.Exit(130) on the second signal;
+//	                  the caller blocks forever so the goroutine's os.Exit terminates the process.
+//	"detach-first"  — detached-capable + following: print the run-continues
+//	                  message on the FIRST signal and return nil. (Detached-runs
+//	                  tests drive the real ui-side DetachSignal follow state —
+//	                  the decision lives in detachable(), the pure function.)
+//	"detach-second" — detached-capable + following: on the FIRST signal print
+//	                  run-continues; on the SECOND signal the wired cancel
+//	                  closure fires (a control-only Converse `cancel`
+//	                  witnesses), then os.Exit(0). The wired spy closure only
+//	                  ever reads the ESTABLISHED follow state, so it mirrors
+//	                  the real double-Ctrl+C cancel.
 func testSignalHandler(mode string) error {
 	sigCh := make(chan os.Signal, 1)
 	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
@@ -793,6 +880,37 @@ func testSignalHandler(mode string) error {
 			<-sigCh
 			fmt.Fprintln(os.Stderr, "mecatui: forcing immediate exit")
 			os.Exit(130)
+		}()
+		select {} // block forever; the goroutine's os.Exit terminates the process
+	case "detach-first":
+		detach := &ui.DetachSignalState{}
+		detach.Follow("sess-detach-test")
+		sig := <-sigCh
+		if detachable(false /* embedded */, detach) {
+			fmt.Fprintln(os.Stderr, "mecatui: run continues in the background — press Ctrl+C again to cancel + exit")
+		} else {
+			fmt.Fprintf(os.Stderr, "mecatui: received %s, shutting down gracefully (press again to force exit)...\n", sig)
+		}
+		return nil
+	case "detach-second":
+		detach := &ui.DetachSignalState{}
+		detach.Follow("sess-detach-test")
+		detach.SetCancel(func() {})
+		go func() {
+			sig := <-sigCh
+			if detachable(false, detach) {
+				fmt.Fprintln(os.Stderr, "mecatui: run continues in the background — press Ctrl+C again to cancel + exit")
+			} else {
+				fmt.Fprintf(os.Stderr, "mecatui: received %s, shutting down gracefully (press again to force exit)...\n", sig)
+			}
+			<-sigCh
+			if _, active := detach.Following(); active {
+				if detachControlCancel(detach) {
+					fmt.Fprintln(os.Stderr, "mecatui: detached run cancelled")
+				}
+			}
+			fmt.Fprintln(os.Stderr, "mecatui: forcing immediate exit")
+			os.Exit(0) // detached-second path cancels then exits cleanly, no force-exit -error code needed
 		}()
 		select {} // block forever; the goroutine's os.Exit terminates the process
 	default:

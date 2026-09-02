@@ -191,6 +191,10 @@ type Config struct {
 	NoBash              bool
 	temporaryStorage    temporaryStorageConfig
 	managedTemp         *managedTemporaryStorage
+	// DetachedRuns is the operator-tier detached-runs gate (ADR 0278,
+	// mecated --detached-runs, default OFF). When true, a Converse Prompt with
+	// detach:true starts a server-owned run that survives the client stream.
+	DetachedRuns bool
 	// AuthorityEvaluator selects the authority evaluator adapter: "local" enforces
 	// minted sets, while "noop" deliberately disables enforcement. "cedar" loads
 	// CedarAuthorityPolicy at startup and fails closed when it cannot be loaded.
@@ -2199,6 +2203,11 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		// would leak infrastructure topology to any authenticated caller. Empty is
 		// the default and the overwhelmingly common case.
 		DeploymentID: cfg.DeploymentID,
+		// DetachedRuns: the operator-tier gate (mecated --detached-runs). The
+		// Service advertises ServerCapabilities.detached_runs and honours a
+		// Prompt's detach field only when this is true; otherwise attached
+		// behaviour is byte-identical for every client.
+		DetachedRuns: cfg.DetachedRuns,
 		// DefaultResolvedModel: the EFFECTIVE provider+model the DEFAULT/shared engine
 		// resolved to (the registry default provider + the already-resolved cfg.Model +
 		// the context window for that pair), computed ONCE here in composition. Same

@@ -597,6 +597,13 @@ const (
 
 const resultStopError = "error"
 
+// RunDetachedMsg is the detached-run ack (ADR 0278 Scenario 4): a Prompt sent
+// with detach:true received the server's single `run.detached` ack — the run is
+// now server-owned (a drain goroutine owns it) and continues after this stream
+// closes. The ui FOLLOWS it via WatchSessionEvents (phaseFollowing) rather than
+// driving it on the Converse stream.
+type RunDetachedMsg struct{}
+
 // ResultMsg is the terminal event: stop reason, final text, error, usage.
 type ResultMsg struct {
 	Stop  string
@@ -1129,6 +1136,10 @@ func EventToMsg(ev *mecatlv1.Event) tea.Msg {
 			Tool:     h.GetTool(),
 			Decision: hookDecisionFrom(h.GetDecision()),
 		}
+	case "run.detached":
+		// The detached-run ack (ADR 0278 Scenario 4): a detach:true prompt's
+		// single terminal ack, which the server sends then closes the stream.
+		return RunDetachedMsg{}
 	case "result":
 		return resultMsg(ev.GetResult())
 	case "approval":

@@ -73,6 +73,7 @@ var flagMetaByFlag = map[string]flagMeta{
 	"ready-file":       {group: groupServer, common: false, acp: acpExclude},
 	"lifetime-pipe-fd": {group: groupServer, common: false, acp: acpExclude},
 	"metrics-addr":     {group: groupServer, common: false, acp: acpExclude},
+	"detached-runs":    {group: groupServer, common: false, acp: acpExclude},
 
 	// ── Security (serve-only) ─────────────────────────────────────────────
 	"auth-token": {group: groupSecurity, common: true, acp: acpExclude},

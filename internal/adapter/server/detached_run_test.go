@@ -18,7 +18,7 @@ func TestDetachedRun_Scenario1_DetachedRunSurvivesStreamClose(t *testing.T) {
 		mockllm.ToolCallTurn(call("c1", "Read", `{"path":"a.go"}`)),
 		mockllm.TextTurn("all done"),
 	)
-	svc := newService(t, llm, allowRules(), read)
+	svc := newServiceMutable(t, llm, allowRules(), "", detachOn, read)
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 
@@ -95,7 +95,7 @@ func TestDetachedRun_Scenario1_AttachedRunCancelledOnStreamClose(t *testing.T) {
 		mockllm.ToolCallTurn(call("c1", "Read", `{"path":"a.go"}`)),
 		mockllm.TextTurn("all done"),
 	)
-	svc := newService(t, llm, allowRules(), read)
+	svc := newServiceMutable(t, llm, allowRules(), "", detachOn, read)
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 
@@ -148,7 +148,7 @@ func TestDetachedRun_Scenario1_DrainGoroutineFinishesRun(t *testing.T) {
 		mockllm.ToolCallTurn(call("c2", "Read", `{"path":"b.go"}`)),
 		mockllm.TextTurn("again reply"),
 	)
-	svc := newService(t, llm, allowRules(), read)
+	svc := newServiceMutable(t, llm, allowRules(), "", detachOn, read)
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 
@@ -218,7 +218,7 @@ func TestDetachedRun_Scenario1_ServiceCloseCancelsDetachedRuns(t *testing.T) {
 		mockllm.ToolCallTurn(call("c1", "Read", `{"path":"a.go"}`)),
 		mockllm.TextTurn("all done"),
 	)
-	svc := newService(t, llm, allowRules(), read)
+	svc := newServiceMutable(t, llm, allowRules(), "", detachOn, read)
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 
@@ -268,7 +268,7 @@ func TestDetachedRun_Scenario1_DetachedLogSurvivesClientDisconnect(t *testing.T)
 		mockllm.ToolCallTurn(call("c1", "Read", `{"path":"a.go"}`)),
 		mockllm.TextTurn("all done"),
 	)
-	svc := newService(t, llm, allowRules(), read)
+	svc := newServiceMutable(t, llm, allowRules(), "", detachOn, read)
 	client, cleanup := dialGRPC(t, svc)
 	defer cleanup()
 

@@ -42,6 +42,7 @@ func TestCapabilitiesFrom(t *testing.T) {
 				Audio:            true,
 				Steer:            true,
 				ManualCompaction: true,
+				DetachedRuns:     true,
 			},
 			want: Capabilities{
 				MCP:              true,
@@ -58,7 +59,13 @@ func TestCapabilitiesFrom(t *testing.T) {
 				Audio:            true,
 				Steer:            true,
 				ManualCompaction: true,
+				DetachedRuns:     true,
 			},
+		},
+		{
+			name: "detached_runs maps independently",
+			in:   &mecatlv1.ServerCapabilities{DetachedRuns: true},
+			want: Capabilities{DetachedRuns: true},
 		},
 		{
 			name: "manual compaction maps independently",

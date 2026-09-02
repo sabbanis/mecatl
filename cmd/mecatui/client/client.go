@@ -283,6 +283,57 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
+// CompatibilityInfo returns the deployment's compatibility descriptor (ADR 0248):
+// the ServerCapabilities echo (the SAME projection as CreateSession, so a fresh
+// client can gate on detached_runs/rules without a probe session). Older servers
+// (pre-ADR-0248) reject with Unimplemented; callers treat that as "no caps yet"
+// (all-false) rather than failing — the projection is capability-only.
+func (c *Client) CompatibilityInfo(ctx context.Context) (Capabilities, error) {
+	resp, err := c.svc.GetCompatibilityInfo(ctx, &mecatlv1.GetCompatibilityInfoRequest{})
+	if err != nil {
+		return Capabilities{}, err
+	}
+	return capabilitiesFrom(resp.GetCapabilities()), nil
+}
+
+// CancelDetachedRun sends a control-only Converse `cancel` frame for the session
+// (ADR 0278 Scenario 4, the task-02 control-only Converse first-frame): a FRESH
+// Converse stream whose first frame is Cancel{SessionId}, then the client closes
+// its send side and drains to the server's `run.cancelled` ack. Best-effort: the
+// caller (the signal handler's second Ctrl+C) exits regardless, and the server
+// runs the cancel regardless of whether this client held a stream.
+func (c *Client) CancelDetachedRun(ctx context.Context, sessionID string) error {
+	stream, err := c.svc.Converse(ctx)
+	if err != nil {
+		return fmt.Errorf("open converse: %w", err)
+	}
+	if err := stream.Send(&mecatlv1.ConverseRequest{
+		Kind: &mecatlv1.ConverseRequest_Cancel{Cancel: &mecatlv1.Cancel{SessionId: sessionID}},
+	}); err != nil {
+		return fmt.Errorf("send cancel: %w", err)
+	}
+	_ = stream.CloseSend()
+	// Drain to the server's run.cancelled ack so the cancel lands before the
+	// caller proceeds to force-exit. Bounded — best-effort cancel.
+	recvTimeout := 5 * time.Second
+	done := make(chan struct{})
+	go func() {
+		for {
+			resp, err := stream.Recv()
+			if err != nil || resp.GetEvent().GetType() == "run.cancelled" {
+				break
+			}
+		}
+		close(done)
+	}()
+	select {
+	case <-done:
+		return nil
+	case <-time.After(recvTimeout):
+		return fmt.Errorf("cancel drain timed out (best-effort cancel still sent)")
+	}
+}
+
 // CreateSession allocates a server-owned session and returns its id together
 // with the server's advertised capabilities and resolved model. The request
 // deliberately carries no client filesystem path.

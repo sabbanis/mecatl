@@ -76,6 +76,9 @@ type Capabilities struct {
 	DebugMCP bool
 	// WorkspaceEnrollment gates the bundled MCP workspace-enrollment flow.
 	WorkspaceEnrollment bool
+	// DetachedRuns is true when the operator has enabled detached runs
+	// (mecated --detached-runs, ADR 0278). Older servers leave it false.
+	DetachedRuns bool
 }
 
 // capabilitiesFrom maps a proto ServerCapabilities (nil-safe) to the plain
@@ -112,6 +115,7 @@ func capabilitiesFrom(c *mecatlv1.ServerCapabilities) Capabilities {
 		SessionDebug:        c.GetSessionDebug(),
 		DebugMCP:            c.GetDebugMcp(),
 		WorkspaceEnrollment: c.GetWorkspaceEnrollment(),
+		DetachedRuns:        c.GetDetachedRuns(),
 	}
 }
 

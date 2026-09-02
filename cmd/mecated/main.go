@@ -129,6 +129,7 @@ type config struct {
 	storeDir             string
 	shell                string
 	noBash               bool
+	detachedRuns         bool // detached runs (ADR 0278, --detached-runs, default OFF)
 	authorityEvaluator   string
 	cedarAuthorityPolicy string
 
@@ -1078,6 +1079,7 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		StoreDir:                      cfg.storeDir,
 		Shell:                         cfg.shell,
 		NoBash:                        cfg.noBash,
+		DetachedRuns:                  cfg.detachedRuns,
 		AuthorityEvaluator:            cfg.authorityEvaluator,
 		CedarAuthorityPolicy:          cfg.cedarAuthorityPolicy,
 		OwnershipEnforced:             cfg.oidc.Enabled(),
@@ -1589,6 +1591,7 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	fs.StringVar(&cfg.authorityEvaluator, "authority-evaluator", "local", "authority evaluator: local (default), noop, or cedar; cedar requires --cedar-authority-policy")
 	fs.StringVar(&cfg.cedarAuthorityPolicy, "cedar-authority-policy", "", "path to the static operator Cedar authority policy; read once at startup when --authority-evaluator=cedar")
 	fs.BoolVar(&cfg.noBash, "no-bash", false, "disable the Bash tool entirely (shell-less mode); overrides --shell")
+	fs.BoolVar(&cfg.detachedRuns, "detached-runs", false, "DETACHED RUNS (ADR 0278): enable detached runs on this server. A Converse Prompt with detach:true then starts a SERVER-OWNED run that continues after the client stream closes (the server drains it to the durable log); the client observes via WatchSessionEvents and controls via a control-only Converse stream (cancel/resume_approval as the first frame). The ServerCapabilities.detached_runs bit is advertised only when this is on, so a client keeps its cancel-on-Ctrl+C behaviour otherwise. Default OFF. See ADR 0278 + docs/architecture.md")
 
 	fs.StringVar(&cfg.compaction, "compaction", "heuristic", "compaction strategy: \"heuristic\" (default, single-summary) or \"cascade\" (tiered snip→strip→collapse→summarize)")
 	fs.StringVar(&cfg.tokenizer, "tokenizer", "heuristic", "token counter for the compaction trigger: \"heuristic\" (default, dependency-free) or \"tiktoken\" (offline tiktoken vocab)")

@@ -2,7 +2,7 @@
 id: 04-ctrl-c-detach-cancel
 title: Ctrl+C detaches; double Ctrl+C cancels
 blocked_by: [01-detached-prompt-drain, 02-control-only-converse, 03-seamless-reattach]
-status: pending
+status: done
 branch: "plan-detached-runs/04-ctrl-c-detach-cancel"
 worktree: ""
 issue: ""
