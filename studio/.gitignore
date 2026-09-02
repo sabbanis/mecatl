@@ -55,3 +55,6 @@ helm/*.lock
 
 # task studio:dev's background log
 dev.log
+
+# local scratch + controller runtime state (ready file, router config)
+/.scratch/
