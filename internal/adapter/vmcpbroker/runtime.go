@@ -2073,7 +2073,19 @@ func (r *Runtime) exchangeDownstreamRefresh(ctx context.Context, grant downstrea
 	ctx = context.WithValue(ctx, oauth2.HTTPClient, r.httpClient)
 	cfg := r.oauthConfig()
 	refreshed, err := cfg.TokenSource(ctx, token).Token()
-	if err != nil || !validBearerToken(refreshed) {
+	if err != nil {
+		// Only a genuine invalid_grant response means the credential is dead
+		// (RFC 6749 §5.2) and should revoke the bundle. Anything else -- a
+		// transport failure, 5xx, timeout, context cancellation -- is
+		// transient: return it as-is so a single network blip on the
+		// broker's OWN refresh cannot de-authorize the whole session.
+		var retrieveErr *oauth2.RetrieveError
+		if errors.As(err, &retrieveErr) && retrieveErr.ErrorCode == "invalid_grant" {
+			return downstreamGrant{}, errDownstreamRefreshRejected
+		}
+		return downstreamGrant{}, err
+	}
+	if !validBearerToken(refreshed) {
 		return downstreamGrant{}, errDownstreamRefreshRejected
 	}
 	refreshedGrant := newDownstreamGrant(refreshed)
