@@ -1750,7 +1750,8 @@ func (r *Runtime) targetForRouteLocked(id session.SessionID, routeID string) (co
 	}
 	for _, route := range r.routes {
 		if route.Protected && route.Tool.Name == routeID {
-			return controlTarget{sessionID: id, backendID: route.BackendID}, true
+			anchor, _ := r.anchorBundleLocked(route.BackendID)
+			return controlTarget{sessionID: id, backendID: anchor}, true
 		}
 	}
 	// Bundled workspace enrollment (ADR 0287) never appends a dynamically
@@ -1769,7 +1770,8 @@ func (r *Runtime) targetForRouteLocked(id session.SessionID, routeID string) (co
 				continue
 			}
 			if route := routed.routeInfo(); route.Protected && route.Tool.Name == routeID {
-				return controlTarget{sessionID: id, backendID: route.BackendID}, true
+				anchor, _ := r.anchorBundleLocked(route.BackendID)
+				return controlTarget{sessionID: id, backendID: anchor}, true
 			}
 		}
 	}
@@ -2328,6 +2330,12 @@ func (r *Runtime) protectedBackendLocked(backendID string) bool {
 func (r *Runtime) authorizationBundleFor(backendID string) (string, []string) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
+	return r.anchorBundleLocked(backendID)
+}
+
+// anchorBundleLocked is authorizationBundleFor without acquiring r.mu, for
+// callers (targetForRouteLocked) that already hold it.
+func (r *Runtime) anchorBundleLocked(backendID string) (string, []string) {
 	for _, configured := range r.staticProtectedBackends {
 		if configured == backendID {
 			return r.staticProtectedBackends[0], append([]string(nil), r.staticProtectedBackends...)
