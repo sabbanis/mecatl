@@ -128,8 +128,8 @@ DNS-pinning, additional/private origins, or redirect policy on that ToolHive req
 A second protected backend, or reconnect after disconnect, returns the explicit ToolHive
 `ConnectUpstream` limitation rather than creating another lineage. Transactions, grants,
 and transports are process-local. See
-[ADR 0245](../adr/0245-session-scoped-vmcp-broker.md),
-[ADR 0247](../adr/0247-broker-generic-oauth2-upstreams.md),
+[ADR 0245](../adr/0284-session-scoped-vmcp-broker.md),
+[ADR 0247](../adr/0286-broker-generic-oauth2-upstreams.md),
 [`STAGE2-RESULTS.md`](../../STAGE2-RESULTS.md), and
 [`STAGE3-RESULTS.md`](../../STAGE3-RESULTS.md).
 

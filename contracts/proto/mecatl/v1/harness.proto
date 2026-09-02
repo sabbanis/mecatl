@@ -1874,7 +1874,7 @@ message Event {
   MCPAuthorization mcp_authorization = 23;
 
   // workspace_enrollment is the safe correlation for a resolved bundled
-  // workspace-enrollment attempt (ADR 0281). It carries no browser URL,
+  // workspace-enrollment attempt (ADR 0287). It carries no browser URL,
   // credential, or discovered catalogue.
   WorkspaceEnrollmentEvent workspace_enrollment = 24;
 }

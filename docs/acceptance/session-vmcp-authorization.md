@@ -2,7 +2,7 @@
 
 **Phase:** capability — operator-configured session broker and resumable MCP authorization
 **Status:** in-progress, 2026-08-31. Synthesized from the Stage 3 handover, the accepted configuration discussion, the completed five-axis `StateAuthorizing` review, and the bundled workspace-enrollment amendment.
-**ADR:** [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) — one MCP authority mode, durable authorizing state, and exact continuation; [ADR-0247](../adr/0247-broker-generic-oauth2-upstreams.md) — broker-only explicit generic OAuth2 upstreams; [ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md) — pre-prompt bundled enrollment and authenticated frozen catalogues.
+**ADR:** [ADR-0246](../adr/0285-configured-resumable-mcp-authorization.md) — one MCP authority mode, durable authorizing state, and exact continuation; [ADR-0247](../adr/0286-broker-generic-oauth2-upstreams.md) — broker-only explicit generic OAuth2 upstreams; [ADR-0248](../adr/0287-bundled-mcp-workspace-enrollment.md) — pre-prompt bundled enrollment and authenticated frozen catalogues.
 **Accumulator branch:** `acc/session-vmcp-authorization` (off `acc/session-vmcp-broker`).
 
 The smallest set of work that lets an administrator configure MCP once, lets
@@ -27,7 +27,7 @@ demonstrate, not which packages happen to exist.
 - [ADR-0113](../adr/0113-operator-mcp-auth-profiles.md) already establishes one strict,
   operator-tier MCP configuration and one canonical loader. Broker mode extends that
   route; it does not add a second profile file or parser.
-- [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) fixes the original Stage 2
+- [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) fixes the original Stage 2
   boundary: stable session-local tools, one protected lineage, broker-owned credentials, and
   no ToolHive/OAuth types in the engine. ADR 0248 extends protected-backend cardinality only
   through all-or-nothing pre-prompt bundled enrollment.
@@ -101,7 +101,7 @@ client cannot enforce them. This fail-closed rejection replaces any claim that t
 controls apply. OIDC remains the default and the process-local broker limit remains. The
 original proof admitted one protected backend; Scenario 11 replaces that cardinality limit
 with ToolHive's deterministic all-or-nothing bundled chain
-([ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md)).
+([ADR-0248](../adr/0287-bundled-mcp-workspace-enrollment.md)).
 
 **Acceptance:**
 - AC1.1: An omitted `mcp.mode` resolves to `broker` in `mecak8s` and `global` in
@@ -216,7 +216,7 @@ The server reserves the canonical session ID before opening broker state, then m
 session-local wrappers through the existing `assembleCatalog` path. A durable non-secret
 broker enrollment/configuration identity makes restored sessions rebuild the same class
 of per-session catalogue or fail loudly; shared/global fallback is forbidden
-([ADR-0245](../adr/0245-session-scoped-vmcp-broker.md)).
+([ADR-0245](../adr/0284-session-scoped-vmcp-broker.md)).
 
 **Acceptance:**
 - AC3.1: Session ID reservation precedes `Runtime.OpenSession`, and create/save/factory
@@ -378,7 +378,7 @@ not a permission verdict. The public operation is **cancel** only—there is no 
 OAuth `deny` vocabulary. Cancellation resolves with status `cancelled` and permits a
 later fresh attempt. The client cannot assert OAuth success. Runtime callback completion
 remains broker-owned, and only a subsequent `Connect == connected` observation may start
-the continuation ([ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md)).
+the continuation ([ADR-0246](../adr/0285-configured-resumable-mcp-authorization.md)).
 
 The service linearization is: owner authorization, keyed `runEntryMu`, acquire/confirm the
 session lease, reload and validate the snapshot, perform the bounded Runtime state check,
@@ -566,7 +566,7 @@ services** operation before prompt input is available. This enrollment is neithe
 approval nor a model-selected `ToolCall`; because no protected tool has been discovered or
 called, it does not reuse `PendingMCPAuthorization` or `StateAuthorizing`. ToolHive drives all
 configured protected backends as one deterministic bundled consent sequence
-([ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md)).
+([ADR-0248](../adr/0287-bundled-mcp-workspace-enrollment.md)).
 
 Every protected backend must connect before authenticated discovery starts. The broker builds
 one ToolHive `UpstreamRunConfig` per protected profile in configured order; the first
@@ -694,15 +694,15 @@ new reviewed ADR explicitly accepts the break.
 
 | Item | Defer-to | ADR / decision |
 |---|---|---|
-| Durable/shared multi-replica broker transactions and credentials | distributed broker stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
-| Remote sidecar broker protocol and authentication | deployment/sidecar stage | [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) |
-| Independent per-backend connect, retry, and cancel; reconnect after permanent `Disconnect` | targeted ToolHive upstream controls | [ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md) |
-| Bootstrap-discovery CLI for generating curated static protected `tools:` | later operator tooling | [ADR-0248](../adr/0248-bundled-mcp-workspace-enrollment.md) |
-| Required Kind/Helm qualification and browser ingress journey | optional deployment qualification / production deployment stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
-| Production ingress, DNS, certificate, and Secret rotation qualification | production deployment stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
-| Broad external-provider interoperability matrix | provider qualification stage | [ADR-0246](../adr/0246-configured-resumable-mcp-authorization.md) |
-| ToolHive residual `httprc` goroutine remediation | upstream ToolHive | [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) |
-| Another OAuth client/controller | excluded | [ADR-0245](../adr/0245-session-scoped-vmcp-broker.md) |
+| Durable/shared multi-replica broker transactions and credentials | distributed broker stage | [ADR-0246](../adr/0285-configured-resumable-mcp-authorization.md) |
+| Remote sidecar broker protocol and authentication | deployment/sidecar stage | [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) |
+| Independent per-backend connect, retry, and cancel; reconnect after permanent `Disconnect` | targeted ToolHive upstream controls | [ADR-0248](../adr/0287-bundled-mcp-workspace-enrollment.md) |
+| Bootstrap-discovery CLI for generating curated static protected `tools:` | later operator tooling | [ADR-0248](../adr/0287-bundled-mcp-workspace-enrollment.md) |
+| Required Kind/Helm qualification and browser ingress journey | optional deployment qualification / production deployment stage | [ADR-0246](../adr/0285-configured-resumable-mcp-authorization.md) |
+| Production ingress, DNS, certificate, and Secret rotation qualification | production deployment stage | [ADR-0246](../adr/0285-configured-resumable-mcp-authorization.md) |
+| Broad external-provider interoperability matrix | provider qualification stage | [ADR-0246](../adr/0285-configured-resumable-mcp-authorization.md) |
+| ToolHive residual `httprc` goroutine remediation | upstream ToolHive | [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) |
+| Another OAuth client/controller | excluded | [ADR-0245](../adr/0284-session-scoped-vmcp-broker.md) |
 
 ## Sequencing recommendation
 

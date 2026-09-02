@@ -47,7 +47,7 @@ mode hard to diagnose without adding temporary server-side logging.
 Restricting the bundle-connect action to a message-free session is a reasonable
 safety property on its own: it guarantees the model never sees a partially-admitted
 protected catalogue mid-conversation, and it keeps the "all-or-nothing" bundle
-semantics simple (ADR 0281 / `docs/adr/0281-bundled-mcp-workspace-enrollment.md`).
+semantics simple (ADR 0281 / `docs/adr/0287-bundled-mcp-workspace-enrollment.md`).
 The gap is specifically the **recovery** case: nothing distinguishes "this session
 already has history because enrollment already succeeded and the conversation is
 legitimately underway" from "the broker's process-local state was lost and this

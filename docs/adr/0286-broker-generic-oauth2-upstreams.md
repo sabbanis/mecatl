@@ -1,4 +1,4 @@
-# ADR 0247 — Broker-only explicit generic OAuth2 upstreams
+# ADR 0286 — Broker-only explicit generic OAuth2 upstreams
 
 - Status: Proposed
 - Date: 2026-08-31
@@ -94,8 +94,8 @@ compatibility.
 
 ## See also
 
-- [ADR 0245](./0245-session-scoped-vmcp-broker.md)
-- [ADR 0246](./0246-configured-resumable-mcp-authorization.md)
+- [ADR 0284](./0284-session-scoped-vmcp-broker.md)
+- [ADR 0285](./0285-configured-resumable-mcp-authorization.md)
 - [Session vMCP authorization acceptance](../acceptance/session-vmcp-authorization.md)
 - [Architecture: session-scoped vMCP broker](../architecture.md#session-scoped-vmcp-broker-stage-3-command-root-proof)
 - [Extensibility: MCP](../architecture/extensibility.md)

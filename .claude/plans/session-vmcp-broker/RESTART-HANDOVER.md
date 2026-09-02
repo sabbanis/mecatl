@@ -6,7 +6,7 @@
 
 ## Source-of-truth and scope
 
-The accepted acceptance contract is `docs/acceptance/session-vmcp-broker.md`, with the boundary decision in `docs/adr/0237-session-scoped-vmcp-broker.md`.
+The accepted acceptance contract is `docs/acceptance/session-vmcp-broker.md`, with the boundary decision in `docs/adr/0284-session-scoped-vmcp-broker.md`.
 
 `STAGE2-HANDOVER.md` is **not present on the accumulator**. Its last available copy is on `wip/session-vmcp-broker-stage0a-snapshot` at `88710382`. Before changing scope, recover or obtain any newer handover text and reconcile it with this note. The available handover establishes these non-negotiable rules:
 

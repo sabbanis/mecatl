@@ -105,6 +105,6 @@ must not add another OAuth client, credential lifecycle, or dynamic catalogue pa
 
 ## Related documents
 
-- [ADR 0245 — Session-scoped vMCP broker](docs/adr/0245-session-scoped-vmcp-broker.md)
+- [ADR 0284 — Session-scoped vMCP broker](docs/adr/0284-session-scoped-vmcp-broker.md)
 - [Session-scoped vMCP broker acceptance plan](docs/acceptance/session-vmcp-broker.md)
 - [Architecture: extensibility](docs/architecture/extensibility.md)

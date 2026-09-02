@@ -6865,7 +6865,7 @@ type Event struct {
 	// authorization. It carries no URL, credential, arguments, route, or config.
 	McpAuthorization *MCPAuthorization `protobuf:"bytes,23,opt,name=mcp_authorization,json=mcpAuthorization,proto3" json:"mcp_authorization,omitempty"`
 	// workspace_enrollment is the safe correlation for a resolved bundled
-	// workspace-enrollment attempt (ADR 0281). It carries no browser URL,
+	// workspace-enrollment attempt (ADR 0287). It carries no browser URL,
 	// credential, or discovered catalogue.
 	WorkspaceEnrollment *WorkspaceEnrollmentEvent `protobuf:"bytes,24,opt,name=workspace_enrollment,json=workspaceEnrollment,proto3" json:"workspace_enrollment,omitempty"`
 	unknownFields       protoimpl.UnknownFields

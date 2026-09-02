@@ -1,4 +1,4 @@
-# ADR 0248 — Bundled MCP workspace enrollment
+# ADR 0287 — Bundled MCP workspace enrollment
 
 - Status: Proposed
 - Date: 2026-08-31
@@ -26,7 +26,7 @@ Users authorize their own workspace services without a bootstrap PAT or configur
 
 ## See also
 
-- [ADR 0245](./0245-session-scoped-vmcp-broker.md)
-- [ADR 0246](./0246-configured-resumable-mcp-authorization.md)
-- [ADR 0247](./0247-broker-generic-oauth2-upstreams.md)
+- [ADR 0284](./0284-session-scoped-vmcp-broker.md)
+- [ADR 0285](./0285-configured-resumable-mcp-authorization.md)
+- [ADR 0286](./0286-broker-generic-oauth2-upstreams.md)
 - [Stage 3 acceptance](../acceptance/session-vmcp-authorization.md)

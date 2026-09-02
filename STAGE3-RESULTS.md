@@ -100,7 +100,7 @@ prompt arguments, result text, bearer token, and provider credential.
 **PASS (2026-08-31T10:32Z):** A single-replica `mecak8s-mecak8s` deployment (Helm
 revision 7, image `ko.local/mecak8s:dev`) exposed through the same public ngrok
 route completed the full Mode B journey against GitHub's real remote MCP server
-(`https://api.githubcopilot.com/mcp/`) using generic OAuth2 (ADR 0247) with an
+(`https://api.githubcopilot.com/mcp/`) using generic OAuth2 (ADR 0286) with an
 operator-declared static tool catalogue (`permconfig.MCPOAuthProfile.Tools`) for
 `get_me` (`read:user`).
 
@@ -148,4 +148,4 @@ broker's OAuth2/session-authorization logic itself):
 ## Related documents
 
 - [Session vMCP authorization acceptance](docs/acceptance/session-vmcp-authorization.md)
-- [ADR 0247 — Broker-only explicit generic OAuth2 upstreams](docs/adr/0247-broker-generic-oauth2-upstreams.md)
+- [ADR 0286 — Broker-only explicit generic OAuth2 upstreams](docs/adr/0286-broker-generic-oauth2-upstreams.md)

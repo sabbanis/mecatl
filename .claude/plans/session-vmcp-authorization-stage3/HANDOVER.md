@@ -13,7 +13,7 @@ The Stage 3 planner must reconcile all of these sources:
 
 1. `STAGE2-RESULTS.md` — honest evidence and limitations at the accumulator tip.
 2. `docs/acceptance/session-vmcp-broker.md` — Stage 2 contract and exclusions.
-3. `docs/adr/0237-session-scoped-vmcp-broker.md` — frozen Stage 2 boundary.
+3. `docs/adr/0284-session-scoped-vmcp-broker.md` — frozen Stage 2 boundary.
 4. `internal/adapter/vmcpbroker/runtime.go` — the executable API, not an older design sketch.
 5. The accepted twenty-point Stage 3 contract reproduced below.
 
