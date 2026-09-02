@@ -329,6 +329,16 @@ target ID and copies it with `t`; the target-derived terminal title uses the sam
 Model/mode/session-changing affordances are disabled. See
 [ADR 0254](adr/0254-session-debugger-admin-transport.md).
 
+### Seamless reattachment
+
+`mecatui connect ADDRESS` with no flags reads a persisted last-session pointer for the
+target and auto-branches: a `running` session is reattached via `WatchSessionEvents`
+(replay what you missed, then follow live); an idle/terminal session is resumed as today;
+no pointer starts fresh ([ADR 0278](adr/0278-detached-runs.md)). `--new` forces a fresh
+session even when a running one exists; `--resume <id>` also auto-branches (reattach if
+running, resume if terminal). The pointer is fail-soft — a corrupt/missing file degrades
+to the session listing.
+
 ## Scheduled tasks
 
 `mecated` and `mecak8s` run scheduled agent fires autonomously (issue #189,

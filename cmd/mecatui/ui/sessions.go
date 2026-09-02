@@ -274,6 +274,47 @@ func (m Model) loadSessionTranscript(row client.SessionListItem, inspect bool) (
 	return m, cmd, true
 }
 
+// applyReattachIntent handles a sessionsReattachIntent (ADR 0278 Scenario 3):
+// `enter` on a RUNNING row in the sessions browser reattaches via
+// WatchSessionEvents. It binds the session, transitions to phaseFollowing (the
+// read-only live view of a server-owned detached run), marks detached, and arms
+// the watch from the beginning of the log (the operator wants what they
+// missed). The row's state is server-authored inventory; a row whose state
+// lagged to terminal is handled by the listing path's eligibility (a running row
+// is only a reattach candidate when the inventory says running). No transcript
+// is adopted — the authoritative snapshot lags the live run; the watch replays
+// it. Returns the stopSurfaceDispatch=true so the surface's modal closes.
+func (m Model) applyReattachIntent(row client.SessionListItem) (tea.Model, tea.Cmd, bool) {
+	if m.deps.Watch == nil {
+		// No watch streamer wired (older server / no detached-runs support):
+		// degrade to a transcript adoption so `enter` still does something
+		// useful (open the transcript read-only).
+		mm, cmd, stop := m.adoptAuthoritativeTranscript(row, conversation{})
+		return mm, cmd, stop
+	}
+	m = m.endRun("")
+	m = m.resetSession()
+	m = m.bindSessionID(row.ID)
+	m.sessionTitle = row.Title
+	m.sessionState = row.State
+	m.sessionCreatedAt = row.CreatedAt
+	m.sessionModifiedAt = row.ModifiedAt
+	m.activeWorkspace = row.Workspace
+	m.detached = true
+	m.restartedThisRun = true
+	m.closeModal()
+	m.browsingStartupSessions = false
+	m.phase = phaseFollowing
+	m.stuck = true
+	m.statusMsg = "reattaching to running session " + safeSessionID(row.ID)
+	cmd := (&m).armWatch("")
+	m.refreshView()
+	if m.deps.Session != nil {
+		cmd = tea.Batch(cmd, client.RefreshResolvedModelCmd(m.deps.Ctx, m.deps.Session, row.ID))
+	}
+	return m, cmd, true
+}
+
 func (m Model) adoptAuthoritativeTranscript(row client.SessionListItem, loaded conversation) (tea.Model, tea.Cmd, bool) {
 	m = m.endRun("")
 	m = m.resetSession()

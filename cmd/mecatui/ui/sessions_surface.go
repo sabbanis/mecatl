@@ -198,6 +198,18 @@ type sessionsTranscriptAdoptionIntent struct {
 
 func (sessionsTranscriptAdoptionIntent) isSurfaceIntent() {}
 
+// sessionsReattachIntent asks the Model to REATTACH to a RUNNING server-owned
+// detached run (ADR 0278 Scenario 3) via WatchSessionEvents, rather than adopting
+// a terminal transcript. Set when `enter` is pressed on a running row in the
+// sessions browser; the Model transitions to phaseFollowing + arms the watch.
+// The row's state is verified via GetSession in the intent handler (a row whose
+// state lagged to terminal degrades to a transcript adoption).
+type sessionsReattachIntent struct {
+	row client.SessionListItem
+}
+
+func (sessionsReattachIntent) isSurfaceIntent() {}
+
 // Startup intents ask the Model to quit or create the first chat.
 type sessionsStartupQuitIntent struct{}
 
@@ -571,6 +583,15 @@ func (s *sessionsState) handleActionKey(msg tea.KeyPressMsg) (tea.Cmd, bool) {
 				reason = row.ReasonCode
 			}
 			s.setNotice(reason)
+			return nil, true
+		}
+		// A RUNNING row is a reattach candidate (ADR 0278 Scenario 3): the server
+		// owns the detached run, so `enter` reattaches via WatchSessionEvents
+		// (replay-then-follow) rather than adopting a terminal transcript. The
+		// Model's intent handler verifies the state via GetSession (a row whose
+		// state lagged to terminal degrades to a transcript adoption).
+		if row.State == "running" && row.Capabilities.PublicChat {
+			s.intent = sessionsReattachIntent{row: row}
 			return nil, true
 		}
 		return s.openTranscript(row, !row.Capabilities.PublicChat && row.Capabilities.Inspect), true
@@ -1225,7 +1246,11 @@ func conversationFromTranscript(messages []client.ConversationMessage) conversat
 func stateBadge(state string) string {
 	switch state {
 	case "running":
-		return "▶"
+		// A filled circle (●) distinguishes a RUNNING detached run (a reattach
+		// candidate, ADR 0278 Scenario 3) from the play-triangle cursor marker
+		// (▶) other surfaces use; `enter` on a running row reattaches via
+		// WatchSessionEvents rather than continuing a terminal transcript.
+		return "●"
 	case "completed":
 		return "✓"
 	case teamStopReasonCancelled, "failed":

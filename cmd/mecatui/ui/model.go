@@ -83,7 +83,23 @@ type SelectionStore interface {
 	SaveGlobalDefault(sel client.ModelSelection) error
 }
 
-// Converser preserves the original extension seam for raw and test clients.
+// SessionStateStore persists the per-target last-session pointer (ADR 0278
+// Scenario 3) so a reconnecting `mecatui connect ADDRESS` with no flags
+// auto-branches on the persisted id. It is satisfied by a main-owned concrete
+// type backed by an XDG state file (sibling to models.yaml); nil cleanly disables
+// persistence (the pointer is never written; the no-flag path falls through to the
+// listing). The ui touches no os/xdg itself — persistence is composition-side,
+// like SelectionStore. SavePointer takes primitives (target, sessionID, state) so
+// the ui never imports the main package's SessionPointer struct; LoadPointer
+// returns the same primitives.
+type SessionStateStore interface {
+	LoadPointer(target string) (sessionID, state string, ok bool)
+	SavePointer(target, sessionID, state string) error
+}
+
+// Converser opens one Converse run as a *client.Stream. *client.Client satisfies
+// it (its OpenConverse, wrapped to fix the mode/ctx); tests supply a fake that
+// returns a Stream over a scripted Recver.
 type Converser interface {
 	OpenConverse(ctx context.Context) (*client.Stream, error)
 }
@@ -160,6 +176,29 @@ type Deps struct {
 	// tests. nil disables the live bridge (the ui still renders deliveries via the
 	// replay on a session switch/reload, just not live). *Client satisfies it.
 	LiveStream client.LiveStreamer
+	// Watch is the durable replay-then-follow watch surface (ADR 0250, ADR 0278
+	// Scenario 3): a reattach to a running server-owned detached run arms a
+	// WatchSessionEvents stream (replay from cursor, then follow live) via this.
+	// The ui holds the interface (not a *Client) so it is injectable with a fake
+	// for offline tests. nil disables the reattach affordance (the no-flag pointer
+	// path degrades to the listing). *Client satisfies it.
+	Watch client.WatchStreamer
+	// Reattach is a statically validated reattach to a RUNNING server-owned
+	// detached run, selected before Bubble Tea starts. Unlike Resume (which
+	// adopts a terminal transcript), a reattach arms a WatchSessionEvents stream
+	// so the operator sees what they missed then follows live. nil preserves the
+	// new-session / resume default. Set by main from the no-flag pointer path or
+	// --resume <id> when the session is running and the server supports detached
+	// runs (ADR 0278 Scenario 3).
+	Reattach *client.ReattachSelection
+	// SessionStateStore persists the per-target last-session pointer (ADR 0278
+	// Scenario 3) so a reconnecting `mecatui connect ADDRESS` with no flags
+	// auto-branches on the persisted id. nil disables persistence (the pointer is
+	// never written; the no-flag path falls through to the listing). Lives in the
+	// ui composition seam so the reducers can SavePointer on detach / session
+	// switch; the store itself is main-owned (composition-side, like
+	// SelectionStore) so the ui never touches os/xdg.
+	SessionStateStore SessionStateStore
 	// MCPAuthorization is the distinct browser authorization surface. It never
 	// shares the permission-approval stream or controls.
 	MCPAuthorization client.MCPAuthorizationController
@@ -437,6 +476,7 @@ const (
 	phaseAuthorizing                   // an MCP browser authorization is pending
 	phaseFatal                         // connect/fatal error; input disabled
 	phaseReplay                        // a stored-session transcript replay is open (read-only; issue #245)
+	phaseFollowing                     // following a server-owned detached run via WatchSessionEvents (read-only live view; ADR 0278)
 )
 
 // spinnerVisible reports whether the footer renders the animated spinner in the
@@ -446,7 +486,7 @@ const (
 // visible phase must re-arm m.sp.Tick. Session transcript loading is owned and
 // rendered by sessionsState; it does not depend on the Model spinner.
 func (m Model) spinnerVisible() bool {
-	return m.phase == phaseRunning || m.phase == phaseConnecting
+	return m.phase == phaseRunning || m.phase == phaseConnecting || m.phase == phaseFollowing
 }
 
 // promptRecovery is a text-only prompt that can safely be restored after a run
@@ -893,6 +933,34 @@ type Model struct {
 	liveContinuityAttempt int
 	liveReconnectErr      string
 
+	// ── Detached-run reattach (ADR 0278 Scenario 3) ────────────────────────
+	// The watch feed (WatchSessionEvents replay-then-follow) + the
+	// phaseFollowing read-only live view. Parallel to the live-feed fields
+	// (liveCh/liveGen/liveStop/liveArmed) but threaded through a CURSOR so a
+	// reconnect resumes from the furthest position the ui observed (at-least-once).
+	// watchCh is the watch reader channel (WatchCmd / ReconnectWatchCmd);
+	// watchGen is its generation guard; watchStop is the idempotent teardown;
+	// watchCursor is the furthest cursor received (threaded into a reconnect);
+	// watchArmed is the session id the watch is armed for (avoids re-arm on
+	// same id). detached marks a run the ui is FOLLOWING (not driving) — a
+	// detached run's Converse stream closed and the watch feed owns the view.
+	// watchReplaying/watchReplayCount drive the `⟳ replaying N events…` footer
+	// (AC3.6: the WatchPhaseReplay→WatchPhaseLive boundary).
+	watchCh               chan tea.Msg
+	watchStop             func()
+	watchGen              uint64
+	watchArmed            string
+	watchCursor           string
+	watchReconCh          chan tea.Msg
+	watchReconStop        func()
+	watchReconGen         uint64
+	watchReconnecting     bool
+	watchReconnectAttempt int
+	watchReconnectErr     string
+	watchReplayCount      int  // events replayed so far in the current replay phase
+	watchReplaying        bool // true while in the WatchPhaseReplay phase
+	detached              bool // true while following a server-owned detached run
+
 	// seenFireIDs is the per-session delivery-note dedup set (issue #387): a
 	// fire-result delivery note that arrives BOTH via the durable catch-up AND the
 	// reopened live feed must render EXACTLY ONCE. Keyed by DeliveryNoteMsg.FireID
@@ -1082,6 +1150,30 @@ func New(deps Deps) Model {
 		m.statusMsg = "continuing chat " + sanitizeTerminal(resume.Row.Title) + " — type to add a turn"
 		m.refreshView()
 	}
+	// A reattach (ADR 0278 Scenario 3): the no-flag pointer (or --resume <id>)
+	// named a RUNNING server-owned detached run. Bind the session id + snapshot
+	// (running) + capabilities, mark detached, transition to phaseFollowing (the
+	// read-only live view), and arm the watch (WatchSessionEvents replay-then-
+	// follow). The ui is FOLLOWING the run, not driving it — there is no
+	// Converse stream and no transcript to adopt (the authoritative snapshot
+	// lags the live run). The watch replays what the operator missed then
+	// follows live; the replay→live boundary drives the `⟳ replaying N
+	// events…` footer (AC3.6).
+	if reattach := deps.Reattach; reattach != nil {
+		m.phase = phaseFollowing
+		m.sessionID = reattach.SessionID
+		m.sessionState = reattach.Snapshot.State
+		m.sessionCreatedAt = reattach.Snapshot.CreatedAt
+		m.activeWorkspace = reattach.Snapshot.Workspace
+		m.activeMode = client.ModeString(client.ModeFromString(reattach.Snapshot.Mode))
+		(&m).setResolvedSessionModel(reattach.Snapshot.ResolvedModel)
+		m.caps = reattach.Snapshot.Capabilities
+		m.detached = true
+		m.startupAdopted = true
+		m.restartedThisRun = true
+		m.statusMsg = "reattaching to running session " + safeSessionID(reattach.SessionID)
+		m.refreshView()
+	}
 	return m
 }
 
@@ -1263,6 +1355,15 @@ func (m Model) startupCmd() tea.Cmd {
 		return tea.Batch(cmds...)
 	}
 	if m.deps.Resume != nil {
+		return tea.Batch(m.sp.Tick, func() tea.Msg { return startupResumeReadyMsg{} }, m.statusLineWaitCmd())
+	}
+	if m.deps.Reattach != nil {
+		// A reattach arms the WatchSessionEvents stream (replay-then-follow) for
+		// the running detached run; the watch reader drives phaseFollowing. A
+		// startupResumeReadyMsg fires finishStartupResume, which arms the watch
+		// from the beginning of the log (cursor "" — the operator wants what
+		// they missed). armWatch is called in finishStartupResume (not here)
+		// because it mutates the model via &m and Init is a value-receiver.
 		return tea.Batch(m.sp.Tick, func() tea.Msg { return startupResumeReadyMsg{} }, m.statusLineWaitCmd())
 	}
 	if m.deps.Models != nil {

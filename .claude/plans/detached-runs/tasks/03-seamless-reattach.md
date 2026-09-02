@@ -2,7 +2,7 @@
 id: 03-seamless-reattach
 title: Seamless reattach — the tool remembers, the user forgets
 blocked_by: [01-detached-prompt-drain]
-status: pending
+status: done
 branch: "plan-detached-runs/03-seamless-reattach"
 worktree: ""
 issue: ""

@@ -40,6 +40,12 @@ exact ID or with `--resume-latest`. Its session browser also supports inspection
 continuation, forking, and maintenance when the server advertises those
 capabilities.
 
+`mecatui connect ADDRESS` with no flags reads a persisted last-session pointer
+for the target and auto-branches: a `running` session is reattached via
+`WatchSessionEvents` (replay what you missed, then follow live); an idle/terminal
+session is resumed as today; no pointer starts fresh. `--new` forces a fresh
+session even when a running one exists.
+
 For the terminal-specific startup and seed-prompt path, see [Mecatui getting started](/mecatui/getting-started.md). For session selectors, browser behavior, and controls, see [Mecatui sessions](/mecatui/sessions.md). For local versus remote connection ownership, see [Connect to a server](/mecatui/remote-servers.md).
 
 ## API flow

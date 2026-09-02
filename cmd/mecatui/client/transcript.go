@@ -36,6 +36,20 @@ type ResumeSelection struct {
 	Snapshot   SessionSnapshot
 }
 
+// ReattachSelection is a startup reattach to a RUNNING server-owned detached run
+// (ADR 0278 Scenario 3). Unlike a ResumeSelection (which adopts a terminal
+// transcript), a reattach arms a WatchSessionEvents stream (replay-then-follow) so
+// the operator sees what they missed then follows live — the session is still
+// running server-side, so there is NO transcript to adopt (the authoritative
+// snapshot lags the live run). Snapshot carries the server-authored state
+// (StateRunning) + capabilities so the ui can render the running-session affordances
+// from turn zero. Resolving it performs no run-entry work — the ui's Init arms the
+// watch (Slice 4).
+type ReattachSelection struct {
+	SessionID string
+	Snapshot  SessionSnapshot
+}
+
 // GetSessionTranscript fetches the authoritative snapshot-derived transcript.
 func (c *Client) GetSessionTranscript(ctx context.Context, id string) (SessionTranscript, error) {
 	resp, err := c.svc.GetSessionTranscript(withSessionAffinity(ctx, id), &mecatlv1.GetSessionTranscriptRequest{SessionId: id})

@@ -72,6 +72,7 @@ var flagApplicabilityByFlag = map[string]flagApplicability{
 	"debug-mcp":     {group: groupSession, common: true, local: true, connect: true},
 	"resume":        {group: groupSession, common: true, local: true, connect: true},
 	"resume-latest": {group: groupSession, common: true, local: true, connect: true},
+	"new":           {group: groupSession, common: false, local: true, connect: true}, // ADR 0278: force fresh session
 	"prompt":        {group: groupSession, common: true, local: true, connect: true},
 	"p":             {group: groupSession, common: false, local: true, connect: true}, // alias for --prompt
 	"prompt-file":   {group: groupSession, common: true, local: true, connect: true},
@@ -318,7 +319,7 @@ func writeSessionsCommonHelp(out io.Writer, fs *flag.FlagSet, mode transportMode
 }
 
 var sessionsLaunchConflictingFlags = map[string]bool{
-	"p": true, "prompt": true, "prompt-file": true, "resume": true, "resume-latest": true,
+	"p": true, "prompt": true, "prompt-file": true, "resume": true, "resume-latest": true, "new": true,
 }
 
 // renderGroupedCommon writes flags grouped by their assigned group heading,

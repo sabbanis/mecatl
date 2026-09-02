@@ -552,6 +552,21 @@ func (m Model) footerActivity() string {
 		left = m.deps.Theme.Style("askTitle").Render(label)
 	case phaseConnecting:
 		left = m.sp.View() + " connecting…"
+	case phaseFollowing:
+		// A reattach (ADR 0278 Scenario 3): the ui is FOLLOWING a server-owned
+		// detached run via WatchSessionEvents. During replay the footer shows
+		// `⟳ replaying N events…`; on the live boundary it switches to the
+		// normal live spinner; while reconnecting it shows the degraded cue.
+		switch {
+		case m.watchReconnecting:
+			left = m.deps.Theme.Style("ctxWarn").Render(
+				fmt.Sprintf("⟳ reattaching to running session… (attempt %d)", m.watchReconnectAttempt),
+			)
+		case m.watchReplaying:
+			left = m.sp.View() + fmt.Sprintf(" ⟳ replaying %d events…", m.watchReplayCount)
+		default:
+			left = m.sp.View() + " following detached run…"
+		}
 	default:
 		left = m.idleFooterLeft()
 	}

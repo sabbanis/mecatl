@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"syscall"
+	"time"
 
 	"github.com/goccy/go-yaml"
 
@@ -171,7 +172,7 @@ func (s *selectionStore) Save(workspace string, sel client.ModelSelection) error
 	if err != nil {
 		return err
 	}
-	return writeStateFile(s.path, out)
+	return writeStateFile(s.path, ".models-*", out)
 }
 
 // LoadWorkspace returns ONLY the per-workspace (realpath-keyed) entry for
@@ -230,7 +231,7 @@ func (s *selectionStore) SaveGlobalDefault(sel client.ModelSelection) error {
 	if err != nil {
 		return err
 	}
-	return writeStateFile(s.path, out)
+	return writeStateFile(s.path, ".models-*", out)
 }
 
 // read loads + parses the state file. ok is false (and the file is ignored
@@ -297,8 +298,10 @@ func readStateFile(path string) ([]byte, error) {
 // writeStateFile atomically replaces the state file with the trust-registry
 // discipline: mkdir -p the parent, refuse to write THROUGH a pre-planted symlink at
 // the final path (O_NOFOLLOW spirit via an Lstat guard, CWE-59), write to a sibling
-// temp file (O_EXCL|0o600), then rename over the target.
-func writeStateFile(path string, data []byte) error {
+// temp file (O_EXCL|0o600), then rename over the target. tempPrefix is the prefix
+// for the sibling temp file (e.g. ".models-*" / ".sessions-*") so the two state
+// files do not collide on the temp namespace; the *.yaml.tmp suffix is appended.
+func writeStateFile(path string, tempPrefix string, data []byte) error {
 	dir := filepath.Dir(path)
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return err
@@ -306,7 +309,7 @@ func writeStateFile(path string, data []byte) error {
 	if fi, err := os.Lstat(path); err == nil && fi.Mode()&fs.ModeSymlink != 0 {
 		return &os.PathError{Op: "open", Path: path, Err: syscall.ELOOP}
 	}
-	tmp, err := os.CreateTemp(dir, ".models-*.yaml.tmp")
+	tmp, err := os.CreateTemp(dir, tempPrefix+"-*.yaml.tmp")
 	if err != nil {
 		return err
 	}
@@ -324,7 +327,210 @@ func writeStateFile(path string, data []byte) error {
 		return err
 	}
 	if err := os.Rename(tmpName, path); err != nil {
-		return fmt.Errorf("rename model state: %w", err)
+		return fmt.Errorf("rename state file: %w", err)
 	}
 	return nil
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
+// sessions.yaml — the per-server-target last-session pointer (ADR 0278 Scenario 3)
+// ─────────────────────────────────────────────────────────────────────────────
+//
+// The detached-runs last-session pointer: a persisted record of the last session
+// mecatui used for ONE connect target, so a reconnecting `mecatui connect ADDRESS`
+// with no flags can auto-branch (running → reattach via WatchSessionEvents;
+// idle/terminal → resume as today; none → fresh). It is a SIBLING to models.yaml
+// in the SAME XDG_STATE_HOME/mecatui dir, reusing the exact selectionStore
+// infrastructure: fail-soft read (a missing/oversized/malformed file ⇒ no pointer,
+// never an error that aborts launch), atomic write (0o600, O_NOFOLLOW symlink
+// guard), the maxStateBytes cap. The user never types a flag, never remembers a
+// session id — the tool remembers, the user forgets (ADR 0278 decision 4).
+//
+// # Format: per-target map
+//
+//	version: 1
+//	targets:
+//	  remote-1.example:443: { last_session: sess-abc, last_seen: 1725200000, state: running }
+//
+// Keyed by connect target (the dial string — host:port, or whatever ADDRESS was
+// passed to `mecatui connect`). Read order on connect: targets[address] if
+// present, else no pointer (fresh session). Written on detach (Ctrl+C leaves the
+// run, the pointer records the id + state) and on session switch (the active
+// session becomes the last for the target). last_seen is a Unix timestamp for
+// staleness display; state is the session's state at the time of recording
+// (running/idle/completed/cancelled/failed — a running state is the reattach
+// affordance, the whole point of the pointer).
+//
+// # Safety
+//
+// Read is fail-soft like models.yaml: a missing/oversized/malformed/wrong-version
+// file yields no pointer (the no-flag connect falls through to the session
+// listing path), never an error. Write is atomic with the SAME temp+rename /
+// O_NOFOLLOW discipline. The file is NEVER a source of truth for session state —
+// the server is; the pointer is a HINT the no-flag path reads then verifies via
+// GetSession before branching. A stale pointer (the session was cancelled
+// server-side) degrades to the listing path.
+
+// sessionStateSubpath is the sessions.yaml path relative to the XDG state base.
+var sessionStateSubpath = filepath.Join("mecatui", "sessions.yaml")
+
+// sessionStateFile is the on-disk schema of sessions.yaml.
+type sessionStateFile struct {
+	Version int                       `yaml:"version"`
+	Targets map[string]sessionPointer `yaml:"targets,omitempty"`
+}
+
+// sessionPointer is one persisted last-session record for a connect target.
+type sessionPointer struct {
+	// LastSession is the opaque session id to reattach to / resume.
+	LastSession string `yaml:"last_session"`
+	// LastSeen is a Unix timestamp of when the pointer was written (staleness).
+	LastSeen int64 `yaml:"last_seen"`
+	// State is the session's state at the time of recording (running/idle/
+	// completed/cancelled/failed). A running state is the reattach affordance.
+	State string `yaml:"state"`
+}
+
+// sessionStateStore is the main-owned concrete SessionStateStore: it loads the
+// persisted last-session pointer at connect and persists it on detach / session
+// switch. Bound to a resolved state-file path; tests inject a temp path. A ""
+// path means no XDG state dir resolved — persistence degrades to a no-op.
+type sessionStateStore struct {
+	path string
+}
+
+// newSessionStateStore resolves the sessions.yaml path under XDG_STATE_HOME (via
+// the shared xdgconfig leaf) and returns a store bound to it. When no state dir
+// resolves the path is "" — persistence degrades to a no-op.
+func newSessionStateStore(env xdgconfig.ResolveEnv) *sessionStateStore {
+	base := xdgconfig.UserStateDir(env)
+	if base == "" {
+		return &sessionStateStore{}
+	}
+	return &sessionStateStore{path: filepath.Join(base, sessionStateSubpath)}
+}
+
+// SessionPointer is the proto-free, ui-visible last-session record the no-flag
+// connect path reads to auto-branch (running → reattach; idle/terminal →
+// resume). LastSeen is a Unix timestamp; State is the session state at the time
+// of recording. An empty LastSession means no pointer (fresh session).
+type SessionPointer struct {
+	LastSession string
+	LastSeen    int64
+	State       string
+}
+
+// LoadPointer returns the persisted last-session pointer for the connect target
+// as primitives for the ui's SessionStateStore interface (sessionID + state + ok).
+// Fail-soft: a missing/oversized/malformed/wrong-version file yields ok=false,
+// never an error — the no-flag connect falls through to the session listing path.
+// LoadPointerFull returns the full SessionPointer (with LastSeen for staleness).
+func (s *sessionStateStore) LoadPointer(target string) (string, string, bool) {
+	ptr := s.LoadPointerFull(target)
+	return ptr.LastSession, ptr.State, ptr.LastSession != ""
+}
+
+// LoadPointerFull returns the full SessionPointer (LastSession + LastSeen + State)
+// for the connect path's staleness display. Fail-soft like LoadPointer.
+func (s *sessionStateStore) LoadPointerFull(target string) SessionPointer {
+	if s == nil || s.path == "" || target == "" {
+		return SessionPointer{}
+	}
+	sf, ok := s.read()
+	if !ok {
+		return SessionPointer{}
+	}
+	ptr, found := sf.Targets[target]
+	if !found {
+		return SessionPointer{}
+	}
+	return SessionPointer(ptr)
+}
+
+// SavePointer persists the last-session pointer for the connect target. It is
+// read-modify-write: it preserves every OTHER target's entry. A zero sessionID is
+// a no-op (a null pointer is not a pointer). The write is atomic. Called on detach
+// (the run continues server-side, the pointer records id + state) and on session
+// switch (the active session becomes the last for the target). lastSeen is a Unix
+// timestamp (0 ⇒ now at write time for the detach/switch callers that don't have
+// one).
+func (s *sessionStateStore) SavePointer(target, sessionID, state string) error {
+	if s == nil || s.path == "" {
+		return errors.New("mecatui: no XDG state dir to persist the last-session pointer")
+	}
+	if target == "" || sessionID == "" {
+		return nil // a null pointer is not a pointer
+	}
+	sf, _ := s.read() // a corrupt/absent file ⇒ start fresh
+	sf.Version = stateVersion
+	if sf.Targets == nil {
+		sf.Targets = make(map[string]sessionPointer)
+	}
+	sf.Targets[target] = sessionPointer{
+		LastSession: sessionID,
+		LastSeen:    nowUnix(),
+		State:       state,
+	}
+	out, err := yaml.Marshal(sf)
+	if err != nil {
+		return err
+	}
+	return writeStateFile(s.path, ".sessions-*", out)
+}
+
+// nowUnix returns the current Unix timestamp for the LastSeen field. Extracted so
+// tests can stub it; production uses time.Now().Unix().
+var nowUnix = func() int64 { return time.Now().Unix() }
+
+// ClearPointer removes the last-session pointer for a target (e.g. on a clean
+// `--new` start, or when the session is confirmed gone). Read-modify-write
+// preserving every other target. No-op when no entry exists.
+func (s *sessionStateStore) ClearPointer(target string) error {
+	if s == nil || s.path == "" {
+		return errors.New("mecatui: no XDG state dir to clear the last-session pointer")
+	}
+	if target == "" {
+		return nil
+	}
+	sf, ok := s.read()
+	if !ok {
+		return nil // nothing to clear
+	}
+	if _, found := sf.Targets[target]; !found {
+		return nil
+	}
+	delete(sf.Targets, target)
+	out, err := yaml.Marshal(sf)
+	if err != nil {
+		return err
+	}
+	return writeStateFile(s.path, ".sessions-*", out)
+}
+
+// read loads + parses the sessions state file. ok is false (and the file is
+// ignored fail-soft) on any read/parse failure or an unknown schema version.
+// Mirrors selectionStore.read (the SAME fail-soft discipline, the SAME cap).
+func (s *sessionStateStore) read() (sessionStateFile, bool) {
+	data, err := readStateFile(s.path)
+	if err != nil {
+		return sessionStateFile{}, false
+	}
+	if len(data) > maxStateBytes {
+		return sessionStateFile{}, false
+	}
+	if len(strings.TrimSpace(string(data))) == 0 {
+		return sessionStateFile{}, false
+	}
+	document, err := yamldiag.ParseSettingsDocument(data)
+	if err != nil {
+		return sessionStateFile{}, false
+	}
+	var sf sessionStateFile
+	if err := document.Decode(document.Mapping(), &sf); err != nil {
+		return sessionStateFile{}, false
+	}
+	if sf.Version != stateVersion {
+		return sessionStateFile{}, false
+	}
+	return sf, true
 }

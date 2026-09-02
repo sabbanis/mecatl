@@ -162,6 +162,13 @@ type config struct {
 	// exclusive; the first prompt still owns all run-entry attachment/revalidation.
 	resumeID     string
 	resumeLatest bool
+	// forceNew (--new) forces a FRESH session even when a persisted last-session
+	// pointer exists for the connect target (ADR 0278 Scenario 3): the operator
+	// who wants to start over without the tool auto-reattaching passes --new. It
+	// is mutually exclusive with --resume/--resume-latest (it defeats both). The
+	// no-flag default reads the persisted pointer and auto-branches (running →
+	// reattach; idle/terminal → resume; none → fresh); --new skips that.
+	forceNew bool
 
 	// prompt is the literal seed-prompt text supplied via -p/--prompt.
 	// Empty = no seed. Joined ahead of --prompt-file when both are given.
@@ -371,6 +378,7 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	})
 	fs.StringVar(&cfg.resumeID, "resume", "", "start by continuing the owned main chat with this exact opaque session ID; loads its authoritative transcript without creating a throwaway session (mutually exclusive with --resume-latest)")
 	fs.BoolVar(&cfg.resumeLatest, "resume-latest", false, "start by continuing the newest eligible owned main chat with an available authoritative transcript; excludes active, awaiting, scheduled, child, and unknown sessions (mutually exclusive with --resume); when none exists, start a new chat instead of failing")
+	fs.BoolVar(&cfg.forceNew, "new", false, "start a FRESH session even when a persisted last-session pointer exists for this connect target (ADR 0278). The no-flag default auto-branches on the persisted pointer: running → reattach via WatchSessionEvents; idle/terminal → resume as today; none → fresh. --new skips the pointer and always starts fresh (mutually exclusive with --resume/--resume-latest)")
 	fs.StringVar(&cfg.prompt, "prompt", "", "seed prompt auto-submitted once the first session is ready (the CLI task to launch with). The TUI stays interactive for follow-ups; this is NOT a one-shot. Both --prompt and --prompt-file may be given (literal first)")
 	fs.StringVar(&cfg.prompt, "p", "", "short form of --prompt")
 	fs.StringVar(&cfg.promptFile, "prompt-file", "", "path to a file whose contents are the seed prompt body. Read at startup (fail-fast on unreadable). Joined after --prompt when both are given")
@@ -574,7 +582,8 @@ func applySavedRemoteTLSPolicy(cfg config, dial *client.DialConfig) error {
 }
 
 // validateResumeSelectors enforces that at most ONE startup resume intent is chosen:
-// --resume and --resume-latest are mutually exclusive. It is shared by the
+// --resume, --resume-latest, and --new are mutually exclusive (a --new defeats a
+// resume/reattach and would silently pick the wrong session). It is shared by the
 // parse-time check and the client-side validate() so both surfaces agree.
 func validateResumeSelectors(cfg config) error {
 	n := 0
@@ -584,8 +593,11 @@ func validateResumeSelectors(cfg config) error {
 	if cfg.resumeLatest {
 		n++
 	}
+	if cfg.forceNew {
+		n++
+	}
 	if n > 1 {
-		return errors.New("--resume and --resume-latest are mutually exclusive")
+		return errors.New("--resume, --resume-latest, and --new are mutually exclusive")
 	}
 	return nil
 }
@@ -613,6 +625,8 @@ func validateSessionsLaunch(cfg config) error {
 		return errors.New("mecatui sessions conflicts with --resume")
 	case cfg.resumeLatest:
 		return errors.New("mecatui sessions conflicts with --resume-latest")
+	case cfg.forceNew:
+		return errors.New("mecatui sessions conflicts with --new")
 	default:
 		return nil
 	}

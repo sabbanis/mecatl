@@ -441,8 +441,21 @@ func (m Model) finishStartupResume() (tea.Model, tea.Cmd) {
 	if contextCmd := m.refreshStatusContextCmd(); contextCmd != nil {
 		cmd = tea.Batch(cmd, contextCmd)
 	}
-	if liveCmd := (&m).armLiveFeed(); liveCmd != nil {
-		cmd = tea.Batch(cmd, liveCmd)
+	// A reattach arms the WatchSessionEvents stream (phaseFollowing); the live
+	// feed (StreamSessionLive) is NOT armed — the watch is the authoritative
+	// live view for a detached run, and arming both would double-deliver. The
+	// watch is armed here (in the Update reducer, where pointer-receiver
+	// mutations on m survive), not in Init — armWatch mutates the model via
+	// &m, and Init is a value-receiver so a mutation there is lost (the same
+	// reason armLiveFeed is armed here, not in Init).
+	if m.detached {
+		if watchCmd := (&m).armWatch(""); watchCmd != nil {
+			cmd = tea.Batch(cmd, watchCmd)
+		}
+	} else {
+		if liveCmd := (&m).armLiveFeed(); liveCmd != nil {
+			cmd = tea.Batch(cmd, liveCmd)
+		}
 	}
 	if m.caps.WorkspaceEnrollment {
 		m.enrollment = workspaceEnrollmentState{}
@@ -600,6 +613,20 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		// lifecycle/transport msg), keeping the main dispatcher's branch count
 		// under the cyclomatic cap.
 		mm, cmd := m.updateReconnectMsg(msg)
+		return mm, cmd, true
+	case watchMsg:
+		// Watch-feed msgs (ADR 0278 Scenario 3): a reattach arms a
+		// WatchSessionEvents replay-then-follow stream; its envelopes (replay
+		// events, the phase-only live boundary, live events) and lifecycle
+		// markers ride the watch channel. Handled here (a lifecycle/transport
+		// msg), keeping the main dispatcher's branch count under the cap.
+		mm, cmd := m.updateWatchMsg(msg)
+		return mm, cmd, true
+	case watchReconnectMsg:
+		// Watch-feed reconnect loop msgs (the watch analogue of reconnectMsg):
+		// a dropped watch stream is recovered with bounded backoff, threading
+		// the last cursor so a re-attach resumes from exactly the next record.
+		mm, cmd := m.updateWatchReconnectMsg(msg)
 		return mm, cmd, true
 	case modelSwitchReadyMsg:
 		// The target's authoritative transcript is already complete and correlated.
@@ -2219,6 +2246,13 @@ func (m Model) applySessionsSurfaceIntent(intent surfaceIntent) (model tea.Model
 		m.activeMode = intent.mode
 		mm, cmd, stopSurfaceDispatch := m.adoptAuthoritativeTranscript(intent.row, intent.transcript)
 		return mm, cmd, true, stopSurfaceDispatch
+	case sessionsReattachIntent:
+		// `enter` on a RUNNING row in the sessions browser (ADR 0278 Scenario 3):
+		// reattach via WatchSessionEvents. The row's state is re-verified via
+		// GetSession (a row whose state lagged to terminal degrades to a transcript
+		// adoption); a running state transitions to phaseFollowing + arms the watch.
+		mm, cmd, stop := m.applyReattachIntent(intent.row)
+		return mm, cmd, true, stop
 	case sessionsStartupQuitIntent:
 		if sessions, ok := m.modal.(*sessionsState); ok && sessions.pageCancel != nil {
 			sessions.pageCancel()
@@ -3719,6 +3753,275 @@ func (m *Model) disarmLiveFeed() {
 	m.liveGen++ // invalidate any stale reader
 	m.liveArmed = ""
 	m.disarmReconnect()
+	// A session switch / reset ALSO tears down the watch feed (ADR 0278): a
+	// reattach's watch is abandoned with the live feed, and the gen bump
+	// invalidates any stale watch reader so it cannot route into the fresh
+	// session. detach is cleared so the fresh session drives its own run.
+	m.disarmWatch()
+	m.detached = false
+}
+
+// ── Watch feed (WatchSessionEvents) — detached-run reattach (ADR 0278 Scenario 3)
+//
+// The watch reducers mirror the live-feed pair (armLiveFeed/disarmLiveFeed/
+// updateLiveMsg/updateReconnectMsg) but over WatchSessionEvents, the durable
+// replay-then-follow stream a reattach arms. The watch threads a CURSOR so a
+// reconnect resumes from exactly the next record (the live feed has no cursor —
+// it is process-local and non-durable). A phase-only frame (the replay→live
+// boundary) drives the `⟳ replaying N events…` footer (AC3.6): while in the
+// WatchPhaseReplay phase the ui counts replay events and shows the indicator; on
+// the WatchPhaseLive boundary it clears the indicator and switches to the normal
+// live spinner.
+
+// watchMsg wraps one message pulled from the watch reader channel with the
+// generation that channel belonged to when the reader was armed. The reducer
+// drops any watchMsg whose gen no longer matches m.watchGen, so a stale reader
+// left bound to an abandoned channel — torn down on a session switch / reset —
+// cannot route its messages into the current session. Parallel to liveMsg /
+// replayMsg.
+type watchMsg struct {
+	gen uint64
+	msg tea.Msg
+}
+
+// waitWatchCmd re-arms the fan-in command on the current watch channel, tagging
+// whatever it delivers with the current watch generation so a stale reader's
+// output is dropped rather than misrouted. Returns nil when no watch channel is
+// armed (defensive). Parallel to waitLiveCmd.
+func (m Model) waitWatchCmd() tea.Cmd {
+	if m.watchCh == nil {
+		return nil
+	}
+	gen := m.watchGen
+	read := client.WaitForMsg(m.watchCh)
+	return func() tea.Msg { return watchMsg{gen: gen, msg: read()} }
+}
+
+// armWatch opens the WatchSessionEvents stream for the current active session
+// (m.sessionID) via m.deps.Watch if a watch streamer is wired AND the session is
+// non-empty AND the watch is not already armed for this id. It tears down any
+// stale watch first (a session switch, or a re-arm after a transient close). The
+// returned tea.Cmd carries the waitWatchCmd fan-in. The cursor is the position
+// to resume from ("" = beginning of the log). Returns nil (no-op) when no
+// streamer is wired, the session is empty, or the feed is already armed. Parallel
+// to armLiveFeed.
+func (m *Model) armWatch(cursor string) tea.Cmd {
+	if m.deps.Watch == nil || m.sessionID == "" {
+		return nil
+	}
+	if m.watchArmed == m.sessionID && m.watchCh != nil {
+		return nil // already armed for this session
+	}
+	m.disarmWatch()
+
+	m.watchGen++
+	ch, stop := client.WatchCmd(m.deps.Ctx, m.deps.Watch, m.sessionID, cursor)
+	m.watchCh = ch
+	m.watchStop = stop
+	m.watchArmed = m.sessionID
+	m.watchCursor = cursor
+	m.watchReplaying = cursor == "" // an empty cursor means the beginning → replay phase
+	m.watchReplayCount = 0
+	return m.waitWatchCmd()
+}
+
+// disarmWatch tears down the watch reader goroutine and clears the watch state
+// fields. Idempotent. The gen bump invalidates any stale reader still draining
+// into the now-defunct channel. It ALSO disarms the watch reconnect loop
+// (parallel to disarmLiveFeed disarming the live reconnect).
+func (m *Model) disarmWatch() {
+	if m.watchStop != nil {
+		m.watchStop()
+	}
+	m.watchCh = nil
+	m.watchStop = nil
+	m.watchGen++ // invalidate any stale reader
+	m.watchArmed = ""
+	m.watchReplaying = false
+	m.watchReplayCount = 0
+	m.disarmWatchReconnect()
+}
+
+// updateWatchMsg applies the generation guard for the watch fan-in, then reduces
+// the inner msg. A WatchEnvelopeMsg carrying an event reduces through the SAME
+// updateStreamEvent path a live/replay event takes (so a watch event projects
+// identically); a phase-only frame (the replay→live boundary) drives the
+// `⟳ replaying N events…` footer (AC3.6); a StreamClosedMsg/StreamErrMsg on the
+// watch reader triggers the watch reconnect loop (the cursor-threaded resume).
+// Parallel to updateLiveMsg.
+func (m Model) updateWatchMsg(wm watchMsg) (tea.Model, tea.Cmd) {
+	if wm.gen != m.watchGen {
+		return m, nil // stale reader — drop, do not re-arm
+	}
+	switch msg := wm.msg.(type) {
+	case client.StreamErrMsg:
+		if msg.AuthReason != "" {
+			return m.reduceLiveAuthRecovery(msg.AuthReason)
+		}
+		m.watchCh = nil
+		m.watchStop = nil
+		return m, (&m).startWatchReconnect(msg.Err)
+	case client.StreamClosedMsg:
+		m.watchCh = nil
+		m.watchStop = nil
+		return m, (&m).startWatchReconnect(nil)
+	case client.WatchEnvelopeMsg:
+		env := msg.Envelope
+		// Thread the cursor so a reconnect resumes from the furthest position.
+		if env.Cursor != "" {
+			m.watchCursor = env.Cursor
+		}
+		// The replay→live boundary (phase-only frame, no Event): switch the
+		// footer from `⟳ replaying N events…` to the normal live spinner.
+		if env.Event == nil {
+			if env.Phase == client.WatchPhaseLive {
+				m.watchReplaying = false
+				m.watchReplayCount = 0
+			}
+			return m, m.waitWatchCmd()
+		}
+		// Count replay events for the footer indicator (AC3.6).
+		if m.watchReplaying && env.Phase == client.WatchPhaseReplay {
+			m.watchReplayCount++
+		}
+		// Reduce the event through the SAME path a live/replay event takes.
+		mm, cmd := m.updateStreamEvent(env.Event)
+		if m2, ok := mm.(Model); ok {
+			cmd = tea.Batch(cmd, m2.waitWatchCmd())
+		}
+		return mm, cmd
+	default:
+		// A non-envelope msg the watch reader projected (defensive): reduce
+		// through the generic stream-event path.
+		mm, cmd := m.updateStreamEvent(msg)
+		if m2, ok := mm.(Model); ok {
+			cmd = tea.Batch(cmd, m2.waitWatchCmd())
+		}
+		return mm, cmd
+	}
+}
+
+// startWatchReconnect kicks off the watch-feed reconnect loop (the cursor-
+// threaded resume) for the current session, returning the waitWatchReconnectCmd
+// fan-in. No-op (nil) when no watch streamer is wired, the session is empty, or
+// a reconnect is already in flight. Parallel to startReconnect.
+func (m *Model) startWatchReconnect(prevErr error) tea.Cmd {
+	if m.deps.Watch == nil || m.sessionID == "" {
+		return nil
+	}
+	if m.watchReconCh != nil {
+		return nil
+	}
+	m.watchReconGen++
+	cursor := m.watchCursor
+	m.watchReconnecting = true
+	m.watchReconnectAttempt = 1
+	if prevErr != nil {
+		m.watchReconnectErr = prevErr.Error()
+	} else {
+		m.watchReconnectErr = ""
+	}
+	ch, stop := client.ReconnectWatchCmd(m.deps.Ctx, m.deps.Watch, m.sessionID, cursor, func(c string) {
+		// cursorSink: advance the ui's furthest cursor on every envelope the
+		// probe delivers, so a multi-attempt reconnect resumes from the furthest
+		// position. Mutated via a pointer to m; safe because the sink is called
+		// from the probe's drain goroutine, which the stop joins.
+		if c != "" {
+			m.watchCursor = c
+		}
+	})
+	m.watchReconCh = ch
+	m.watchReconStop = stop
+	return m.waitWatchReconnectCmd()
+}
+
+// watchReconnectMsg wraps one message pulled from the watch reconnect loop's
+// channel with the watch-reconnect generation. Parallel to reconnectMsg.
+type watchReconnectMsg struct {
+	gen uint64
+	msg tea.Msg
+}
+
+// waitWatchReconnectCmd re-arms the fan-in on the current watch reconnect
+// channel. Parallel to waitReconnectCmd.
+func (m Model) waitWatchReconnectCmd() tea.Cmd {
+	if m.watchReconCh == nil {
+		return nil
+	}
+	gen := m.watchReconGen
+	read := client.WaitForMsg(m.watchReconCh)
+	return func() tea.Msg { return watchReconnectMsg{gen: gen, msg: read()} }
+}
+
+// updateWatchReconnectMsg applies the generation guard, then reduces the inner
+// msg. A WatchReconnectingMsg updates the degraded footer; a WatchReconnectedMsg
+// clears it, tears down the reconnect loop, and re-arms the watch reader off a
+// FRESH channel (threading the furthest cursor). A catch-up WatchEnvelopeMsg
+// reduces through the SAME updateStreamEvent path. Parallel to updateReconnectMsg.
+func (m Model) updateWatchReconnectMsg(rm watchReconnectMsg) (tea.Model, tea.Cmd) {
+	if rm.gen != m.watchReconGen {
+		return m, nil // stale reader — drop, do not re-arm
+	}
+	if msg, ok := rm.msg.(client.StreamErrMsg); ok && msg.AuthReason != "" {
+		return m.reduceLiveAuthRecovery(msg.AuthReason)
+	}
+	switch msg := rm.msg.(type) {
+	case client.WatchReconnectingMsg:
+		m.watchReconnecting = true
+		m.watchReconnectAttempt = msg.Attempt
+		if msg.Err != nil {
+			m.watchReconnectErr = msg.Err.Error()
+		} else {
+			m.watchReconnectErr = ""
+		}
+		return m, m.waitWatchReconnectCmd()
+	case client.WatchReconnectedMsg:
+		m.watchReconnecting = false
+		m.watchReconnectAttempt = 0
+		m.watchReconnectErr = ""
+		(&m).disarmWatchReconnect()
+		// Re-arm the watch reader off a FRESH channel, threading the furthest
+		// cursor. An empty cursor (the reconnect delivered nothing) resumes from
+		// the beginning (replay phase); a non-empty cursor resumes mid-stream.
+		return m, (&m).armWatch(m.watchCursor)
+	case client.StreamClosedMsg, client.StreamErrMsg:
+		m.watchReconnecting = false
+		m.watchReconnectAttempt = 0
+		m.watchReconnectErr = ""
+		(&m).disarmWatchReconnect()
+		return m, nil
+	case client.WatchEnvelopeMsg:
+		// Catch-up envelopes delivered by the probe: thread the cursor and
+		// reduce the event through the normal path.
+		if msg.Envelope.Cursor != "" {
+			m.watchCursor = msg.Envelope.Cursor
+		}
+		mm, cmd := m.updateStreamEvent(msg.Envelope.Event)
+		if m2, ok := mm.(Model); ok {
+			cmd = tea.Batch(cmd, m2.waitWatchReconnectCmd())
+		}
+		return mm, cmd
+	default:
+		mm, cmd := m.updateStreamEvent(rm.msg)
+		if m2, ok := mm.(Model); ok {
+			cmd = tea.Batch(cmd, m2.waitWatchReconnectCmd())
+		}
+		return mm, cmd
+	}
+}
+
+// disarmWatchReconnect tears down the watch reconnect loop and clears its
+// fields. Idempotent. Parallel to disarmReconnect.
+func (m *Model) disarmWatchReconnect() {
+	if m.watchReconStop != nil {
+		m.watchReconStop()
+	}
+	m.watchReconCh = nil
+	m.watchReconStop = nil
+	m.watchReconGen++
+	m.watchReconnecting = false
+	m.watchReconnectAttempt = 0
+	m.watchReconnectErr = ""
 }
 
 // mediaDescriptors builds one human-readable descriptor per non-text media part of

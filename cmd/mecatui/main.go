@@ -252,7 +252,21 @@ func runWithOptions(argv []string, options runOptions) error {
 		resumeCfg.resumeID = options.connectResumeSessionID
 		resumeCfg.resumeLatest = false
 	}
-	resume, uiWorkspace, err := startupResumeConfig(ctx, cl, resumeCfg)
+	// The detached-runs capability seam (ADR 0278 Scenario 3): task 04 adds the
+	// ServerCapabilities.detached_runs proto field and wires this closure to read
+	// it. For task 03 it is a constant false — the reattach affordance on the
+	// PERSISTED-POINTER path is still gated on the pointer's verified state (a
+	// running session IS a real detached run, since tasks 01/02 shipped the server
+	// surface), but the --resume-latest LISTING expansion to include running rows
+	// stays conservative (an older server keeps the exclusion). The pointer path
+	// itself resolves a running pointer to a reattach only when detachSupported()
+	// reports true, so under the constant false a running pointer degrades to the
+	// listing — which is the honest pre-capability behaviour. Task 04 flips this
+	// to read the advertised capability.
+	detachSupported := func() bool { return false }
+	ptrStore := newSessionStateStore(xdgconfig.OSEnv)
+	outcome, uiWorkspace, err := startupResumeConfigWithPointer(ctx, cl, resumeCfg, ptrStore, target, detachSupported)
+	resume, reattach := outcome.Resume, outcome.Reattach
 	if options.connectResumeSessionID != "" {
 		// An auth-recovery candidate is opportunistic. Only a verified terminal
 		// boundary is adopted; every other state and every ambiguous verification
@@ -260,6 +274,7 @@ func runWithOptions(argv []string, options runOptions) error {
 		// ordinary fresh CreateSession, whose own error remains authoritative.
 		if !shouldAdoptAuthRecoveryCandidate(resume, err) {
 			resume = nil
+			reattach = nil
 			uiWorkspace = cfg.workspace
 			err = nil
 		}
@@ -307,6 +322,9 @@ func runWithOptions(argv []string, options runOptions) error {
 		Transcript:             cl,
 		Replayer:               cl,
 		LiveStream:             cl,
+		Watch:                  cl,
+		Reattach:               reattach,
+		SessionStateStore:      ptrStore,
 		SelectionStore:         store,
 		Learning:               learningSettingsForConfig(cfg),
 		Connect:                savedConnectController{},
