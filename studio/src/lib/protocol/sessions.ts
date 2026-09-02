@@ -16,7 +16,7 @@ import {
   optionalString,
 } from "./internal";
 
-type SessionSummary = {
+export type SessionSummary = {
   sessionId: string;
   /** The server-held label: operator-authored, or seeded from the first prompt. */
   title: string;
