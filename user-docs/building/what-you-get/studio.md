@@ -12,8 +12,8 @@ Studio reads and writes the daemon's state rather than keeping its own.
 
 :::note Landing in progress
 Studio is landing as a stacked series of pull requests. This page grows with
-each one; right now everything except session modes/model-switch/debug, Labs, and the
-mobile round is in the tree.
+each one; right now everything except the Labs extras and the mobile round is in the
+tree.
 :::
 
 ## Starting it
@@ -117,3 +117,12 @@ Open a driving session in a second tab (or refresh mid-run) and Studio
 re-attaches to the live run through the daemon's durable session watch. One
 limit to know: the tab that *started* the run still cancels it if that tab's
 prompt connection drops — re-attach covers every other tab.
+
+## Modes, model switching, debug sessions
+
+The composer's mode selector switches the session's permission mode live
+(with rollback if the daemon refuses), and the model selector forks the
+conversation onto another model mid-chat, keeping the transcript. Where the
+daemon advertises session debugging, a chat's menu offers Debug with AI
+behind an explicit consent dialog; debug sessions carry a badge in the
+sidebar.

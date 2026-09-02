@@ -17,6 +17,8 @@ import {
   useAgentRoster,
   useAgentSessions,
 } from "@/features/agent";
+import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
+import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import { useConfirm } from "@/hooks/use-confirm";
 import { useIsCompact } from "@/hooks/use-mobile";
@@ -26,18 +28,26 @@ import { usePrompt } from "@/hooks/use-prompt";
 import {
   compactHarnessSession,
   fetchHarnessSessionDetail,
+  forkHarnessSessionToModel,
   type HarnessResolvedModel,
+  ThreadSourceBusyError,
 } from "@/lib/harness/client";
+import { createHarnessDebugSession } from "@/lib/harness/debug";
+import { useDisabledModels } from "@/lib/model-preferences";
 import {
   type SessionListSide,
   useAgentDisplayName,
   useSessionListSide,
 } from "@/lib/profile-preferences";
+import type { SessionPermissionMode } from "@/lib/protocol";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { useThreadSessionIds } from "@/lib/thread-map";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
-import { ChatInput } from "../../_components/chat-input";
+import {
+  ChatInput,
+  type ComposerModelOption,
+} from "../../_components/chat-input";
 import { ResizeHandle } from "../../_components/resize-handle";
 import { ChatView } from "./chat-view";
 import {
@@ -181,6 +191,11 @@ function DraftView({
   showSidebarButton,
   sidebarSide,
   onShowSidebar,
+  mode,
+  onModeChange,
+  models,
+  autoModelLabel,
+  onModelChange,
 }: {
   onSend: (content: string, files?: File[]) => void;
   seed: string | null;
@@ -190,6 +205,13 @@ function DraftView({
   showSidebarButton: boolean;
   sidebarSide: SessionListSide;
   onShowSidebar: () => void;
+  /** Pending permission mode, applied when the first send mints the session. */
+  mode: SessionPermissionMode;
+  onModeChange: (mode: SessionPermissionMode) => void;
+  /** Live daemon models for the picker ("" = auto-routed). */
+  models: ComposerModelOption[];
+  autoModelLabel: string;
+  onModelChange: (id: string) => void;
 }) {
   return (
     <div className="flex h-full flex-col">
@@ -250,6 +272,11 @@ function DraftView({
               initialText={seed}
               onInitialTextConsumed={onSeedConsumed}
               placeholder="Start a new chat..."
+              mode={mode}
+              onModeChange={onModeChange}
+              models={models}
+              autoModelLabel={autoModelLabel}
+              onModelChange={onModelChange}
             />
           </div>
         </div>
@@ -371,6 +398,49 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const hookSessionId =
     selectedId && selectedId !== draftMintedIdRef.current ? selectedId : null;
 
+  // The composer's permission mode. For an open chat this reads/writes the
+  // live session (POST /mode); for a draft it is pending local state, read
+  // via modeRef when the first send mints the daemon session below.
+  const { mode, modeRef, changeMode } = useSessionMode(selectedId || null);
+  const getCreateMode = useCallback(() => modeRef.current, [modeRef]);
+
+  // The composer's model picker: live daemon models minus the Studio-side
+  // disabled set; "" = auto-routed. Like mode, the pick is pending local
+  // state read via ref when the first send mints the session.
+  const { models: liveModels, status: runtimeStatus } = useHarnessRuntime();
+  const { disabled: disabledModels } = useDisabledModels();
+  const modelOptions = useMemo(
+    () =>
+      liveModels
+        .filter((m) => !disabledModels.has(m.id))
+        .map((m) => ({
+          id: m.id,
+          label: m.displayName || m.id,
+          // The daemon requires provider_id whenever model_id rides a create.
+          providerId: m.providerId,
+        })),
+    [liveModels, disabledModels],
+  );
+  // "Auto-routed" is only an honest name for the empty pick while the model
+  // router is actually on; otherwise the daemon just uses its default model.
+  const routingEnabled = Boolean(runtimeStatus?.modelRouter?.enabled);
+  const draftModelRef = useRef("");
+  const handleDraftModelChange = useCallback((id: string) => {
+    draftModelRef.current = id;
+  }, []);
+  const modelOptionsRef = useRef(modelOptions);
+  modelOptionsRef.current = modelOptions;
+  const getCreateModel = useCallback(() => {
+    const id = draftModelRef.current;
+    if (!id) return null;
+    const option = modelOptionsRef.current.find((m) => m.id === id);
+    // A pick that fell out of the inventory degrades to auto rather than
+    // sending a bare model_id the daemon would reject.
+    return option?.providerId
+      ? { modelId: id, providerId: option.providerId }
+      : null;
+  }, []);
+
   const {
     messages,
     isStreaming,
@@ -395,6 +465,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     cancelChat,
   } = useAgentChat(hookSessionId, {
     onSessionCreated: handleSessionCreated,
+    createMode: getCreateMode,
+    createModel: getCreateModel,
     // The inventory poll's lifecycle state: running/awaiting attaches the
     // durable watch so an externally-driven run renders live (ADR 0250).
     sessionState: hookSessionId
@@ -529,8 +601,40 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     [selectedId, router],
   );
 
+  // "Debug with AI" (F1, ADR 0254): creates a SEPARATE no-fs diagnostic
+  // session bound to the picked chat, after the mandated consent dialog —
+  // invoking the debugger sends the target's STORED transcript and event
+  // evidence (secrets included) to the model, even though the target itself
+  // can never be modified. Gated on the daemon's session_debug capability.
+  const debugSupported = serverCapabilities.session_debug === true;
+  const handleDebugSession = useCallback(
+    async (id: string) => {
+      const ok = await confirm({
+        title: "Debug with AI",
+        description:
+          "This creates a separate diagnostic chat bound to this session. " +
+          "The session's stored transcript and event evidence — including " +
+          "anything sensitive it contains — will be sent to the model as " +
+          "debugging evidence. The session itself is read-only to the " +
+          "debugger and is never modified.",
+        confirmText: "Send evidence & debug",
+      });
+      if (!ok) return;
+      try {
+        const debugId = await createHarnessDebugSession(id);
+        await refreshSessions();
+        handleSelectSession(debugId);
+        toast.success("Debug session created");
+      } catch (caught) {
+        toast.error(caught instanceof Error ? caught.message : String(caught));
+      }
+    },
+    [confirm, refreshSessions, handleSelectSession],
+  );
+
   const sessionActions: SessionActions = useMemo(
     () => ({
+      onDebug: debugSupported ? handleDebugSession : undefined,
       onRename: async (id: string) => {
         const s = sessions.find((x) => x.id === id);
         const name = await prompt({
@@ -554,7 +658,16 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         deselectIfActive(id);
       },
     }),
-    [sessions, prompt, renameSession, confirm, deleteSession, deselectIfActive],
+    [
+      sessions,
+      prompt,
+      renameSession,
+      confirm,
+      deleteSession,
+      deselectIfActive,
+      debugSupported,
+      handleDebugSession,
+    ],
   );
 
   // Flattened, in-display-order chat ids for keyboard navigation.
@@ -608,6 +721,40 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const turnError =
     status === "error" ? (chatError ?? "The last turn failed.") : null;
 
+  // Mid-chat model switch: the daemon fixes a session's model at create, so
+  // a pick FORKS the chat — a new session seeded from this one's history on
+  // the new model, carrying the title — and the UI moves there. The old chat
+  // stays in the list (nothing is destroyed); a mid-run source answers 412.
+  const handleSwitchModel = useCallback(
+    async (option: ComposerModelOption | null) => {
+      const source = selectedSession;
+      if (!source) return;
+      try {
+        const newId = await forkHarnessSessionToModel(
+          source.id,
+          option?.providerId
+            ? { modelId: option.id, providerId: option.providerId }
+            : null,
+          source.title || "",
+        );
+        await refreshSessions();
+        handleSelectSession(newId);
+        toast.success(
+          `Continuing on ${option?.label ?? "the auto-routed model"} in a copy of this chat`,
+        );
+      } catch (caught) {
+        toast.error(
+          caught instanceof ThreadSourceBusyError
+            ? "Wait for the current response to finish, then switch models."
+            : caught instanceof Error
+              ? caught.message
+              : String(caught),
+        );
+      }
+    },
+    [selectedSession, refreshSessions, handleSelectSession],
+  );
+
   const chatView = (open: boolean, onToggle: () => void) =>
     selectedSession ? (
       <ChatView
@@ -657,6 +804,11 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             : undefined
         }
         onSidePanelOpenChange={handleSidePanelOpenChange}
+        mode={mode}
+        onModeChange={changeMode}
+        models={modelOptions}
+        autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
+        onSwitchModel={handleSwitchModel}
       />
     ) : null;
 
@@ -668,6 +820,9 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
           chatView(sidebarOpen, () => setSidebarOpen((o) => !o))
         ) : (
           <DraftView
+            models={modelOptions}
+            autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
+            onModelChange={handleDraftModelChange}
             onSend={sendMessage}
             seed={draftSeed}
             onSeedConsumed={clearDraftSeed}
@@ -676,6 +831,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
             showSidebarButton={!sidebarOpen}
             sidebarSide={sidebarSide}
             onShowSidebar={() => setSidebarOpen(true)}
+            mode={mode}
+            onModeChange={changeMode}
           />
         )}
       </div>

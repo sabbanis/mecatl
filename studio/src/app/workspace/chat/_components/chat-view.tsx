@@ -55,6 +55,7 @@ import {
   useEnterSendBehavior,
   useShowToolCalls,
 } from "@/lib/profile-preferences";
+import type { SessionPermissionMode } from "@/lib/protocol";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import {
   composeThreadPrompt,
@@ -69,7 +70,10 @@ import {
   useThreadMap,
 } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
-import { ChatInput } from "../../_components/chat-input";
+import {
+  ChatInput,
+  type ComposerModelOption,
+} from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
 import { ClarificationPanel } from "./clarification-panel";
 import { ContextMeter } from "./context-meter";
@@ -536,6 +540,7 @@ function ThreadPanel({
               disabled={!!pendingApproval}
               initialText={seedText}
               onInitialTextConsumed={() => setSeedText(null)}
+              onModelChange={() => {}}
               placeholder={isStreaming ? "Queue a reply…" : "Reply in thread…"}
             />
           </div>
@@ -659,6 +664,7 @@ export function ChatView({
   isStreaming,
   onSend,
   botName,
+  live = false,
   usage,
   error,
   onRetry,
@@ -684,6 +690,11 @@ export function ChatView({
   onCancelRun,
   onCompact,
   contextInfo,
+  mode,
+  onModeChange,
+  models,
+  autoModelLabel,
+  onSwitchModel,
 }: {
   session: AgentSession;
   messages: AgentMessage[];
@@ -735,6 +746,16 @@ export function ChatView({
   /** The session's effective model + context window (B1.1): feeds the slim
       approximate context meter near the composer. */
   contextInfo?: { modelLabel: string; contextWindow: number } | null;
+  /** The session's current permission mode, for the composer's Mode selector. */
+  mode?: SessionPermissionMode;
+  /** Renders the composer's Mode selector when provided (the mock tour chat
+      omits it — a read-only demo has no permission posture to set). */
+  onModeChange?: (mode: SessionPermissionMode) => void;
+  /** Live daemon models for the mid-chat switch picker. */
+  models?: ComposerModelOption[];
+  autoModelLabel?: string;
+  /** Picking a model forks this chat onto it (daemon fixes model at create). */
+  onSwitchModel?: (option: ComposerModelOption | null) => void;
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Whether the transcript is scrolled to (near) the bottom; when it isn't,
@@ -1099,6 +1120,16 @@ export function ChatView({
                   onQueue={onQueueMessage}
                   onSteer={onSteerMessage}
                   onPreviewAttachment={handlePreviewFile}
+                  modelLockedLabel={
+                    live ? session.model || "Auto-routed" : undefined
+                  }
+                  onModelChange={() => {}}
+                  models={models}
+                  autoModelLabel={autoModelLabel}
+                  onSwitchModel={live ? onSwitchModel : undefined}
+                  currentModelId={session.model ?? ""}
+                  mode={mode}
+                  onModeChange={onModeChange}
                   isStreaming={isStreaming}
                   disabled={!!pendingApproval}
                   appendText={appendText}

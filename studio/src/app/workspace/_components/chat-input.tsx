@@ -12,6 +12,7 @@ import {
   Mic,
   Paperclip,
   Plus,
+  RotateCcw,
 } from "lucide-react";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -19,6 +20,10 @@ import {
   DropdownMenu,
   DropdownMenuContent,
   DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import {
@@ -30,6 +35,7 @@ import {
   type EnterSendBehavior,
   useEnterSendBehavior,
 } from "@/lib/profile-preferences";
+import type { SessionPermissionMode } from "@/lib/protocol";
 import { cn } from "@/lib/utils";
 import {
   type ComposerMenuItem,
@@ -49,6 +55,11 @@ interface ChatInputProps {
       while `isStreaming`; absent when the daemon lacks the steer capability
       (mid-run sends then queue and files stay attached). */
   onSteer?: (content: string, files?: File[]) => void;
+  onModelChange?: (alias: string) => void;
+  /** Live daemon models for the picker; absent = the sentinel only. */
+  models?: ComposerModelOption[];
+  /** Label for the empty (daemon-picks) entry. */
+  autoModelLabel?: string;
   /** Preview an attached file in the canvas panel. */
   onPreviewAttachment?: (file: File) => void;
   disabled?: boolean;
@@ -60,6 +71,19 @@ interface ChatInputProps {
       not quoted and replaces rather than appends. */
   initialText?: string | null;
   onInitialTextConsumed?: () => void;
+  /** Display-only model label for live-harness sessions (see ModelSelector). */
+  modelLockedLabel?: string;
+  /** Live-chat model switch: picking forks the chat onto the model (the
+   *  daemon fixes a session's model at create). null = auto-routed. */
+  onSwitchModel?: (option: ComposerModelOption | null) => void;
+  /** The live session's current model id ("" = auto). */
+  currentModelId?: string;
+  /** The session's current permission mode, shown by the Mode selector. */
+  mode?: SessionPermissionMode;
+  /** Renders the Mode selector (first in the control bar) when provided.
+      Surfaces without a mode concept (the thread panel, the mock tour chat)
+      simply omit it. */
+  onModeChange?: (mode: SessionPermissionMode) => void;
 }
 
 /**
@@ -103,6 +127,302 @@ function FilesDropdown({
         <Plus className="size-4" />
       </Button>
     </>
+  );
+}
+
+/** The daemon-picks sentinel (model_id omitted at create). Its label is
+ *  supplied by the caller: "Auto-routed" only while the router is really on. */
+const AUTO_MODEL_ID = "";
+const autoModel = (label?: string) => ({
+  id: AUTO_MODEL_ID,
+  label: label ?? "Default model",
+});
+
+export interface ComposerModelOption {
+  id: string;
+  label: string;
+  /** The daemon requires provider_id whenever model_id rides a create. */
+  providerId?: string;
+}
+
+const EFFORT_LEVELS = [
+  { id: "light", label: "Light" },
+  { id: "medium", label: "Medium" },
+  { id: "high", label: "High" },
+  { id: "extra-high", label: "Extra High" },
+] as const;
+
+type EffortId = (typeof EFFORT_LEVELS)[number]["id"];
+
+const DEFAULT_EFFORT_ID: EffortId = "medium";
+
+/**
+ * Combined model + effort picker in a single menu: the trigger reads
+ * "{model} {effort}", and the menu drills into a Model submenu and an Effort
+ * submenu, with a reset. When `lockedLabel` is set (a live harness routes the
+ * model server-side) the trigger is display-only.
+ */
+function ModelEffortSelector({
+  onModelChange,
+  lockedLabel,
+  onSwitchModel,
+  currentModelId,
+  models,
+  autoModelLabel,
+}: {
+  onModelChange?: (id: string) => void;
+  lockedLabel?: string;
+  /** Live-chat switch: picking forks the chat onto the model. */
+  onSwitchModel?: (option: ComposerModelOption | null) => void;
+  currentModelId?: string;
+  models?: ComposerModelOption[];
+  autoModelLabel?: string;
+}) {
+  const modelOptions = [autoModel(autoModelLabel), ...(models ?? [])];
+  const [model, setModel] = useState<string>(AUTO_MODEL_ID);
+  const [effort, setEffort] = useState<EffortId>(DEFAULT_EFFORT_ID);
+  const switchId = currentModelId ?? AUTO_MODEL_ID;
+  const selectedModel = onSwitchModel
+    ? (modelOptions.find((m) => m.id === switchId) ?? {
+        id: switchId,
+        label: switchId || autoModel(autoModelLabel).label,
+      })
+    : (modelOptions.find((m) => m.id === model) ?? modelOptions[0]);
+  const selectedEffort =
+    EFFORT_LEVELS.find((e) => e.id === effort) ?? EFFORT_LEVELS[1];
+
+  // The toolbar is a CSS container (@container on the footer row): below
+  // ~28rem — a narrow side-panel composer, not just mobile viewports — the
+  // value labels collapse to the static word "Model", with the full selection
+  // kept on the title attribute; in between, truncation caps a long model id.
+  if (lockedLabel && !onSwitchModel) {
+    return (
+      <Button
+        size="sm"
+        className={GHOST_TRIGGER_CLASS}
+        disabled
+        title={lockedLabel}
+      >
+        <span className="max-w-40 truncate @max-md:hidden">{lockedLabel}</span>
+        <span className="hidden @max-md:inline">Model</span>
+      </Button>
+    );
+  }
+
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="sm"
+          className={GHOST_TRIGGER_CLASS}
+          title={
+            onSwitchModel
+              ? selectedModel.label
+              : `${selectedModel.label} · ${selectedEffort.label}`
+          }
+        >
+          <span className="max-w-40 truncate @max-md:hidden">
+            {selectedModel.label}
+          </span>
+          {!onSwitchModel && (
+            <span className="max-w-24 truncate text-muted-foreground @max-md:hidden">
+              {selectedEffort.label}
+            </span>
+          )}
+          <span className="hidden @max-md:inline">Model</span>
+          <ChevronDown className="size-3.5 text-muted-foreground" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        align="start"
+        className="w-64"
+      >
+        <DropdownMenuSub>
+          <DropdownMenuSubTrigger>
+            <span className="flex-1">Model</span>
+            <span className="text-muted-foreground">{selectedModel.label}</span>
+          </DropdownMenuSubTrigger>
+          <DropdownMenuSubContent className="w-80 p-2">
+            {onSwitchModel && (
+              <p className="px-3 pb-1.5 text-xs text-muted-foreground">
+                Picking a model continues this chat in a copy on it.
+              </p>
+            )}
+            {modelOptions.map((m) => {
+              const isSelected = m.id === (onSwitchModel ? switchId : model);
+              return (
+                <DropdownMenuItem
+                  key={m.id}
+                  className={cn(
+                    "flex items-center gap-3 rounded-lg px-3 py-3 text-sm cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 justify-between",
+                    isSelected && "bg-zinc-100 dark:bg-zinc-800",
+                  )}
+                  onClick={() => {
+                    if (onSwitchModel) {
+                      if (m.id !== switchId)
+                        onSwitchModel(m.id === AUTO_MODEL_ID ? null : m);
+                      return;
+                    }
+                    setModel(m.id);
+                    onModelChange?.(m.id);
+                  }}
+                >
+                  <span className="font-medium">{m.label}</span>
+                  <Check
+                    className={cn(
+                      "size-4 shrink-0",
+                      isSelected ? "text-foreground" : "text-transparent",
+                    )}
+                  />
+                </DropdownMenuItem>
+              );
+            })}
+          </DropdownMenuSubContent>
+        </DropdownMenuSub>
+        {!onSwitchModel && (
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger>
+              <span className="flex-1">Effort</span>
+              <span className="text-muted-foreground">
+                {selectedEffort.label}
+              </span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-72 p-2">
+              {EFFORT_LEVELS.map((e) => {
+                const isSelected = e.id === effort;
+                return (
+                  <DropdownMenuItem
+                    key={e.id}
+                    className={cn(
+                      "flex items-center gap-3 rounded-lg px-3 py-3 text-sm cursor-pointer hover:bg-zinc-100 dark:hover:bg-zinc-800 justify-between",
+                      isSelected && "bg-zinc-100 dark:bg-zinc-800",
+                    )}
+                    onClick={() => setEffort(e.id)}
+                  >
+                    <span className="font-medium">{e.label}</span>
+                    <Check
+                      className={cn(
+                        "size-4 shrink-0",
+                        isSelected ? "text-foreground" : "text-transparent",
+                      )}
+                    />
+                  </DropdownMenuItem>
+                );
+              })}
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+        )}
+        {!onSwitchModel && (
+          <>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem
+              disabled={model === AUTO_MODEL_ID && effort === DEFAULT_EFFORT_ID}
+              onClick={() => {
+                setModel(AUTO_MODEL_ID);
+                setEffort(DEFAULT_EFFORT_ID);
+                onModelChange?.(AUTO_MODEL_ID);
+              }}
+            >
+              <RotateCcw className="size-4 mr-2 text-muted-foreground" />
+              Reset to default
+            </DropdownMenuItem>
+          </>
+        )}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
+const PERMISSION_MODE_OPTIONS = [
+  {
+    id: "default",
+    label: "Manual",
+    description: "Always ask before making changes",
+  },
+  {
+    id: "acceptEdits",
+    label: "Accept edits",
+    description: "Automatically accept all file edits",
+  },
+  {
+    id: "plan",
+    label: "Plan",
+    description: "Create a plan before making changes",
+  },
+] as const satisfies readonly {
+  id: SessionPermissionMode;
+  label: string;
+  description: string;
+}[];
+
+/** Display label for a session permission mode. */
+function permissionModeLabel(mode: SessionPermissionMode): string {
+  return (
+    PERMISSION_MODE_OPTIONS.find((option) => option.id === mode)?.label ??
+    "Manual"
+  );
+}
+
+/**
+ * The session permission-mode selector (Default / Plan / Accept edits), the
+ * first control in the composer bar. Same pill + container-collapse idiom as
+ * the model selector: the current mode wide, the bare word "Mode" narrow,
+ * always the full selection on the title. Disabled while a run streams — the
+ * daemon's session aggregate refuses a mid-turn mode change, so the control
+ * matches that reality instead of round-tripping a guaranteed refusal.
+ */
+function ModeSelector({
+  mode,
+  onModeChange,
+  disabled,
+}: {
+  mode: SessionPermissionMode;
+  onModeChange: (mode: SessionPermissionMode) => void;
+  disabled?: boolean;
+}) {
+  const label = permissionModeLabel(mode);
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <Button
+          size="sm"
+          className={GHOST_TRIGGER_CLASS}
+          disabled={disabled}
+          title={`Mode: ${label}`}
+        >
+          <span className="max-w-32 truncate @max-md:hidden">{label}</span>
+          <span className="hidden @max-md:inline">Mode</span>
+          <ChevronDown className="size-3.5 text-muted-foreground" />
+        </Button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent
+        onCloseAutoFocus={(e) => e.preventDefault()}
+        align="start"
+        className="w-72"
+      >
+        {PERMISSION_MODE_OPTIONS.map((option) => (
+          <DropdownMenuItem
+            key={option.id}
+            className="items-start gap-2"
+            onClick={() => onModeChange(option.id)}
+          >
+            <Check
+              className={cn(
+                "mt-0.5 size-4 shrink-0",
+                mode === option.id ? "text-foreground" : "text-transparent",
+              )}
+            />
+            <span className="flex min-w-0 flex-col">
+              <span>{option.label}</span>
+              <span className="text-xs text-muted-foreground">
+                {option.description}
+              </span>
+            </span>
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
   );
 }
 
@@ -407,13 +727,21 @@ export function ChatInput({
   onSend,
   onQueue,
   onSteer,
+  onModelChange,
   disabled = false,
   isStreaming = false,
   appendText,
   onAppendConsumed,
   initialText,
   onInitialTextConsumed,
+  modelLockedLabel,
+  onSwitchModel,
+  currentModelId,
+  models,
+  autoModelLabel,
   onPreviewAttachment,
+  mode,
+  onModeChange,
 }: ChatInputProps) {
   const placeholder = placeholderProp ?? DEFAULT_PLACEHOLDER;
   // Plain-text mirror of the editor, kept in sync via onUpdate. Used only for
@@ -839,7 +1167,28 @@ export function ChatInput({
           container queries when THIS row runs narrow (a ~400px side-panel
           composer), independent of the viewport width. */}
       <div className="@container -mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1 rounded-b-2xl border border-t-0 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 overflow-x-auto hide-scrollbar">
-        {!compact && <MemoryToggle />}
+        {!compact && (
+          <>
+            {onModeChange && (
+              <ModeSelector
+                mode={mode ?? "default"}
+                onModeChange={onModeChange}
+                disabled={disabled || isStreaming}
+              />
+            )}
+            <ModelEffortSelector
+              models={models}
+              autoModelLabel={autoModelLabel}
+              lockedLabel={modelLockedLabel}
+              onSwitchModel={onSwitchModel}
+              currentModelId={currentModelId}
+              onModelChange={(id) => {
+                onModelChange?.(id);
+              }}
+            />
+            <MemoryToggle />
+          </>
+        )}
       </div>
     </div>
   );

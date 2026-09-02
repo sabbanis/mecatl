@@ -2,6 +2,7 @@
 
 import {
   Bot,
+  Bug,
   ChevronDown,
   ChevronUp,
   Ellipsis,
@@ -9,6 +10,7 @@ import {
   Trash2,
 } from "lucide-react";
 import { useState } from "react";
+import { Badge } from "@/components/ui/badge";
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -22,6 +24,13 @@ import { cn } from "@/lib/utils";
 export interface SessionActions {
   onRename: (id: string) => void;
   onDelete: (id: string) => void;
+  /**
+   * "Debug with AI" (ADR 0254): present only when the daemon reports
+   * `capabilities.session_debug` — the caller gates it, the menus render it.
+   * The handler owns the consent dialog; a row that already IS a debug
+   * session never offers it (no debugging the debugger).
+   */
+  onDebug?: (id: string) => void;
 }
 
 export function SidebarGroup({
@@ -57,6 +66,8 @@ function SessionContextMenu({
   // (disabled menu items swallow pointer events, so a tooltip can't open).
   const canRename = session.canRename === true;
   const canDelete = session.canDelete === true;
+  const offerDebug =
+    actions.onDebug !== undefined && !session.debugTargetSessionId;
 
   return (
     <DropdownMenu modal={false} onOpenChange={onOpenChange}>
@@ -67,6 +78,12 @@ function SessionContextMenu({
         sideOffset={4}
         className="w-56"
       >
+        {offerDebug && (
+          <DropdownMenuItem onClick={() => actions.onDebug?.(session.id)}>
+            <Bug className="size-4 mr-2 shrink-0 text-muted-foreground" />
+            <span className="min-w-0">Debug with AI</span>
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           disabled={!canRename}
           onClick={() => actions.onRename(session.id)}
@@ -150,6 +167,17 @@ function SessionRow({
           >
             {session.title || "Untitled"}
           </span>
+          {/* An AI-debug session (ADR 0254) reads as an ordinary chat except
+              for this label — the relationship is the daemon's signal. */}
+          {session.debugTargetSessionId && (
+            <Badge
+              variant="outline"
+              className="h-4 shrink-0 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+              title={`Debugging session ${session.debugTargetSessionId}`}
+            >
+              Debug
+            </Badge>
+          )}
         </span>
       </button>
       <div className="shrink-0 ml-2 grid w-8 items-center justify-items-center [grid-template-areas:'slot']">

@@ -103,6 +103,19 @@ async function resolveWorkspace(external: string): Promise<string> {
   }
 }
 
+/**
+ * True for a create body the daemon REQUIRES to arrive workspace-free: the
+ * no-fs profile has no file tools to root anywhere ("no-fs requires an EMPTY
+ * workspace"), and a debug session (ADR 0254) is no-fs by contract — the
+ * daemon rejects either with a non-empty workspace. Injecting one here would
+ * turn every such create into a guaranteed 400, so injection skips them.
+ * (These bodies may still carry an explicit `workspace: ""`, which the
+ * `!body.workspace` check below would otherwise treat as "absent".)
+ */
+function requiresEmptyWorkspace(body: Record<string, unknown>): boolean {
+  return body.profile === "no-fs" || Boolean(body.debug_target_session_id);
+}
+
 async function withWorkspace(
   request: Request,
   external: string,
@@ -113,7 +126,7 @@ async function withWorkspace(
     if (typeof body !== "object" || body === null || Array.isArray(body)) {
       return raw;
     }
-    if (!body.workspace) {
+    if (!body.workspace && !requiresEmptyWorkspace(body)) {
       const workspace = await resolveWorkspace(external);
       if (workspace) body.workspace = workspace;
     }
