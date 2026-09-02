@@ -23,9 +23,14 @@ These are distinct failures:
 
 - **Connection failure:** confirm the address, network path, and that the operator started the server.
 - **Authentication failure:** obtain the right bearer token or identity credential from the operator; changing a local client setting cannot change server auth.
-- **TLS verification failure:** use `--tls`; when the server uses a private CA, obtain its CA bundle and pass `--tls-ca`. Do not bypass verification except in controlled testing.
+- **TLS verification failure:** remote targets use verified TLS automatically; use
+  `--tls-ca` when the server uses a private CA. `--tls=false` is an explicit
+  plaintext downgrade for controlled testing, not a verification fix. Do not use
+  `--insecure` except in controlled testing.
 
-A bearer is allowed over plaintext loopback, but mecatui refuses to send it to a non-loopback server without TLS. See [Connect to a server](./remote-servers.md) and the operator [server flag reference](/building/deployment/mecated.md#flag-reference).
+A bearer is allowed over plaintext loopback, but mecatui refuses it over explicit
+non-loopback plaintext. Saved OIDC authentication always uses verified TLS, even
+for loopback. See [Connect to a server](./remote-servers.md) and the operator [server flag reference](/building/deployment/mecated.md#flag-reference).
 
 ## The workspace is missing or unexpected
 
@@ -41,8 +46,12 @@ Use `/sessions` or `mecatui sessions` to inspect what the server has stored. An 
 
 ## A debug command cannot open its target
 
-`mecatui debug SESSION_ID` and `mecatui connect ADDRESS debug SESSION_ID` require the
-same store and caller authorization as the target. Missing and unauthorized targets are
+`mecatui debug TARGET` and `mecatui connect ADDRESS debug TARGET` require the same store and
+caller authorization as the target. A syntactically valid short target consults the complete
+caller-visible inventory: exact full-ID equality wins, otherwise one unique projected handle
+resolves. If projections are ambiguous, open `/session`, copy the full exact ID, and pass it as
+`TARGET` through the same command. If inventory fails or no handle matches, mecatui sends `TARGET`
+unchanged and reports the server's ordinary exact-ID result. Missing and unauthorized targets are
 both reported as not found so ownership is not disclosed. Confirm the exact server,
 identity, and session ID. A persisted debugger also fails closed after restart if its
 bound target or dedicated debug-engine support is unavailable; it never falls back to an

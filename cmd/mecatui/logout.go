@@ -14,7 +14,6 @@ import (
 
 	"github.com/adrg/xdg"
 
-	"github.com/stacklok/mecatl/authn/oidc/scopedhttps"
 	"github.com/stacklok/mecatl/internal/adapter/clientauth"
 	"github.com/stacklok/mecatl/internal/adapter/credentialstore"
 )
@@ -55,30 +54,8 @@ func runRemoteLogout(address string, args []string) error {
 	}
 	result, err := clientauth.Logout(ctx, address, clientauth.LogoutConfig{
 		Registry: registry, Credentials: creds,
-		// Called at most once per logout, with every retained connection needing
-		// revocation, so one scoped client (its dial-approval policy spans every
-		// retained issuer) is reused for the whole operation instead of rebuilt
-		// per credential (ADR 0275's bounded-keep-alive intent). Each issuer's
-		// own CA maps ONLY to that issuer's own endpoint -- scopedhttps.NewClient
-		// verifies each connection against its dialed endpoint's own pool only,
-		// never a union, so one retained connection's CA can never authenticate
-		// a different retained connection's issuer.
-		HTTPClientOwned: func(ctx context.Context, conns []clientauth.Connection) (*http.Client, bool, error) {
-			endpointCAs := make(map[string][]byte, len(conns))
-			for _, conn := range conns {
-				ca, err := os.ReadFile(conn.IssuerCAFile)
-				if err != nil {
-					return nil, false, err
-				}
-				// Two retained connections can share an issuer with different
-				// CA files (e.g. a rotation where the registry still has a
-				// stale entry) -- union rather than overwrite, so the pool
-				// scopedhttps builds for that issuer's host accepts either.
-				endpointCAs[conn.Identity.Issuer] = append(append(endpointCAs[conn.Identity.Issuer], ca...), '\n')
-			}
-			client, err := scopedhttps.NewClient(ctx, endpointCAs)
-			return client, true, err
-		},
+		// Each revocation uses its retained connection's own address policy and roots.
+		HTTPClientForConnection: logoutIssuerClient,
 	})
 	if err != nil {
 		if errors.Is(err, clientauth.ErrIncompleteLogout) {
@@ -89,6 +66,19 @@ func runRemoteLogout(address string, args []string) error {
 	}
 	writeLogoutResult(os.Stderr, result)
 	return nil
+}
+
+func logoutIssuerClient(ctx context.Context, conn clientauth.Connection) (*http.Client, bool, error) {
+	var ca []byte
+	if conn.IssuerCAFile != "" {
+		read, err := os.ReadFile(conn.IssuerCAFile)
+		if err != nil {
+			return nil, false, err
+		}
+		ca = read
+	}
+	client, err := clientauth.IssuerHTTPClient(ctx, conn.IssuerAddressPolicy, conn.Identity.Issuer, ca)
+	return client, true, err
 }
 
 func writeLogoutResult(out io.Writer, result clientauth.LogoutResult) {

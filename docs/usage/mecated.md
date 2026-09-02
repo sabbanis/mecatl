@@ -121,6 +121,7 @@ root, or wait for a future opaque scoped-grant design. See [ADR
 | `--anthropic-base-url` | `""` | override the native Anthropic API base URL (compatible/proxy endpoints; key from `ANTHROPIC_API_KEY`) |
 | `--auth-file` | `""` | path to a YAML credentials file (`providers.<name>.api_key` for `anthropic`/`openai`/`openrouter`/`opencode`, or file-only `providers.openai-codex.oauth`); overrides the conventional default `$XDG_CONFIG_HOME/mecatl/auth.yaml` (usually `~/.config/mecatl/auth.yaml`, a `settings.yaml` sibling). See [Credentials file](#credentials-file-authyaml) below — an environment variable wins over the file only for the API-key providers; `openai-codex` has no environment alias. |
 | `--mock` | `false` | use a canned offline mock provider (no network; smoke tests only) |
+| `--mock-script` | `""` | path to a strict JSON mock script; implies the offline mock provider and replaces its canned turn with ordered text/tool-call turns. Optional `delay_ms` (0–30000) keeps a turn in flight for control testing. |
 | `--shell` | `/bin/sh` | shell used to execute `Bash`-tool commands; empty disables Bash (shell-less mode). |
 | `--no-bash` | `false` | disable the `Bash` tool entirely (shell-less mode); overrides `--shell`. |
 | `--compaction` | `heuristic` | compaction strategy: `heuristic` (single-summary) or `cascade` (tiered snip→strip→collapse→summarize). |
@@ -216,7 +217,7 @@ mailbox). See the delegation-capabilities note below.
 | `SEARXNG_URL` *(env)* | `""` | **WebSearch SearXNG tier**: point at a **self-hosted** [SearXNG](https://docs.searxng.org/) `/search` URL to switch the backend to SearXNG (no API key). Wins over `BRAVE_API_KEY` and the Exa default; loses to `--websearch-url`. |
 | `BRAVE_API_KEY` *(env)* | `""` | **WebSearch Brave tier**: a [Brave Search API](https://brave.com/search/api/) key switches the backend to Brave (sent in the `X-Subscription-Token` header against the Brave Web Search endpoint). The key is **never logged**. Wins over the Exa default; loses to `SEARXNG_URL`/`--websearch-url`. |
 | `EXA_API_KEY` *(env)* | `""` | **WebSearch Exa paid tier**: an [Exa](https://exa.ai/) key upgrades the **default** Exa backend from the anonymous tier to the paid tier (appended as `?exaApiKey=` to the Exa endpoint, escaped). The key is **never logged**. Without it the Exa default runs anonymously. |
-| `--fork-preserved-cap` | `agent.DefaultPreservedForkCap` | max **PRESERVED** winner forks (for `join=first`/`judge`) kept on disk at once — the oldest beyond this is LRU-reaped. Preserved fork workspaces stay inspectable (their paths ride the Parallel result) until reaped. A single-branch winner's fork is preserved AND its diff auto-merged into this workspace (see [ADR 0039](../adr/0039-parallel-auto-merge.md)); it still counts toward this cap and is reaped like any other. |
+| `--fork-preserved-cap` | `agent.DefaultPreservedForkCap` | max **PRESERVED** winner forks (for `join=first`/`judge`) kept on disk at once — the oldest beyond this is LRU-reaped. Winner workspace paths ride the Parallel result and are normally inspectable until eviction or graceful app shutdown, but may already be gone if shutdown began concurrently. Shutdown drains both retained winners and eviction cleanups already detached before closure, without waiting for a later preserve. A crash remains a residual; mecated does not delete preserved forks at startup. A single-branch winner's diff is auto-merged into this workspace when that merge succeeds (see [ADR 0039](../adr/0039-parallel-auto-merge.md)); its workspace still counts toward this cap when the reaper retains it and is reaped like any other. |
 | `--enable-teams` | `true` | register the experimental **agent-teams** capability (`CreateTeam`/`SpawnTeammate`/`RunTeam` + the in-loop `Team` tool). On by default and **inert** until a client drives a team; `=false` disables it. |
 | `--subagent-model` | `""` | global default model for every Subagent / Parallel-branch / team-member child that does not pin its own model (via an agent definition `model:` or a per-call override) — the analogue of `CLAUDE_CODE_SUBAGENT_MODEL`. The Parallel judge stays on the session model. A concrete id or a `--model-alias`; same provider as the session. Empty inherits the parent `--model`; a non-empty value that does not resolve to a usable model id (unknown alias, or an alias meaning *inherit* — the built-in `sonnet`/`opus`/`haiku` unless overridden) **fails startup**. `mecatui` accepts the same flag for its embedded server. |
 | `--headless` | `false` | run **non-interactive**: declare that clients drive sessions but never answer permission prompts (autonomous / CI). A **child** (subagent/member/branch) unresolved permission ask is then **not surfaced** to the client (nobody would answer it — it would park until run-end) but resolved by the auto-deny path / the opt-in `--subagent-ask-reviewer`. **Caveat — this gates only CHILD asks: a MAIN-session ask still surfaces and, headless, parks unanswered forever.** Pair `--headless` with permission `allow` rules (or `--yolo`) covering the main agent's tool use, or those asks will hang. Default off: a normal mecated serving an interactive client (mecatui, an IDE) surfaces asks for a human. **`--subagent-ask-reviewer` only engages under `--headless`** — setting it on an interactive server is inert (a startup WARNING says so). |
@@ -948,6 +949,8 @@ builds an N-provider registry and AUTO-DETECTS availability from the environment
   matching API-key environment variable is empty. `openai-codex` instead uses
   only its distinct `providers.openai-codex.oauth` file entry.
 - `--mock` → canned offline provider (single text turn; smoke tests only).
+- `--mock-script PATH` → scripted offline provider backed by the same `mockllm`
+  adapter; it implies the mock provider without changing bare `--mock`.
 - none of the above → startup error (the daemon refuses to start; mecatui fails the
   same check client-side before hosting an embedded server). The error names all
   four API-key environment routes (Anthropic, OpenAI, OpenRouter, and OpenCode),
@@ -966,6 +969,35 @@ even if an intent-only gateway such as ToolHive is also available. A zero-select
 session continues to float with the deployment default after restart, while an
 explicit Codex selector is persisted and must rehydrate through Codex rather than
 `openai`.
+
+#### Scripted offline mock
+
+`--mock-script` reads one JSON document at startup and fails before listener binding
+if the file is missing or malformed. Each turn sets exactly one of `text` or
+`tool_calls`; tool-call `args` is ordinary JSON. Turns are consumed in order across
+model calls, so a tool-call turn followed by a text turn models the loop continuing
+after the tool result:
+
+```json
+{
+  "turns": [
+    {
+      "tool_calls": [
+        {
+          "id": "write-1",
+          "name": "Write",
+          "args": { "path": "proof.txt", "content": "ok\n" }
+        }
+      ]
+    },
+    { "text": "continued after the tool" },
+    { "delay_ms": 2000, "text": "a cancellable turn" }
+  ]
+}
+```
+
+The flag is an offline operator/testing surface, not a network mock service. A bare
+`--mock` remains the original single canned text turn byte-for-byte.
 
 #### Per-session provider/model selection (wire)
 

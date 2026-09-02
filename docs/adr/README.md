@@ -30,6 +30,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0027 — Cloud-native arc](./0027-cloud-native.md)
 - [0104 — Session families get a bounded, injective, non-reversible physical name](./0104-session-family-physical-naming.md)
 - [0217 — Session discovery uses durable kind metadata and an authoritative transcript](./0217-session-discovery-continuation.md)
+- [0285 — Predictable actionable mecatui session handles](./0285-predictable-mecatui-session-handles.md) *(ordinary fixed escaped raw-ID-prefix handles; supersedes ADR 0217 decision 8 without changing debugger evidence/incarnation handles or their digests)*
 - [0226 — Session storage separates current state, indexed metadata, and maintenance](./0226-session-storage-maintenance.md)
 - [0239 — Semantic stream retry and failed-step retry transport](./0239-semantic-stream-retry.md)
 - [0243 — Local JSONL durability boundaries](./0243-jsonl-durability.md)
@@ -56,7 +57,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0252 — HTTP steer endpoint: `POST /v1/sessions/{id}/steer`](./0252-http-steer-endpoint.md)
 - [0253 — SDK mocking testkit: vendor the proven unary pattern, defer streaming](./0253-sdk-mocking-testkit.md)
 - [0279 — TypeScript SDK architecture: Connect-ES transport, protobuf-es codegen, in-repo pnpm project](./0279-typescript-sdk-architecture.md) *(supersedes ADR 0253 Decisions 1–2 in part)*
-- [0281 — Persistent read-before-write ledgers are independent storage](./0281-persistent-read-before-write-ledgers.md) *(supersedes ADR 0208 decision 6 only)*
+- [0289 — Persistent read-before-write ledgers are independent storage](./0289-persistent-read-before-write-ledgers.md) *(supersedes ADR 0208 decision 6 only)*
 - [0036 — `engine/` is its own Go module (monorepo via `go.work`)](./0036-engine-module.md)
 - [0037 — Engine public-API stability contract](./0037-engine-stability-contract.md)
 - [0038 — Event-sourced SessionStore rehydration (the reference fold)](./0038-event-sourced-rehydration.md)
@@ -67,7 +68,9 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0048 — mecak8s: Kubernetes-native agent harness (storage-free, managed-service state)](./0048-mecak8s.md)
 - [0233 — Secure external Redis on the shared connection layer](./0233-secure-external-redis.md)
 - [0237 — Listener-scoped workspace authority](./0237-listener-scoped-workspace-authority.md)
+- [0286 — Public and private OIDC issuers are two transports, not one policy](./0286-issuer-transport-split.md) *(supersedes ADR 0284's implicit CA-presence mode selection, and ADR 0277's private-only transport clauses)*
 - [0277 — Remote mecatui OIDC client authentication](./0277-remote-mecatui-oidc.md) *(supersedes 0270–0273)*
+- [0284 — Optional system trust for remote mecatui OIDC issuers](./0284-optional-system-trust-remote-oidc.md) *(supersedes ADR 0277's mandatory issuer-CA requirement only; mode selection superseded by 0286)*
 - [0278 — mecak8s edge-terminated TLS](./0278-mecak8s-edge-terminated-tls.md) *(supersedes ADR 0240's provider-security gate scope only)*
 - [0275 — Bounded scoped HTTPS keep-alive reuse for OIDC](./0275-bounded-scoped-https-keepalive-oidc.md) *(supersedes ADR 0235's keep-alive policy and ADR 0277's credential-recovery classification only)*
 - [0270 — Activity-gated remote OIDC refresh](./0270-activity-gated-remote-oidc-refresh.md) *(superseded by 0277)*
@@ -105,12 +108,15 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0111 — Hardened publication and recovery for agent-owned skills](./0111-hardened-agent-owned-skill-publication.md)
 
 ### Core tools & shell
+- [0281 — Managed temporary command leases and deterministic reaping](./0281-managed-temporary-command-leases.md) *(proposed)*
+- [0282 — Managed workspace scratch cache](./0282-managed-workspace-scratch-cache.md) *(proposed; depends on 0281)*
 - [0201 — Background Bash commands](./0201-background-bash.md)
 - [0208 — Execution environments and version-aware file mutation](./0208-execution-environment.md) *(runtime-seam deferral superseded by 0211; version protocol authoritative)*
 - [0211 — Execution-environment runtime seam](./0211-execution-environment-runtime-seam.md) *(supersedes 0208 decisions 1–3; phase-3 persistence deferral superseded by 0214)*
 - [0214 — Execution-environment persistence and reattachment](./0214-environment-persistence.md) *(supersedes 0211 decision 6 only)*
 
 ### Agents, teams & delegation
+- [0283 — Managed delegation-fork lifecycle](./0283-managed-delegation-fork-lifecycle.md) *(proposed; depends on 0281)*
 - [0013 — Agent definitions](./0013-agent-definitions.md)
 - [0014 — Agent teams](./0014-agent-teams.md)
 - [0015 — Background subagents](./0015-background-subagents.md)

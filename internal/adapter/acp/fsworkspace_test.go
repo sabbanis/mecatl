@@ -963,7 +963,7 @@ func TestFSWorkspaceLedgerCrossForm(t *testing.T) {
 }
 
 // TestFSWorkspaceLedgerNotBlockedByParkedRPC proves capability separation
-// (ADR 0208, ADR 0281): an Environment-selected ReadLedger is independent of
+// (ADR 0208, ADR 0289): an Environment-selected ReadLedger is independent of
 // ACP's RPC CAS mutex (callMu), so a parked RPC mutation holding callMu never
 // blocks ledger RecordRead/RecordedVersion. AC3.8 pins this separation.
 func TestFSWorkspaceLedgerNotBlockedByParkedRPC(t *testing.T) {

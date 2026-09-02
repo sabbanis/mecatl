@@ -107,6 +107,12 @@ when the code that satisfies the plan has landed.
   responsive header/footer templates or one local command over a shared status
   input and theme-integrated StatusML; present chrome is the default templates.
   Status: draft.
+- [Predictable mecatui session handles](predictable-session-handles.md) — one fixed,
+  terminal-safe, client-resolved escaped raw-ID-prefix handle for ordinary chrome, `/sessions`,
+  status-line v2, and `mecatui debug`; debug resolves positional handles against all caller-visible
+  projected matches and offers an explicit inventory-free exact-ID path, while server APIs and
+  debugger evidence/incarnation handles retain their exact existing identity contracts. Status:
+  landed.
 
 - [Listener-scoped workspace authority](listener-scoped-workspace-authority.md) — network listeners assign one operator-configured filesystem root while embedded and loopback deployments retain client-selected workspaces; mecak8s is no-FS by default. Status: draft.
 - [SDK server enablers](sdk-server-enablers.md) — the Go-side contracts the TypeScript
@@ -119,7 +125,15 @@ when the code that satisfies the plan has landed.
   protobuf-es generation for `mecatl.v1` with a freshness gate, Connect-ES + HTTP/SSE
   raw transports behind an injected-Transport seam, typed errors and the compatibility
   floor, `Client`/`Session`/`Run` choreography with permissions and strict steer,
-  multimodal helpers, and the offline e2e against `mecated --mock`. Status: draft.
+  multimodal helpers, and the offline e2e against `mecated --mock`. Status: landed.
+- [TypeScript SDK durable attachment (M2)](sdk-typescript-attach.md) — the client
+  half of the durable watch: the `WatchSessionEvents` envelope union with tolerated
+  unknown phases, `session.attach()` / `session.activity()`, a serializable
+  filter-branded cursor with consumption-time checkpointing, explicit gap and
+  cursor-fault errors, a three-arm reconnect authority over a closed terminal code
+  set, an HTTP-only attached `cancel` carrying `expected_run_id` (attached
+  approval deferred to an ack-only server route), and the offline
+  daemon-restart and awaiting-resume e2e. Status: draft.
 
 ## See also
 

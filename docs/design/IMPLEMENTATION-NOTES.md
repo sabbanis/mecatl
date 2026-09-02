@@ -305,10 +305,18 @@ expected report sections → delimited debugger-runtime context. The objective i
 or custom `--prompt`; the runtime block is compatibility/transport context, never target
 evidence. A safely classified lookup failure leaves unavailable fields but does not block
 that turn or expose the raw error. Durable authority, safety, and source hierarchy remain in
-`applyDebugSessionPosture`'s stable Role rather than dynamic runtime text. The ordinary padded header carries
-amber/bold `DEBUG target #<digest>` immediately after `mecatui`; width pressure removes
+`applyDebugSessionPosture`'s stable Role rather than dynamic runtime text. The ordinary padded
+header carries amber/bold `DEBUG target <handle>` immediately after `mecatui`; its fixed
+12-column handle renders safe `[A-Za-z0-9._-]` bytes literally except that a leading `-` is
+encoded as `%2D`, and renders every other UTF-8 byte as uppercase `%HH`, keeping only complete
+atoms that fit. It has no leading `#`. A syntactically valid short target consults the complete
+caller-visible inventory: exact full-ID equality wins, otherwise one unique projected match
+resolves. Multiple projected matches stop before create and direct the operator to copy the exact
+ID from `/session` and pass it as `TARGET` through the same command. A zero match or inventory
+failure passes `TARGET` unchanged to the server's existing exact-ID authorization/not-found path.
+Width pressure removes
 model/mode/server detail before that complete identity, `/session` shows and copies the
-safely quoted exact target ID, and the target-derived title remains. Binding-breaking
+safely quoted exact target ID, and the target-derived title uses the same handle. Binding-breaking
 controls stay disabled. Live target following, raw audit/tool-record inspection, packet capture,
 raw logs/pprof, and support bundles remain out of scope. See [ADR 0254](../adr/0254-session-debugger-admin-transport.md) and [ADR 0255](../adr/0255-sanitized-network-attempt-evidence.md).
 
@@ -1640,12 +1648,17 @@ does not apply). The shared `autoMergeWinner` helper fires for a SINGLE-BRANCH
 (`len(results) == 1`) winner of `join=first` OR `join=judge` — both one-branch
 winners land (the paths collapse: a one-branch judge run and a one-branch first
 run are the same "delegate and land" case). The winner's diff is auto-merged back
-into the parent workspace AFTER `preserveWinner` and BEFORE `Execute` returns;
-the result notes the auto-merge (and drops the "inspect/merge/clean" guidance —
-the changes already landed). Multi-branch runs and `join=all` NEVER auto-merge
-(the no-auto-merge boundary stays for fan-out). On a conflict `Execute` returns a
-tool error naming the conflict + the preserved fork path (the fork is left intact
-for manual resolution); it NEVER forces. `ParallelTool.ReadOnly()` stays `true` —
+into the parent workspace BEFORE `preserveWinner` and before `Execute` returns, so
+shutdown cannot reap its fork while the merge reads it; the result notes the auto-merge
+(and drops the "inspect/merge/clean" guidance — the changes already landed).
+Multi-branch runs and `join=all` NEVER auto-merge
+(the no-auto-merge boundary stays for fan-out). The process-scoped
+`agent.LRUForkReaper` retains preserved winners only until LRU eviction or graceful
+app shutdown. `Close` drains retained cleanups and eviction cleanups detached before
+closure outside its mutex, but does not wait for a `Preserve` that begins after closure;
+a crash remains a residual (there is deliberately no startup deletion sweep). On a conflict `Execute` returns a
+tool error naming the conflict + the ephemeral workspace path, which may already be gone
+if graceful shutdown began; it NEVER forces. `ParallelTool.ReadOnly()` stays `true` —
 the merge is a POST-RUN step, not a dispatch-time mutation, so read-parallel /
 mutate-serial is unaffected. The merge runs in the PARENT workspace under the
 parent's trust posture. SECURITY: the merge's `git diff` runs `--no-textconv`
@@ -3482,12 +3495,24 @@ flag; ACP help excludes it. See ADR 0088.
 
 The command taxonomy is deliberately explicit. `mecatui llm login` is the existing
 ToolHive gateway login and has no server/session meaning. `mecatui login ADDRESS` is
-remote enrollment: it requires `--issuer`, `--client-id`, `--audience`, and `--tls-ca`,
-then runs public Authorization Code + PKCE and saves the target metadata plus
-credential. The registry saves the issuer CA path/reference, never the CA contents, for
+remote enrollment: it requires `--issuer`, `--client-id`, and `--audience`; it defaults
+to public issuer address admission with system roots, while optional `--tls-ca` replaces
+them. `--private-issuer` requires that CA and selects scoped private admission. The registry
+saves the issuer policy and CA path/reference, never CA contents, for
 discovery/token/JWKS/refresh/revocation; the optional
 `connect --tls-ca` is separately the gRPC server trust root. `mecatui connect ADDRESS`
-only dials; it never implicitly opens a browser.
+only dials; it never implicitly opens a browser. `cmd/mecatui/config.go`
+(`resolveRemoteTLSPolicy`) resolves omitted `--tls` after target parsing: non-loopback
+and unparseable targets verify TLS, loopback defaults plaintext, and `--tls=false` is
+the explicit downgrade. `cmd/mecatui/client/client.go` (`Dial`) independently refuses
+remote plaintext without that explicit authorization and never permits a bearer there.
+Both layers classify targets with the SINGLE predicate `cmd/mecatui/client/client.go`
+(`IsLocalTarget`) — loopback host:port OR a `unix://` socket — which also feeds
+`bearerCreds.allowInsecure`, so the policy default, the two pre-dial guards, and the
+per-RPC credential can never disagree about one target.
+A registry hit overrides the loopback default to verified gRPC TLS and rejects explicit
+plaintext or `--insecure`; the saved issuer CA is passed only to the issuer client, never
+to `DialConfig.TLSCAFile`.
 A missing target enrollment returns the CLI-login instruction. The UI `/connect`
 overlay lists public saved-target metadata, confirms a selection, and requests a
 restart; a new-target selection exits to the same CLI login flow before reconnecting.
@@ -8037,6 +8062,52 @@ model-facing tool/result text, ACP/config boundaries, and generated configuratio
 failures name only the class, never the value. The elapsed-time expiry leg is bounded and is
 the only clock-dependent part because the official `oauth2.Token.Valid` has no injected
 clock.
+
+## TypeScript SDK — `sdk/typescript/` (M1 core, ADR 0279)
+
+The ESM-only `@stacklok/mecatl-sdk` has three exports. `.` owns the transport-neutral
+`Client`/`Session`/`Run` API, typed events/errors, prompt-media helpers, and the hand-written
+HTTP/JSON/SSE transport. `./node` re-exports that surface and adds connect-node real gRPC over
+HTTP/2: TCP uses an ordinary base URL; UDS keeps an ordinary HTTP authority and supplies a
+socket-opening `createConnection` through the HTTP/2 node options (`sdk/typescript/src/node-transport.ts`),
+never a `unix://` URL. `./gen` is the committed protobuf-es output generated only for
+`contracts/proto/mecatl/v1/`; it has a codegen freshness gate rather than an API Extractor
+report. The package requires Node 24 in M1, builds unbundled ESM plus declarations/source maps,
+and owns its pinned pnpm lock independently of the npm-based website.
+
+`sdk/typescript/src/raw.ts` enforces API-major compatibility before all non-compatibility RPCs;
+the ergonomic client also probes status and maps transport/auth/incompatibility states without
+making the probe a second protocol contract. `Session` handles are lightweight views over one
+client. A handle admits one live run at a time, while separately fetched handles let callers
+model real server-side races. `Run` is single-consumption: callers choose async event iteration
+or `result()`, never both. Server terminal stops — including `cancelled` — resolve as typed
+values; transport/protocol/server failures reject. Every approval, cancel, and steer frame
+carries `expected_run_id`, so a stale HTTP control becomes typed `stale_run_control` and cannot
+affect the session's next run. HTTP steer remains deliberately unsupported until the server
+advertises `http_steer`.
+
+`sdk/typescript/src/events.ts` normalizes gRPC protobuf events and HTTP JSON/SSE records into
+one discriminated union, retaining an explicit unknown-event member for forward compatibility.
+The Go↔TypeScript kind-parity gate prevents the known vocabulary from drifting. Permission
+asks remain ordinary raw `permission.ask` events even when `onPermissionAsk` automatically
+returns `allow_once`, `allow_always`, or `deny`; responder lifetime is tied to the ask and late
+answers cannot resolve a retracted ask. A denial is a tool error, not a terminal run failure,
+so the provider receives that result and may continue on a later turn.
+
+Prompt media in `sdk/typescript/src/media.ts` accepts text plus image/audio parts and validates
+source XOR, MIME allowlists, per-part/count/aggregate bounds, and server capabilities before
+opening a run. The Node export adds path loaders; neither transport changes the normalized
+prompt model or event model.
+
+The offline real-wire lane is `sdk/typescript/e2e/`, separate from injected-transport unit
+tests and from the paid Go live suite below. `task sdk:e2e` first runs the repository Taskfile
+build, then Vitest spawns `bin/mecated` only on `127.0.0.1` or an owner-local UDS, with live
+provider credentials removed. Bare `--mock` remains its original single canned text turn.
+`cmd/mecated/mockscript.go` exposes `--mock-script`: strict bounded JSON is compiled into the
+existing `engine/adapter/mockllm` provider via `app.Config.MockProvider`, including ask-worthy
+tool-call turns and a bounded per-turn delay for deterministic mid-flight cancellation. The
+SDK CI job runs frozen install, Biome, typecheck, unit Vitest, build, pack, API reports, Go+TS
+codegen freshness, and this e2e; each command remains a hard failure.
 
 ## Live e2e — `e2e/` (see `e2e/README.md`)
 

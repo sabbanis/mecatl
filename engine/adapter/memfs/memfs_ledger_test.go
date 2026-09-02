@@ -11,7 +11,7 @@ import (
 )
 
 // TestPersistentReadLedgers_Scenario1_IndependentSessionLedgers pins AC1.3
-// (docs/adr/0281): two Workspaces over ONE shared file-content backend
+// (docs/adr/0289): two Workspaces over ONE shared file-content backend
 // (memfs.FileSystem) can select two INDEPENDENT tool.ReadLedger instances, so
 // a record made through one Workspace's ledger is ABSENT from the other's —
 // even though both Workspaces see the same file contents.
@@ -64,7 +64,7 @@ func TestPersistentReadLedgers_Scenario1_IndependentSessionLedgers(t *testing.T)
 }
 
 // TestPersistentReadLedgers_Scenario1_DefaultMemoryLifecycle pins AC1.4
-// (docs/adr/0281): with no durable ledger explicitly selected, the standard
+// (docs/adr/0289): with no durable ledger explicitly selected, the standard
 // construction path (memfs.NewWorkspace) uses a FRESH in-memory ledger, and
 // rebuilding the Workspace (as the default per-session factory does on every
 // new run) starts with an EMPTY ledger — the existing per-live-Workspace reset

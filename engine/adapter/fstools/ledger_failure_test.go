@@ -11,7 +11,7 @@ import (
 )
 
 // ledger_failure_test.go pins the Scenario 3 fail-closed acceptance criteria
-// (docs/adr/0281): a failed RecordRead, an unavailable/corrupt RecordedVersion
+// (docs/adr/0289): a failed RecordRead, an unavailable/corrupt RecordedVersion
 // lookup, and a post-mutation RecordRead failure must all fail closed without
 // ever weakening the final ReplaceFile/CreateFile CAS.
 

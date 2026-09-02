@@ -2,6 +2,7 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"strings"
 	"testing"
 
@@ -26,4 +27,14 @@ func TestLogoutOutputIsSecretFreeAndHonestAboutPartialState(t *testing.T) {
 			t.Errorf("logout output %q does not contain %q", got, want)
 		}
 	}
+}
+
+func TestLogoutPublicIssuerUsesManagedPublicPolicy(t *testing.T) {
+	client, owned, err := logoutIssuerClient(context.Background(), clientauth.Connection{
+		Identity: clientauth.Identity{Issuer: "https://8.8.8.8"}, IssuerAddressPolicy: clientauth.IssuerAddressPolicyPublic,
+	})
+	if err != nil || client == nil || !owned {
+		t.Fatalf("public logout issuer client = (%v, %t, %v), want managed client", client, owned, err)
+	}
+	client.CloseIdleConnections()
 }

@@ -17,7 +17,9 @@ Caller identity is an opt-in server feature for `mecated` and `mecak8s`. It
 protects both wire surfaces with the same validator and ownership rules. `mecatui`
 can either send an operator-supplied static bearer with `--auth-token`, or enroll a
 remote target with `mecatui login` and obtain, validate, and refresh its own OIDC
-credential. Those are distinct client modes; the server still only validates the
+credential. Remote targets use verified TLS automatically; a static bearer is never
+sent over explicit non-loopback plaintext, and saved OIDC authentication always
+requires verified TLS. Those are distinct client modes; the server still only validates the
 bearer presented on each request.
 
 With OIDC disabled, the server preserves the single-shared-deployment behavior:
@@ -117,7 +119,7 @@ command line:
 bin/mecatui login mecated.example.internal:443 \
   --issuer https://idp.example.internal \
   --client-id mecatui --audience mecatl \
-  --tls-ca /path/to/issuer-ca.pem
+  --tls-ca /path/to/issuer-ca.pem --private-issuer
 bin/mecatui connect mecated.example.internal:443 \
   --tls --tls-ca /path/to/server-ca.pem
 ```

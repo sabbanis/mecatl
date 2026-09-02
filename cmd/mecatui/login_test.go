@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/adrg/xdg"
@@ -61,6 +62,25 @@ func TestRemoteLoginStoresAbsoluteIssuerCAReferenceAcrossCWDChanges(t *testing.T
 	}
 	if conn.IssuerCAFile != physicalCA || !filepath.IsAbs(conn.IssuerCAFile) {
 		t.Fatalf("saved issuer CA = %q, want %q", conn.IssuerCAFile, physicalCA)
+	}
+}
+
+func TestRemoteLoginAllowsSystemIssuerRoots(t *testing.T) {
+	original := executeRemoteLogin
+	t.Cleanup(func() { executeRemoteLogin = original })
+	marker := errors.New("stop after connection capture")
+	executeRemoteLogin = func(_ context.Context, conn clientauth.Connection, _ bool) error {
+		if conn.IssuerCAFile != "" {
+			t.Fatalf("issuer CA = %q, want system roots", conn.IssuerCAFile)
+		}
+		return marker
+	}
+
+	err := runRemoteLogin("remote.example:443", []string{
+		"--issuer", "https://issuer.example", "--client-id", "client", "--audience", "audience",
+	})
+	if !errors.Is(err, marker) {
+		t.Fatalf("runRemoteLogin error = %v, want capture marker", err)
 	}
 }
 
@@ -142,6 +162,20 @@ func TestSavedRemoteLoginPreflightsLocalStorageBeforeRuntime(t *testing.T) {
 	}
 }
 
+func TestSavedPublicLoginDoesNotReadEmptyCAPath(t *testing.T) {
+	originalRuntime := newRemoteLoginRuntime
+	originalPrepare := prepareSavedLogin
+	t.Cleanup(func() { newRemoteLoginRuntime = originalRuntime; prepareSavedLogin = originalPrepare })
+	prepareSavedLogin = func(context.Context, clientauth.Connection) (preparedSavedLogin, error) {
+		return preparedSavedLogin{close: func() {}}, nil
+	}
+	marker := errors.New("runtime reached")
+	newRemoteLoginRuntime = func(oauthlogin.Options) (*oauthlogin.Runtime, error) { return nil, marker }
+	if err := runSavedRemoteLogin(t.Context(), clientauth.Connection{IssuerAddressPolicy: clientauth.IssuerAddressPolicyPublic}, false); !errors.Is(err, marker) {
+		t.Fatalf("saved public login error = %v, want runtime marker", err)
+	}
+}
+
 func TestExistingSavedRemoteLoginMissingStoreDoesNotLaunchBrowserOrCreateState(t *testing.T) {
 	oldConfigHome := xdg.ConfigHome
 	xdg.ConfigHome = t.TempDir()
@@ -191,5 +225,22 @@ func TestSigninErrorLeavesDiscoveryFailuresUnclassified(t *testing.T) {
 	}
 	if reason, ok := client.AuthFailure(err, false); ok {
 		t.Fatalf("discovery failure classified as %q, want unclassified", reason)
+	}
+}
+
+func TestRemoteLoginIssuerPolicyFlags(t *testing.T) {
+	original := executeRemoteLogin
+	t.Cleanup(func() { executeRemoteLogin = original })
+	var got clientauth.Connection
+	executeRemoteLogin = func(_ context.Context, conn clientauth.Connection, _ bool) error { got = conn; return nil }
+	args := []string{"--issuer", "https://issuer.example", "--client-id", "client", "--audience", "audience"}
+	if err := runRemoteLogin("remote.example:443", args); err != nil {
+		t.Fatal(err)
+	}
+	if got.IssuerAddressPolicy != clientauth.IssuerAddressPolicyPublic || got.IssuerCAFile != "" {
+		t.Fatalf("public login connection = %#v", got)
+	}
+	if err := runRemoteLogin("remote.example:443", append(args, "--private-issuer")); err == nil || !strings.Contains(err.Error(), "requires --tls-ca") {
+		t.Fatalf("private issuer without CA error = %v", err)
 	}
 }

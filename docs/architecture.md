@@ -190,6 +190,25 @@ translation, resilience, tools, and the provider-neutral engine port remain
 single-sourced. See [the provider chapter](architecture/providers.md#experimental-openai-codex-subscription-provider)
 and [ADR 0215](adr/0215-openai-subscription-manual-token.md).
 
+### TypeScript SDK
+
+The ESM-only `@stacklok/mecatl-sdk` package lives in `sdk/typescript/`, with its
+own pnpm lockfile and Node-focused build/test gates kept separate from the Go
+modules and the npm-based `website/` tree. Its public surface is split by
+transport: `.` is the transport-neutral core plus the browser HTTP/SSE client,
+while `./node` contains the Node/Bun real-gRPC transport (TCP and UDS), and
+`./gen` is reserved for protobuf-es types and service descriptors generated under
+`sdk/typescript/src/gen/` from `contracts/proto/mecatl/v1/`. Both transports feed
+the same `Client`/`Session`/single-consumption `Run` layer: compatibility is checked
+before ordinary calls; events and server errors are normalized into closed typed
+families; controls carry the current run id; permission responders do not hide raw
+ask events; and prompt media is validated before transport selection. UDS dials by
+supplying connect-node's HTTP/2 node connection option for the socket path, never a
+`unix://` base URL. Unit tests inject transports; `sdk/typescript/e2e/` separately
+builds and spawns the same checkout's `mecated` with the offline mock provider to
+prove TCP, UDS, HTTP/SSE, asks, cancellation, and stale controls on real wire. See
+[ADR 0279](adr/0279-typescript-sdk-architecture.md).
+
 Around that core, every capability beyond the minimal loop is a **seam with a
 default and a swap-in adapter**, so the production build stays static and
 network-free unless you wire something in. The current adapters cover, grouped:
@@ -363,17 +382,26 @@ a second failure. Visible failures require an explicit retry. The server it talk
 either one it **hosts in-process** over a UNIX socket (`cmd/mecatui/embed` →
 `app.Build`, the default — bare `mecatui` always embeds, never probes) or an
 external `mecated` it dials via `mecatui connect ADDRESS` — so a single binary
-works with no daemon. The `sessions` launch intent is orthogonal to that transport:
+works with no daemon. Remote transport is target-aware: an omitted `--tls` uses
+verified TLS for a non-loopback or unparseable target and plaintext only for
+loopback; `--tls=false` is the explicit remote plaintext downgrade. A saved OIDC
+connection always uses verified TLS. The `sessions` launch intent is orthogonal to that transport:
 `mecatui sessions` and `mecatui connect ADDRESS sessions` enter the same stored-session
 inventory without first creating a session, then continue/inspect through the existing
 authoritative transcript path or create only when the operator requests a new chat.
-The sibling `mecatui debug SESSION_ID` and `mecatui connect ADDRESS debug SESSION_ID`
-forms create a separate durable `debug` session whose trusted relationship metadata binds
-one authorized target. The proto-free client uses the same 12-byte helper as the
-header: only an exact header-width reference is resolved against the caller-filtered
-inventory, exact full-ID matches win, and ambiguity fails before creation. Longer IDs
-bypass inventory lookup; an unmatched short reference is still sent unchanged so the
-server preserves its absence-shaped authorization response and remains the final authority.
+The sibling `mecatui debug TARGET` and
+`mecatui connect ADDRESS debug TARGET` forms create a separate durable `debug` session whose trusted relationship metadata binds
+one authorized target. The proto-free UI uses the same fixed 12-column,
+terminal-safe handle as the header: safe `[A-Za-z0-9._-]` bytes are literal except that
+a leading `-` is encoded as `%2D`; all other UTF-8 bytes are uppercase `%HH`, with only
+complete atoms that fit. The displayed literal has no leading `#`. A syntactically valid
+short target is resolved against the complete caller-filtered inventory: exact full-ID equality
+wins automatically, otherwise one unique projected match resolves. Multiple projections fail
+with guidance to copy and pass the full exact ID as `TARGET`. Inventory failure or no match
+passes `TARGET` unchanged to the existing server exact-ID authorization/not-found path. Longer
+or malformed targets likewise remain exact-ID inputs automatically. Only the resolved exact ID
+crosses the real `Client.CreateDebugSession` request boundary, and the server remains the final
+authority.
 That engine has no filesystem, carries a stable-prefix debugging
 contract, and always exposes the target-bound `InspectSession` tool; the model cannot
 choose another target or submit a raw session ID. A create request may additionally name
@@ -452,9 +480,9 @@ first user turn ordered as objective, required InspectSession workflow, expected
 structure, then a delimited sanitized debugger-runtime context. The runtime block is
 compatibility/transport context, never target evidence; a custom `--prompt` changes only the
 objective. Durable safety, authority, and source hierarchy stay in the stable system Role.
-Its normal padded header keeps amber/bold `DEBUG target #<digest>`
+Its normal padded header keeps amber/bold `DEBUG target <handle>`
 ahead of lower-priority details, `/session` exposes and copies the safely quoted exact target,
-and the target-derived terminal title remains while binding-breaking controls are hidden. See [ADR 0254](adr/0254-session-debugger-admin-transport.md), [ADR 0255](adr/0255-sanitized-network-attempt-evidence.md), [ADR 0256](adr/0256-session-debugger-evidence-and-reporting.md), and [ADR 0257](adr/0257-session-debugger-hardening.md). Each
+and the target-derived terminal title uses the same handle. See [ADR 0254](adr/0254-session-debugger-admin-transport.md), [ADR 0255](adr/0255-sanitized-network-attempt-evidence.md), [ADR 0256](adr/0256-session-debugger-evidence-and-reporting.md), and [ADR 0257](adr/0257-session-debugger-hardening.md). Each
 inventory row also carries server-authored action capabilities. The TUI uses those bits—not
 ID spelling—to expose exact-ID copy, detached transcript view, peer fork, operator-title
 rename, and confirmed physical deletion. The server also exposes authenticated legacy-adoption
@@ -490,11 +518,16 @@ leaves the old session and UI unchanged. Usage and configuration are documented 
 **Remote mecatui OIDC.** The remote-login path is separate from the ToolHive LLM
 login: `mecatui llm login` remains the ToolHive gateway flow, while `mecatui login
 ADDRESS` performs public-client OIDC enrollment for one remote target. Login requires
-issuer, public client ID, audience, and an issuer CA bundle path/reference; only that
-reference, never CA contents, is saved. The login `--tls-ca` path is distinct from the
+issuer, public client ID, and audience. It defaults to public, globally routable issuer
+addresses verified against the system trust store; optional `--tls-ca` replaces those
+roots. `--private-issuer` requires `--tls-ca` and selects private-address admission. The
+saved policy and an explicit CA reference, never CA contents, are used for later refresh
+and logout. The login `--tls-ca` path is distinct from the
 optional server CA supplied to `connect`. It validates discovery, PKCE, and
 the resulting token before saving. `mecatui connect ADDRESS` never opens a browser or
-guesses missing settings. An enrolled target uses a root-scoped OS-keyring key and a
+guesses missing settings. A saved credential forces verified TLS for the gRPC server,
+even on loopback; its saved issuer CA remains issuer-only, while `connect --tls-ca`
+is the only custom server-CA input. An enrolled target uses a root-scoped OS-keyring key and a
 keyring-wrapped encrypted credential store; under the root lock, the legacy unsuffixed
 keyring key is copied only when that encrypted namespace contains an actual credential
 record—opening an empty namespace is not migration evidence. Credentials are bound to
@@ -547,7 +580,7 @@ The shared private-HTTPS path reuses a finite, owner-closed scoped keep-alive po
 every new dial re-resolves DNS and intersects the approved addresses while retaining
 HTTPS, origin, CA, hostname, and redirect safeguards. Kind remote login is available after fixture setup with host aliases and
 the public CA, but is a live qualification path, not ordinary offline-test coverage.
-See [ADR 0275](adr/0275-bounded-scoped-https-keepalive-oidc.md), [ADR 0277](adr/0277-remote-mecatui-oidc.md) and [ADR 0274](adr/0274-remote-mecatui-logout-budget.md).
+See [ADR 0275](adr/0275-bounded-scoped-https-keepalive-oidc.md), [ADR 0277](adr/0277-remote-mecatui-oidc.md), [ADR 0287](adr/0287-target-aware-mecatui-tls.md), and [ADR 0274](adr/0274-remote-mecatui-logout-budget.md).
 
 **mecatequi — the single-shot headless runner (`cmd/mecatequi`).** A fourth composition
 root and a *peer of `mecademo`* over the same `app.Build`: it runs **one** prompt against
@@ -684,7 +717,7 @@ Two deliberate cycle-breaks worth noting, documented in code:
   through any stricter child-authority Workspace view; storage is never reconstructed
   from `Root()`.
   The final conditional `ReplaceFile` remains the concurrency guard. See
-  [ADR 0281](adr/0281-persistent-read-before-write-ledgers.md).
+  [ADR 0289](adr/0289-persistent-read-before-write-ledgers.md).
   As of [ADR 0214](adr/0214-environment-persistence.md), `EnvironmentRef` is a DURABLE
   snapshot field: a non-in-tree ref persists across a restart and reattaches a live
   `Environment` at run entry through `server.Config.EnvironmentResolver`; the in-tree

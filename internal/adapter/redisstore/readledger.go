@@ -30,7 +30,7 @@ const ledgerFormat = "redisstore-ledger/1"
 // I/O and carries no path/session identity of its own — that identity lives
 // entirely in the Redis key (session) and hash field (normalized path), the
 // two INDEPENDENT axes that make (session, path) addressing injective (ADR
-// 0281): concatenating them into one delimited string is exactly what this
+// 0289): concatenating them into one delimited string is exactly what this
 // scheme avoids, so an adversarial separator or shared prefix in either value
 // can never make two distinct pairs address the same hash field.
 type ledgerRecord struct {
@@ -57,7 +57,7 @@ var _ tool.ReadLedger = (*redisLedger)(nil)
 // this Store's Redis client. Independently constructed handles for the SAME
 // session id (including from separate *Store instances/process — see New) all
 // read and write the same durable Redis hash, so a version recorded through
-// one handle is visible after reopening another (ADR 0281 Scenario 2).
+// one handle is visible after reopening another (ADR 0289 Scenario 2).
 func (st *Store) ReadLedger(id session.SessionID) tool.ReadLedger {
 	return &redisLedger{clients: st.clients, id: id}
 }

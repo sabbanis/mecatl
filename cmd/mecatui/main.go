@@ -101,6 +101,10 @@ func prepareRun(argv []string) (invocationResolution, error) {
 		writeTopLevelHelp(os.Stderr)
 		return invocationResolution{}, flag.ErrHelp
 	}
+	if res.debugHelp {
+		writeDebugHelp(os.Stderr, res.mode == modeConnect)
+		return invocationResolution{}, flag.ErrHelp
+	}
 	return res, nil
 }
 
@@ -403,6 +407,9 @@ func parseRunConfig(res invocationResolution) (config, error) {
 	}
 	cfg.connectAddress = res.address
 	cfg.debugTarget = res.debugTarget
+	if err := resolveRemoteTLSPolicy(&cfg); err != nil {
+		return config{}, err
+	}
 	if err := configureWorkspaceForTransport(&cfg); err != nil {
 		return config{}, err
 	}
@@ -795,7 +802,7 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 	// ADDRESS and NEVER probes/embeds; the bare invocation ALWAYS embeds and
 	// NEVER probes loopback.
 	if cfg.transportMode == modeConnect {
-		dial := client.DialConfig{Server: cfg.connectAddress, AuthToken: cfg.authToken, UseTLS: cfg.useTLS, TLSCAFile: cfg.tlsCA, Insecure: cfg.insecure}
+		dial := client.DialConfig{Server: cfg.connectAddress, AuthToken: cfg.authToken, UseTLS: cfg.useTLS, TLSCAFile: cfg.tlsCA, Insecure: cfg.insecure, RemotePlaintextAllowed: cfg.tlsExplicit && !cfg.useTLS}
 		if cfg.authToken == "" && !cfg.noSavedAuth {
 			root := filepath.Join(xdg.ConfigHome, "mecatl")
 			registry, regErr := clientauth.OpenExistingRegistry(root)
@@ -806,10 +813,14 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 			if findErr == nil {
 				target = conn.Identity.Target
 				dial.Server = target
-				if !cfg.useTLS || cfg.insecure {
-					return target, client.DialConfig{}, noop, errors.New("saved remote authentication requires TLS; remove --insecure and use --tls")
+				if err := applySavedRemoteTLSPolicy(cfg, &dial); err != nil {
+					return target, client.DialConfig{}, noop, err
 				}
-				ca, readErr := os.ReadFile(conn.IssuerCAFile)
+				var ca []byte
+				var readErr error
+				if conn.IssuerCAFile != "" {
+					ca, readErr = os.ReadFile(conn.IssuerCAFile)
+				}
 				if readErr != nil {
 					return target, client.DialConfig{}, noop, &client.AuthError{Reason: client.AuthStorageUnavailable}
 				}
@@ -842,7 +853,7 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 					}
 					return target, client.DialConfig{}, noop, &client.AuthError{Reason: client.AuthStorageUnavailable}
 				}
-				source, sourceErr := clientauth.NewRefreshSource(ctx, creds, clientauth.LoginConfig{Identity: conn.Identity, PrivateHTTPS: true, TrustedCAPEM: ca, Registry: registry})
+				source, sourceErr := clientauth.NewRefreshSource(ctx, creds, clientauth.LoginConfig{Identity: conn.Identity, IssuerAddressPolicy: conn.IssuerAddressPolicy, TrustedCAPEM: ca, Registry: registry})
 				if sourceErr != nil {
 					_ = store.Close()
 					// NewRefreshSource fails with ErrDiscovery when the issuer is
@@ -859,9 +870,10 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 				dial.TokenSource = mapAuthTokenSource(source)
 				return target, dial, func() { _ = source.Close(); _ = store.Close() }, nil
 			}
-			if !errors.Is(findErr, credentialstore.ErrNotFound) {
-				return target, client.DialConfig{}, noop, &client.AuthError{Reason: client.AuthStorageUnavailable}
+			if errors.Is(findErr, credentialstore.ErrNotFound) {
+				return cfg.connectAddress, client.DialConfig{}, noop, &client.AuthError{Reason: client.AuthNeverEnrolled}
 			}
+			return target, client.DialConfig{}, noop, &client.AuthError{Reason: client.AuthStorageUnavailable}
 		}
 		return cfg.connectAddress, dial, noop, nil
 	}

@@ -38,11 +38,17 @@ bin/mecatui connect 127.0.0.1:8080 \
   --auth-token "$MECATL_AUTH_TOKEN" --workspace "$PWD"
 ```
 
-For a non-loopback endpoint, use TLS when sending a bearer. Add a CA bundle only when the server uses a private CA:
+For a non-loopback endpoint, verified TLS is automatic; `--tls`, `--tls=true`,
+and `--tls-ca` also select verified TLS. `--insecure` instead uses encrypted TLS
+without certificate verification and is only for controlled testing — it cannot
+carry a bearer to a non-loopback server, because an unverified certificate hides
+an interceptor that would read the token. `--tls=false`
+is the explicit plaintext downgrade; use it only for controlled, non-bearer testing.
+Add a CA bundle with `--tls-ca` only when the server uses a private CA.
 
 ```sh
 bin/mecatui connect mecated.example.internal:443 \
-  --tls --tls-ca /path/to/company-ca.pem \
+  --tls-ca /path/to/company-ca.pem \
   --auth-token "$MECATL_AUTH_TOKEN"
 ```
 
@@ -58,24 +64,28 @@ Remote enrollment and connecting are separate actions:
 bin/mecatui login mecated.example.internal:443 \
   --issuer https://id.example.internal \
   --client-id mecatui --audience mecatl \
-  --tls-ca /path/to/issuer-ca.pem
+  --tls-ca /path/to/issuer-ca.pem --private-issuer
 bin/mecatui connect mecated.example.internal:443 \
   --tls --tls-ca /path/to/server-ca.pem
 ```
 
-`mecatui login ADDRESS` runs the public OIDC Authorization Code + PKCE flow and
-requires all four options shown. The login `--tls-ca` verifies the issuer's discovery,
+`mecatui login ADDRESS` runs the public OIDC Authorization Code + PKCE flow. It
+requires `--issuer`, `--client-id`, and `--audience`. It defaults to a public issuer
+verified against the system roots; the example above is a PRIVATE issuer, so it passes
+`--private-issuer`, which requires `--tls-ca`. The login `--tls-ca` verifies the issuer's discovery,
 token, JWKS, refresh, and revocation endpoints; it does not configure server transport
-trust. The issuer CA bundle path/reference, not the CA contents, is saved as public target
-metadata; the later
-`connect --tls-ca` independently verifies the gRPC server. Login saves
+trust. An explicit issuer CA bundle path/reference, not its contents, is saved as public
+target metadata. A later `connect` with saved credentials always uses verified TLS,
+including for loopback; only `connect --tls-ca` independently verifies a private-CA
+gRPC server. Login saves
 public target metadata in the connection registry and stores the credential in a
 canonical-root-scoped, keyring-wrapped encrypted store. The credential is bound to the
 canonical target and OIDC identity. An old unsuffixed keyring key is copied without
 deletion only when that root already contains an actual encrypted credential record; an
 empty opened namespace does not trigger migration. A credential enrolled under a legacy zero-padded port spelling
-needs one login after upgrade. `mecatui connect
-ADDRESS` never opens a browser; an unenrolled target tells you to run `login`.
+needs one login after upgrade. `mecatui connect ADDRESS` never opens a browser; an
+unenrolled target is rejected before it dials and tells you to run `mecatui login
+ADDRESS` first.
 Add `--no-browser` to print the authorization URL for you to open yourself, which is
 what you want over SSH or on a headless host. Remote login listens at the registered
 `http://127.0.0.1:18473/oauth/callback`. Open the printed URL in a browser on your

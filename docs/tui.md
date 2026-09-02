@@ -27,7 +27,9 @@ mandatory safety/navigation and activity lanes, then clips and aligns the result
 A configuration selects exactly one source: responsive `templates` or a
 `command` with an absolute `executable` and literal `args`. Templates receive an
 automatically StatusML-escaped projection; a command receives the same raw input
-as JSON on stdin. It is run directly (there is no shell or source configuration
+as JSON on stdin. Input protocol v2 exposes the ordinary fixed handle as `Session.Handle`;
+it replaces v1's `Session.Digest`, and no digest compatibility alias is emitted. It is run
+directly (there is no shell or source configuration
 form); `/bin/sh` is available only when explicitly selected as the executable with
 literal arguments. It uses a constrained environment, local-only CWD selection, a
 one-second deadline, and a combined 4 KiB stdout/stderr limit. StatusML accepts semantic theme tokens and validated
@@ -98,8 +100,13 @@ instead.
 To use a specific **external** server instead, use the `connect` subcommand:
 
 ```sh
+# External loopback server: omitted --tls is plaintext only for loopback.
 bin/mecated serve &                                    # listens on 127.0.0.1:8080
 bin/mecatui connect 127.0.0.1:8080 --workspace "$PWD"
+
+# Remote targets use verified TLS automatically; --tls=false is the explicit
+# plaintext downgrade and is appropriate only for controlled non-bearer testing.
+bin/mecatui connect mecated.example.internal:443
 ```
 
 `--workspace` defaults to the current directory for an embedded server and for a
@@ -132,18 +139,22 @@ or fallback:
   create a new chat with the launch workspace/mode/model defaults, or `esc` to
   quit without a session. Inspection `esc` returns to the startup inventory.
 
-- **`mecatui debug SESSION_ID [flags]`** — create a separate durable no-filesystem
-  analysis session permanently bound to that stored target. `SESSION_ID` may be the
-  full opaque ID or the exact 12-byte ID shown in the TUI header. A unique
-  header ID resolves through the caller-visible inventory; if it is ambiguous,
-  mecatui creates nothing and asks for the full ID. The invocation is the consent
-  gesture: before entering the TUI, mecatui warns that the target transcript
-  and diagnostic evidence may contain prompts, outputs, tool arguments/results, file
-  paths, and secrets and will be sent to the selected model. It then submits a default
-  diagnostic prompt automatically. The target is never resumed, leased, mutated, or
-  used as the debugger's conversation.
+- **`mecatui debug TARGET [flags]`** — create a separate durable no-filesystem
+  analysis session permanently bound to that stored target. `TARGET` may be an exact full opaque
+  ID—including the exact ID printed when mecatui exits—or the displayed 12-column short handle:
+  safe `[A-Za-z0-9._-]` bytes are literal except that a leading `-` becomes `%2D`; every other
+  UTF-8 byte is uppercase `%HH`, and only complete atoms that fit are shown. The handle has no
+  leading `#` marker. A syntactically valid short target consults the complete caller-visible
+  inventory. Exact full-ID equality wins; otherwise one unique projected match resolves.
+  Ambiguous projections create nothing and direct you to copy the full exact ID from `/session`
+  and pass it as `TARGET` to the same command. If inventory fails or no handle matches, `TARGET`
+  is sent unchanged and the server's ordinary exact-ID authorization/not-found path decides.
+  The invocation is the consent gesture: diagnostic evidence may contain prompts, outputs, tool
+  arguments/results, file paths, and secrets and will be sent to the selected model. It then
+  submits a default diagnostic prompt automatically. The target is never resumed, leased,
+  mutated, or used as the debugger's conversation.
 
-- **`mecatui connect ADDRESS [flags]`** — always dial a running `mecated` at
+- **`mecatui connect ADDRESS [sessions | debug TARGET] [flags]`** — always dial a running `mecated` at
   `ADDRESS` (host:port); **never probe** loopback and **never embed** — the
   target must already be serving. Embedded-server flags (`--mock`,
   `--trust-project`, provider keys, …) are **rejected** here — only shared
@@ -153,14 +164,17 @@ or fallback:
   bin/mecated serve &                                 # listens on 127.0.0.1:8080
   bin/mecatui connect 127.0.0.1:8080 --workspace "$PWD"
   bin/mecatui connect 127.0.0.1:8080 sessions --workspace "$PWD"
+  bin/mecatui connect 127.0.0.1:8080 debug SESSION_ID
   bin/mecatui connect mecated.internal:443 --tls --auth-token "$MECATL_AUTH_TOKEN"
   ```
 
 - **`mecatui login ADDRESS`** — performs the remote server's public OIDC
   Authorization Code + PKCE login, then records target metadata and an encrypted,
-  target-bound credential. It requires `--issuer`, `--client-id`, `--audience`, and
-  `--tls-ca`; this CA verifies the issuer endpoints and is not the optional server CA
-  supplied to `connect`. It exits without starting a session. `--no-browser` prints the
+  target-bound credential. It requires `--issuer`, `--client-id`, and `--audience`.
+  It defaults to public issuer addresses trusted by the system roots; `--tls-ca` is
+  optional there and REPLACES those roots. `--private-issuer` requires `--tls-ca` and
+  admits private issuer addresses only. This CA verifies the issuer endpoints and is not
+  the optional server CA supplied to `connect`. It exits without starting a session. `--no-browser` prints the
   authorization URL instead of opening a browser and then waits for the fixed
   `http://127.0.0.1:18473/oauth/callback` callback (headless/SSH use). For SSH, open
   that URL on the operator workstation and forward the fixed callback port to the host
@@ -207,9 +221,9 @@ or fallback:
 `mecatui login ADDRESS` is the enrollment path for a remote `mecated`/`mecak8s`
 caller-identity deployment. The issuer, public client, audience, redirect URI, and
 scopes are bound to the canonical `host:port` target. Login validates discovery,
-PKCE, and the resulting token, and private HTTPS requires an explicit issuer CA bundle
-path. The registry saves that path/reference—not CA contents—for issuer discovery,
-token, JWKS, refresh, and revocation only;
+PKCE, and the resulting token. A public issuer uses system trust roots; private HTTPS
+requires an explicit issuer CA bundle path. The registry saves an explicit path/reference
+only—not CA contents—for issuer discovery, token, JWKS, refresh, and revocation;
 `connect --tls-ca` independently verifies the gRPC server. The connection registry
 contains public metadata only; credentials are encrypted on disk using a canonical-
 root-scoped key held by the OS keyring. Under a root lock, an old unsuffixed keyring key
@@ -224,8 +238,10 @@ export MECATL_AUTH_TOKEN="$(your-oidc-cli print-access-token)"
 bin/mecatui connect 127.0.0.1:8080 --auth-token "$MECATL_AUTH_TOKEN"
 ```
 
-For a non-loopback endpoint, `mecatui` refuses to send a bearer without `--tls`.
-Use `connect --tls-ca` when the server uses a private CA. The remote server chooses
+For a non-loopback endpoint, omitted `--tls` verifies TLS automatically; `--tls`
+and `--tls-ca` also select verified TLS. `--tls=false` is the explicit plaintext
+downgrade, and a bearer is refused on that remote plaintext transport. Use
+`connect --tls-ca` when the server uses a private CA. The remote server chooses
 its own workspace authority: mecatui sends no local cwd, and an explicit
 `--workspace` is rejected locally rather than being treated as a path inside an
 agent pod. See [Security & transport](usage/mecated.md#security--transport-auth-tls-rate-limiting) for the attribution model and its non-tenancy limits.
@@ -280,9 +296,11 @@ a usage error; choose one startup intent explicitly.
 ### Debug a stored session
 
 ```sh
+mecatui debug 01JOPAQUETARG
+mecatui connect 127.0.0.1:8080 debug 01JOPAQUETARG
 mecatui debug 01JOPAQUETARGET
 mecatui connect 127.0.0.1:8080 debug 01JOPAQUETARGET
-mecatui connect 127.0.0.1:8080 debug 01JOPAQUETARGET --debug-mcp github
+mecatui connect 127.0.0.1:8080 debug 01JOPAQUETARG --debug-mcp github
 ```
 
 `--debug-mcp NAME` is repeatable and selects only already-configured server-global
@@ -291,10 +309,16 @@ server. After reviewing it, send a new current prompt such as `Publish this issu
 each mutating call opens an approval card even under yolo/configured allow. Allow once sends
 one request. A later mutation asks again; Allow always is deliberately not learned.
 
-These commands accept either the full opaque session ID or the exact 12-byte ID
-shown in the TUI header. The short form is resolved from the caller-visible session
-inventory. If more than one visible session shares it, no debug session is created and
-mecatui asks for the full ID. These commands do not attach to or continue the target.
+These commands accept either an exact full opaque session ID or the displayed 12-column short
+handle as `TARGET`. The handle renders safe `[A-Za-z0-9._-]` bytes literally except that a leading
+`-` becomes `%2D`; every other UTF-8 byte is an uppercase `%HH` atom, and rendering stops before an
+atom that would exceed 12 ASCII columns. The displayed literal has no leading `#` and is itself the
+debug argument. A syntactically valid short target consults the complete caller-visible inventory.
+Exact full-ID equality wins; otherwise one unique projected match resolves. On ambiguity, open
+`/session`, copy the exact full ID, and pass it as `TARGET` through the same command. If inventory
+lookup fails or no projection matches, mecatui sends `TARGET` unchanged and reports the ordinary
+server exact-ID authorization/not-found result. These commands do not attach to or continue the
+target.
 They authorize it, create a separate durable no-filesystem debug session, print a privacy
 disclosure, and submit one first genuine user turn. That turn is ordered as the diagnosis
 objective, the required status/transcript/pagination workflow, the expected report sections,
@@ -326,10 +350,10 @@ the debugger.
 The debug conversation persists independently and can rehydrate after server restart with
 the same exact lineage and narrow catalog. Invalid lineage/no-fs metadata, a missing debug
 factory, or an unavailable target fails closed. The ordinary padded header places amber/bold
-`DEBUG target #<digest>` immediately after `mecatui` in every phase. At narrow widths it
+`DEBUG target <handle>` immediately after `mecatui` in every phase. At narrow widths it
 sheds model/mode/server detail before that complete target identity rather than clipping it;
 `/session` displays the safely quoted exact target ID and copies it with `t`. The
-`DEBUG <target-digest>` terminal title remains unchanged. The TUI hides `/clear`, `/sessions`, `/models`,
+`DEBUG <handle>` terminal title uses the same handle. The TUI hides `/clear`, `/sessions`, `/models`,
 `/effort`, and `/worktrees`, and blocks the mode/effort shortcuts because those controls
 can replace the launch binding. Schedule and learning controls remain available because
 changing those independent settings does not rebind the debug target; harmless inspection
@@ -410,14 +434,14 @@ a short directive with a longer brief. The seed fires ONCE: a `/models` restart 
 | `--theme` | `aztec` | theme name (also `MECATUI_THEME`); giving either pins the theme and disables the light/dark auto-detect below |
 | `--theme-dir` | – | extra directory of `*.json` themes to load |
 | `--auth-token` | – | bearer token for an **external** server (or `MECATL_AUTH_TOKEN`) |
-| `--tls` | off | use TLS transport for an **external** server |
-| `--tls-ca` | – | path to a PEM CA bundle for external-server verification |
-| `--insecure` | off | skip TLS verification (testing only) |
+| `--tls` | target-aware | verified TLS for an external server when given; omitted selects verified TLS for non-loopback/unparseable targets and plaintext for loopback; `--tls=false` explicitly permits remote plaintext |
+| `--tls-ca` | – | path to a PEM CA bundle for verified external-server TLS (also implies TLS) |
+| `--insecure` | off | encrypted TLS without certificate verification (controlled testing only; implies TLS; a bearer is refused over it for a non-loopback target) |
 | `--list-themes` | – | print available themes and exit |
 | `--version` | – | print the build identity and exit before normal startup |
 | `--inline` / `--no-alt-screen` | off | render inline in the terminal's normal buffer instead of the alternate screen, preserving native scrollback/search (no mouse capture; see `--no-mouse` below) |
 | `--no-mouse` | off | keep the alt screen but disable mouse capture and in-app mouse gestures, preserving the terminal's **native** click-drag selection; keyboard prompt selection still works (or `MECATUI_NO_MOUSE=1`; see the selection section) |
-| `--terminal-title` | `on` | dynamic terminal window/tab title: `on` shows `<session title> — <status word> mecatui` (the title is the first prompt, the status word reflects the phase); `off` collapses to the bare `mecatui` (escape hatch for terminals/multiplexers where a set title does more harm than good). Accepts `on`/`off`/`true`/`false`/`1`/`0` (or `MECATUI_NO_TERMINAL_TITLE=1`; see the terminal title section) |
+| `--terminal-title` | `on` | dynamic terminal window/tab title: `on` shows `<session title> <handle> — <status word> mecatui` (the title is the first prompt, the fixed handle identifies the session, and the status word reflects the phase); `off` collapses to the bare `mecatui` (escape hatch for terminals/multiplexers where a set title does more harm than good). Accepts `on`/`off`/`true`/`false`/`1`/`0` (or `MECATUI_NO_TERMINAL_TITLE=1`; see the terminal title section) |
 | `--no-banner` | off | disable the first-run welcome **splash** (mascot + gradient wordmark); the plain prompt hint + affordance list still show. Auto-forced on under `--quiet` or a non-interactive stdin |
 | `--model` | – (provider default) | model id for the **embedded** server; empty = the server-configured `--default-model` (when set), else the provider-appropriate built-in (anthropic → `claude-sonnet-4-6`, openai → `gpt-5`, openrouter → `openai/gpt-5`; openai-codex → first entitled live model). Overridden per session by the `/models` picker |
 | `--default-provider` | – | **embedded** server: deployment-wide default provider id (e.g. `openai`, `openrouter`, `anthropic`, experimental `openai-codex`); overrides automatic preference for zero-selector sessions, while a client-side selection still wins. An unknown/unavailable provider **fails startup** |
@@ -530,26 +554,28 @@ left owned after the bounded shutdown completes.
 | `MECATUI_FORCE_KITTY` / `MECATUI_NO_KITTY` | force / suppress the Kitty-graphics mascot on the welcome splash (force-on, no-wins-over-force); default is conservative env-based detection, falling back to the always-correct half-block mascot |
 
 **Dynamic terminal window/tab title.** `mecatui` sets the terminal window/tab title
-to `<session title> — <status word> mecatui`, so you can tell sessions apart in a
-tab bar. The title is the **first genuine prompt** of the session (clamped to ~40
-runes); the status word reflects the TUI phase:
+to `<session title> <handle> — <status word> mecatui`, so you can tell sessions apart
+in a tab bar. The title is the **first genuine prompt** of the session (clamped to
+~40 runes); `<handle>` is the fixed terminal-safe session handle; the status word
+reflects the TUI phase:
 
 | Phase | Title |
 |---|---|
-| running | `<title> — Working mecatui` |
-| awaiting approval | `<title> — ⚠ mecatui` |
-| connecting | `<title> — Connecting mecatui` |
-| fatal | `<title> — ✗ mecatui` |
-| idle / replay (title known) | `<title> — mecatui` |
-| no title yet | `mecatui` |
+| running | `<title> <handle> — Working mecatui` |
+| awaiting approval | `<title> <handle> — ⚠ mecatui` |
+| connecting | `<title> <handle> — Connecting mecatui` |
+| fatal | `<title> <handle> — ✗ mecatui` |
+| idle / replay (title known) | `<title> <handle> — mecatui` |
+| no title yet (session known) | `<handle> — mecatui` |
+| no session yet | `mecatui` |
 
 The title leads because tab bars **truncate from the right**; the status is a
 **static word, never an animated spinner** (per-frame title churn trips OS
 attention heuristics — the dock bounces / the taskbar flashes on every change).
 The title self-heals across a session switch / fork / carryover (a refetch adopts
 the server's stored title when this client never saw the first prompt). A dedicated
-debugger instead always starts with `DEBUG <target-digest>`, followed by its static
-phase label; the persistent amber/bold `DEBUG target #<digest>` segment in the ordinary
+debugger instead always starts with `DEBUG <handle>`, followed by its static
+phase label; the persistent amber/bold `DEBUG target <handle>` segment in the ordinary
 padded header carries the same identity through every lifecycle and fatal state.
 
 The title is terminal-escape-sanitized (C0/ESC/DEL stripped — a malicious prompt
@@ -1413,11 +1439,13 @@ conversation history. The editor preserves a three-row minimum, grows and shrink
 with explicit newlines and soft wraps to eight rows, then scrolls internally to keep
 the caret visible.
 
-**Header bar.** `mecatui · session #<digest> · <model> · mode <mode> · <server>`.
-The session segment uses the same terminal-safe eight-character SHA-256 digest as the
-`/sessions` inventory; it never prints the full opaque ID. Type **`/session`** for the
-safe quoted full ID and active-session metadata, or press **`c`** there to copy the exact
-ID through the clipboard.
+**Header bar.** `mecatui · session <handle> · <model> · mode <mode> · <server>`.
+The session segment uses a fixed terminal-safe 12-column handle: safe `[A-Za-z0-9._-]`
+bytes are literal except that a leading `-` is encoded as `%2D`; other UTF-8 bytes are
+uppercase `%HH`, and only complete atoms that fit are shown. It has no leading `#` and
+is the literal accepted by positional `mecatui debug` when it resolves uniquely.
+Type **`/session`** for the safe quoted full ID and active-session metadata, or press
+**`c`** there to copy the exact ID through the clipboard.
 The **mode segment** shows the server-confirmed permission posture for the current session;
 when a mid-turn switch has been deferred it shows `mode <target> pending` until the retry
 succeeds at the next prompt boundary. The **model segment** shows the EFFECTIVE model the server resolved THIS session to —
@@ -1493,7 +1521,7 @@ id" and stays in inspect.
 **`/session` (active session details).** This read-only overlay shows the current
 chat's safely quoted full opaque ID, title, lifecycle state, workspace, known creation
 and modification timestamps, provider, and model. The header intentionally shows only
-the compact digest. Press **`c`** to copy the exact full ID byte-for-byte; mecatui reports
+the compact short handle. Press **`c`** to copy the exact full ID byte-for-byte; mecatui reports
 clipboard failure or a session change instead of claiming a stale copy. `esc` closes it.
 
 **`/sessions` (session continuity).** The session inventory has four session tabs:
@@ -1531,7 +1559,7 @@ stay unresolved until the operator explicitly selects them—there is no server-
 fallback.
 `tab` switches tabs; the
 search box filters the current tab. Search matches the title, full session ID,
-its terminal-safe digest handle, model, workspace, and the available
+its terminal-safe short handle, model, workspace, and the available
 relationship metadata (parent/call, schedule/origin, team/member). This keeps
 scheduled fires and delegation children discoverable without making their IDs
 part of the UI contract.
@@ -1548,11 +1576,13 @@ the new first page arrives. Closing the panel or quitting the startup browser
 cancels the outstanding request and never creates or rebinds a session.
 
 Each row shows a state badge, relative modification time, turn count, title,
-digest handle, and model. The active chat is explicitly marked **`[current]`**;
-a team member row also identifies its member. The digest is a lowercase SHA-256
-prefix (`#…`): it starts at eight hex characters and expands only if another
-visible row collides, while the full opaque ID remains what the client sends
-back to the server.
+short handle, and model. The active chat is explicitly marked **`[current]`**;
+a team member row also identifies its member. The handle is the same fixed
+12-column escaped-prefix literal as the header (no `#`): safe `[A-Za-z0-9._-]`
+bytes are literal except that a leading `-` is encoded as `%2D`; other UTF-8 bytes are
+uppercase `%HH`, and only complete atoms that fit are retained. The full opaque ID remains
+what the client sends back to the
+server.
 
 Pressing `enter` follows server-authored capabilities. A public Chat is
 **Continue**: mecatui first loads the authoritative snapshot-derived
