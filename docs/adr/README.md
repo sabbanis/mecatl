@@ -57,7 +57,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0252 — HTTP steer endpoint: `POST /v1/sessions/{id}/steer`](./0252-http-steer-endpoint.md)
 - [0253 — SDK mocking testkit: vendor the proven unary pattern, defer streaming](./0253-sdk-mocking-testkit.md)
 - [0279 — TypeScript SDK architecture: Connect-ES transport, protobuf-es codegen, in-repo pnpm project](./0279-typescript-sdk-architecture.md) *(supersedes ADR 0253 Decisions 1–2 in part)*
-- [0289 — Persistent read-before-write ledgers are independent storage](./0289-persistent-read-before-write-ledgers.md) *(supersedes ADR 0208 decision 6 only)*
+- [0290 — Persistent read-before-write ledgers are independent storage](./0290-persistent-read-before-write-ledgers.md) *(supersedes ADR 0208 decision 6 only)*
 - [0036 — `engine/` is its own Go module (monorepo via `go.work`)](./0036-engine-module.md)
 - [0037 — Engine public-API stability contract](./0037-engine-stability-contract.md)
 - [0038 — Event-sourced SessionStore rehydration (the reference fold)](./0038-event-sourced-rehydration.md)
@@ -217,7 +217,8 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0087 — Staged mecatui transport migration](./0087-mecatui-staged-transport-migration.md) *(superseded by 0089)*
 - [0088 — Explicit daemon.yaml (listener topology config)](./0088-daemon-config-file.md)
 - [0222 — mecatui: ctrl+t routes by ask type; full-screen ask-args view](./0222-mecatui-ask-args-view.md)
-- [0247 — mecatui generated status lines](./0247-mecatui-status-line.md)
+- [0247 — mecatui generated status lines](./0247-mecatui-status-line.md) *(superseded by 0289)*
+- [0289 — Hardened status-command output and environment extension](./0289-hardened-status-command-boundary.md)
 - [0280 — Automatic light theme selection in mecatui](./0280-mecatui-light-theme-autodetect.md)
 
 ### Retired

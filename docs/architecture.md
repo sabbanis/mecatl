@@ -507,7 +507,12 @@ cancellation; the UI owns theme resolution, renderer chrome, clipping, and
 alignment. Settings live only in `$XDG_CONFIG_HOME/mecatui/settings.yaml`; a
 remote server or project never selects a local executable. Templates get a
 StatusML-escaped projection, commands get raw JSON on stdin, and StatusML carries
-semantic tokens rather than ANSI/OSC. This preserves `ui` as a pure render layer
+semantic tokens rather than ANSI/OSC. Its command environment retains a fixed
+safe baseline; `passthrough_env` may add only explicitly named user-global values,
+never ambient environment values; reserved baseline and source-owned terminal-dimension
+names are rejected during settings validation. Before StatusML parsing, command output trims only boundary
+ASCII whitespace, so a normal `print` newline is accepted without changing internal
+text. This preserves `ui` as a pure render layer
 while allowing autonomous source updates. Its `/clear` command uses the existing
 create-session RPC to create a new empty session first (preserving the current
 workspace, effective model/reasoning effort, and permission mode), then rebinds
@@ -717,7 +722,7 @@ Two deliberate cycle-breaks worth noting, documented in code:
   through any stricter child-authority Workspace view; storage is never reconstructed
   from `Root()`.
   The final conditional `ReplaceFile` remains the concurrency guard. See
-  [ADR 0289](adr/0289-persistent-read-before-write-ledgers.md).
+  [ADR 0290](adr/0290-persistent-read-before-write-ledgers.md).
   As of [ADR 0214](adr/0214-environment-persistence.md), `EnvironmentRef` is a DURABLE
   snapshot field: a non-in-tree ref persists across a restart and reattaches a live
   `Environment` at run entry through `server.Config.EnvironmentResolver`; the in-tree

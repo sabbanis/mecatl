@@ -319,7 +319,7 @@ func TestEditFailsWhenChangedSinceRead(t *testing.T) {
 	}
 }
 
-// TestInvariant_read_before_edit pins AC3.3 (docs/adr/0289): an ABSENT ledger
+// TestInvariant_read_before_edit pins AC3.3 (docs/adr/0290): an ABSENT ledger
 // entry preserves the existing read-before-edit/read-before-overwrite refusal
 // (Edit and existing-file Write both refuse an un-read path), while a STALE
 // recorded version — the file changed since the recorded read — preserves the

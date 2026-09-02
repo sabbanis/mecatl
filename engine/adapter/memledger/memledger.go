@@ -1,5 +1,5 @@
 // Package memledger provides a concurrent in-memory reference implementation of
-// tool.ReadLedger (ADR 0289). It is the default a Workspace selects when no
+// tool.ReadLedger (ADR 0290). It is the default a Workspace selects when no
 // durable ledger is configured, and the offline fixture the shared
 // engine/adapter/ledgerconformance suite validates. It never returns
 // tool.ErrLedgerUnavailable: an in-memory map cannot go unavailable or corrupt,
@@ -16,7 +16,7 @@ import (
 // Ledger is a concurrency-safe in-memory tool.ReadLedger. Each Ledger instance
 // is an independent evidence scope: two Ledgers never share state, which is
 // what lets two Workspaces over one file-content backend select two isolated
-// ledgers (ADR 0289 Scenario 1).
+// ledgers (ADR 0290 Scenario 1).
 type Ledger struct {
 	mu      sync.Mutex
 	entries map[string]tool.FileVersion
