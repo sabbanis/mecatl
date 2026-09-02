@@ -13,8 +13,9 @@ Studio reads and writes the daemon's state rather than keeping its own.
 :::note Landing in progress
 Studio is landing as a stacked series of pull requests. This page grows with
 each one; right now the module foundation, the server tier (proxy + managed-mode
-controller), the typed protocol seam, the workspace shell, and the Chats
-and Scheduled surfaces are in the tree; the remaining surfaces arrive next.
+controller), the typed protocol seam, the workspace shell, and the Chats,
+Scheduled, and Skills surfaces are in the tree; the remaining surfaces
+arrive next.
 :::
 
 ## Starting it
@@ -70,3 +71,13 @@ retry) — and mutating runs are an explicit opt-in in the form, so the
 invalid mutating/plan pairing cannot be constructed. Editing round-trips the
 schedule's carried spec (the daemon's update replaces the whole spec), and
 each fire links its real transcript.
+
+## Skills
+
+The Skills surface lists the daemon's skills with provenance, browses folder
+skills (including the SKILL.md inline), and — in managed mode — authors them
+through the local controller: create a skill in two steps, upload a zip or a
+folder, enable/disable (a disabled skill moves to a holding area rather than
+being deleted), or delete. Skill names pass one shared validator on both the
+browser and the controller. In external mode the list is read-only: skill
+management belongs to the deployment.

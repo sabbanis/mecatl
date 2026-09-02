@@ -32,3 +32,12 @@ test("schedules render the registry with humanized triggers", async ({
     page.getByText("Daily at", { exact: false }).first(),
   ).toBeVisible();
 });
+
+test("skills render the resolved inventory", async ({ page }) => {
+  await page.goto("/workspace/skills");
+  await expect(
+    page
+      .getByText("Review a diff for correctness.", { exact: false })
+      .filter({ visible: true }),
+  ).toBeVisible();
+});

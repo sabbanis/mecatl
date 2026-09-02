@@ -1,13 +1,24 @@
 import { execFile, spawn } from "node:child_process";
 import { createHash, randomBytes } from "node:crypto";
-import { mkdir, open, readFile, rm } from "node:fs/promises";
+import {
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  readFile,
+  rename,
+  rm,
+  stat,
+  writeFile,
+} from "node:fs/promises";
 import http from "node:http";
 import { homedir } from "node:os";
-import { dirname, resolve } from "node:path";
+import { dirname, resolve, sep } from "node:path";
 import { fileURLToPath } from "node:url";
 import {
   requestIsAllowed,
   validateGatewayURL,
+  validSkillName,
 } from "../src/lib/controller-security.mjs";
 import {
   KNOWN_AUTH_PROVIDERS,
@@ -34,6 +45,12 @@ const routerStateFile = resolve(studioStateDir, "model-router.json");
 // --skills-conventional (which would also pull in ~/.claude/skills and the
 // user-global mecatl dir — a much wider trust surface than this app should open).
 const skillsDir = resolve(workspace, ".mecatl/skills");
+// Disabled skills are MOVED into a holding area inside the pinned skills dir,
+// not deleted and not flagged: mecated's discovery walks only the direct
+// children of --skills-dir looking for <name>/SKILL.md, so a nested dir is
+// invisible to it, and the skill-name grammar forbids a leading dot, so
+// `.disabled` can never collide with a real skill.
+const disabledSkillsDir = resolve(skillsDir, ".disabled");
 // Per-project memory (the Remember/Recall/SearchMemory tools) is OFF in mecated
 // until --memory-dir is passed, unlike the user model which is on by default. The
 // store is per-project by design, so it lives beside the session store rather than
@@ -125,6 +142,164 @@ async function listSelectableProviderNames() {
     if (!names.includes(provider.name)) names.push(provider.name);
   }
   return names;
+}
+// ── Workspace skills management ────────────────────────────────────────────
+// The daemon has no HTTP write API for skills (Studio shipped them read-only;
+// authoring is the ADR-0233 backlog item), and it resolves the skills dir
+// ONCE at startup: skillfs's FSSource is a construction-time snapshot
+// ("bodies are retained; no re-read") and internal/app/build.go registers
+// "the skills resolved once at build time". So skill CRUD lives here, on the
+// controller that owns --skills-dir, and every mutation the daemon can see
+// restarts mecated through the same queueRestart machinery as config writes —
+// in-flight runs and session ids die with it, exactly like a gateway or
+// model-router write.
+
+/** Max SKILL.md body accepted on the edit path. */
+const maxSkillBodyBytes = 262_144;
+
+// Multi-file create caps (a zip/folder upload): a skill is a small folder of
+// instructions plus a few assets, never a repository.
+const maxSkillUploadFiles = 200;
+const maxSkillUploadFileBytes = 2 * 1024 * 1024;
+const maxSkillUploadTotalBytes = 8 * 1024 * 1024;
+// The create body cap: the total decoded cap, base64-inflated, plus headroom.
+const maxSkillCreateBodyBytes = 12 * 1024 * 1024;
+
+/** The controller's own guard on an uploaded relative path — the browser
+ *  plans uploads too, but the server side is the one that counts. */
+function validSkillUploadPath(path) {
+  if (typeof path !== "string" || path === "" || path.includes("\\"))
+    return false;
+  return path
+    .split("/")
+    .every(
+      (segment) =>
+        segment !== "" &&
+        segment !== "." &&
+        segment !== ".." &&
+        !segment.startsWith("."),
+    );
+}
+
+function skillClientError(message, statusCode = 400) {
+  return Object.assign(new Error(message), { statusCode });
+}
+
+/**
+ * The enabled/disabled directory pair for a validated skill name. The grammar
+ * already forbids separators, dots, and whitespace; the prefix check is
+ * defense-in-depth should the grammar ever loosen.
+ */
+function skillPaths(name) {
+  if (!validSkillName(name))
+    throw skillClientError(
+      "Skill names use lowercase letters, digits, hyphens, and underscores (max 64 characters)",
+    );
+  const enabled = resolve(skillsDir, name);
+  const disabled = resolve(disabledSkillsDir, name);
+  if (
+    !enabled.startsWith(skillsDir + sep) ||
+    !disabled.startsWith(disabledSkillsDir + sep)
+  )
+    throw skillClientError("Skill name escapes the skills directory");
+  return { enabled, disabled };
+}
+
+async function isDirectory(path) {
+  try {
+    return (await stat(path)).isDirectory();
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * One-line `description:` scan of a SKILL.md frontmatter block — a line scan,
+ * never a YAML parse, mirroring listConfiguredProviderNames. Best-effort: a
+ * block-scalar or absent description simply lists as "".
+ */
+function skillDescription(markdown) {
+  const lines = markdown.split("\n");
+  if (lines[0]?.trim() !== "---") return "";
+  for (const line of lines.slice(1)) {
+    if (line.trim() === "---") break;
+    const match = line.match(/^description:\s*(.+)$/);
+    if (!match) continue;
+    const value = match[1].trim();
+    if (/^[>|]/.test(value)) return "";
+    return value.replace(/^["']|["']$/g, "");
+  }
+  return "";
+}
+
+/** Cap on the bundled-file listing — a skill is a small folder, not a repo. */
+const maxSkillFiles = 500;
+
+/**
+ * Bounded recursive listing of one skill's folder: relative POSIX paths +
+ * sizes. Symlinks are never followed (a link could point outside the skills
+ * dir), dot-entries are skipped (.DS_Store noise), and the walk stops at
+ * maxSkillFiles entries / depth 8.
+ */
+async function listSkillFiles(root) {
+  const files = [];
+  async function walk(dir, prefix, depth) {
+    if (depth > 8 || files.length >= maxSkillFiles) return;
+    let entries;
+    try {
+      entries = await readdir(dir, { withFileTypes: true });
+    } catch {
+      return;
+    }
+    entries.sort((a, b) => a.name.localeCompare(b.name));
+    for (const entry of entries) {
+      if (files.length >= maxSkillFiles) return;
+      if (entry.name.startsWith(".") || entry.isSymbolicLink()) continue;
+      const rel = prefix ? `${prefix}/${entry.name}` : entry.name;
+      if (entry.isDirectory()) {
+        await walk(resolve(dir, entry.name), rel, depth + 1);
+      } else if (entry.isFile()) {
+        try {
+          files.push({
+            path: rel,
+            size: (await stat(resolve(dir, entry.name))).size,
+          });
+        } catch {
+          // Raced away between readdir and stat — skip it.
+        }
+      }
+    }
+  }
+  await walk(root, "", 0);
+  return files;
+}
+
+/** Names (+ best-effort descriptions) in the `.disabled/` holding area. */
+async function listDisabledSkills() {
+  let entries;
+  try {
+    entries = await readdir(disabledSkillsDir, { withFileTypes: true });
+  } catch {
+    return [];
+  }
+  const skills = [];
+  for (const entry of entries) {
+    if (!entry.isDirectory() || !validSkillName(entry.name)) continue;
+    let description = "";
+    try {
+      description = skillDescription(
+        await readFile(
+          resolve(disabledSkillsDir, entry.name, "SKILL.md"),
+          "utf8",
+        ),
+      );
+    } catch {
+      // A SKILL.md-less folder still lists — enabling it back is how the
+      // operator recovers it.
+    }
+    skills.push({ name: entry.name, description });
+  }
+  return skills.sort((a, b) => a.name.localeCompare(b.name));
 }
 
 // The kinds startMecatl/preferredKind understand: the two synthetic ones plus
@@ -1173,6 +1348,326 @@ const server = http.createServer(async (request, response) => {
         memory: { dir: memoryDir, scope: "project" },
       }),
     );
+    return;
+  }
+  // The disabled-skill inventory. Like every controller route this sits
+  // behind requestIsAllowed (loopback Host + allowlisted Origin + the
+  // server-set studio header) — the Next server proxy is the only caller.
+  if (request.method === "GET" && requestURL.pathname === "/skills/disabled") {
+    response.end(JSON.stringify({ disabled: await listDisabledSkills() }));
+    return;
+  }
+  // Skill creation: POST /skills with { name, body } → <skillsDir>/<name>/
+  // SKILL.md. A brand-new skill is invisible until the daemon rebuilds its
+  // startup snapshot, so creation always restarts mecated — serialized through
+  // queueRestart like every sibling mutation (existence probes included, so a
+  // queued restart cannot race them).
+  if (request.method === "POST" && requestURL.pathname === "/skills") {
+    try {
+      if (
+        !String(request.headers["content-type"] || "")
+          .toLowerCase()
+          .startsWith("application/json")
+      )
+        throw skillClientError("Content-Type must be application/json", 415);
+      const input = JSON.parse(
+        (await readBody(request, maxSkillCreateBodyBytes)).toString("utf8"),
+      );
+      if (typeof input?.name !== "string")
+        throw skillClientError("Provide the skill name as { name }");
+      const name = input.name;
+      const paths = skillPaths(name);
+      // Two accepted shapes: { name, body } writes a lone SKILL.md; { name,
+      // files: [{ path, contentBase64 }] } writes a whole folder skill (a
+      // zip/folder upload). Either way a SKILL.md must land at the root.
+      let files;
+      if (Array.isArray(input?.files)) {
+        if (
+          input.files.length === 0 ||
+          input.files.length > maxSkillUploadFiles
+        )
+          throw skillClientError(
+            `Provide between 1 and ${maxSkillUploadFiles} files`,
+          );
+        let total = 0;
+        const seen = new Set();
+        files = input.files.map((entry) => {
+          if (
+            !validSkillUploadPath(entry?.path) ||
+            typeof entry?.contentBase64 !== "string"
+          )
+            throw skillClientError(
+              "Each file needs a safe relative { path } and { contentBase64 }",
+            );
+          // The write below is on the default (case-insensitive) macOS
+          // filesystem — case-colliding paths would silently overwrite.
+          const key = entry.path.toLowerCase();
+          if (seen.has(key))
+            throw skillClientError(
+              `The upload holds duplicate paths: ${entry.path}`,
+            );
+          seen.add(key);
+          const content = Buffer.from(entry.contentBase64, "base64");
+          if (content.length > maxSkillUploadFileBytes)
+            throw skillClientError(
+              `"${entry.path}" exceeds the ${maxSkillUploadFileBytes}-byte per-file limit`,
+              413,
+            );
+          total += content.length;
+          return { path: entry.path, content };
+        });
+        if (total > maxSkillUploadTotalBytes)
+          throw skillClientError(
+            `The upload exceeds the ${maxSkillUploadTotalBytes}-byte total limit`,
+            413,
+          );
+        const skillMd = files.find((file) => file.path === "SKILL.md");
+        if (!skillMd)
+          throw skillClientError(
+            "The upload needs a SKILL.md at the folder root",
+          );
+        if (skillMd.content.length > maxSkillBodyBytes)
+          throw skillClientError(
+            `SKILL.md is limited to ${maxSkillBodyBytes} bytes`,
+            413,
+          );
+      } else {
+        if (typeof input?.body !== "string" || input.body.length === 0)
+          throw skillClientError("Provide the SKILL.md content as { body }");
+        if (Buffer.byteLength(input.body, "utf8") > maxSkillBodyBytes)
+          throw skillClientError(
+            `SKILL.md is limited to ${maxSkillBodyBytes} bytes`,
+            413,
+          );
+        files = [{ path: "SKILL.md", content: Buffer.from(input.body) }];
+      }
+      let restarted = false;
+      await queueRestart(async () => {
+        // A name taken on EITHER side is a collision: a same-named disabled
+        // skill would silently resurrect over this content when enabled.
+        if (
+          (await isDirectory(paths.enabled)) ||
+          (await isDirectory(paths.disabled))
+        )
+          throw skillClientError(
+            `A skill named "${name}" already exists under ${skillsDir}`,
+            409,
+          );
+        try {
+          for (const file of files) {
+            const target = resolve(paths.enabled, file.path);
+            // Defense-in-depth behind validSkillUploadPath.
+            if (!target.startsWith(paths.enabled + sep))
+              throw skillClientError(
+                `Path escapes the skill folder: ${file.path}`,
+              );
+            await mkdir(dirname(target), { recursive: true });
+            await writeFile(target, file.content);
+          }
+        } catch (error) {
+          // The collision check above proved the dir was ours to create, so
+          // a half-written skill is safe to sweep away whole.
+          await rm(paths.enabled, { recursive: true, force: true });
+          throw error;
+        }
+        restarted = true;
+        await startMecatl(preferredKind());
+      });
+      response.end(JSON.stringify({ ok: true, restarted }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Skill create failed",
+      );
+    }
+    return;
+  }
+  // Skill CRUD: GET/PUT /skills/{name}/body, POST /skills/{name}/{enable|
+  // disable}, DELETE /skills/{name}. Mutations serialize through queueRestart
+  // (checks included, so a queued restart cannot race the side probes) and
+  // restart mecated whenever the change touches what its startup snapshot saw.
+  const skillRoute = requestURL.pathname.match(
+    /^\/skills\/([^/]+?)(?:\/(body|enable|disable|files|file))?$/,
+  );
+  if (skillRoute) {
+    const [, rawName, action] = skillRoute;
+    let name = rawName;
+    try {
+      try {
+        name = decodeURIComponent(rawName);
+      } catch {
+        // Malformed escape: the raw segment is the only candidate, and the
+        // name grammar below rejects anything percent-shaped anyway.
+      }
+      const paths = skillPaths(name);
+      if (request.method === "GET" && action === "body") {
+        for (const side of [paths.enabled, paths.disabled]) {
+          let body;
+          try {
+            body = await readFile(resolve(side, "SKILL.md"), "utf8");
+          } catch {
+            continue; // try the other side
+          }
+          response.end(JSON.stringify({ body }));
+          return;
+        }
+        throw skillClientError(`No skill named "${name}" has a SKILL.md`, 404);
+      }
+      // Read-only folder views: a skill can be a whole folder of assets
+      // (scripts/, references/, …), not just a SKILL.md. Listing and preview
+      // work on whichever side (enabled/disabled) holds the skill.
+      if (request.method === "GET" && action === "files") {
+        for (const side of [paths.enabled, paths.disabled]) {
+          if (!(await isDirectory(side))) continue;
+          response.end(JSON.stringify({ files: await listSkillFiles(side) }));
+          return;
+        }
+        throw skillClientError(`No skill named "${name}"`, 404);
+      }
+      if (request.method === "GET" && action === "file") {
+        const relPath = requestURL.searchParams.get("path") || "";
+        const segments = relPath.split("/");
+        if (
+          !relPath ||
+          relPath.includes("\\") ||
+          segments.some(
+            (segment) => segment === "" || segment === "." || segment === "..",
+          )
+        )
+          throw skillClientError(
+            "Provide a relative file path inside the skill as ?path=",
+          );
+        for (const side of [paths.enabled, paths.disabled]) {
+          if (!(await isDirectory(side))) continue;
+          const target = resolve(side, relPath);
+          if (!target.startsWith(side + sep))
+            throw skillClientError("Path escapes the skill folder");
+          let meta;
+          try {
+            meta = await lstat(target);
+          } catch {
+            throw skillClientError(`No file "${relPath}" in "${name}"`, 404);
+          }
+          if (!meta.isFile())
+            throw skillClientError(`"${relPath}" is not a regular file`);
+          if (meta.size > maxSkillBodyBytes)
+            throw skillClientError(
+              `"${relPath}" is too large to preview (limit ${maxSkillBodyBytes} bytes)`,
+              413,
+            );
+          const bytes = await readFile(target);
+          if (bytes.includes(0))
+            throw skillClientError(
+              `"${relPath}" is a binary file — no text preview`,
+              415,
+            );
+          response.end(JSON.stringify({ content: bytes.toString("utf8") }));
+          return;
+        }
+        throw skillClientError(`No skill named "${name}"`, 404);
+      }
+      if (request.method === "PUT" && action === "body") {
+        if (
+          !String(request.headers["content-type"] || "")
+            .toLowerCase()
+            .startsWith("application/json")
+        )
+          throw skillClientError("Content-Type must be application/json", 415);
+        const input = JSON.parse(
+          (await readBody(request, maxSkillBodyBytes + 16_384)).toString(
+            "utf8",
+          ),
+        );
+        if (typeof input?.body !== "string" || input.body.length === 0)
+          throw skillClientError("Provide the SKILL.md content as { body }");
+        if (Buffer.byteLength(input.body, "utf8") > maxSkillBodyBytes)
+          throw skillClientError(
+            `SKILL.md is limited to ${maxSkillBodyBytes} bytes`,
+            413,
+          );
+        let restarted = false;
+        await queueRestart(async () => {
+          const onEnabled = await isDirectory(paths.enabled);
+          const onDisabled = await isDirectory(paths.disabled);
+          if (!onEnabled && !onDisabled)
+            throw skillClientError(`No skill named "${name}"`, 404);
+          const target = resolve(
+            onEnabled ? paths.enabled : paths.disabled,
+            "SKILL.md",
+          );
+          const temp = `${target}.tmp`;
+          await writeFile(temp, input.body);
+          await rename(temp, target);
+          // A disabled skill is invisible to the daemon's snapshot, so
+          // editing it owes no restart.
+          if (onEnabled) {
+            restarted = true;
+            await startMecatl(preferredKind());
+          }
+        });
+        response.end(JSON.stringify({ ok: true, restarted }));
+        return;
+      }
+      if (
+        request.method === "POST" &&
+        (action === "enable" || action === "disable")
+      ) {
+        let restarted = false;
+        await queueRestart(async () => {
+          const onEnabled = await isDirectory(paths.enabled);
+          const onDisabled = await isDirectory(paths.disabled);
+          if (!onEnabled && !onDisabled)
+            throw skillClientError(`No skill named "${name}"`, 404);
+          if (onEnabled && onDisabled)
+            throw skillClientError(
+              `Both an enabled and a disabled "${name}" exist under ${skillsDir}; resolve the collision on disk first`,
+              409,
+            );
+          // Idempotent-ish: already on the requested side moves nothing and
+          // restarts nothing.
+          if (action === "disable" ? onDisabled : onEnabled) return;
+          if (action === "disable") {
+            await mkdir(disabledSkillsDir, { recursive: true });
+            await rename(paths.enabled, paths.disabled);
+          } else {
+            await rename(paths.disabled, paths.enabled);
+          }
+          restarted = true;
+          await startMecatl(preferredKind());
+        });
+        response.end(JSON.stringify({ ok: true, restarted }));
+        return;
+      }
+      if (request.method === "DELETE" && !action) {
+        let restarted = false;
+        await queueRestart(async () => {
+          const onEnabled = await isDirectory(paths.enabled);
+          const onDisabled = await isDirectory(paths.disabled);
+          if (!onEnabled && !onDisabled)
+            throw skillClientError(`No skill named "${name}"`, 404);
+          // A delete means gone from BOTH sides — never a hidden disabled
+          // copy waiting to resurrect under the same name.
+          if (onDisabled)
+            await rm(paths.disabled, { recursive: true, force: true });
+          if (onEnabled) {
+            await rm(paths.enabled, { recursive: true, force: true });
+            restarted = true;
+            await startMecatl(preferredKind());
+          }
+        });
+        response.end(JSON.stringify({ ok: true, restarted }));
+        return;
+      }
+      response.statusCode = 404;
+      response.end(JSON.stringify({ error: "not found" }));
+    } catch (error) {
+      jsonError(
+        response,
+        error.statusCode || 400,
+        error.message || "Skill update failed",
+      );
+    }
     return;
   }
   if (request.method !== "POST" || requestURL.pathname !== "/mcp") {
