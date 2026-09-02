@@ -2,7 +2,7 @@
 id: 02-control-only-converse
 title: Control-only Converse stream (cancel/approve without a prompt)
 blocked_by: []
-status: pending
+status: done
 branch: "plan-detached-runs/02-control-only-converse"
 worktree: ""
 issue: ""

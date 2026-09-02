@@ -7,7 +7,7 @@ import (
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
-	)
+)
 
 // TestDetachedRun_Scenario1_DetachedRunSurvivesStreamClose verifies AC1.1: a
 // Prompt with detach=true starts a run that continues after the Converse stream

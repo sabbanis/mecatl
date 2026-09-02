@@ -1597,6 +1597,13 @@ message ResumeApproval {
   // is current. Existing clients are unaffected; a client that knows the run id
   // it is acting on should always send it.
   string expected_run_id = 4;
+  // session_id identifies the session whose ask this resolves. It is REQUIRED
+  // on a control-only Converse stream (a stream whose first frame is
+  // resume_approval with no preceding prompt). On a run-driving Converse
+  // stream (first frame is prompt/retry) it is ignored — the session comes
+  // from the prompt. Additive: an older client leaves it empty and the server
+  // infers the session from the stream's run context as today.
+  string session_id = 5;
 }
 
 // ApprovalVerdict is the client's three-way resolution of a permission.ask,
@@ -1627,6 +1634,13 @@ message Cancel {
   // should always send this. Empty keeps the legacy "cancel whatever is running"
   // behaviour.
   string expected_run_id = 1;
+  // session_id identifies the session whose run this cancels. It is REQUIRED
+  // on a control-only Converse stream (a stream whose first frame is cancel
+  // with no preceding prompt). On a run-driving Converse stream (first frame
+  // is prompt/retry) it is ignored — the session comes from the prompt.
+  // Additive: an older client leaves it empty and the server infers the
+  // session from the stream's run context as today.
+  string session_id = 2;
 }
 
 // CancelChild cancels ONE child of the in-flight run, addressed by its child

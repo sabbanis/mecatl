@@ -343,55 +343,6 @@ func (h *HarnessServer) ForkSession(ctx context.Context, req *mecatlv1.ForkSessi
 	return &mecatlv1.ForkSessionResponse{SessionId: string(id), Placement: placementMetadataToProto(created.Placement)}, nil
 }
 
-func (h *HarnessServer) startConverse(ctx context.Context, first *mecatlv1.ConverseRequest) (session.SessionID, *agent.Run, bool, error) {
-	switch {
-	case first.GetPrompt() != nil:
-		prompt := first.GetPrompt()
-		if prompt.GetSessionId() == "" {
-			return "", nil, false, status.Error(codes.InvalidArgument, "converse: prompt session_id is required")
-		}
-		if prompt.GetText() == "" && len(prompt.GetParts()) == 0 {
-			return "", nil, false, status.Error(codes.InvalidArgument, "converse: prompt text or parts is required")
-		}
-		parts, err := contentFromProto(prompt.GetParts())
-		if err != nil {
-			return "", nil, false, status.Error(codes.InvalidArgument, err.Error())
-		}
-		id := session.SessionID(prompt.GetSessionId())
-		if err := validateGRPCSessionAffinity(ctx, string(id)); err != nil {
-			return "", nil, false, err
-		}
-		if prompt.GetDetach() {
-			run, err := h.svc.StartDetachedRunContent(ctx, id, prompt.GetText(), parts)
-			if err != nil {
-				return "", nil, false, toStatus(err)
-			}
-			return id, run, true, nil
-		}
-		run, err := h.svc.StartInteractiveRunContent(ctx, id, prompt.GetText(), parts)
-		if err != nil {
-			return "", nil, false, toStatus(err)
-		}
-		return id, run, false, nil
-	case first.GetRetry() != nil:
-		retry := first.GetRetry()
-		if retry.GetSessionId() == "" {
-			return "", nil, false, status.Error(codes.InvalidArgument, "converse: retry session_id is required")
-		}
-		id := session.SessionID(retry.GetSessionId())
-		if err := validateGRPCSessionAffinity(ctx, string(id)); err != nil {
-			return "", nil, false, err
-		}
-		run, err := h.svc.RetryFailedRun(ctx, id)
-		if err != nil {
-			return "", nil, false, toStatus(err)
-		}
-		return id, run, true, nil
-	default:
-		return "", nil, false, status.Error(codes.InvalidArgument, "converse: first frame must be a prompt or retry")
-	}
-}
-
 // Converse drives one run over a bidi stream. The first frame MUST be a Prompt
 // or RetryStart;
 // the server then relays the run's Events while concurrently reading
@@ -410,17 +361,13 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 		}
 		return err
 	}
-	id, run, detached, err := h.startConverse(ctx, first)
+	id, run, _, handled, err := h.runStartDispatch(stream, first)
 	if err != nil {
 		return err
 	}
-	if detached {
-		return stream.Send(&mecatlv1.ConverseResponse{Event: &mecatlv1.Event{
-			Type: "run.detached",
-			Result: &mecatlv1.Result{
-				Stop: "detached",
-			},
-		}})
+	if handled {
+		// A control-only or detached first frame fully handled the stream.
+		return nil
 	}
 	defer h.svc.finishRelayRun(context.WithoutCancel(ctx), id, run)
 
@@ -571,6 +518,108 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 		}
 	}
 	return rl.sendErr
+}
+
+// runStartDispatch resolves the Converse stream's first frame into the run to
+// relay (ADR 0278). A control-only or detached first frame finishes the stream
+// here and reports handled=true; otherwise the caller relays the returned run.
+func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_ConverseServer, first *mecatlv1.ConverseRequest) (id session.SessionID, run *agent.Run, retrying bool, handled bool, err error) {
+	ctx := stream.Context()
+	switch {
+	case first.GetPrompt() != nil:
+		prompt := first.GetPrompt()
+		if prompt.GetSessionId() == "" {
+			return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: prompt session_id is required")
+		}
+		if prompt.GetText() == "" && len(prompt.GetParts()) == 0 {
+			return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: prompt text or parts is required")
+		}
+		parts, perr := contentFromProto(prompt.GetParts())
+		if perr != nil {
+			return "", nil, false, false, status.Error(codes.InvalidArgument, perr.Error())
+		}
+		id = session.SessionID(prompt.GetSessionId())
+		if aerr := validateGRPCSessionAffinity(ctx, string(id)); aerr != nil {
+			return "", nil, false, false, aerr
+		}
+		if prompt.GetDetach() {
+			// Detached run (ADR 0278): the server-owned drain goroutine takes
+			// ownership; this stream only acks and closes.
+			if _, derr := h.svc.StartDetachedRunContent(ctx, id, prompt.GetText(), parts); derr != nil {
+				return "", nil, false, false, toStatus(derr)
+			}
+			if serr := stream.Send(detachedAck("run.detached", "detached")); serr != nil {
+				return "", nil, false, false, serr
+			}
+			return "", nil, false, true, nil
+		}
+		run, err = h.svc.StartInteractiveRunContent(ctx, id, prompt.GetText(), parts)
+		return id, run, false, false, errToStatus(err)
+	case first.GetRetry() != nil:
+		retry := first.GetRetry()
+		if retry.GetSessionId() == "" {
+			return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: retry session_id is required")
+		}
+		id = session.SessionID(retry.GetSessionId())
+		if aerr := validateGRPCSessionAffinity(ctx, string(id)); aerr != nil {
+			return "", nil, false, false, aerr
+		}
+		run, err = h.svc.RetryFailedRun(ctx, id)
+		return id, run, true, false, errToStatus(err)
+	case first.GetCancel() != nil:
+		// Control-only stream (ADR 0278): cancel an in-flight run. No run starts.
+		cancel := first.GetCancel()
+		if cancel.GetSessionId() == "" {
+			return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: cancel session_id is required on a control-only stream")
+		}
+		if aerr := validateGRPCSessionAffinity(ctx, cancel.GetSessionId()); aerr != nil {
+			return "", nil, false, false, aerr
+		}
+		if cerr := h.svc.Cancel(ctx, session.SessionID(cancel.GetSessionId()), cancel.GetExpectedRunId()); cerr != nil {
+			return "", nil, false, false, toStatus(cerr)
+		}
+		return "", nil, false, true, stream.Send(detachedAck("run.cancelled", "cancelled"))
+	case first.GetResumeApproval() != nil:
+		// Control-only stream (ADR 0278): resolve a paused ask from a detached
+		// client. No run starts unless the rehydrate path returns one to relay.
+		resume := first.GetResumeApproval()
+		if resume.GetSessionId() == "" {
+			return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: resume_approval session_id is required on a control-only stream")
+		}
+		id = session.SessionID(resume.GetSessionId())
+		if aerr := validateGRPCSessionAffinity(ctx, string(id)); aerr != nil {
+			return "", nil, false, false, aerr
+		}
+		verdict := verdictFromResumeApproval(resume.GetVerdict(), resume.GetAllow())
+		resumedRun, rerr := h.svc.ApproveRun(ctx, id, resume.GetAskId(), verdict, resume.GetExpectedRunId())
+		if rerr != nil {
+			return "", nil, false, false, toStatus(rerr)
+		}
+		if resumedRun != nil {
+			// Rehydrate path: relay the resumed run's events on this stream.
+			return id, resumedRun, false, false, nil
+		}
+		// Same-process path: the live run resolved the ask over its channel.
+		return "", nil, false, true, stream.Send(detachedAck("run.approved", "approved"))
+	default:
+		return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: first frame must be a prompt, retry, cancel, or resume_approval")
+	}
+}
+
+// detachedAck is the single terminal ack a control-only or detached stream
+// sends before it closes.
+func detachedAck(eventType, stop string) *mecatlv1.ConverseResponse {
+	return &mecatlv1.ConverseResponse{Event: &mecatlv1.Event{
+		Type:   eventType,
+		Result: &mecatlv1.Result{Stop: stop},
+	}}
+}
+
+func errToStatus(err error) error {
+	if err == nil {
+		return nil
+	}
+	return toStatus(err)
 }
 
 // streamSender is the single-writer gate every Send on one Converse bidi stream
