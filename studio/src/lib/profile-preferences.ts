@@ -79,8 +79,8 @@ export function useAgentAvatar() {
   return useStoredAvatar(AGENT_AVATAR_KEY);
 }
 
-const UI_SCALE_MIN = 0.85;
-const UI_SCALE_MAX = 1.3;
+export const UI_SCALE_MIN = 0.85;
+export const UI_SCALE_MAX = 1.3;
 
 const UI_SCALE_KEY = "mecatl-studio.ui-scale";
 

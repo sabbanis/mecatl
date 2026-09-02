@@ -18,7 +18,6 @@ const config: KnipConfig = {
     "src/features/**",
     // Reached only through the UI kit until later PRs in the stacked series
     // land their first app-level consumers; each line leaves with that PR.
-    "src/hooks/use-mobile.ts",
   ],
   ignoreDependencies: [
     // Tailwind v4 is imported via CSS (@import "tailwindcss"), not JS

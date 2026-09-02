@@ -12,10 +12,8 @@ Studio reads and writes the daemon's state rather than keeping its own.
 
 :::note Landing in progress
 Studio is landing as a stacked series of pull requests. This page grows with
-each one; right now the module foundation, the server tier (proxy + managed-mode
-controller), the typed protocol seam, the workspace shell, and the Chats,
-Scheduled, and Skills surfaces are in the tree; the remaining surfaces
-arrive next.
+each one; right now everything except provider/model-router/gateway settings,
+external-mode sign-in, and the advanced chat tiers is in the tree.
 :::
 
 ## Starting it
@@ -81,3 +79,13 @@ folder, enable/disable (a disabled skill moves to a holding area rather than
 being deleted), or delete. Skill names pass one shared validator on both the
 browser and the controller. In external mode the list is read-only: skill
 management belongs to the deployment.
+
+## Memory and Settings
+
+Memory is read-only by design: the daemon has no memory write API (a
+hand-typed value would enter turn-0 context without injection scanning), so
+Studio shows the memory table with honest disabled/empty states, per-entry
+detail, the store footprint, and the consolidate action. Settings carries
+Personalize (text size, interface scale, session-list side, notifications),
+the agent identity card (name and avatar are browser-local cosmetics — the
+agent learns your name in conversation), and the learning review page.
