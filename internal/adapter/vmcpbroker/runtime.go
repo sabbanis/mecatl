@@ -710,7 +710,17 @@ func NewToolHiveProcess(ctx context.Context, profiles []permconfig.MCPServerProf
 		_ = server.Stop(context.Background())
 		return fail(err)
 	}
-	routes, err := discoverAnonymousRoutes(ctx, construction.anonymousProfiles, diag)
+	anonymousDefs, err := discoverAnonymousToolDefinitions(ctx, construction.anonymousProfiles, diag)
+	if err != nil {
+		_ = server.Stop(context.Background())
+		return fail(err)
+	}
+	staticDefs, err := staticProtectedToolDefinitions(protected)
+	if err != nil {
+		_ = server.Stop(context.Background())
+		return fail(err)
+	}
+	routes, err := CompileProfiles(profiles, append(anonymousDefs, staticDefs...))
 	if err != nil {
 		_ = server.Stop(context.Background())
 		return fail(err)
@@ -774,7 +784,13 @@ func newProtectedToolHiveConstruction(profiles []permconfig.MCPServerProfile, is
 			providers[provider] = profile.Name
 			construction.providerNames[profile.Name] = provider
 			construction.upstreams = append(construction.upstreams, newUpstreamRunConfig(profile, provider, issuer, options))
-			construction.protectedBackends = append(construction.protectedBackends, profile.Name)
+			// A backend with a static tool declaration is admitted at
+			// construction time (staticProtectedToolDefinitions) instead of
+			// requiring eager bundled workspace enrollment, so it must not
+			// feed the eager-only protectedBackends/workspaceEnrollment gate.
+			if len(profile.Auth.OAuth.Tools) == 0 {
+				construction.protectedBackends = append(construction.protectedBackends, profile.Name)
+			}
 			backend.AuthConfig = &authtypes.BackendAuthStrategy{Type: "upstream_inject", UpstreamInject: &authtypes.UpstreamInjectConfig{ProviderName: provider}}
 		} else {
 			construction.anonymousProfiles = append(construction.anonymousProfiles, profile)
@@ -937,10 +953,11 @@ func brokerSecretEnv(p permconfig.MCPServerProfile) string {
 	return ""
 }
 
-// discoverAnonymousRoutes eagerly discovers only profiles whose auth mode is none.
-// Rejecting any other mode here makes the startup trust boundary auditable at the
-// caller and prevents this helper from silently growing protected discovery.
-func discoverAnonymousRoutes(ctx context.Context, profiles []permconfig.MCPServerProfile, diag port.Diagnostics) ([]Route, error) {
+// discoverAnonymousToolDefinitions eagerly discovers only profiles whose auth
+// mode is none. Rejecting any other mode here makes the startup trust boundary
+// auditable at the caller and prevents this helper from silently growing
+// protected discovery.
+func discoverAnonymousToolDefinitions(ctx context.Context, profiles []permconfig.MCPServerProfile, diag port.Diagnostics) ([]ToolDefinition, error) {
 	configs := make([]mcp.ServerConfig, 0, len(profiles))
 	for _, profile := range profiles {
 		if profile.Auth.Mode != "none" {
@@ -965,7 +982,50 @@ func discoverAnonymousRoutes(ctx context.Context, profiles []permconfig.MCPServe
 			}
 		}
 	}
+	return defs, nil
+}
+
+// discoverAnonymousRoutes eagerly discovers only profiles whose auth mode is none.
+func discoverAnonymousRoutes(ctx context.Context, profiles []permconfig.MCPServerProfile, diag port.Diagnostics) ([]Route, error) {
+	defs, err := discoverAnonymousToolDefinitions(ctx, profiles, diag)
+	if err != nil {
+		return nil, err
+	}
 	return CompileProfiles(profiles, defs)
+}
+
+// staticProtectedToolDefinitions builds tool definitions for every protected
+// profile that declares its catalogue statically (auth.oauth.tools), without
+// any network call or live authenticated discovery. Config is a trust
+// boundary too: each declared tool is routed through the same
+// validateProtectedRoute check a live-discovered protected route gets.
+func staticProtectedToolDefinitions(profiles []permconfig.MCPServerProfile) ([]ToolDefinition, error) {
+	defs := make([]ToolDefinition, 0)
+	for _, profile := range profiles {
+		if profile.Auth.Mode != profileAuthOAuth || profile.Auth.OAuth == nil {
+			continue
+		}
+		for _, declared := range profile.Auth.OAuth.Tools {
+			route := Route{
+				BackendID: profile.Name,
+				Protected: true,
+				ReadOnly:  declared.ReadOnly,
+				Tool: tool.ToolSpec{
+					Name:        "mcp__" + profile.Name + "__" + declared.Name,
+					Description: declared.Description,
+					Schema:      append(json.RawMessage(nil), declared.InputSchema...),
+				},
+			}
+			if err := validateProtectedRoute(route); err != nil {
+				return nil, fmt.Errorf("vmcpbroker: static tool declaration for backend %q: %w", profile.Name, err)
+			}
+			defs = append(defs, ToolDefinition{
+				BackendID: route.BackendID, Name: route.Tool.Name, Description: route.Tool.Description,
+				Schema: route.Tool.Schema, ReadOnly: route.ReadOnly,
+			})
+		}
+	}
+	return defs, nil
 }
 
 // Close releases the Runtime and its owned resources.
@@ -978,42 +1038,49 @@ func (p *Process) Close() error {
 
 // Runtime owns the stable catalogue and opens session-local executable wrappers.
 type Runtime struct {
-	mu                  sync.RWMutex
-	routes              []Route
-	caller              Caller
-	opener              sessionOpener
-	sessions            map[session.SessionID]*SessionTools
-	lifecycles          map[session.SessionID]*sessionLifecycle
-	tombstones          map[session.SessionID]struct{}
-	authorizeEndpoint   string
-	callbackURL         string
-	transactionTTL      time.Duration
-	transactions        map[controlTarget]authorizationTransaction
-	authorizations      map[controlTarget]string
-	grants              map[controlTarget]downstreamGrant
-	disconnected        map[controlTarget]struct{}
-	refreshes           map[controlTarget]*refreshOperation
-	oauthBackend        string
-	protectedBackends   []string
-	workspaceEnrollment bool
-	providerNames       map[string]string
-	tokenDeleter        upstreamTokenDeleter
-	tokenCleanupMu      sync.Mutex
-	tokenCleanup        map[tokenCleanupTarget]struct{}
-	authenticatedQuery  func(context.Context, ToolHiveAuthSessionID, string) (AuthenticatedCapabilities, error)
-	clientID            string
-	httpClient          *http.Client
-	tokenEndpoint       string
-	resource            string
-	diagnostics         port.Diagnostics
-	now                 func() time.Time
-	lifecycleCtx        context.Context
-	cancelLifecycle     context.CancelFunc
-	sharedClosers       []namedCloser
-	authContext         context.Context
-	closeOnce           sync.Once
-	closeErr            error
-	closed              bool
+	mu                sync.RWMutex
+	routes            []Route
+	caller            Caller
+	opener            sessionOpener
+	sessions          map[session.SessionID]*SessionTools
+	lifecycles        map[session.SessionID]*sessionLifecycle
+	tombstones        map[session.SessionID]struct{}
+	authorizeEndpoint string
+	callbackURL       string
+	transactionTTL    time.Duration
+	transactions      map[controlTarget]authorizationTransaction
+	authorizations    map[controlTarget]string
+	grants            map[controlTarget]downstreamGrant
+	disconnected      map[controlTarget]struct{}
+	refreshes         map[controlTarget]*refreshOperation
+	oauthBackend      string
+	protectedBackends []string
+	// staticProtectedBackends is the immutable snapshot of every protected
+	// backend that already had routes at construction (a statically-declared
+	// tool catalogue) -- unlike protectedBackends, it is never later
+	// overwritten with only the eager workspace-enrollment set, so a per-call
+	// authorization trigger can still find and bundle a static backend's
+	// siblings even when eager backends are also configured.
+	staticProtectedBackends []string
+	workspaceEnrollment     bool
+	providerNames           map[string]string
+	tokenDeleter            upstreamTokenDeleter
+	tokenCleanupMu          sync.Mutex
+	tokenCleanup            map[tokenCleanupTarget]struct{}
+	authenticatedQuery      func(context.Context, ToolHiveAuthSessionID, string) (AuthenticatedCapabilities, error)
+	clientID                string
+	httpClient              *http.Client
+	tokenEndpoint           string
+	resource                string
+	diagnostics             port.Diagnostics
+	now                     func() time.Time
+	lifecycleCtx            context.Context
+	cancelLifecycle         context.CancelFunc
+	sharedClosers           []namedCloser
+	authContext             context.Context
+	closeOnce               sync.Once
+	closeErr                error
+	closed                  bool
 }
 
 // ToolHiveRuntimeConfig binds the broker to its already-composed embedded
@@ -1146,25 +1213,26 @@ func NewRuntime(routes []Route, caller Caller) (*Runtime, error) {
 	sort.Slice(copied, func(i, j int) bool { return copied[i].Tool.Name < copied[j].Tool.Name })
 	lifecycleCtx, cancelLifecycle := context.WithCancel(context.Background())
 	return &Runtime{
-		routes:              copied,
-		caller:              caller,
-		sessions:            make(map[session.SessionID]*SessionTools),
-		lifecycles:          make(map[session.SessionID]*sessionLifecycle),
-		tombstones:          make(map[session.SessionID]struct{}),
-		transactions:        make(map[controlTarget]authorizationTransaction),
-		authorizations:      make(map[controlTarget]string),
-		grants:              make(map[controlTarget]downstreamGrant),
-		disconnected:        make(map[controlTarget]struct{}),
-		refreshes:           make(map[controlTarget]*refreshOperation),
-		oauthBackend:        oauthBackend,
-		protectedBackends:   protectedBackends,
-		workspaceEnrollment: len(protectedBackends) > 0,
-		providerNames:       make(map[string]string),
-		tokenCleanup:        make(map[tokenCleanupTarget]struct{}),
-		diagnostics:         port.NopDiagnostics{},
-		now:                 time.Now,
-		lifecycleCtx:        lifecycleCtx,
-		cancelLifecycle:     cancelLifecycle,
+		routes:                  copied,
+		caller:                  caller,
+		sessions:                make(map[session.SessionID]*SessionTools),
+		lifecycles:              make(map[session.SessionID]*sessionLifecycle),
+		tombstones:              make(map[session.SessionID]struct{}),
+		transactions:            make(map[controlTarget]authorizationTransaction),
+		authorizations:          make(map[controlTarget]string),
+		grants:                  make(map[controlTarget]downstreamGrant),
+		disconnected:            make(map[controlTarget]struct{}),
+		refreshes:               make(map[controlTarget]*refreshOperation),
+		oauthBackend:            oauthBackend,
+		protectedBackends:       protectedBackends,
+		staticProtectedBackends: append([]string(nil), protectedBackends...),
+		workspaceEnrollment:     len(protectedBackends) > 0,
+		providerNames:           make(map[string]string),
+		tokenCleanup:            make(map[tokenCleanupTarget]struct{}),
+		diagnostics:             port.NopDiagnostics{},
+		now:                     time.Now,
+		lifecycleCtx:            lifecycleCtx,
+		cancelLifecycle:         cancelLifecycle,
 	}, nil
 }
 
@@ -2251,6 +2319,43 @@ func (r *Runtime) protectedBackendLocked(backendID string) bool {
 	return false
 }
 
+// authorizationBundleFor returns the deterministic connect anchor and full
+// authorization bundle for backendID: the statically-declared protected set
+// it belongs to, if any, else the eager workspace-enrollment set, else
+// backendID alone (bundle nil). Each set's first element is guaranteed to
+// equal r.oauthBackend (both are derived from the same construction-order
+// slice), so the returned anchor always satisfies Connect's single-anchor gate.
+func (r *Runtime) authorizationBundleFor(backendID string) (string, []string) {
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	for _, configured := range r.staticProtectedBackends {
+		if configured == backendID {
+			return r.staticProtectedBackends[0], append([]string(nil), r.staticProtectedBackends...)
+		}
+	}
+	for _, configured := range r.protectedBackends {
+		if configured == backendID {
+			return r.protectedBackends[0], append([]string(nil), r.protectedBackends...)
+		}
+	}
+	return backendID, nil
+}
+
+// stampTransactionBackends records the full bundle a just-created pending
+// transaction should grant together on Callback, mirroring
+// ConnectWorkspaceServices's own bundle stamp for the eager path.
+func (r *Runtime) stampTransactionBackends(id session.SessionID, anchor string, bundle []string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	target := controlTarget{sessionID: id, backendID: anchor}
+	transaction, ok := r.transactions[target]
+	if !ok {
+		return
+	}
+	transaction.backends = append([]string(nil), bundle...)
+	r.transactions[target] = transaction
+}
+
 func (r *Runtime) grantForTarget(target controlTarget) (downstreamGrant, error) {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
@@ -2458,7 +2563,8 @@ func (t *protectedSessionTool) RequestAuthorization(ctx context.Context) (tool.A
 		return tool.AuthorizationRequest{}, false, ErrClosed
 	}
 	defer t.owner.calls.Done()
-	connected, err := t.owner.runtime.Connect(ctx, t.sessionID, t.route.BackendID)
+	anchor, bundle := t.owner.runtime.authorizationBundleFor(t.route.BackendID)
+	connected, err := t.owner.runtime.Connect(ctx, t.sessionID, anchor)
 	if err != nil {
 		return tool.AuthorizationRequest{}, false, err
 	}
@@ -2467,6 +2573,9 @@ func (t *protectedSessionTool) RequestAuthorization(ctx context.Context) (tool.A
 	}
 	if connected.Status != ConnectionPending || connected.AuthorizationRequired == nil {
 		return tool.AuthorizationRequest{}, false, ErrInvalidControlTarget
+	}
+	if len(bundle) > 1 {
+		t.owner.runtime.stampTransactionBackends(t.sessionID, anchor, bundle)
 	}
 	label := t.route.AuthorizationLabel
 	if label == "" {
@@ -2485,7 +2594,8 @@ func (t *protectedSessionTool) RequestAuthorization(ctx context.Context) (tool.A
 
 // CancelAuthorization invalidates precisely the pending broker transaction.
 func (t *protectedSessionTool) CancelAuthorization(_ context.Context, authorizationID string) error {
-	return t.owner.runtime.cancelAuthorization(t.sessionID, t.route.BackendID, authorizationID)
+	anchor, _ := t.owner.runtime.authorizationBundleFor(t.route.BackendID)
+	return t.owner.runtime.cancelAuthorization(t.sessionID, anchor, authorizationID)
 }
 
 // InvalidateAuthorization makes this retained wrapper unusable. It is the

@@ -134,7 +134,7 @@ func TestBundledWorkspaceEnrollment_Scenario11_ProtectedStartupSkipsAnonymousDis
 	}
 }
 
-func TestBundledWorkspaceEnrollment_Scenario11_StaticCandidatesStayConfigurationOnly(t *testing.T) {
+func TestBundledWorkspaceEnrollment_Scenario11_StaticCandidatesAdmitAtConstruction(t *testing.T) {
 	var publicRequests, protectedRequests atomic.Int32
 	public := discoveryTestServer(t, "public", &publicRequests)
 	protected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -156,8 +156,24 @@ func TestBundledWorkspaceEnrollment_Scenario11_StaticCandidatesStayConfiguration
 	if publicRequests.Load() == 0 || protectedRequests.Load() != 0 {
 		t.Fatalf("anonymous/protected startup requests = %d/%d, want anonymous eager and protected zero", publicRequests.Load(), protectedRequests.Load())
 	}
-	if len(process.Runtime.routes) != 1 || process.Runtime.routes[0].BackendID != "public" {
-		t.Fatalf("static candidate entered runtime catalogue: %#v", process.Runtime.routes)
+	// A statically-declared protected backend is admitted as an ordinary
+	// Protected:true route at construction, with no network call: its
+	// credential (not its schema) is what still requires authorization.
+	if len(process.Runtime.routes) != 2 {
+		t.Fatalf("static candidate did not enter runtime catalogue: %#v", process.Runtime.routes)
+	}
+	var staticRoute *Route
+	for i, route := range process.Runtime.routes {
+		if route.BackendID == "GitHub_API" {
+			staticRoute = &process.Runtime.routes[i]
+		}
+	}
+	if staticRoute == nil || !staticRoute.Protected || staticRoute.Tool.Name != "mcp__GitHub_API__reviewed" ||
+		staticRoute.Tool.Description != "reviewed static candidate" || !staticRoute.ReadOnly {
+		t.Fatalf("static candidate route = %#v", staticRoute)
+	}
+	if process.Runtime.WorkspaceEnrollmentRequired() {
+		t.Fatal("an all-static protected backend must not require eager bundled enrollment")
 	}
 	if process.Runtime.authenticatedQuery == nil {
 		t.Fatal("static candidate replaced authenticated discovery")

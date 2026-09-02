@@ -36,10 +36,6 @@ func TestBundledWorkspaceEnrollment_Scenario11_TwoBackendVertical(t *testing.T) 
 		bundledProtectedProfile("GitHub_API", githubMCP.URL, githubOAuth.URL),
 		bundledProtectedProfile("Calendar_API", calendarMCP.URL, calendarOAuth.URL),
 	}
-	profiles[0].Auth.OAuth.Tools = []permconfig.MCPStaticToolProfile{{
-		Name: "static_override", Description: "configured static description",
-		InputSchema: []byte(`{"type":"object","properties":{"static":{"type":"boolean"}}}`), ReadOnly: false,
-	}}
 	gateway := httptest.NewUnstartedServer(nil)
 	issuer := "https://" + gateway.Listener.Addr().String()
 	mux := http.NewServeMux()
