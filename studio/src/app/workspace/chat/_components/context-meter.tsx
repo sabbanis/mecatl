@@ -1,16 +1,22 @@
 "use client";
 
 /**
- * The slim context strip in the composer toolbar (B1.1): the session's
- * effective model and an APPROXIMATE context-utilisation meter — cumulative
- * input+output tokens this visit counted (summed from the runs' terminal usage
- * frames) vs the model's `resolved_model.context_window`. The reading is
- * approximate — the daemon's true compaction trigger also counts the system
- * prompt and tool schemas, which the client never sees, and a page reload
- * loses the visit's running total — which the `~` prefix conveys. Typography
- * matches the toolbar pills' value text (the "On" in "Memory On").
+ * The context strip at the right end of the composer toolbar (B1.1): the
+ * session's effective model and an APPROXIMATE context-utilisation meter —
+ * cumulative input+output tokens this visit counted (summed from the runs'
+ * terminal usage frames) vs the model's `resolved_model.context_window`. The
+ * reading is approximate — the daemon's true compaction trigger also counts
+ * the system prompt and tool schemas, which the client never sees, and a page
+ * reload loses the visit's running total — which the tooltip explains.
+ * Typography matches the toolbar pills' value text (the "On" in "Memory On");
+ * the bar spans 40% of the toolbar's width (cqw against its @container).
  */
 
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
 /**
@@ -46,23 +52,33 @@ export function ContextMeter({
   if (fraction === null || inputTokens + outputTokens <= 0) return null;
   const percent = Math.round(fraction * 100);
   return (
-    <div className="flex items-center gap-2 px-2 text-sm text-muted-foreground">
-      {modelLabel && <span className="truncate">{modelLabel}</span>}
-      <span
-        className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-border"
-        aria-hidden="true"
-      >
-        <span
-          className={cn(
-            "block h-full rounded-full",
-            fraction >= 0.85 ? "bg-warning" : "bg-brand/60",
-          )}
-          style={{ width: `${Math.max(2, percent)}%` }}
-        />
-      </span>
-      <span className="whitespace-nowrap tabular-nums">
-        ~{percent}% of context
-      </span>
-    </div>
+    <Tooltip>
+      <TooltipTrigger asChild>
+        <div className="ml-auto flex shrink-0 items-center gap-2 px-2 text-sm text-muted-foreground">
+          {modelLabel && <span className="truncate">{modelLabel}</span>}
+          <span
+            className="h-1 w-[40cqw] shrink-0 overflow-hidden rounded-full bg-border"
+            aria-hidden="true"
+          >
+            <span
+              className={cn(
+                "block h-full rounded-full",
+                fraction >= 0.85 ? "bg-warning" : "bg-brand/60",
+              )}
+              style={{ width: `${Math.max(2, percent)}%` }}
+            />
+          </span>
+          <span className="whitespace-nowrap tabular-nums">
+            {percent}% used
+          </span>
+        </div>
+      </TooltipTrigger>
+      <TooltipContent side="top" align="end" className="max-w-72">
+        The context window is how much conversation the model can consider at
+        once — your messages, its replies, and tool activity all count toward
+        it. This is a rough share of the window used so far this visit; as it
+        fills, the agent compacts older history to make room.
+      </TooltipContent>
+    </Tooltip>
   );
 }

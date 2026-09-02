@@ -70,8 +70,8 @@ interface ProjectItem {
 interface ChatInputProps {
   placeholder?: string;
   rows?: number;
-  /** The context-utilisation strip, rendered leftmost in the toolbar row
-      below the input (typography matches the pills' value text). */
+  /** The context-utilisation strip, rendered at the right end of the toolbar
+      row below the input (typography matches the pills' value text). */
   contextMeter?: ReactNode;
   projects?: ProjectItem[];
   selectedProjectId?: string | null;
@@ -1681,7 +1681,6 @@ export function ChatInput({
           container queries when THIS row runs narrow (a ~400px side-panel
           composer), independent of the viewport width. */}
       <div className="@container -mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1 rounded-b-2xl border border-t-0 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 overflow-x-auto hide-scrollbar max-[499px]:hidden">
-        {contextMeter}
         {projects && (
           <ProjectsDropdown
             projects={projects}
@@ -1712,6 +1711,7 @@ export function ChatInput({
             <MemoryToggle />
           </>
         )}
+        {contextMeter}
       </div>
     </div>
   );
