@@ -593,9 +593,10 @@ port with a generated bearer) or external (`MECATL_BASE_URL`; every local contro
 surface answers 409 as deployment-owned). Studio is daemon-only — an unreachable
 daemon renders as an offline state, never demo content — and decodes the wire in
 one typed seam (`studio/src/lib/protocol/`) that surfaces unknown event kinds
-instead of dropping them. Live re-attach to a running session is a stated non-goal
-today: the live tail is gRPC-only (`StreamSessionLive`), so Studio shows running
-state from the session inventory and reads the transcript when the run ends. A
+instead of dropping them. Live re-attach to a running session rides the
+durable session watch (`GET /v1/sessions/{id}/watch`, ADR 0250): any tab can
+follow a driving run live, with one residual — the driving tab's own
+`POST …/prompt` stream still cancels the run on disconnect. A
 breaking wire change owes a Studio update in the same PR. See ADR 0288/0289.
 
 **mecatequi — the single-shot headless runner (`cmd/mecatequi`).** A fourth composition

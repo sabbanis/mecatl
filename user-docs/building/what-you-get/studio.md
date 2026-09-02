@@ -12,8 +12,8 @@ Studio reads and writes the daemon's state rather than keeping its own.
 
 :::note Landing in progress
 Studio is landing as a stacked series of pull requests. This page grows with
-each one; right now everything except the advanced chat tiers (attachments, steering,
-threads, live re-attach, modes, mobile) is in the tree.
+each one; right now everything except session modes/model-switch/debug, Labs, and the
+mobile round is in the tree.
 :::
 
 ## Starting it
@@ -110,3 +110,10 @@ provider page offers sign-in: Studio's server tier runs the PKCE flow itself
 and holds tokens in process memory only — nothing token-shaped reaches the
 browser or disk. With OIDC unconfigured, the static `MECATL_AUTH_TOKEN` path
 is untouched. Managed mode never uses either.
+
+## Live re-attach
+
+Open a driving session in a second tab (or refresh mid-run) and Studio
+re-attaches to the live run through the daemon's durable session watch. One
+limit to know: the tab that *started* the run still cancels it if that tab's
+prompt connection drops — re-attach covers every other tab.

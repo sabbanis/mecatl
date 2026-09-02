@@ -395,6 +395,11 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     cancelChat,
   } = useAgentChat(hookSessionId, {
     onSessionCreated: handleSessionCreated,
+    // The inventory poll's lifecycle state: running/awaiting attaches the
+    // durable watch so an externally-driven run renders live (ADR 0250).
+    sessionState: hookSessionId
+      ? sessions.find((s) => s.id === hookSessionId)?.state
+      : undefined,
   });
 
   /** Esc with nothing else open interrupts the in-flight run (close.esc). */
