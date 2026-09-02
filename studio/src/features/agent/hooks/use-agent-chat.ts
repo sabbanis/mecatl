@@ -8,12 +8,14 @@ import {
 import { fileFromToolCall } from "@/lib/file-meta";
 import {
   cancelHarnessRun,
+  cancelHarnessSteer,
   createHarnessSession,
   fetchSessionTranscriptMessages,
   HarnessApiError,
   type PromptPart,
   respondToHarnessApproval,
   retryHarnessRun,
+  steerHarnessRun,
   streamHarnessPrompt,
 } from "@/lib/harness/client";
 import {
@@ -30,6 +32,7 @@ import type {
   ClarificationRequest,
   DelegationInfo,
   RetryDisposition,
+  SteerEchoPart,
   StreamEvent,
   ToolCallInfo,
 } from "../types";
@@ -40,6 +43,40 @@ type ChatStatus =
   | "waiting_approval"
   | "waiting_clarification"
   | "error";
+
+/** A message held while a run is active, drained as a prompt when idle.
+ *  `files` are staged attachments the text must not lose on the way. */
+export interface QueuedMessage {
+  id: string;
+  text: string;
+  files?: File[];
+}
+
+/** A steer the daemon accepted but has not yet drained into the run. */
+export interface PendingSteer {
+  id: string;
+  text: string;
+  /** Staged attachments the steer carried (requeued with the text if the
+   *  run ends before the drain). */
+  files?: File[];
+}
+
+/**
+ * Splits the ordered pending-steer list on the drain echo's watermark: every
+ * steer up to AND including the matching id was merged into the drained
+ * bundle and drops. An empty or unmatched id clears the whole list — the
+ * daemon's correlation FIFO is authoritative, so an echo we cannot correlate
+ * means the local list is stale. Never text-match.
+ */
+export function splitPendingSteersOnWatermark(
+  pending: readonly PendingSteer[],
+  messageId: string,
+): PendingSteer[] {
+  if (!messageId) return [];
+  const index = pending.findIndex((steer) => steer.id === messageId);
+  if (index === -1) return [];
+  return pending.slice(index + 1);
+}
 
 /** Formats every vision provider accepts; anything else gets re-encoded. */
 const WIRE_IMAGE_TYPES = new Set([
@@ -180,6 +217,29 @@ function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
 }
 
 /**
+ * Renders the steer drain echo's committed media bundle (ADR 0251) as
+ * message-attachment chips: inline bytes become data: URLs the existing
+ * thumbnail path already displays; url-sourced parts pass the URL through.
+ */
+export function attachmentsFromSteerParts(
+  parts: readonly SteerEchoPart[] | undefined,
+): Attachment[] | undefined {
+  if (!parts?.length) return undefined;
+  const attachments: Attachment[] = [];
+  for (const [index, part] of parts.entries()) {
+    const extension = part.mimeType.split("/")[1] || "bin";
+    attachments.push({
+      name: `${part.kind}-${index + 1}.${extension}`,
+      type: part.mimeType,
+      url: part.data
+        ? `data:${part.mimeType};base64,${part.data}`
+        : part.url || undefined,
+    });
+  }
+  return attachments;
+}
+
+/**
  * Applies one live child-activity event (`delegation_progress` /
  * `delegation_end`, D1) onto the delegation card it belongs to, searching the
  * transcript backwards for the entry keyed by `childId`. Pure — a new array
@@ -251,13 +311,17 @@ export function useAgentChat(
     createModel?: () => { modelId: string; providerId: string } | null;
   },
 ) {
-  const { connected } = useRuntimeStatus();
+  const { connected, features, serverCapabilities } = useRuntimeStatus();
   const [messages, setMessages] = useState<AgentMessage[]>([]);
   const [status, setStatus] = useState<ChatStatus>("idle");
   const [error, setError] = useState<string | null>(null);
   const [pendingApproval, setPendingApproval] =
     useState<ApprovalRequest | null>(null);
   const [pendingClarification] = useState<ClarificationRequest | null>(null);
+  /** Steers the daemon accepted but has not yet drained into the run, in send
+   *  order. The stream's `steer` echo splits this list on its watermark id. */
+  const [pendingSteers, setPendingSteers] = useState<PendingSteer[]>([]);
+  const steerSerialRef = useRef(0);
   const [usage, setUsage] = useState({
     inputTokens: 0,
     outputTokens: 0,
@@ -353,10 +417,24 @@ export function useAgentChat(
     return () => controller.abort();
   }, [sessionId, connected, rehydrate]);
 
+  const queueMessage = useCallback((text: string, files?: File[]) => {
+    const trimmed = text.trim();
+    if (!trimmed && !files?.length) return;
+    setQueuedMessages((prev) => [
+      ...prev,
+      {
+        id: `queued-${Date.now()}-${prev.length}`,
+        text: trimmed,
+        files: files?.length ? files : undefined,
+      },
+    ]);
+  }, []);
+
   /**
    * Builds the per-run stream-event handler shared by the prompt stream and
    * the failed-step retry relay (ADR 0239) — both drive the SAME translated
-   * event switch.
+   * event switch. `ids.assistant` is deliberately mutable: the steer drain
+   * echo re-anchors accumulation onto a fresh assistant bubble.
    */
   const makeStreamHandler = useCallback(
     (daemonId: string, ids: { assistant: string }) => {
@@ -432,6 +510,61 @@ export function useAgentChat(
               current === "waiting_approval" ? "streaming" : current,
             );
             break;
+          case "steer": {
+            // The daemon drained the pending steer bundle into the run.
+            // The accepted steers are already optimistic user bubbles;
+            // MOVE them to the drain boundary and open a fresh assistant
+            // bubble there, so the reply to the injection streams below
+            // it in reading order. No duplicate echo message is added —
+            // the optimistic bubbles carry the same text the echo merges.
+            const nextAssistantId = `assistant-${Date.now() + 1}`;
+            ids.assistant = nextAssistantId;
+            setPendingSteers((prev) => {
+              const remaining = splitPendingSteersOnWatermark(
+                prev,
+                event.messageId,
+              );
+              const remainingIds = new Set(remaining.map((p) => p.id));
+              const drained = prev.filter((p) => !remainingIds.has(p.id));
+              const drainedBubbleIds = new Set(
+                drained.map((p) => `steer-user-${p.id}`),
+              );
+              setMessages((msgs) => {
+                const moved = msgs.filter((m) => drainedBubbleIds.has(m.id));
+                const rest = msgs.filter((m) => !drainedBubbleIds.has(m.id));
+                // A steer accepted by the daemon but missing locally
+                // (e.g. after a reload) still surfaces via the echo — with
+                // its committed media bundle (ADR 0251).
+                const echoAttachments = attachmentsFromSteerParts(event.parts);
+                const bubbles =
+                  moved.length > 0
+                    ? moved
+                    : event.text || echoAttachments
+                      ? [
+                          {
+                            id: `steer-echo-${Date.now()}`,
+                            role: "user" as const,
+                            content: event.text,
+                            timestamp: Date.now(),
+                            attachments: echoAttachments,
+                          },
+                        ]
+                      : [];
+                return [
+                  ...rest,
+                  ...bubbles,
+                  {
+                    id: nextAssistantId,
+                    role: "assistant",
+                    content: "",
+                    timestamp: Date.now() + 1,
+                  },
+                ];
+              });
+              return remaining;
+            });
+            break;
+          }
           case "notice":
             patch((message) => ({
               ...message,
@@ -516,7 +649,13 @@ export function useAgentChat(
   const sendMessage = useCallback(
     async (content: string, files?: File[]) => {
       if (!connected) return;
-      if (status === "streaming" || status === "waiting_approval") return;
+      if (status === "streaming" || status === "waiting_approval") {
+        // Defense in depth behind the composer's own routing: text sent while
+        // a run is live is HELD, never fired into the funnel (which would
+        // refuse with "already has an active run") and never dropped.
+        queueMessage(content, files);
+        return;
+      }
 
       // Only images cross the wire — the daemon's prompt parts are
       // image/audio only (documents are a daemon capability gap).
@@ -581,8 +720,8 @@ export function useAgentChat(
       const controller = new AbortController();
       abortRef.current = controller;
 
-      // Failure patches outside the stream handler target the assistant
-      // bubble.
+      // Failure patches outside the stream handler target the CURRENT
+      // assistant bubble (the steer echo may have re-anchored it).
       const patch = (apply: (message: AgentMessage) => AgentMessage) =>
         setMessages((prev) =>
           prev.map((message) =>
@@ -661,7 +800,7 @@ export function useAgentChat(
         abortRef.current = null;
       }
     },
-    [status, connected, makeStreamHandler],
+    [status, connected, queueMessage, makeStreamHandler],
   );
 
   /** Re-sends the last prompt after a failure — the legacy Retry path, kept
@@ -773,6 +912,26 @@ export function useAgentChat(
     if (ineligible) await resendLast();
   }, [status, connected, resendLast, makeStreamHandler]);
 
+  /** A message typed while a run was active, held client-side: the daemon is
+   *  strictly one-run-at-a-time (a mid-run prompt answers 412), so the queue
+   *  lives here and drains one message per completed run. */
+  const [queuedMessages, setQueuedMessages] = useState<QueuedMessage[]>([]);
+  const flushingRef = useRef(false);
+
+  const deleteQueued = useCallback((id: string) => {
+    setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+  }, []);
+
+  /** Removes the message from the queue and returns its text (for editing). */
+  const takeQueued = useCallback(
+    (id: string) => {
+      const hit = queuedMessages.find((m) => m.id === id);
+      if (hit) setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+      return hit?.text ?? null;
+    },
+    [queuedMessages],
+  );
+
   const cancelChat = useCallback(async () => {
     abortRef.current?.abort();
     if (daemonIdRef.current) {
@@ -780,6 +939,171 @@ export function useAgentChat(
     }
     setStatus("idle");
   }, []);
+
+  // Steer is capability-gated (C1.2): the live `capabilities.steer` off
+  // /v1/compatibility, or the `http_steer` feature-registry row a rebuilt
+  // daemon serves. Absent both, mid-run sends queue instead.
+  const steerSupported =
+    serverCapabilities.steer === true || features.has("http_steer");
+
+  /**
+   * Injects a message — text plus staged image attachments (ADR 0251) — into
+   * the in-flight run at the next turn boundary. accepted/appended park it on
+   * the pending list until the drain echo; too_late or a failed request fall
+   * back to the queue so nothing is lost — the queue drains it as a normal
+   * prompt.
+   */
+  const steerMessage = useCallback(
+    async (text: string, files?: File[]) => {
+      const trimmed = text.trim();
+      if (!trimmed && !files?.length) return;
+      const daemonId = daemonIdRef.current;
+      if (!daemonId || !steerSupported) {
+        queueMessage(trimmed, files);
+        return;
+      }
+      const images = (files ?? []).filter((file) =>
+        file.type.startsWith("image/"),
+      );
+      let parts: PromptPart[];
+      try {
+        parts = await Promise.all(images.map(imageToPart));
+      } catch (caught) {
+        setError(caught instanceof Error ? caught.message : String(caught));
+        return;
+      }
+      // Same bytes as the wire parts, so the optimistic bubble's chips show
+      // thumbnails (mirrors sendMessage's attachment handling).
+      const attachments: Attachment[] | undefined =
+        images.length > 0
+          ? images.map((file, index) => {
+              const part = parts[index];
+              return {
+                name: file.name,
+                type: file.type,
+                url: part
+                  ? `data:${part.mime_type};base64,${part.data}`
+                  : undefined,
+              };
+            })
+          : undefined;
+      steerSerialRef.current += 1;
+      const id = `steer-${Date.now()}-${steerSerialRef.current}`;
+      try {
+        const { outcome } = await steerHarnessRun(daemonId, trimmed, id, {
+          parts,
+        });
+        if (outcome === "accepted" || outcome === "appended") {
+          // The injected text IS a chat message — show it in the transcript
+          // right away, attachments included. pendingSteers stays internal
+          // bookkeeping (watermark reconciliation at the drain echo).
+          setMessages((prev) => [
+            ...prev,
+            {
+              id: `steer-user-${id}`,
+              role: "user",
+              content: trimmed,
+              timestamp: Date.now(),
+              attachments,
+            },
+          ]);
+          setPendingSteers((prev) => [
+            ...prev,
+            { id, text: trimmed, files: images.length ? images : undefined },
+          ]);
+          return;
+        }
+        queueMessage(trimmed, files);
+      } catch (caught) {
+        queueMessage(trimmed, files);
+        setError(caught instanceof Error ? caught.message : String(caught));
+      }
+    },
+    [queueMessage, steerSupported],
+  );
+
+  /** "Steer": pull a queued message and inject it into the in-flight run at
+   *  the next turn boundary; on an idle chat it just sends. */
+  const steerQueued = useCallback(
+    (id: string) => {
+      const hit = queuedMessages.find((m) => m.id === id);
+      if (!hit) return;
+      setQueuedMessages((prev) => prev.filter((m) => m.id !== id));
+      if (status === "streaming" || status === "waiting_approval") {
+        void steerMessage(hit.text, hit.files);
+        return;
+      }
+      void sendMessage(hit.text, hit.files);
+    },
+    [status, queuedMessages, steerMessage, sendMessage],
+  );
+
+  /**
+   * Retracts the pending steer bundle. The daemon models one bundle per run —
+   * only the whole thing can be retracted, not a single message. On
+   * `none_pending` the bundle already drained (the echo reconciles the list),
+   * so the pending list clears on either outcome.
+   */
+  const cancelPendingSteers = useCallback(async () => {
+    const daemonId = daemonIdRef.current;
+    if (!daemonId) {
+      setPendingSteers([]);
+      return;
+    }
+    try {
+      await cancelHarnessSteer(daemonId);
+      setPendingSteers([]);
+    } catch (caught) {
+      // Unknown daemon state: keep the list rather than pretend it retracted.
+      setError(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, []);
+
+  // On run end, steers that never drained were dropped with the run (the
+  // daemon's steer buffer is run-scoped, best-effort): move them to the FRONT
+  // of the queue, in order, so the drain below sends them as normal prompts —
+  // never lose text. Runs on error too: the texts wait visibly in the strip.
+  useEffect(() => {
+    if (status !== "idle" && status !== "error") return;
+    if (pendingSteers.length === 0) return;
+    const orphaned = pendingSteers;
+    setPendingSteers([]);
+    // Their optimistic bubbles come out of the transcript too — the daemon
+    // dropped these with the run, so the queue (visible) owns the text now.
+    const bubbleIds = new Set(orphaned.map((p) => `steer-user-${p.id}`));
+    setMessages((prev) => prev.filter((m) => !bubbleIds.has(m.id)));
+    setQueuedMessages((prev) => [
+      ...orphaned.map((steer) => ({
+        id: `queued-${steer.id}`,
+        text: steer.text,
+        files: steer.files,
+      })),
+      ...prev,
+    ]);
+  }, [status, pendingSteers]);
+
+  // Drain the queue one message per completed run. Only a clean idle flushes:
+  // an error waits for the user (retry/edit), a parked approval waits for the
+  // verdict, and orphaned pending steers get requeued (above) before anything
+  // sends. flushingRef bridges the async gap before sendMessage flips the
+  // status, so a re-render can't double-send.
+  useEffect(() => {
+    if (
+      status !== "idle" ||
+      !connected ||
+      queuedMessages.length === 0 ||
+      pendingSteers.length > 0 ||
+      flushingRef.current
+    ) {
+      return;
+    }
+    flushingRef.current = true;
+    const next = queuedMessages[0];
+    setQueuedMessages((prev) => prev.filter((m) => m.id !== next.id));
+    void sendMessage(next.text, next.files).finally(() => {
+      flushingRef.current = false;
+    });
+  }, [status, connected, queuedMessages, pendingSteers, sendMessage]);
 
   const respondToApproval = useCallback(
     async (choice: ApprovalChoice) => {
@@ -789,7 +1113,10 @@ export function useAgentChat(
       // The verdict resumes the SAME run — the prompt stream stays open and
       // keeps delivering (the daemon acks the approve; only the run's end
       // closes the stream). Mirror the retract handler: back to streaming,
-      // never idle. The stream's own end handler owns the eventual idle.
+      // never idle — a premature idle here let the steer-requeue and queue
+      // drain effects fire against the still-live run (a pending steer got
+      // re-sent as a prompt that 412s). The stream's own end handler owns
+      // the eventual idle.
       setStatus((current) =>
         current === "waiting_approval" ? "streaming" : current,
       );
@@ -830,8 +1157,18 @@ export function useAgentChat(
   return {
     messages,
     // A parked approval is still an in-flight run daemon-side; the composer
-    // treats both as "run active".
+    // treats both as "run active" (queue/steer, never a raw prompt).
     isStreaming: status === "streaming" || status === "waiting_approval",
+    queuedMessages,
+    queueMessage,
+    deleteQueued,
+    takeQueued,
+    steerQueued,
+    pendingSteers,
+    steerMessage,
+    /** Mid-run steering is available (capability/feature gate, C1.2). */
+    steerSupported,
+    cancelPendingSteers,
     status,
     error,
     harnessLive: connected,

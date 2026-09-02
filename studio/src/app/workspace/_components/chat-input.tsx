@@ -26,6 +26,10 @@ import {
   getSlashCommands,
 } from "@/features/agent/composer-capabilities";
 import { fileKindMeta } from "@/lib/file-meta";
+import {
+  type EnterSendBehavior,
+  useEnterSendBehavior,
+} from "@/lib/profile-preferences";
 import { cn } from "@/lib/utils";
 import {
   type ComposerMenuItem,
@@ -39,6 +43,12 @@ interface ChatInputProps {
   rows?: number;
   compact?: boolean;
   onSend?: (content: string, files?: File[]) => void;
+  onQueue?: (content: string) => void;
+  /** Injects the text — plus any staged image attachments (ADR 0251) — into
+      the in-flight run at the next step (mid-run steering). Only meaningful
+      while `isStreaming`; absent when the daemon lacks the steer capability
+      (mid-run sends then queue and files stay attached). */
+  onSteer?: (content: string, files?: File[]) => void;
   /** Preview an attached file in the canvas panel. */
   onPreviewAttachment?: (file: File) => void;
   disabled?: boolean;
@@ -320,6 +330,32 @@ export function AttachmentPill({
   );
 }
 
+/** What Enter resolves to in the composer. `newline` means "do not intercept
+ *  the key" — the editor's own hardBreak handles it. */
+export type ComposerEnterAction = "send" | "queue" | "steer" | "newline";
+
+/**
+ * The composer's Enter decision table, extracted pure so the whole matrix is
+ * testable without driving the TipTap editor:
+ *
+ * - Idle: Enter sends; Shift+Enter inserts a newline (fall through to the
+ *   editor's hardBreak).
+ * - Streaming: Enter performs the preferred action (Settings → Personalize) and
+ *   Shift+Enter the opposite. Attachments no longer force the queue path —
+ *   steers carry image parts (ADR 0251), so a mid-run send with files steers
+ *   when steering is available (and degrades to queue when it is not, via
+ *   performAction's missing-handler fallback, keeping the files attached).
+ */
+export function resolveComposerAction(input: {
+  shift: boolean;
+  isStreaming: boolean;
+  behavior: EnterSendBehavior;
+}): ComposerEnterAction {
+  if (!input.isStreaming) return input.shift ? "newline" : "send";
+  if (!input.shift) return input.behavior;
+  return input.behavior === "queue" ? "steer" : "queue";
+}
+
 /** Open autocomplete menu state, mirrored from TipTap's suggestion lifecycle. */
 interface ComposerMenu {
   kind: "agent" | "command";
@@ -369,7 +405,10 @@ export function ChatInput({
   placeholder: placeholderProp,
   compact = false,
   onSend,
+  onQueue,
+  onSteer,
   disabled = false,
+  isStreaming = false,
   appendText,
   onAppendConsumed,
   initialText,
@@ -378,8 +417,8 @@ export function ChatInput({
 }: ChatInputProps) {
   const placeholder = placeholderProp ?? DEFAULT_PLACEHOLDER;
   // Plain-text mirror of the editor, kept in sync via onUpdate. Used only for
-  // "is there something to send" checks; the editor document is the source of
-  // truth for the message itself.
+  // "is there something to send" checks and the streaming border state;
+  // the editor document is the source of truth for the message itself.
   const [text, setText] = useState("");
   const [attachedFiles, setAttachedFiles] = useState<File[]>([]);
   const [isDragOver, setIsDragOver] = useState(false);
@@ -525,19 +564,65 @@ export function ChatInput({
     ),
   );
 
-  const handleSend = useCallback(() => {
-    const trimmed = editor ? composerText(editor) : "";
-    if (!trimmed || disabled) return;
-    const files = attachedFiles.length > 0 ? attachedFiles : undefined;
-    onSend?.(trimmed, files);
-    editor?.commands.clearContent();
-    setText("");
-    setAttachedFiles([]);
-  }, [editor, disabled, onSend, attachedFiles]);
+  // The preferred Enter action while a reply is streaming (Settings → Personalize).
+  // Hydrates on mount, so the first frame is always the "queue" default.
+  const { behavior: enterBehavior } = useEnterSendBehavior();
+
+  /** Executes one resolved Enter action against the current editor content.
+   *  Missing handlers degrade toward the pre-steer behavior: steer without
+   *  onSteer queues, queue without onQueue sends. */
+  const performAction = useCallback(
+    (action: ComposerEnterAction) => {
+      if (action === "newline") return;
+      const trimmed = editor ? composerText(editor) : "";
+      if (!trimmed || disabled) return;
+      const files = attachedFiles.length > 0 ? attachedFiles : undefined;
+      const resolved = action === "steer" && !onSteer ? "queue" : action;
+      if (resolved === "steer" && onSteer) {
+        // A steer carries the staged attachments as image parts (ADR 0251);
+        // they leave the composer with the text.
+        onSteer(trimmed, files);
+        editor?.commands.clearContent();
+        setText("");
+        setAttachedFiles([]);
+        return;
+      }
+      if (resolved === "queue" && onQueue) {
+        onQueue(trimmed);
+        editor?.commands.clearContent();
+        setText("");
+        // Attached files deliberately stay attached: a queued text cannot
+        // carry them, so they ride the next real send.
+        return;
+      }
+      onSend?.(trimmed, files);
+      editor?.commands.clearContent();
+      setText("");
+      setAttachedFiles([]);
+    },
+    [editor, disabled, onQueue, onSteer, onSend, attachedFiles],
+  );
+
+  /** Resolve + perform for one Enter press (or a send-button click, which is
+   *  the plain-Enter path). */
+  const actOnEnter = useCallback(
+    (shift: boolean) => {
+      performAction(
+        resolveComposerAction({
+          shift,
+          isStreaming,
+          behavior: enterBehavior,
+        }),
+      );
+    },
+    [performAction, isStreaming, enterBehavior],
+  );
+
+  const handleSend = useCallback(() => actOnEnter(false), [actOnEnter]);
 
   // Menu nav + Enter-to-send are wired with a native capture-phase keydown
   // listener on the editor DOM, re-subscribed each render with fresh closures
-  // over `menu`/`handleSend`. Capture phase runs before ProseMirror's own
+  // over `menu`/`actOnEnter`. Capture phase runs before ProseMirror's own
   // (bubble-phase) handler, and stopPropagation keeps the base keymap and the
   // suggestion plugins from also acting. This sidesteps both TipTap re-syncing
   // its editorProps and the React Compiler not preserving render-phase refs.
@@ -552,15 +637,26 @@ export function ChatInput({
         }
         return;
       }
-      if (event.key === "Enter" && !event.shiftKey) {
+      if (event.key !== "Enter") return;
+      if (event.shiftKey) {
+        // Shift+Enter acts (as the opposite of the Enter preference) only
+        // while a reply is streaming AND there is text to act on; otherwise
+        // it keeps its newline behavior — fall through to the editor's
+        // hardBreak without preventDefault.
+        const trimmed = editor ? composerText(editor) : "";
+        if (!isStreaming || !trimmed) return;
         event.preventDefault();
         event.stopPropagation();
-        handleSend();
+        actOnEnter(true);
+        return;
       }
+      event.preventDefault();
+      event.stopPropagation();
+      actOnEnter(false);
     };
     dom.addEventListener("keydown", onKeyDown, true);
     return () => dom.removeEventListener("keydown", onKeyDown, true);
-  }, [editor, menu, handleSend]);
+  }, [editor, menu, isStreaming, actOnEnter]);
 
   const hasText = text.trim().length > 0;
 
@@ -651,7 +747,9 @@ export function ChatInput({
             ? "border-brand bg-brand/5 dark:bg-brand/10 ring-2 ring-brand/20"
             : isWindowDrag
               ? "border-brand/50 ring-1 ring-brand/10"
-              : "border-zinc-300 dark:border-zinc-700",
+              : isStreaming && hasText
+                ? "border-warning shadow-warning/10"
+                : "border-zinc-300 dark:border-zinc-700",
         )}
       >
         {voice.isListening && (

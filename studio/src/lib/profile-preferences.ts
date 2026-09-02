@@ -186,6 +186,35 @@ export function useShowToolCalls() {
   return { showToolCalls, setShowToolCalls };
 }
 
+export type EnterSendBehavior = "queue" | "steer";
+
+const ENTER_SEND_BEHAVIOR_KEY = "mecatl-studio.enter-send-behavior";
+
+/**
+ * What Enter does while the agent is replying: queue the message for the next
+ * run (the factory default) or steer it into the in-flight run at the next
+ * step. Shift+Enter does the opposite. Hydrates on mount, so the first frame
+ * always reads "queue" — the composer tolerates that.
+ */
+export function useEnterSendBehavior() {
+  const [behavior, setBehaviorState] = useState<EnterSendBehavior>("queue");
+  useEffect(() => {
+    if (readLocalStorage(ENTER_SEND_BEHAVIOR_KEY) === "steer") {
+      setBehaviorState("steer");
+    }
+  }, []);
+
+  const setBehavior = useCallback((next: EnterSendBehavior) => {
+    setBehaviorState(next);
+    writeLocalStorage(
+      ENTER_SEND_BEHAVIOR_KEY,
+      next === "steer" ? "steer" : null,
+    );
+  }, []);
+
+  return { behavior, setBehavior };
+}
+
 /**
  * The user's display name — browser-local, cosmetic. It labels your chat
  * messages in Studio; the AGENT learns your name in conversation (its memory

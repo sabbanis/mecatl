@@ -384,9 +384,22 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     pendingClarification,
     respondToClarification,
     usage,
+    queuedMessages,
+    queueMessage,
+    deleteQueued,
+    takeQueued,
+    steerQueued,
+    steerMessage,
+    steerSupported,
+    cancelChat,
   } = useAgentChat(hookSessionId, {
     onSessionCreated: handleSessionCreated,
   });
+
+  /** Esc with nothing else open interrupts the in-flight run (close.esc). */
+  const handleCancelRun = useCallback(() => {
+    void cancelChat();
+  }, [cancelChat]);
 
   // The daemon's operator-enabled capabilities (A3 caches /v1/compatibility).
   const { connected, serverCapabilities } = useRuntimeStatus();
@@ -586,6 +599,15 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         error={turnError}
         onRetry={retryLast}
         onSend={sendMessage}
+        queuedMessages={queuedMessages}
+        onQueueMessage={queueMessage}
+        onSteerQueued={steerQueued}
+        onDeleteQueued={deleteQueued}
+        onTakeQueued={takeQueued}
+        // Steer is capability-gated (C1.2): absent, mid-run sends queue and
+        // the composer's steer action degrades to queue.
+        onSteerMessage={steerSupported ? steerMessage : undefined}
+        onCancelRun={handleCancelRun}
         onCompact={compactSupported ? handleCompact : undefined}
         contextInfo={
           resolvedModel && resolvedModel.contextWindow > 0

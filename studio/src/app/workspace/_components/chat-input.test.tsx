@@ -1,23 +1,49 @@
 import { render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { AttachmentPill, ChatInput } from "./chat-input";
+import { AttachmentPill, resolveComposerAction } from "./chat-input";
 
-// jsdom cannot host a live ProseMirror view (TipTap mounts asynchronously and
-// owns its own capture-phase handlers), so the editor is stubbed to its
-// pre-mount (null) state and this file covers the composer chrome around it.
-vi.mock("@tiptap/react", () => ({
-  useEditor: () => null,
-  EditorContent: () => <div data-testid="composer-editor" />,
-}));
+/**
+ * The Enter matrix is tested through `resolveComposerAction`, the pure
+ * decision function the composer's keydown handler and send button both call.
+ * Driving the TipTap editor's ProseMirror view with synthetic keydowns in
+ * jsdom is impractical (the editor mounts asynchronously and owns its own
+ * capture-phase handlers), so the decision table is extracted and tested
+ * exhaustively instead; "newline" means the key is NOT intercepted — the
+ * editor's own hardBreak inserts the newline and onSend is never called.
+ */
+describe("resolveComposerAction", () => {
+  const resolve = (
+    shift: boolean,
+    isStreaming: boolean,
+    behavior: "queue" | "steer",
+  ) => resolveComposerAction({ shift, isStreaming, behavior });
 
-describe("ChatInput", () => {
-  it("renders the composer chrome with the send button disabled while empty", () => {
-    const { getByLabelText, getByTestId } = render(<ChatInput />);
-    expect(getByTestId("composer-editor")).toBeTruthy();
-    expect((getByLabelText("Send message") as HTMLButtonElement).disabled).toBe(
-      true,
-    );
+  it("sends on idle Enter, whatever the preference", () => {
+    expect(resolve(false, false, "queue")).toBe("send");
+    expect(resolve(false, false, "steer")).toBe("send");
   });
+
+  it("keeps idle Shift+Enter as a newline (the key is not intercepted, so onSend is never called)", () => {
+    expect(resolve(true, false, "queue")).toBe("newline");
+    expect(resolve(true, false, "steer")).toBe("newline");
+  });
+
+  it("queues on streaming Enter with the default preference", () => {
+    expect(resolve(false, true, "queue")).toBe("queue");
+  });
+
+  it("steers on streaming Shift+Enter with the default preference", () => {
+    expect(resolve(true, true, "queue")).toBe("steer");
+  });
+
+  it("inverts both keys when the preference is steer", () => {
+    expect(resolve(false, true, "steer")).toBe("steer");
+    expect(resolve(true, true, "steer")).toBe("queue");
+  });
+
+  // Attachments no longer force the queue path: a steer carries staged image
+  // parts (ADR 0251). Availability is the handler's business — performAction
+  // degrades steer→queue when onSteer is absent, keeping the files attached.
 });
 
 describe("AttachmentPill", () => {

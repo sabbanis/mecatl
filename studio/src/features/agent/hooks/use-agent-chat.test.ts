@@ -1,6 +1,40 @@
 import { describe, expect, it } from "vitest";
 import type { AgentMessage } from "../types";
-import { applyDelegationUpdate } from "./use-agent-chat";
+import {
+  applyDelegationUpdate,
+  attachmentsFromSteerParts,
+  splitPendingSteersOnWatermark,
+} from "./use-agent-chat";
+
+const pending = [
+  { id: "steer-1", text: "first" },
+  { id: "steer-2", text: "second" },
+  { id: "steer-3", text: "third" },
+];
+
+describe("splitPendingSteersOnWatermark", () => {
+  it("drops every pending steer up to and including the watermark, keeping the tail", () => {
+    expect(splitPendingSteersOnWatermark(pending, "steer-2")).toEqual([
+      { id: "steer-3", text: "third" },
+    ]);
+  });
+
+  it("clears the whole list when the watermark is the last pending steer", () => {
+    expect(splitPendingSteersOnWatermark(pending, "steer-3")).toEqual([]);
+  });
+
+  it("clears the whole list on an empty watermark — the daemon's FIFO is authoritative", () => {
+    expect(splitPendingSteersOnWatermark(pending, "")).toEqual([]);
+  });
+
+  it("clears the whole list on an unmatched watermark rather than text-matching", () => {
+    expect(splitPendingSteersOnWatermark(pending, "steer-unknown")).toEqual([]);
+  });
+
+  it("leaves an empty list empty", () => {
+    expect(splitPendingSteersOnWatermark([], "steer-1")).toEqual([]);
+  });
+});
 
 // ── delegation cards (D1) ────────────────────────────────────────────────────
 
@@ -75,5 +109,30 @@ describe("applyDelegationUpdate", () => {
         toolCount: 1,
       }),
     ).toBe(before);
+  });
+});
+
+// ── steer echo attachments (ADR 0251 / C2.2) ─────────────────────────────────
+
+describe("attachmentsFromSteerParts", () => {
+  it("renders inline bytes as data: URLs and passes url parts through", () => {
+    expect(
+      attachmentsFromSteerParts([
+        { kind: "image", mimeType: "image/png", data: "aGk=" },
+        { kind: "audio", mimeType: "audio/wav", url: "mecatl://a" },
+      ]),
+    ).toEqual([
+      {
+        name: "image-1.png",
+        type: "image/png",
+        url: "data:image/png;base64,aGk=",
+      },
+      { name: "audio-2.wav", type: "audio/wav", url: "mecatl://a" },
+    ]);
+  });
+
+  it("returns undefined for an empty bundle", () => {
+    expect(attachmentsFromSteerParts(undefined)).toBeUndefined();
+    expect(attachmentsFromSteerParts([])).toBeUndefined();
   });
 });

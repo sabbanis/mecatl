@@ -7,6 +7,7 @@ import {
   Ellipsis,
   FileText,
   FoldVertical,
+  ListEnd,
   Loader2,
   MessageCircle,
   PanelLeftClose,
@@ -40,11 +41,14 @@ import type {
   ClarificationRequest,
   ToolCallInfo,
 } from "@/features/agent";
+import type { QueuedMessage } from "@/features/agent/hooks/use-agent-chat";
 import { formatTokens } from "@/lib/formatters";
 import {
   type SessionListSide,
+  useEnterSendBehavior,
   useShowToolCalls,
 } from "@/lib/profile-preferences";
+import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
 import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
@@ -132,6 +136,76 @@ function UsageMenuRow({
       <p className="text-sm tabular-nums">
         {formatTokens(usage.outputTokens)} output
       </p>
+    </div>
+  );
+}
+
+/**
+ * Messages held while a run is active, shown above the composer. Steered
+ * messages the daemon accepted but has not yet applied render first, with a
+ * pulsing "steering…" marker and a single retract control for the whole
+ * bundle (the daemon retracts bundles, not single messages). Queued rows
+ * offer Steer (inject into the in-flight run), Edit (back into the composer),
+ * and Delete; they drain in order as runs complete.
+ */
+function QueuedMessageStrip({
+  queued,
+  onSteer,
+  onEdit,
+  onDelete,
+}: {
+  queued: QueuedMessage[];
+  onSteer: (id: string) => void;
+  onEdit: (id: string) => void;
+  onDelete: (id: string) => void;
+}) {
+  if (queued.length === 0) return null;
+  return (
+    // ONE opaque group (the strip floats over the transcript): pending steers
+    // first, then the queue, as divided rows — never a stack of panels.
+    <div className="max-[499px]:mx-3">
+      <div className="divide-y overflow-hidden rounded-xl border bg-background">
+        {queued.map((message) => (
+          <div
+            key={message.id}
+            className="flex items-center gap-2 py-1 pr-1 pl-3"
+          >
+            <ListEnd className="size-4 shrink-0 text-muted-foreground" />
+            <span
+              className="min-w-0 flex-1 truncate text-sm"
+              title={message.text}
+            >
+              {message.text}
+            </span>
+            <DropdownMenu modal={false}>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  className="size-7 shrink-0 text-muted-foreground"
+                  aria-label={`Actions for queued message`}
+                >
+                  <Ellipsis className="size-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end">
+                <DropdownMenuItem onClick={() => onSteer(message.id)}>
+                  Steer
+                </DropdownMenuItem>
+                <DropdownMenuItem onClick={() => onEdit(message.id)}>
+                  Edit
+                </DropdownMenuItem>
+                <DropdownMenuItem
+                  variant="destructive"
+                  onClick={() => onDelete(message.id)}
+                >
+                  Delete
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }
@@ -296,6 +370,13 @@ export function ChatView({
   onSidePanelOpenChange,
   initialDraft,
   onInitialDraftConsumed,
+  queuedMessages = [],
+  onQueueMessage,
+  onSteerQueued,
+  onDeleteQueued,
+  onTakeQueued,
+  onSteerMessage,
+  onCancelRun,
   onCompact,
   contextInfo,
 }: {
@@ -326,6 +407,21 @@ export function ChatView({
       chip that seeds the message without sending it). */
   initialDraft?: string | null;
   onInitialDraftConsumed?: () => void;
+  /** Messages held while a run is active (see QueuedMessageStrip). */
+  queuedMessages?: QueuedMessage[];
+  onQueueMessage?: (text: string) => void;
+  onSteerQueued?: (id: string) => void;
+  onDeleteQueued?: (id: string) => void;
+  /** Removes a queued message and returns its text (the Edit action). */
+  onTakeQueued?: (id: string) => string | null;
+  /** Steers the daemon accepted but has not yet applied to the run. */
+  /** Injects composer text (plus staged image attachments, ADR 0251) into
+      the in-flight run at the next step. Absent when the daemon lacks the
+      steer capability — mid-run sends then queue. */
+  onSteerMessage?: (text: string, files?: File[]) => void;
+  /** Retracts the whole pending steer bundle. */
+  /** Cancels the in-flight run (Esc with no panel open). */
+  onCancelRun?: () => void;
   /** Manually compacts the conversation (B1.2); present only when the
       daemon's manual_compaction capability is on. Disabled while streaming. */
   onCompact?: () => void;
@@ -347,6 +443,14 @@ export function ChatView({
   // time" structural rather than something to coordinate by hand.
   const [panel, setPanel] = useState<ActivePanel | null>(null);
   const [appendText, setAppendText] = useState<string | null>(null);
+  // The Enter preference (Settings → Chat) decides the streaming placeholder.
+  const { behavior: enterBehavior } = useEnterSendBehavior();
+  // Editing a queued message pulls it out of the queue into the composer.
+  const [editSeed, setEditSeed] = useState<string | null>(null);
+  const handleEditQueued = (id: string) => {
+    const text = onTakeQueued?.(id);
+    if (text) setEditSeed(text);
+  };
   // When maximized, the panel fills the pane and the conversation column is
   // hidden. Always reset when the panel is closed.
   const [panelMaximized, setPanelMaximized] = useState(false);
@@ -418,6 +522,19 @@ export function ChatView({
     const el = messagesContainerRef.current;
     if (el) el.scrollTop = el.scrollHeight;
   }, [messages]);
+
+  // Esc, layered (close.esc): an open Radix dialog/menu — and the composer's
+  // autocomplete — consume their own Escape before the dispatcher sees it
+  // (`defaultPrevented`), so by the time this fires nothing transient is
+  // open. Close the side panel if one is up; otherwise interrupt a streaming
+  // run (the Claude Code convention: Esc cancels).
+  useShortcut("close.esc", () => {
+    if (panel !== null) {
+      closeSidePanel();
+      return;
+    }
+    if (isStreaming) onCancelRun?.();
+  });
 
   // Let the parent collapse the chat list while the side panel is open so
   // both panels fit side by side.
@@ -616,6 +733,12 @@ export function ChatView({
                   outputTokens={usage?.outputTokens ?? 0}
                 />
               )}
+              <QueuedMessageStrip
+                queued={queuedMessages}
+                onSteer={(id) => onSteerQueued?.(id)}
+                onEdit={handleEditQueued}
+                onDelete={(id) => onDeleteQueued?.(id)}
+              />
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-background bg-gradient-to-b from-destructive/5 to-destructive/5 px-3 py-2">
                   <AlertCircle className="size-4 shrink-0 text-destructive" />
@@ -644,14 +767,27 @@ export function ChatView({
               ) : (
                 <ChatInput
                   onSend={onSend}
+                  onQueue={onQueueMessage}
+                  onSteer={onSteerMessage}
                   onPreviewAttachment={handlePreviewFile}
                   isStreaming={isStreaming}
                   disabled={!!pendingApproval}
                   appendText={appendText}
                   onAppendConsumed={handleAppendConsumed}
-                  initialText={initialDraft}
-                  onInitialTextConsumed={onInitialDraftConsumed}
-                  placeholder="Send a message..."
+                  initialText={editSeed ?? initialDraft}
+                  onInitialTextConsumed={() => {
+                    if (editSeed !== null) setEditSeed(null);
+                    else onInitialDraftConsumed?.();
+                  }}
+                  placeholder={
+                    isStreaming
+                      ? // "Steer" is only an honest promise while the daemon
+                        // actually supports it (C1.2) — absent, sends queue.
+                        enterBehavior === "steer" && onSteerMessage
+                        ? "Steer the agent..."
+                        : "Queue a message..."
+                      : "Send a message..."
+                  }
                 />
               )}
             </div>

@@ -18,8 +18,10 @@ import { useEffect, useState } from "react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
+  type EnterSendBehavior,
   UI_SCALE_MAX,
   UI_SCALE_MIN,
+  useEnterSendBehavior,
   useSessionListSide,
   useUiScale,
 } from "@/lib/profile-preferences";
@@ -37,10 +39,16 @@ const SIDE_OPTIONS = [
   { value: "right", label: "Right", icon: PanelRight },
 ] as const;
 
+const ENTER_BEHAVIOR_OPTIONS = [
+  { value: "queue", label: "Queue message", icon: ListEnd },
+  { value: "steer", label: "Steer the agent", icon: CornerDownRight },
+] as const;
+
 export default function AppearanceSettingsPage() {
   const { theme: activeTheme, setTheme } = useTheme();
   const { side, setSide } = useSessionListSide();
   const { scale, setScale } = useUiScale();
+  const { behavior, setBehavior } = useEnterSendBehavior();
 
   // Browser notifications: permission mirrored into state so the row reflects
   // granted / denied / not-yet-asked; "unsupported" hides the row's actions.
@@ -145,6 +153,18 @@ export default function AppearanceSettingsPage() {
             value={side}
             options={SIDE_OPTIONS}
             onChange={(next) => setSide(next as "left" | "right")}
+          />
+        </SettingsRow>
+
+        <SettingsRow
+          label="Message queuing"
+          description="Shift+Enter does the opposite."
+        >
+          <OptionField
+            label="Message queuing"
+            value={behavior}
+            options={ENTER_BEHAVIOR_OPTIONS}
+            onChange={(next) => setBehavior(next as EnterSendBehavior)}
           />
         </SettingsRow>
 
