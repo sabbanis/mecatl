@@ -1291,9 +1291,25 @@ type sessionEngine struct {
 // cancelled on shutdown like any mid-stream run — which is correct: the fire path
 // does not persist an awaiting snapshot, so there is no resumable state to
 // preserve.
+//
+// detached marks an AWAITING run whose ownership is DETACHED-OWNED
+// (StartDetachedRunContent's drain goroutine, ADR 0278): the drain goroutine is
+// the run's sole consumer — it ranges run.Events(), Persists on every ask (the
+// same relayEvent projection a wire relay uses, autoApprove=false), and has no
+// client stream whose absence could ever need shielding. Close therefore CANCELS
+// a detached-owned awaiting run (reaping its Events channel, drain goroutine,
+// concurrency-gate slot and deadline timer) even though it skips a
+// relay-owned awaiting run — the durable StateAwaiting snapshot the drain's
+// Persist-on-ask already recorded remains the cross-process resume point under
+// ADR 0027 Phase 2, and the run itself is gone with the process. The flag is
+// set by startRunContent's register mark exactly once, at run start; only
+// StartDetachedRunContent's call path sets it. It is read by Close (under
+// s.mu) and by the run-entry registered-run re-check, never by the engine loop.
 type runState struct {
 	run  *agent.Run
 	sess *session.Session
+	// detached marks a run owned end-to-end by StartDetachedRunContent's drain.
+	detached bool
 	// cancelling is guarded by Service.mu. Clear marks the exact registered
 	// lifecycle before signalling cancellation so no approval, steer, or admission
 	// promotion can restart work across the irreversible clear boundary.
@@ -2971,21 +2987,33 @@ func (s *Service) Close() {
 	// unwinds. Snapshot under s.mu, then cancel outside to avoid holding the
 	// lock across Cancel (which may block briefly on hardAbort).
 	//
-	// AWAITING runs are EXCLUDED: a run parked on a permission ask persists a
-	// durable StateAwaiting snapshot (the relay's Persist-on-ask) that is the
-	// cloud-native Phase 2 resume point — a restarted process (or a peer replica)
-	// re-enters the loop at the ask via ApproveRun/ApprovePlan (Engine.
-	// ResumeApproval). Cancelling such a run would transition awaiting→cancelled
-	// and persist the cancelled snapshot OVER the awaiting one, destroying the
-	// cross-process resume contract. The parked run's goroutine waits on
-	// askRegistry.await (ctx-gated, but we do NOT cancel it); it is goleak-ignored
-	// (leakmain_test.go), so leaving it parked across Close is leak-clean, and the
-	// durable awaiting snapshot survives the shutdown. The awaiting signal is the
-	// race-free runState.awaiting atomic that Persist sets when the session is
-	// StateAwaiting (the relay calls Persist on EvPermissionAsk; reading sess.State
-	// there races no concurrent loop write — the loop is parked). A fire-driven run
-	// (no relay) never marks the flag, so it is cancelled like any mid-stream run —
-	// correct, since the fire path persists no awaiting snapshot to preserve.
+	// AWAITING runs are EXCLUDED — with ONE deliberate exception. A relay-owned
+	// run parked on a permission ask persists a durable StateAwaiting snapshot
+	// (the relay's Persist-on-ask) that is the cloud-native Phase 2 resume point —
+	// a restarted process (or a peer replica) re-enters the loop at the ask via
+	// ApproveRun/ApprovePlan (Engine.ResumeApproval). Cancelling such a run would
+	// transition awaiting→cancelled and persist the cancelled snapshot OVER the
+	// awaiting one, destroying the cross-process resume contract. The parked run's
+	// goroutine waits on askRegistry.await (ctx-gated, but we do NOT cancel it);
+	// it is goleak-ignored (leakmain_test.go), so leaving it parked across Close
+	// is leak-clean, and the durable awaiting snapshot survives the shutdown. The
+	// awaiting signal is the race-free runState.awaiting atomic that Persist sets
+	// when the session is StateAwaiting (the relay calls Persist on EvPermissionAsk;
+	// reading sess.State there races no concurrent loop write — the loop is parked).
+	// A fire-driven run (no relay) never marks the flag, so it is cancelled like any
+	// mid-stream run — correct, since the fire path persists no awaiting snapshot to
+	// preserve.
+	//
+	// The ONE exception: a DETACHED-OWNED awaiting run (StartDetachedRunContent, ADR
+	// 0278) IS cancelled. The drain goroutine — not a client stream — is its sole
+	// consumer: it Persists on every ask through the SAME relayEvent projection
+	// (autoApprove=false), so the durable StateAwaiting snapshot that is the
+	// cross-process resume point is already recorded BEFORE Close can cancel. The
+	// run itself dies with the process either way, and its Events channel, drain
+	// goroutine, concurrency-gate slot and deadline timer would otherwise outlive
+	// Close — the ADR-0027 List 1 row 67 "joins on Service.Close" contract. The
+	// runState.detached flag disambiguates: Close reaps exactly the awaiting runs
+	// whose ownership is the detached drain, never a relay-owned awaiting run.
 	// Mid-stream (StateRunning) runs have no durable mid-flight snapshot, so they
 	// ARE cancelled to unwind blocked LLM/MCP calls (the Task #3 intent).
 	s.mu.Lock()
@@ -2998,7 +3026,7 @@ func (s *Service) Close() {
 		rs.persistMu.Lock()
 		awaiting := rs.awaiting.Load()
 		rs.persistMu.Unlock()
-		if awaiting {
+		if awaiting && !rs.detached {
 			continue // resumable cross-process via the durable awaiting snapshot
 		}
 		if rs.run != nil {
@@ -4344,7 +4372,7 @@ func (s *Service) StartRun(ctx context.Context, id session.SessionID, text strin
 // fail closed. The trusted scheduler uses StartScheduledRunContent instead.
 func (s *Service) StartRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
 	generation := s.captureRunEntryGeneration(id)
-	return s.startRunContent(ctx, id, text, parts, runPurposeChat, generation, false)
+	return s.startRunContent(ctx, id, text, parts, runPurposeChat, generation, false, false)
 }
 
 // StartInteractiveRunContent starts a public HTTP/gRPC run whose transport can
@@ -4352,7 +4380,7 @@ func (s *Service) StartRunContent(ctx context.Context, id session.SessionID, tex
 // StartRunContent so protected calls fail without parking.
 func (s *Service) StartInteractiveRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
 	generation := s.captureRunEntryGeneration(id)
-	return s.startRunContent(ctx, id, text, parts, runPurposeChat, generation, true)
+	return s.startRunContent(ctx, id, text, parts, runPurposeChat, generation, true, false)
 }
 
 // StartScheduledRunContent is the trusted scheduler-purpose entry. It admits
@@ -4361,7 +4389,7 @@ func (s *Service) StartInteractiveRunContent(ctx context.Context, id session.Ses
 // scheduler composition calls it directly.
 func (s *Service) StartScheduledRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
 	generation := s.captureRunEntryGeneration(id)
-	return s.startRunContent(ctx, id, text, parts, runPurposeScheduler, generation, false)
+	return s.startRunContent(ctx, id, text, parts, runPurposeScheduler, generation, false, false)
 }
 
 // StartDetachedRunContent is the detached chat-purpose entry. It starts a run
@@ -4408,8 +4436,10 @@ func (s *Service) StartDetachedRunContent(ctx context.Context, id session.Sessio
 	// stays cancellable via Run.Cancel — which Service.Close drives for every
 	// registered non-awaiting run — so a server shutdown still reaps it.
 	runCtx := context.WithoutCancel(ctx)
+	// The run is detached-owned from its first registration so Close never
+	// observes it as relay-owned.
 	generation := s.captureRunEntryGeneration(id)
-	run, err := s.startRunContent(runCtx, id, text, parts, runPurposeChat, generation, false)
+	run, err := s.startRunContent(runCtx, id, text, parts, runPurposeChat, generation, false, true)
 	if err != nil {
 		// The run never started; the gate slot must not leak.
 		release()
@@ -4558,7 +4588,7 @@ func (s *Service) RetryFailedRun(ctx context.Context, id session.SessionID) (*ag
 		return nil, fmt.Errorf("%w: session %q: %v", ErrFailedStepRetryIneligible, id, err)
 	}
 
-	st, admissionParent, err := s.beginRunAdmission(ctx, id, sess, false)
+	st, admissionParent, err := s.beginRunAdmission(ctx, id, sess, false, false)
 	if err != nil {
 		return nil, err
 	}
@@ -4661,7 +4691,7 @@ const (
 )
 
 //nolint:gocyclo // run-entry funnel keeps repair, lease, engine-resolve, and launch in one ordered transaction; inherent.
-func (s *Service) startRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content, purpose runPurpose, generation runEntryGeneration, canPresentAuthorization bool) (*agent.Run, error) {
+func (s *Service) startRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content, purpose runPurpose, generation runEntryGeneration, canPresentAuthorization, detached bool) (*agent.Run, error) {
 	if s.draining.Load() {
 		return nil, fmt.Errorf("%w: %q", ErrUnavailable, id)
 	}
@@ -4729,7 +4759,7 @@ func (s *Service) startRunContent(ctx context.Context, id session.SessionID, tex
 	// Register a cancellable provisional lifecycle before lease acquisition and
 	// engine construction. Drain can now cancel admission even in the gap between
 	// acquiring ownership and constructing the run.
-	st, admissionParent, err := s.beginRunAdmission(ctx, id, sess, false)
+	st, admissionParent, err := s.beginRunAdmission(ctx, id, sess, false, detached)
 	if err != nil {
 		return nil, err
 	}
@@ -4967,7 +4997,7 @@ func (s *Service) Steer(ctx context.Context, id session.SessionID, text string, 
 // genuinely-live session is not slowed by the grace. An unknown session id
 // surfaces ErrNotFound from the first funnel call.
 func (s *Service) promotedSteerRun(ctx context.Context, id session.SessionID, text string, parts []session.Content, generation runEntryGeneration) (*agent.Run, error) {
-	run, err := s.startRunContent(ctx, id, text, parts, runPurposeChat, generation, false)
+	run, err := s.startRunContent(ctx, id, text, parts, runPurposeChat, generation, false, false)
 	if err == nil {
 		return run, nil // no live run blocked the entry — promoted immediately
 	}
@@ -4987,7 +5017,7 @@ func (s *Service) promotedSteerRun(ctx context.Context, id session.SessionID, te
 	// Registry cleared: the original relay finished and the run's final terminal
 	// state is durable. Drive the follow-up through the hardened funnel, which
 	// now sees the terminal state and reopens it.
-	return s.startRunContent(ctx, id, text, parts, runPurposeChat, generation, false)
+	return s.startRunContent(ctx, id, text, parts, runPurposeChat, generation, false, false)
 }
 
 // CancelSteer retracts the session's live run's PENDING (un-drained) steer,
@@ -5911,7 +5941,7 @@ func (s *Service) resumeFromAwaiting(ctx context.Context, id session.SessionID, 
 		// stranded-for-Approve as before (last-write-wins / nothing to resume).
 		return nil, ErrNoActiveRun
 	}
-	st, admissionParent, err := s.beginRunAdmission(ctx, id, sess, true)
+	st, admissionParent, err := s.beginRunAdmission(ctx, id, sess, true, false)
 	if err != nil {
 		return nil, err
 	}
@@ -6062,7 +6092,7 @@ func (s *Service) approvePlan(ctx context.Context, id session.SessionID, targetM
 		// (loadAndReopen → engineAndEnvironmentFor CASE 1 rebuild on the flipped
 		// mode → execute model). The StopPlanApproved-completed session is
 		// reopened to idle by loadAndReopen.
-		cont, cerr := s.startRunContent(ctx, id, proceed, nil, runPurposeChat, generation, false)
+		cont, cerr := s.startRunContent(ctx, id, proceed, nil, runPurposeChat, generation, false, false)
 		if cerr != nil {
 			// Surface the continuation-launch failure honestly on the stream as a
 			// synthetic terminal result so the relay's client sees a terminal
@@ -6579,7 +6609,7 @@ func (s *Service) autoApproveContinuation(ctx context.Context, id session.Sessio
 	// mode → execute model). The StopPlanApproved-completed session is reopened
 	// to idle by loadAndReopen.
 	proceed := agent.PlanApprovedProceedText + "\n\nOperator note: auto-approved: no human reviewed this plan"
-	cont, cerr := s.startRunContent(logCtx, id, proceed, nil, runPurposeChat, generation, false)
+	cont, cerr := s.startRunContent(logCtx, id, proceed, nil, runPurposeChat, generation, false, false)
 	if cerr != nil {
 		s.cfg.Diagnostics.Log(logCtx, port.LevelWarn,
 			"plan_mode_auto_approve: continuation run failed to start",
@@ -7163,9 +7193,9 @@ func (s *Service) cleanupRunAdmission(id session.SessionID, st *runState, promot
 // acquisition or engine construction. resumeAdmission marks the awaiting-resume
 // path so concurrent approvals wait for its resumeMu transaction to promote.
 // The caller holds runEntryMu for id.
-func (s *Service) beginRunAdmission(parent context.Context, id session.SessionID, sess *session.Session, resumeAdmission bool) (*runState, context.Context, error) {
+func (s *Service) beginRunAdmission(parent context.Context, id session.SessionID, sess *session.Session, resumeAdmission, detached bool) (*runState, context.Context, error) {
 	ctx, cancel := context.WithCancel(parent)
-	st := &runState{sess: sess, admissionCancel: cancel, settled: make(chan struct{}), resumeAdmission: resumeAdmission, titleRevision: sess.TitleRevision}
+	st := &runState{sess: sess, admissionCancel: cancel, settled: make(chan struct{}), resumeAdmission: resumeAdmission, detached: detached, titleRevision: sess.TitleRevision}
 	s.mu.Lock()
 	if s.draining.Load() {
 		s.mu.Unlock()

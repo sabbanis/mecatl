@@ -570,3 +570,178 @@ func TestDetachedRun_Scenario5_GuardrailBlocksDetachedRun(t *testing.T) {
 		t.Fatal("the model must receive the guardrail block as an error tool result (recorded conversation)")
 	}
 }
+
+// TestDetachedRun_Repair_CloseReapsAwaitingDetachedRun pins the awaiting-
+// detached Close leak fix (ADR-0027 List 1 row 67 "joins on Service.Close"): a
+// DETACHED run parked awaiting (a nil-rules Ask — the no-matching-rule default)
+// must be CANCELLED by Service.Close even though Close skips relay-owned awaiting
+// runs (the cross-process resume contract). Without the cancel, the run's Events
+// channel never closes and the drain goroutine — plus its detachedGate slot and
+// deadline timer (released by the SAME defer stack, `defer stopTimer()` /
+// `defer release()`, as the events-channel close) — outlives Close. The cancel is
+// safe because the drain's Persist-on-ask has ALREADY durably recorded the
+// StateAwaiting snapshot before the park (the ADR 0027 Phase 2 resume point).
+func TestDetachedRun_Repair_CloseReapsAwaitingDetachedRun(t *testing.T) {
+	read := &scriptTool{name: "Read", readOnly: true, content: "file body"}
+	write := &scriptTool{name: "Write", readOnly: false, content: "wrote"}
+	llm := mockllm.New(
+		mockllm.ToolCallTurn(call("c1", "Read", `{"path":"a.go"}`)),
+		mockllm.ToolCallTurn(call("c2", "Write", `{"path":"b.go","content":"x"}`)),
+		mockllm.TextTurn("all done"),
+	)
+	// Nil rules: the no-matching-rule default is Ask, so the FIRST tool call
+	// parks the run awaiting — no configured rule, no auto-approve.
+	svc := newServiceEngineStoreMutable(t, llm, nil, func(cfg *server.Config) {
+		detachOn(cfg)
+		cfg.MaxDetachedRuns = 1 // a one-slot gate: the slot is observably held
+	}, read, write)
+	client, cleanup := dialGRPC(t, svc)
+	defer cleanup()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+
+	cs, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+
+	// Start a detached run that will park awaiting on the first tool ask.
+	stream, err := client.Converse(ctx)
+	if err != nil {
+		t.Fatalf("Converse: %v", err)
+	}
+	if err := stream.Send(&mecatlv1.ConverseRequest{
+		Kind: &mecatlv1.ConverseRequest_Prompt{Prompt: &mecatlv1.Prompt{
+			SessionId: cs.GetSessionId(), Text: "look", Detach: true,
+		}},
+	}); err != nil {
+		t.Fatalf("Send prompt: %v", err)
+	}
+	_ = stream.CloseSend()
+	_ = recvAll(t, stream)
+
+	// Poll until the run parks awaiting: the drain goroutine's Persist-on-ask has
+	// durably recorded the StateAwaiting snapshot — the cross-process resume point
+	// that makes the shutdown cancel safe.
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		sess, gerr := svc.GetSession(ctx, session.SessionID(cs.GetSessionId()))
+		if gerr != nil {
+			t.Fatalf("GetSession: %v", gerr)
+		}
+		if sess.State == session.StateAwaiting {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session state = %q, want awaiting before Close", sess.State)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	// The run must be parked BEFORE any tool executed (Ask precedes Execute) —
+	// the awaiting snapshot is a genuine park, not a completed turn. (A nil-rules
+	// Ask parks the FIRST call — Read or Write — so no tool has run.)
+	if write.ran() {
+		t.Fatal("Write executed while the detached run was parked awaiting — auto-approve must never happen")
+	}
+
+	// Capture the run's events channel BEFORE Close so we can assert it closes —
+	// the leak signal: a relay-owned awaiting run keeps it open across Close, a
+	// detached-owned one must close (the drain goroutine finishes).
+	run, ok := svc.LookupRun(session.SessionID(cs.GetSessionId()))
+	if !ok {
+		t.Fatal("detached run not registered while parked awaiting")
+	}
+	runEvents := run.Events()
+
+	// Close the service: this must CANCEL the detached-owned awaiting run (the
+	// fix), not skip it like a relay-owned one.
+	svc.Close()
+
+	// The events channel closes — the drain goroutine drained the terminal
+	// StopCancelled EvResult, then its defer stack STOPPED the deadline timer and
+	// RELEASED the detachedGate slot. Bounded, so a regression (Close leaking the
+	// awaited run) fails the test instead of hanging it.
+	select {
+	case _, chOpen := <-runEvents:
+		if chOpen {
+			// One event delivered and the channel is still open? The run must be
+			// terminal; drain the rest within the bound.
+			for range runEvents {
+			}
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("detached awaiting run's Events channel did NOT close after Close — drain goroutine leaked")
+	}
+
+	// The run left the registry — the drain goroutine calls FinishRun AFTER its
+	// events channel closes (Persist then deregister), so poll the registry.
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		if _, ok := svc.LookupRun(session.SessionID(cs.GetSessionId())); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("Close-reaped awaiting detached run still registered — FinishRun must release it")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The session reached the terminal cancelled state: run.Cancel actually fired
+	// (the drain's terminal Persist lands it; the engine's own save would too).
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		sess, gerr := svc.GetSession(ctx, session.SessionID(cs.GetSessionId()))
+		if gerr != nil {
+			t.Fatalf("GetSession: %v", gerr)
+		}
+		if sess.State == session.StateCancelled {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("session state after Close = %q, want cancelled", sess.State)
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+
+	// The gate slot is released: with a one-slot gate, a held slot would make a
+	// NEW detached run fail fast with ResourceExhausted. Start a second detached
+	// run on a fresh session and require the run.detached ack — proving the slot
+	// returned. The second run parks awaiting on the same nil-rules Ask; a SECOND
+	// Close reaps it exactly like the first (Close is idempotent and cancels every
+	// registered detached-owned run), so goleak sees no leaked drain goroutine.
+	cs2, err := client.CreateSession(ctx, &mecatlv1.CreateSessionRequest{Workspace: "/ws"})
+	if err != nil {
+		t.Fatalf("CreateSession: %v", err)
+	}
+	stream2, err := client.Converse(ctx)
+	if err != nil {
+		t.Fatalf("Converse: %v", err)
+	}
+	if err := stream2.Send(&mecatlv1.ConverseRequest{
+		Kind: &mecatlv1.ConverseRequest_Prompt{Prompt: &mecatlv1.Prompt{
+			SessionId: cs2.GetSessionId(), Text: "look", Detach: true,
+		}},
+	}); err != nil {
+		t.Fatalf("Send prompt: %v", err)
+	}
+	_ = stream2.CloseSend()
+	ack2 := recvAll(t, stream2)
+	if len(ack2) == 0 || ack2[len(ack2)-1].GetType() != "run.detached" {
+		t.Fatalf("gate slot NOT released after Close: second detached run refused (acked %v)", typesOf(ack2))
+	}
+	// Reap the second run with a SECOND Close (Close is idempotent and cancels
+	// every registered detached-owned awaiting run) so no drain goroutine
+	// outlives the test and goleak stays clean.
+	svc.Close()
+	deadline = time.Now().Add(10 * time.Second)
+	for {
+		if _, ok := svc.LookupRun(session.SessionID(cs2.GetSessionId())); !ok {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("second detached run still registered after second Close — FinishRun must release it")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+}

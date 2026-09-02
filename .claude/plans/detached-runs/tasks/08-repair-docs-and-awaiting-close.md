@@ -2,7 +2,7 @@
 id: 08-repair-docs-and-awaiting-close
 title: Repair — IMPLEMENTATION-NOTES deliverable + awaiting-detached Close leak (panel-review)
 blocked_by: []
-status: pending
+status: done
 branch: "plan-detached-runs/08-repair-docs-and-awaiting-close"
 worktree: ""
 issue: ""

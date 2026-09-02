@@ -525,18 +525,21 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 // here and reports handled=true; otherwise the caller relays the returned run.
 func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_ConverseServer, first *mecatlv1.ConverseRequest) (id session.SessionID, run *agent.Run, retrying bool, handled bool, err error) {
 	ctx := stream.Context()
+	// Every arm returns its error through errToStatus (nil passes through) so the
+	// whole switch owns ONE return shape: a gRPC status error, handled=false, or
+	// handled=true with a nil error when the frame was fully consumed.
 	switch {
 	case first.GetPrompt() != nil:
 		prompt := first.GetPrompt()
 		if prompt.GetSessionId() == "" {
-			return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: prompt session_id is required")
+			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: prompt session_id is required"))
 		}
 		if prompt.GetText() == "" && len(prompt.GetParts()) == 0 {
-			return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: prompt text or parts is required")
+			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: prompt text or parts is required"))
 		}
 		parts, perr := contentFromProto(prompt.GetParts())
 		if perr != nil {
-			return "", nil, false, false, status.Error(codes.InvalidArgument, perr.Error())
+			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, perr.Error()))
 		}
 		id = session.SessionID(prompt.GetSessionId())
 		if aerr := validateGRPCSessionAffinity(ctx, string(id)); aerr != nil {
@@ -549,10 +552,10 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 			// Detached run (ADR 0278): the server-owned drain goroutine takes
 			// ownership; this stream only acks and closes.
 			if _, derr := h.svc.StartDetachedRunContent(ctx, id, prompt.GetText(), parts); derr != nil {
-				return "", nil, false, false, toStatus(derr)
+				return "", nil, false, false, errToStatus(derr)
 			}
 			if serr := stream.Send(detachedAck("run.detached", "detached")); serr != nil {
-				return "", nil, false, false, serr
+				return "", nil, false, false, errToStatus(serr)
 			}
 			return "", nil, false, true, nil
 		}
@@ -561,7 +564,7 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 	case first.GetRetry() != nil:
 		retry := first.GetRetry()
 		if retry.GetSessionId() == "" {
-			return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: retry session_id is required")
+			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: retry session_id is required"))
 		}
 		id = session.SessionID(retry.GetSessionId())
 		if aerr := validateGRPCSessionAffinity(ctx, string(id)); aerr != nil {
@@ -573,21 +576,21 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 		// Control-only stream (ADR 0278): cancel an in-flight run. No run starts.
 		cancel := first.GetCancel()
 		if cancel.GetSessionId() == "" {
-			return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: cancel session_id is required on a control-only stream")
+			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: cancel session_id is required on a control-only stream"))
 		}
 		if aerr := validateGRPCSessionAffinity(ctx, cancel.GetSessionId()); aerr != nil {
 			return "", nil, false, false, aerr
 		}
 		if cerr := h.svc.Cancel(ctx, session.SessionID(cancel.GetSessionId()), cancel.GetExpectedRunId()); cerr != nil {
-			return "", nil, false, false, toStatus(cerr)
+			return "", nil, false, false, errToStatus(cerr)
 		}
-		return "", nil, false, true, stream.Send(detachedAck("run.cancelled", "cancelled"))
+		return "", nil, false, true, errToStatus(stream.Send(detachedAck("run.cancelled", "cancelled")))
 	case first.GetResumeApproval() != nil:
 		// Control-only stream (ADR 0278): resolve a paused ask from a detached
 		// client. No run starts unless the rehydrate path returns one to relay.
 		resume := first.GetResumeApproval()
 		if resume.GetSessionId() == "" {
-			return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: resume_approval session_id is required on a control-only stream")
+			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: resume_approval session_id is required on a control-only stream"))
 		}
 		id = session.SessionID(resume.GetSessionId())
 		if aerr := validateGRPCSessionAffinity(ctx, string(id)); aerr != nil {
@@ -596,16 +599,16 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 		verdict := verdictFromResumeApproval(resume.GetVerdict(), resume.GetAllow())
 		resumedRun, rerr := h.svc.ApproveRun(ctx, id, resume.GetAskId(), verdict, resume.GetExpectedRunId())
 		if rerr != nil {
-			return "", nil, false, false, toStatus(rerr)
+			return "", nil, false, false, errToStatus(rerr)
 		}
 		if resumedRun != nil {
 			// Rehydrate path: relay the resumed run's events on this stream.
 			return id, resumedRun, false, false, nil
 		}
 		// Same-process path: the live run resolved the ask over its channel.
-		return "", nil, false, true, stream.Send(detachedAck("run.approved", "approved"))
+		return "", nil, false, true, errToStatus(stream.Send(detachedAck("run.approved", "approved")))
 	default:
-		return "", nil, false, false, status.Error(codes.InvalidArgument, "converse: first frame must be a prompt, retry, cancel, or resume_approval")
+		return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: first frame must be a prompt, retry, cancel, or resume_approval"))
 	}
 }
 
@@ -618,9 +621,20 @@ func detachedAck(eventType, stop string) *mecatlv1.ConverseResponse {
 	}}
 }
 
+// errToStatus is the ONE error-return shape of runStartDispatch: every arm
+// returns through it, so the caller sees a gRPC status error (or nil). A
+// status-bearing error (a stream.Send error, a validation status.Error, a
+// context cancellation) passes through VERBATIM — re-classifying it through the
+// sentinel registry would map an explicit InvalidArgument status to the generic
+// Internal row. A service sentinel (ErrNoActiveRun, ErrSessionLeasedElsewhere,
+// ErrDetachedRunsRefused, …) is classified by toStatus, which attaches the
+// stable mecatl code detail.
 func errToStatus(err error) error {
 	if err == nil {
 		return nil
+	}
+	if _, ok := status.FromError(err); ok {
+		return err
 	}
 	return toStatus(err)
 }

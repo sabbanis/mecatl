@@ -371,6 +371,13 @@ parks awaiting (no auto-approve — the drain goroutine is a recorder, never an
 approver); a reconnecting client resolves it via the control-only
 `resume_approval` stream from the same section above.
 
+Detached runs are **gRPC-only in v1**: the detach affordance — the
+`detach: true` prompt field and the control-only Converse stream — lives on the
+bidi `Converse` RPC, which the HTTP/SSE surface (`POST /v1/sessions/{id}/prompt`)
+has no equivalent for. The watch side IS available over SSE
+(`GET /v1/sessions/{id}/watch`), but submit-and-detach and cancel/approve without
+a prompt require gRPC.
+
 ## Scheduled tasks
 
 `mecated` and `mecak8s` run scheduled agent fires autonomously (issue #189,

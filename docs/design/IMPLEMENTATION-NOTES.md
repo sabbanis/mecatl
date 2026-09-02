@@ -7062,6 +7062,93 @@ allocates are `0027-cloud-native.md` List 1 rows 65–66.
   implement the cursor seam, which is a deployment fact reported by
   `watch_unsupported`.
 
+### Detached runs (ADR 0278)
+
+The CONNECT-AND-LEAVE-RUNNING channel: a `Prompt{detach:true}` first frame
+starts a run the server owns end-to-end, acks once, and closes the stream — the
+run continues after the client disconnects, is observed via
+`WatchSessionEvents`, and is controlled via a control-only Converse stream
+(ADR 0278 decision 1; the acceptance plan is `docs/acceptance/detached-runs.md`).
+The resources it allocates are `0027-cloud-native.md` List 1 rows 67–69.
+
+- **The detach channel is a field, not an RPC.** `Prompt.detach` is additive on
+  the existing bidi `Converse` (`contracts/proto/mecatl/v1/harness.proto`);
+  `Cancel.session_id` and `ResumeApproval.session_id` are additive so a
+  control-only stream can name its session. The gRPC handler
+  (`internal/adapter/server/grpc.go` (`runStartDispatch`)) routes the frame:
+  detached → `Service.StartDetachedRunContent`
+  (`internal/adapter/server/service.go`), send the `run.detached` ack, close the
+  stream; control-only → `Service.Cancel` / `Service.ApproveRun` directly; the
+  existing prompt/retry arms are byte-identical.
+- **The drain goroutine is the one new Service-owned resource.** It ranges
+  `run.Events()` through the SAME `relayEvent` projection a wire relay uses —
+  `autoApprove=false`, so a detached run NEVER auto-approves (the drain is a
+  recorder, never an approver; a permission ask parks awaiting and a reconnecting
+  client resolves it via the control-only `resume_approval` frame). It breaks on
+  the terminal `EvResult`, then `Persist` (the terminal snapshot; a cancel-
+  detached ctx keeps the save alive after the caller's stream is gone) BEFORE
+  `FinishRun` — the drain goroutine is the run's authoritative owner, and its
+  `defer` stack also stops the deadline timer and releases the concurrency-gate
+  slot. The whole lifecycle — including Close reaping an AWAITING detached run —
+  is ADR 0278 decision 3 + ADR 0027 List 1 row 67.
+- **A control-only Converse stream is the cancel/approve surface.** A first
+  frame of `cancel` or `resume_approval` (with a `session_id`) resolves a
+  detached run without a prompt. The `resume_approval` arm reuses the EXISTING
+  `resumeFromAwaiting` path (ADR 0027 Phase 2): a same-process verdict resolves
+  the parked run over its channel; a dead run's snapshot rehydrates and the
+  resumed run relays its events on the stream. Cancel provides the double-Ctrl+C
+  affordance's wire half.
+- **The capability gate + posture refusal are operator-tier.** `mecated
+  --detached-runs` (default OFF) gates BOTH halves: when off, the server ignores
+  `detach:true` (attached behaviour, byte-identical) and does NOT advertise
+  `ServerCapabilities.detached_runs`. Under posture `yolo` the derived
+  `Config.DetachedRunsRefused` REFUSES detached runs outright (fail-closed —
+  the ADR's "WARN or refuse" resolved to refuse; `internal/app/posture.go`
+  (`applyPosture`)), and the capability bit is unadvertised so a well-behaved
+  client never sends the field.
+- **The deadline + concurrency gate bound the unattended run.** A wall-clock
+  `DetachedRunDeadline` timer (default 24h) calls `Service.Cancel` on lapse —
+  the same scheduler_fire watchdog pattern, UNCONDITIONAL (a parked-awaiting
+  detached run included, whose pending ask is closed out as cancelled); the
+  drain's terminal persist lands the cancelled snapshot. The server-wide
+  `detachedGate` counting semaphore (default 4) fails fast with
+  `ErrTooManyDetachedRuns` (ids only) at run start and is released by the drain
+  goroutine's defer — with no client watching, the gate is the only
+  backpressure.
+- **mecatui: sessions.yaml pointer + startup auto-branch + watch-reattach.**
+  `cmd/mecatui/state.go` (`sessionStateStore`) persists a per-target last-session
+  pointer as a sibling of models.yaml (fail-soft read, atomic 0o600 write) —
+  written on detach (`applyDetachedAck`, `cmd/mecatui/ui/update.go`) and on
+  session switch; the no-flag `mecatui connect ADDRESS` path auto-branches on
+  state via `resolveStartupResumeWithPointer` (`cmd/mecatui/startup_resume.go`):
+  running → reattach through `WatchSessionEvents` (replay from the cursor, then
+  follow live — `cmd/mecatui/client/watch.go` (`WatchCmd`/`WatchEnvelope`),
+  threaded through the UI's `armWatch`/`updateWatchMsg` generation-guarded
+  fan-in, cursor re-threaded on reconnect), idle/terminal → resume as today,
+  none → fresh. The sessions browser lists `running` rows with a reattach
+  affordance (`applyReattachIntent`, `cmd/mecatui/ui/sessions.go`). The
+  detached view is `phaseFollowing` — a read-only live view of a server-owned
+  run; no transcript is adopted (the authoritative snapshot lags the live run,
+  the watch replays it).
+- **Ctrl+C is two-signal, capability-determined.** `cmd/mecatui/main.go`
+  (`setupSignalHandler`): on a detached-capable server while FOLLOWING a
+  detached run (`ui.DetachSignalState`), the FIRST Ctrl+C prints the one-line
+  "run continues" message and quits WITHOUT cancelling; the SECOND sends a
+  control-only Converse `cancel` frame on a FRESH bounded context
+  (`CancelDetachedRun`, `cmd/mecatui/client/client.go`) and exits. On any other
+  server/mode the first signal cancels the ctx and the second is the legacy hard
+  exit — byte-identical to the pre-detached-runs build. Embedded mode never
+  detaches (the server dies with the process).
+- **Close reaps AWAITING detached runs.** The relay-owned awaiting skip
+  (`Service.Close` — the ADR 0027 Phase 2 cross-process resume contract) does
+  NOT apply to a run whose ownership is the detached drain: the drain's
+  Persist-on-ask has already durably recorded the StateAwaiting snapshot, so
+  cancelling the run is safe and is what lets the drain goroutine, its gate slot
+  and its deadline timer JOIN on Close (row 67's "joins on `Service.Close`" —
+  the `runState.detached` flag, set at registration, disambiguates; a relay-owned
+  awaiting run is still skipped byte-identically). Pinned by
+  `TestDetachedRun_Repair_CloseReapsAwaitingDetachedRun`.
+
 ### Durable event log — consumers (cloud-native Phase 3b)
 
 The CONSUMERS of the 3a log: a non-destructive compaction archive and a
