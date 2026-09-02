@@ -1,30 +1,3 @@
-export function formatRelativeTime(ts: number): string {
-  if (!ts || ts < 1000) return "";
-  try {
-    const diffMs = Date.now() - ts;
-    const diffMin = Math.floor(diffMs / 60000);
-    if (diffMin < 1) return "<1m";
-    if (diffMin < 60) return `${diffMin}m`;
-    const diffHr = Math.floor(diffMin / 60);
-    if (diffHr < 24) return `${diffHr}h`;
-    const diffDay = Math.floor(diffHr / 24);
-    return `${diffDay}d`;
-  } catch {
-    return "";
-  }
-}
-
-export function formatCost(cost: number | null): string {
-  if (cost == null) return "$0.00";
-  return `$${cost.toFixed(2)}`;
-}
-
-export function formatTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}k`;
-  return String(n);
-}
-
 const CRON_DAYS = [
   "Sunday",
   "Monday",
@@ -34,6 +7,16 @@ const CRON_DAYS = [
   "Friday",
   "Saturday",
 ];
+
+/** 1 → "1st", 22 → "22nd", 13 → "13th" — day-of-month labels. */
+function ordinal(n: number): string {
+  const rem10 = n % 10;
+  const rem100 = n % 100;
+  if (rem10 === 1 && rem100 !== 11) return `${n}st`;
+  if (rem10 === 2 && rem100 !== 12) return `${n}nd`;
+  if (rem10 === 3 && rem100 !== 13) return `${n}rd`;
+  return `${n}th`;
+}
 
 function formatClock(hour: number, minute: number): string {
   const period = hour < 12 ? "AM" : "PM";
@@ -62,21 +45,18 @@ export function describeCron(expr: string): string {
   if (everyHour && numMin && dom === "*" && mon === "*" && dow === "*") {
     return `Every ${everyHour[1]} hours`;
   }
-  if (numMin && numHour && dom === "*" && mon === "*") {
+  if (numMin && numHour && mon === "*") {
     const time = formatClock(Number(hour), Number(min));
-    if (dow === "*") return `Daily at ${time}`;
-    if (/^\d$/.test(dow))
-      return `Weekly on ${CRON_DAYS[Number(dow)]} at ${time}`;
+    if (dom === "*") {
+      if (dow === "*") return `Daily at ${time}`;
+      if (dow === "1-5") return `Weekdays at ${time}`;
+      if (/^[0-6]$/.test(dow))
+        return `Weekly on ${CRON_DAYS[Number(dow)]} at ${time}`;
+    } else if (dow === "*" && /^\d{1,2}$/.test(dom)) {
+      const day = Number(dom);
+      if (day >= 1 && day <= 31)
+        return `Monthly on the ${ordinal(day)} at ${time}`;
+    }
   }
   return expr;
-}
-
-export function formatMessageTime(ts: number): string {
-  if (!ts || ts < 1000) return "";
-  const d = new Date(ts);
-  return d.toLocaleTimeString(undefined, {
-    hour: "2-digit",
-    minute: "2-digit",
-    hour12: false,
-  });
 }

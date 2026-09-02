@@ -4,18 +4,17 @@ const isDev = process.env.NODE_ENV !== "production";
 
 /**
  * Content Security Policy header.
- * All API calls (OIDC, backend API) happen server-side,
- * so browser CSP only needs 'self'.
+ * Every daemon/controller call happens server-side through the /api/mecatl*
+ * proxy routes, so the browser CSP only needs 'self'.
  */
 const cspHeader = `
   default-src 'self';
   script-src 'self' 'unsafe-inline'${isDev ? " 'unsafe-eval'" : ""};
   style-src 'self' 'unsafe-inline';
-  img-src 'self' blob: data: https://randomuser.me;
+  img-src 'self' blob: data:;
   font-src 'self';
   connect-src 'self';
   form-action 'self';
-  frame-src *;
   frame-ancestors 'none';
   base-uri 'self';
   object-src 'none';
@@ -24,26 +23,33 @@ const cspHeader = `
   .replace(/\s{2,}/g, " ")
   .trim();
 
+/**
+ * Hostnames allowed to request dev-server assets, derived from the same
+ * MECATL_STUDIO_PUBLIC_ORIGIN allowlist the API proxy trusts — one knob for
+ * LAN access. Without this, Next's dev cross-origin protection 403s the
+ * /_next/* chunks for a non-localhost Host, so the page renders but never
+ * hydrates. Dev-only: `next start` has no such gate.
+ */
+const allowedDevOrigins = (process.env.MECATL_STUDIO_PUBLIC_ORIGIN || "")
+  .split(",")
+  .map((origin) => origin.trim())
+  .filter(Boolean)
+  .map((origin) => {
+    try {
+      return new URL(origin).hostname;
+    } catch {
+      return origin;
+    }
+  });
+
 const nextConfig: NextConfig = {
   reactCompiler: true,
-  output: "standalone",
   poweredByHeader: false,
-  // Include OpenAPI schema files in the Vercel/standalone deployment bundle.
-  // mocker.ts reads them at runtime via fs.readFileSync to generate fixture
-  // handlers; without this they are absent from /var/task/ on Vercel.
-  // Include OpenAPI schema files in the Vercel/standalone deployment bundle.
-  // mocker.ts reads them at runtime via fs.readFileSync.
-  outputFileTracingIncludes: {
-    "/api/mock/**": ["./swagger.json", "./user-management-openapi.yaml"],
-    "/api-docs/**": ["./swagger.json", "./user-management-openapi.yaml"],
-  },
+  ...(allowedDevOrigins.length > 0 ? { allowedDevOrigins } : {}),
   async headers() {
     return [
       {
-        // Apply strict security headers to all routes except the proxy endpoint.
-        // The proxy serves third-party HTML that needs unrestricted resource loading,
-        // so it gets its own permissive CSP below.
-        source: "/((?!api/proxy).*)",
+        source: "/(.*)",
         headers: [
           { key: "Content-Security-Policy", value: cspHeader },
           { key: "X-Content-Type-Options", value: "nosniff" },
@@ -55,30 +61,6 @@ const nextConfig: NextConfig = {
           },
           { key: "Cross-Origin-Resource-Policy", value: "same-origin" },
         ],
-      },
-      {
-        // Proxy endpoint: allow the proxied page's own resources to load freely.
-        source: "/api/proxy",
-        headers: [
-          {
-            key: "Content-Security-Policy",
-            value: "default-src * 'unsafe-inline' 'unsafe-eval' data: blob:;",
-          },
-          { key: "X-Content-Type-Options", value: "nosniff" },
-        ],
-      },
-    ];
-  },
-  async rewrites() {
-    if (!isDev) return [];
-
-    const apiBaseUrl = process.env.API_BASE_URL || "";
-
-    return [
-      // Proxy registry API in development (to mock server or real backend)
-      {
-        source: "/registry/:path*",
-        destination: `${apiBaseUrl}/registry/:path*`,
       },
     ];
   },
