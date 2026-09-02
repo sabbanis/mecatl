@@ -12,19 +12,56 @@ function formatPreview(output: string | undefined): string {
 }
 
 /**
- * The collapsed summary line's text: "3 tools", pluralized only past one
- * call. Split so the component can render the count without re-deriving it.
+ * The collapsed summary line's text: "3 tools" plus a "1 failed" fragment
+ * only when any call failed (never "0 failed"). Split so the component can
+ * tint the failed fragment destructive without re-deriving the counts.
  */
 export function activitySummary(toolCalls: Pick<ToolCallInfo, "status">[]): {
   tools: string;
+  failed: string | null;
 } {
   const count = toolCalls.length;
+  const failedCount = toolCalls.filter((t) => t.status === "failed").length;
   return {
     tools: `${count} tool${count === 1 ? "" : "s"}`,
+    failed: failedCount > 0 ? `${failedCount} failed` : null,
   };
 }
 
-export function ToolCallList({ toolCalls }: { toolCalls: ToolCallInfo[] }) {
+/** Per-call status dot color: the schedule-badges quiet-dot idiom. */
+export function statusDotClass(status: ToolCallInfo["status"]): string {
+  switch (status) {
+    case "failed":
+      return "bg-destructive";
+    case "running":
+      return "bg-brand animate-pulse";
+    default:
+      return "bg-muted-foreground/50";
+  }
+}
+
+/** Quiet status dot: color carries the state, label kept for hover/SRs. */
+function StatusDot({ status }: { status: ToolCallInfo["status"] }) {
+  return (
+    <span title={status} className="inline-flex shrink-0 items-center">
+      <span
+        aria-hidden="true"
+        className={cn("size-1.5 rounded-full", statusDotClass(status))}
+      />
+      <span className="sr-only">{status}</span>
+    </span>
+  );
+}
+
+export function ToolCallList({
+  toolCalls,
+  onSelect,
+}: {
+  toolCalls: ToolCallInfo[];
+  /** Opens one call's full input/output in the side panel; omitted = rows
+      are plain text (the thread panel keeps its inline previews only). */
+  onSelect?: (call: ToolCallInfo) => void;
+}) {
   const [expanded, setExpanded] = useState(false);
   const toolNames = toolCalls.map((t) => t.name).join(" · ");
   const summary = activitySummary(toolCalls);
@@ -43,24 +80,49 @@ export function ToolCallList({ toolCalls }: { toolCalls: ToolCallInfo[] }) {
           )}
         />
         <span className="text-xs text-muted-foreground">
-          <span className="font-medium">Activity: {summary.tools}</span>{" "}
+          <span className="font-medium">Activity: {summary.tools}</span>
+          {summary.failed && (
+            <span className="font-medium text-destructive">
+              {" "}
+              · {summary.failed}
+            </span>
+          )}{" "}
           {toolNames}
         </span>
       </button>
       {expanded && (
         <div className="ml-5 mt-1 space-y-1">
-          {toolCalls.map((tc) => (
-            <div
-              key={tc.callId}
-              className="flex items-center gap-2 text-xs text-muted-foreground py-0.5"
-            >
-              <Plug className="size-3 shrink-0" />
-              <span className="font-medium text-foreground/70">{tc.name}</span>
-              {tc.output && (
-                <span className="truncate">{formatPreview(tc.output)}</span>
-              )}
-            </div>
-          ))}
+          {toolCalls.map((tc) => {
+            const row = (
+              <>
+                <StatusDot status={tc.status} />
+                <Plug className="size-3 shrink-0" />
+                <span className="font-medium text-foreground/70">
+                  {tc.name}
+                </span>
+                {tc.output && (
+                  <span className="truncate">{formatPreview(tc.output)}</span>
+                )}
+              </>
+            );
+            return onSelect ? (
+              <button
+                key={tc.callId}
+                type="button"
+                onClick={() => onSelect(tc)}
+                className="-mx-1 flex w-full items-center gap-2 rounded-md px-1 py-0.5 text-left text-xs text-muted-foreground transition-colors hover:bg-muted/50"
+              >
+                {row}
+              </button>
+            ) : (
+              <div
+                key={tc.callId}
+                className="flex items-center gap-2 text-xs text-muted-foreground py-0.5"
+              >
+                {row}
+              </div>
+            );
+          })}
         </div>
       )}
     </div>

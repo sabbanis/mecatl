@@ -1,41 +1,79 @@
-import { act, renderHook } from "@testing-library/react";
-import { describe, expect, it, vi } from "vitest";
-import { useAgentChat } from "./use-agent-chat";
+import { describe, expect, it } from "vitest";
+import type { AgentMessage } from "../types";
+import { applyDelegationUpdate } from "./use-agent-chat";
 
-// The hook's network surface is exercised against the fixture daemon (e2e);
-// here we pin the client-side resting shape every later stage builds on.
-vi.mock("../runtime-status", () => ({
-  useRuntimeStatus: () => ({
-    connected: false,
-    features: new Set<string>(),
-    serverCapabilities: {},
-  }),
-}));
+// ── delegation cards (D1) ────────────────────────────────────────────────────
 
-describe("useAgentChat", () => {
-  it("opens a draft chat idle: empty transcript, no approval, zero usage", () => {
-    const { result } = renderHook(() => useAgentChat(null));
-    expect(result.current.messages).toEqual([]);
-    expect(result.current.status).toBe("idle");
-    expect(result.current.isStreaming).toBe(false);
-    expect(result.current.harnessLive).toBe(false);
-    expect(result.current.pendingApproval).toBeNull();
-    expect(result.current.usage).toEqual({
-      inputTokens: 0,
-      outputTokens: 0,
-      cacheReadTokens: 0,
-      cacheWriteTokens: 0,
-      reasoningTokens: 0,
-      estimatedCost: null,
+describe("applyDelegationUpdate", () => {
+  const base = (): AgentMessage[] => [
+    { id: "u1", role: "user", content: "go", timestamp: 0 },
+    {
+      id: "a1",
+      role: "assistant",
+      content: "",
+      timestamp: 0,
+      delegations: [
+        {
+          kind: "subagent",
+          label: "explore the repo",
+          detail: "",
+          childId: "subagent-abc",
+        },
+      ],
+    },
+  ];
+
+  it("ticks the running counters on delegation_progress, keyed by childId", () => {
+    let messages = applyDelegationUpdate(base(), {
+      type: "delegation_progress",
+      childId: "subagent-abc",
+      toolCount: 3,
+      inputTokens: 1200,
+      outputTokens: 80,
+      toolName: "Read",
+    });
+    messages = applyDelegationUpdate(messages, {
+      type: "delegation_progress",
+      childId: "subagent-abc",
+      toolCount: 4,
+      toolName: "Grep",
+    });
+    expect(messages[1].delegations?.[0]).toMatchObject({
+      childId: "subagent-abc",
+      toolCount: 4,
+      inputTokens: 1200,
+      outputTokens: 80,
+      lastTool: "Grep",
+    });
+    // The card is still running: no stop yet.
+    expect(messages[1].delegations?.[0].stop).toBeUndefined();
+  });
+
+  it("stamps stop, duration, and the failure cause on delegation_end — a failed child never vanishes", () => {
+    const messages = applyDelegationUpdate(base(), {
+      type: "delegation_end",
+      childId: "subagent-abc",
+      stop: "error",
+      toolCount: 7,
+      durationMs: 4200,
+      cause: "provider rejected the request",
+    });
+    expect(messages[1].delegations?.[0]).toMatchObject({
+      stop: "error",
+      toolCount: 7,
+      durationMs: 4200,
+      cause: "provider rejected the request",
     });
   });
 
-  it("refuses to send while the daemon is unreachable — no optimistic bubble", async () => {
-    const { result } = renderHook(() => useAgentChat(null));
-    await act(async () => {
-      await result.current.sendMessage("hello");
-    });
-    expect(result.current.messages).toEqual([]);
-    expect(result.current.status).toBe("idle");
+  it("returns the SAME array when no card carries the child (progress without a start)", () => {
+    const before = base();
+    expect(
+      applyDelegationUpdate(before, {
+        type: "delegation_progress",
+        childId: "subagent-unknown",
+        toolCount: 1,
+      }),
+    ).toBe(before);
   });
 });

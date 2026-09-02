@@ -3,6 +3,7 @@
 import { Loader2, PanelLeft, PanelRight, SquarePen } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import {
   Tooltip,
@@ -16,11 +17,17 @@ import {
   useAgentRoster,
   useAgentSessions,
 } from "@/features/agent";
+import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import { useConfirm } from "@/hooks/use-confirm";
 import { useIsCompact } from "@/hooks/use-mobile";
 import { useNavReopenSidebar } from "@/hooks/use-nav-reopen-sidebar";
 import { usePanelWidth } from "@/hooks/use-panel-width";
 import { usePrompt } from "@/hooks/use-prompt";
+import {
+  compactHarnessSession,
+  fetchHarnessSessionDetail,
+  type HarnessResolvedModel,
+} from "@/lib/harness/client";
 import {
   type SessionListSide,
   useAgentDisplayName,
@@ -277,6 +284,12 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   // Selection is URL-driven; the state mirror keeps it in sync while also
   // allowing an optimistic update before the client navigation settles.
   const [selectedId, setSelectedIdState] = useState(sessionId ?? "");
+  // Mirror for effects that must read the current selection without
+  // re-firing on every selection change.
+  const selectedIdRef = useRef(selectedId);
+  useEffect(() => {
+    selectedIdRef.current = selectedId;
+  }, [selectedId]);
   // The id minted for a draft on first send. While the URL settles on that id
   // the chat hook keeps its draft binding (it already owns the live stream);
   // re-keying it would wipe the in-flight messages with a transcript refetch.
@@ -365,6 +378,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     harnessLive,
     sendMessage,
     retryLast,
+    refreshTranscript,
     pendingApproval,
     respondToApproval,
     pendingClarification,
@@ -373,6 +387,47 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   } = useAgentChat(hookSessionId, {
     onSessionCreated: handleSessionCreated,
   });
+
+  // The daemon's operator-enabled capabilities (A3 caches /v1/compatibility).
+  const { connected, serverCapabilities } = useRuntimeStatus();
+
+  // The session's effective model + context window (B1.1): GET-session's
+  // resolved_model echo. Per selected chat; a fetch failure just hides the
+  // meter (it is an approximation, never load-bearing).
+  const [resolvedModel, setResolvedModel] =
+    useState<HarnessResolvedModel | null>(null);
+  useEffect(() => {
+    setResolvedModel(null);
+    if (!selectedId || !connected) return;
+    const controller = new AbortController();
+    void fetchHarnessSessionDetail(selectedId, controller.signal)
+      .then((detail) => {
+        if (!controller.signal.aborted) setResolvedModel(detail.resolvedModel);
+      })
+      .catch(() => undefined);
+    return () => controller.abort();
+  }, [selectedId, connected]);
+
+  // Manual compaction (B1.2-B1.4): gated on the daemon's manual_compaction
+  // capability (the compatibility document is the live source; the GET-session
+  // echo is its per-session sibling once daemons stamp it).
+  const compactSupported = serverCapabilities.manual_compaction === true;
+  const handleCompact = useCallback(async () => {
+    const id = selectedIdRef.current;
+    if (!id) return;
+    try {
+      const compacted = await compactHarnessSession(id);
+      toast.success(
+        compacted ? "Conversation compacted" : "Nothing to compact",
+      );
+      if (compacted) {
+        // The model history was rewritten; the transcript must refetch.
+        await refreshTranscript();
+      }
+    } catch (caught) {
+      toast.error(caught instanceof Error ? caught.message : String(caught));
+    }
+  }, [refreshTranscript]);
 
   useNavReopenSidebar(setSidebarOpen);
 
@@ -531,6 +586,15 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         error={turnError}
         onRetry={retryLast}
         onSend={sendMessage}
+        onCompact={compactSupported ? handleCompact : undefined}
+        contextInfo={
+          resolvedModel && resolvedModel.contextWindow > 0
+            ? {
+                modelLabel: resolvedModel.modelId,
+                contextWindow: resolvedModel.contextWindow,
+              }
+            : null
+        }
         botName={agentName}
         sidebarOpen={open}
         sidebarSide={sidebarSide}

@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useState, useSyncExternalStore } from "react";
 
 /**
  * Cosmetic, browser-local identity preferences: the agent's display name and
@@ -148,6 +148,42 @@ export function useSessionListSide() {
   }, []);
 
   return { side, setSide };
+}
+
+const SHOW_TOOL_CALLS_KEY = "mecatl-studio.show-tool-calls";
+
+const showToolCallsListeners = new Set<() => void>();
+
+function subscribeShowToolCalls(callback: () => void): () => void {
+  showToolCallsListeners.add(callback);
+  return () => showToolCallsListeners.delete(callback);
+}
+
+function readShowToolCalls(): boolean {
+  return readLocalStorage(SHOW_TOOL_CALLS_KEY) === "1";
+}
+
+/**
+ * Whether chat transcripts render each turn's tool activity ("Show Tools").
+ * A GLOBAL browser-local preference, not per session: the chat menu and the
+ * thread panel's menu read and write the same stored value, and both mount
+ * at once, so instances sync through a shared store (the use-panel-width
+ * pattern) instead of hydrating independently. Default OFF; the key stores
+ * "1" only while enabled. SSR renders "off" and patches up after hydration.
+ */
+export function useShowToolCalls() {
+  const showToolCalls = useSyncExternalStore(
+    subscribeShowToolCalls,
+    readShowToolCalls,
+    () => false,
+  );
+
+  const setShowToolCalls = useCallback((next: boolean) => {
+    writeLocalStorage(SHOW_TOOL_CALLS_KEY, next ? "1" : null);
+    for (const fn of showToolCallsListeners) fn();
+  }, []);
+
+  return { showToolCalls, setShowToolCalls };
 }
 
 /**

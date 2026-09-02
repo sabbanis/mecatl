@@ -10,8 +10,10 @@ import {
   cancelHarnessRun,
   createHarnessSession,
   fetchSessionTranscriptMessages,
+  HarnessApiError,
   type PromptPart,
   respondToHarnessApproval,
+  retryHarnessRun,
   streamHarnessPrompt,
 } from "@/lib/harness/client";
 import {
@@ -26,6 +28,8 @@ import type {
   ApprovalRequest,
   Attachment,
   ClarificationRequest,
+  DelegationInfo,
+  RetryDisposition,
   StreamEvent,
   ToolCallInfo,
 } from "../types";
@@ -176,6 +180,58 @@ function messagesFromTranscript(transcript: SessionTranscript): AgentMessage[] {
 }
 
 /**
+ * Applies one live child-activity event (`delegation_progress` /
+ * `delegation_end`, D1) onto the delegation card it belongs to, searching the
+ * transcript backwards for the entry keyed by `childId`. Pure — a new array
+ * on a hit, the SAME array when the child has no card (a progress frame whose
+ * start this visit never saw updates nothing).
+ */
+export function applyDelegationUpdate(
+  messages: AgentMessage[],
+  event: Extract<
+    StreamEvent,
+    { type: "delegation_progress" | "delegation_end" }
+  >,
+): AgentMessage[] {
+  const apply = (delegation: DelegationInfo): DelegationInfo =>
+    event.type === "delegation_progress"
+      ? {
+          ...delegation,
+          toolCount: event.toolCount ?? delegation.toolCount,
+          inputTokens: event.inputTokens ?? delegation.inputTokens,
+          outputTokens: event.outputTokens ?? delegation.outputTokens,
+          lastTool: event.toolName ?? delegation.lastTool,
+        }
+      : {
+          ...delegation,
+          toolCount: event.toolCount ?? delegation.toolCount,
+          inputTokens: event.inputTokens ?? delegation.inputTokens,
+          outputTokens: event.outputTokens ?? delegation.outputTokens,
+          stop: event.stop || "end_turn",
+          durationMs: event.durationMs,
+          cause: event.cause,
+        };
+  for (let index = messages.length - 1; index >= 0; index -= 1) {
+    const message = messages[index];
+    if (
+      !message.delegations?.some(
+        (delegation) => delegation.childId === event.childId,
+      )
+    ) {
+      continue;
+    }
+    const updated: AgentMessage = {
+      ...message,
+      delegations: message.delegations.map((delegation) =>
+        delegation.childId === event.childId ? apply(delegation) : delegation,
+      ),
+    };
+    return [...messages.slice(0, index), updated, ...messages.slice(index + 1)];
+  }
+  return messages;
+}
+
+/**
  * Chat state for one daemon session. Daemon-only: the sidebar id IS the
  * daemon session id — there is no client-side session mapping and no demo
  * fallback. Opening a chat rehydrates its history from the authoritative
@@ -217,6 +273,10 @@ export function useAgentChat(
   const daemonIdRef = useRef<string | null>(sessionId);
   const abortRef = useRef<AbortController | null>(null);
   const lastPromptRef = useRef<string | null>(null);
+  // The last failed terminal's typed disposition (ADR 0239), captured from
+  // run_result frames: "retryable" routes retryLast through the retry
+  // endpoint instead of re-sending the prompt. Cleared when a run starts.
+  const lastDispositionRef = useRef<RetryDisposition | undefined>(undefined);
   // Attachments sent this visit, keyed by session: the daemon's transcript
   // carries no attachment bytes, so every rehydrate would strip the chips —
   // this ref re-attaches them by matching user turns in send order.
@@ -268,6 +328,7 @@ export function useAgentChat(
   // Opening a chat (or switching chats) rehydrates from the daemon.
   useEffect(() => {
     daemonIdRef.current = sessionId;
+    lastDispositionRef.current = undefined;
     setMessages([]);
     setPendingApproval(null);
     setError(null);
@@ -292,7 +353,11 @@ export function useAgentChat(
     return () => controller.abort();
   }, [sessionId, connected, rehydrate]);
 
-  /** Builds the per-run stream-event handler the prompt stream drives. */
+  /**
+   * Builds the per-run stream-event handler shared by the prompt stream and
+   * the failed-step retry relay (ADR 0239) — both drive the SAME translated
+   * event switch.
+   */
   const makeStreamHandler = useCallback(
     (daemonId: string, ids: { assistant: string }) => {
       // Every update is a functional setState: tokens and tool results arrive
@@ -389,6 +454,12 @@ export function useAgentChat(
               ],
             }));
             break;
+          case "delegation_progress":
+          case "delegation_end":
+            // Live child cards (D1): counters tick while the child works;
+            // the terminal stamps stop/duration/cause onto the card.
+            setMessages((prev) => applyDelegationUpdate(prev, event));
+            break;
           case "usage":
             // The daemon reports per-run figures; the chat total is
             // their sum. (Lost on reload: the HTTP read surface does
@@ -407,6 +478,8 @@ export function useAgentChat(
             break;
           case "run_result":
             if (event.stop === "error") {
+              // The typed disposition routes the Retry button (ADR 0239).
+              lastDispositionRef.current = event.retryDisposition;
               const detail =
                 event.errorText || "The run failed without a specific error.";
               patch((message) => ({
@@ -549,6 +622,7 @@ export function useAgentChat(
           }
           onSessionCreatedRef.current?.(daemonId);
         }
+        lastDispositionRef.current = undefined;
         await streamHarnessPrompt(
           daemonId,
           content,
@@ -590,9 +664,9 @@ export function useAgentChat(
     [status, connected, makeStreamHandler],
   );
 
-  /** Re-sends the last prompt after a failure — the error banner's Retry. */
-  const retryLast = useCallback(async () => {
-    if (status === "streaming") return;
+  /** Re-sends the last prompt after a failure — the legacy Retry path, kept
+   *  for permanent/unknown dispositions and older daemons. */
+  const resendLast = useCallback(async () => {
     const prompt = lastPromptRef.current;
     if (!prompt) return;
     // Drop the failed exchange so the retry replaces it instead of stacking.
@@ -614,7 +688,90 @@ export function useAgentChat(
     setError(null);
     setStatus("idle");
     await sendMessage(prompt);
-  }, [status, sendMessage]);
+  }, [sendMessage]);
+
+  /**
+   * The error banner's Retry. When the failed terminal was typed RETRYABLE
+   * (ADR 0239), this drives `POST .../retry`: the daemon re-drives the
+   * recorded failed step itself and relays the run as SSE — no user message
+   * is re-sent, which is exactly the duplicate-effects path the endpoint
+   * exists to prevent. A 409 `failed_step_retry_ineligible` (the intent
+   * raced away) falls back to the resend path; a PERMANENT or untyped
+   * failure keeps the resend path (and the composer's edit-and-resend).
+   */
+  const retryLast = useCallback(async () => {
+    if (status === "streaming") return;
+    const daemonId = daemonIdRef.current;
+    if (lastDispositionRef.current !== "retryable" || !daemonId || !connected) {
+      await resendLast();
+      return;
+    }
+    // Drop the failed assistant bubble — the retried step streams into a
+    // fresh one; the user message stays (nothing is re-sent).
+    setMessages((prev) => {
+      const trimmed = [...prev];
+      while (trimmed.length) {
+        const last = trimmed[trimmed.length - 1];
+        if (last.role === "assistant" && (last.failed || !last.content)) {
+          trimmed.pop();
+          continue;
+        }
+        break;
+      }
+      return trimmed;
+    });
+    setError(null);
+    setStatus("streaming");
+
+    const ids = { assistant: `assistant-${Date.now()}` };
+    setMessages((prev) => [
+      ...prev,
+      {
+        id: ids.assistant,
+        role: "assistant",
+        content: "",
+        timestamp: Date.now(),
+      },
+    ]);
+    const controller = new AbortController();
+    abortRef.current = controller;
+    lastDispositionRef.current = undefined;
+    let ineligible = false;
+    try {
+      await retryHarnessRun(
+        daemonId,
+        makeStreamHandler(daemonId, ids),
+        controller.signal,
+      );
+      setStatus((current) =>
+        current === "waiting_approval" || current === "error"
+          ? current
+          : "idle",
+      );
+    } catch (caught) {
+      if (controller.signal.aborted) {
+        setStatus("idle");
+        return;
+      }
+      if (
+        caught instanceof HarnessApiError &&
+        (caught.code === "failed_step_retry_ineligible" ||
+          caught.status === 409)
+      ) {
+        // The retry intent is gone daemon-side (another client acted, or
+        // the state moved on): quietly fall back to re-sending the prompt.
+        ineligible = true;
+      } else {
+        const message =
+          caught instanceof Error ? caught.message : String(caught);
+        setError(message);
+        setStatus("error");
+      }
+    } finally {
+      abortRef.current = null;
+    }
+    if (ineligible) await resendLast();
+  }, [status, connected, resendLast, makeStreamHandler]);
 
   const cancelChat = useCallback(async () => {
     abortRef.current?.abort();
@@ -662,6 +819,14 @@ export function useAgentChat(
     setStatus("idle");
   }, []);
 
+  /** Re-fetches the authoritative transcript (e.g. after a manual compaction
+   *  rewrote the model history, B1.3). No-op on a draft with no session. */
+  const refreshTranscript = useCallback(async () => {
+    const daemonId = daemonIdRef.current;
+    if (!daemonId) return;
+    await rehydrate(daemonId);
+  }, [rehydrate]);
+
   return {
     messages,
     // A parked approval is still an in-flight run daemon-side; the composer
@@ -672,6 +837,7 @@ export function useAgentChat(
     harnessLive: connected,
     sendMessage,
     retryLast,
+    refreshTranscript,
     cancelChat,
     pendingApproval,
     pendingClarification,

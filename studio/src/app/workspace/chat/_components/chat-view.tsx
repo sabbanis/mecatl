@@ -6,6 +6,7 @@ import {
   CirclePlus,
   Ellipsis,
   FileText,
+  FoldVertical,
   Loader2,
   MessageCircle,
   PanelLeftClose,
@@ -17,7 +18,7 @@ import {
   Trash2,
   Wrench,
 } from "lucide-react";
-import { useCallback, useEffect, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
@@ -37,20 +38,28 @@ import type {
   ApprovalRequest,
   Attachment,
   ClarificationRequest,
+  ToolCallInfo,
 } from "@/features/agent";
 import { formatTokens } from "@/lib/formatters";
-import type { SessionListSide } from "@/lib/profile-preferences";
+import {
+  type SessionListSide,
+  useShowToolCalls,
+} from "@/lib/profile-preferences";
 import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
 import { ClarificationPanel } from "./clarification-panel";
+import { ContextMeter } from "./context-meter";
 import { FilePreview } from "./file-preview";
 import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
 import { SidePanel } from "./side-panel";
+import { ToolCallPanel } from "./tool-call-panel";
 
 /** The single right-hand panel: exactly one kind is open at a time, or none. */
-type ActivePanel = { kind: "attachment"; attachment: Attachment };
+type ActivePanel =
+  | { kind: "attachment"; attachment: Attachment }
+  | { kind: "toolcall"; call: ToolCallInfo };
 
 /**
  * Bottom-of-transcript activity line while a turn is running: three
@@ -287,6 +296,8 @@ export function ChatView({
   onSidePanelOpenChange,
   initialDraft,
   onInitialDraftConsumed,
+  onCompact,
+  contextInfo,
 }: {
   session: AgentSession;
   messages: AgentMessage[];
@@ -315,6 +326,12 @@ export function ChatView({
       chip that seeds the message without sending it). */
   initialDraft?: string | null;
   onInitialDraftConsumed?: () => void;
+  /** Manually compacts the conversation (B1.2); present only when the
+      daemon's manual_compaction capability is on. Disabled while streaming. */
+  onCompact?: () => void;
+  /** The session's effective model + context window (B1.1): feeds the slim
+      approximate context meter near the composer. */
+  contextInfo?: { modelLabel: string; contextWindow: number } | null;
 }) {
   const messagesEndRef = useRef<HTMLDivElement>(null);
   // Whether the transcript is scrolled to (near) the bottom; when it isn't,
@@ -324,7 +341,8 @@ export function ChatView({
   const [atBottom, setAtBottom] = useState(true);
   const atBottomRef = useRef(true);
   const messagesContainerRef = useRef<HTMLDivElement>(null);
-  const [showActivity, setShowActivity] = useState(false);
+  // The global Show Tools preference (persisted; shared with thread panels).
+  const { showToolCalls: showActivity, setShowToolCalls } = useShowToolCalls();
   // The single right-hand panel — a discriminated union makes "one panel at a
   // time" structural rather than something to coordinate by hand.
   const [panel, setPanel] = useState<ActivePanel | null>(null);
@@ -363,6 +381,25 @@ export function ChatView({
     [releasePreviewUrl],
   );
 
+  // Drill-down from a row in the inline activity list to the call's full
+  // untruncated input/output in the side panel.
+  const handleOpenToolCall = useCallback(
+    (call: ToolCallInfo) => setPanel({ kind: "toolcall", call }),
+    [],
+  );
+
+  // The tool-call panel tracks the LIVE call: the stream replaces call
+  // objects as results land, so re-resolve by callId each render — the
+  // clicked snapshot would otherwise read "running" forever.
+  const activePanel = useMemo<ActivePanel | null>(() => {
+    if (panel?.kind !== "toolcall") return panel;
+    for (const msg of messages) {
+      const live = msg.toolCalls?.find((c) => c.callId === panel.call.callId);
+      if (live) return { kind: "toolcall", call: live };
+    }
+    return panel;
+  }, [panel, messages]);
+
   // Jump to the latest message whenever the active chat changes so users
   // always land at the bottom (most-recent) of the conversation.
   // biome-ignore lint/correctness/useExhaustiveDependencies: scrolling is intentionally driven by session.id changes
@@ -394,7 +431,7 @@ export function ChatView({
   // With the list docked right, an open side panel occupies its slot — the
   // toggle then means "give me the list back": close the panel, and the
   // workspace restores the sidebar to its pre-panel state.
-  const panelHoldsSidebarSlot = sidebarSide === "right" && panel !== null;
+  const panelHoldsSidebarSlot = sidebarSide === "right" && activePanel !== null;
   const sidebarToggle = (
     <Tooltip>
       <TooltipTrigger asChild>
@@ -478,10 +515,16 @@ export function ChatView({
               {/* Token usage as the daemon reported it (was a header pill;
                   it lives in the menu now). Hidden until any lands. */}
               <UsageMenuRow usage={usage} />
-              <DropdownMenuItem onClick={() => setShowActivity((v) => !v)}>
+              <DropdownMenuItem onClick={() => setShowToolCalls(!showActivity)}>
                 <Wrench className="size-4 mr-2 text-muted-foreground" />
                 {showActivity ? "Hide Tools" : "Show Tools"}
               </DropdownMenuItem>
+              {onCompact && (
+                <DropdownMenuItem disabled={isStreaming} onClick={onCompact}>
+                  <FoldVertical className="size-4 mr-2 text-muted-foreground" />
+                  Compact conversation
+                </DropdownMenuItem>
+              )}
               {onRename && (
                 <DropdownMenuItem onClick={onRename}>
                   <Pencil className="size-4 mr-2 text-muted-foreground" />
@@ -522,6 +565,7 @@ export function ChatView({
                   onOpenAttachment={(attachment) =>
                     setPanel({ kind: "attachment", attachment })
                   }
+                  onOpenToolCall={handleOpenToolCall}
                   botName={botName}
                   showActivity={showActivity}
                 />
@@ -562,6 +606,16 @@ export function ChatView({
               </div>
             )}
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
+              {/* B1.1: effective model + approximate context utilisation,
+                  visible only when the window is known and tokens counted. */}
+              {contextInfo && contextInfo.contextWindow > 0 && (
+                <ContextMeter
+                  modelLabel={contextInfo.modelLabel}
+                  contextWindow={contextInfo.contextWindow}
+                  inputTokens={usage?.inputTokens ?? 0}
+                  outputTokens={usage?.outputTokens ?? 0}
+                />
+              )}
               {error && (
                 <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-background bg-gradient-to-b from-destructive/5 to-destructive/5 px-3 py-2">
                   <AlertCircle className="size-4 shrink-0 text-destructive" />
@@ -604,9 +658,9 @@ export function ChatView({
           </div>
         </div>
       </div>
-      {panel !== null && (
+      {activePanel !== null && (
         <SidePanelForKind
-          panel={panel}
+          panel={activePanel}
           onClose={closeSidePanel}
           maximized={panelMaximized}
           onToggleMaximize={toggleMaximize}
@@ -632,5 +686,7 @@ function SidePanelForKind({
   switch (panel.kind) {
     case "attachment":
       return <AttachmentPanel attachment={panel.attachment} {...shared} />;
+    case "toolcall":
+      return <ToolCallPanel call={panel.call} {...shared} />;
   }
 }
