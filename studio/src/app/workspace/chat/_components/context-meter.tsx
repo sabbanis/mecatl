@@ -68,11 +68,9 @@ export function ContextMeter({
           </span>
         </div>
       </TooltipTrigger>
-      <TooltipContent side="top" align="end" className="max-w-72">
-        The context window is how much conversation the model can consider at
-        once — your messages, its replies, and tool activity all count toward
-        it. This is a rough share of the window used so far this visit; as it
-        fills, the agent compacts older history to make room.
+      <TooltipContent side="top" align="end" className="max-w-64">
+        Roughly how much of the model&apos;s working memory this chat has used.
+        When it fills up, older messages are summarized to make room.
       </TooltipContent>
     </Tooltip>
   );
