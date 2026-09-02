@@ -713,7 +713,7 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		}
 		// A transport error has no semantic commit fact. Always pause and preserve
 		// staged follow-ups, regardless of legacy transient-looking status text.
-		m.conv.addError("stream error: " + msg.Err.Error())
+		m.conv.addError("stream error: " + friendlyWorkspaceEnrollmentRejection(msg.Err.Error()))
 		m = m.endRun(stopError)
 		liveCmd := m.armLiveFeed()
 		mm, drainCmd := m.drainQueue(stopError)

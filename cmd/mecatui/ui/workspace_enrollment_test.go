@@ -2,6 +2,7 @@ package ui
 
 import (
 	"context"
+	"errors"
 	"strings"
 	"testing"
 
@@ -156,6 +157,25 @@ func TestFriendlyWorkspaceEnrollmentRejection(t *testing.T) {
 	other := "some unrelated failure"
 	if got := friendlyWorkspaceEnrollmentRejection(other); got != other {
 		t.Fatalf("friendlyWorkspaceEnrollmentRejection(%q) = %q, want it unchanged", other, got)
+	}
+}
+
+// TestStreamErrMsgAppliesWorkspaceEnrollmentRejection pins the third real call site
+// (client.StreamErrMsg's generic transport-error fallback in updateStreamEvent) that
+// a live qualification run found unwired: the rewrite was applied at the stream-open
+// failure and terminal-ResultMsg sites, but a FailedPrecondition surfacing as a
+// mid-stream StreamErrMsg (e.g. a fresh session's very first prompt, rejected before
+// any run starts) still showed the raw server message with no /tools-connect pointer.
+func TestStreamErrMsgAppliesWorkspaceEnrollmentRejection(t *testing.T) {
+	m, _ := newQueueModel(t)
+	mm, _ := m.Update(client.StreamErrMsg{Err: errors.New("rpc error: code = FailedPrecondition desc = server: failed precondition: workspace services must be connected before prompting")})
+	m = mm.(Model)
+	if len(m.conv.blocks) == 0 {
+		t.Fatal("expected an error block after StreamErrMsg")
+	}
+	got := m.conv.blocks[len(m.conv.blocks)-1].raw
+	if !strings.Contains(got, "/tools-connect") {
+		t.Fatalf("stream error block = %q, want a /tools-connect pointer", got)
 	}
 }
 
