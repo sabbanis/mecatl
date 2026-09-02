@@ -803,6 +803,19 @@ export function useAgentChat(
     [status, connected, queueMessage, makeStreamHandler],
   );
 
+  /**
+   * Binds this hook to an ALREADY-CREATED daemon session without re-keying it.
+   * The thread panel mints its own seeded session (source_session_id must be
+   * carried, and the 412-busy case has to keep the composer text), then
+   * adopts the id here so the first send streams against it. Re-keying the
+   * hook instead would refetch the transcript mid-stream and wipe the
+   * optimistic messages — the same reason a draft keeps its null hook id
+   * after minting.
+   */
+  const adoptSession = useCallback((id: string) => {
+    daemonIdRef.current = id;
+  }, []);
+
   /** Re-sends the last prompt after a failure — the legacy Retry path, kept
    *  for permanent/unknown dispositions and older daemons. */
   const resendLast = useCallback(async () => {
@@ -1173,6 +1186,7 @@ export function useAgentChat(
     error,
     harnessLive: connected,
     sendMessage,
+    adoptSession,
     retryLast,
     refreshTranscript,
     cancelChat,

@@ -10,6 +10,7 @@ import {
   FileText,
   GitBranch,
   Image as ImageIcon,
+  MessageSquareText,
   User,
 } from "lucide-react";
 import ReactMarkdown from "react-markdown";
@@ -35,6 +36,7 @@ import {
   useUserAvatar,
   useUserDisplayName,
 } from "@/lib/profile-preferences";
+import type { ThreadSummary } from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
 import { mdComponents } from "./markdown-components";
 import { ToolCallList } from "./tool-call-list";
@@ -96,6 +98,13 @@ function BotAvatar({ small = false }: { small?: boolean }) {
 }
 
 /**
+ * Slack-style reply indicator shown under a message that has a thread: the
+ * repliers' overlapping avatars, the reply count, and when the last reply
+ * landed. Clicking it opens the thread side panel. Fed by inline `replies`
+ * when a message genuinely carries them, or by the browser-local thread-map
+ * `summary` for a daemon-backed side thread.
+ */
+/**
  * Splits the leading "> " blockquote lines off a user message. Add-to-chat
  * and thread-root quoting compose messages as a quote block, a blank line,
  * then the user's own words — user text otherwise stays plain (never
@@ -109,15 +118,71 @@ export function splitLeadingQuote(content: string): {
   let i = 0;
   while (i < lines.length && /^>\s?/.test(lines[i])) i++;
   if (i === 0) return { quote: null, rest: content };
+  // Strip EVERY leading marker: a thread root that was itself an
+  // add-to-chat quote arrives double-quoted ("> > ..."), and the reader
+  // wants the words, not the markup.
   const quote = lines
     .slice(0, i)
-    .map((line) => line.replace(/^>\s?/, ""))
+    .map((line) => line.replace(/^(>\s?)+/, ""))
     .join("\n");
   const rest = lines.slice(i).join("\n").replace(/^\n+/, "");
   return { quote, rest };
 }
 
-function MessageActions({ message }: { message: AgentMessage }) {
+function ReplyIndicator({
+  replies,
+  summary,
+  onClick,
+}: {
+  replies?: AgentMessage[];
+  summary?: ThreadSummary;
+  onClick: () => void;
+}) {
+  const inline = replies && replies.length > 0 ? replies : null;
+  const count = inline ? inline.length : (summary?.replyCount ?? 0);
+  if (count === 0) return null;
+  const lastAt = inline
+    ? inline[inline.length - 1].timestamp
+    : (summary?.lastReplyAt ?? 0);
+  // A side thread always opens with the user's reply; the agent has joined
+  // once anything came back (count > 1). Inline replies name their authors.
+  const hasUser = inline ? inline.some((r) => r.role === "user") : true;
+  const hasBot = inline
+    ? inline.some((r) => r.role === "assistant")
+    : count > 1;
+
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className="group/reply mt-1.5 -ml-1 inline-flex items-center gap-2 rounded-md px-1.5 py-1 transition-colors hover:bg-brand/5"
+    >
+      <div className="flex -space-x-1.5">
+        {hasUser && <UserAvatar small />}
+        {hasBot && <BotAvatar small />}
+      </div>
+      <span className="text-xs font-semibold text-brand group-hover/reply:underline">
+        {count} {count === 1 ? "reply" : "replies"}
+      </span>
+      {lastAt > 0 && (
+        <span
+          suppressHydrationWarning
+          className="hidden text-xs tabular-nums text-muted-foreground sm:inline"
+        >
+          Last reply {formatMessageTime(lastAt)}
+        </span>
+      )}
+    </button>
+  );
+}
+
+function MessageActions({
+  message,
+  onStartThread,
+}: {
+  message: AgentMessage;
+  onStartThread?: () => void;
+}) {
   const copyContent = () => {
     navigator.clipboard.writeText(message.content).catch(() => {});
   };
@@ -138,6 +203,23 @@ function MessageActions({ message }: { message: AgentMessage }) {
             Copy to clipboard
           </TooltipContent>
         </Tooltip>
+        {onStartThread && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                onClick={onStartThread}
+                className={btnClass}
+                aria-label="Reply in thread"
+              >
+                <MessageSquareText className="size-3.5" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom" className="text-xs">
+              Reply in thread
+            </TooltipContent>
+          </Tooltip>
+        )}
       </div>
     </TooltipProvider>
   );
@@ -360,6 +442,8 @@ export function MessageBubble({
   onOpenArtifact,
   onOpenAttachment,
   onOpenToolCall,
+  onStartThread,
+  threadSummary,
   botName = "Mecatl",
   showActivity = true,
 }: {
@@ -368,6 +452,9 @@ export function MessageBubble({
   onOpenAttachment?: (attachment: Attachment) => void;
   /** Opens one tool call's full input/output in the side panel. */
   onOpenToolCall?: (call: ToolCallInfo) => void;
+  onStartThread?: (message: AgentMessage) => void;
+  /** Daemon-backed side thread branched off this message (thread map). */
+  threadSummary?: ThreadSummary;
   botName?: string;
   showActivity?: boolean;
 }) {
@@ -546,9 +633,22 @@ export function MessageBubble({
             }
           />
         )}
+        {((message.replies && message.replies.length > 0) || threadSummary) &&
+          onStartThread && (
+            <ReplyIndicator
+              replies={message.replies}
+              summary={threadSummary}
+              onClick={() => onStartThread(message)}
+            />
+          )}
       </div>
       <div className="shrink-0 pt-0.5">
-        <MessageActions message={message} />
+        <MessageActions
+          message={message}
+          onStartThread={
+            onStartThread ? () => onStartThread(message) : undefined
+          }
+        />
       </div>
     </div>
   );

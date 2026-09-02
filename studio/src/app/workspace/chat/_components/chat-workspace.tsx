@@ -34,6 +34,7 @@ import {
   useSessionListSide,
 } from "@/lib/profile-preferences";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
+import { useThreadSessionIds } from "@/lib/thread-map";
 import { pageTitleClass } from "@/lib/typography";
 import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
@@ -448,9 +449,23 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const [draftSeed, setDraftSeed] = useState<string | null>(null);
   const clearDraftSeed = useCallback(() => setDraftSeed(null), []);
 
+  // Sessions minted to back message threads. Filtered HERE, at the
+  // presentation seam, deliberately not inside use-agent-sessions: rule 9's
+  // test pins that hook to the daemon store verbatim (rows obey the store),
+  // and a thread session IS a real store row — it is only this list, the
+  // keyboard order derived from it, and search that hide it. Its sole entry
+  // point is the reply indicator on its parent message; deep-linking to
+  // /workspace/chat/<threadId> still works (selectedSession reads the
+  // unfiltered `sessions`), which stays the escape hatch for parked
+  // approvals. The registry — never the "Thread: " title — decides, so a
+  // user's own chat named "Thread: …" is never hidden.
+  const threadSessionIds = useThreadSessionIds();
   const orderedSessions = useMemo(
-    () => [...sessions].sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
-    [sessions],
+    () =>
+      sessions
+        .filter((s) => !threadSessionIds.has(s.id))
+        .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
+    [sessions, threadSessionIds],
   );
   const groups = useMemo(
     () => groupSessionsByRecency(orderedSessions),
@@ -601,6 +616,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         onSend={sendMessage}
         queuedMessages={queuedMessages}
         onQueueMessage={queueMessage}
+        onOpenSession={handleSelectSession}
         onSteerQueued={steerQueued}
         onDeleteQueued={deleteQueued}
         onTakeQueued={takeQueued}

@@ -10,6 +10,7 @@ import {
   ListEnd,
   Loader2,
   MessageCircle,
+  MessageSquareText,
   PanelLeftClose,
   PanelLeftOpen,
   PanelRightClose,
@@ -32,29 +33,48 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import type {
-  AgentMessage,
-  AgentSession,
-  ApprovalChoice,
-  ApprovalRequest,
-  Attachment,
-  ClarificationRequest,
-  ToolCallInfo,
+import {
+  type AgentMessage,
+  type AgentSession,
+  type ApprovalChoice,
+  type ApprovalRequest,
+  type Artifact,
+  type Attachment,
+  type ClarificationRequest,
+  type ToolCallInfo,
+  useAgentChat,
 } from "@/features/agent";
 import type { QueuedMessage } from "@/features/agent/hooks/use-agent-chat";
 import { formatTokens } from "@/lib/formatters";
+import {
+  createThreadHarnessSession,
+  ThreadSourceBusyError,
+} from "@/lib/harness/client";
 import {
   type SessionListSide,
   useEnterSendBehavior,
   useShowToolCalls,
 } from "@/lib/profile-preferences";
 import { useShortcut } from "@/lib/shortcuts/use-shortcuts";
+import {
+  composeThreadPrompt,
+  getThreadSession,
+  registerThreadSession,
+  sliceThreadReplies,
+  stripRootQuote,
+  syncThreadActivity,
+  threadKeyForMessage,
+  threadTitleFromRoot,
+  unregisterThreadSession,
+  useThreadMap,
+} from "@/lib/thread-map";
 import { cn } from "@/lib/utils";
 import { ChatInput } from "../../_components/chat-input";
 import { ApprovalPanel } from "./approval-panel";
 import { ClarificationPanel } from "./clarification-panel";
 import { ContextMeter } from "./context-meter";
 import { FilePreview } from "./file-preview";
+import { MarkdownCanvasPanel } from "./markdown-canvas-panel";
 import { MessageBubble } from "./message-bubble";
 import { MockProviderNotice } from "./mock-provider-notice";
 import { SidePanel } from "./side-panel";
@@ -62,7 +82,9 @@ import { ToolCallPanel } from "./tool-call-panel";
 
 /** The single right-hand panel: exactly one kind is open at a time, or none. */
 type ActivePanel =
+  | { kind: "artifact"; artifact: Artifact }
   | { kind: "attachment"; attachment: Attachment }
+  | { kind: "thread"; message: AgentMessage }
   | { kind: "toolcall"; call: ToolCallInfo };
 
 /**
@@ -241,6 +263,288 @@ function AttachmentPanel({
   );
 }
 
+/**
+ * A side-panel thread branched off a single message, backed by a REAL daemon
+ * session seeded with the parent conversation (source_session_id carryover).
+ * The root message is shown read-only at the top; replies genuinely converse
+ * with the agent, streaming through the same chat hook as the main view. The
+ * thread session is minted lazily on the first send, renamed "Thread: …",
+ * and remembered in the browser-local thread map so reopening the thread
+ * rehydrates its transcript. It also shows up in the sidebar under that
+ * name, which is the escape hatch for anything the panel keeps minimal.
+ */
+function ThreadPanel({
+  parentSessionId,
+  rootMessage,
+  botName,
+  onClose,
+  onConvertToChat,
+  maximized,
+  onToggleMaximize,
+}: {
+  parentSessionId: string;
+  rootMessage: AgentMessage;
+  botName: string;
+  onClose: () => void;
+  /** Detach the thread and open its session as an ordinary chat. */
+  onConvertToChat?: (threadSessionId: string) => void;
+  maximized: boolean;
+  onToggleMaximize: () => void;
+}) {
+  // The global Show Tools preference — shared with the chat's ··· menu.
+  const { showToolCalls: showTools, setShowToolCalls } = useShowToolCalls();
+  const rootKey = threadKeyForMessage(rootMessage);
+  // The persisted thread session, when this root message already has one —
+  // the hook rehydrates its transcript. A session minted DURING this panel's
+  // lifetime deliberately does NOT re-key the hook: it is adopted via
+  // adoptSession instead (the draft-minting pattern), because re-keying
+  // would refetch the transcript mid-stream and wipe the optimistic messages.
+  const [initialThreadId] = useState<string | null>(() =>
+    getThreadSession(parentSessionId, rootKey),
+  );
+  const threadIdRef = useRef<string | null>(initialThreadId);
+  // The parent was mid-run (daemon 412): the seeded fork has to wait.
+  const [sourceBusy, setSourceBusy] = useState(false);
+  const [createError, setCreateError] = useState<string | null>(null);
+  // Re-seeds the composer after a refused first send (keep the text) or a
+  // queued-message edit.
+  const [seedText, setSeedText] = useState<string | null>(null);
+  const threadScrollRef = useRef<HTMLDivElement>(null);
+  const endRef = useRef<HTMLDivElement>(null);
+
+  const {
+    messages,
+    isStreaming,
+    status,
+    error,
+    sendMessage,
+    adoptSession,
+    queuedMessages,
+    queueMessage,
+    deleteQueued,
+    takeQueued,
+    steerQueued,
+    pendingApproval,
+    respondToApproval,
+  } = useAgentChat(initialThreadId);
+
+  // The thread session's history starts with the seeded parent conversation;
+  // only the thread's own exchange (from the quoted first message) renders.
+  const replies = useMemo(
+    () =>
+      stripRootQuote(
+        sliceThreadReplies(messages, rootMessage.content),
+        rootMessage.content,
+      ),
+    [messages, rootMessage.content],
+  );
+
+  // biome-ignore lint/correctness/useExhaustiveDependencies: the scroll follows every new reply by design
+  useEffect(() => {
+    endRef.current?.scrollIntoView({ behavior: "smooth" });
+  }, [replies.length]);
+
+  // Mirror the thread's activity into the persisted map so the parent
+  // transcript's reply indicator stays live (count + last-reply time).
+  useEffect(() => {
+    if (!threadIdRef.current || replies.length === 0) return;
+    const countable = replies.filter(
+      (reply) =>
+        reply.role === "user" ||
+        Boolean(reply.content.trim()) ||
+        Boolean(reply.failed),
+    );
+    if (countable.length === 0) return;
+    let lastAt = 0;
+    for (const reply of countable) {
+      if (reply.timestamp > lastAt) lastAt = reply.timestamp;
+    }
+    syncThreadActivity(parentSessionId, rootKey, countable.length, lastAt);
+  }, [replies, parentSessionId, rootKey]);
+
+  const handleSend = useCallback(
+    async (content: string, files?: File[]) => {
+      setSourceBusy(false);
+      setCreateError(null);
+      if (threadIdRef.current) {
+        void sendMessage(content, files);
+        return;
+      }
+      // First send: mint the seeded thread session up front — the hook's own
+      // lazy mint would create an UNSEEDED session with no parent context.
+      try {
+        const threadId = await createThreadHarnessSession(
+          parentSessionId,
+          threadTitleFromRoot(rootMessage.content),
+        );
+        threadIdRef.current = threadId;
+        adoptSession(threadId);
+        registerThreadSession(parentSessionId, rootKey, threadId);
+      } catch (caught) {
+        // A refused first send keeps the text: re-seed the composer with it.
+        setSeedText(content);
+        if (caught instanceof ThreadSourceBusyError) {
+          setSourceBusy(true);
+        } else {
+          setCreateError(
+            caught instanceof Error ? caught.message : String(caught),
+          );
+        }
+        return;
+      }
+      void sendMessage(
+        composeThreadPrompt(rootMessage.content, content),
+        files,
+      );
+    },
+    [parentSessionId, rootKey, rootMessage.content, sendMessage, adoptSession],
+  );
+
+  // Editing a queued reply pulls it out of the queue into the composer.
+  const handleEditQueued = (id: string) => {
+    const text = takeQueued(id);
+    if (text) setSeedText(text);
+  };
+
+  return (
+    <SidePanel
+      icon={MessageSquareText}
+      title="Thread"
+      closeLabel="Close thread"
+      maximized={maximized}
+      onToggleMaximize={onToggleMaximize}
+      onClose={onClose}
+      minWidth={340}
+      headerExtra={
+        <DropdownMenu modal={false}>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="ghost"
+              size="icon"
+              className="size-7 shrink-0 text-muted-foreground"
+              aria-label="Thread options"
+            >
+              <Ellipsis className="size-4" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem onClick={() => setShowToolCalls(!showTools)}>
+              {showTools ? "Hide Tools" : "Show Tools"}
+            </DropdownMenuItem>
+            <DropdownMenuItem
+              disabled={!onConvertToChat}
+              onClick={() => {
+                const threadId = threadIdRef.current;
+                if (!threadId || !onConvertToChat) return;
+                unregisterThreadSession(parentSessionId, threadId);
+                onConvertToChat(threadId);
+              }}
+            >
+              Open as full chat
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      }
+    >
+      {/* Body: root message, live replies, composer */}
+      <div className="relative flex-1 min-h-0">
+        <div
+          ref={threadScrollRef}
+          className="h-full overflow-y-auto px-3 pt-3 pb-40 max-[499px]:pb-24 lg:px-4"
+        >
+          <div className="rounded-lg border border-dashed border-border/70 px-1 py-1">
+            <MessageBubble message={rootMessage} botName={botName} />
+          </div>
+          {replies.length > 0 && (
+            <div className="my-2 flex items-center gap-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
+              <span className="h-px flex-1 bg-border" />
+              {replies.length} {replies.length === 1 ? "reply" : "replies"}
+              <span className="h-px flex-1 bg-border" />
+            </div>
+          )}
+          {replies.map((reply) => (
+            <MessageBubble
+              key={reply.id}
+              message={reply}
+              botName={botName}
+              showActivity={showTools}
+            />
+          ))}
+          {pendingApproval && (
+            <ApprovalPanel
+              approval={pendingApproval}
+              onRespond={respondToApproval}
+            />
+          )}
+          {isStreaming && (
+            <StreamingIndicator
+              message={
+                replies[replies.length - 1]?.role === "assistant"
+                  ? replies[replies.length - 1]
+                  : undefined
+              }
+            />
+          )}
+          <div ref={endRef} />
+        </div>
+        <TextSelectionToolbar
+          containerRef={threadScrollRef}
+          onAddToChat={(text) =>
+            setSeedText((prev) => {
+              const quoted = `${text
+                .split("\n")
+                .map((line) => `> ${line}`)
+                .join("\n")}\n\n`;
+              return prev ? prev + quoted : quoted;
+            })
+          }
+          addLabel="Add to thread"
+        />
+        <div className="absolute bottom-0 left-0 right-0 px-3 lg:px-4 pb-4 max-[499px]:px-0 max-[499px]:pb-0">
+          <div className="space-y-1.5">
+            <QueuedMessageStrip
+              queued={queuedMessages}
+              onSteer={steerQueued}
+              onEdit={handleEditQueued}
+              onDelete={deleteQueued}
+            />
+            {sourceBusy && (
+              <p className="px-2 text-xs text-muted-foreground">
+                Wait for the current response to finish before starting a
+                thread.
+              </p>
+            )}
+            {createError && (
+              <p className="px-2 text-xs text-destructive break-words">
+                {createError}
+              </p>
+            )}
+            {status === "error" && error && (
+              <div className="flex items-center gap-2 rounded-lg border border-destructive/40 bg-background bg-gradient-to-b from-destructive/5 to-destructive/5 px-3 py-2">
+                <AlertCircle className="size-4 shrink-0 text-destructive" />
+                <p className="min-w-0 flex-1 text-sm text-destructive break-words">
+                  {error}
+                </p>
+              </div>
+            )}
+            <MockProviderNotice />
+            <ChatInput
+              rows={1}
+              onSend={handleSend}
+              onQueue={queueMessage}
+              isStreaming={isStreaming}
+              disabled={!!pendingApproval}
+              initialText={seedText}
+              onInitialTextConsumed={() => setSeedText(null)}
+              placeholder={isStreaming ? "Queue a reply…" : "Reply in thread…"}
+            />
+          </div>
+        </div>
+      </div>
+    </SidePanel>
+  );
+}
+
 function TextSelectionToolbar({
   containerRef,
   onAddToChat,
@@ -372,6 +676,7 @@ export function ChatView({
   onInitialDraftConsumed,
   queuedMessages = [],
   onQueueMessage,
+  onOpenSession,
   onSteerQueued,
   onDeleteQueued,
   onTakeQueued,
@@ -410,6 +715,8 @@ export function ChatView({
   /** Messages held while a run is active (see QueuedMessageStrip). */
   queuedMessages?: QueuedMessage[];
   onQueueMessage?: (text: string) => void;
+  /** Open a session as the main chat (thread → full chat conversion). */
+  onOpenSession?: (sessionId: string) => void;
   onSteerQueued?: (id: string) => void;
   onDeleteQueued?: (id: string) => void;
   /** Removes a queued message and returns its text (the Edit action). */
@@ -455,6 +762,9 @@ export function ChatView({
   // hidden. Always reset when the panel is closed.
   const [panelMaximized, setPanelMaximized] = useState(false);
   const handleAppendConsumed = useCallback(() => setAppendText(null), []);
+  // Threads branched off this chat's messages (browser-local), for the
+  // Slack-style reply indicators under their root messages.
+  const threadMap = useThreadMap(session.id);
 
   const closeSidePanel = useCallback(() => {
     setPanel(null);
@@ -483,6 +793,19 @@ export function ChatView({
       });
     },
     [releasePreviewUrl],
+  );
+
+  const handleConvertThread = useCallback(
+    (threadSessionId: string) => {
+      setPanel(null);
+      onOpenSession?.(threadSessionId);
+    },
+    [onOpenSession],
+  );
+
+  const handleStartThread = useCallback(
+    (message: AgentMessage) => setPanel({ kind: "thread", message }),
+    [],
   );
 
   // Drill-down from a row in the inline activity list to the call's full
@@ -673,16 +996,22 @@ export function ChatView({
             <TextSelectionToolbar
               containerRef={messagesContainerRef}
               onAddToChat={(text) => setAppendText(text)}
+              onAskInSideChat={(text) => setAppendText(text)}
             />
             <div className="flex-1 min-w-0 flex flex-col gap-0 w-full max-w-[768px]">
               {messages.map((msg) => (
                 <MessageBubble
                   key={msg.id}
                   message={msg}
+                  onOpenArtifact={(artifact) =>
+                    setPanel({ kind: "artifact", artifact })
+                  }
                   onOpenAttachment={(attachment) =>
                     setPanel({ kind: "attachment", attachment })
                   }
                   onOpenToolCall={handleOpenToolCall}
+                  onStartThread={handleStartThread}
+                  threadSummary={threadMap[threadKeyForMessage(msg)]}
                   botName={botName}
                   showActivity={showActivity}
                 />
@@ -797,7 +1126,10 @@ export function ChatView({
       {activePanel !== null && (
         <SidePanelForKind
           panel={activePanel}
+          parentSessionId={session.id}
+          botName={botName}
           onClose={closeSidePanel}
+          onConvertToChat={handleConvertThread}
           maximized={panelMaximized}
           onToggleMaximize={toggleMaximize}
         />
@@ -809,20 +1141,41 @@ export function ChatView({
 /** Renders the right-hand panel for the active kind. */
 function SidePanelForKind({
   panel,
+  parentSessionId,
+  botName,
   onClose,
+  onConvertToChat,
   maximized,
   onToggleMaximize,
 }: {
   panel: ActivePanel;
+  parentSessionId: string;
+  botName: string;
   onClose: () => void;
+  onConvertToChat?: (threadSessionId: string) => void;
   maximized: boolean;
   onToggleMaximize: () => void;
 }) {
   const shared = { onClose, maximized, onToggleMaximize };
   switch (panel.kind) {
+    case "artifact":
+      return <MarkdownCanvasPanel artifact={panel.artifact} {...shared} />;
     case "attachment":
       return <AttachmentPanel attachment={panel.attachment} {...shared} />;
     case "toolcall":
       return <ToolCallPanel call={panel.call} {...shared} />;
+    case "thread":
+      return (
+        <ThreadPanel
+          // Re-key per root message: switching threads must remount the
+          // panel so its chat hook re-binds to the right thread session.
+          key={`${parentSessionId}:${panel.message.id}`}
+          parentSessionId={parentSessionId}
+          rootMessage={panel.message}
+          botName={botName}
+          onConvertToChat={onConvertToChat}
+          {...shared}
+        />
+      );
   }
 }

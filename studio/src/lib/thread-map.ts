@@ -13,7 +13,7 @@ import type { AgentMessage } from "@/features/agent";
  * time) to draw the Slack-style reply indicator without opening the thread.
  */
 
-interface ThreadSummary {
+export interface ThreadSummary {
   /** The daemon session backing the thread. */
   sessionId: string;
   replyCount: number;
@@ -281,7 +281,7 @@ export function registerThreadSession(
  * per-parent record goes (so the reply indicator does too). The session
  * itself is untouched; it was always a real daemon session.
  */
-function unregisterThreadSession(
+export function unregisterThreadSession(
   parentSessionId: string,
   threadSessionId: string,
 ) {
@@ -329,7 +329,7 @@ export function syncThreadActivity(
  * indicators. Hydrates after mount (the server renders none) and follows
  * writes from this tab (the change event) and other tabs (the storage event).
  */
-function useThreadMap(parentSessionId: string): ThreadMap {
+export function useThreadMap(parentSessionId: string): ThreadMap {
   const [map, setMap] = useState<ThreadMap>({});
   useEffect(() => {
     if (!parentSessionId) {

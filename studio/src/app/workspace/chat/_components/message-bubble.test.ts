@@ -20,6 +20,12 @@ describe("splitLeadingQuote", () => {
       rest: "hello\n> quoted later",
     });
   });
+  it("collapses nested quote markers", () => {
+    expect(splitLeadingQuote("> > deep\n\nwords")).toEqual({
+      quote: "deep",
+      rest: "words",
+    });
+  });
   it("handles a quote-only message", () => {
     expect(splitLeadingQuote("> just a quote")).toEqual({
       quote: "just a quote",
