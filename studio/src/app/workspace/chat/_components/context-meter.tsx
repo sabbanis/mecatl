@@ -1,13 +1,14 @@
 "use client";
 
 /**
- * The slim context strip near the composer (B1.1): the session's effective
- * model and an APPROXIMATE context-utilisation meter — cumulative input+output
- * tokens this visit counted (summed from the runs' terminal usage frames) vs
- * the model's `resolved_model.context_window`. Deliberately labeled
- * approximate: the daemon's true compaction trigger also counts the system
+ * The slim context strip in the composer toolbar (B1.1): the session's
+ * effective model and an APPROXIMATE context-utilisation meter — cumulative
+ * input+output tokens this visit counted (summed from the runs' terminal usage
+ * frames) vs the model's `resolved_model.context_window`. The reading is
+ * approximate — the daemon's true compaction trigger also counts the system
  * prompt and tool schemas, which the client never sees, and a page reload
- * loses the visit's running total.
+ * loses the visit's running total — which the `~` prefix conveys. Typography
+ * matches the toolbar pills' value text (the "On" in "Memory On").
  */
 
 import { cn } from "@/lib/utils";
@@ -45,8 +46,8 @@ export function ContextMeter({
   if (fraction === null || inputTokens + outputTokens <= 0) return null;
   const percent = Math.round(fraction * 100);
   return (
-    <div className="flex items-center gap-2 px-2 text-[11px] text-muted-foreground/80">
-      {modelLabel && <span className="truncate font-medium">{modelLabel}</span>}
+    <div className="flex items-center gap-2 px-2 text-sm text-muted-foreground">
+      {modelLabel && <span className="truncate">{modelLabel}</span>}
       <span
         className="h-1 w-16 shrink-0 overflow-hidden rounded-full bg-border"
         aria-hidden="true"
@@ -61,9 +62,6 @@ export function ContextMeter({
       </span>
       <span className="whitespace-nowrap tabular-nums">
         ~{percent}% of context
-      </span>
-      <span className="whitespace-nowrap text-muted-foreground/60">
-        approximate
       </span>
     </div>
   );

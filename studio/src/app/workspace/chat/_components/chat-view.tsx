@@ -1269,16 +1269,6 @@ export function ChatView({
               </div>
             )}
             <div className="max-w-[768px] space-y-1.5 max-[499px]:max-w-none">
-              {/* B1.1: effective model + approximate context utilisation,
-                  visible only when the window is known and tokens counted. */}
-              {contextInfo && contextInfo.contextWindow > 0 && (
-                <ContextMeter
-                  modelLabel={contextInfo.modelLabel}
-                  contextWindow={contextInfo.contextWindow}
-                  inputTokens={usage?.inputTokens ?? 0}
-                  outputTokens={usage?.outputTokens ?? 0}
-                />
-              )}
               <QueuedMessageStrip
                 queued={queuedMessages}
                 onSteer={(id) => onSteerQueued?.(id)}
@@ -1318,6 +1308,19 @@ export function ChatView({
                   onPreviewAttachment={handlePreviewFile}
                   focusKey={session.id}
                   mobileDocked
+                  // B1.1: effective model + approximate context utilisation,
+                  // leftmost in the toolbar, visible only when the window is
+                  // known and tokens counted.
+                  contextMeter={
+                    contextInfo && contextInfo.contextWindow > 0 ? (
+                      <ContextMeter
+                        modelLabel={contextInfo.modelLabel}
+                        contextWindow={contextInfo.contextWindow}
+                        inputTokens={usage?.inputTokens ?? 0}
+                        outputTokens={usage?.outputTokens ?? 0}
+                      />
+                    ) : undefined
+                  }
                   modelLockedLabel={
                     live ? session.model || "Auto-routed" : undefined
                   }
