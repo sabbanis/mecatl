@@ -359,6 +359,18 @@ mode (the bare `mecatui` hosting an in-process server) is unchanged — Ctrl+C k
 the process, so a detach there is meaningless. This flag is operator-tier; see
 [ADR 0278](adr/0278-detached-runs.md).
 
+Detached runs are hardened (ADR 0278 decision 6, Scenario 5): they are **refused
+under posture `yolo`** (a yolo run implicitly assumes a human is watching, and a
+detached run removes that last checkpoint — fail-closed, `FailedPrecondition`),
+bounded by a **server-wide concurrency gate** (`--max-detached-runs`, default 4;
+a full gate fails fast with `ResourceExhausted`), and bounded by a **mandatory
+wall-clock deadline** (`--detached-run-deadline`, default 24h; on lapse the run is
+cancelled — any still-in-flight detached run included — and the terminal snapshot
+persisted). A permission ask on a detached run
+parks awaiting (no auto-approve — the drain goroutine is a recorder, never an
+approver); a reconnecting client resolves it via the control-only
+`resume_approval` stream from the same section above.
+
 ## Scheduled tasks
 
 `mecated` and `mecak8s` run scheduled agent fires autonomously (issue #189,

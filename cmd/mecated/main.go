@@ -129,7 +129,9 @@ type config struct {
 	storeDir             string
 	shell                string
 	noBash               bool
-	detachedRuns         bool // detached runs (ADR 0278, --detached-runs, default OFF)
+	detachedRuns         bool          // detached runs (ADR 0278, --detached-runs, default OFF)
+	maxDetachedRuns      int           // server-wide detached-run concurrency cap (--max-detached-runs, default 4)
+	detachedRunDeadline  time.Duration // wall-clock bound per detached run (--detached-run-deadline, default 24h)
 	authorityEvaluator   string
 	cedarAuthorityPolicy string
 
@@ -1080,6 +1082,8 @@ func appConfig(cfg config, sink port.EventSink, recorder port.ToolCallRecorder, 
 		Shell:                         cfg.shell,
 		NoBash:                        cfg.noBash,
 		DetachedRuns:                  cfg.detachedRuns,
+		MaxDetachedRuns:               cfg.maxDetachedRuns,
+		DetachedRunDeadline:           cfg.detachedRunDeadline,
 		AuthorityEvaluator:            cfg.authorityEvaluator,
 		CedarAuthorityPolicy:          cfg.cedarAuthorityPolicy,
 		OwnershipEnforced:             cfg.oidc.Enabled(),
@@ -1272,6 +1276,15 @@ func applyPostureCLI(cfg config, diag port.Diagnostics) error {
 		slog.Warn("OPERATOR POSTURE: auto — allow-all is ACTIVE server-wide (the built-in mutate-ask floor + the MAIN agent's substitution floor are waived). A Deny in any scope and any deliberately configured Ask still apply. The CHILD prompt-injection defense stays ON: a subagent's $()/backtick/heredoc still resolves through the child-ask model. Recommended for UNATTENDED single-tenant use.")
 	case app.PostureYolo:
 		slog.Warn("OPERATOR POSTURE: yolo — allow-all server-wide AND the CHILD prompt-injection defense is OFF: $()/backtick/heredoc commands AUTO-RUN in subagents/branches. A Deny in any scope and any deliberately configured Ask still apply. ISOLATED, EPHEMERAL, SINGLE-TENANT deployments ONLY. NOTE behaviour change: --yolo now ALSO loosens the child substitution floor.")
+		if cfg.detachedRuns {
+			// ADR 0278 decision 6: a yolo run implicitly assumes a human is
+			// watching; a DETACHED run removes that last checkpoint, so under
+			// yolo detached runs are REFUSED (fail-closed). Loud at boot so the
+			// operator learns the combination is unavailable BEFORE the first
+			// refused prompt — the capability bit is also unadvertised, and
+			// StartDetachedRunContent rejects with ErrDetachedRunsRefused.
+			slog.Warn("detached runs REFUSED under posture yolo: --detached-runs is enabled but a detached run would remove the last human checkpoint the yolo contract assumes. Either drop --detached-runs (attached runs only) or run a lower posture (strict/trusted/auto). See ADR 0278 decision 6.")
+		}
 	}
 	return nil
 }
@@ -1592,6 +1605,8 @@ func parseFlagsModeOut(mode commandMode, argv []string, out io.Writer) (*flag.Fl
 	fs.StringVar(&cfg.cedarAuthorityPolicy, "cedar-authority-policy", "", "path to the static operator Cedar authority policy; read once at startup when --authority-evaluator=cedar")
 	fs.BoolVar(&cfg.noBash, "no-bash", false, "disable the Bash tool entirely (shell-less mode); overrides --shell")
 	fs.BoolVar(&cfg.detachedRuns, "detached-runs", false, "DETACHED RUNS (ADR 0278): enable detached runs on this server. A Converse Prompt with detach:true then starts a SERVER-OWNED run that continues after the client stream closes (the server drains it to the durable log); the client observes via WatchSessionEvents and controls via a control-only Converse stream (cancel/resume_approval as the first frame). The ServerCapabilities.detached_runs bit is advertised only when this is on, so a client keeps its cancel-on-Ctrl+C behaviour otherwise. Default OFF. See ADR 0278 + docs/architecture.md")
+	fs.IntVar(&cfg.maxDetachedRuns, "max-detached-runs", 0, "DETACHED RUNS (ADR 0278): server-WIDE cap on how many detached runs may be in flight at once (a counting semaphore, mirroring the engine's Subagent childGate). Each detached run holds an in-flight engine run + an LLM slot + a drain goroutine for its whole wall-clock lifetime, and with no client watching there is no natural backpressure, so the gate is the resource-exhaustion bound. A full gate fails fast with too_many_detached_runs (429), listing the live detached session ids. 0 (the default) applies a sane 4; a NEGATIVE value disables the gate (unlimited)")
+	fs.DurationVar(&cfg.detachedRunDeadline, "detached-run-deadline", 0, "DETACHED RUNS (ADR 0278): mandatory wall-clock bound per detached run — the \"forgot to come back\" deadline. On lapse the run is cancelled via the run-registry Cancel seam and the drain goroutine persists the terminal snapshot (stop=cancelled, Interrupt-recoverable). The cancel is UNCONDITIONAL — a run parked awaiting a permission ask is cancelled too (nobody came back within the deadline, which is the failure this bound exists to stop). 0 (the default) applies a sane 24h; a NEGATIVE value disables the deadline (unlimited)")
 
 	fs.StringVar(&cfg.compaction, "compaction", "heuristic", "compaction strategy: \"heuristic\" (default, single-summary) or \"cascade\" (tiered snip→strip→collapse→summarize)")
 	fs.StringVar(&cfg.tokenizer, "tokenizer", "heuristic", "token counter for the compaction trigger: \"heuristic\" (default, dependency-free) or \"tiktoken\" (offline tiktoken vocab)")

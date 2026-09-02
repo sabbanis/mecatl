@@ -943,6 +943,22 @@ process, listener, goroutine, or durable store: they own bounded async iterators
 row-68 client and release on terminal, iterator return, abort, or close. **List 2 gains no row.** The
 only cross-process continuation data is already server-durable session/event state plus the
 application-owned row-69 cursor; the SDK never fabricates a client-side durability layer.
+| 73 | Detached-run drain goroutine + per-run wall-clock deadline timer (ADR 0278 decision 6) | `server.Service` (`StartDetachedRunContent`) | one detached run (a `Prompt{detach:true}` run the server drains with no client stream) | the drain goroutine ranges `run.Events()` through the SAME `RunEventRecorder` + `relayEvent` projection a wire relay uses, breaks on the terminal `EvResult`, persists the terminal snapshot, calls `FinishRun` (deregisters), STOPS the deadline timer and releases the concurrency-gate slot. It joins on `Service.Close` (which cancels all in-flight runs) | **reset-by-design**: a crashed detached run leaves a `running` snapshot settled by the existing `Abandon` seam + `startStaleSessionReconcile` (List 2 row 3); a run that parked awaiting leaves a durable `awaiting` snapshot resumed cross-process via `resumeFromAwaiting`. The deadline timer is a `time.AfterFunc` (the scheduler_fire.go watchdog pattern) that calls `Service.Cancel` on lapse — it dies with the run it bounds | `internal/adapter/server/service.go` (`StartDetachedRunContent`, `relayEvent`) |
+| 74 | Server-wide detached-run concurrency gate (`Service.detachedGate` counting semaphore + `Service.detachedRuns` roster) | `server.Config.MaxDetachedRuns` (default `defaultMaxDetachedRuns` = 4); gate on `server.Service` | process (one buffered channel of capacity MaxDetachedRuns, sized in `NewService`) | slot acquired at the top of `StartDetachedRunContent` (fail-fast `ErrTooManyDetachedRuns` listing the live detached ids), released by the drain goroutine when it finishes (`defer`). A NEGATIVE MaxDetachedRuns leaves the gate nil (always-available — the byte-identical pre-gate path) | **reconstructible**: the gate is pure synchronization (a channel + an in-memory id roster); a restart re-sizes it from the same operator config and the roster repopulates on the next acquires. It holds no session/run state | `internal/adapter/server/service.go` (`acquireDetachedSlot`, `detachedRuns`, `NewService`) |
+| 75 | Detached-run posture refusal (ADR 0278 decision 6) | `server.Config.DetachedRunsRefused`, derived in composition by `applyPosture` under PostureYolo ONLY | server-wide (a fixed derived bool, not a per-run resource) | no lifecycle (a configuration fact, not a handle); `StartDetachedRunContent` fails fast with `ErrDetachedRunsRefused` (FailedPrecondition) and the capability bit is not advertised | **reconstructible** (re-derived from the posture tier at the next Build); holds no state | `internal/app/posture.go` (`applyPosture`); `internal/adapter/server/service.go` (`StartDetachedRunContent`, `capabilities`) |
+
+**Detached-run re-audit (List 1 / List 2 — ADR 0278).** List 1 rows 73–75 inventory
+the Scenario 5 hardening wave: the drain goroutine + its deadline timer (row 73), the
+server-wide concurrency gate (row 74), and the posture refusal (row 75). The drain
+goroutine itself was already inventoried as the new Service-owned resource the
+ADR-0278 plan called for — row 67 now also owns its deadline timer (both die with the
+run). Row 68's gate and row 69's refusal are pure server-wide synchronization/config,
+not per-run resources. **List 2 gains no row**: a crashed detached run is a `running`
+snapshot already handled by `Abandon` + `startStaleSessionReconcile` (List 1 row 9's
+registry is lost — the same residual scheduled fires have); a deadline-cancelled run
+persists an ordinary `cancelled` terminal snapshot (Interrupt-recoverable,
+List-2 row 5's pending-ask liveness discipline carries the awaiting-parked case via
+`resumeFromAwaiting`).
 
 **Durable watch re-audit (List 1 / List 2 — issue #821, ADR 0250).** List 1 rows 65–66
 inventory the whole family the watch transport adds: the Service-owned per-session

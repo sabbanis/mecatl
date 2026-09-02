@@ -236,3 +236,28 @@ func TestPostureStringRoundTrips(t *testing.T) {
 		t.Fatalf("unexpected token strings")
 	}
 }
+
+// TestPostureDerivesDetachedRunsRefusedUnderYoloOnly pins the AC5.1 composition
+// half: applyPosture derives the detached-run REFUSAL under posture yolo ONLY
+// (ADR 0278 decision 6's "WARN or refuse" resolved to refuse, fail-closed) —
+// strict/trusted/auto keep detached runs allowed. The server adapter consumes
+// the derived bool (server.Config.DetachedRunsRefused); this test pins the
+// derivation, the server-side refusal is pinned by the Scenario 5 server test
+// TestDetachedRun_Scenario5_YoloDetachedRefused.
+func TestPostureDerivesDetachedRunsRefusedUnderYoloOnly(t *testing.T) {
+	cases := []struct {
+		posture Posture
+		want    bool
+	}{
+		{PostureStrict, false},
+		{PostureTrusted, false},
+		{PostureAuto, false},
+		{PostureYolo, true},
+	}
+	for _, tc := range cases {
+		cfg := applyPosture(Config{Posture: tc.posture})
+		if got := cfg.DetachedRunsRefused; got != tc.want {
+			t.Fatalf("posture %s: DetachedRunsRefused = %v, want %v", tc.posture, got, tc.want)
+		}
+	}
+}

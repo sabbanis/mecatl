@@ -432,6 +432,45 @@ type Config struct {
 	// capability bit is advertised. See service.go DetachedRuns / grpc.go
 	// runStartDispatch.
 	DetachedRuns bool
+	// MaxDetachedRuns caps how many detached runs may be in flight SERVER-WIDE at
+	// once (ADR 0278 decision 6: the concurrency gate, mirroring the engine's
+	// Subagent childGate). Each detached run holds an in-flight engine run + an
+	// LLM slot + a drain goroutine for its whole wall-clock lifetime, and with no
+	// client watching there is no natural backpressure — so the cap is a counting
+	// semaphore acquired at detached-run start and released when the drain
+	// goroutine finishes. StartDetachedRunContent fails fast with
+	// ErrTooManyDetachedRuns (ResourceExhausted / 429) when the gate is full,
+	// listing the currently-live detached session ids (ids only). Defaults to
+	// defaultMaxDetachedRuns (4) when zero; a NEGATIVE value disables the gate
+	// (unlimited — not recommended).
+	MaxDetachedRuns int
+	// DetachedRunDeadline is the mandatory wall-clock bound on a detached run —
+	// the "forgot to come back" bound (ADR 0278 decision 6). A detached run has
+	// no client watching, so it must not run forever: StartDetachedRunContent
+	// arms a time.AfterFunc that calls Service.Cancel on lapse (the
+	// scheduler_fire.go:169-179 watchdog pattern, verbatim — unconditional), and
+	// the drain goroutine's terminal persist lands the cancelled snapshot. On
+	// lapse ANY still-in-flight detached run is cancelled — a run parked
+	// awaiting a permission ask included (the ask's verdict channel dies with
+	// the run's ctx; the pending ask is closed out as cancelled,
+	// Interrupt-recoverable): nobody came back within the deadline, which is
+	// precisely the "forgot to come back" failure this bound exists to stop, and
+	// an awaiting-parked run still holds its gate slot + drain goroutine. The
+	// awaiting-resume protection (Close skipping awaiting runs, ADR 0027 Phase 2)
+	// is a SHUTDOWN concern; the deadline is an operator-set run bound and
+	// intentionally overrides it. Defaults to defaultDetachedRunDeadline (24h)
+	// when zero; NEGATIVE disables the deadline (unlimited — a detached run then
+	// runs until it completes, parks awaiting, or the server shuts down).
+	DetachedRunDeadline time.Duration
+	// DetachedRunsRefused is the POSTURE-derived detached-run refusal (ADR 0278
+	// decision 6, set by composition from applyPosture under PostureYolo ONLY).
+	// A yolo run implicitly assumes a human is watching; a detached run removes
+	// that last checkpoint, so under yolo the server REFUSES detached runs
+	// (fail-closed — the ADR's "WARN or refuse", refused). When true,
+	// StartDetachedRunContent fails fast with ErrDetachedRunsRefused and the
+	// Converse detach arm surfaces FailedPrecondition; the client falls back to
+	// the attached prompt path (byte-identical to a server with the feature off).
+	DetachedRunsRefused bool
 
 	// DefaultResolvedModel is the EFFECTIVE provider+model the DEFAULT/shared engine
 	// resolved to (the registry default provider + cfg.Model + the default context
@@ -794,6 +833,38 @@ const defaultMaxSessionEngines = 1024
 // slow store, while keeping a crashed holder's lease recoverable within ~30s.
 const defaultLeaseTTL = 30 * time.Second
 
+// applyDetachedRunDefaults fills the zero-value detached-run defaults (ADR 0278
+// decision 6) onto a Config copy: a zero MaxDetachedRuns applies
+// defaultMaxDetachedRuns (4) and a zero DetachedRunDeadline applies
+// defaultDetachedRunDeadline (24h). NEGATIVE values deliberately keep the gate
+// open / deadline disabled. It is extracted from NewService to keep that
+// function's cyclomatic complexity under the lint gate.
+func applyDetachedRunDefaults(cfg *Config) {
+	if cfg.MaxDetachedRuns == 0 {
+		cfg.MaxDetachedRuns = defaultMaxDetachedRuns
+	}
+	if cfg.DetachedRunDeadline == 0 {
+		cfg.DetachedRunDeadline = defaultDetachedRunDeadline
+	}
+}
+
+// defaultMaxDetachedRuns is the server-wide detached-run concurrency cap applied
+// when Config.MaxDetachedRuns is zero (ADR 0278, the task brief's "~4"). Four
+// concurrent unattended engine runs is a sane default bound for a single server:
+// each costs an in-flight run + an LLM slot + a drain goroutine for its whole
+// wall-clock lifetime, and there is no client watching to provide natural
+// backpressure. A NEGATIVE Config.MaxDetachedRuns disables the gate.
+const defaultMaxDetachedRuns = 4
+
+// defaultDetachedRunDeadline is the wall-clock bound applied to every detached
+// run when Config.DetachedRunDeadline is zero (ADR 0278 decision 6: the
+// mandatory "forgot to come back" deadline; the task brief says "check the
+// ADR/plan for guidance; if silent, choose 24h" — the ADR is silent, so 24h it
+// is: a detached long task is a multi-hour job, and a full day is the generous
+// "check back tomorrow morning" bound the connect-and-leave workflow promises).
+// A NEGATIVE Config.DetachedRunDeadline disables the deadline.
+const defaultDetachedRunDeadline = 24 * time.Hour
+
 // leaseAcquireTimeout bounds a SessionLease.Acquire / Release call. Acquire runs
 // on the run-entry hot path UNDER s.runEntryMu, so a wedged k8s/driver backend
 // must not stall run-entry indefinitely; Release runs on a detached ctx at
@@ -1139,6 +1210,22 @@ type Service struct {
 	// honest "this deployment cannot serve a watch" signal both appendEvent and
 	// watchLog read.
 	cursorLog port.CursorEventLog
+
+	// detachedGate is the server-wide detached-run counting semaphore (ADR 0278
+	// decision 6, mirroring the engine's Subagent childGate): a buffered channel
+	// of capacity cfg.MaxDetachedRuns, acquired at the TOP of
+	// StartDetachedRunContent (fail-fast, ids only in the error) and released by
+	// the drain goroutine when it finishes. It bounds how many server-owned
+	// unattended runs may be in flight at once — each holds an in-flight engine
+	// run + an LLM slot + a drain goroutine for its whole wall-clock lifetime,
+	// and with no client watching there is no natural backpressure. nil (the
+	// byte-identical default) when Config.MaxDetachedRuns is negative (gate
+	// disabled) — tryAcquireDetachedSlot treats nil as always-available.
+	detachedGate chan struct{}
+	// detachedRuns tracks the session ids that currently HOLD a detachedGate
+	// slot, so the fail-fast error lists the live detached runs (ids only) and
+	// the tracking is released exactly when the slot is. Guarded by s.mu.
+	detachedRuns map[session.SessionID]struct{}
 }
 
 // heldLease is one process-held session lease plus the cancel that stops its
@@ -1349,6 +1436,7 @@ func NewServiceContext(ctx context.Context, cfg Config) (*Service, error) {
 	if cfg.MaxSessionEngines <= 0 {
 		cfg.MaxSessionEngines = defaultMaxSessionEngines
 	}
+	applyDetachedRunDefaults(&cfg)
 	if cfg.Diagnostics == nil {
 		cfg.Diagnostics = port.NopDiagnostics{}
 	}
@@ -1391,6 +1479,12 @@ func NewServiceContext(ctx context.Context, cfg Config) (*Service, error) {
 		cleanupPlans:        make(map[string]cleanupTokenPayload),
 		cleanupJobs:         make(map[string]cleanupJobRecord),
 		subscriptions:       make(map[session.SessionID]map[int64]chan session.Event),
+		detachedRuns:        make(map[session.SessionID]struct{}),
+	}
+	// Size the detached-run concurrency gate (ADR 0278 decision 6). A negative
+	// Config.MaxDetachedRuns disables the gate (nil = always-available).
+	if cfg.MaxDetachedRuns > 0 {
+		svc.detachedGate = make(chan struct{}, cfg.MaxDetachedRuns)
 	}
 	svc.titleCoordinator = buildTitleCoordinator(svc, cfg)
 	// Narrow the durable log to the cursor seam once (ADR 0250). A backend that
@@ -2535,8 +2629,8 @@ func (s *Service) capabilities() *mecatlv1.ServerCapabilities {
 		SessionDebug:        s.cfg.DebugSessionEngine != nil,
 		DebugMcp:            s.cfg.DebugMCP,
 		WorkspaceEnrollment: s.cfg.WorkspaceEnrollment,
-		// DetachedRuns is the operator-tier gate (mecated --detached-runs).
-		DetachedRuns: s.cfg.DetachedRuns,
+		// DetachedRuns is advertised only when the operator gate and posture admit it.
+		DetachedRuns: s.cfg.DetachedRuns && !s.cfg.DetachedRunsRefused,
 	}
 }
 
@@ -4277,7 +4371,35 @@ func (s *Service) StartScheduledRunContent(ctx context.Context, id session.Sessi
 // observes via WatchSessionEvents and controls via a control-only Converse
 // stream. Reuses runPurposeChat — a detached run is a normal chat run, just
 // drained server-side.
+//
+// Security guardrails (ADR 0278 decision 6 — Scenario 5 hardening):
+//   - POSTURE GATE: under posture yolo (Config.DetachedRunsRefused) the run is
+//     REFUSED with ErrDetachedRunsRefused (fail-closed) — a yolo run implicitly
+//     assumes a human is watching, and a detached run removes that checkpoint.
+//   - WALL-CLOCK DEADLINE: a Config.DetachedRunDeadline timer (default 24h, see
+//     defaultDetachedRunDeadline) arms a time.AfterFunc that calls Service.Cancel
+//     on lapse — the "forgot to come back" bound, mirroring scheduler_fire.go's
+//     watchdog verbatim (UNCONDITIONAL: a parked-awaiting run included, whose
+//     pending ask is closed out as cancelled). The drain goroutine's terminal
+//     persist lands the cancelled snapshot.
+//   - CONCURRENCY GATE: a server-wide counting semaphore (Config.MaxDetachedRuns,
+//     default 4) is acquired at the top of this method and released by the drain
+//     goroutine when it finishes; a full gate fails fast with
+//     ErrTooManyDetachedRuns listing the live detached session ids (ids only).
+//     The gate bounds how many unattended engine runs + drain goroutines may be
+//     in flight at once — with no client watching there is no natural
+//     backpressure.
 func (s *Service) StartDetachedRunContent(ctx context.Context, id session.SessionID, text string, parts []session.Content) (*agent.Run, error) {
+	// Posture refusal first (fail-closed, cheapest): under yolo a detached run is
+	// refused outright — the ADR's "WARN or refuse" resolved to refuse, pinned by
+	// TestDetachedRun_Scenario5_YoloDetachedRefused.
+	if s.cfg.DetachedRunsRefused {
+		return nil, fmt.Errorf("%w: %q", ErrDetachedRunsRefused, id)
+	}
+	release, err := s.acquireDetachedSlot(id)
+	if err != nil {
+		return nil, err
+	}
 	// A detached run must outlive the caller's stream: the Converse handler
 	// returns (and gRPC cancels its stream context) the moment the ack is sent,
 	// but the run keeps driving server-side. Derive a cancel-detached context so
@@ -4289,17 +4411,47 @@ func (s *Service) StartDetachedRunContent(ctx context.Context, id session.Sessio
 	generation := s.captureRunEntryGeneration(id)
 	run, err := s.startRunContent(runCtx, id, text, parts, runPurposeChat, generation, false)
 	if err != nil {
+		// The run never started; the gate slot must not leak.
+		release()
 		return nil, err
+	}
+	// Arm the wall-clock watchdog (the scheduler_fire.go:169-179 pattern,
+	// verbatim). A deadline of zero was defaulted in NewService; NEGATIVE
+	// disables. On lapse Service.Cancel looks up the run by session id and calls
+	// run.Cancel() — the loop yields StopCancelled, the drain goroutine persists
+	// the terminal snapshot. A clean completion stops the timer (the drain
+	// goroutine's defer). The cancel is UNCONDITIONAL (a parked-awaiting run
+	// included, whose pending ask is closed out as cancelled): nobody came back
+	// within the deadline, and the awaiting resume protection (Close skipping
+	// awaiting runs) is a shutdown concern, not a run bound.
+	stopTimer := func() {}
+	if s.cfg.DetachedRunDeadline > 0 {
+		timer := time.AfterFunc(s.cfg.DetachedRunDeadline, func() {
+			_ = s.Cancel(context.WithoutCancel(ctx), id, "")
+		})
+		stopTimer = func() { timer.Stop() }
 	}
 	// Spawn the server-owned drain goroutine: range run.Events(), record every
 	// event to the durable log with a cancel-detached ctx, break on terminal
 	// EvResult, then FinishRun. The goroutine joins on Service.Close (which
 	// cancels all in-flight runs).
+	//
+	// Every event routes through relayEvent (the SAME single projection the wire
+	// relays use) — NOT bare recorder.Observe — so the detached run inherits the
+	// relay's full EvPermissionAsk contract: Persist-on-ask (the durable
+	// StateAwaiting snapshot that is the cross-process resume point, ADR 0027
+	// Phase 2) and the awaiting-flag lifecycle. autoApprove=false: a detached
+	// run has NO auto-approve source — the drain goroutine is a recorder, never
+	// an approver (a plan-ask is still the operator's call via the control-only
+	// stream; PlanModeAutoApprove remains the only auto path and it lives in the
+	// same composition the wire relays use).
 	logCtx := context.WithoutCancel(ctx)
 	recorder := NewRunEventRecorder(logCtx, s, id)
 	go func() {
+		defer stopTimer()
+		defer release()
 		for ev := range run.Events() {
-			recorder.Observe(ev)
+			s.relayEvent(logCtx, id, ev, false, recorder)
 			if ev.Type == session.EvResult && ev.Result != nil {
 				break
 			}
@@ -4319,6 +4471,48 @@ func (s *Service) StartDetachedRunContent(ctx context.Context, id session.Sessio
 		s.FinishRun(id, run)
 	}()
 	return run, nil
+}
+
+// acquireDetachedSlot acquires one slot of the server-wide detached-run
+// concurrency gate (ADR 0278 decision 6), failing FAST when the gate is full. It
+// returns a release func (idempotent — the caller owns calling it EXACTLY once,
+// either via the error path in StartDetachedRunContent or the drain goroutine's
+// defer). A nil gate (Config.MaxDetachedRuns < 0 — gate disabled) is
+// always-available (the byte-identical pre-gate path).
+//
+// The fail-fast error lists the currently-live detached session ids — ids ONLY
+// (nothing model/child-authored; the same discipline as the engine's
+// backgroundGateFullError, which lists background subagent ids). The id is
+// tracked under s.mu on acquire and untracked on release, so the roster covers
+// exactly the runs that hold a slot.
+func (s *Service) acquireDetachedSlot(id session.SessionID) (func(), error) {
+	if s.detachedGate == nil {
+		return func() {}, nil
+	}
+	select {
+	case s.detachedGate <- struct{}{}:
+		s.mu.Lock()
+		s.detachedRuns[id] = struct{}{}
+		s.mu.Unlock()
+		var once sync.Once
+		return func() {
+			once.Do(func() {
+				<-s.detachedGate
+				s.mu.Lock()
+				delete(s.detachedRuns, id)
+				s.mu.Unlock()
+			})
+		}, nil
+	default:
+		s.mu.Lock()
+		ids := make([]string, 0, len(s.detachedRuns))
+		for rid := range s.detachedRuns {
+			ids = append(ids, string(rid))
+		}
+		s.mu.Unlock()
+		sort.Strings(ids)
+		return nil, fmt.Errorf("%w: %s", ErrTooManyDetachedRuns, strings.Join(ids, ", "))
+	}
 }
 
 // RetryFailedRun resumes the failed model step from the persisted conversation state

@@ -32,7 +32,7 @@ The forces at play:
 
 5. **Ctrl+C always detaches when the server supports it; double Ctrl+C cancels.** The behavior is determined by the server's `ServerCapabilities.detached_runs` bit, not the user's mode awareness. The first Ctrl+C prints the one-line "run continues" message and quits without cancelling. The second Ctrl+C sends a control-only Converse `cancel` frame and exits. This reuses the existing two-signal handler shape. Embedded mode: Ctrl+C kills the process (the server dies with it) — unchanged.
 
-6. **Detached runs are operator-tier gated and hardened.** `mecated --detached-runs` flag (default OFF). Posture gating: allowed under `strict`/`trusted`/`auto`; WARN or refuse under `yolo`. Permission asks park awaiting (no auto-approve). Mandatory wall-clock deadline (the "forgot to come back" bound). Server-wide concurrency gate (mirrors `childGate`).
+6. **Detached runs are operator-tier gated and hardened.** `mecated --detached-runs` flag (default OFF). Posture gating: allowed under `strict`/`trusted`/`auto`; REFUSED under `yolo` (the "WARN or refuse" resolved to refuse, fail-closed — a yolo run implicitly assumes a human is watching, and a detached run removes that last checkpoint). Permission asks park awaiting (no auto-approve). Mandatory wall-clock deadline (the "forgot to come back" bound; **default 24h**, `--detached-run-deadline`, negative disables; on lapse the run is cancelled UNCONDITIONALLY — a parked-awaiting run included, since nobody came back within the deadline). Server-wide concurrency gate (mirrors `childGate`; **default 4**, `--max-detached-runs`, negative disables).
 
 ## Consequences
 

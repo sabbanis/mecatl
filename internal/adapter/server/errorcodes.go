@@ -119,6 +119,8 @@ var errorRegistry = []errorCodeEntry{
 	{Sentinel: ErrTeamNotRunning, Code: "team_not_running", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusPreconditionFailed, Title: "Team is not running"},
 	{Sentinel: ErrTooManyTeams, Code: "too_many_teams", GRPC: codes.ResourceExhausted, HTTPStatus: http.StatusTooManyRequests, Title: "Too many live teams"},
 	{Sentinel: ErrTooManySessionEngines, Code: "too_many_session_engines", GRPC: codes.ResourceExhausted, HTTPStatus: http.StatusTooManyRequests, Title: "Too many live per-session engines"},
+	{Sentinel: ErrTooManyDetachedRuns, Code: "too_many_detached_runs", GRPC: codes.ResourceExhausted, HTTPStatus: http.StatusTooManyRequests, Title: "Too many concurrent detached runs"},
+	{Sentinel: ErrDetachedRunsRefused, Code: "detached_runs_refused", GRPC: codes.FailedPrecondition, HTTPStatus: http.StatusPreconditionFailed, Title: "Detached runs refused under the current posture"},
 	{Sentinel: ErrNoScheduleStore, Code: "no_schedule_store", GRPC: codes.Unimplemented, HTTPStatus: http.StatusNotImplemented, Title: "Scheduled tasks are not supported by the configured store"},
 	{Sentinel: ErrNoEventLog, Code: "no_event_log", GRPC: codes.Unimplemented, HTTPStatus: http.StatusNotImplemented, Title: "No durable event log configured"},
 	// The listener-scoped client-MCP refusal (ADR 0237, Scenario 9). It sits with

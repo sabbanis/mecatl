@@ -195,6 +195,24 @@ type Config struct {
 	// mecated --detached-runs, default OFF). When true, a Converse Prompt with
 	// detach:true starts a server-owned run that survives the client stream.
 	DetachedRuns bool
+	// DetachedRunsRefused is the POSTURE-derived detached-run refusal (ADR 0278
+	// decision 6, derived by applyPosture under PostureYolo ONLY): a yolo run
+	// implicitly assumes a human is watching, and a detached run removes that
+	// last checkpoint. Derived — NEVER set directly (the same discipline as the
+	// other posture knobs AllowAllTools/LooseChildSubstitution).
+	DetachedRunsRefused bool
+	// MaxDetachedRuns caps how many detached runs may be in flight server-wide
+	// (ADR 0278 decision 6's concurrency gate; server.Config.MaxDetachedRuns).
+	// Zero (the default) applies server defaultMaxDetachedRuns (4) in
+	// NewService; a NEGATIVE value disables the gate. Operator-tier
+	// (--max-detached-runs).
+	MaxDetachedRuns int
+	// DetachedRunDeadline is the mandatory wall-clock bound on a detached run
+	// (ADR 0278 decision 6's "forgot to come back" deadline;
+	// server.Config.DetachedRunDeadline). Zero (the default) applies
+	// server defaultDetachedRunDeadline (24h); a NEGATIVE value disables the
+	// deadline. Operator-tier (--detached-run-deadline).
+	DetachedRunDeadline time.Duration
 	// AuthorityEvaluator selects the authority evaluator adapter: "local" enforces
 	// minted sets, while "noop" deliberately disables enforcement. "cedar" loads
 	// CedarAuthorityPolicy at startup and fails closed when it cannot be loaded.
@@ -2206,8 +2224,13 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		// DetachedRuns: the operator-tier gate (mecated --detached-runs). The
 		// Service advertises ServerCapabilities.detached_runs and honours a
 		// Prompt's detach field only when this is true; otherwise attached
-		// behaviour is byte-identical for every client.
-		DetachedRuns: cfg.DetachedRuns,
+		// behaviour is byte-identical for every client. DetachedRunsRefused is
+		// the posture-derived refusal (applyPosture under yolo): a yolo detached
+		// run would remove the last human checkpoint yolo implicitly assumes.
+		DetachedRuns:        cfg.DetachedRuns,
+		DetachedRunsRefused: cfg.DetachedRunsRefused,
+		MaxDetachedRuns:     cfg.MaxDetachedRuns,
+		DetachedRunDeadline: cfg.DetachedRunDeadline,
 		// DefaultResolvedModel: the EFFECTIVE provider+model the DEFAULT/shared engine
 		// resolved to (the registry default provider + the already-resolved cfg.Model +
 		// the context window for that pair), computed ONCE here in composition. Same

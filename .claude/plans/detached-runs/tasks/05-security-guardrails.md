@@ -2,7 +2,7 @@
 id: 05-security-guardrails
 title: Security guardrails + hardening (posture gating, deadline, concurrency bound)
 blocked_by: [01-detached-prompt-drain]
-status: pending
+status: done
 branch: "plan-detached-runs/05-security-guardrails"
 worktree: ""
 issue: ""

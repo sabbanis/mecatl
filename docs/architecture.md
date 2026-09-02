@@ -206,7 +206,12 @@ OpenAI type. The Converse stream additionally supports a **detached mode** (ADR
 first frame starts a server-owned drain goroutine that continues a run after
 the client disconnects, acks once, and closes the stream — the client observes
 via `WatchSessionEvents` and controls via a control-only Converse stream
-(a first frame of `cancel` / `resume_approval`).
+(a first frame of `cancel` / `resume_approval`). Detached runs are hardened
+(ADR 0278 decision 6): refused under posture `yolo` (fail-closed), bounded by a
+server-wide concurrency gate (`--max-detached-runs`, default 4) and a mandatory
+wall-clock deadline (`--detached-run-deadline`, default 24h), and their
+permission asks park awaiting (no auto-approve — the drain goroutine is a
+recorder, never an approver).
 
 The system is built **hexagonally (ports & adapters) with a DDD core**.
 Dependencies point inward only: a domain of pure value objects and aggregates
