@@ -1,6 +1,7 @@
 import {
   Bot,
   Brain,
+  FlaskConical,
   GraduationCap,
   Network,
   Palette,
@@ -73,6 +74,16 @@ export const SETTINGS_GROUPS: Array<{
         href: "/workspace/settings/gateway",
         label: "MCP gateway",
         icon: Network,
+      },
+    ],
+  },
+  {
+    label: "Experimental",
+    items: [
+      {
+        href: "/workspace/settings/labs",
+        label: "Labs",
+        icon: FlaskConical,
       },
     ],
   },

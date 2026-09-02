@@ -6,6 +6,8 @@ import {
   ChevronDown,
   ChevronUp,
   Ellipsis,
+  FolderClosed,
+  FolderOpen,
   Pencil,
   Trash2,
 } from "lucide-react";
@@ -18,6 +20,13 @@ import {
   DropdownMenuTrigger,
 } from "@/components/ui/dropdown-menu";
 import type { AgentSession, RosterAgent } from "@/features/agent";
+import {
+  MOCK_PROJECTS,
+  MOCK_PROJECTS_DEFAULT_OPEN_ID,
+  type MockProject,
+  type MockProjectChat,
+} from "@/features/agent/mock-projects";
+import { isMockTourSession } from "@/features/agent/mock-tour";
 import { formatRelativeTime } from "@/lib/formatters";
 import { cn } from "@/lib/utils";
 
@@ -67,7 +76,9 @@ function SessionContextMenu({
   const canRename = session.canRename === true;
   const canDelete = session.canDelete === true;
   const offerDebug =
-    actions.onDebug !== undefined && !session.debugTargetSessionId;
+    actions.onDebug !== undefined &&
+    !session.debugTargetSessionId &&
+    !isMockTourSession(session.id);
 
   return (
     <DropdownMenu modal={false} onOpenChange={onOpenChange}>
@@ -167,6 +178,14 @@ function SessionRow({
           >
             {session.title || "Untitled"}
           </span>
+          {isMockTourSession(session.id) && (
+            <Badge
+              variant="outline"
+              className="h-4 shrink-0 px-1.5 text-[10px] font-medium uppercase tracking-wide text-muted-foreground"
+            >
+              Mock
+            </Badge>
+          )}
           {/* An AI-debug session (ADR 0254) reads as an ordinary chat except
               for this label — the relationship is the daemon's signal. */}
           {session.debugTargetSessionId && (
@@ -363,6 +382,165 @@ export function AgentList({
           </button>
         );
       })}
+    </div>
+  );
+}
+
+/**
+ * Remembers each mock project's expanded/collapsed state by id, module-wide.
+ * Selecting a chat can remount the workspace (the route re-keys), which would
+ * otherwise reset every item's local `open` state; seeding from — and writing
+ * back to — this store keeps folders as the user left them. Seeded with one
+ * project open so the section demonstrates the expanded look immediately.
+ */
+const mockProjectOpenStore = new Map<string, boolean>([
+  [MOCK_PROJECTS_DEFAULT_OPEN_ID, true],
+]);
+
+/**
+ * One chat row inside an expanded mock project. Presentational only: the
+ * Labs mock machinery has exactly one canned transcript (the feature tour),
+ * and these rows deliberately do not mint a second mock-session system — so
+ * there is nothing to open and the row is inert except for its hover state.
+ */
+function MockProjectChatRow({ chat }: { chat: MockProjectChat }) {
+  const [menuOpen, setMenuOpen] = useState(false);
+  return (
+    // py-2 matches the real SessionRow height so the two lists read as one
+    // rhythm. Never styled selected: selection lives on real sessions only —
+    // these rows are inert, so a highlight here would always be a lie.
+    <div className="group flex items-center border-l-[3px] border-transparent py-2 pr-3 pl-8 transition-colors hover:bg-accent">
+      <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground select-none group-hover:text-foreground">
+        {chat.title}
+      </span>
+      {/* The real SessionRow's right-slot grammar: dot/age yields to the
+          hover "…" menu. The items decline with a reason, the same disabled
+          treatment a daemon row without the capability gets. */}
+      <div className="shrink-0 ml-2 grid w-8 items-center justify-items-center [grid-template-areas:'slot']">
+        {chat.unread ? (
+          <span
+            role="img"
+            aria-label="Unread"
+            className={cn(
+              "[grid-area:slot] size-2 rounded-full bg-brand",
+              menuOpen
+                ? "min-[500px]:invisible"
+                : "min-[500px]:group-hover:invisible",
+            )}
+          />
+        ) : (
+          <span
+            className={cn(
+              "[grid-area:slot] text-xs text-muted-foreground/50 tabular-nums",
+              menuOpen
+                ? "min-[500px]:invisible"
+                : "min-[500px]:group-hover:invisible",
+            )}
+          >
+            {formatRelativeTime(chat.updatedAt)}
+          </span>
+        )}
+        <DropdownMenu modal={false} onOpenChange={setMenuOpen}>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label="Chat options"
+              className={cn(
+                "[grid-area:slot] flex items-center justify-center w-7 rounded text-muted-foreground hover:text-foreground",
+                menuOpen
+                  ? "opacity-100"
+                  : "opacity-0 pointer-events-none min-[500px]:group-hover:opacity-100 min-[500px]:group-hover:pointer-events-auto",
+              )}
+            >
+              <Ellipsis className="size-4" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent
+            align="end"
+            side="bottom"
+            sideOffset={4}
+            className="w-56"
+          >
+            <DropdownMenuItem disabled>
+              <Pencil className="size-4 mr-2 shrink-0 text-muted-foreground" />
+              <span className="min-w-0">
+                Rename
+                <span className="block truncate text-xs text-muted-foreground">
+                  Demo content — not a real chat
+                </span>
+              </span>
+            </DropdownMenuItem>
+            <DropdownMenuItem disabled>
+              <Trash2 className="size-4 mr-2 shrink-0" />
+              <span className="min-w-0">
+                Delete
+                <span className="block truncate text-xs text-muted-foreground">
+                  Demo content — not a real chat
+                </span>
+              </span>
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
+    </div>
+  );
+}
+
+/** A collapsible mock project folder; clicking the row toggles it open.
+ *  The header itself never takes the green treatment — the highlight
+ *  belongs to exactly one row, the SELECTED chat inside; openness is
+ *  carried by the folder icon alone. */
+function MockProjectItem({ project }: { project: MockProject }) {
+  const [open, setOpenState] = useState(
+    () => mockProjectOpenStore.get(project.id) ?? false,
+  );
+  const toggle = () =>
+    setOpenState((prev) => {
+      const next = !prev;
+      mockProjectOpenStore.set(project.id, next);
+      return next;
+    });
+
+  return (
+    <div className="flex flex-col">
+      <button
+        type="button"
+        onClick={toggle}
+        aria-expanded={open}
+        aria-label={`${open ? "Collapse" : "Expand"} project: ${project.name}`}
+        className="group flex items-center gap-2 border-l-[3px] border-transparent py-2 pr-3 pl-3 text-left transition-colors hover:bg-accent"
+      >
+        {open ? (
+          <FolderOpen className="size-4 shrink-0 text-muted-foreground" />
+        ) : (
+          <FolderClosed className="size-4 shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 flex-1 truncate text-[0.85rem] font-medium text-muted-foreground select-none group-hover:text-foreground">
+          {project.name}
+        </span>
+      </button>
+      {open && (
+        <div className="flex flex-col">
+          {project.chats.map((chat) => (
+            <MockProjectChatRow key={chat.id} chat={chat} />
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/**
+ * The Labs mock "Projects" section: project-grouped chats, presentation
+ * only. The caller gates it on the mock-features preference, exactly like
+ * the feature tour row — never rendered outside Settings → Labs.
+ */
+export function MockProjectList() {
+  return (
+    <div className="flex flex-col">
+      {MOCK_PROJECTS.map((project) => (
+        <MockProjectItem key={project.id} project={project} />
+      ))}
     </div>
   );
 }

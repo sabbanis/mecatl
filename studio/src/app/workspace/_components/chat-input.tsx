@@ -9,6 +9,8 @@ import {
   Bot,
   Check,
   ChevronDown,
+  FolderClosed,
+  FolderPlus,
   Mic,
   Paperclip,
   Plus,
@@ -19,7 +21,9 @@ import { Button } from "@/components/ui/button";
 import {
   DropdownMenu,
   DropdownMenuContent,
+  DropdownMenuGroup,
   DropdownMenuItem,
+  DropdownMenuLabel,
   DropdownMenuSeparator,
   DropdownMenuSub,
   DropdownMenuSubContent,
@@ -30,6 +34,7 @@ import {
   getAgentMentions,
   getSlashCommands,
 } from "@/features/agent/composer-capabilities";
+import { usePrompt } from "@/hooks/use-prompt";
 import { fileKindMeta } from "@/lib/file-meta";
 import {
   type EnterSendBehavior,
@@ -44,9 +49,19 @@ import {
   setComposerText,
 } from "./composer-mentions";
 
+interface ProjectItem {
+  id: string;
+  name: string;
+  color: string;
+}
+
 interface ChatInputProps {
   placeholder?: string;
   rows?: number;
+  projects?: ProjectItem[];
+  selectedProjectId?: string | null;
+  onSelectProject?: (id: string | null) => void;
+  onCreateProject?: (name: string) => void;
   compact?: boolean;
   onSend?: (content: string, files?: File[]) => void;
   onQueue?: (content: string) => void;
@@ -473,6 +488,80 @@ function MemoryToggle() {
   );
 }
 
+function ProjectsDropdown({
+  projects,
+  selectedProjectId,
+  onSelect,
+  onCreate,
+}: {
+  projects?: ProjectItem[];
+  selectedProjectId?: string | null;
+  onSelect?: (id: string | null) => void;
+  onCreate?: (name: string) => void;
+}) {
+  const { prompt, PromptDialog } = usePrompt();
+  const selected = projects?.find((p) => p.id === selectedProjectId);
+
+  return (
+    <>
+      {PromptDialog}
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button size="sm" className={GHOST_TRIGGER_CLASS}>
+            <FolderClosed className="size-3.5 text-muted-foreground" />
+            {selected ? selected.name : "Project"}
+            <ChevronDown className="size-3.5 text-muted-foreground" />
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent
+          onCloseAutoFocus={(e) => e.preventDefault()}
+          align="start"
+          className="w-56"
+        >
+          <DropdownMenuLabel>Projects</DropdownMenuLabel>
+          <DropdownMenuSeparator />
+          <DropdownMenuGroup>
+            <DropdownMenuItem onClick={() => onSelect?.(null)}>
+              <span className={cn(!selectedProjectId && "font-semibold")}>
+                Chats
+              </span>
+            </DropdownMenuItem>
+            {projects?.map((p) => (
+              <DropdownMenuItem key={p.id} onClick={() => onSelect?.(p.id)}>
+                <FolderClosed className="size-3.5 shrink-0 mr-1.5 text-muted-foreground" />
+                <span
+                  className={cn(
+                    "truncate",
+                    p.id === selectedProjectId && "font-semibold",
+                  )}
+                >
+                  {p.name}
+                </span>
+              </DropdownMenuItem>
+            ))}
+          </DropdownMenuGroup>
+          <DropdownMenuSeparator />
+          <DropdownMenuItem
+            onClick={async () => {
+              const name = await prompt({
+                title: "New project",
+                description:
+                  "Give your project a name to organize related conversations.",
+                placeholder: "Project name",
+                confirmText: "Create project",
+              });
+              if (name) onCreate?.(name);
+            }}
+          >
+            <FolderPlus className="size-3.5 mr-2" />
+            New project
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      </DropdownMenu>
+    </>
+  );
+}
+
 function useVoiceInput(onTranscript: (text: string) => void) {
   const [isListening, setIsListening] = useState(false);
   const [isSupported, setIsSupported] = useState(false);
@@ -723,6 +812,10 @@ function handleMenuNavKey(
 
 export function ChatInput({
   placeholder: placeholderProp,
+  projects,
+  selectedProjectId,
+  onSelectProject,
+  onCreateProject,
   compact = false,
   onSend,
   onQueue,
@@ -1167,6 +1260,14 @@ export function ChatInput({
           container queries when THIS row runs narrow (a ~400px side-panel
           composer), independent of the viewport width. */}
       <div className="@container -mt-4 pt-5 px-2 pb-1.5 flex items-center gap-1 rounded-b-2xl border border-t-0 border-zinc-300 dark:border-zinc-700 bg-zinc-50 dark:bg-zinc-900 overflow-x-auto hide-scrollbar">
+        {projects && (
+          <ProjectsDropdown
+            projects={projects}
+            selectedProjectId={selectedProjectId}
+            onSelect={onSelectProject}
+            onCreate={onCreateProject}
+          />
+        )}
         {!compact && (
           <>
             {onModeChange && (

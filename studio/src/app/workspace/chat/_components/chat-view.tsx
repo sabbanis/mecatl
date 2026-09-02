@@ -45,6 +45,7 @@ import {
   useAgentChat,
 } from "@/features/agent";
 import type { QueuedMessage } from "@/features/agent/hooks/use-agent-chat";
+import { isMockTourSession } from "@/features/agent/mock-tour";
 import { formatTokens } from "@/lib/formatters";
 import {
   createThreadHarnessSession,
@@ -368,6 +369,9 @@ function ThreadPanel({
 
   const handleSend = useCallback(
     async (content: string, files?: File[]) => {
+      // Defense in depth: a mock session id must never mint a daemon thread
+      // session (the panel router already sends mock threads elsewhere).
+      if (isMockTourSession(parentSessionId)) return;
       setSourceBusy(false);
       setCreateError(null);
       if (threadIdRef.current) {
@@ -550,6 +554,57 @@ function ThreadPanel({
   );
 }
 
+/**
+ * The thread panel for the Labs mock chat: a read-only view of the root
+ * message's canned replies. Entirely local — a mock session id must never
+ * mint a daemon thread session, so this replaces ThreadPanel outright.
+ */
+function MockThreadPanel({
+  rootMessage,
+  botName,
+  onClose,
+  maximized,
+  onToggleMaximize,
+}: {
+  rootMessage: AgentMessage;
+  botName: string;
+  onClose: () => void;
+  maximized: boolean;
+  onToggleMaximize: () => void;
+}) {
+  const replies = rootMessage.replies ?? [];
+  return (
+    <SidePanel
+      icon={MessageSquareText}
+      title="Thread"
+      closeLabel="Close thread"
+      maximized={maximized}
+      onToggleMaximize={onToggleMaximize}
+      onClose={onClose}
+      minWidth={340}
+    >
+      <div className="flex-1 min-h-0 overflow-y-auto px-3 pt-3 pb-4 lg:px-4">
+        <div className="rounded-lg border border-dashed border-border/70 px-1 py-1">
+          <MessageBubble message={rootMessage} botName={botName} />
+        </div>
+        {replies.length > 0 && (
+          <div className="my-2 flex items-center gap-2 px-2 text-[11px] font-medium uppercase tracking-wide text-muted-foreground/70">
+            <span className="h-px flex-1 bg-border" />
+            {replies.length} {replies.length === 1 ? "reply" : "replies"}
+            <span className="h-px flex-1 bg-border" />
+          </div>
+        )}
+        {replies.map((reply) => (
+          <MessageBubble key={reply.id} message={reply} botName={botName} />
+        ))}
+        <p className="px-2 pt-2 text-xs text-muted-foreground">
+          Mock thread &mdash; read-only demo content.
+        </p>
+      </div>
+    </SidePanel>
+  );
+}
+
 function TextSelectionToolbar({
   containerRef,
   onAddToChat,
@@ -690,6 +745,7 @@ export function ChatView({
   onCancelRun,
   onCompact,
   contextInfo,
+  readOnlyPlaceholder,
   mode,
   onModeChange,
   models,
@@ -746,6 +802,9 @@ export function ChatView({
   /** The session's effective model + context window (B1.1): feeds the slim
       approximate context meter near the composer. */
   contextInfo?: { modelLabel: string; contextWindow: number } | null;
+  /** Disables the composer and shows this placeholder instead (the Labs
+      mock chat is read-only demo content). */
+  readOnlyPlaceholder?: string;
   /** The session's current permission mode, for the composer's Mode selector. */
   mode?: SessionPermissionMode;
   /** Renders the composer's Mode selector when provided (the mock tour chat
@@ -1131,7 +1190,7 @@ export function ChatView({
                   mode={mode}
                   onModeChange={onModeChange}
                   isStreaming={isStreaming}
-                  disabled={!!pendingApproval}
+                  disabled={!!pendingApproval || readOnlyPlaceholder != null}
                   appendText={appendText}
                   onAppendConsumed={handleAppendConsumed}
                   initialText={editSeed ?? initialDraft}
@@ -1140,13 +1199,14 @@ export function ChatView({
                     else onInitialDraftConsumed?.();
                   }}
                   placeholder={
-                    isStreaming
+                    readOnlyPlaceholder ??
+                    (isStreaming
                       ? // "Steer" is only an honest promise while the daemon
                         // actually supports it (C1.2) — absent, sends queue.
                         enterBehavior === "steer" && onSteerMessage
                         ? "Steer the agent..."
                         : "Queue a message..."
-                      : "Send a message..."
+                      : "Send a message...")
                   }
                 />
               )}
@@ -1196,6 +1256,16 @@ function SidePanelForKind({
     case "toolcall":
       return <ToolCallPanel call={panel.call} {...shared} />;
     case "thread":
+      // Mock chat threads stay local: read-only replies, no daemon session.
+      if (isMockTourSession(parentSessionId)) {
+        return (
+          <MockThreadPanel
+            rootMessage={panel.message}
+            botName={botName}
+            {...shared}
+          />
+        );
+      }
       return (
         <ThreadPanel
           // Re-key per root message: switching threads must remount the

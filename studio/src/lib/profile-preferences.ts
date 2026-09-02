@@ -150,6 +150,30 @@ export function useSessionListSide() {
   return { side, setSide };
 }
 
+const MOCK_FEATURES_KEY = "mecatl-studio.mock-features";
+
+/**
+ * Labs preference: show the clearly-labeled mock feature-tour content (a
+ * synthetic chat demonstrating file cards, previews, and threads). Browser-
+ * local demo content only — nothing mock ever reaches the daemon. Default
+ * OFF; the key stores "1" only while enabled.
+ */
+export function useMockFeatures() {
+  const [enabled, setEnabledState] = useState(false);
+  useEffect(() => {
+    if (readLocalStorage(MOCK_FEATURES_KEY) === "1") {
+      setEnabledState(true);
+    }
+  }, []);
+
+  const setEnabled = useCallback((next: boolean) => {
+    setEnabledState(next);
+    writeLocalStorage(MOCK_FEATURES_KEY, next ? "1" : null);
+  }, []);
+
+  return { enabled, setEnabled };
+}
+
 const SHOW_TOOL_CALLS_KEY = "mecatl-studio.show-tool-calls";
 
 const showToolCallsListeners = new Set<() => void>();

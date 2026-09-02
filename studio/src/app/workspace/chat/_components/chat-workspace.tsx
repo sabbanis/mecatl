@@ -1,6 +1,12 @@
 "use client";
 
-import { Loader2, PanelLeft, PanelRight, SquarePen } from "lucide-react";
+import {
+  FolderPlus,
+  Loader2,
+  PanelLeft,
+  PanelRight,
+  SquarePen,
+} from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { toast } from "sonner";
@@ -19,6 +25,11 @@ import {
 } from "@/features/agent";
 import { useHarnessRuntime } from "@/features/agent/hooks/use-harness-runtime";
 import { useSessionMode } from "@/features/agent/hooks/use-session-mode";
+import {
+  isMockTourSession,
+  MOCK_TOUR_MESSAGES,
+  MOCK_TOUR_SESSION,
+} from "@/features/agent/mock-tour";
 import { useRuntimeStatus } from "@/features/agent/runtime-status";
 import { useConfirm } from "@/hooks/use-confirm";
 import { useIsCompact } from "@/hooks/use-mobile";
@@ -37,6 +48,7 @@ import { useDisabledModels } from "@/lib/model-preferences";
 import {
   type SessionListSide,
   useAgentDisplayName,
+  useMockFeatures,
   useSessionListSide,
 } from "@/lib/profile-preferences";
 import type { SessionPermissionMode } from "@/lib/protocol";
@@ -52,6 +64,7 @@ import { ResizeHandle } from "../../_components/resize-handle";
 import { ChatView } from "./chat-view";
 import {
   AgentList,
+  MockProjectList,
   type SessionActions,
   SessionList,
   SidebarGroup,
@@ -107,6 +120,7 @@ function SidebarContent({
   selectedId,
   onSelect,
   actions,
+  showMockProjects,
 }: {
   onNewChat: () => void;
   isLoading: boolean;
@@ -116,6 +130,8 @@ function SidebarContent({
   selectedId: string;
   onSelect: (id: string) => void;
   actions: SessionActions;
+  /** Labs mock features: list the demo project-grouped chats. */
+  showMockProjects: boolean;
 }) {
   return (
     <>
@@ -137,6 +153,23 @@ function SidebarContent({
           </TooltipTrigger>
           <TooltipContent side="bottom">New chat</TooltipContent>
         </Tooltip>
+        {/* Part of the Labs mock Projects demo: presentational only — there
+            is no project system to create into, so the button is inert. */}
+        {showMockProjects && (
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <Button
+                variant="ghost"
+                size="icon"
+                className="size-8 shrink-0 text-muted-foreground"
+                aria-label="New project"
+              >
+                <FolderPlus className="size-4" />
+              </Button>
+            </TooltipTrigger>
+            <TooltipContent side="bottom">New project</TooltipContent>
+          </Tooltip>
+        )}
       </div>
 
       <div className="flex-1 overflow-y-auto py-3">
@@ -145,23 +178,47 @@ function SidebarContent({
             {error}
           </p>
         )}
+        {/* The Labs mock Projects section leads the list: local demo
+            content, never daemon rows — same gate and labeling discipline
+            as the mock tour group. */}
+        {!isLoading && showMockProjects && (
+          <SidebarGroup label="Projects">
+            <MockProjectList />
+          </SidebarGroup>
+        )}
         {isLoading ? (
           <div className="flex items-center justify-center py-8">
             <Loader2 className="size-5 animate-spin text-muted-foreground" />
           </div>
         ) : groups.length > 0 ? (
-          <div className="flex flex-col gap-3">
-            {groups.map((group) => (
-              <SidebarGroup key={group.label} label={group.label}>
+          showMockProjects ? (
+            // Mock mode flattens the date groups under one "Chat" header so
+            // the demo's Projects/Chat split reads like the reference UI.
+            <div className="pt-3">
+              <SidebarGroup label="Chat">
                 <SessionList
-                  sessions={group.sessions}
+                  sessions={groups.flatMap((group) => group.sessions)}
                   selectedId={selectedId}
                   onSelect={onSelect}
                   actions={actions}
+                  cap={7}
                 />
               </SidebarGroup>
-            ))}
-          </div>
+            </div>
+          ) : (
+            <div className="flex flex-col gap-3">
+              {groups.map((group) => (
+                <SidebarGroup key={group.label} label={group.label}>
+                  <SessionList
+                    sessions={group.sessions}
+                    selectedId={selectedId}
+                    onSelect={onSelect}
+                    actions={actions}
+                  />
+                </SidebarGroup>
+              ))}
+            </div>
+          )
         ) : (
           !error && (
             <p className="text-center text-sm text-muted-foreground/50 py-8">
@@ -170,7 +227,11 @@ function SidebarContent({
           )
         )}
         {!isLoading && agents.length > 0 && (
-          <div className={groups.length > 0 ? "pt-3" : undefined}>
+          <div
+            className={
+              groups.length > 0 || showMockProjects ? "pt-3" : undefined
+            }
+          >
             <SidebarGroup label="Agents">
               <AgentList agents={agents} onStartChat={onNewChat} />
             </SidebarGroup>
@@ -305,6 +366,10 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const router = useRouter();
   const { name: agentName } = useAgentDisplayName();
   const { side: sidebarSide } = useSessionListSide();
+  // Labs preference: list the mock feature tour. The mock id is treated as
+  // mock UNCONDITIONALLY below (never handed to the daemon) — the toggle
+  // only controls whether the row is offered.
+  const { enabled: mockFeatures } = useMockFeatures();
   const isCompact = useIsCompact();
   const { confirm, ConfirmDialog } = useConfirm();
   const { prompt, PromptDialog } = usePrompt();
@@ -393,15 +458,23 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     [refreshSessions],
   );
 
+  // The Labs mock chat never talks to the daemon: its transcript is a local
+  // constant and its id must never reach the chat hook.
+  const isMockSelected = isMockTourSession(selectedId);
+
   // The draft keeps a null hook id even after its session is minted and the
   // URL updates — the hook already streams against the minted id internally.
   const hookSessionId =
-    selectedId && selectedId !== draftMintedIdRef.current ? selectedId : null;
+    selectedId && !isMockSelected && selectedId !== draftMintedIdRef.current
+      ? selectedId
+      : null;
 
   // The composer's permission mode. For an open chat this reads/writes the
   // live session (POST /mode); for a draft it is pending local state, read
   // via modeRef when the first send mints the daemon session below.
-  const { mode, modeRef, changeMode } = useSessionMode(selectedId || null);
+  const { mode, modeRef, changeMode } = useSessionMode(
+    isMockSelected ? null : selectedId || null,
+  );
   const getCreateMode = useCallback(() => modeRef.current, [modeRef]);
 
   // The composer's model picker: live daemon models minus the Studio-side
@@ -489,7 +562,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     useState<HarnessResolvedModel | null>(null);
   useEffect(() => {
     setResolvedModel(null);
-    if (!selectedId || !connected) return;
+    if (!selectedId || isMockTourSession(selectedId) || !connected) return;
     const controller = new AbortController();
     void fetchHarnessSessionDetail(selectedId, controller.signal)
       .then((detail) => {
@@ -505,7 +578,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const compactSupported = serverCapabilities.manual_compaction === true;
   const handleCompact = useCallback(async () => {
     const id = selectedIdRef.current;
-    if (!id) return;
+    if (!id || isMockTourSession(id)) return;
     try {
       const compacted = await compactHarnessSession(id);
       toast.success(
@@ -544,13 +617,18 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
         .sort((a, b) => (b.updatedAt ?? 0) - (a.updatedAt ?? 0)),
     [sessions, threadSessionIds],
   );
-  const groups = useMemo(
-    () => groupSessionsByRecency(orderedSessions),
-    [orderedSessions],
-  );
+  const groups = useMemo(() => {
+    const recency = groupSessionsByRecency(orderedSessions);
+    // The Labs mock tour pins atop the list under its own clearly-labeled
+    // group — local demo content, never a daemon row.
+    return mockFeatures
+      ? [{ label: "Mock", sessions: [MOCK_TOUR_SESSION] }, ...recency]
+      : recency;
+  }, [orderedSessions, mockFeatures]);
 
   const selectedSession = useMemo<AgentSession | undefined>(() => {
     if (!selectedId) return undefined;
+    if (isMockTourSession(selectedId)) return MOCK_TOUR_SESSION;
     const found = sessions.find((s) => s.id === selectedId);
     if (found) return found;
     // A just-minted draft's row may not have landed in the polled list yet;
@@ -609,6 +687,8 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
   const debugSupported = serverCapabilities.session_debug === true;
   const handleDebugSession = useCallback(
     async (id: string) => {
+      // The Labs mock row is local demo content — never a daemon target.
+      if (isMockTourSession(id)) return;
       const ok = await confirm({
         title: "Debug with AI",
         description:
@@ -709,6 +789,7 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
     selectedId,
     onSelect: handleSelectSession,
     actions: sessionActions,
+    showMockProjects: mockFeatures,
   };
 
   const dialogs = (
@@ -757,59 +838,80 @@ export function ChatWorkspace({ sessionId }: { sessionId?: string }) {
 
   const chatView = (open: boolean, onToggle: () => void) =>
     selectedSession ? (
-      <ChatView
-        session={selectedSession}
-        messages={messages}
-        isStreaming={isStreaming}
-        live={harnessLive}
-        usage={usage}
-        error={turnError}
-        onRetry={retryLast}
-        onSend={sendMessage}
-        queuedMessages={queuedMessages}
-        onQueueMessage={queueMessage}
-        onOpenSession={handleSelectSession}
-        onSteerQueued={steerQueued}
-        onDeleteQueued={deleteQueued}
-        onTakeQueued={takeQueued}
-        // Steer is capability-gated (C1.2): absent, mid-run sends queue and
-        // the composer's steer action degrades to queue.
-        onSteerMessage={steerSupported ? steerMessage : undefined}
-        onCancelRun={handleCancelRun}
-        onCompact={compactSupported ? handleCompact : undefined}
-        contextInfo={
-          resolvedModel && resolvedModel.contextWindow > 0
-            ? {
-                modelLabel: resolvedModel.modelId,
-                contextWindow: resolvedModel.contextWindow,
-              }
-            : null
-        }
-        botName={agentName}
-        sidebarOpen={open}
-        sidebarSide={sidebarSide}
-        onToggleSidebar={onToggle}
-        pendingApproval={pendingApproval}
-        onRespondApproval={respondToApproval}
-        pendingClarification={pendingClarification}
-        onRespondClarification={respondToClarification}
-        onRename={
-          selectedSession.canRename === true
-            ? () => sessionActions.onRename(selectedSession.id)
-            : undefined
-        }
-        onDelete={
-          selectedSession.canDelete === true
-            ? () => sessionActions.onDelete(selectedSession.id)
-            : undefined
-        }
-        onSidePanelOpenChange={handleSidePanelOpenChange}
-        mode={mode}
-        onModeChange={changeMode}
-        models={modelOptions}
-        autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
-        onSwitchModel={handleSwitchModel}
-      />
+      isMockSelected ? (
+        // The mock feature tour: a canned local transcript, a disabled
+        // composer, and zero daemon traffic (the hook id above is null).
+        <ChatView
+          session={selectedSession}
+          messages={MOCK_TOUR_MESSAGES}
+          isStreaming={false}
+          onSend={() => {}}
+          readOnlyPlaceholder="Mock chat — read-only"
+          botName={agentName}
+          sidebarOpen={open}
+          sidebarSide={sidebarSide}
+          onToggleSidebar={onToggle}
+          pendingApproval={null}
+          onRespondApproval={() => {}}
+          pendingClarification={null}
+          onRespondClarification={() => {}}
+          onSidePanelOpenChange={handleSidePanelOpenChange}
+        />
+      ) : (
+        <ChatView
+          session={selectedSession}
+          messages={messages}
+          isStreaming={isStreaming}
+          live={harnessLive}
+          usage={usage}
+          error={turnError}
+          onRetry={retryLast}
+          onSend={sendMessage}
+          queuedMessages={queuedMessages}
+          onQueueMessage={queueMessage}
+          onOpenSession={handleSelectSession}
+          onSteerQueued={steerQueued}
+          onDeleteQueued={deleteQueued}
+          onTakeQueued={takeQueued}
+          // Steer is capability-gated (C1.2): absent, mid-run sends queue and
+          // the composer's steer action degrades to queue.
+          onSteerMessage={steerSupported ? steerMessage : undefined}
+          onCancelRun={handleCancelRun}
+          onCompact={compactSupported ? handleCompact : undefined}
+          contextInfo={
+            resolvedModel && resolvedModel.contextWindow > 0
+              ? {
+                  modelLabel: resolvedModel.modelId,
+                  contextWindow: resolvedModel.contextWindow,
+                }
+              : null
+          }
+          botName={agentName}
+          sidebarOpen={open}
+          sidebarSide={sidebarSide}
+          onToggleSidebar={onToggle}
+          pendingApproval={pendingApproval}
+          onRespondApproval={respondToApproval}
+          pendingClarification={pendingClarification}
+          onRespondClarification={respondToClarification}
+          onRename={
+            selectedSession.canRename === true
+              ? () => sessionActions.onRename(selectedSession.id)
+              : undefined
+          }
+          onDelete={
+            selectedSession.canDelete === true
+              ? () => sessionActions.onDelete(selectedSession.id)
+              : undefined
+          }
+          onSidePanelOpenChange={handleSidePanelOpenChange}
+          mode={mode}
+          onModeChange={changeMode}
+          models={modelOptions}
+          autoModelLabel={routingEnabled ? "Auto-routed" : "Default model"}
+          onSwitchModel={handleSwitchModel}
+        />
+      )
     ) : null;
 
   return (
