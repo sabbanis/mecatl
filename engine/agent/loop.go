@@ -1186,8 +1186,16 @@ func (e *Engine) ContinueMCPAuthorization(ctx context.Context, sess *session.Ses
 // PrepareAfterMCPAuthorization prepares the ordinary model loop after the service
 // has durably paired a nonconnected authorization outcome. The caller must register
 // Run before Start so cancellation and expiry cannot lose the continuation.
+// AuthorizationPresentation is always true: this continuation's sole production
+// caller (internal/adapter/server's resolveMCPAuthorization) is reached only via
+// the authenticated Service boundary (RecheckMCPAuthorization/CancelMCPAuthorization),
+// mirroring ResumeApprovalWithPresentation's same rationale for ordinary approvals.
+// Without it, a SECOND protected tool call the model makes within this same
+// continued run hard-fails at postPreToolUse's "no interactive client attached"
+// gate — the first call's own resume works regardless, since it executes the
+// already-resolved pending call directly rather than re-checking this flag.
 func (e *Engine) PrepareAfterMCPAuthorization(ctx context.Context, sess *session.Session, env tool.Environment) *PreparedRun {
-	return e.prepareRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
+	return e.prepareRun(ctx, sess, RunRequest{AuthorizationPresentation: true}, func(ctx context.Context, r *Run) {
 		e.runLoop(ctx, r, sess, env, false)
 	})
 }
