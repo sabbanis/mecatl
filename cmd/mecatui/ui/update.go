@@ -714,6 +714,16 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		// A transport error has no semantic commit fact. Always pause and preserve
 		// staged follow-ups, regardless of legacy transient-looking status text.
 		m.conv.addError("stream error: " + friendlyWorkspaceEnrollmentRejection(msg.Err.Error()))
+		// The workspace-enrollment gate rejects the prompt before any run starts, so
+		// the just-submitted text was never sent anywhere — hand it to
+		// pendingInitialPrompt so finalizeWorkspaceEnrollmentConnected auto-resubmits
+		// it once /tools-connect resolves, instead of silently dropping it.
+		if isWorkspaceEnrollmentRejection(msg.Err.Error()) {
+			if p := strings.TrimSpace(m.lastSubmittedPromptText); p != "" {
+				m.pendingInitialPrompt = p
+			}
+		}
+		m.lastSubmittedPromptText = ""
 		m = m.endRun(stopError)
 		liveCmd := m.armLiveFeed()
 		mm, drainCmd := m.drainQueue(stopError)
@@ -2916,6 +2926,7 @@ func (m Model) submitPrompt() (tea.Model, tea.Cmd) {
 	// This is a genuine new user turn, so it starts a fresh one-retry budget.
 	// Automatic failed-step retry bypasses submitPrompt and therefore cannot re-arm itself.
 	m.failedStepRetryTried = false
+	m.lastSubmittedPromptText = text
 	if len(media.Descriptors) > 0 {
 		m.conv.addUserWithMedia(text, media.Descriptors)
 	} else {

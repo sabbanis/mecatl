@@ -770,6 +770,19 @@ type Model struct {
 	// re-fires. Empty = no seed (the default; today's behavior).
 	pendingInitialPrompt string
 
+	// lastSubmittedPromptText is the most recent text handed to submitPrompt,
+	// stashed there (text only — no media) so a workspace-enrollment rejection
+	// (StreamErrMsg carrying "workspace services must be connected before
+	// prompting") can auto-resubmit the exact same prompt once /tools-connect
+	// resolves, instead of silently dropping what the user typed. Consumed
+	// (and cleared) by the StreamErrMsg handler into pendingInitialPrompt,
+	// which already knows how to fire it via finalizeWorkspaceEnrollmentConnected
+	// — this field is ONLY a staging area for that one handoff, never read
+	// anywhere else. Overwritten on every submit; a submission that succeeds or
+	// fails for any OTHER reason just leaves a stale value here, harmless since
+	// nothing consults it outside that one rejection branch.
+	lastSubmittedPromptText string
+
 	// Startup-adopted chats remain protected until their first prompt reaches the
 	// server stream. A pre-SessionInit failure restores the authoritative transcript
 	// as a read-only retry/back view; no fallback session is ever created.

@@ -179,6 +179,48 @@ func TestStreamErrMsgAppliesWorkspaceEnrollmentRejection(t *testing.T) {
 	}
 }
 
+// TestWorkspaceEnrollmentRejectionAutoResubmits pins the full round trip a live
+// qualification run found missing: a rejected prompt must not be silently dropped.
+// Submitting a prompt before workspace services connect stashes the exact text
+// (lastSubmittedPromptText), the StreamErrMsg rejection hands it to
+// pendingInitialPrompt, and the connected event fires it automatically — the user
+// should never have to retype it.
+func TestWorkspaceEnrollmentRejectionAutoResubmits(t *testing.T) {
+	m, conv := newQueueModel(t)
+	m = typeText(t, m, "list PRs")
+	mm, _ := m.submitPrompt()
+	m = mm.(Model)
+	if m.lastSubmittedPromptText != "list PRs" {
+		t.Fatalf("lastSubmittedPromptText = %q, want %q", m.lastSubmittedPromptText, "list PRs")
+	}
+
+	mm, _ = m.Update(client.StreamErrMsg{Err: errors.New("rpc error: code = FailedPrecondition desc = server: failed precondition: workspace services must be connected before prompting")})
+	m = mm.(Model)
+	if m.pendingInitialPrompt != "list PRs" {
+		t.Fatalf("pendingInitialPrompt = %q after rejection, want %q", m.pendingInitialPrompt, "list PRs")
+	}
+	if m.lastSubmittedPromptText != "" {
+		t.Fatalf("lastSubmittedPromptText not cleared after handoff: %q", m.lastSubmittedPromptText)
+	}
+
+	m.enrollment.ID = "bundle-1"
+	mm, cmd := m.applyWorkspaceEnrollmentEvent(client.WorkspaceEnrollmentEventMsg{
+		EnrollmentID: "bundle-1", Backends: []string{"github"}, Status: "connected",
+	})
+	m = mm.(Model)
+	if m.pendingInitialPrompt != "" {
+		t.Fatalf("pendingInitialPrompt not consumed on auto-resolve: %q", m.pendingInitialPrompt)
+	}
+	if cmd == nil {
+		t.Fatal("connected event returned no command (expected the stashed prompt to resubmit)")
+	}
+	runBatchLeaves(cmd)
+	got := promptTexts(conv.send)
+	if len(got) != 1 || got[0] != "list PRs" {
+		t.Fatalf("resubmitted prompt frames = %v, want [\"list PRs\"]", got)
+	}
+}
+
 type workspaceEnrollmentControlFake struct {
 	connect      client.WorkspaceEnrollment
 	connectCalls int

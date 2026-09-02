@@ -193,8 +193,16 @@ func (m Model) finalizeWorkspaceEnrollmentConnected() (tea.Model, tea.Cmd) {
 // shape in a different domain), since it exists only to fill the one gap
 // where a model-facing gate had no model-visible way out.
 func friendlyWorkspaceEnrollmentRejection(raw string) string {
-	if strings.Contains(raw, "workspace services must be connected before prompting") {
+	if isWorkspaceEnrollmentRejection(raw) {
 		return "workspace services aren't connected — run /tools-connect to enable protected tools before prompting"
 	}
 	return raw
+}
+
+// isWorkspaceEnrollmentRejection reports whether raw is the same server rejection
+// friendlyWorkspaceEnrollmentRejection rewrites — shared so a StreamErrMsg handler
+// can decide whether to stash the just-rejected prompt for auto-resubmit, not just
+// reword the message.
+func isWorkspaceEnrollmentRejection(raw string) bool {
+	return strings.Contains(raw, "workspace services must be connected before prompting")
 }
