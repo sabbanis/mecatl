@@ -1349,7 +1349,10 @@ func (c *streamingCaller) call(ctx context.Context, _ session.SessionID, route R
 	if route.Protected {
 		_, ok := c.runtime.grant(c.sessionID, route.BackendID)
 		if !ok {
-			c.protected = nil // stale conn built on a now-revoked grant
+			if c.protected != nil {
+				_ = c.protected.Close() // stale conn built on a now-revoked grant
+				c.protected = nil
+			}
 			return session.NewToolError("", "broker authorization expired; re-run this tool to re-authorize"), nil
 		}
 		server = c.protected
@@ -1680,6 +1683,26 @@ func (r *Runtime) targetForRouteLocked(id session.SessionID, routeID string) (co
 	for _, route := range r.routes {
 		if route.Protected && route.Tool.Name == routeID {
 			return controlTarget{sessionID: id, backendID: route.BackendID}, true
+		}
+	}
+	// Bundled workspace enrollment (ADR 0287) never appends a dynamically
+	// discovered protected route to the static r.routes list -- discovery
+	// appends it directly onto this session's own SessionTools.tools
+	// (workspace_enrollment.go), scoped to what THIS session was actually
+	// granted. Without this fallback, CheckAuthorization/CancelAuthorization
+	// could never resolve a routeID for any such route, and a mid-turn
+	// authorization park could never be re-presented or resumed.
+	if opened, ok := r.sessions[id]; ok {
+		opened.mu.RLock()
+		defer opened.mu.RUnlock()
+		for _, wrapped := range opened.tools {
+			routed, ok := wrapped.(interface{ routeInfo() Route })
+			if !ok {
+				continue
+			}
+			if route := routed.routeInfo(); route.Protected && route.Tool.Name == routeID {
+				return controlTarget{sessionID: id, backendID: route.BackendID}, true
+			}
 		}
 	}
 	return controlTarget{}, false
@@ -2424,6 +2447,7 @@ type sessionTool struct {
 func (t *sessionTool) Spec() tool.ToolSpec { return copyRoute(t.route).Tool }
 func (t *sessionTool) ReadOnly() bool      { return t.route.ReadOnly }
 func (*sessionTool) DispatchSerial() bool  { return true }
+func (t *sessionTool) routeInfo() Route    { return t.route }
 
 type protectedSessionTool struct{ *sessionTool }
 
