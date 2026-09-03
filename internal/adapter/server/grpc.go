@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"strings"
 	"sync"
 
@@ -40,6 +41,8 @@ var _ mecatlv1.HarnessServiceServer = (*HarnessServer)(nil)
 
 // CreateSession allocates a new session and returns its id.
 func (h *HarnessServer) CreateSession(ctx context.Context, req *mecatlv1.CreateSessionRequest) (*mecatlv1.CreateSessionResponse, error) {
+	fmt.Fprintf(os.Stderr, "DEBUGTRACE grpc.CreateSession RECEIVED workspace=%q mode=%q profile=%q provider=%q model=%q source=%q debugTarget=%q mcpServers=%d\n",
+		req.GetWorkspace(), req.GetMode(), req.GetProfile(), req.GetProviderId(), req.GetModelId(), req.GetSourceSessionId(), req.GetDebugTargetSessionId(), len(req.GetMcpServers()))
 	// Session profile (issue #55): "" = default (full filesystem), "no-fs" = the
 	// no-filesystem profile; anything else is a loud InvalidArgument. The
 	// workspace requirement is PROFILE-AWARE and enforced in the service
@@ -78,8 +81,10 @@ func (h *HarnessServer) CreateSession(ctx context.Context, req *mecatlv1.CreateS
 	}
 	sess, err := h.svc.CreateSessionWithProfile(ctx, req.GetWorkspace(), modeFromProto(req.GetMode()), limitsFromProto(req.GetLimits()), sel, profile, opts...)
 	if err != nil {
+		fmt.Fprintf(os.Stderr, "DEBUGTRACE grpc.CreateSession CreateSessionWithProfile FAILED err=%v\n", err)
 		return nil, toStatus(err)
 	}
+	fmt.Fprintf(os.Stderr, "DEBUGTRACE grpc.CreateSession CreateSessionWithProfile SUCCEEDED id=%s\n", sess.ID)
 	// session_capabilities echoes the per-session resolved input capability (catalog
 	// ∩ adapter for THIS session's provider+model), which may differ from the
 	// server-wide capabilities when a non-default selector was supplied. Both read
@@ -1416,12 +1421,23 @@ func (h *HarnessServer) relayMCPAuthorizationControl(ctx context.Context, id ses
 	recorder := NewRunEventRecorder(logCtx, h.svc, id)
 	defer recorder.Close()
 
-	// The authoritative authorization status precedes its continuation. Once it
-	// cannot be delivered, keep that first transport failure caller-visible while
-	// cancelling and draining the already-registered continuation.
+	// The authoritative authorization status precedes its continuation. A control
+	// stream is a one-shot RPC, not the continuation's owner: the run is started on
+	// a context deliberately detached from this stream, so a transport failure here
+	// is NOT a cancellation. It is specifically the window in which the continuation
+	// parks a FOLLOW-UP authorization, and cancelling then destroys that park and
+	// leaves the session unrecoverably `cancelled` (H-K5/H-K23). Keep the failure
+	// caller-visible, keep draining into the log, and let the run finish.
+	//
+	// The one exception is a run this dead stream has stranded: while parked on a
+	// permission ask, the run emits nothing and only an approval frame — which no
+	// longer has a channel to arrive on — can move it. Cancel that, and only that.
 	sendErr := send(toProto(result.Event))
-	if sendErr != nil {
-		result.Run.Cancel()
+	parkedOnAsk := false
+	strand := func() {
+		if sendErr != nil && parkedOnAsk {
+			result.Run.Cancel()
+		}
 	}
 
 	var controlDone chan error
@@ -1457,15 +1473,19 @@ func (h *HarnessServer) relayMCPAuthorizationControl(ctx context.Context, id ses
 				if sendErr == nil {
 					sendErr = err
 				}
-				result.Run.Cancel()
+				strand()
 			}
 		case ev, ok := <-events:
 			if !ok {
 				events = nil
 				continue
 			}
+			// A parked run emits nothing, so an ask being the most recent event is
+			// what "parked awaiting approval" looks like from here.
+			parkedOnAsk = ev.Type == session.EvPermissionAsk
 			if sendErr != nil {
 				recorder.Observe(ev)
+				strand()
 				continue
 			}
 			if !h.svc.relayEvent(ctx, id, ev, false, recorder) {
@@ -1473,7 +1493,7 @@ func (h *HarnessServer) relayMCPAuthorizationControl(ctx context.Context, id ses
 			}
 			if err := send(toProto(ev)); err != nil {
 				sendErr = err
-				result.Run.Cancel()
+				strand()
 			}
 		}
 	}
@@ -1621,15 +1641,7 @@ func toProtoWatchEnvelope(env WatchEnvelope) *mecatlv1.WatchSessionEventsRespons
 // EvUserPrompt stay skipped (they are persistence-only; the client holds its
 // own verdict/compaction/prompt view).
 func isPublicEvent(ev session.Event) bool {
-	switch ev.Type {
-	case session.EvNetworkAttempt,
-		session.EvRequestManifest,
-		session.EvAuthorizationRequired,
-		session.EvAuthorizationResolved:
-		return false
-	default:
-		return true
-	}
+	return ev.Type != session.EvNetworkAttempt && ev.Type != session.EvRequestManifest
 }
 
 func relayLiveEvent(ev session.Event) bool {
