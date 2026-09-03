@@ -245,6 +245,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case liveMsg:
 		return m.updateLiveMsg(msg)
 
+	case mcpAuthorizationPollTickMsg:
+		return m.applyMCPAuthorizationPollTick(msg)
+
 	case tea.WindowSizeMsg:
 		return m.onResize(msg)
 
@@ -571,6 +574,9 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	case workspaceEnrollmentMsg:
 		mm, cmd := m.applyWorkspaceEnrollment(msg)
 		return mm, cmd, true
+	case workspaceEnrollmentPollTickMsg:
+		mm, cmd := m.applyWorkspaceEnrollmentPollTick(msg)
+		return mm, cmd, true
 	case client.SessionCompactedMsg:
 		if msg.RequestToken != m.compactRequestToken || msg.SessionID != m.sessionID || !m.compactPending {
 			return m, nil, true
@@ -844,7 +850,7 @@ func mcpAuthorizationNotice(msg client.MCPAuthorizationMsg) string {
 		target = " for " + displayName
 	}
 	if msg.Status == mcpAuthorizationStatusPending {
-		return "MCP authorization required" + target + ". Open Browser, Copy Link, Recheck, or Cancel."
+		return "MCP authorization required" + target + ". Open Browser or Copy Link to start automatic checking, or Cancel."
 	}
 	return fmt.Sprintf("MCP authorization%s: %s.", target, oneLine(sanitizeTerminal(msg.Status)))
 }
