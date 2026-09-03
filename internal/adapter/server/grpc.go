@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"strings"
 	"sync"
 
@@ -41,8 +40,6 @@ var _ mecatlv1.HarnessServiceServer = (*HarnessServer)(nil)
 
 // CreateSession allocates a new session and returns its id.
 func (h *HarnessServer) CreateSession(ctx context.Context, req *mecatlv1.CreateSessionRequest) (*mecatlv1.CreateSessionResponse, error) {
-	fmt.Fprintf(os.Stderr, "DEBUGTRACE grpc.CreateSession RECEIVED workspace=%q mode=%q profile=%q provider=%q model=%q source=%q debugTarget=%q mcpServers=%d\n",
-		req.GetWorkspace(), req.GetMode(), req.GetProfile(), req.GetProviderId(), req.GetModelId(), req.GetSourceSessionId(), req.GetDebugTargetSessionId(), len(req.GetMcpServers()))
 	// Session profile (issue #55): "" = default (full filesystem), "no-fs" = the
 	// no-filesystem profile; anything else is a loud InvalidArgument. The
 	// workspace requirement is PROFILE-AWARE and enforced in the service
@@ -81,10 +78,8 @@ func (h *HarnessServer) CreateSession(ctx context.Context, req *mecatlv1.CreateS
 	}
 	sess, err := h.svc.CreateSessionWithProfile(ctx, req.GetWorkspace(), modeFromProto(req.GetMode()), limitsFromProto(req.GetLimits()), sel, profile, opts...)
 	if err != nil {
-		fmt.Fprintf(os.Stderr, "DEBUGTRACE grpc.CreateSession CreateSessionWithProfile FAILED err=%v\n", err)
 		return nil, toStatus(err)
 	}
-	fmt.Fprintf(os.Stderr, "DEBUGTRACE grpc.CreateSession CreateSessionWithProfile SUCCEEDED id=%s\n", sess.ID)
 	// session_capabilities echoes the per-session resolved input capability (catalog
 	// ∩ adapter for THIS session's provider+model), which may differ from the
 	// server-wide capabilities when a non-default selector was supplied. Both read

@@ -950,6 +950,10 @@ type Service struct {
 	brokerMu          keyedMutex
 	// authorizationExpiry is Service-owned and guarded by mu.
 	authorizationExpiry map[session.SessionID]*authorizationExpiry
+	// beforeAuthorizationContinuationStart is an inert test synchronization seam.
+	// It is configured before serving and runs while the continuation handoff lock
+	// is held, immediately before cancellation is disarmed.
+	beforeAuthorizationContinuationStart func()
 	closed              bool
 	shutdownComplete    bool
 	closeMu             sync.Mutex
@@ -5776,8 +5780,9 @@ func (s *Service) appendEvent(ctx context.Context, id session.SessionID, ev sess
 //     streaming deltas and durably flushes them before this event when it is a
 //     boundary; client liveness never gates observation, so the post-disconnect
 //     tail still includes the terminal EvResult.
-//  2. skip the client wire for the five log-only kinds (EvApproval,
-//     EvCompactionArchive, EvUserPrompt, EvNetworkAttempt, EvRequestManifest) — recorded above but
+//  2. skip the client wire for the seven log-only kinds (EvApproval,
+//     EvCompactionArchive, EvUserPrompt, EvNetworkAttempt, EvRequestManifest,
+//     EvAuthorizationRequired, EvAuthorizationResolved) — recorded above but
 //     NOT forwarded.
 //  3. on EvPermissionAsk: Persist (snapshot semantics, gated to the healthy
 //     path — the passed ctx, NOT the cancel-detached one) and — when autoApprove
@@ -5805,10 +5810,12 @@ func (s *Service) relayEvent(ctx context.Context, id session.SessionID, ev sessi
 		}
 		s.mu.Unlock()
 	}
-	// EvApproval (3a), EvCompactionArchive (3b), EvUserPrompt (ADR 0038),
-	// EvNetworkAttempt (ADR 0255), and EvRequestManifest are consumed by the durable
-	// log ONLY — appended above but NOT relayed to the client wire. Debugger-only
-	// evidence never crosses an ordinary client surface.
+	// EvApproval (3a), EvCompactionArchive (3b), and EvUserPrompt (ADR 0038) are
+	// consumed by the durable log ONLY — appended above but NOT relayed to the
+	// client wire. EvNetworkAttempt (ADR 0255) and EvRequestManifest are the
+	// remaining isPublicEvent exclusions. authorization.required/resolved ARE
+	// relayed — cmd/mecatui/client/msgs.go decodes them into MCPAuthorizationMsg,
+	// the client's only signal to show the MCP-authorization modal.
 	if !isPublicEvent(ev) || ev.Type == session.EvApproval || ev.Type == session.EvCompactionArchive || ev.Type == session.EvUserPrompt {
 		return false
 	}
