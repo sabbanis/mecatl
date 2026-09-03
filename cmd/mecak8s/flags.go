@@ -33,7 +33,6 @@ import (
 
 	"github.com/stacklok/mecatl/engine/agent"
 	"github.com/stacklok/mecatl/engine/port"
-	"github.com/stacklok/mecatl/internal/adapter/server"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
@@ -43,8 +42,9 @@ import (
 // isolation, unlike mecated's single-user loopback trust model. Auth is still
 // configurable via --auth-token / --tls-* for a non-mesh deployment.
 const (
-	defaultGRPCAddr = "0.0.0.0:8080"
-	defaultHTTPAddr = "0.0.0.0:8081"
+	defaultGRPCAddr  = "0.0.0.0:8080"
+	defaultHTTPAddr  = "0.0.0.0:8081"
+	defaultDrainAddr = "0.0.0.0:8082"
 )
 
 // defaultK8sLeaseNamespace is the conventional namespace for the
@@ -78,6 +78,7 @@ type config struct {
 	diagnostics            port.Diagnostics
 	grpcAddr               string
 	httpAddr               string
+	drainAddr              string
 	workspace              string
 	model                  string
 	defaultProvider        string
@@ -272,7 +273,9 @@ func parseFlags(argv []string) (config, error) {
 	fs.StringVar(&cfg.grpcAddr, "grpc-addr", defaultGRPCAddr,
 		"gRPC listen address (a pod binds 0.0.0.0; set --auth-token and/or --tls-cert for a non-mesh deployment)")
 	fs.StringVar(&cfg.httpAddr, "http-addr", defaultHTTPAddr,
-		"HTTP/SSE listen address (carries /healthz, /readyz, /drain outside auth; the API mux inside auth)")
+		"HTTP/SSE listen address (carries /healthz and /readyz outside auth; the API mux inside auth)")
+	fs.StringVar(&cfg.drainAddr, "drain-addr", defaultDrainAddr,
+		"plaintext drain-only listen address (GET /drain for the kubelet preStop hook)")
 	fs.StringVar(&cfg.workspace, "workspace", "", "optional shared agent workspace root, e.g. a mounted PVC path. Empty (the default) is a FILE-LESS deployment: every session is no-FS. A non-empty ABSOLUTE path selects a server-assigned filesystem deployment rooted there — the operator vouches for the mount and clients cannot select another root (ADR 0237)")
 	fs.StringVar(&cfg.model, "model", "", "model identifier sent to the provider (empty: provider-appropriate default)")
 	fs.StringVar(&cfg.defaultProvider, "default-provider", "", "server-configured deployment-wide default provider id (e.g. openai, openrouter, anthropic); validated FAIL-FAST at startup")
@@ -507,21 +510,10 @@ const mecak8sServerImplementation = "mecak8s"
 // from the observability handles (issue #343): nil when telemetry is off (the
 // byte-identical no-metrics posture), non-nil when --otlp-* is set.
 func appConfig(cfg config, diag port.Diagnostics, obs observability) app.Config {
-	// Workspace authority is driven by whether an operator configured a root.
-	// Empty (the default) is a FILE-LESS deployment: never pass the process cwd
-	// (a container root) as an agent workspace — every session is no-FS. A
-	// non-empty root is a deliberately mounted filesystem (e.g. a PVC): a
-	// server-assigned deployment rooted there, so clients cannot select another
-	// root (ADR 0237). Session/harness state stays in Redis + the k8s API either
-	// way (ADR 0048); a mounted workspace holds agent working files, not state.
-	workspace, authority, authoritativeRoot := "", server.WorkspaceAuthorityFileless, ""
-	if cfg.workspace != "" {
-		workspace, authority, authoritativeRoot = cfg.workspace, server.WorkspaceAuthorityServerAssigned, cfg.workspace
-	}
+	// An empty configured root binds the deployment's no-FS placement; a
+	// non-empty root binds the operator-mounted filesystem.
 	out := app.Config{
-		Workspace:              workspace,
-		WorkspaceAuthority:     authority,
-		AuthoritativeWorkspace: authoritativeRoot,
+		Workspace:              cfg.workspace,
 		Model:                  cfg.model,
 		DefaultProvider:        cfg.defaultProvider,
 		DefaultModel:           cfg.defaultModel,

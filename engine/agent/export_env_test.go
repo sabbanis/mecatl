@@ -6,10 +6,13 @@
 
 package agent
 
-import "github.com/stacklok/mecatl/engine/tool"
+import (
+	"github.com/stacklok/mecatl/engine/session"
+	"github.com/stacklok/mecatl/engine/tool"
+)
 
 // EnvForWS wraps a Workspace into a tool.Environment with an optional bound
 // runner (exported for the external agent_test package).
 func EnvForWS(ws tool.Workspace, runner tool.CommandRunner) tool.Environment {
-	return testEnvironment(ws, runner)
+	return tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: ws.Root(), Revision: "in-tree-v1"}, ws, runner)
 }

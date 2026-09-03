@@ -124,7 +124,7 @@ func (j *engineJudge) Judge(ctx context.Context, candidates []BranchSummary, cri
 	sess := session.New(
 		session.SessionID(fmt.Sprintf("%s-%d", j.idPrefix, childSerial.Add(1))),
 		j.childMode,
-		"/",
+		judgeEnvironment.Ref(),
 		j.limits,
 		j.engine.now(),
 	)
@@ -258,12 +258,9 @@ func (judgeWorkspace) Glob(context.Context, string) ([]string, error) { return n
 func (judgeWorkspace) Grep(context.Context, string, string) ([]tool.GrepMatch, error) {
 	return nil, nil
 }
-
-type emptyReadLedger struct{}
-
-func (emptyReadLedger) RecordRead(context.Context, string, tool.FileVersion) error { return nil }
-func (emptyReadLedger) RecordedVersion(context.Context, string) (tool.FileVersion, bool, error) {
-	return tool.FileVersion{}, false, nil
+func (judgeWorkspace) RecordRead(string, tool.FileVersion) {}
+func (judgeWorkspace) RecordedVersion(string) (tool.FileVersion, bool) {
+	return tool.FileVersion{}, false
 }
 
 // Compile-time assertions.
@@ -278,4 +275,14 @@ var (
 // scores text without touching the parent tree. Built once via MustEnvironment
 // (a process-wide var is safe — the Environment is immutable and carries no
 // per-run state).
-var judgeEnvironment = tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "judge"}, judgeWorkspace{}, emptyReadLedger{}, nil)
+var judgeEnvironment = tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "judge", Revision: "in-tree-v1"}, judgeWorkspace{}, emptyReadLedger{}, nil)
+
+// emptyReadLedger is for shell-less, tool-less helper engines. Their catalog cannot
+// create file-read evidence, so retaining it would have no observable effect.
+type emptyReadLedger struct{}
+
+func (emptyReadLedger) RecordRead(context.Context, string, tool.FileVersion) error { return nil }
+
+func (emptyReadLedger) RecordedVersion(context.Context, string) (tool.FileVersion, bool, error) {
+	return tool.FileVersion{}, false, nil
+}

@@ -19,23 +19,27 @@ OPENAI_API_KEY=sk-... bin/mecatui --workspace "$PWD"
 
 ```sh
 bin/mecated serve &
-bin/mecatui connect 127.0.0.1:8080 --workspace "$PWD"
+bin/mecatui connect 127.0.0.1:8080
 ```
 
-For loopback connections, the client-selected workspace is evaluated on the server host
-and must be an absolute path available there. For a non-loopback target, mecatui sends
-an empty workspace and rejects `--workspace`; the remote server's listener authority
-chooses its configured root (or its no-FS profile). A client path is never a way to
-select a checkout inside a remote container or pod.
+Every connection uses the same path-free contract. `--workspace` is embedded/server
+operator configuration and is rejected by `mecatui connect`, including loopback. The
+server binds its configured default (or no-FS). `/worktrees` lists eligible alternatives
+from the owned source session and switches through an opaque short-lived selector; it
+never sends a path or exact environment ref. Selectors expire on server restart, so the
+client relists and keeps the current session if relist/switch fails.
 
 ## Connect securely
 
-A loopback server can use its local single-user trust model. If the server requires a bearer token, pass the token supplied by its operator:
+A loopback server can use its local single-user trust model. With no explicit credential,
+mecatui preserves an existing saved enrollment; if the local target has never been enrolled,
+it connects credential-free without creating login state. If the server requires a bearer
+token, pass the token supplied by its operator:
 
 ```sh
 export MECATL_AUTH_TOKEN="$(cat ~/.mecatl/token)"
 bin/mecatui connect 127.0.0.1:8080 \
-  --auth-token "$MECATL_AUTH_TOKEN" --workspace "$PWD"
+  --auth-token "$MECATL_AUTH_TOKEN"
 ```
 
 For a non-loopback endpoint, verified TLS is automatic; `--tls`, `--tls=true`,
@@ -54,6 +58,30 @@ bin/mecatui connect mecated.example.internal:443 \
 
 Authentication proves the caller's credential; TLS protects the connection and verifies the server. They are separate settings. Do not use `--insecure` except for controlled testing.
 
+Use connect-only `--anonymous` when you intentionally want no bearer even when saved OIDC
+enrollment exists. It bypasses saved credentials and has no environment equivalent. A static
+token from `--auth-token` or `MECATL_AUTH_TOKEN` wins if both are present. On a clean enrollment miss, mecatui
+already attempts a credential-free connection and lets the server decide whether caller
+authentication is required. Remote credential-free transport is never weakened by a private
+address or hostname: verified TLS remains the default, and plaintext additionally requires
+`--tls=false`.
+
+For example, a Tailscale deployment may deliberately make tailnet membership and ACLs the
+shared authority and transport boundary:
+
+```sh
+mecatui connect ozzllama:9080 --tls=false
+```
+
+Bind the server to one concrete Tailscale address, never a wildcard, and do not enable
+Funnel. Treat ACLs as load-bearing, use a dedicated server workspace with least OS
+authority, and configure a restrictive rate limit. Run it at `--posture strict` (or
+`trusted` only when its project inputs are trusted): `auto` and `yolo` weaken the remaining
+approval boundary. The server's prominent non-loopback no-caller-authentication warning is
+expected; ordinary TLS would not suppress it because TLS is not caller authentication. A
+non-loopback client does not select or upload its local workspace—the server remains the
+workspace authority.
+
 Caller identity is attribution, not tenant isolation: authenticated callers can still list and act on other callers' sessions. Do not treat a token-authenticated shared server as a tenancy boundary.
 
 ## Remote OIDC login
@@ -69,7 +97,8 @@ bin/mecatui connect mecated.example.internal:443 \
   --tls --tls-ca /path/to/server-ca.pem
 ```
 
-`mecatui login ADDRESS` runs the public OIDC Authorization Code + PKCE flow. It
+`mecatui login ADDRESS` runs the public OIDC Authorization Code + PKCE flow; it is
+persistent enrollment, never an anonymous-login command. It
 requires `--issuer`, `--client-id`, and `--audience`. It defaults to a public issuer
 verified against the system roots; the example above is a PRIVATE issuer, so it passes
 `--private-issuer`, which requires `--tls-ca`. The login `--tls-ca` verifies the issuer's discovery,
@@ -83,9 +112,14 @@ canonical-root-scoped, keyring-wrapped encrypted store. The credential is bound 
 canonical target and OIDC identity. An old unsuffixed keyring key is copied without
 deletion only when that root already contains an actual encrypted credential record; an
 empty opened namespace does not trigger migration. A credential enrolled under a legacy zero-padded port spelling
-needs one login after upgrade. `mecatui connect ADDRESS` never opens a browser; an
-unenrolled target is rejected before it dials and tells you to run `mecatui login
-ADDRESS` first.
+needs one login after upgrade. `mecatui connect ADDRESS` never opens a browser. Credential
+selection is explicit token, explicit `--anonymous`, saved enrollment, then a
+credential-free attempt for any clean missing enrollment. The server is authoritative: only
+an actual `Unauthenticated` RPC opens recovery and recommends `--auth-token` or
+`mecatui login ADDRESS`, which is OIDC enrollment. Explicit `--anonymous` deliberately
+bypasses saved state and gets rejection wording that says so. `PermissionDenied` remains an
+authorization failure, and network/TLS errors never offer authentication recovery. Corrupt
+or unreadable registry, keyring, or credential state never falls back anonymously.
 Add `--no-browser` to print the authorization URL for you to open yourself, which is
 what you want over SSH or on a headless host. Remote login listens at the registered
 `http://127.0.0.1:18473/oauth/callback`. Open the printed URL in a browser on your

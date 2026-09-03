@@ -50,7 +50,7 @@ func TestSearchMemoryToolThroughLoop(t *testing.T) {
 	)
 	e := newEngine(agent.Deps{LLM: llm, Catalog: cat})
 	ws := memfs.NewWorkspace("/ws")
-	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws"}, ws, memledger.New(), nil)
+	env := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: "/ws", Revision: "v1"}, ws, memledger.New(), nil)
 	r := e.Run(ctx, newSession(t, session.Limits{}), env, agent.RunRequest{Text: "find the test runner pref"})
 	evs := drain(r)
 

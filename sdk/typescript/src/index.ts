@@ -31,11 +31,16 @@ export type {
   TransportKind,
 } from "./errors.js";
 export {
+  ActivityGapError,
   AuthenticationError,
+  CursorExpiredError,
+  CursorMalformedError,
+  CursorScopeError,
   IncompatibleServerError,
   InvalidStateError,
   MECATL_ERROR_CODES,
   MecatlError,
+  NoRunsError,
   PermissionAskAlreadyResolvedError,
   PromptValidationError,
   ProtocolError,
@@ -114,3 +119,15 @@ export type {
   RunOptions,
   RunResult,
 } from "./run.js";
+export type {
+  AttachedRun,
+  AttachOptions,
+  SdkCursor,
+  SessionActivity,
+  UnknownWatchEnvelope,
+  WatchBoundaryEnvelope,
+  WatchEnvelope,
+  WatchEventEnvelope,
+  WatchGapEnvelope,
+} from "./watch.js";
+export { MECATL_ATTACH_FILTERED_KINDS, MECATL_WATCH_PHASES } from "./watch.js";

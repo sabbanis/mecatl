@@ -5,7 +5,7 @@ title: Cloud-native k8s with mecak8s
 
 # Cloud-native k8s with mecak8s
 
-`mecak8s` (`cmd/mecak8s`) is a thin composition-root binary that reuses the same `app.Build` assembly as `mecated`, but with Kubernetes-native defaults baked in. The agent pods hold no durable state: session snapshots and the event log live in Redis, and single-writer enforcement per session uses `coordination.k8s.io` Leases backed by the Kubernetes API server.
+`mecak8s` (`cmd/mecak8s`) is a thin composition-root binary that reuses the same `app.Build` assembly as `mecated`, but with Kubernetes-native defaults baked in. The chart defaults to two replicas for availability; one replica is supported when lower resource usage and simpler session routing are preferred over HA. The agent pods hold no durable state: session snapshots and the event log live in Redis, and single-writer enforcement per session uses `coordination.k8s.io` Leases backed by the Kubernetes API server.
 
 ```mermaid
 flowchart TD
@@ -21,6 +21,24 @@ flowchart TD
 ```
 
 Kill any pod. The survivor acquires the lease and resumes interrupted sessions from the Redis snapshot. The pod is disposable; the session is not.
+
+## Server-owned session placement
+
+Mecak8s uses the same path-free, server-owned placement contract as mecated. Its
+storage-free default binds new sessions to no-FS; clients omit placement or explicitly
+request `profile:"no-fs"` and never send a workspace/cwd/exact ref. Redis/driver state
+retains the exact private EnvironmentRef needed for reattachment. Schedule fires reauthorize
+that stored placement, and delegation cannot upgrade no-FS. A future remote filesystem
+provider can implement the same private Bind/Reattach contract without changing clients.
+
+## Drain endpoint isolation
+
+The chart runs a plaintext, Pod-only drain listener on port 8082. Kubernetes calls
+`GET /drain` there during preStop; normal HTTP/SSE API traffic, including TLS traffic,
+has no drain route. The Service intentionally exposes only gRPC and HTTP, not port
+8082. This protects Service and gateway traffic, but it is not a Pod-IP firewall:
+operators must restrict direct access to port 8082 with NetworkPolicy, mesh policy, or
+equivalent controls.
 
 ## Try mecak8s locally with Kind
 
@@ -154,8 +172,8 @@ ordinary offline tests. See the [fixture's setup and CA instructions](https://gi
 | `--posture` default | `strict` | `auto` |
 | Project-tier ingestion + read-only child shell | granted at `auto`/`yolo` by the interactive ladder | one root-aware trust decision — explicit `--trust-project`, `trustedWorkspaces:`, or remembered trust admits BOTH; without trust, headless auto gives allow-all with neither |
 | Bind address default | `127.0.0.1` (loopback) | `0.0.0.0` (pod netns) |
-| Workspace authority | Loopback client-selected by default | **Always server-assigned; no mounted root by default** |
-| New-session profile | Default filesystem profile unless requested otherwise | **`no-fs`** when the wire profile is omitted or empty (no mounted root); a filesystem session when `--workspace` mounts one |
+| Session placement | Server-owned local default configured by the operator; public clients send no path | **Server-owned no-FS default; no mounted root by default** |
+| New-session profile | Omitted profile binds the configured default; `no-fs` explicitly attenuates | Omitted or `no-fs` binds the no-FS default; no public workspace field |
 | Session store | In-memory or JSONL on disk (`--store-dir`); optional `--session-store-url` | **Redis only** (`--redis-url`; no `--store-dir`) |
 | Session lease | Optional (`--session-lease-k8s-namespace`) | **On by default** (`--session-lease-k8s-namespace=mecatl`) |
 | Prometheus `/metrics` listener | Yes | Opt-in (`--metrics-addr`, loopback only) |
@@ -167,9 +185,9 @@ ordinary offline tests. See the [fixture's setup and CA instructions](https://gi
 The `--redis-url` flag exists **only on `cmd/mecak8s`**. `mecated` does not expose it. If you want Redis-backed state with `mecated`, you need `mecak8s`.
 
 The no-FS default is intentional. A standard mecak8s pod is storage-free and
-has no authoritative filesystem root, so a client must not send a workspace
-path. Empty profile/workspace values request the no-FS session; they never mean
-“use the client cwd” or “choose a pod path.”
+has no authoritative filesystem root, so the server binds omitted/default profile
+to its configured no-FS placement. Clients never send a workspace path; explicit
+`profile:"no-fs"` attenuates to the same filesystem-free surface.
 
 ### Mounted workspace (shared filesystem root)
 
@@ -177,10 +195,8 @@ To give sessions a real filesystem, mount a volume into the pod and point
 `--workspace` at it (for example a PVC mounted at `/workspace`). A configured
 root turns mecak8s into a **server-assigned filesystem deployment** rooted
 there: every session is assigned that single root, the filesystem tools and
-Bash operate on it, and — because authority is server-assigned — a client still
-cannot select a different root (a non-empty client workspace is rejected with
-`InvalidArgument`). The path must be absolute and clean; a relative value is
-refused at startup.
+Bash operate on it, and clients have no field with which to select another root.
+The path must be absolute and clean; a relative value is refused at startup.
 
 This does not change mecak8s's storage-free posture: harness and session state
 still live in Redis and the Kubernetes API, and the mounted volume holds only
@@ -466,8 +482,7 @@ They default to the standard `tls.crt` and `tls.key` data keys; set the values
 when your Secret uses different PEM key names. The container receives the
 fixed mounted paths `/var/run/secrets/tls/<certKey>` and
 `/var/run/secrets/tls/<keyKey>` as `--tls-cert` and `--tls-key`, enabling TLS
-for both gRPC and HTTP/SSE. The chart also changes health, readiness, and drain
-requests to HTTPS. This is the in-pod TLS + OIDC secure real-provider posture;
+for both gRPC and HTTP/SSE. The chart also changes health and readiness requests to HTTPS; the Pod-only drain listener remains plaintext HTTP on port 8082. This is the in-pod TLS + OIDC secure real-provider posture;
 include the OIDC values shown above for a real provider. For an operator-owned edge
 TLS boundary instead, set `security.tlsTerminatedUpstream=true` with OIDC. Keeping
 `tls.enabled=true` is valid re-encryption and preserves that upstream attestation;
@@ -561,9 +576,9 @@ production install:
 | Template | What it creates |
 |---|---|
 | `rbac.yaml` | ServiceAccount + Role (lease verbs only) + RoleBinding |
-| `deployment.yaml` | Agent Deployment — `replicas: 2`, no PVC, storage-free |
+| `deployment.yaml` | Agent Deployment — `replicas: 2` by default (one is supported), no PVC, storage-free |
 | `service.yaml` | ClusterIP Service exposing gRPC (8080) and HTTP/SSE (8081) |
-| `pdb.yaml` | PodDisruptionBudget (`minAvailable: 1`) |
+| `pdb.yaml` | PodDisruptionBudget (`minAvailable: 1`) when `replicaCount >= 2`; omitted for one replica |
 | `raw-driver-networkpolicy.yaml` | Rendered only when `oidc.enabled` — scopes ingress on `app.kubernetes.io/component: raw-driver` pods to the agent pod only |
 | `redis-local.yaml` | Rendered only under the disposable `values-kind.yaml` profile (`redis.local.enabled`) — an in-cluster Redis StatefulSet + Service for Kind/offline use, never for production |
 
@@ -575,13 +590,13 @@ know.
 
 Key details from `deployment.yaml`:
 
-- `replicas: 2` with `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` — there is always a ready survivor during a rolling update.
+- `replicas: 2` by default with `RollingUpdate`, `maxSurge: 1`, `maxUnavailable: 0` — there is always a ready survivor during a multi-replica rolling update. With one replica, a surge replacement can preserve availability only if it schedules and becomes Ready.
 - `terminationGracePeriodSeconds: 60` — the bounded `GracefulStop` window.
 - No PVC, no `--store-dir`. The only `volumeMount` is `/tmp` for the Go runtime and SSE buffering under `readOnlyRootFilesystem: true`.
-- A `preStop` lifecycle hook calls `GET /drain` on the HTTP port. This arms the drain gate and blocks ~3 seconds for endpoint propagation before returning, so the kubelet's SIGTERM arrives after the pod has left the Service endpoints.
+- A `preStop` lifecycle hook calls plaintext `GET /drain` on the named Pod-only drain port (8082). This arms the drain gate and blocks ~3 seconds for endpoint propagation before returning, so the kubelet's SIGTERM arrives after the pod has left the Service endpoints. The Service still exposes only gRPC and HTTP/SSE; NetworkPolicy or mesh policy must restrict direct Pod-IP access to the drain port.
 - PSS `restricted` in full: `runAsNonRoot`, `allowPrivilegeEscalation: false`, `capabilities: drop: ALL`, `seccompProfile: RuntimeDefault`.
 
-The PDB ensures that voluntary disruptions (node drains, cluster autoscaler) never take both replicas offline simultaneously, keeping at least one pod available to hold leases and serve traffic.
+For `replicaCount: 1`, the chart omits the PDB so a voluntary disruption may evict the only pod instead of blocking the node drain. This mode is not HA: node failures, evictions, or an unschedulable replacement cause downtime, although Redis preserves successfully persisted session state. For two or more replicas, the PDB keeps at least one pod available during voluntary disruptions.
 
 ---
 
@@ -627,15 +642,15 @@ fullnameOverride=<name>` at install time to pin a different one.
 
 ## Readiness and health
 
-mecak8s exposes three endpoints on the HTTP port (default `0.0.0.0:8081`), all mounted **outside** the auth boundary:
+mecak8s exposes two unauthenticated probe endpoints on the HTTP port (default `0.0.0.0:8081`). A separate plaintext, Pod-only drain listener defaults to `0.0.0.0:8082` and serves only `GET /drain`:
 
 | Endpoint | Purpose |
 |---|---|
 | `GET /healthz` | Liveness — returns 200 unless the process is hung |
 | `GET /readyz` | Readiness — returns 200 only when `!draining && redisOK`; flips to 503 on drain or Redis failure |
-| `GET /drain` | preStop hook target — arms the drain gate, blocks ~3s for endpoint propagation, returns 200 |
+| `GET /drain` on port 8082 | preStop hook target — arms the drain gate, blocks ~3s for endpoint propagation, returns 200 |
 
-The `readyz` probe is dynamic: it calls `svc.StorageReady`, which pings the Redis store with a 2-second timeout. A Redis failure shows up as not-ready and removes the pod from Service endpoints without a restart.
+The Service exposes only ports 8080 and 8081, so normal Service/gateway API traffic cannot invoke `/drain`. Direct Pod-IP access to 8082 remains an operator network-isolation responsibility. The `readyz` probe is dynamic: it calls `svc.StorageReady`, which pings the Redis store with a 2-second timeout. A Redis failure shows up as not-ready and removes the pod from Service endpoints without a restart.
 
 ---
 
@@ -992,11 +1007,13 @@ Stated plainly so it is not inferred:
 
 ## Scaling
 
-Add replicas freely. The `coordination.k8s.io` Lease backend enforces single-writer per session: when two pods both try to start a run on the same session, the second gets `ErrSessionLeasedElsewhere` (HTTP 409 / gRPC `FAILED_PRECONDITION`). The acquiring pod renews its lease on a background goroutine; the interval defaults to `--session-lease-ttl / 3`.
+The chart defaults to two replicas for HA-oriented operation, but `replicaCount: 1` is supported when lower resource usage and simpler session routing are preferred. In single-replica mode there is no failover and the chart omits the PDB, so voluntary eviction can interrupt service; Redis preserves successfully persisted state, not availability.
+
+The `coordination.k8s.io` Lease backend enforces single-writer per session: when two pods both try to start a run on the same session, the second gets `ErrSessionLeasedElsewhere` (HTTP 409 / gRPC `FAILED_PRECONDITION`). The acquiring pod renews its lease on a background goroutine; the interval defaults to `--session-lease-ttl / 3`.
 
 No session affinity is required on the Service. The lease is the exclusion mechanism — not routing. A client can connect to any replica; if that replica does not hold the lease, the call fails with 409 and the client retries against another replica (or waits for the in-flight run to finish).
 
-The PodDisruptionBudget (`minAvailable: 1`) prevents voluntary disruptions from taking all replicas offline simultaneously.
+For two or more replicas, the PodDisruptionBudget (`minAvailable: 1`) prevents voluntary disruptions from taking all replicas offline simultaneously.
 
 For production load, note that Redis is a single point of failure in the default in-cluster setup (1 replica, no persistence). For high availability, use Redis Sentinel, Redis Cluster, or a managed service (ElastiCache, MemoryStore). The adapter talks to Redis generically — swapping the backing service is a manifest change; no adapter code changes.
 

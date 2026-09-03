@@ -185,6 +185,7 @@ func TestTelemetryMetricsAddrServesPrometheus(t *testing.T) {
 		"--metrics-addr", free,
 		"--grpc-addr", "127.0.0.1:0",
 		"--http-addr", "127.0.0.1:0",
+		"--drain-addr", "127.0.0.1:0",
 		"--session-lease-k8s-namespace", "", // no k8s apiserver in a test
 	})
 	if err != nil {
@@ -206,7 +207,7 @@ func TestTelemetryMetricsAddrServesPrometheus(t *testing.T) {
 
 	// Drive a run so the instruments record data before scraping. mecak8s is a
 	// file-less deployment (ADR 0237), so the session carries no workspace.
-	sess, err := built.Service.CreateSession(context.Background(), "", session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -292,6 +293,7 @@ func TestTelemetryPushesRunMetricsOnExit(t *testing.T) {
 		"--redis-allow-plaintext", // disposable miniredis fixture
 		"--grpc-addr", "127.0.0.1:0",
 		"--http-addr", "127.0.0.1:0",
+		"--drain-addr", "127.0.0.1:0",
 		"--session-lease-k8s-namespace", "", // no k8s apiserver in a test
 		"--otlp-metrics-endpoint", coll.addr(),
 		"--otlp-metrics-protocol", "http",
@@ -317,7 +319,7 @@ func TestTelemetryPushesRunMetricsOnExit(t *testing.T) {
 
 	// Drive a run so the instruments record data before the SIGTERM flush. mecak8s
 	// is a file-less deployment (ADR 0237), so the session carries no workspace.
-	sess, err := built.Service.CreateSession(context.Background(), "", session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}

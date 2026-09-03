@@ -33,6 +33,9 @@ import (
 // demoWorkspaceRoot is the root the in-memory demo workspace is mounted at.
 const demoWorkspaceRoot = "/workspace"
 
+// demoEnvironmentRevision identifies the in-memory demo environment.
+const demoEnvironmentRevision = "in-tree-v1"
+
 // demoFilePath is the file the scenario seeds and the model Reads.
 const demoFilePath = "greeting.txt"
 
@@ -68,12 +71,12 @@ func RunScenario(ctx context.Context, provider port.LLMProvider, model string) (
 	sess := session.New(
 		"demo-session",
 		session.ModeDefault,
-		demoWorkspaceRoot,
+		session.EnvironmentRef{Kind: session.EnvKindLocal, ID: demoWorkspaceRoot, Revision: demoEnvironmentRevision},
 		session.Limits{MaxTurns: 8, MaxToolCalls: 16, MaxConsecutiveFailures: 3},
 		time.Now(),
 	)
 
-	run := engine.Run(ctx, sess, tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: demoWorkspaceRoot}, ws, memledger.New(), nil), agent.RunRequest{Text: "Read greeting.txt and then save a note, then summarize."})
+	run := engine.Run(ctx, sess, tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: demoWorkspaceRoot, Revision: demoEnvironmentRevision}, ws, memledger.New(), nil), agent.RunRequest{Text: "Read greeting.txt and then save a note, then summarize."})
 
 	var events []session.Event
 	for ev := range run.Events() {
@@ -208,7 +211,7 @@ func RunTeamScenario(ctx context.Context) (agent.TeamOutcome, error) {
 		})}
 	}
 
-	baseEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: demoWorkspaceRoot}, base, memledger.New(), nil)
+	baseEnv := tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: demoWorkspaceRoot, Revision: demoEnvironmentRevision}, base, memledger.New(), nil)
 	sup := agent.NewSupervisor(tm, baseEnv, factory,
 		agent.WithTeamGoal("verify the demo greeting file is intact"),
 		agent.WithMemberStore(memstore.New()),
@@ -292,12 +295,12 @@ func RunBackgroundScenario(ctx context.Context) ([]session.Event, []string) {
 	sess := session.New(
 		"demo-background-session",
 		session.ModeDefault,
-		demoWorkspaceRoot,
+		session.EnvironmentRef{Kind: session.EnvKindLocal, ID: demoWorkspaceRoot, Revision: demoEnvironmentRevision},
 		session.Limits{MaxTurns: 8, MaxToolCalls: 16, MaxConsecutiveFailures: 3},
 		time.Now(),
 	)
 	bgWS := memfs.NewWorkspace(demoWorkspaceRoot)
-	run := engine.Run(ctx, sess, tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindMem, ID: demoWorkspaceRoot}, bgWS, memledger.New(), nil),
+	run := engine.Run(ctx, sess, tool.MustEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: demoWorkspaceRoot, Revision: demoEnvironmentRevision}, bgWS, memledger.New(), nil),
 		agent.RunRequest{Text: "Verify the greeting in the background, then report."})
 
 	var events []session.Event

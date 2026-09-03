@@ -573,12 +573,32 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.statusMsg = m.deps.Theme.Style("muted").Render("ready")
 		m.refreshView()
 		return m, nil, true
+	case worktreeSwitchReadyMsg:
+		if m.sessionID != msg.oldID || m.phase != phaseConnecting {
+			return m, nil, true
+		}
+		m = m.resetSession()
+		m.activePlacement = msg.placement
+		mm, bindCmd, handled := m.applySessionReady(msg.ready)
+		m = mm.(Model)
+		m.statusMsg = m.deps.Theme.Style("success").Render("worktree switched")
+		m.refreshView()
+		return m, tea.Batch(bindCmd, m.closeSessionCmd(msg.oldID)), handled
+	case worktreeSwitchFailedMsg:
+		if m.sessionID != msg.sourceID || m.phase != phaseConnecting {
+			return m, nil, true
+		}
+		m.phase = phaseIdle
+		m.statusMsg = m.deps.Theme.Style("errorText").Render("could not switch worktree: " + sanitizeTerminal(msg.err.Error()) + "; relist and try again")
+		focusCmd := m.prompt.Focus()
+		return m, focusCmd, true
 	case clearSessionReadyMsg:
 		// The replacement exists, so it is now safe to discard the old transcript
 		// and bind through the ordinary SessionReady machinery. Do this before
 		// scheduling the best-effort close: a close failure cannot disturb the
 		// already-active replacement.
 		m = m.resetSession()
+		m.activePlacement = msg.placement
 		mm, bindCmd, handled := m.applySessionReady(msg.ready)
 		m = mm.(Model)
 		// The replacement was created with desiredMode, so its ready echo confirms
@@ -779,7 +799,7 @@ func (m Model) onResolvedModelMsg(msg client.ResolvedModelMsg) (Model, tea.Cmd, 
 	}
 	m.sessionState = msg.State
 	m.sessionCreatedAt = msg.CreatedAt
-	m.activeWorkspace = msg.Workspace
+	m.activePlacement = msg.Placement
 	if (&m).setResolvedSessionModel(msg.Resolved) {
 		m.refreshView()
 	}
@@ -1373,8 +1393,8 @@ func applySubagentTo(c *conversation, msg client.SubagentMsg) {
 // applyParallel routes a BOUNDED Parallel fork-join projection into the GROUPED
 // parallelGroups state (keyed by ParentCallID), which backs the fleet footer segment and
 // the ctrl+a Parallel tab. Unlike Subagent it has no second inline-card destination: a
-// Parallel run's deliverable (the winner + fork paths) rides the tool RESULT text the
-// model reads; these events are the client observability channel only. The previews
+// Parallel run's deliverable (the winner summary + opaque artifact handle) rides
+// the tool RESULT text the model reads; these events are the client observability channel only. The previews
 // are bounded/scrubbed/client-only (gauntlet #7).
 func (m *Model) applyParallel(msg client.ParallelMsg) {
 	applyParallelTo(&m.conv, msg)
@@ -1393,9 +1413,9 @@ func applyParallelTo(c *conversation, msg client.ParallelMsg) {
 	case client.ParallelBranchTool:
 		c.parallelBranchTool(msg)
 	case client.ParallelBranchEnd:
-		c.parallelBranchEnd(msg.ParentCallID, msg.BranchIndex, msg.ChildID, msg.Usage, msg.ToolCount, msg.Stop, msg.Failed, msg.Workspace, msg.DurationMs)
+		c.parallelBranchEnd(msg.ParentCallID, msg.BranchIndex, msg.ChildID, msg.Usage, msg.ToolCount, msg.Stop, msg.Failed, msg.DurationMs)
 	case client.ParallelEnd:
-		c.parallelEnd(msg.ParentCallID, msg.Join, msg.BranchCount, msg.Winner, msg.WinnerWorkspace, msg.Stop)
+		c.parallelEnd(msg.ParentCallID, msg.Join, msg.BranchCount, msg.Winner, msg.Stop)
 	}
 }
 
@@ -1448,6 +1468,8 @@ func applyTeamTo(c *conversation, msg client.TeamMsg) {
 // chrome (which relayout measures) reflect the NEW width before the body height is
 // computed from them.
 func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
+	widthChanged := m.width != msg.Width
+	viewportHeight := m.vp.Height()
 	m.width = msg.Width
 	m.height = msg.Height
 	m.vp.SetWidth(m.width)
@@ -1465,10 +1487,16 @@ func (m Model) onResize(msg tea.WindowSizeMsg) (tea.Model, tea.Cmd) {
 	m.rend.setWidth(m.width)
 	// relayout sizes the viewport height from the measured layout (header + transients
 	// + input + footer) and, when the height changed, re-renders + re-derives
-	// auto-follow — the tail onResize used to do inline. The magic taH=4/footerH=2 and
+	// auto-follow — the tail onResize used to do inline. A width-only resize leaves
+	// that layout unchanged, so re-render below to replace any stale wrapped lines.
+	// The magic taH=4/footerH=2 and
 	// the header arithmetic are GONE; the heights are measured via lipgloss.Height of
 	// the rendered regions in chrome().
 	m.relayout()
+	if widthChanged && m.vp.Height() == viewportHeight {
+		m.refreshView()
+		m.syncStuck()
+	}
 	// Open modal surfaces derive geometry at Render time; no resize fan-out is needed.
 	return m, m.maybeKittyTransmit()
 }
@@ -1884,8 +1912,6 @@ func (m Model) applySessionsSurfaceIntent(intent surfaceIntent) (model tea.Model
 			m.prompt.Blur()
 		}
 		return m, nil, true, false
-	case sessionsAdoptionPreflightIntent:
-		return m, m.adoptionPreflightCmd(intent.row), true, false
 	case sessionsMigrationJobIntent:
 		m.maintenanceMigrationJobID = intent.jobID
 		return m, nil, true, false
@@ -2010,15 +2036,21 @@ func (m Model) retryPendingModeCmd() tea.Cmd {
 // while armed quits; the fatal screen quits on the first press; a first press with
 // staged input clears it (no arm); a first press on an empty prompt arms the guard,
 // shows the hint, and schedules the timed disarm. See onKey's doc for the rationale.
+func (m Model) quitNow() (tea.Model, tea.Cmd) {
+	if m.cancelRun != nil {
+		m.cancelRun()
+	}
+	return m, tea.Quit
+}
+
+// onQuitKey implements the guarded ctrl+c exit behavior. The immediate exit is
+// shared with /quit so both paths cancel an active run before Bubble Tea exits.
 func (m Model) onQuitKey() (tea.Model, tea.Cmd) {
 	// Already armed → a second ctrl+c within the window: quit now. The fatal
 	// (dead-connection) screen also exits on a single press — there is no input to
 	// clear and no run to protect, so the guard would only add friction.
 	if m.quitArmed || m.phase == phaseFatal {
-		if m.cancelRun != nil {
-			m.cancelRun()
-		}
-		return m, tea.Quit
+		return m.quitNow()
 	}
 	// First ctrl+c with staged input: clear the input (mirrors esc's clear-the-line)
 	// and do NOT arm — a single press to wipe a draft is expected.
@@ -2103,10 +2135,7 @@ func (m Model) resumeNotice() string {
 // deliberately separate chords + separate state so neither confirms the other.
 func (m Model) onQuitDKey() (tea.Model, tea.Cmd) {
 	if m.quitDArmed || m.phase == phaseFatal {
-		if m.cancelRun != nil {
-			m.cancelRun()
-		}
-		return m, tea.Quit
+		return m.quitNow()
 	}
 	// The caller's gate keeps the prompt empty here (a populated prompt keeps the
 	// chord in the textarea).

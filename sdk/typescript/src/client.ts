@@ -17,17 +17,31 @@ import {
   SessionBusyError,
   TransportError,
   type TransportKind,
+  UnsupportedFeatureError,
 } from "./errors.js";
 import {
   ContentSchema,
   type ConverseResponse,
   type Event,
   HarnessService,
+  type WatchSessionEventsResponse,
 } from "./gen/mecatl/v1/harness_pb.js";
 import { createHttpTransport, type HttpTransportOptions } from "./http.js";
 import { encodePrompt, type PromptCapabilities, type PromptInput } from "./media.js";
-import { createRawClient, type RawClient } from "./raw.js";
+import {
+  createRawClient,
+  invalidateRawCompatibility,
+  type RawClient,
+  registeredTransportOperations,
+} from "./raw.js";
 import { type ConverseFrame, type Run, RunImpl, type RunOptions } from "./run.js";
+import {
+  type AttachedRun,
+  type AttachOptions,
+  createAttachedRun,
+  createSessionActivity,
+  type SessionActivity,
+} from "./watch.js";
 
 /** The complete connection-state vocabulary exposed by the SDK. @public */
 export type ConnectionStatus =
@@ -87,7 +101,6 @@ export interface CreateSessionOptions {
   providerId?: string;
   reasoningEffort?: string;
   sourceSessionId?: string;
-  workspace?: string;
 }
 
 /** Optional overrides accepted when forking a session. @public */
@@ -99,6 +112,10 @@ export interface ForkSessionOptions {
 /** A durable mecatl session handle. @public */
 export interface Session {
   readonly id: string;
+  /** Attaches to an explicit run, or selects the newest run in the durable log. */
+  attach(runId?: string, options?: AttachOptions): Promise<AttachedRun>;
+  /** Opens the durable cross-run activity stream for this session. */
+  activity(options?: AttachOptions): Promise<SessionActivity>;
   /** Starts a run and resolves once its first run-ID-bearing event arrives. */
   run(prompt: PromptInput, options?: RunOptions): Promise<Run>;
   /** Releases runtime resources without removing the durable session. */
@@ -129,8 +146,20 @@ interface ClientCoreOptions {
   visibility: boolean;
 }
 
+type AttachmentConnectionStatus = "online" | "reconnecting" | "unauthorized" | "incompatible";
+
+interface AttachmentStatusWriter {
+  close(): void;
+  set(status: AttachmentConnectionStatus): void;
+}
+
 interface SessionOperations {
   assertOpen(): void;
+  attachmentStatus(): AttachmentStatusWriter;
+  cancelRun(sessionId: string, runId: string): Promise<void>;
+  readonly clientSignal: AbortSignal;
+  features(): Promise<ReadonlySet<string>>;
+  invalidateCompatibility(): void;
   readonly transportKind: TransportKind;
   stream<I extends DescMessage, O extends DescMessage>(
     method: DescMethodStreaming<I, O>,
@@ -140,6 +169,12 @@ interface SessionOperations {
     method: DescMethodUnary<I, O>,
     input: MessageInitShape<I>,
   ): Promise<MessageShape<O>>;
+  watch(
+    sessionId: string,
+    runId: string,
+    cursor: string,
+    signal: AbortSignal,
+  ): AsyncIterable<WatchSessionEventsResponse>;
 }
 
 type DisposableTransport = Transport & {
@@ -149,6 +184,14 @@ type DisposableTransport = Transport & {
 };
 
 const HEARTBEAT_INTERVAL_MS = 30_000;
+const CONNECTION_STATUS_PRECEDENCE: readonly ConnectionStatus[] = [
+  "incompatible",
+  "unauthorized",
+  "reconnecting",
+  "connecting",
+  "offline",
+  "online",
+];
 
 class SessionImpl implements Session {
   readonly id: string;
@@ -164,6 +207,16 @@ class SessionImpl implements Session {
     this.id = id;
     this.#operations = operations;
     this.#promptCapabilities = promptCapabilities;
+  }
+
+  async attach(runId?: string, options: AttachOptions = {}): Promise<AttachedRun> {
+    this.#operations.assertOpen();
+    return createAttachedRun(this.id, runId, this.#operations, options);
+  }
+
+  async activity(options: AttachOptions = {}): Promise<SessionActivity> {
+    this.#operations.assertOpen();
+    return createSessionActivity(this.id, this.#operations, options);
   }
 
   async run(prompt: PromptInput, options: RunOptions = {}): Promise<Run> {
@@ -259,6 +312,7 @@ class ClientImpl implements Client {
   readonly status: ConnectionStatusStore;
 
   readonly #abort = new AbortController();
+  readonly #attachmentStatuses = new Map<symbol, AttachmentConnectionStatus>();
   readonly #listeners = new Set<ConnectionStatusListener>();
   readonly #operations: SessionOperations;
   readonly #owned: boolean;
@@ -270,6 +324,7 @@ class ClientImpl implements Client {
   #closePromise: Promise<void> | undefined;
   #heartbeat: ReturnType<typeof setTimeout> | undefined;
   #heartbeatAbort: AbortController | undefined;
+  #requestStatus: ConnectionStatus = "connecting";
   #snapshot: ConnectionStatus = "connecting";
   #visibilityTarget: Document | undefined;
 
@@ -284,9 +339,20 @@ class ClientImpl implements Client {
     });
     this.#operations = {
       assertOpen: () => this.#assertOpen(),
+      attachmentStatus: () => this.#createAttachmentStatus(),
+      cancelRun: (sessionId, runId) => this.#cancelRun(sessionId, runId),
+      clientSignal: this.#abort.signal,
+      features: () => this.#features(),
+      invalidateCompatibility: () => invalidateRawCompatibility(this.#raw),
       stream: (method, input) => this.#stream(method, input),
       transportKind: this.#transportKind,
       unary: (method, input) => this.#unary(method, input),
+      watch: (sessionId, runId, cursor, signal) =>
+        this.#watch(
+          HarnessService.method.watchSessionEvents,
+          singleValue({ cursor, runId, sessionId }),
+          signal,
+        ),
     };
     this.sessions = {
       create: async (input) => {
@@ -341,6 +407,7 @@ class ClientImpl implements Client {
         transport: this.#transportKind,
       }),
     );
+    this.#attachmentStatuses.clear();
     this.#stopHeartbeat();
     this.#detachVisibility();
     this.#listeners.clear();
@@ -376,11 +443,43 @@ class ClientImpl implements Client {
     input: MessageInitShape<I>,
   ): Promise<MessageShape<O>> {
     this.#assertOpen();
-    if (this.#snapshot === "offline") this.#publish("reconnecting");
+    if (this.#requestStatus === "offline") this.#setRequestStatus("reconnecting");
     try {
       const response = await this.#raw.unary(method, input, { signal: this.#abort.signal });
-      this.#publish("online");
+      this.#setRequestStatus("online");
       return response;
+    } catch (error) {
+      this.#observeError(error);
+      throw error;
+    }
+  }
+
+  async #cancelRun(sessionId: string, runId: string): Promise<void> {
+    this.#assertOpen();
+    if (this.#transportKind === "grpc") {
+      throw new UnsupportedFeatureError("prompt_free_controls", { transport: "grpc" });
+    }
+    const cancel = registeredTransportOperations(this.#transport)?.cancelRun;
+    if (cancel === undefined) {
+      throw new UnsupportedFeatureError("attached_cancel", { transport: "http" });
+    }
+    if (this.#requestStatus === "offline") this.#setRequestStatus("reconnecting");
+    try {
+      await cancel(sessionId, runId, this.#abort.signal);
+      this.#setRequestStatus("online");
+    } catch (error) {
+      this.#observeError(error);
+      throw error;
+    }
+  }
+
+  async #features(): Promise<ReadonlySet<string>> {
+    this.#assertOpen();
+    if (this.#requestStatus === "offline") this.#setRequestStatus("reconnecting");
+    try {
+      const features = await this.#raw.features({ signal: this.#abort.signal });
+      this.#setRequestStatus("online");
+      return features;
     } catch (error) {
       this.#observeError(error);
       throw error;
@@ -390,11 +489,15 @@ class ClientImpl implements Client {
   #stream<I extends DescMessage, O extends DescMessage>(
     method: DescMethodStreaming<I, O>,
     input: AsyncIterable<MessageInitShape<I>>,
+    signal?: AbortSignal,
   ): AsyncIterable<MessageShape<O>> {
     this.#assertOpen();
-    const raw = this.#raw.stream(method, input, { signal: this.#abort.signal });
+    const raw = this.#raw.stream(method, input, {
+      signal:
+        signal === undefined ? this.#abort.signal : AbortSignal.any([this.#abort.signal, signal]),
+    });
     const observeError = (error: unknown) => this.#observeError(error);
-    const publishOnline = () => this.#publish("online");
+    const publishOnline = () => this.#setRequestStatus("online");
     return (async function* () {
       try {
         for await (const message of raw) {
@@ -408,9 +511,20 @@ class ClientImpl implements Client {
     })();
   }
 
+  #watch<I extends DescMessage, O extends DescMessage>(
+    method: DescMethodStreaming<I, O>,
+    input: AsyncIterable<MessageInitShape<I>>,
+    signal: AbortSignal,
+  ): AsyncIterable<MessageShape<O>> {
+    this.#assertOpen();
+    return this.#raw.stream(method, input, {
+      signal: AbortSignal.any([this.#abort.signal, signal]),
+    });
+  }
+
   async #probe(raw: RawClient, signal: AbortSignal = this.#abort.signal): Promise<void> {
     this.#assertOpen();
-    if (this.#snapshot === "offline") this.#publish("reconnecting");
+    if (this.#requestStatus === "offline") this.#setRequestStatus("reconnecting");
     try {
       await raw.unary(
         HarnessService.method.getCompatibilityInfo,
@@ -419,7 +533,7 @@ class ClientImpl implements Client {
           signal,
         },
       );
-      this.#publish("online");
+      this.#setRequestStatus("online");
     } catch (error) {
       this.#observeError(error);
       throw error;
@@ -429,22 +543,57 @@ class ClientImpl implements Client {
   #observeError(error: unknown): void {
     if (this.#closed) return;
     if (error instanceof AuthenticationError) {
-      this.#publish("unauthorized");
+      this.#setRequestStatus("unauthorized");
       return;
     }
     if (error instanceof IncompatibleServerError) {
-      this.#publish("incompatible");
+      this.#setRequestStatus("incompatible");
       return;
     }
     if (error instanceof TransportError) {
-      this.#publish("reconnecting");
-      this.#publish("offline");
+      this.#setRequestStatus("reconnecting");
+      this.#setRequestStatus("offline");
       return;
     }
-    if (error instanceof ServerError) this.#publish("online");
+    if (error instanceof ServerError) this.#setRequestStatus("online");
   }
 
-  #publish(status: ConnectionStatus): void {
+  #createAttachmentStatus(): AttachmentStatusWriter {
+    const id = Symbol("attachment-status");
+    let open = true;
+    this.#attachmentStatuses.set(id, "online");
+    this.#publishResolvedStatus();
+    return {
+      close: () => {
+        if (!open) return;
+        open = false;
+        this.#attachmentStatuses.delete(id);
+        this.#publishResolvedStatus();
+      },
+      set: (status) => {
+        if (!open || this.#closed) return;
+        this.#attachmentStatuses.set(id, status);
+        // A terminal floor failure remains useful after its attachment closes;
+        // the next successful ordinary exchange clears the deployment fact.
+        if (status === "incompatible") this.#requestStatus = status;
+        this.#publishResolvedStatus();
+      },
+    };
+  }
+
+  #setRequestStatus(status: ConnectionStatus): void {
+    if (this.#closed) return;
+    this.#requestStatus = status;
+    this.#publishResolvedStatus();
+  }
+
+  #publishResolvedStatus(): void {
+    const inputs = new Set<ConnectionStatus>([
+      this.#requestStatus,
+      ...this.#attachmentStatuses.values(),
+    ]);
+    const status = CONNECTION_STATUS_PRECEDENCE.find((candidate) => inputs.has(candidate));
+    if (status === undefined) return;
     if (this.#closed || status === this.#snapshot) return;
     this.#snapshot = status;
     for (const listener of [...this.#listeners]) {
@@ -541,6 +690,10 @@ class ClientImpl implements Client {
     this.#visibilityTarget?.removeEventListener("visibilitychange", this.#visibilityChanged);
     this.#visibilityTarget = undefined;
   }
+}
+
+async function* singleValue<T>(value: T): AsyncGenerator<T> {
+  yield value;
 }
 
 class ConverseInput implements AsyncIterable<ConverseFrame> {

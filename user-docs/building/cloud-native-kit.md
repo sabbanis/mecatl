@@ -119,11 +119,11 @@ ADR 0027 delivered the cloud-native arc in four independently-shippable phases.
 
 Made the snapshot faithful enough that a restarted process is indistinguishable mid-conversation. Three fields were added to `sessnap.Snapshot` (`engine/adapter/sessnap/sessnap.go`):
 
-- `profile` — session profile (`no-fs` vs default); the empty-workspace inference stays as a second defense.
+- `profile` — session profile (`no-fs` vs default); every session also carries an exact valid `EnvironmentRef`, and no-FS rehydration is derived from server-owned durable state rather than workspace emptiness.
 - `ProviderID`/`ModelID` — the provider/model selector pair, so `Service.rehydrateSession` rebuilds the SAME per-session engine rather than falling to the default-provider floor.
 - `usage` — cumulative `session.Usage` (input + output tokens, cache excluded), so the `MaxRunTokens` budget brake continues across restart.
 
-All three are additive `omitempty` fields — the snapshot format tag (`sessnap-json/1`) is unchanged. An older harness loading a newer snapshot silently drops the new fields; the empty-workspace inference keeps the no-fs path correct even in that downgrade case.
+These fields retain the `sessnap-json/1` envelope. Current snapshots also persist the exact private `EnvironmentRef{kind,id,revision}` as the sole placement identity; invalid or duplicate legacy placement state is rejected rather than inferred or migrated.
 
 ### Phase 2 — Awaiting-approval evict/rehydrate (SHIPPED)
 
@@ -174,8 +174,11 @@ mecak8s (`cmd/mecak8s`) is the **reference cloud-native deployment**. It is a th
 - Kubernetes `coordination.k8s.io/v1` lease per session (`internal/adapter/k8slease`).
 - `--headless` on, `--posture auto` by default.
 - SIGTERM triggers `Service.Drain()` (an `atomic.Bool draining` flag checked at `acquireLease`, returning `ErrUnavailable` / HTTP 503), then a bounded `GracefulStop` (30s, then `grpcSrv.Stop()` fallback). In-flight runs are cancelled, not drained, and `Recover`-able on the successor.
+- A plaintext Pod-only drain listener on port 8082 serves `GET /drain`; normal API
+  traffic cannot reach it through the Service or gateway. Direct Pod-IP access remains
+  an operator network-isolation responsibility.
 
-The `deploy/helm/mecak8s/` Helm chart provides the production deployment contract: namespace-scoped RBAC for `leases`, a storage-free agent Deployment (two replicas, no PVC), Service, and PodDisruptionBudget. The production profile does not create Redis and does not ship a general workload NetworkPolicy; the Kind/local profile can create a disposable Redis fixture, and enabling OIDC can render a narrow raw-driver NetworkPolicy. General network isolation remains the cluster policy layer.
+The `deploy/helm/mecak8s/` Helm chart provides the production deployment contract: namespace-scoped RBAC for `leases`, a storage-free agent Deployment (two replicas by default; one is supported when lower availability is acceptable), Service, and a PodDisruptionBudget for multi-replica operation. The production profile does not create Redis and does not ship a general workload NetworkPolicy; the Kind/local profile can create a disposable Redis fixture, and enabling OIDC can render a narrow raw-driver NetworkPolicy. General network isolation remains the cluster policy layer.
 
 For the full deployment guide, see [mecak8s deployment](/building/deployment/mecak8s.md).
 

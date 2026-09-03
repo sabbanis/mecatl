@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -56,8 +58,8 @@ func TestMecak8sRejectsOpenAICodexCredential(t *testing.T) {
 
 // TestParseFlagsK8sDefaults asserts the k8s-native defaults parse: --headless
 // defaults true, --posture defaults "auto", --session-lease-k8s-namespace
-// defaults "mecatl", --grpc-addr/--http-addr bind 0.0.0.0, and --redis-url is
-// empty by default (storage-free is opt-in via the flag, not forced).
+// defaults "mecatl", and --grpc-addr/--http-addr/--drain-addr bind 0.0.0.0,
+// and --redis-url is empty by default (storage-free is opt-in via the flag, not forced).
 func TestParseFlagsK8sDefaults(t *testing.T) {
 	def, err := parseFlags(nil)
 	if err != nil {
@@ -80,6 +82,9 @@ func TestParseFlagsK8sDefaults(t *testing.T) {
 	}
 	if def.httpAddr != defaultHTTPAddr {
 		t.Errorf("httpAddr default = %q, want %q", def.httpAddr, defaultHTTPAddr)
+	}
+	if def.drainAddr != defaultDrainAddr {
+		t.Errorf("drainAddr default = %q, want %q", def.drainAddr, defaultDrainAddr)
 	}
 	if def.redisURL != "" {
 		t.Errorf("redisURL default = %q, want empty (storage-free is opt-in)", def.redisURL)
@@ -173,7 +178,7 @@ func TestAppConfigHeadlessDefault(t *testing.T) {
 	}
 }
 
-func TestListenerScopedWorkspaceAuthority_Scenario4_Mecak8sDefaultsToNoFS(t *testing.T) {
+func TestMecak8sDefaultsToNoFS(t *testing.T) {
 	cfg, err := parseFlags([]string{"--mock", "--posture", "strict", "--no-soul", "--no-user-model", "--permissions-conventional=false", "--agents-conventional=false"})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
@@ -205,12 +210,12 @@ func TestListenerScopedWorkspaceAuthority_Scenario4_Mecak8sDefaultsToNoFS(t *tes
 	if sess.Profile != string(server.ProfileNoFS) {
 		t.Errorf("session profile = %q, want %q", sess.Profile, server.ProfileNoFS)
 	}
-	if sess.Workspace != "" {
-		t.Errorf("session workspace = %q, want empty for no-FS", sess.Workspace)
+	if sess.EnvironmentRef.Kind != session.EnvKindNoFS {
+		t.Errorf("session workspace = %q, want empty for no-FS", sess.EnvironmentRef)
 	}
 }
 
-func TestListenerScopedWorkspaceAuthority_Scenario4_Mecak8sRejectsFilesystemProfileAndWorkspace(t *testing.T) {
+func TestMecak8sRejectsUnsupportedFilesystemProfile(t *testing.T) {
 	cfg, err := parseFlags([]string{"--mock", "--posture", "strict", "--no-soul", "--no-user-model", "--permissions-conventional=false", "--agents-conventional=false"})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
@@ -231,8 +236,6 @@ func TestListenerScopedWorkspaceAuthority_Scenario4_Mecak8sRejectsFilesystemProf
 		name string
 		req  *mecatlv1.CreateSessionRequest
 	}{
-		{name: "empty wire profile with workspace", req: &mecatlv1.CreateSessionRequest{Workspace: "/caller/workspace"}},
-		{name: "no-fs with workspace", req: &mecatlv1.CreateSessionRequest{Profile: string(server.ProfileNoFS), Workspace: "/caller/workspace"}},
 		{name: "unsupported filesystem profile", req: &mecatlv1.CreateSessionRequest{Profile: "filesystem"}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -244,7 +247,7 @@ func TestListenerScopedWorkspaceAuthority_Scenario4_Mecak8sRejectsFilesystemProf
 	}
 }
 
-func TestListenerScopedWorkspaceAuthority_Scenario4_Mecak8sMountedWorkspaceIsServerAssigned(t *testing.T) {
+func TestMecak8sMountedWorkspaceIsServerAssigned(t *testing.T) {
 	// A configured --workspace (a mounted PVC path) is an operator-enabled
 	// filesystem deployment: server-assigned authority rooted at the mount, so a
 	// default-profile session mints on that root and a client cannot select
@@ -257,11 +260,8 @@ func TestListenerScopedWorkspaceAuthority_Scenario4_Mecak8sMountedWorkspaceIsSer
 	// Disable the k8s session lease (no kubeconfig in this offline test).
 	cfg.sessionLeaseK8sNamespace = ""
 	ac := appConfig(cfg, port.NopDiagnostics{}, observability{})
-	if ac.WorkspaceAuthority != server.WorkspaceAuthorityServerAssigned {
-		t.Fatalf("WorkspaceAuthority = %v, want ServerAssigned for a configured mount", ac.WorkspaceAuthority)
-	}
-	if ac.AuthoritativeWorkspace != mount || ac.Workspace != mount {
-		t.Fatalf("authoritative/workspace = %q/%q, want the mount %q", ac.AuthoritativeWorkspace, ac.Workspace, mount)
+	if ac.Workspace != mount {
+		t.Fatalf("workspace = %q, want the mount %q", ac.Workspace, mount)
 	}
 
 	built, err := app.Build(context.Background(), ac)
@@ -284,15 +284,11 @@ func TestListenerScopedWorkspaceAuthority_Scenario4_Mecak8sMountedWorkspaceIsSer
 	if sess.Profile != "" {
 		t.Errorf("session profile = %q, want default (filesystem) on a mounted deployment", sess.Profile)
 	}
-	if sess.Workspace != mount {
-		t.Errorf("session workspace = %q, want the deployment mount %q", sess.Workspace, mount)
+	if sess.EnvironmentRef.ID != mount {
+		t.Errorf("private session placement ID = %q, want exact configured mount %q", sess.EnvironmentRef.ID, mount)
 	}
 
-	// A client cannot select a different root: server-assigned rejects a non-empty
-	// client workspace before any filesystem access.
-	if _, err := harness.CreateSession(context.Background(), &mecatlv1.CreateSessionRequest{Workspace: "/client/root"}); status.Code(err) != codes.InvalidArgument {
-		t.Fatalf("CreateSession(client workspace) status = %s, want InvalidArgument", status.Code(err))
-	}
+	// A client cannot send placement authority; the generated request has no such field.
 }
 
 func TestParseFlagsMecak8sRejectsRelativeWorkspace(t *testing.T) {
@@ -301,7 +297,7 @@ func TestParseFlagsMecak8sRejectsRelativeWorkspace(t *testing.T) {
 	}
 }
 
-func TestListenerScopedWorkspaceAuthority_Scenario4_Mecak8sFixtureRunsNoFS(t *testing.T) {
+func TestMecak8sFixtureRunsNoFS(t *testing.T) {
 	cfg, err := parseFlags([]string{"--mock", "--posture", "strict", "--no-soul", "--no-user-model", "--permissions-conventional=false", "--agents-conventional=false"})
 	if err != nil {
 		t.Fatalf("parseFlags: %v", err)
@@ -319,7 +315,7 @@ func TestListenerScopedWorkspaceAuthority_Scenario4_Mecak8sFixtureRunsNoFS(t *te
 	}
 	defer built.Close()
 
-	sess, err := built.Service.CreateSession(context.Background(), "", session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -372,7 +368,7 @@ func TestBuildOverRedisDrivesRunToCompletion(t *testing.T) {
 	}
 	defer built.Close()
 
-	sess, err := built.Service.CreateSession(context.Background(), t.TempDir(), session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -424,7 +420,7 @@ func TestDrainRejectsNewRunsViaComposition(t *testing.T) {
 	if built.Service.IsDraining() {
 		t.Fatal("IsDraining = true on a fresh service, want false")
 	}
-	sess, err := built.Service.CreateSession(context.Background(), t.TempDir(), session.ModeDefault, session.Limits{})
+	sess, err := built.Service.CreateSession(context.Background(), session.ModeDefault, session.Limits{})
 	if err != nil {
 		t.Fatalf("CreateSession: %v", err)
 	}
@@ -438,11 +434,10 @@ func TestDrainRejectsNewRunsViaComposition(t *testing.T) {
 	}
 }
 
-// TestDrainHTTPFlipsReadyz asserts the /drain endpoint arms the drain gate and
-// the dynamic ReadyFunc flips to not-ready. It builds a real HealthHandler over
-// the composition Service's IsDraining + a nil-Redis (drain-gated-only)
-// readiness, drives /drain, and checks /readyz transitions 200→503.
-func TestDrainHTTPFlipsReadyz(t *testing.T) {
+// TestDrainHTTPRouting keeps lifecycle traffic off the normal API listener. The
+// drain handler is plaintext and isolated so a TLS/authenticated API endpoint
+// cannot expose a credential-free drain operation.
+func TestDrainHTTPRouting(t *testing.T) {
 	built, err := app.Build(context.Background(), app.Config{
 		Workspace:               t.TempDir(),
 		UseMock:                 true,
@@ -457,31 +452,156 @@ func TestDrainHTTPFlipsReadyz(t *testing.T) {
 	}
 	defer built.Close()
 
-	// The nil-Redis readiness branch (drain-gated only), as serve.go wires it.
-	ready := server.ReadyFunc(func() bool { return !built.Service.IsDraining() })
-	hh := server.NewHealthHandler(ready)
-	mux := http.NewServeMux()
-	hh.RegisterHealth(mux)
-	mux.HandleFunc("GET /drain", func(w http.ResponseWriter, _ *http.Request) {
-		built.Service.Drain()
-		// Skip the propagation sleep in the test (it's a fixed 3s window).
-		w.WriteHeader(http.StatusOK)
+	auth := server.NewAuthenticator(server.SecurityConfig{AuthToken: "test-token"})
+	defer auth.Close()
+	normal := httptest.NewServer(normalHTTPMux(built.Service, auth))
+	defer normal.Close()
+	drain := httptest.NewServer(drainHTTPMux(built.Service, func(time.Duration) {}))
+	defer drain.Close()
+
+	if code := probe(t, normal.URL+"/readyz"); code != http.StatusOK {
+		t.Fatalf("normal /readyz = %d, want 200", code)
+	}
+	if code := probe(t, normal.URL+"/v1/info"); code != http.StatusUnauthorized {
+		t.Fatalf("normal unauthenticated API = %d, want 401", code)
+	}
+	req, err := http.NewRequest(http.MethodGet, normal.URL+"/v1/info", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("normal authenticated API = %d, want 200", resp.StatusCode)
+	}
+	req, err = http.NewRequest(http.MethodGet, normal.URL+"/drain", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.Header.Set("Authorization", "Bearer test-token")
+	resp, err = http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = resp.Body.Close()
+	if resp.StatusCode != http.StatusNotFound {
+		t.Fatalf("normal authenticated /drain = %d, want 404", resp.StatusCode)
+	}
+
+	if code := probeMethod(t, http.MethodHead, drain.URL+"/drain"); code != http.StatusMethodNotAllowed {
+		t.Fatalf("drain HEAD /drain = %d, want 405", code)
+	}
+	if built.Service.IsDraining() {
+		t.Fatal("IsDraining = true after HEAD /drain, want false")
+	}
+
+	resp, err = http.Get(drain.URL + "/drain")
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, err := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if resp.StatusCode != http.StatusOK || string(body) != "draining\n" {
+		t.Fatalf("drain GET = %d %q, want 200 %q", resp.StatusCode, body, "draining\n")
+	}
+	if !built.Service.IsDraining() {
+		t.Fatal("IsDraining = false after drain endpoint, want true")
+	}
+	if code := probe(t, normal.URL+"/readyz"); code != http.StatusServiceUnavailable {
+		t.Fatalf("normal /readyz after drain = %d, want 503", code)
+	}
+	if code := probe(t, drain.URL+"/other"); code != http.StatusNotFound {
+		t.Fatalf("drain /other = %d, want 404", code)
+	}
+	if code := probeMethod(t, http.MethodPost, drain.URL+"/drain"); code != http.StatusMethodNotAllowed {
+		t.Fatalf("drain POST /drain = %d, want 405", code)
+	}
+}
+
+func TestServeWiresSeparateDrainListener(t *testing.T) {
+	cfg, err := parseFlags([]string{
+		"--mock",
+		"--grpc-addr", freeLoopbackPort(t),
+		"--http-addr", freeLoopbackPort(t),
+		"--drain-addr", freeLoopbackPort(t),
+		"--session-lease-k8s-namespace", "",
 	})
-
-	srv := httptest.NewServer(mux)
-	defer srv.Close()
-
-	// Before drain: ready (200).
-	if code := probe(t, srv.URL+"/readyz"); code != http.StatusOK {
-		t.Fatalf("readyz before drain = %d, want 200", code)
+	if err != nil {
+		t.Fatalf("parseFlags: %v", err)
 	}
-	// Hit /drain (arms the gate).
-	if code := probe(t, srv.URL+"/drain"); code != http.StatusOK {
-		t.Fatalf("/drain = %d, want 200", code)
+	built, err := app.Build(context.Background(), appConfig(cfg, port.NopDiagnostics{}, observability{}))
+	if err != nil {
+		t.Fatalf("app.Build: %v", err)
 	}
-	// After drain: not ready (503) — the endpoint controller would remove the pod.
-	if code := probe(t, srv.URL+"/readyz"); code != http.StatusServiceUnavailable {
-		t.Fatalf("readyz after drain = %d, want 503 (drain gate flips readiness)", code)
+	defer built.Close()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	serveErr := make(chan error, 1)
+	go func() {
+		serveErr <- serveWithDrainWait(ctx, cfg, built.Service, observability{}, func(time.Duration) {})
+	}()
+
+	waitForHTTPStatus(t, "http://"+cfg.httpAddr+"/drain", http.StatusNotFound)
+	if built.Service.IsDraining() {
+		t.Fatal("normal listener drained the service")
+	}
+	waitForHTTPStatus(t, "http://"+cfg.drainAddr+"/drain", http.StatusOK)
+	if !built.Service.IsDraining() {
+		t.Fatal("drain listener did not drain the service")
+	}
+
+	cancel()
+	select {
+	case err := <-serveErr:
+		if err != nil {
+			t.Fatalf("serve: %v", err)
+		}
+	case <-time.After(10 * time.Second):
+		t.Fatal("serve did not stop after cancellation")
+	}
+}
+
+func waitForHTTPStatus(t *testing.T, url string, want int) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		resp, err := http.Get(url)
+		if err == nil {
+			_ = resp.Body.Close()
+			if resp.StatusCode == want {
+				return
+			}
+		}
+		time.Sleep(25 * time.Millisecond)
+	}
+	t.Fatalf("%s did not return %d", url, want)
+}
+
+func TestListenCoreListenersClosesEarlierListenersOnDrainFailure(t *testing.T) {
+	drain, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _ = drain.Close() }()
+	cfg := config{grpcAddr: freeLoopbackPort(t), httpAddr: freeLoopbackPort(t), drainAddr: drain.Addr().String()}
+	_, _, _, err = listenCoreListeners(cfg)
+	if err == nil {
+		t.Fatal("listenCoreListeners succeeded with occupied drain address")
+	}
+	for _, addr := range []string{cfg.grpcAddr, cfg.httpAddr} {
+		lis, listenErr := net.Listen("tcp", addr)
+		if listenErr != nil {
+			t.Fatalf("listener %s remained open after drain failure: %v", addr, listenErr)
+		}
+		_ = lis.Close()
 	}
 }
 
@@ -541,6 +661,20 @@ func TestParseFlagsHasNoStoreDir(t *testing.T) {
 	if _, err := parseFlags([]string{"--store-dir", "/tmp/x"}); err == nil {
 		t.Fatal("parseFlags(--store-dir) = nil, want an error (mecak8s is storage-free; --store-dir is not a flag)")
 	}
+}
+
+func probeMethod(t *testing.T, method, url string) int {
+	t.Helper()
+	req, err := http.NewRequest(method, url, nil)
+	if err != nil {
+		t.Fatalf("new %s request: %v", method, err)
+	}
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("%s %s: %v", method, url, err)
+	}
+	defer func() { _ = resp.Body.Close() }()
+	return resp.StatusCode
 }
 
 // probe issues a GET and returns the status code.

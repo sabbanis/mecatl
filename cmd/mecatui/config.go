@@ -48,11 +48,11 @@ type config struct {
 	theme             string
 	themeDir          string
 	authToken         string
+	anonymous         bool
 	useTLS            bool
 	tlsExplicit       bool
 	tlsCA             string
 	insecure          bool
-	noSavedAuth       bool
 	listThemes        bool
 
 	// noAltScreen renders mecatui INLINE in the terminal's normal buffer instead
@@ -355,7 +355,7 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	cfg.browseSessions = len(browseSessions) > 0 && browseSessions[0]
 	fs := flag.NewFlagSet("mecatui", flag.ContinueOnError)
 	fs.SetOutput(out)
-	fs.StringVar(&cfg.workspace, "workspace", "", "absolute workspace root for a new session (default: cwd); an adopted session keeps its stored workspace")
+	fs.StringVar(&cfg.workspace, "workspace", "", "embedded server only: absolute deployment workspace root (default: cwd); not accepted by connect")
 	fs.StringVar(&cfg.mode, "mode", "default", "permission mode: default | plan | accept-edits")
 	fs.Func("debug-mcp", "debug sessions only: select one already-configured server-global streaming-HTTP MCP server by name (repeatable)", func(value string) error {
 		cfg.debugMCP = append(cfg.debugMCP, value)
@@ -369,10 +369,10 @@ func parseTransportFlags(mode transportMode, out io.Writer, args []string, brows
 	fs.StringVar(&cfg.theme, "theme", "", "theme name (default: aztec)")
 	fs.StringVar(&cfg.themeDir, "theme-dir", "", "extra directory of *.json themes to load")
 	fs.StringVar(&cfg.authToken, "auth-token", "", "bearer token for an external server (or MECATL_AUTH_TOKEN)")
+	fs.BoolVar(&cfg.anonymous, "anonymous", false, "bypass saved OIDC enrollment and send no bearer unless --auth-token or MECATL_AUTH_TOKEN supplies one")
 	fs.BoolVar(&cfg.useTLS, "tls", false, "use verified TLS for an external server (default for non-loopback targets; --tls=false explicitly permits plaintext)")
 	fs.StringVar(&cfg.tlsCA, "tls-ca", "", "path to a PEM CA bundle for external-server verification")
 	fs.BoolVar(&cfg.insecure, "insecure", false, "skip TLS verification (testing only)")
-	fs.BoolVar(&cfg.noSavedAuth, "no-saved-auth", false, "ignore saved remote login credentials")
 	fs.BoolVar(&cfg.listThemes, "list-themes", false, "list available themes and exit")
 	fs.BoolVar(&cfg.noAltScreen, "no-alt-screen", false, "render inline in the terminal's normal buffer instead of the alternate screen, preserving native scrollback/search")
 	fs.BoolVar(&cfg.noAltScreen, "inline", false, "alias for --no-alt-screen: render inline in the normal buffer, preserving native scrollback/search")
@@ -654,6 +654,12 @@ func finalizeParsedConfig(fs *flag.FlagSet, cfg *config) error {
 	if cfg.authToken == "" {
 		cfg.authToken = os.Getenv("MECATL_AUTH_TOKEN")
 	}
+	if cfg.authToken != "" {
+		// Static bearer credentials are the highest-priority credential source.
+		// --anonymous only overrides saved OIDC state when no static token was
+		// supplied explicitly or through MECATL_AUTH_TOKEN.
+		cfg.anonymous = false
+	}
 	if cfg.theme == "" {
 		cfg.theme = os.Getenv("MECATUI_THEME")
 	}
@@ -775,16 +781,9 @@ func transportUsage(fs *flag.FlagSet, mode transportMode, browseSessions ...bool
 // rejected before a dial or CreateSession call. Embedded and loopback workflows
 // retain the local cwd/worktree default.
 func configureWorkspaceForTransport(cfg *config) error {
-	if cfg.debugTarget != "" && cfg.transportMode == modeConnect {
+	if cfg.transportMode == modeConnect {
 		if cfg.workspaceExplicit {
-			return errors.New("--workspace is not allowed when connecting to a remote debug session")
-		}
-		cfg.workspace = ""
-		return nil
-	}
-	if cfg.transportMode == modeConnect && !client.IsLoopbackHost(cfg.connectAddress) {
-		if cfg.workspaceExplicit {
-			return errors.New("--workspace is not allowed when connecting to a remote server")
+			return errors.New("--workspace configures only the embedded server and is not allowed with connect")
 		}
 		cfg.workspace = ""
 		return nil
@@ -835,7 +834,7 @@ func (c config) validate() error {
 			return errors.New("debug conflicts with sessions launch")
 		}
 	}
-	if c.workspace == "" && c.debugTarget == "" && (c.transportMode != modeConnect || client.IsLoopbackHost(c.connectAddress)) {
+	if c.workspace == "" && c.debugTarget == "" && c.transportMode != modeConnect {
 		return errors.New("workspace is required")
 	}
 	if c.workspace != "" && !filepath.IsAbs(c.workspace) {

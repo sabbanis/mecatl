@@ -40,6 +40,12 @@ export const MECATL_ERROR_CODES = [
   "no_schedule_store",
   "not_awaiting_plan",
   "not_found",
+  "placement_binding_invalid",
+  "placement_changed",
+  "placement_selector_invalid",
+  "placement_selector_not_found",
+  "placement_selector_stale",
+  "placement_unavailable",
   "proposal_conflict",
   "request_too_large",
   "resource_exhausted",
@@ -73,9 +79,11 @@ export type ServerErrorCode = (typeof MECATL_ERROR_CODES)[number] | "unknown";
 /** @public */
 export type SDKErrorCode =
   | "authentication"
+  | "cursor_scope"
   | "incompatible_server"
   | "invalid_prompt"
   | "invalid_state"
+  | "no_runs"
   | "protocol"
   | "transport"
   | "unsupported_feature";
@@ -173,6 +181,47 @@ export class InvalidStateError extends MecatlError {
   }
 }
 
+/** Durable activity is known to contain a delivery gap. @public */
+export class ActivityGapError extends MecatlError {
+  constructor(
+    message = "The durable activity stream contains a known delivery gap",
+    options: Omit<MecatlErrorOptions, "code"> = { transport: "local" },
+  ) {
+    super(message, { ...options, code: "activity_gap" });
+  }
+}
+
+/** The server cursor belongs to a superseded event-log generation. @public */
+export class CursorExpiredError extends MecatlError {
+  constructor(message: string, options: Omit<MecatlErrorOptions, "code">) {
+    super(message, { ...options, code: "cursor_expired" });
+  }
+}
+
+/** An SDK cursor is not a structurally valid `sdkcur/1` envelope. @public */
+export class CursorMalformedError extends MecatlError {
+  constructor(
+    message = "The attachment cursor is malformed",
+    options: Omit<MecatlErrorOptions, "code"> = { transport: "local" },
+  ) {
+    super(message, { ...options, code: "cursor_malformed" });
+  }
+}
+
+/** An SDK cursor would widen the set of durable events delivered by its source view. @public */
+export class CursorScopeError extends MecatlError {
+  constructor(message = "The attachment cursor cannot resume the requested view") {
+    super(message, { code: "cursor_scope", transport: "local" });
+  }
+}
+
+/** The readable session log contains no event associated with a run. @public */
+export class NoRunsError extends MecatlError {
+  constructor() {
+    super("The session has no run-bearing events", { code: "no_runs", transport: "local" });
+  }
+}
+
 /** A structured prompt failed local validation before any request was sent. @public */
 export class PromptValidationError extends MecatlError {
   readonly reason: PromptValidationReason;
@@ -213,6 +262,22 @@ export class ServerError extends MecatlError {
     options: Omit<MecatlErrorOptions, "code"> & { code: ServerErrorCode },
   ) {
     super(message, options);
+  }
+}
+
+function errorFromServer(
+  message: string,
+  options: Omit<MecatlErrorOptions, "code"> & { code: ServerErrorCode },
+): MecatlError {
+  switch (options.code) {
+    case "activity_gap":
+      return new ActivityGapError(message, options);
+    case "cursor_expired":
+      return new CursorExpiredError(message, options);
+    case "cursor_malformed":
+      return new CursorMalformedError(message, options);
+    default:
+      return new ServerError(message, options);
   }
 }
 
@@ -257,7 +322,7 @@ export function errorFromProblem(
       transport: "http",
     });
   }
-  return new ServerError(message, {
+  return errorFromServer(message, {
     cause: problem,
     code,
     requestId: safeRequestId,
@@ -370,7 +435,7 @@ export function normalizeError(reason: unknown, transport: TransportKind): Mecat
     });
   }
   if (info?.domain === "mecatl.stacklok.com") {
-    return new ServerError(reason.rawMessage, {
+    return errorFromServer(reason.rawMessage, {
       cause: reason,
       code: serverCode(info.reason),
       requestId,

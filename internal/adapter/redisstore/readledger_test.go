@@ -357,7 +357,7 @@ func TestPersistentReadLedgers_RedisSessionDeletionRemovesLedger(t *testing.T) {
 	st := newLedgerTestStore(t)
 	ctx := context.Background()
 	const id session.SessionID = "delete-ledger-session"
-	if err := st.Save(ctx, session.New(id, session.ModeAccept, "/work", session.Limits{}, time.Now().UTC())); err != nil {
+	if err := st.Save(ctx, session.New(id, session.ModeAccept, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/work", Revision: "in-tree-v1"}, session.Limits{}, time.Now().UTC())); err != nil {
 		t.Fatalf("Save: %v", err)
 	}
 	if err := st.ReadLedger(id).RecordRead(ctx, "a.txt", tool.NewFileVersion("v1")); err != nil {
@@ -370,7 +370,7 @@ func TestPersistentReadLedgers_RedisSessionDeletionRemovesLedger(t *testing.T) {
 		t.Fatalf("RecordedVersion after Delete = (ok=%v, err=%v), want (false, nil)", ok, err)
 	}
 
-	if err := st.Save(ctx, session.New(id, session.ModeAccept, "/reused", session.Limits{}, time.Now().UTC())); err != nil {
+	if err := st.Save(ctx, session.New(id, session.ModeAccept, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/reused", Revision: "in-tree-v1"}, session.Limits{}, time.Now().UTC())); err != nil {
 		t.Fatalf("Save(reused id): %v", err)
 	}
 	if _, ok, err := st.ReadLedger(id).RecordedVersion(ctx, "a.txt"); err != nil || ok {
@@ -384,7 +384,7 @@ func TestPersistentReadLedgers_RedisConditionalDeletionRemovesLedger(t *testing.
 
 	t.Run("successful deletion removes evidence", func(t *testing.T) {
 		const id session.SessionID = "conditional-delete-success"
-		if err := st.Save(ctx, session.New(id, session.ModeAccept, "/work", session.Limits{}, time.Now().UTC())); err != nil {
+		if err := st.Save(ctx, session.New(id, session.ModeAccept, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/work", Revision: "in-tree-v1"}, session.Limits{}, time.Now().UTC())); err != nil {
 			t.Fatalf("Save: %v", err)
 		}
 		if err := st.ReadLedger(id).RecordRead(ctx, "a.txt", tool.NewFileVersion("v1")); err != nil {
@@ -414,7 +414,7 @@ func TestPersistentReadLedgers_RedisConditionalDeletionRemovesLedger(t *testing.
 
 	t.Run("failed deletion preserves evidence", func(t *testing.T) {
 		const id session.SessionID = "conditional-delete-failed"
-		sess := session.New(id, session.ModeAccept, "/work", session.Limits{}, time.Now().UTC())
+		sess := session.New(id, session.ModeAccept, session.EnvironmentRef{Kind: session.EnvKindLocal, ID: "/work", Revision: "in-tree-v1"}, session.Limits{}, time.Now().UTC())
 		if err := st.Save(ctx, sess); err != nil {
 			t.Fatalf("Save: %v", err)
 		}

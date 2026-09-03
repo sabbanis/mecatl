@@ -28,7 +28,7 @@ func TestPersistentReadLedgers_InvalidVersionRejected(t *testing.T) {
 	}
 }
 
-// TestInvariant_persistent_read_ledger_exact_version pins AC1.1 (ADR 0290):
+// TestInvariant_persistent_read_ledger_exact_version pins AC1.1 (ADR 0294):
 // recording a read stores the EXACT opaque FileVersion supplied by the
 // corresponding version-bearing read, and a lookup returns that SAME valid
 // token — without touching file content. This is ADR-0208's no-I/O evidence
@@ -63,7 +63,7 @@ func TestInvariant_persistent_read_ledger_exact_version(t *testing.T) {
 	}
 }
 
-// TestInvariant_persistent_read_ledger_lexical_key pins AC1.2 (ADR 0290):
+// TestInvariant_persistent_read_ledger_lexical_key pins AC1.2 (ADR 0294):
 // relative and ordinary in-root absolute spellings of the same file converge to
 // ONE ledger entry through the EXISTING I/O-free tool.LedgerKey normalization —
 // record by one spelling, look up by the other, with no filesystem inspection.

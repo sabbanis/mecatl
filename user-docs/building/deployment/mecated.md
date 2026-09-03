@@ -78,22 +78,25 @@ defence) on.
 Before binding a non-loopback address, add `--tls-cert` / `--tls-key` and
 `--auth-token` — see [the trust model](#the-trust-model) below.
 
-### Workspace authority follows listener topology
+### Server-owned session placement
 
-A loopback-only `mecated` (and embedded `mecatui`) lets a client choose an
-absolute workspace, which is the convenient local developer workflow. Any
-non-loopback, wildcard, or mixed `mecated` API listener instead uses a single
-**server-assigned** workspace. Configure that root with `--workspace`; clients
-must leave `CreateSession.workspace` empty. Empty means “use the server root,”
-not “use the client's current directory.”
+Every deployment owns session placement. `--workspace` configures the server's private
+local default; the public session API has no workspace, cwd, placement ID, or
+exact environment ref—even over loopback or an embedded UNIX socket. Omit `profile` to
+bind that default or request `profile:"no-fs"` to attenuate filesystem access.
 
-The server rejects any non-empty client workspace with `InvalidArgument` before
-it cleans or accesses that path, and refuses to start a server-assigned
-filesystem deployment without `--workspace`. If a reverse proxy makes a
-loopback listener remotely reachable, set `--workspace-authority=server-assigned`
-explicitly. This is one-root deployment authority, not remote multi-workspace
-authorization. A remote `mecatui` sends no local cwd and rejects an explicit
-workspace locally; other clients remain subject to server enforcement.
+`ListWorktrees(session_id)` discovers alternatives from an owned source session and
+returns safe labels plus a short-lived opaque selector. Only `ClearSession` and
+`ForkSession` accept it. `/clear` creates a non-destructive empty-history successor;
+Fork preserves valid history. Omitted selector inherits the source's exact placement.
+Selectors expire on restart, so clients relist; a failed relist or switch leaves their
+current session unchanged.
+
+The exact private `EnvironmentRef{kind,id,revision}` is persisted in snapshots and trusted
+driver storage and reattached at run entry. It is never exposed by public session/event
+projections. Schedules resolve and persist exact placement before firing, delegation
+derives it from the parent, and ACP cwd is only a local consistency assertion. See
+[ADR 0291](https://github.com/stacklok/mecatl/blob/main/docs/adr/0291-server-owned-session-placement.md).
 
 ## Operator-defined providers
 
@@ -453,20 +456,22 @@ mecatl exposes command and file execution. The security model has three layers:
 1. **Network binding.** Both listeners default to `127.0.0.1` — the loopback
    interface. No traffic crosses the machine.
 2. **Authentication.** Off by default for the loopback case. Enable a bearer token
-   (`--auth-token` / `MECATL_AUTH_TOKEN`) before binding a non-loopback address.
+   (`--auth-token` / `MECATL_AUTH_TOKEN`), OIDC, or mTLS before binding a non-loopback
+   address unless a deliberately controlled private network is the shared authority.
    [Caller identity](#caller-identity-oidc) is a separate, additive axis: a shared
    token is one credential with no subject behind it, while `--oidc-issuer` gives
    each caller a distinct identity. Identity records **who** acted; it does not
    yet decide **what** they may act on.
 3. **Transport.** Plaintext by default. Add `--tls-cert` + `--tls-key` for TLS;
-   add `--client-ca` to require and verify client certificates (mTLS).
+   add `--client-ca` to require and verify client certificates (mTLS). Ordinary TLS
+   encrypts traffic and authenticates the server, but does not authenticate callers.
 
 A non-loopback bind with no auth is **permitted** (a service mesh may legitimately
 front mecatl) but generates a prominent startup warning:
 
 ```
-WARN  API bound to a NON-loopback address with NO authentication: it exposes
-      UNAUTHENTICATED command/file execution to the network
+WARN  API bound to a NON-loopback address with NO caller authentication: it exposes
+      UNAUTHENTICATED command/file execution to every network caller
 ```
 
 This is not a hard failure — if you see it intentionally, your mesh owns the auth

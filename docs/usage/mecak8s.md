@@ -30,13 +30,13 @@ defaults **on** and `--posture` defaults to **`auto`** (an unattended daemon). L
 other shipped executables, exact top-level `mecak8s --version` prints its build identity
 and exits before loading normal configuration or starting listeners.
 
-`mecak8s` is always a server-assigned workspace deployment, but its normal
-storage-free pod has no mounted workspace. An omitted or empty wire `profile`
-therefore creates a `no-fs` session; clients must not send a workspace path, and
-any profile other than `no-fs` is rejected. The empty workspace/profile contract
-is intentional: it does not request a cwd from the client or an arbitrary path
-inside the pod. A mounted-workspace mode requires a future explicit operator
-design.
+`mecak8s` uses the same server-owned, path-free placement contract as every other
+composition root. Its normal storage-free pod configures the deployment default as no-FS,
+so omitted profile and explicit `"no-fs"` both bind the filesystem-free Environment;
+other profiles are rejected. Clients cannot send a workspace path, cwd, placement ID, or
+exact ref. A future remote filesystem provider can implement the same private Bind/Reattach
+contract without changing public clients. Exact private refs remain in snapshots/driver
+storage and each run or schedule fire reattaches them; delegation cannot upgrade no-FS.
 
 ```console
 $ go run ./cmd/mecak8s --redis-url redis:6379 --redis-allow-plaintext --session-lease-k8s-namespace mecatl --openai
@@ -65,7 +65,8 @@ $ go run ./cmd/mecak8s --redis-url redis:6379 --redis-allow-plaintext --session-
 | `--anthropic-cache-ttl` | `""` (API default, `5m`) | TTL stamped on every Anthropic ephemeral `cache_control` breakpoint: `5m` or `1h`. Empty omits the `ttl` field; any other value is ignored with a `WARN`. |
 | `--mock` | `false` | canned offline mock provider (no network, no API key) — used by the kind e2e. |
 | `--grpc-addr` | `0.0.0.0:8080` | gRPC listen address (a pod binds `0.0.0.0`, unlike `mecated`'s loopback). |
-| `--http-addr` | `0.0.0.0:8081` | HTTP/SSE listen address (carries `/healthz`, `/readyz`, `/drain` outside auth; the API mux inside auth). |
+| `--http-addr` | `0.0.0.0:8081` | HTTP/SSE listen address (carries `/healthz` and `/readyz` outside auth; the API mux inside auth). |
+| `--drain-addr` | `0.0.0.0:8082` | Plaintext drain-only listener serving only `GET /drain` for the kubelet preStop hook; it remains outside the Service and requires operator NetworkPolicy/mesh isolation against direct Pod-IP access ([ADR 0290](../adr/0290-mecak8s-drain-listener.md)). |
 | `--auth-token` / `--tls-cert` / `--tls-key` / `--client-ca` | `""` | bearer / TLS / mTLS — enable before binding a non-mesh address (a pod is otherwise fronted by the Service/mesh). |
 | `--max-run-tokens` / `--max-team-tokens` | `0` | loop-level / team-wide cumulative token ceilings (`0` = unlimited). |
 | `--mcp-server` | — | remote MCP server as `name=URL` (repeatable); a per-server bearer token is read from `MCP_<NAME>_TOKEN` (name upper-cased, token optional). Names must match `[A-Za-z0-9_]+` and be case-insensitively unique; a token-bearing URL must be `https` (or `http` to loopback). The same flag + env convention as `mecated`/`mecatequi` ([ADR 0082](../adr/0082-factory-mcp-wiring.md)). NOTE: the token is read **once at startup** and shared across all sessions for the pod's lifetime — per-run identity is a `mecatequi` property; a per-session credential source is future work (mecatl#342). |

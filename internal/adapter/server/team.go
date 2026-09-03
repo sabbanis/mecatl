@@ -99,9 +99,9 @@ type teamState struct {
 	run sync.Mutex
 }
 
-// CreateTeam allocates a new agent team over the given base workspace, enrols the
-// optional initial roster, and returns its server-assigned id together with the
-// enrolled roster. It builds the supervisor (binding the member-engine factory to
+// CreateTeamOnDefaultPlacement allocates a new agent team over the trusted default
+// placement, enrols an optional initial roster, and returns its server-assigned
+// id together with the enrolled roster. It builds the supervisor (binding the member-engine factory to
 // the shared team), then adds each member before the team is registered.
 //
 // Enrolment is ATOMIC: if any member fails to enrol the whole team is abandoned —
@@ -118,36 +118,45 @@ type teamState struct {
 // server budget; a positive value applies only when it is lower.
 //
 // It returns ErrTeamsDisabled when teams are not enabled.
-func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, maxTeamTokens int, members []agent.MemberSpec) (string, []team.Member, error) {
+// CreateTeamOnDefaultPlacement is the explicit trusted-composition entry for a
+// team that is not derived from an existing session.
+func (s *Service) CreateTeamOnDefaultPlacement(ctx context.Context, name, goal string, maxTeamTokens int, members []agent.MemberSpec) (string, []team.Member, error) {
 	if s.cfg.MemberEngine == nil {
 		return "", nil, ErrTeamsDisabled
 	}
-	workspace, _, err := s.workspaceForCreate(workspace, ProfileDefault)
+	binding, err := s.BindPlacement(ctx, DefaultPlacement(), PlacementOperationCreate)
 	if err != nil {
 		return "", nil, err
 	}
+	if binding.Close != nil {
+		defer func() { _ = binding.Close() }()
+	}
+	return s.createTeamInEnvironment(ctx, binding.Environment, name, goal, maxTeamTokens, members)
+}
+
+// CreateTeamForSession creates a team in an owning session's exact authorized
+// environment. The caller supplies no path or selector; no-FS is never upgraded.
+func (s *Service) CreateTeamForSession(ctx context.Context, source session.SessionID, name, goal string, maxTeamTokens int, members []agent.MemberSpec) (string, []team.Member, error) {
+	if source == "" {
+		return "", nil, fmt.Errorf("%w: session_id is required", ErrInvalidArgument)
+	}
+	_, env, err := s.ownedSessionEnvironment(ctx, source)
+	if err != nil {
+		return "", nil, err
+	}
+	if env.Workspace() == nil || env.Ref().Kind == session.EnvKindNoFS {
+		return "", nil, fmt.Errorf("%w: session has no filesystem placement", ErrFailedPrecondition)
+	}
+	return s.createTeamInEnvironment(ctx, env, name, goal, maxTeamTokens, members)
+}
+
+func (s *Service) createTeamInEnvironment(ctx context.Context, base tool.Environment, name, goal string, maxTeamTokens int, members []agent.MemberSpec) (string, []team.Member, error) {
+	if s.cfg.MemberEngine == nil {
+		return "", nil, ErrTeamsDisabled
+	}
+	workspace := base.Workspace().Root()
 
 	t := team.New(name)
-	baseWS := s.cfg.Workspaces(workspace)
-	// Build the team's base Environment: bind the runner for the team's root
-	// (the main runner when it's the launch root, a root-bound runner otherwise,
-	// shell-less when no factory is wired for a differing root). The forker builds
-	// its OWN runners for forked members, so this is the base-sharing member
-	// runner only.
-	var baseRunner tool.CommandRunner
-	if workspace == s.cfg.DefaultWorkspace {
-		baseRunner = s.cfg.CommandRunner
-	} else if s.cfg.CommandRunnerFactory != nil {
-		baseRunner = s.cfg.CommandRunnerFactory(workspace)
-	}
-	// The workspace is service-authorized and assigned, but a nil return from the
-	// Workspaces factory (a misconfigured factory, etc.) must not panic. NewEnvironment
-	// rejects a nil Workspace with a normal error; wrap it as ErrInvalidArgument so the
-	// caller sees a bad-request status rather than a server crash.
-	base, err := tool.NewEnvironment(session.EnvironmentRef{Kind: session.EnvKindLocal, ID: workspace}, baseWS, memledger.New(), baseRunner)
-	if err != nil {
-		return "", nil, fmt.Errorf("%w: team workspace could not be built: %w", ErrInvalidArgument, err)
-	}
 	factory := func(spec agent.MemberSpec, routedModel string) agent.MemberBuild {
 		return s.cfg.MemberEngine(t, spec, routedModel)
 	}
@@ -163,7 +172,6 @@ func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, 
 	opts := []agent.SupervisorOption{
 		agent.WithTeamGoal(goal),
 		agent.WithMemberSessionPrefix(agent.TeamSessionPrefix + id),
-		agent.WithTeamReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }),
 	}
 	if s.cfg.RootAuthority != nil {
 		opts = append(opts, agent.WithRootAuthority(s.cfg.RootAuthority(session.SessionKindTeamMember)))
@@ -188,6 +196,7 @@ func (s *Service) CreateTeam(ctx context.Context, workspace, name, goal string, 
 	if s.cfg.ReadOnlyForker != nil {
 		opts = append(opts, agent.WithReadOnlyForker(s.cfg.ReadOnlyForker))
 	}
+	opts = append(opts, agent.WithTeamReadLedgerFactory(func() tool.ReadLedger { return memledger.New() }))
 	if s.cfg.SharedBaseWorkspace != nil {
 		opts = append(opts, agent.WithTeamSharedBaseWorkspace(s.cfg.SharedBaseWorkspace))
 	}

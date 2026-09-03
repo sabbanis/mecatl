@@ -109,7 +109,10 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/gitenv"
 )
 
-// childRoot builds a content-only child Workspace over an isolated directory.
+// childRoot is the constructor the forker uses to build a child tool.Workspace
+// over an isolated directory. It is injected so this adapter does not import the
+// osfs adapter directly (avoiding an adapter→adapter dependency) and so tests can
+// substitute a workspace constructor. The composition root passes osfs.NewWorkspace.
 type childRoot func(root string) (tool.Workspace, error)
 
 // childRunner is the constructor the forker uses to build a BOUND tool.CommandRunner
@@ -224,9 +227,9 @@ func WithRunner(r childRunner) Option {
 	return func(f *Forker) { f.newRunner = r }
 }
 
-// New constructs the default Forker. newWorkspace builds only the child content
-// Workspace over an isolated directory; Fork separately attaches a fresh child
-// ReadLedger when it constructs the returned Environment. It must be non-nil.
+// New constructs the default Forker. newWorkspace builds a child tool.Workspace
+// over an isolated directory (the composition root passes osfs.NewWorkspace);
+// it must be non-nil.
 func New(newWorkspace func(root string) (tool.Workspace, error), opts ...Option) *Forker {
 	if newWorkspace == nil {
 		panic("forker: New requires a non-nil newWorkspace constructor")
@@ -348,7 +351,7 @@ func (f *Forker) childEnv(base tool.Environment, ws tool.Workspace) (tool.Enviro
 	if f.newRunner != nil {
 		runner = f.newRunner(root)
 	}
-	ref := session.EnvironmentRef{Kind: base.Ref().Kind, ID: root}
+	ref := session.EnvironmentRef{Kind: base.Ref().Kind, ID: root, Revision: base.Ref().Revision}
 	return tool.NewEnvironment(ref, ws, memledger.New(), runner)
 }
 

@@ -89,9 +89,7 @@ when the code that satisfies the plan has landed.
   application sessions, schedules, teams, memory, event streams, live runs, and
   model-facing object access; remote-driver enforcement is deferred to #452. Status:
   draft.
-- [Session storage continuity](session-storage-continuity.md) — bounded current snapshots,
-  indexed metadata, maintenance jobs, and writable legacy-session adoption. Status:
-  landed.
+- [Session storage continuity](session-storage-continuity.md) — historical storage plan: bounded current snapshots, indexed metadata, and maintenance jobs landed; its writable legacy-adoption criteria were superseded by ADR 0291. Status: draft historical record.
 - [Session continuity UX](session-continuity-ux.md) — authoritative session-family
   metadata, honest replay/inspection, an active-session copy surface, startup resume,
   and a final session-ID handoff for mecatui. Status: landed.
@@ -114,7 +112,13 @@ when the code that satisfies the plan has landed.
   debugger evidence/incarnation handles retain their exact existing identity contracts. Status:
   landed.
 
-- [Listener-scoped workspace authority](listener-scoped-workspace-authority.md) — network listeners assign one operator-configured filesystem root while embedded and loopback deployments retain client-selected workspaces; mecak8s is no-FS by default. Status: draft.
+- [Server-owned session placement](server-owned-session-placement.md) — removes public
+  filesystem-path authority: composition binds default/no-FS/remote environments;
+  alternate worktrees use fresh source-scoped opaque selectors only on clear/fork.
+  Status: landed.
+- [Listener-scoped workspace authority](listener-scoped-workspace-authority.md) — historical
+  draft superseded by ADR 0291's path-free contract; retained for context and excluded from
+  strict traceability. Status: draft.
 - [SDK server enablers](sdk-server-enablers.md) — the Go-side contracts the TypeScript
   SDK is built on: `GetServerInfo` + an open-string feature vocabulary, RFC 9457 typed
   errors, exact-origin CORS, a durable host-minted `run_id` with stale-control guards,
@@ -134,6 +138,13 @@ when the code that satisfies the plan has landed.
   set, an HTTP-only attached `cancel` carrying `expected_run_id` (attached
   approval deferred to an ack-only server route), and the offline
   daemon-restart and awaiting-resume e2e. Status: draft.
+- [TypeScript SDK local daemon and callback tools (M3)](sdk-typescript-local.md) —
+  `@stacklok/mecatl-sdk` M3: `spawn()`'s binary resolution, SDK-owned argv and
+  ready-file barrier, the UDS-only tool-capable topology with its lifetime pipe,
+  redacted startup-failure reporting, the spawned-versus-connected disposal
+  ownership matrix, `query()`'s one-shot lifecycle, callback `tool()` with local
+  schema validation and two-layer collision refusal, the hand-written loopback
+  streaming-HTTP MCP host, and the offline Node/Bun e2e. Status: draft.
 
 ## See also
 

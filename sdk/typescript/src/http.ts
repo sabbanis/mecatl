@@ -320,9 +320,8 @@ class HttpTransport implements Transport {
         };
         break;
       case "cancel":
-        route = { body: true, method: "POST", path: `${path}/cancel` };
-        body = { expected_run_id: kind.value.expectedRunId };
-        break;
+        await this.cancelRun(sessionId, kind.value.expectedRunId, signal);
+        return;
       case "cancelChild":
         route = { body: true, method: "POST", path: `${path}/cancel-child` };
         body = { child_id: kind.value.childId };
@@ -363,6 +362,23 @@ class HttpTransport implements Transport {
     if (!response.ok) await this.#problem(response);
   }
 
+  async cancelRun(
+    sessionId: string,
+    runId: string,
+    signal: AbortSignal | undefined,
+  ): Promise<void> {
+    const response = await this.#request(
+      {
+        body: true,
+        method: "POST",
+        path: `/v1/sessions/${encodeURIComponent(sessionId)}/cancel`,
+      },
+      { expected_run_id: runId },
+      signal,
+    );
+    if (!response.ok) await this.#problem(response);
+  }
+
   async stream<I extends DescMessage, O extends DescMessage>(
     method: DescMethodStreaming<I, O>,
     signal: AbortSignal | undefined,
@@ -387,6 +403,18 @@ class HttpTransport implements Transport {
         body: false,
         method: "GET",
         path: `/v1/sessions/${encodeURIComponent(stringField(jsonInput, "session_id"))}/events`,
+      };
+    } else if (method.name === "WatchSessionEvents") {
+      const query = new URLSearchParams();
+      const cursor = stringField(jsonInput, "cursor");
+      const runId = stringField(jsonInput, "run_id");
+      if (cursor !== "") query.set("cursor", cursor);
+      if (runId !== "") query.set("run_id", runId);
+      const suffix = query.toString();
+      route = {
+        body: false,
+        method: "GET",
+        path: `/v1/sessions/${encodeURIComponent(stringField(jsonInput, "session_id"))}/watch${suffix === "" ? "" : `?${suffix}`}`,
       };
     } else if (method.name === "Converse") {
       const frame = firstInput as unknown as ConverseRequest;
@@ -484,6 +512,10 @@ class HttpTransport implements Transport {
         if (wrapEvent) {
           const event = (message as { readonly event?: object | undefined }).event;
           if (event !== undefined) registerRawJson(event, raw);
+        } else if (method.name === "WatchSessionEvents") {
+          const event = (message as { readonly event?: object | undefined }).event;
+          const rawEvent = record(raw).event;
+          if (event !== undefined && rawEvent !== undefined) registerRawJson(event, rawEvent);
         }
         yield message;
       }
@@ -559,5 +591,8 @@ async function* parseSSE(
 
 /** Creates the browser-safe mecated HTTP/JSON/SSE implementation of Connect Transport. @public */
 export function createHttpTransport(options: HttpTransportOptions): Transport {
-  return registerTransport(new HttpTransport(options), "http");
+  const transport = new HttpTransport(options);
+  return registerTransport(transport, "http", {
+    cancelRun: (sessionId, runId, signal) => transport.cancelRun(sessionId, runId, signal),
+  });
 }

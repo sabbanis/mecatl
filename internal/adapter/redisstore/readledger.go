@@ -57,7 +57,7 @@ var _ tool.ReadLedger = (*redisLedger)(nil)
 // this Store's Redis client. Independently constructed handles for the SAME
 // session id (including from separate *Store instances/process — see New) all
 // read and write the same durable Redis hash, so a version recorded through
-// one handle is visible after reopening another (ADR 0290 Scenario 2).
+// one handle is visible after reopening another (ADR 0294 Scenario 2).
 func (st *Store) ReadLedger(id session.SessionID) tool.ReadLedger {
 	return &redisLedger{clients: st.clients, id: id}
 }

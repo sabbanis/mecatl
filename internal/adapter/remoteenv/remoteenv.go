@@ -49,7 +49,10 @@ import (
 // engine/session — the EnvironmentKind set is open, and a real remote transport
 // (or another out-of-tree backend) adds its own label without widening the
 // session package.
-const Kind session.EnvironmentKind = "remote-fake"
+const (
+	Kind     session.EnvironmentKind = "remote-fake"
+	revision string                  = "remote-fake-v1"
+)
 
 // ErrUnknownNamespace is returned by Resolve/NewEnvironment when the requested
 // namespace id does not exist in the Backend's registry. A non-in-tree ref
@@ -131,7 +134,7 @@ func (b *Backend) NewEnvironment(label string) (tool.Environment, error) {
 	ns := b.createNamespace(id)
 	ws := &workspace{ns: ns}
 	runner := &runner{ns: ns}
-	return tool.NewEnvironment(session.EnvironmentRef{Kind: Kind, ID: id}, ws, memledger.New(), runner)
+	return tool.NewEnvironment(session.EnvironmentRef{Kind: Kind, ID: id, Revision: revision}, ws, memledger.New(), runner)
 }
 
 // Resolve reattaches a LIVE Environment to the namespace named by ref.ID,
@@ -255,11 +258,13 @@ func (b *Backend) RehydrateForTest(id string, src tool.Workspace) error {
 
 // workspace is the tool.Workspace bound to a single namespace. Multiple
 // workspaces over the same namespace share the mutex-guarded file map, so the
-// version ledger is per-handle (RecordRead/RecordedVersion, ADR 0281 —
-// a fresh in-memory tool.ReadLedger by default) while the authoritative
-// content+version lives on the shared namespace.
+// version ledger is per-handle (RecordRead/RecordedVersion) while the
+// authoritative content+version lives on the shared namespace.
 type workspace struct {
 	ns *namespace
+
+	mu     sync.Mutex
+	ledger map[string]tool.FileVersion // clean path -> recorded version
 }
 
 // Compile-time assertion that workspace satisfies the frozen seam.
@@ -388,6 +393,34 @@ func (w *workspace) Grep(ctx context.Context, pattern, pathGlob string) ([]tool.
 	return grepInMemory(ctx, w.ns, pattern, pathGlob)
 }
 
+// RecordRead stores the EXACT version for path under this handle's ledger (no
+// I/O). The ledger is per-handle: a second handle to the same namespace has its
+// own ledger, so a stale-version conflict between two handles is observable.
+func (w *workspace) RecordRead(p string, version tool.FileVersion) {
+	key, err := cleanPath(p)
+	if err != nil {
+		return // fail-safe: an uncleanable path stays unrecorded
+	}
+	w.mu.Lock()
+	if w.ledger == nil {
+		w.ledger = make(map[string]tool.FileVersion)
+	}
+	w.ledger[key] = version
+	w.mu.Unlock()
+}
+
+// RecordedVersion returns the version previously recorded for path (no I/O).
+func (w *workspace) RecordedVersion(p string) (tool.FileVersion, bool) {
+	key, err := cleanPath(p)
+	if err != nil {
+		return tool.FileVersion{}, false
+	}
+	w.mu.Lock()
+	v, ok := w.ledger[key]
+	w.mu.Unlock()
+	return v, ok
+}
+
 // namespaceFiles returns a snapshot of the namespace's current (path -> content)
 // for fork/merge. It reads under the namespace read lock.
 func (w *workspace) namespaceFiles() map[string][]byte {
@@ -478,6 +511,9 @@ type runner struct {
 
 // Compile-time assertion that runner satisfies the runner port.
 var _ tool.CommandRunner = (*runner)(nil)
+
+// BoundWorkspaceRoot reports the namespace identity shared with the workspace.
+func (r *runner) BoundWorkspaceRoot() string { return r.ns.id }
 
 // Run executes the tiny test protocol against the bound namespace.
 func (r *runner) Run(ctx context.Context, command string) (tool.CommandResult, error) {

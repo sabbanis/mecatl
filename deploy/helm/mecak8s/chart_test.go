@@ -18,6 +18,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	policyv1 "k8s.io/api/policy/v1"
 	"sigs.k8s.io/yaml"
 
 	mcpadapter "github.com/stacklok/mecatl/internal/adapter/mcp"
@@ -97,6 +98,24 @@ func deploymentFromRender(t *testing.T, rendered string) *appsv1.Deployment {
 		return &deployment
 	}
 	t.Fatal("rendered chart has no Deployment")
+	return nil
+}
+
+func pdbFromRender(t *testing.T, rendered string) *policyv1.PodDisruptionBudget {
+	t.Helper()
+	for _, document := range strings.Split(rendered, "\n---") {
+		var meta struct {
+			Kind string `yaml:"kind"`
+		}
+		if err := yaml.Unmarshal([]byte(document), &meta); err != nil || meta.Kind != "PodDisruptionBudget" {
+			continue
+		}
+		var pdb policyv1.PodDisruptionBudget
+		if err := yaml.Unmarshal([]byte(document), &pdb); err != nil {
+			t.Fatal(err)
+		}
+		return &pdb
+	}
 	return nil
 }
 
@@ -349,6 +368,7 @@ func TestMecak8sHelmChart_DeployCheckProductionFixtureRuntimeAndSpread(t *testin
 	wantArgs := []string{
 		"--grpc-addr=0.0.0.0:8080",
 		"--http-addr=0.0.0.0:8081",
+		"--drain-addr=0.0.0.0:8082",
 		"--redis-url=redis.example.internal:6379",
 		"--session-lease-k8s-namespace=default",
 		"--headless=true",
@@ -754,6 +774,53 @@ func TestMecak8sHelmChart_ExternalEndpointRequiresNumericPort(t *testing.T) {
 	}
 }
 
+func TestMecak8sHelmChart_ReplicaCountControlsDisruptionBudget(t *testing.T) {
+	for _, tc := range []struct {
+		name         string
+		replicaCount string
+		wantPDB      bool
+		wantMinAvail int32
+	}{
+		{name: "single replica", replicaCount: "1", wantPDB: false},
+		{name: "two replicas", replicaCount: "2", wantPDB: true, wantMinAvail: 1},
+		{name: "three replicas", replicaCount: "3", wantPDB: true, wantMinAvail: 1},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			args := append(productionArgs(), "--set", "replicaCount="+tc.replicaCount)
+			rendered, err := helm(t, args...)
+			if err != nil {
+				t.Fatalf("render replica count %s: %v", tc.replicaCount, err)
+			}
+			deployment := deploymentFromRender(t, rendered)
+			if deployment.Spec.Replicas == nil || *deployment.Spec.Replicas != int32(mustParseInt(t, tc.replicaCount)) {
+				t.Fatalf("Deployment replicas = %v, want %s", deployment.Spec.Replicas, tc.replicaCount)
+			}
+			pdb := pdbFromRender(t, rendered)
+			if (pdb != nil) != tc.wantPDB {
+				t.Fatalf("PDB present = %t, want %t", pdb != nil, tc.wantPDB)
+			}
+			if pdb == nil {
+				return
+			}
+			if pdb.Spec.MinAvailable == nil || pdb.Spec.MinAvailable.IntVal != tc.wantMinAvail {
+				t.Fatalf("PDB minAvailable = %v, want %d", pdb.Spec.MinAvailable, tc.wantMinAvail)
+			}
+			if !reflect.DeepEqual(pdb.Spec.Selector, deployment.Spec.Selector) {
+				t.Fatalf("PDB selector = %#v, Deployment selector = %#v", pdb.Spec.Selector, deployment.Spec.Selector)
+			}
+		})
+	}
+}
+
+func mustParseInt(t *testing.T, value string) int {
+	t.Helper()
+	var parsed int
+	if _, err := fmt.Sscan(value, &parsed); err != nil {
+		t.Fatal(err)
+	}
+	return parsed
+}
+
 func TestInvariant_mecak8s_storage_free_restricted_workload(t *testing.T) {
 	args := productionArgs()
 	rendered, err := helm(t, args...)
@@ -971,10 +1038,37 @@ func TestMecak8sHelmChart_ServerTLS(t *testing.T) {
 		"startupProbe:\n            httpGet:\n              scheme: HTTP\n              path: /readyz\n              port: http",
 		"readinessProbe:\n            httpGet:\n              scheme: HTTP\n              path: /readyz\n              port: http",
 		"livenessProbe:\n            httpGet:\n              scheme: HTTP\n              path: /healthz\n              port: http",
-		"preStop:\n              httpGet:\n                scheme: HTTP\n                path: /drain\n                port: http",
+		"preStop:\n              httpGet:\n                scheme: HTTP\n                path: /drain\n                port: drain",
 	} {
 		if !strings.Contains(defaultRender, want) {
 			t.Fatalf("default production render missing HTTP endpoint block %q", want)
+		}
+	}
+	deployment := deploymentFromRender(t, defaultRender)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if !slices.Contains(container.Args, "--drain-addr=0.0.0.0:8082") {
+		t.Fatalf("drain listener arg missing: %q", container.Args)
+	}
+	if !slices.ContainsFunc(container.Ports, func(port corev1.ContainerPort) bool {
+		return port.Name == "drain" && port.ContainerPort == 8082
+	}) {
+		t.Fatalf("drain container port missing: %#v", container.Ports)
+	}
+	defaultService := serviceFromRender(t, defaultRender)
+	wantServicePorts := map[string]struct {
+		port       int32
+		targetPort string
+	}{
+		"grpc": {port: 8080, targetPort: "grpc"},
+		"http": {port: 8081, targetPort: "http"},
+	}
+	if len(defaultService.Spec.Ports) != len(wantServicePorts) {
+		t.Fatalf("Service ports = %#v, want exactly grpc and http", defaultService.Spec.Ports)
+	}
+	for _, port := range defaultService.Spec.Ports {
+		want, ok := wantServicePorts[port.Name]
+		if !ok || port.Port != want.port || port.TargetPort.String() != want.targetPort {
+			t.Fatalf("Service port = %#v, want mappings %#v", port, wantServicePorts)
 		}
 	}
 
@@ -991,7 +1085,7 @@ func TestMecak8sHelmChart_ServerTLS(t *testing.T) {
 		"startupProbe:\n            httpGet:\n              scheme: HTTPS\n              path: /readyz\n              port: http",
 		"readinessProbe:\n            httpGet:\n              scheme: HTTPS\n              path: /readyz\n              port: http",
 		"livenessProbe:\n            httpGet:\n              scheme: HTTPS\n              path: /healthz\n              port: http",
-		"preStop:\n              httpGet:\n                scheme: HTTPS\n                path: /drain\n                port: http",
+		"preStop:\n              httpGet:\n                scheme: HTTP\n                path: /drain\n                port: drain",
 	} {
 		if !strings.Contains(rendered, want) {
 			t.Fatalf("TLS production fixture missing %q", want)

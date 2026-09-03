@@ -28,8 +28,16 @@ list below; the reading map owns audience routing.
 ## Build identity
 
 All shipped commands share the linker-stamped build identity in
-`internal/buildinfo/buildinfo.go`. Exact top-level `--version` exits before normal
-The server exposes its build identity plus sanitized diagnostic display endpoint projections through authenticated gRPC
+`internal/buildinfo/buildinfo.go`. Ordinary `task build`, `task install`, and
+Taskfile-driven ko builds resolve the source checkout at build time with
+`git describe --tags --match 'v[0-9]*' --always --dirty`; this yields the most
+recent root release tag, commits since it, abbreviated SHA, and an optional dirty
+suffix (for example, `v0.0.22-28-g40a6b3fc6-dirty`). A nonempty `BUILD_ID` stamp
+is retained exactly, including an explicit `dev`. Direct Go or ko builds with no
+stamp never invoke git at runtime: they fall back to Go's embedded VCS metadata as
+`dev+<12-char-vcs-revision>[.dirty]`, or to `dev` if metadata is unavailable or
+invalid. Exact top-level `--version` exits before normal
+startup. The server exposes its build identity plus sanitized diagnostic display endpoint projections through authenticated gRPC
 `GetServerInfo` and HTTP `GET /v1/info?provider_id=<active-provider>`; neither endpoint reads session or workspace
 state, and the provider display projection is available only when the caller supplies its already-known active provider and never triggers discovery or configuration reads. These values are not connection instructions. Mecatui's palette-visible `/diagnostics` converts the exact
 lower-case command into a sanitized report sent through the normal model prompt path;
@@ -45,7 +53,7 @@ This page is the overview and router; the big picture and the layering rule are 
 **Foundations** (the linear spine — read in order):
 
 - **[The domain model](architecture/domain-model.md)** — the Session aggregate, Conversation, Events, ToolCall/ToolResult value objects.
-- **[The ports (`engine/port`)](architecture/ports.md)** — the seams the loop consumes: `LLMProvider`, `SessionStore`, `PermissionPolicy`, `HookRunner`, and the `tool.Workspace`/`FileSystem`/`ReadLedger` seam.
+- **[The ports (`engine/port`)](architecture/ports.md)** — the seams the loop consumes: `LLMProvider`, `SessionStore`, `PermissionPolicy`, `HookRunner`, and the `tool.Workspace`/`FileSystem` seam.
 - **[The agent loop & permission pause/resume](architecture/agent-loop.md)** — `Engine.Run` / drive algorithm, dispatch (read-parallel / mutate-serial), and permission pause/resume.
 
 **Topic branches** (stand alone; each lists its prerequisite):
@@ -209,6 +217,97 @@ builds and spawns the same checkout's `mecated` with the offline mock provider t
 prove TCP, UDS, HTTP/SSE, asks, cancellation, and stale controls on real wire. See
 [ADR 0279](adr/0279-typescript-sdk-architecture.md).
 
+The durable-watch foundation uses the generated `WatchSessionEvents` descriptor on
+both transports and decodes each wire frame into a four-arm `WatchEnvelope`:
+`event`, the single replay-to-live `boundary`, cursor-free `gap`, or lossless
+`unknown`. Envelope events pass through the same M1 event decoder, so unknown event
+kinds retain transport-native raw data. The compatibility feature set is exposed at
+the raw/client seam rather than owned by HTTP, allowing both transports to gate the
+shared `watch_session_events` capability. See
+[ADR 0288](adr/0288-typescript-sdk-durable-attachment.md).
+
+`Session.attach(runId?)` builds the first ergonomic view over that watch. An explicit
+run id is sent as the server filter; without one, the client opens exactly one
+unfiltered watch, scans its replay to the boundary, selects the newest run id, and
+filters that same stream client-side. A readable log with no run-bearing record raises
+the local `NoRunsError`, including the deliberately documented interval where a run is
+already stamped on a running session but has emitted no durable event. Unknown or
+foreign sessions, unsupported watch deployments, missing logs, and delegation-child
+ids remain distinct typed server refusals. `AttachedRun.live` reflects events observed
+through that attachment and becomes false when its selected run's terminal `result` is
+delivered.
+
+`Session.activity()` keeps both the server filter and cursor run binding empty, so one
+ordered stream spans every run and also includes run-less `schedule.*` records. A run's
+terminal `result` does not end this session-level timeline. Both views omit the event kinds
+derived from the server's public/live relay filters by default; `includeLogOnly: true` adds
+those records without changing the order or cursors of records already visible. The filter
+applies only to event kinds: activity still yields a cursor-free `gap` delivery frame, then
+raises `ActivityGapError` if the consumer asks to continue. A run-bound attachment preserves
+its existing immediate typed-gap termination.
+
+The attachment is one replay-then-follow operation: it yields the selected run's durable
+replay in append order, announces the live boundary once, follows new appends, and completes
+at that run's terminal `result`. A run that already finished therefore completes from replay
+without parking. `attach(runId, { from: "now" })` still opens the ordinary watch with an
+empty wire cursor and receives the replay, but discards replay envelopes client-side before
+yielding the live boundary; the mode is rejected locally when no explicit run id is supplied.
+
+Ergonomic checkpoints are opaque, serializable `sdkcur/1` strings that wrap the server token
+with the view's run binding and effective server filter. The SDK validates that envelope and
+delivered-set scope before opening a watch: a run-bound cursor cannot widen to session
+activity or another run, while an unbound activity cursor can narrow to any run. Checkpoints
+advance when the consumer requests the next envelope, giving natural at-least-once delivery;
+records dropped by the ergonomic filter advance immediately, and a filtered `approval` still
+retires its permission ask. The SDK exposes the string for application-owned persistence but
+does not write browser storage or files itself.
+
+A decoded `gap` remains visible on the raw watch. A run-bound ergonomic attachment turns it
+into a local `ActivityGapError` before yielding; session activity yields the delivery fact but
+raises the same error on the next pull. Neither path checkpoints the gap, leaving the exposed
+cursor at the last preceding envelope. Cursor faults use the same typed error classes on both transports:
+gRPC carries the registry code in its terminal status, while HTTP has already committed 200 and
+therefore carries it in a terminal `event: error` SSE frame. An expired cursor never triggers an
+implicit restart from the beginning; that recovery remains an explicit application decision.
+
+Attachment continuity is owned only by the durable watch. Transport failures,
+`watch_lagging`, authentication failures, and clean non-terminal EOF reconnect with bounded
+exponential backoff and jitter from the attachment checkpoint under the same filter. The client
+invalidates and re-probes cached compatibility before each reconnect, so a replacement daemon's
+feature set is authoritative on the first attempt. The closed permanent-code set ends the view;
+ordinary mutations, prompts, permission verdicts, and owned run streams remain one-shot. An
+`AttachedRun` stops after its own `result`, while session activity treats every clean EOF as a
+reconnect point. Reconnected watches do not re-announce the replay-to-live boundary. An optional
+`AttachOptions.signal`, iterator release, explicit disposal, or `Client.close()` aborts backoff and
+releases the current watch without cancelling the run.
+
+The client connection monitor combines its ordinary request outcome with one private input per
+open attachment. It resolves those inputs by fixed precedence — `incompatible` above
+`unauthorized`, `reconnecting`, `connecting`, `offline`, then `online` — so one healthy stream or
+successful unary call cannot hide another attachment's retry. A retrying watch reports
+`reconnecting` (or `unauthorized` while refreshing credentials) and never publishes the ordinary
+request path's transient `offline`; its next envelope restores `online` once no higher-ranked input
+remains. Opening an attachment does not subscribe to status or start/retain the heartbeat. Browser
+visibility still pauses the subscriber-gated heartbeat, but it neither pauses nor detaches a watch.
+
+Attached controls deliberately use a different path from an owned `Run`'s Converse frames.
+`AttachedRun.cancel()` is an asynchronous out-of-band operation: over HTTP it posts the attached
+run id as `expected_run_id` to `/v1/sessions/{id}/cancel` and resolves only after the server's
+bodyless `204` acknowledgement, so transport and stale-run failures reject the returned promise.
+gRPC has no prompt-free control RPC and therefore returns a typed `prompt_free_controls`
+unsupported-feature error without opening Converse. Attached approval is likewise an explicit
+typed deferral (`approve_ack_only` over HTTP, `prompt_free_controls` over gRPC), while attached
+steer remains unsupported on both transports. None of these deferrals changes detach semantics:
+aborting, disposing, or leaving iteration releases only the watch.
+
+The offline SDK lane exercises that contract against a same-checkout daemon rather than only
+an injected transport. Its restartable harness rebinds the same listeners over one JSONL store:
+an open `activity()` view resumes from its consumption checkpoint and observes a newly minted run,
+while a run-bound view crosses restart only in the persisted-awaiting case where an external HTTP
+approval resumes the original run id. The latter response is bounded and drained by test harness
+code, not exposed as an SDK approval contract. The same suites prove gRPC TCP, UDS, HTTP/SSE,
+attached stale-guarded cancellation, terminal SSE cursor errors, and default log-only filtering.
+
 Around that core, every capability beyond the minimal loop is a **seam with a
 default and a swap-in adapter**, so the production build stays static and
 network-free unless you wire something in. The current adapters cover, grouped:
@@ -294,7 +393,7 @@ flowchart LR
   subgraph DOMAIN["domain (no infra imports)"]
     sess["engine/session\nSession · Conversation · Event\nToolCall · ToolResult · Usage\n(inert labels: Profile · ProviderID · ModelID · ReasoningEffort · Title)"]
     gov["engine/governance\nEffect · Decision · Rule · Scope\nHookEvent · Evaluator · bash.go"]
-    tl["engine/tool\nTool · ToolSpec · Catalog · Disclosable\nFileSystem · Workspace · ReadLedger · Environment · CommandRunner\nMemoryStore · EnvironmentForker · EnvironmentMerger · ToolSearch"]
+    tl["engine/tool\nTool · ToolSpec · Catalog · Disclosable\nFileSystem · Workspace · Environment · CommandRunner\nMemoryStore · EnvironmentForker · EnvironmentMerger · ToolSearch"]
     pr["engine/prompt\nLayered · Build · Env · toolDisciplineHints\nInstructionAssembler · SoulSource · RulesSource · CommandExpander\n(model-neutral; per-model agencyDelta lives in internal/app)"]
   end
 
@@ -305,7 +404,7 @@ flowchart LR
 
   subgraph DRIVEN["driven adapters — engine/adapter + internal/adapter"]
     oai["openai · mockllm"]
-    fs["osfs (+CommandRunner) · memfs · memledger · redisstore ReadLedger"]
+    fs["osfs (+CommandRunner) · memfs"]
     st["memstore · jsonlstore · redisstore · sessnap"]
     tools["tools (Read/Edit/Write/Grep/Glob/WebFetch/WebSearch + optional Bash)"]
     pp["permpolicy · hookexec · modelhook"]
@@ -485,12 +584,12 @@ ahead of lower-priority details, `/session` exposes and copies the safely quoted
 and the target-derived terminal title uses the same handle. See [ADR 0254](adr/0254-session-debugger-admin-transport.md), [ADR 0255](adr/0255-sanitized-network-attempt-evidence.md), [ADR 0256](adr/0256-session-debugger-evidence-and-reporting.md), and [ADR 0257](adr/0257-session-debugger-hardening.md). Each
 inventory row also carries server-authored action capabilities. The TUI uses those bits—not
 ID spelling—to expose exact-ID copy, detached transcript view, peer fork, operator-title
-rename, and confirmed physical deletion. The server also exposes authenticated legacy-adoption
-preflight and apply RPCs: an owned, transcript-complete `unknown` source can be copied into a
-new explicit-main session only with explicit workspace/environment and provider/model bindings.
-Apply revalidates under run-entry serialization and the mutation lease, persists a
-caller+source-bound idempotency proof and source audit link, and never rewrites the legacy source.
-The TUI adoption affordance is a separate client workflow. Fork/rename/delete are revalidated under the
+rename, and confirmed physical deletion. Unknown legacy/custom rows remain inspect-only:
+the server exposes no adoption or preflight API and accepts no replacement workspace or
+placement authority for them. Clear and fork instead create new main-session successors
+from an owned main source: Clear carries no history, Fork carries valid history, and both
+inherit the source's exact placement unless given a fresh source-scoped worktree selector.
+Fork/clear/rename/delete are revalidated under the
 server's run-entry serialization with ownership, kind, state, liveness, and optional lease
 checks; a stale UI row therefore cannot bypass the server gates, and a failed action does
 not rebind the prompt target. The
@@ -513,11 +612,11 @@ never ambient environment values; reserved baseline and source-owned terminal-di
 names are rejected during settings validation. Before StatusML parsing, command output trims only boundary
 ASCII whitespace, so a normal `print` newline is accepted without changing internal
 text. This preserves `ui` as a pure render layer
-while allowing autonomous source updates. Its `/clear` command uses the existing
-create-session RPC to create a new empty session first (preserving the current
-workspace, effective model/reasoning effort, and permission mode), then rebinds
-locally and only afterward best-effort closes the old session; a failed create
-leaves the old session and UI unchanged. Usage and configuration are documented in
+while allowing autonomous source updates. Its `/clear` command calls `ClearSession`
+to create a non-destructive empty-history successor that inherits the current session's
+exact placement, effective model/reasoning effort, and permission mode. It rebinds locally
+only after the successor and its authoritative snapshot are available; any failure leaves
+the source session and UI unchanged. Usage and configuration are documented in
 `docs/tui.md`.
 
 **Remote mecatui OIDC.** The remote-login path is separate from the ToolHive LLM
@@ -530,7 +629,17 @@ saved policy and an explicit CA reference, never CA contents, are used for later
 and logout. The login `--tls-ca` path is distinct from the
 optional server CA supplied to `connect`. It validates discovery, PKCE, and
 the resulting token before saving. `mecatui connect ADDRESS` never opens a browser or
-guesses missing settings. A saved credential forces verified TLS for the gRPC server,
+guesses missing settings. Credential selection is explicit-token first (and therefore wins
+if `--anonymous` is also present), then explicit
+`--anonymous`, then a saved enrollment. A clean registry/target miss dials without a
+credential for both local and remote targets; only an actual server `Unauthenticated`
+response establishes that caller authentication is required. Explicit anonymous bypasses
+the registry even when enrollment exists, while corrupt or unreadable registry, keyring,
+or credential state never silently degrades ([ADR 0293](adr/0293-mecatui-anonymous-connect.md)).
+Remote credential-free targets still default to verified TLS, and plaintext requires an
+explicit `--tls=false`; no private IP, DNS name, or Tailscale-like target weakens that policy.
+In a credential-free Tailscale deployment, tailnet membership and ACLs are the shared
+authority and all admitted peers share the server's unauthenticated caller posture. A saved credential forces verified TLS for the gRPC server,
 even on loopback; its saved issuer CA remains issuer-only, while `connect --tls-ca`
 is the only custom server-CA input. An enrolled target uses a root-scoped OS-keyring key and a
 keyring-wrapped encrypted credential store; under the root lock, the legacy unsuffixed
@@ -570,7 +679,7 @@ registry is an idempotent success, but pre-existing credential-only orphans rema
 because the credential store has no enumeration contract. `/connect` is a confirmed
 chooser. Ordinary saved-target selection and every target switch start a fresh remote
 session; during same-target authentication recovery only, an ownership-authorized
-completed, cancelled, or failed session may be adopted. Missing, ownership-hidden,
+completed, cancelled, or failed session may be resumed. Missing, ownership-hidden,
 active, awaiting, and infrastructure-ambiguous candidates are discarded. The closed
 `ConnectAction` separates saved-target connect, explicit reauthentication, cleanup-only
 retry, and add-target intent; it preserves the server CA path only for same-target
@@ -688,45 +797,42 @@ concurrent Save/Delete cannot invalidate the proof and no O(total) key or member
 Lua ([ADR 0231](adr/0231-redis-owner-index-exact-coverage.md)). It defaults
 `--headless=true` and `--posture=auto` (an unattended daemon, inverted from `mecated`'s
 interactive defaults), drops `mecated`'s subcommands + Prometheus/OTel admin surface, and
-exposes `--redis-url` (mutually exclusive with `--store-dir`/`--session-store-url`). The
-honest shutdown contract: new runs are rejected (503 via the drain gate) the moment SIGTERM
-or the `preStop` `httpGet /drain` fires; **in-flight runs are cancelled, not drained** (a
+exposes `--redis-url` (mutually exclusive with `--store-dir`/`--session-store-url`). Its
+normal HTTP/SSE listener exposes only health/readiness outside authentication and the API
+behind authentication; a separate plaintext drain-only listener defaults to `0.0.0.0:8082`.
+The honest shutdown contract: new runs are rejected (503 via the drain gate) the moment
+SIGTERM or the `preStop` `httpGet /drain` fires; **in-flight runs are cancelled, not drained** (a
 multi-minute LLM turn cannot survive a rolling update within
 `terminationGracePeriodSeconds: 60`); the pod is disposable, the session is not — it is
 `Recover`-able on the successor (issue #51) from the Redis snapshot + durable event log.
 Its Helm chart offers three secure real-provider transport postures — in-pod TLS, an
 operator-attested edge-terminated TLS boundary, and the explicit unsafe bypass —
 detailed in [deployment and hardening](architecture/deployment-and-hardening.md).
-See `docs/adr/0048-mecak8s.md`.
+See `docs/adr/0048-mecak8s.md` and [ADR 0290](adr/0290-mecak8s-drain-listener.md); direct
+Pod-IP access to the drain port remains an operator-enforced network-isolation residual.
 
 Two deliberate cycle-breaks worth noting, documented in code:
 - `port` imports `tool` and `prompt` (because `LLMRequest` carries
   `[]tool.ToolSpec` and `prompt.Layered`) — see the package note at the top of
   `engine/port/llm.go`.
-- `FileSystem`/`Workspace`/`ReadLedger`/`Environment` live in `engine/tool`, **not**
+- `FileSystem`/`Workspace`/`Environment` live in `engine/tool`, **not**
   `engine/port`, because `port` already imports `tool` while
   `tool.Tool.Execute` takes an `Environment`; defining them in `port` would form
   a `port↔tool` cycle. See the package note in `engine/tool/tool.go`.
-  `Environment` bundles a non-null content-only `Workspace`, a separately selected
-  non-null `ReadLedger`, an optional bound `CommandRunner`, and a backend identity
-  `EnvironmentRef`. FS tools obtain `env.Workspace()` and `env.ReadLedger()`; the Bash
-  tool obtains `env.CommandRunner()`. Workspace file mutation is version-aware:
-  agent-facing Read records an opaque `FileVersion`, new-file Write is create-only,
-  and Edit/existing-file Write finish with conditional replace. Public Workspace
-  exposes no unconditional mutation or ledger operation. Default Environment
-  composition supplies a fresh in-memory ledger, while a caller may select a durable
-  ledger without changing filesystem storage. Ledger absence is an ordinary
-  read-before-mutate refusal; storage/decode/corruption errors fail closed. Every child
-  receives a fresh ledger: isolated children pair it with their fork Workspace, while
-  base-sharing/direct-write children retain the exact parent content backend and runner
-  through any stricter child-authority Workspace view; storage is never reconstructed
-  from `Root()`.
-  The final conditional `ReplaceFile` remains the concurrency guard. See
-  [ADR 0290](adr/0290-persistent-read-before-write-ledgers.md).
-  As of [ADR 0214](adr/0214-environment-persistence.md), `EnvironmentRef` is a DURABLE
-  snapshot field: a non-in-tree ref persists across a restart and reattaches a live
-  `Environment` at run entry through `server.Config.EnvironmentResolver`; the in-tree
-  Kinds never reach the resolver, and a nil/mismatch/nil-Workspace result fails loudly.
+  `Environment` bundles a `Workspace`, an optional bound `CommandRunner`, and an
+  exact backend identity `EnvironmentRef{Kind, ID, Revision}`. FS tools obtain
+  `env.Workspace()`; Bash obtains `env.CommandRunner()`. Workspace mutation remains
+  version-aware: Read records an opaque `FileVersion`, new-file Write is create-only,
+  and Edit/existing-file Write conditionally replace. The read ledger belongs to the
+  live Environment and resets when that Environment is rebuilt.
+
+  [ADR 0291](adr/0291-server-owned-session-placement.md) makes `EnvironmentRef` the
+  sole durable runtime identity. Every session is bound to a valid exact ref before
+  persistence; snapshots and trusted driver storage retain it, while public Harness,
+  HTTP, event, and client projections expose only bounded display metadata. There is
+  no persisted `Session.Workspace`, zero-ref fallback, lazy stamping, or inferred
+  default. Run entry exactly reattaches the persisted ref/revision; missing providers,
+  authorization/revision drift, nil Workspace, or identity mismatch fail closed.
   See [ADR 0208](adr/0208-execution-environment.md),
   [ADR 0211](adr/0211-execution-environment-runtime-seam.md),
   [ADR 0214](adr/0214-environment-persistence.md), and the
@@ -777,33 +883,45 @@ server's `audience:["user"]` is not a suppression control). Server-returned
 fetched by the `FetchMcpResource` tool through `ValidateMediaURL` (SSRF
 backstop, CWE-918). See `docs/adr/0078-mcp-typed-tool-results.md`.
 
-**Conversation fork.** `Service.ForkSession` (`internal/adapter/server/service.go`)
-creates a new peer session whose conversation history is a snapshot of an existing
-session's, inheriting the source's mode, workspace, limits, and
-provider/model/profile labels (ADR 0065). The ONE permitted selector delta is an
-optional `reasoning_effort` override (ADR 0068): empty inherits the source's effort
-verbatim, while a non-empty value replaces only the effort label/engine — provider
-and model always inherit. This is how a mid-conversation effort switch works
-non-destructively (the mecatui `/effort` fork-resume): the transcript survives on
-the peer. It reuses the domain primitives the
-subagent `fork:true` path already exercises — `session.ForkSnapshot`
-(`engine/session/conversation.go`) clones the conversation with a fresh backing
-array and strips trailing unanswered tool calls (tool-pairing-valid), and
-`session.SeedHistory` (`engine/session/session.go`) loads it into a fresh
-`session.New` aggregate that starts idle with zeroed `Counters`/`Usage`. The
-source is authorized and revalidated under the same per-session run-entry mutex used by
-prompt starts and the rename/delete management paths. The gate accepts only owned main
-sessions at a turn boundary, rejects legacy child-ID prefixes even when stale metadata says
-`main`, and acquires the optional cross-process session lease before recovering or snapshotting
-the source. A terminal source is recovered to idle first; a running/awaiting source or a live
-in-process run is rejected with `ErrFailedPrecondition`. A mutation-scoped lease is released on
-every exit, while a lease already held by this process for the session lifetime is preserved.
-The forked engine is
-rehydrated ONLY when the source needed a per-session engine (non-default selector
-/ no-fs profile / worktree workspace), mirroring `createSession`'s branching; a
-default-FS fork rides the shared engine. Same provider and model only — the
-snapshot carries provider-private replay blobs a different provider cannot
-consume. Wire surface: the `ForkSession` gRPC RPC and `POST /v1/sessions/{id}/fork`.
+**Server-owned placement.** Trusted composition installs one placement provider and
+scope before listeners serve. `CreateSession` accepts only the provider's deployment
+`default` or explicit `no-fs`; the public request has no workspace, cwd, placement ID,
+or selector. Local embedded and daemon deployments configure their root privately with
+`--workspace`; remote/cloud-native providers may bind another backend without widening
+the public API. ACP's required cwd is only checked against the trusted local binding and
+cannot select authority.
+
+Discovery is source-session scoped. `ListCommands(session_id)` and
+`ListWorktrees(session_id)` first authorize the owner and exactly reattach that source.
+No-FS returns empty before filesystem discovery. Worktree entries contain bounded
+kind/label/branch/revision metadata and an opaque selector. The local selector is an
+HMAC-SHA256 digest scoped to caller and source session using one random Build-owned key;
+use re-enumerates current eligible choices and constant-time matches. No selector is
+decoded, persisted, or stored in a registry/map, and restart requires clients to relist.
+
+`ClearSession` creates a distinct empty-history successor; `ForkSession` creates a
+distinct history-carrying successor. With no selector both inherit and exactly reattach
+the source placement. A fresh source-scoped selector may move either successor to an
+eligible worktree; Fork may also atomically apply provider/model/effort overrides.
+Source ownership, run-entry serialization, and leases are checked before publication,
+and any failure leaves the source and client binding unchanged. Schedules similarly
+persist their resolved exact ref, durable owner, and placement scope—not a selector or
+"current default" intent—and reauthorize and exactly reattach at each fire.
+
+Delegation never accepts placement input: Team derives the owning session environment;
+Subagent and Parallel share or server-fork the parent Environment. Preserved-fork,
+delegation, inspection, and artifact handles are typed capabilities, not worktree
+selectors, and public results/events do not reveal fork roots or exact refs. Trusted
+driver storage is the deliberate private exception: it transports exact
+`EnvironmentRef` values so another process can reattach, but public mappers never project
+them.
+
+**Conversation successors.** `Service.ClearSessionSuccessor` and
+`Service.ForkSessionSuccessor` implement the two operations above. Fork snapshots valid
+history with `session.ForkSnapshot` and `session.SeedHistory`; Clear starts with empty
+history. Both create fresh idle aggregates with fresh counters/usage and preserve the
+source session. Wire surfaces are `ClearSession`/`ForkSession` over gRPC and the matching
+HTTP successor routes.
 
 ## See also
 
@@ -821,7 +939,12 @@ that run **autonomously, durably, and exactly-once** across a multi-replica
 deployment — with no human present at fire time.
 
 It is a **composition-layer** subsystem (no `engine/agent` changes) that reuses
-the existing run-entry funnel. The pieces:
+the existing run-entry funnel. Schedule creation resolves the source/default placement
+immediately and persists the exact private `EnvironmentRef`, durable owner, and trusted
+placement scope. It never persists a worktree selector or an instruction to follow a
+future deployment default. Every fire reauthorizes that owner/scope and exactly reattaches;
+drift or unavailability records a failure before session creation or filesystem access.
+The pieces:
 
 - **`port.ScheduleStore`** (`engine/port/schedule.go`) — the durable registry,
   a peer of `port.SessionLease`/`port.EventLog`. The store is ground truth; an
@@ -838,7 +961,10 @@ the existing run-entry funnel. The pieces:
   non-leader serves RPCs and retries the acquire on a jittered backoff,
   promoting when the leader's lease lapses; a definitive Renew loss demotes the
   leader back to standby (failover), and a sticky
-  store-unsupported flag stops the loop re-acquiring forever. `FireNow` is
+  store-unsupported flag stops the loop re-acquiring forever. Standby logging is
+  rate-limited: state transitions and periodic heartbeats remain
+  operator-visible, while repeated acquire attempts are logged at debug level to
+  avoid replica-scale log noise. `FireNow` is
   gated on leadership (`ErrNotLeader` → FailedPrecondition/412). On each tick:
   `Due` → misfire policy → `Claim` (at-most-once) → `FireFunc` → `RecordFire`.
   The `FireFunc` seam is how composition injects the run-entry funnel.

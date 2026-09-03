@@ -33,6 +33,7 @@ type DialConfig struct {
 	Server                 string      // host:port, e.g. 127.0.0.1:8080
 	AuthToken              string      // optional static bearer; sent as "authorization: Bearer <tok>"
 	TokenSource            TokenSource // optional dynamic bearer source, evaluated once per RPC
+	ExplicitAnonymous      bool        // bypass saved OIDC state and send no bearer credential
 	UseTLS                 bool        // enable transport TLS
 	TLSCAFile              string      // optional custom CA bundle for server verification
 	Insecure               bool        // skip TLS verification (testing only; with UseTLS)
@@ -106,13 +107,13 @@ func Dial(cfg DialConfig) (*Client, error) {
 			grpc.WithChainStreamInterceptor(tokenSourceStream(cfg.TokenSource)),
 		)
 	} else {
-		// Dialling with no credential at all is legitimate: a mecated with no OIDC
-		// configured needs none, so a missing saved credential cannot be an error
-		// here. It becomes actionable only when the server actually demands one,
-		// which is where these interceptors add the enrolment hint.
+		// Dialling with no credential at all is legitimate: the server is
+		// authoritative about whether caller authentication is required. Annotate
+		// only an actual server rejection; network and TLS failures stay transport
+		// errors.
 		opts = append(opts,
-			grpc.WithChainUnaryInterceptor(anonymousUnaryHint(cfg.Server)),
-			grpc.WithChainStreamInterceptor(anonymousStreamHint(cfg.Server)),
+			grpc.WithChainUnaryInterceptor(credentialFreeUnaryHint(cfg.Server, cfg.ExplicitAnonymous)),
+			grpc.WithChainStreamInterceptor(credentialFreeStreamHint(cfg.Server, cfg.ExplicitAnonymous)),
 		)
 	}
 
@@ -129,44 +130,64 @@ func Dial(cfg DialConfig) (*Client, error) {
 	}, nil
 }
 
-// anonymousDialHint annotates a server Unauthenticated rejection received by a
-// client that carried no bearer credential. Without it the operator sees only the
-// far side's "missing or invalid bearer token" and no indication that the local
-// cause is an unenrolled target. Wrapping preserves the gRPC status, so
-// status.Code classification elsewhere is unaffected.
-func anonymousDialHint(server string, err error) error {
-	if status.Code(err) != codes.Unauthenticated {
+// credentialFreeAuthError preserves the server's gRPC status while carrying a
+// closed, server-authoritative recovery reason to the UI.
+type credentialFreeAuthError struct {
+	cause  error
+	reason AuthReason
+	msg    string
+}
+
+func (e *credentialFreeAuthError) Error() string              { return e.msg }
+func (e *credentialFreeAuthError) Unwrap() error              { return e.cause }
+func (e *credentialFreeAuthError) GRPCStatus() *status.Status { return status.Convert(e.cause) }
+func (e *credentialFreeAuthError) AuthReason() AuthReason     { return e.reason }
+
+func credentialFreeDialHint(server string, explicitAnonymous bool, err error) error {
+	switch status.Code(err) {
+	case codes.Unauthenticated:
+		reason := AuthNotEnrolled
+		prefix := "server requires caller authentication"
+		if explicitAnonymous {
+			reason = AuthAnonymousRejected
+			prefix = "server rejected the explicit --anonymous connection because it requires caller authentication"
+		}
+		return &credentialFreeAuthError{
+			cause:  err,
+			reason: reason,
+			msg:    fmt.Sprintf("%s; use --auth-token, or, if this server supports OIDC enrollment, run 'mecatui login %s': %v", prefix, server, err),
+		}
+	case codes.PermissionDenied:
+		return fmt.Errorf("%w (server authorization denied this caller)", err)
+	default:
 		return err
 	}
-	return fmt.Errorf("%w (no saved credential for %s; run 'mecatui login %s')", err, server, server)
 }
 
-func anonymousUnaryHint(server string) grpc.UnaryClientInterceptor {
+func credentialFreeUnaryHint(server string, explicitAnonymous bool) grpc.UnaryClientInterceptor {
 	return func(ctx context.Context, method string, req, reply any, cc *grpc.ClientConn, invoker grpc.UnaryInvoker, opts ...grpc.CallOption) error {
-		return anonymousDialHint(server, invoker(ctx, method, req, reply, cc, opts...))
+		return credentialFreeDialHint(server, explicitAnonymous, invoker(ctx, method, req, reply, cc, opts...))
 	}
 }
 
-func anonymousStreamHint(server string) grpc.StreamClientInterceptor {
+func credentialFreeStreamHint(server string, explicitAnonymous bool) grpc.StreamClientInterceptor {
 	return func(ctx context.Context, desc *grpc.StreamDesc, cc *grpc.ClientConn, method string, streamer grpc.Streamer, opts ...grpc.CallOption) (grpc.ClientStream, error) {
 		stream, err := streamer(ctx, desc, cc, method, opts...)
 		if err != nil {
-			return nil, anonymousDialHint(server, err)
+			return nil, credentialFreeDialHint(server, explicitAnonymous, err)
 		}
-		// Server-side auth rejects before the handler runs, and gRPC surfaces that
-		// on the first Recv rather than at stream creation, so the hint has to
-		// cover RecvMsg too.
-		return hintingStream{ClientStream: stream, server: server}, nil
+		return hintingStream{ClientStream: stream, server: server, explicitAnonymous: explicitAnonymous}, nil
 	}
 }
 
 type hintingStream struct {
 	grpc.ClientStream
-	server string
+	server            string
+	explicitAnonymous bool
 }
 
 func (s hintingStream) RecvMsg(m any) error {
-	return anonymousDialHint(s.server, s.ClientStream.RecvMsg(m))
+	return credentialFreeDialHint(s.server, s.explicitAnonymous, s.ClientStream.RecvMsg(m))
 }
 
 type tokenContextKey struct{}
@@ -243,20 +264,11 @@ func (c *Client) Close() error {
 	return c.conn.Close()
 }
 
-// CreateSession allocates a server-side session against an absolute workspace and
-// returns its id together with the server's advertised Capabilities. mode is the
-// proto PermissionMode (see ModeFromString). sel is the optional, proto-free model
-// selection (its zero value ⇒ no provider_id/model_id set ⇒ the server's default).
-// This is the SINGLE proto-build point for the model selection: the ui passes a
-// plain ModelSelection and never sees the proto request. The Capabilities are the
-// proto-free mirror of the create response's ServerCapabilities; an older server
-// that omits the field yields the all-false zero value (see capabilitiesFrom).
-// The ResolvedModel is the EFFECTIVE provider+model the server resolved the session
-// to (echoed verbatim); an older server that omits the field yields the zero value
-// (see resolvedModelFrom), which the ui renders as no model segment.
-func (c *Client) CreateSession(ctx context.Context, workspace string, mode mecatlv1.PermissionMode, sel ModelSelection) (string, Capabilities, ResolvedModel, error) {
+// CreateSession allocates a server-owned session and returns its id together
+// with the server's advertised capabilities and resolved model. The request
+// deliberately carries no client filesystem path.
+func (c *Client) CreateSession(ctx context.Context, mode mecatlv1.PermissionMode, sel ModelSelection) (string, Capabilities, ResolvedModel, error) {
 	return c.createSession(ctx, &mecatlv1.CreateSessionRequest{
-		Workspace:       workspace,
 		Mode:            mode,
 		ProviderId:      sel.ProviderID,
 		ModelId:         sel.ModelID,
@@ -411,26 +423,23 @@ func isUpperHex(b byte) bool {
 	return b >= '0' && b <= '9' || b >= 'A' && b <= 'F'
 }
 
-// CreateSessionWithCarryover is CreateSession seeded with the source session's
-// conversation history (issue #20). sourceSessionID, when non-empty, sets
-// source_session_id on the request; the server snapshots the source (it must be
-// at a turn boundary) and seeds the new session's history. The server is the
-// authority on same-vs-cross: a same-provider carryover replays verbatim, a
-// cross-provider carryover strips the prior provider's private replay blobs.
-// An empty sourceSessionID is byte-identical to CreateSession (no carryover).
-// The caller owns closing the source session AFTER the new one is ready (the
-// server snapshotted it at create time). This is the SINGLE proto-build point
-// for the carryover selector — the ui passes plain strings and never sees the
-// proto.
-func (c *Client) CreateSessionWithCarryover(ctx context.Context, workspace string, mode mecatlv1.PermissionMode, sel ModelSelection, sourceSessionID string) (string, Capabilities, ResolvedModel, error) {
-	return c.createSession(ctx, &mecatlv1.CreateSessionRequest{
-		Workspace:       workspace,
-		Mode:            mode,
-		ProviderId:      sel.ProviderID,
-		ModelId:         sel.ModelID,
-		ReasoningEffort: sel.ReasoningEffort,
-		SourceSessionId: sourceSessionID,
+// CreateSessionWithCarryover forks sourceSessionID with model overrides. Server
+// inheritance supplies placement, mode, limits, and any omitted model fields.
+func (c *Client) CreateSessionWithCarryover(ctx context.Context, sel ModelSelection, sourceSessionID string) (string, Capabilities, ResolvedModel, error) {
+	if sourceSessionID == "" {
+		return "", Capabilities{}, ResolvedModel{}, fmt.Errorf("fork session: source session ID is required")
+	}
+	resp, err := c.svc.ForkSession(ctx, &mecatlv1.ForkSessionRequest{
+		SourceSessionId: sourceSessionID, ProviderId: sel.ProviderID, ModelId: sel.ModelID, ReasoningEffort: sel.ReasoningEffort,
 	})
+	if err != nil {
+		return "", Capabilities{}, ResolvedModel{}, fmt.Errorf("fork session: %w", err)
+	}
+	snapshot, err := c.GetSession(ctx, resp.GetSessionId())
+	if err != nil {
+		return "", Capabilities{}, ResolvedModel{}, err
+	}
+	return resp.GetSessionId(), snapshot.Capabilities, snapshot.ResolvedModel, nil
 }
 
 // createSession is the shared proto-build→call→unwrap body for both CreateSession
@@ -442,6 +451,29 @@ func (c *Client) createSession(ctx context.Context, req *mecatlv1.CreateSessionR
 		return "", Capabilities{}, ResolvedModel{}, fmt.Errorf("create session: %w", err)
 	}
 	return resp.GetSessionId(), capabilitiesFrom(resp.GetCapabilities()), resolvedModelFrom(resp.GetResolvedModel()), nil
+}
+
+// ClearSession creates an empty-history successor. A nil selector inherits the
+// source placement; a non-nil selector must be one returned by ListWorktrees for
+// this source session. The successor is fetched before return so callers bind
+// only server-authored metadata.
+func (c *Client) ClearSession(ctx context.Context, sourceID string, selector *WorktreeSelector) (string, SessionSnapshot, error) {
+	var token *string
+	if selector != nil {
+		if selector.IsZero() {
+			return "", SessionSnapshot{}, fmt.Errorf("clear session: worktree selector must not be empty")
+		}
+		token = &selector.token
+	}
+	resp, err := c.svc.ClearSession(ctx, &mecatlv1.ClearSessionRequest{SourceSessionId: sourceID, WorktreeSelector: token})
+	if err != nil {
+		return "", SessionSnapshot{}, fmt.Errorf("clear session: %w", err)
+	}
+	snapshot, err := c.GetSession(ctx, resp.GetSessionId())
+	if err != nil {
+		return "", SessionSnapshot{}, err
+	}
+	return resp.GetSessionId(), snapshot, nil
 }
 
 // ForkSession creates a peer session from the conversation-history snapshot of the

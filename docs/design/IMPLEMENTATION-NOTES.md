@@ -158,18 +158,14 @@ non-main kinds. `engine/adapter/sessnap/sessnap.go`, every SessionStore adapter
 Restore rejects invalid combinations; a legacy absent kind becomes fail-closed
 `unknown` rather than gaining main-session continuation posture.
 
-Explicit legacy adoption (issue #593) remains a server/composition authority boundary,
-not an aggregate transition. `PreflightSessionAdoption` accepts only an authenticated,
-caller-owned `unknown` snapshot with a complete tool-paired transcript at an idle/terminal
-boundary and no reserved child/team/parallel/scheduled prefix or relationship. It reports
-stable reason codes and requires explicit workspace/`EnvironmentRef` plus provider/model
-bindings; resolution failures never fall through to defaults. `AdoptSession` repeats the
-checks while holding the source's `runEntryMu` and mutation lease, copies through the
-existing cross-provider state-stripping discipline, and saves one fresh main aggregate with
-optional `Adoption` metadata containing the source ID and a caller/source/request-bound digest. The deterministic opaque target
-ID makes a lost-response retry return that complete snapshot. Foreign and absent sources are
-both `ErrNotFound`; the source is never reopened, relabelled, or saved. There is no bulk,
-automatic, or client-transcript-upload path.
+Legacy/custom `unknown` sessions remain inspect-only. There is no adoption or
+preflight operation, no adoption metadata, and no client-supplied replacement workspace or
+placement authority. New writable main sessions come only from ordinary server-owned creation
+or from `ClearSession`/`ForkSession` successors of an owned main source: Clear starts with empty
+history, Fork copies valid history, and both inherit the source's exact `EnvironmentRef` unless
+they consume a fresh source-scoped worktree selector. The successor path reauthorizes and
+serializes the source under the mutation lease; failure publishes no partial target and leaves
+the source unchanged.
 
 ---
 
@@ -3512,8 +3508,21 @@ Both layers classify targets with the SINGLE predicate `cmd/mecatui/client/clien
 per-RPC credential can never disagree about one target.
 A registry hit overrides the loopback default to verified gRPC TLS and rejects explicit
 plaintext or `--insecure`; the saved issuer CA is passed only to the issuer client, never
-to `DialConfig.TLSCAFile`.
-A missing target enrollment returns the CLI-login instruction. The UI `/connect`
+to `DialConfig.TLSCAFile`. Credential resolution is static `--auth-token`, explicit
+`--anonymous`, saved OIDC enrollment, then a credential-free dial on any clean enrollment
+miss. The server is authoritative: only an actual `Unauthenticated` RPC establishes that
+caller authentication is required. Corrupt or unreadable registry, keyring, and credential
+state remains a storage failure rather than a miss. A static token flag or environment
+fallback wins even when `--anonymous` is also present; otherwise `--anonymous` bypasses saved
+state. Remote use retains
+verified-TLS-by-default with `--tls=false` as a separate plaintext decision. Neither a
+private IP nor a DNS/Tailscale-like name changes those TLS rules. In a credential-free
+Tailscale deployment, tailnet membership and ACLs become the shared authority, so every
+admitted peer shares the unauthenticated server authority. `--no-saved-auth` is removed under
+the ADR-0089 one-spelling rule. On the server side, startup listener posture counts only
+static bearer, OIDC, or verified client certificates as caller authentication. Ordinary
+TLS is transport encryption/server authentication and therefore does not suppress the
+prominent non-loopback anonymous warning. The UI `/connect`
 overlay lists public saved-target metadata, confirms a selection, and requests a
 restart; a new-target selection exits to the same CLI login flow before reconnecting.
 Ordinary target selection and every target switch start a new remote session. During
@@ -5845,15 +5854,13 @@ the scoped WRITE path is deferred** (see below).
 
 ### Session profiles — `"no-fs"` (issue #55)
 
-The filesystem is **optional per session**. `CreateSessionRequest.profile`(6) is an
-enum-as-string (`""` default / `"no-fs"`; unknown ⇒ loud InvalidArgument, never a silent
-default), parsed by `server.ParseSessionProfile` and FIXED for the session lifetime. The
-workspace requirement is PROFILE-AWARE in `Service.createSession` (the old unconditional
-empty-workspace guards in grpc.go/http.go are gone): default REQUIRES a workspace, no-fs
-REQUIRES an EMPTY one — the contradictory combination is rejected loudly. A no-fs session
-ALWAYS takes the per-session engine path (`needPerSession` includes the profile — the shared
-engine has the FS tools baked in) and `server.SessionEngineFactory` grew a
-`profile SessionProfile` parameter, mirroring how the `ProviderSelector` flows.
+The filesystem is **optional per session**, but placement is always server-owned.
+`CreateSessionRequest.profile`(6) is an enum-as-string (`""` = bind the trusted
+deployment default; `"no-fs"` = explicit attenuation). Unknown values fail loudly.
+The public request has no workspace, cwd, placement ID, or selector. Composition's
+`PlacementProvider.Bind` returns a complete Environment plus an exact valid ref before
+the session is persisted. A no-fs session always takes the per-session engine path
+because the shared engine has FS tools baked in.
 
 - **Catalog profile:** `catalogSession.noFS` threads through `assembleCatalog`.
   `registerCoreTools(…, noFS)` registers `tools.NoFS()` = {WebFetch} PLUS WebSearch (both
@@ -5868,13 +5875,11 @@ engine has the FS tools baked in) and `server.SessionEngineFactory` grew a
 - **Skill stays ON, body-only:** a skill body is TEXT INJECTION, not a filesystem act; an
   out-of-workspace ASSET read fails honestly through the no-FS workspace (skills with
   payload files are effectively body-only in a no-fs session).
-- **Workspace:** `engine/adapter/nofs` — the HONEST empty `tool.Workspace` (reads/stats fail
-  `fs.ErrNotExist`, Glob/Grep empty, Write refuses with `ErrNoFilesystem`, `Root()` "");
-  deliberately NOT memfs, which would silently absorb writes nobody can ever read back —
-  with nofs nothing exists that can be lost. It is registered as the per-session workspace
-  OVERRIDE at CREATE time (the ACP-buffer-workspace seam, same lock as the engine
-  registration), so `StartRun` never hands the empty root to the osfs factory (which would
-  MkdirAll/OpenRoot the server process cwd). Persisted `Session.Workspace` is `""`.
+- **Workspace:** `engine/adapter/nofs` is the honest empty `tool.Workspace` (reads/stats
+  fail `fs.ErrNotExist`, Glob/Grep empty, Write refuses with `ErrNoFilesystem`, `Root()`
+  is empty). It is deliberately not memfs, which would silently absorb writes. The
+  placement provider binds it with a valid exact no-FS `EnvironmentRef` before persistence;
+  run entry exactly reattaches that ref and never treats an empty path as authority.
 - **Child surface (Subagent + Team):** `noFSChildCatalog(assets)` = memory six + WebFetch +
   WebSearch + global MCP — no FS tools, no shell, NO forkers (neither worktree nor force-copy; a
   Mutating team-member spawn fails loudly at `selectMemberWorkspace`). Per-def specialist
@@ -5889,29 +5894,13 @@ engine has the FS tools baked in) and `server.SessionEngineFactory` grew a
   `noFSMemberNote` (children) to the Role; `agent.WithSubagentNoFSNote()` replaces the WHOLE
   Subagent tool-surface description (no Read/Grep/Glob, no worktree, no Parallel claims) —
   byte-identical without the option (`TestSubagentSpecNoFSNoteOption`, mutation-verified).
-- **Restart rehydration (widened in cloud-native Phase 1):** the profile is now a persisted
-  snapshot label (`Session.Profile`; see the snapshot-fidelity note below) AND still
-  recoverable by inference — an empty persisted `Session.Workspace` can ONLY be a no-fs
-  session (default requires one, ACP persists a real cwd, CreateTeam rejects empty). At the
-  run-entry seam (`Service.StartRunContent`) a loaded session with no registered
-  per-session engine that `needsRehydration` (no-fs profile OR a persisted selector OR an
-  empty workspace) is REHYDRATED (`Service.rehydrateSession`, generalized from the former
-  no-fs-only `rehydrateNoFSSession`): the engine is rebuilt through the SAME
-  `SessionEngineFactory` path create used, reading the PERSISTED selector + profile back off
-  the loaded session (a no-fs session rebuilds the file-less catalog and re-registers the
-  nofs workspace override; a selector session rebuilds on the SAME provider+model), under
-  the create-time cap/lock discipline. Without this a no-fs session would silently ESCALATE
-  onto the shared engine over `osfs` opened at the server cwd, and a selector session would
-  DEGRADE onto the default provider. Two defenses can't regress independently:
-  `StartRunContent` never hands an empty root to the shared factory (serves `nofs.New()`),
-  and `osfsWorkspaceFactory` itself intercepts `root == ""` (ERROR log + nofs — the
-  chokepoint a future caller cannot bypass). `LoadSessionWithMCP` likewise re-derives the
-  selector + profile from the persisted labels. A DEFAULT FS session (empty selector,
-  default profile, non-empty workspace) does NOT trigger rehydration — it keeps riding the
-  shared engine. Guarded by `TestNoFSSessionRehydratesAfterRestart` +
-  `TestSelectorSessionRehydratesWithPersistedSelector` + `TestDefaultFSSessionDoesNotRehydrate`
-  (server seams) and `TestNoFSSessionSurvivesRestartE2E` + `TestSelectorSessionSurvivesRestartE2E`
-  (full Build over a shared jsonl store), mutation-verified per leg.
+- **Restart reattachment:** `Session.EnvironmentRef{Kind, ID, Revision}` is the sole
+  durable placement identity and every session persists a valid exact ref. On run entry
+  `PlacementReattacher.Reattach` must return a complete Environment with exactly that ref;
+  missing providers, authorization or revision drift, nil Workspace, and identity mismatch
+  fail closed. Zero refs, legacy duplicate `Workspace` state, empty-workspace inference,
+  lazy stamping, and fallback to the current default are unsupported. Provider/model/profile
+  labels still drive engine reconstruction independently of environment reattachment.
 - **Non-goals / known edges:** a REMOTE filesystem for no-fs sessions returns later as a
   driver (see `DRIVERS.md`). The awaiting-approval mid-turn resume is still Phase 2 (Phase 1
   widened only the engine-rebuild trigger, not the run-entry cursor). Skills with payload
@@ -5922,76 +5911,46 @@ engine has the FS tools baked in) and `server.SessionEngineFactory` grew a
 
 A coding agent ultimately needs one execution environment whose filesystem and command namespace are
 affined: the bytes Read/Edit see and the tree Bash builds must be the same place. ADR 0208 fixes the
-layering and the version protocol; ADR 0211 IMPLEMENTS the runtime seam (issue #462). Durable identity
-lives cycle-safely in `session.EnvironmentRef{Kind, ID}` (stdlib-only, so it CAN ride the
-snapshot/event log without pulling tool types in — but in phase 2 it is an IN-PROCESS identity only,
-NOT yet a snapshot field; persistence/remote transport are deferred to phase 3); the minimal immutable
-`tool.Environment` carries that ref plus a NON-NULL `Workspace`
-and an OPTIONAL bound `CommandRunner`. `Tool.Execute`, the observed/parent seams, `Engine.Run`/
-`ResumeApproval`, the loop/dispatch, and delegation now take `tool.Environment` (not `tool.Workspace`);
-narrow policy/prompt/hook APIs still receive `env.Workspace`/`WorkspaceReader`. `CommandRunner.Run`/
-`CommandStreamer.RunStreaming` LOST the per-call workdir — a runner is BOUND to one namespace at
-construction, so the command's cwd always matches the workspace the tool executes against; a nil
-runner surfaces `ErrNoShell`. `tool.EnvironmentForker` REPLACES `tool.WorkspaceForker` (Fork returns a
-complete child Environment whose Workspace and runner share the child namespace) and
-`tool.EnvironmentMerger` REPLACES `tool.ForkMerger` (Merge receives child/parent Environments, no
-forkRoot string). A direct-write Subagent uses the PARENT Environment; read-only/copy/worktree branches
-and Team use the CHILD Environment. Composition wires the forker's bound-runner builder
-(`forker.WithRunner`, the same envscrub/gitenv hardening as the parent runner); the Service binds the
-main `CommandRunner` + a `CommandRunnerFactory` for worktree-bound sessions.
+version protocol; ADR 0211 implements the runtime seam; ADR 0291 makes
+`session.EnvironmentRef{Kind, ID, Revision}` the sole durable identity. The minimal immutable
+`tool.Environment` carries that ref plus a non-null `Workspace` and an optional bound
+`CommandRunner`. `Tool.Execute`, the loop, and delegation take `tool.Environment`; narrow
+policy/prompt/hook APIs receive its Workspace view. A runner is bound at construction, so its
+cwd and the Workspace namespace cannot drift. `tool.EnvironmentForker` returns a complete child
+Environment and `tool.EnvironmentMerger` receives complete child/parent Environments. A
+direct-write Subagent uses the parent Environment; isolated Subagent, Parallel, and Team paths
+receive server-created children.
 
-**Persistence/reattachment (ADR 0214, issue #462 phase 3).** `EnvironmentRef` is now a DURABLE
-snapshot field: `session.Session.EnvironmentRef` is an inert exported label (the same posture as
-`Profile`/`ProviderID`), persisted via `sessnap.Snapshot.EnvironmentRef` (Go 1.26 `omitzero`, so a
-default/local session stays byte-identical to a pre-phase-3 snapshot; a legacy snapshot restores the
-zero ref). At `createSession` the resolved default ref is stamped (`local` ID=workspace root, `nofs`
-empty ID); a legacy zero ref is stamped from the first resolved live Environment at run entry (no
-migration sweep). `server.Config.EnvironmentResolver func(ctx, session.EnvironmentRef) (tool.Environment, error)`
-reattaches a live Environment for a non-in-tree Kind — the in-tree Kinds never reach it (they
-re-derive through the factories); a nil resolver, a ref mismatch, or a nil-Workspace result fails
-loudly (`ErrFailedPrecondition`), never a silent local fallback; the returned `Ref()` MUST equal the
-request. The resolver does NOT trigger/rebuild a per-session `SessionEngine` for a default
-provider/model — environment reattachment and engine rehydration are INDEPENDENT. `internal/adapter/remoteenv`
-is a deterministic, in-process reference fake (`Backend` ID→namespace registry; `NewEnvironment`/`Resolve`
-return Workspace+CommandRunner bound to the same namespace; `EnvironmentForker`/`EnvironmentMerger` over
-refs; a tiny `cat`/`write` test protocol; `FileVersion` CAS across handles; `const Kind = "remote-fake"`
-inside the adapter, NOT in `engine/session`). It is a contract proof only and is NOT wired by default
-`app.Build`. No production remote transport, flags, proto changes, or external dependencies.
+**Persistence/reattachment (ADR 0291, preserving ADR 0214 exactness).**
+`session.Session.EnvironmentRef` and `sessnap.Snapshot.EnvironmentRef` contain the exact private
+`Kind`, `ID`, and `Revision`; there is no `Session.Workspace` or snapshot Workspace. Trusted driver
+storage transports the same exact ref. Public Harness/HTTP/client mappers expose only bounded
+`PlacementMetadata` and never the ref or physical root. `PlacementProvider.Bind` is the atomic
+creation/successor operation; `PlacementReattacher.Reattach` accepts only the persisted ref and
+trusted principal/scope. Returned Environment identity and Workspace/runner namespace must agree.
+Any missing provider, stale authorization/revision, unavailable backend, nil Workspace, or ref
+mismatch is a failed precondition with no fallback. Every new session has a valid ref before Save;
+zero refs, lazy stamping, workspace inference, legacy adoption, and migration sweeps are removed.
+The local provider is composition-owned; remote providers may implement the same Bind/Reattach
+contract. ACP's cwd remains a local consistency assertion against the trusted configured binding,
+never a selector.
 
-The version and ledger contracts live in `engine/tool/tool.go` (`FileVersion`, `Workspace`,
-`LedgerKey`) and `engine/tool/ledger.go` (`ReadLedger`, `ErrLedgerUnavailable`). They stay in core
-because `port` already imports `tool`; neither contract imports a root adapter or Redis dependency.
-Workspace is the content capability only. `engine/tool/environment.go` (`Environment`) separately
-carries one non-null Workspace and one non-null session-scoped ReadLedger, so their implementations
-and lifetimes can differ without rebuilding or replacing the content backend:
+The first migration stage is the version protocol in `engine/tool/tool.go` (`FileVersion`,
+`Workspace`). Plain Read remains for non-agent consumers, but public Workspace exposes no
+unconditional mutation: concrete adapter/FileSystem Write methods are bootstrap/setup APIs outside the
+capability handed to tools. The built-in bodies use only the safe path:
 
-1. `engine/adapter/fstools/read.go` (`ReadTool.Execute`) calls `ReadVersion`, derives the I/O-free
-   lexical `LedgerKey` from the Workspace root and requested path, and records the exact
-   adapter-minted token through `env.ReadLedger()`. A record failure is returned to the model and
-   establishes no new evidence; older evidence retains only its ordinary exact-version meaning.
-2. `engine/adapter/fstools/edit.go` (`EditTool.Execute`) and existing-file Write call the
-   context-aware `RecordedVersion`. Ordinary absence keeps the familiar not-read refusal; storage,
-   decode, or corruption errors are distinct and fail closed before mutation. With valid evidence,
-   the tools read the current version, reject a recorded/current mismatch, then call conditional
-   `ReplaceFile` against that current version.
+1. `engine/adapter/fstools/read.go` (`ReadTool.Execute`) calls `ReadVersion` and records the exact
+   adapter-minted version; `RecordRead`/`RecordedVersion` perform no I/O. osfs and ACP ledger keys use
+   lexical Clean/Rel only: ordinary abs/relative forms converge, while physical symlink aliases may
+   safely miss and force another Read.
+2. `engine/adapter/fstools/edit.go` (`EditTool.Execute`) and existing-file Write require
+   `RecordedVersion`, make a current version-bearing read, reject a recorded/current mismatch, then
+   call conditional `ReplaceFile` against that current version.
 3. New-file Write calls create-only `CreateFile`. A create race reports an existing-file conflict;
    there is no empty/`AnyVersion` overwrite sentinel.
-4. A successful create/replace records the returned new version. If that post-mutation ledger write
-   fails, the tool truthfully reports that content changed and no new evidence was persisted; it does
-   not roll back content or invalidate older evidence. Any later mutation still requires exact
-   recorded/current equality and final CAS.
-
-`engine/adapter/ledgerconformance/ledgerconformance.go` (`Run`) pins exact-token round-trip,
-invalid-zero rejection, absence, replacement, key isolation, and concurrent access for each ledger
-adapter. `engine/tool/tool.go` (`EncodeFileVersion`, `DecodeFileVersion`) is the narrow persistence
-codec: valid empty/non-empty opaque tokens round-trip, while the invalid zero value is rejected.
-`internal/adapter/redisstore/readledger.go` (`ReadLedger`, `DeleteReadLedger`) is the durable proof:
-one versioned Redis hash per session uses normalized paths as fields, borrows the Store's existing
-client-generation lifecycle, and treats missing/null/wrongly typed fields, malformed JSON, unknown
-formats, and unavailable storage as `tool.ErrLedgerUnavailable`, never absence. Both canonical
-Redis session-deletion scripts atomically delete the ledger with the other sidecars; the explicit
-ledger-only reset remains idempotent. The adapter does no file-content I/O and is not
-production-default wiring.
+4. A successful create/replace records the returned new version so another mutation through the same
+   live Workspace remains valid.
 
 The final ReplaceFile is load-bearing: `engine/adapter/fstools/fstools_test.go`
 (`TestEditConditionalReplaceRejectsConcurrentChange`,
@@ -6018,29 +5977,11 @@ instances over an arbitrary backend are not claimed to be globally serialized. A
 POSIX process bypassing Workspace does not participate; local osfs is not claimed as kernel-level CAS.
 A future remote backend owes true backend CAS.
 
-Ledger scope is selected independently from Environment identity and filesystem-content scope.
-Default Environment construction pairs its Workspace with a fresh in-memory ledger, preserving the
-previous behavior: rebuilding the Environment (including the next user run) starts with no evidence
-and Edit/overwrite is refused until Read records a version. Composition may instead pair the same
-Workspace/content backend with a durable session ledger. This does not turn
-`internal/adapter/server/service.go` (`sessionEnvironments`) into a default Environment cache: it
-remains the per-session override map for complete Environments registered by surface adapters (ACP
-editor buffers and no-fs), with accurate Kind/ID, ledger, and runner posture.
-
-Every child gets fresh evidence ownership. `internal/adapter/forker/forker.go` (`Fork`) pairs a new
-`memledger` with the child Workspace for both worktree and copy paths. Base-sharing children do not
-reopen `Workspace.Root()` as osfs: direct-write Subagents and Team members retain the exact parent
-content backend and appropriate runner through the composition-supplied child-authority Workspace
-view, while receiving a fresh child ledger from the independent ledger factory. The view preserves
-ACP/remote/custom backends and keeps the existing path-escape containment boundary. No fallback
-inherits the parent ledger, including when the parent selected durable Redis storage.
-
-The Redis ledger's lifetime is the containing redisstore Store's client-generation lifetime; handles
-borrow that client rather than owning another connection. Canonical and conditional session deletion
-atomically delete its hash with the session sidecars; `DeleteReadLedger` remains an explicit,
-idempotent ledger-only reset. No TTL or age pruning is implied, and the ledger is not yet selected by
-default production composition. The ordinary in-memory override and restart behavior remains
-unchanged. **EnvironmentRef is a DURABLE snapshot field (ADR 0214, issue #462 phase 3):** `EnvironmentRef` persists via `sessnap.Snapshot.EnvironmentRef` (Go 1.26 `omitzero` — a default/local session stays byte-identical to a pre-phase-3 snapshot); a non-in-tree Kind reattaches a live `Environment` at run entry through `server.Config.EnvironmentResolver` (nil/mismatch/nil-Workspace fails loudly with `ErrFailedPrecondition`, never a silent local fallback; the in-tree Kinds never reach the resolver — they re-derive through the factories; the resolver does NOT trigger per-session engine rehydration — environment reattachment and engine rehydration are INDEPENDENT). A default `local`/`nofs` ref is stamped at `createSession`; a legacy zero ref is stamped from the first resolved live Environment on the next save (no migration sweep). See the Persistence/reattachment subsection above for the full detail.
+The read ledger belongs to the live Environment instance and resets when that Environment is
+rebuilt. `Service.sessionEnvironments` caches complete bound Environments for a session; entries
+carry the exact persisted ref and are evicted on session close. On restart the placement provider
+reattaches from that exact private ref; no public path, empty-root inference, or current-default
+fallback participates.
 
 ### Path-escape posture (`docs/acceptance/path-escape-posture.md` + ADR 0080)
 
@@ -6111,10 +6052,10 @@ target dir that escapes further is refused by that root's containment, exactly a
 workspace root's own containment refuses an in-root escape. The relax widens WHICH
 paths may be served, never HOW they are served. `escapeWorkspace` also carries the
 pseudo-fs hard-deny as defense-in-depth at the tool-body boundary, INCLUDING the
-version-bearing read/mutations (`ReadVersion`/`CreateFile`/`ReplaceFile` are overridden,
-AC-W2-F1). Since a guarded read fails before the file tool can record evidence in the separate
-Environment ledger, pseudo-fs Edit can never validate its read-before-edit invariant through this
-wrapper.
+version-bearing read/mutations and Edit read-ledger (`ReadVersion`/`CreateFile`/
+`ReplaceFile` and `RecordRead`/`RecordedVersion` are overridden, AC-W2-F1). A guarded
+record is a no-op and a guarded lookup reports not-recorded, so a pseudo-fs Edit can
+never validate its read-before-edit invariant through this wrapper.
 
 **Pseudo-fs is never relaxed** (`escapePseudoFS`, distinct from a regular escape at
 every posture): an in-process FS Read of `/proc/self/environ` would return the SERVER's
@@ -6125,17 +6066,17 @@ the tool-body wrapper as defense-in-depth.
 
 **Children never relax.** The relaxed construction options are wired into the MAIN
 session's workspace factory only — `newForkWorkspace` and every fork family build the
-plain non-relaxed workspace, so a forked child keeps ordinary containment at every
+plain non-relaxed workspace, so a forked child keeps the ordinary containment at every
 posture (Scenario 5). The two BASE-SHARING child paths would otherwise inherit the
-relaxed parent wrapper verbatim, so composition supplies a capability-narrowing view:
-`engine/agent/subagent.go` (`WithSharedChildWorkspace`) covers the shell-less read-only
-explorer and `mode:"read-write"` direct-write child, and
-`engine/agent/teamsupervisor.go` (`WithTeamSharedBaseWorkspace`) covers a base-sharing
-shell-less read-only team member. `internal/app/escapepolicy.go` (`childWorkspaceView`)
-keeps the exact underlying content backend and classifier but rejects every escape; a
-non-relaxed, ACP, remote, or custom Workspace passes through by identity. It never
-reopens `Workspace.Root()` as osfs, so authority narrowing cannot change the namespace
-or silently replace an editor/remote backend.
+relaxed parent workspace verbatim, so composition hands them a NON-relaxed re-view of
+the shared base: `engine/agent/subagent.go` (`WithSharedChildWorkspace`) for the
+shell-less read-only explorer and the `mode:"read-write"` direct-write child, and
+`engine/agent/teamsupervisor.go` (`WithTeamSharedBaseWorkspace`) for a base-sharing
+shell-less read-only team member — SAME root, SAME per-skill read-only roots, NO relaxed
+options (the exact constructor `newForkWorkspace` uses), wired only at `PostureAuto` and
+above (inert below it, where the parent workspace is never relaxed). A root the
+constructor cannot open yields nil and the child falls back to the parent workspace
+(fail-open to the historical shape).
 
 **ADR-0080 guardrail-routed escape checking.** The plan's "guardrail-gated iff the knob
 is configured" clause is a composition-level PRE-CHECK inside the escape policy
@@ -6162,40 +6103,57 @@ deny-dominant (the inner fold runs first — a configured Deny or configured Ask
 reaches the checker). Default `false` is the byte-identical un-routed posture table. See
 `docs/adr/0080-guardrail-routed-escape-checking.md`.
 
-### Worktree binding (issue #102, `docs/adr/0032-worktree-binding.md`)
+### Server-owned session placement and worktree successors (ADR 0291)
 
-A session may bind to an EXISTING git worktree (not just the launch root) so all
-local tools root there. Three clear, separated interfaces:
+Placement is server-owned across embedded, loopback, remote, and cloud-native composition.
+`internal/app/placement.go` installs the local immutable provider over the operator's private
+configured root plus no-FS attenuation. `server.PlacementBinder` is mandatory and is the single Bind
+choke point; provider authorization and resolution happen in one snapshot and return a complete
+Environment, exact `EnvironmentRef{Kind, ID, Revision}`, and bounded display metadata. Startup
+validates the deployment default without caching it, and ordinary run entry always reattaches a
+fresh Environment so the read ledger resets; after restart, a verified local binding whose workspace
+root differs from the configured default rebuilds its root-scoped per-session engine and policy before
+running rather than using the shared default-root engine. `sessionEnvironments` remains overrides-only
+(ACP and other explicitly owned overlays). Placement-provider, discovery, and storage failures cross
+public gRPC/HTTP only as stable content-free categories; bounded detailed causes remain on injected
+operator diagnostics. A remote provider may implement the same contract; no public
+placement-ID registry or server-side `Workspaces(path)` fallback exists.
 
-- **Discovery** — `server.WorktreeLister` (a composition-injected, nil-safe port
-  mirroring `CommandLister`) backs the `ListWorktrees` RPC. The osfs-backed
-  `buildWorktreeLister` (`internal/app/build.go`) shells out to
-  `git worktree list --porcelain` with the SAME scrubbed+neutralised git env as
-  `gitSnapshot` (`envscrub` then `gitenv`), TRUST-GATED (`cfg.TrustProject`), and
-  FAIL-SOFT (any git fault → `nil, nil`, never an error). nil when there is no
-  workspace / no shell / untrusted — then `ListWorktrees` returns empty and
-  `ServerCapabilities.worktrees` is false (the mecatui overlay is honestly
-  absent). Cloud-native compatible: a no-FS/cloud server wires no lister.
-- **Routing** — `server.Config.DefaultWorkspace` (the launch root; empty for a
-  child/member/cloud service). `needPerSession` and `needsRehydration` (now a
-  `*Service` method) are widened: a session whose
-  `workspace != "" && workspace != DefaultWorkspace` routes through the
-  per-session engine factory, which ALREADY re-pins the CHILD permission resolver
-  to the session root via `childPermResolverFor(cfg, workspace)` (closing the
-  child-resolver gap — a shared-engine child would otherwise read the launch
-  root's `.mecatl/settings.yaml`). The main policy ALREADY re-resolves
-  per-workspace. The session rehydrates to the SAME worktree-rooted engine after
-  a restart. When `DefaultWorkspace == ""` the new arm never fires, so the
-  cloud/no-root posture is byte-identical.
-- **Switching** — mecatui's `/worktrees` overlay (`cmd/mecatui/ui/worktrees.go`)
-  lists worktrees and, on select, closes the old session and creates a NEW one
-  rooted at the chosen worktree via the NEW `SessionCreator.CreateSessionInWorkspace`
-  method (the `/models` restart-now precedent; `restartFailedMsg` reused).
-  Operator-driven only; the model has no workspace-switch tool; a live session
-  is never mutated. osfs path confinement is unchanged.
+Public Create accepts only omitted/default placement or `profile:"no-fs"`; workspace and source
+fields are reserved. Discovery takes an owned `session_id`: `ListCommandsForSession` and
+`ListWorktreesForSession` authorize and exactly reattach before touching command/git providers,
+and no-FS returns empty first. Worktrees expose display-only label/branch/revision plus an opaque
+selector. The local placement provider owns `WorktreeSelectorIssuer`, which HMACs provider-private
+current identity with caller/source scope using one random Build-owned key. Discovery and selected
+successor Bind therefore use the same provider inventory seam; use re-lists current choices and
+constant-time matches before environment construction. No token is decoded or stored, no registry/map
+exists, and restart invalidates selectors so clients relist.
 
-Trust stays OPERATOR-tier at launch (worktrees share `.git`); per-worktree trust
-re-resolution is a documented follow-up, not blocked by the design.
+Only ClearSession and ForkSession consume a worktree selector. Omitted selector exactly inherits
+the source placement. Clear creates a fresh empty-history successor; Fork copies valid history and
+may apply authorized provider/model/reasoning overrides in the same atomic publication. Both lock
+and lease the owned source, derive a cancellation context from the held mutation lease, build any
+per-session engine, re-check the held lease immediately before persistence, and tear down provisional
+bindings/engines if ownership is lost. The current `SessionStore` seam has no lease-token
+conditional create, so there is an accepted residual window after the final held-lease check and
+before or during publication: a concurrent renewal loss cancels the context but cannot make every
+supported store's already-started commit atomic. This is not claimed as cancellation atomicity;
+closing it requires a follow-up acceptance plan for a token-fenced create/CAS store seam.
+Mecatui `/clear`, `/worktrees`, `/effort`, and inventory fork use
+these successor RPCs and keep the active source selected if relist/switch fails.
+
+Schedules resolve placement at creation and persist exact private ref, owner principal, and trusted
+scope—never the ephemeral selector or current-default intent. Each fire reauthorizes and exactly
+reattaches before creating its fire session. Team derives the owning session placement; Subagent
+and Parallel receive the parent Environment or a server-created fork. Preserved-fork, delegation,
+inspection, and artifact handles are typed separately and cannot be replayed as selectors; their
+public projections reveal no root or exact ref. Driver session storage is trusted and therefore
+round-trips the exact private EnvironmentRef. ACP binds/reattaches first and treats editor cwd only
+as an assertion against trusted configured local placement.
+
+The Build-owned selector key is inventoried in ADR 0027 List 1; List 2 records reset-by-design,
+unpersisted selectors, and relist-after-restart. `TestADR_0291_PlacementReauditInventoriesEphemeralSelectorKey`
+pins that lifecycle text.
 
 ### Snapshot fidelity — persisted per-session facts (cloud-native Phase 1)
 
@@ -7013,6 +6971,13 @@ on the byte-identical no-scheduling path). The pieces:
   as the run-entry session lease, different id — no contention). On each tick:
   `Due` → misfire policy → `Claim` (at-most-once) → `FireFunc` → `RecordFire`. The
   `FireFunc` seam (`scheduler.FireFunc`) is how composition injects the run-entry funnel.
+  Standby logging is a rate-limited heartbeat (issue #778): a lease held by a
+  peer logs at INFO and a failed acquire at WARN on entry; repeated attempts log
+  at DEBUG, then re-announce at the original level after `standbyLogInterval`
+  (5m by default). This keeps a persistently wedged lease backend visible
+  without flooding a healthy multi-replica deployment. A cause change within
+  the interval does not reset the heartbeat and is reported on its next beat;
+  successful leadership acquisition after standby always logs once at INFO.
 - **Composition** (`internal/app/build.go` `buildScheduler`/`startScheduler`) wires the
   scheduler whenever the configured store exposes the `ScheduleStore()` accessor and
   the operator has not passed `--no-scheduler`, reusing the configured store + the
@@ -8063,7 +8028,7 @@ failures name only the class, never the value. The elapsed-time expiry leg is bo
 the only clock-dependent part because the official `oauth2.Token.Valid` has no injected
 clock.
 
-## TypeScript SDK — `sdk/typescript/` (M1 core, ADR 0279)
+## TypeScript SDK — `sdk/typescript/` (M1 core + M2 attachment, ADRs 0279 and 0288)
 
 The ESM-only `@stacklok/mecatl-sdk` has three exports. `.` owns the transport-neutral
 `Client`/`Session`/`Run` API, typed events/errors, prompt-media helpers, and the hand-written
@@ -8108,6 +8073,160 @@ existing `engine/adapter/mockllm` provider via `app.Config.MockProvider`, includ
 tool-call turns and a bounded per-turn delay for deterministic mid-flight cancellation. The
 SDK CI job runs frozen install, Biome, typecheck, unit Vitest, build, pack, API reports, Go+TS
 codegen freshness, and this e2e; each command remains a hard failure.
+
+The M2 durable-watch base lives in `sdk/typescript/src/watch.ts`. Its client-authored `kind`
+turns the generated `{event, cursor, phase}` response into `event | boundary | gap | unknown`;
+known phases narrow, future phases retain their raw string and optional event, and the gap arm
+deliberately drops the server token from the ergonomic shape. Event payloads still flow through
+`sdk/typescript/src/events.ts` (`decodeEvent`) rather than a watch-specific decoder. The HTTP
+transport maps the generated server-streaming method to `GET /v1/sessions/{id}/watch`, including
+terminal SSE error frames, while `sdk/typescript/src/raw.ts` exposes the compatibility feature set
+to client-level code for transport-neutral watch gating. Root-module parity tests derive phases,
+the feature id, and default-filtered kinds from the Go server sources; the sole filter divergence
+is explicit: the SDK filters every `user_prompt` instead of copying the server's fenced scheduled-
+delivery-note classifier.
+
+`sdk/typescript/src/watch.ts` also owns the fixed `SessionActivity` and `AttachedRun`
+interfaces and the initial attachment iterator. `Session.attach(runId)` issues
+`WatchSessionEvents` with `run_id`; `Session.attach()` instead consumes replay from one
+unfiltered request through its live-boundary marker, remembers the last non-empty
+`Event.runId`, and reuses the already-open iterator with a client-side run filter. It
+does not consult `GetSession.state` and does not retry the empty replay: no run-bearing
+record is `NoRunsError`, even during the known running-but-empty-log window. The scan
+closes immediately at the boundary when no run exists, so it never turns a run-less
+session into an unbounded follow.
+
+`Session.activity()` uses the same iterator with no run binding and an empty server `run_id`
+filter. It therefore yields every run's records in durable append order, continues past each
+run's `result`, and also follows sessions whose log contains only run-less `schedule.*` events;
+the same log still makes implicit `Session.attach()` raise `NoRunsError`. Activity cursors keep
+both `{filter, run}` empty so they can later narrow to any run-bound view.
+
+The watch capability check goes through `sdk/typescript/src/raw.ts` (`RawClient.features`)
+for both transport kinds before `sdk/typescript/src/client.ts` opens the stream. A
+missing advertised `watch_session_events` feature is the existing local
+`UnsupportedFeatureError`; once advertised, `session_not_found`, `watch_unsupported`,
+`no_event_log`, and delegation-child `invalid_argument` errors pass through the shared
+server-error normalization unchanged. Scheduled-fire session ids (`sched--*`) are not
+client-rejected. `AttachedRun.live` is backed by iterator state, not captured at
+construction: delivery of that run's decoded `result` flips the getter to false and
+ends the attached iterator.
+
+The lifecycle remains one `WatchSessionEvents` request and one iterator in
+`sdk/typescript/src/watch.ts`: replay envelopes, the replay-to-live boundary, live appends,
+and the terminal `result` are consumed in wire order. Encountering that terminal in replay
+ends an already-finished attachment immediately; no follow read is requested. `AttachOptions`
+adds `from: "start" | "now" | SdkCursor` plus `includeLogOnly`, and
+`Session.activity(options)` accepts the same checkpoint input. The opt-in bypasses only the
+derived event-kind filter, so it adds records without changing existing order or cursor values.
+The `now` arm is deliberately a yield-time client filter, not a
+request capability: `sdk/typescript/src/client.ts` still sends `cursor: ""`, the iterator reads
+and discards every replay envelope, and the boundary is its first yielded value. It requires a
+non-empty explicit run id and rejects locally before compatibility probing or watch creation
+otherwise, avoiding an unfiltered discovery scan whose result would be thrown away.
+
+Attachment checkpoints in `sdk/typescript/src/watch.ts` are versioned, base64url-encoded
+`sdkcur/1` JSON strings carrying `{token, filter, run}`. `token` remains the opaque server
+position, `filter` records the effective server-side `run_id`, and `run` records the client-side
+binding that an implicit `attach()` selected. Cursor parsing is structural and stateless:
+wrong versions, undecodable values, missing string fields, and raw server tokens raise the
+local `CursorMalformedError`, while any well-formed value is accepted regardless of who built
+it. `CursorScopeError` enforces delivered-set containment before feature probing or stream
+creation: a non-empty source run must equal the target run, and a non-empty source filter may
+not be widened; an activity cursor with both fields empty may narrow to any attachment.
+
+The iterator separates delivery from consumption. A yielded envelope's branded cursor becomes
+the attachment checkpoint only when the next `next()` resumes the generator, so a crash after
+processing but before the next pull re-delivers that envelope. Records omitted for run,
+replay-discard, or default-kind filtering have no consumer-visible delivery to acknowledge and
+therefore advance the checkpoint immediately. Observation happens before those yield filters:
+in particular, `approval` removes its matching `permission.ask` from attachment bookkeeping
+even though the default view never yields the approval record. `includeLogOnly` restores every
+derived filtered kind without bypassing run selection, replay discard, or boundary handling.
+The cursor stays application-
+owned and serializable across a fresh `Client`; no SDK storage backend or filesystem path is
+introduced.
+
+Gap and cursor-fault handling stays split at the raw/ergonomic boundary. The shared
+`sdk/typescript/src/errors.ts` normalizer maps `cursor_expired`, `cursor_malformed`, and
+server-originated `activity_gap` into their dedicated classes from either a gRPC status or an
+HTTP terminal SSE error frame; the latter necessarily retains HTTP status 200 because cursor
+decoding occurs after the watch response is committed. `sdk/typescript/src/watch.ts` leaves
+`decodeWatchEnvelope` lossless for raw consumers. A run-bound ergonomic iterator raises a local
+`ActivityGapError` before yielding the gap; the unbound session activity iterator yields the gap
+so event-kind filtering cannot hide a delivery fact, then raises the same error if the consumer
+pulls again. Neither moves its checkpoint past the last preceding envelope. Cursor expiry is
+terminal here: restart-from-beginning remains caller-authored rather than an SDK fallback.
+
+Reconnect authority stays inside the named watch operation in `sdk/typescript/src/watch.ts`.
+`WatchConnection` resumes transport-shaped failures, `watch_lagging`, authentication failures,
+and clean EOF from the iterator's raw checkpoint token and unchanged server filter. It applies
+bounded exponential delay with jitter through the internal `delayFor`/`sleep` scheduler bag; a
+successful envelope resets the attempt count. The code-driven terminal arm is the single
+`terminalWatchCodes` set: `cursor_expired`, `cursor_malformed`, `activity_gap`,
+`session_not_found`, `invalid_argument`, `management_unauthorized`, `incompatible_server`,
+`watch_unsupported`, and `no_event_log`. No retry policy is installed in
+`sdk/typescript/src/raw.ts` or `sdk/typescript/src/client.ts`, so every non-watch operation stays
+one-shot by construction.
+
+Before the first reconnect sleep, `WatchConnection` invokes the client operation that clears
+`sdk/typescript/src/raw.ts`'s compatibility promise; the following attempt runs the ordinary
+feature gate before opening the stream. This both re-invokes credential providers and prevents a
+new daemon from inheriting the old process's capability result. `SessionActivityImpl` tracks the
+consumer checkpoint separately from the current transport iterator, swallows every boundary after
+the attachment's first, and lets only a run-bound view's own `result` terminate iteration. Its
+combined attachment/client/caller abort signal owns both the current watch and the scheduler sleep.
+`AttachOptions.signal`, `close`/`Symbol.asyncDispose`, async-iterator `return`, and `Client.close()`
+therefore converge on one release path that clears the timer and returns the watch without sending
+a run control.
+
+Connection status is an arbitration result, not a last-writer register. `sdk/typescript/src/client.ts`
+keeps the M1 request outcome plus a map entry for every `WatchConnection` and selects the first
+present value from `incompatible > unauthorized > reconnecting > connecting > offline > online`.
+`sdk/typescript/src/watch.ts` updates its entry before reconnect work begins, preserves
+`unauthorized` across the credential-refresh attempt, and returns it to `online` only after the next
+watch envelope. The watch uses a status-neutral raw stream path, so the ordinary stream observer
+cannot publish `offline` between a resumable failure and `WatchConnection` taking authority; feature
+re-probes still update the request input, and precedence prevents their success from masking a
+retrying peer. A terminal compatibility floor also updates the request input so the deployment fact
+survives automatic iterator cleanup until a later successful exchange clears it. Removing the
+attachment entry on close cannot cancel a run.
+
+Attachment entries do not participate in `ConnectionStatusStore.subscribe` accounting. Only the
+first real status subscriber installs the browser visibility listener and schedules the 30-second
+heartbeat; removing the last stops both even while attachments remain open. Conversely, a hidden
+page stops only that heartbeat. No visibility event reaches `WatchConnection`, so its watch and
+reconnect scheduler keep consuming until their own caller/client abort or disposal path fires.
+
+Attached cancellation does not reuse `RunOperations.send`: that method is the synchronous push
+onto an owned Converse stream, while an attachment has no such stream and must await an HTTP
+response. `sdk/typescript/src/watch.ts` (`AttachmentOperations.cancelRun`) is the asynchronous
+`cancelRun(sessionId, runId): Promise<void>` seam. `sdk/typescript/src/client.ts` binds it to the
+transport capabilities registered in `sdk/typescript/src/raw.ts`; `sdk/typescript/src/http.ts`
+registers the prompt-free implementation, posts `{expected_run_id: runId}` to the session cancel
+route, and resolves only after the bodyless acknowledgement. The HTTP transport's owned-Converse
+cancel arm calls that same implementation, preserving the ADR-0249 stale guard and shared problem
+mapping without pretending the delivery mechanisms are interchangeable. The gRPC binding rejects
+locally with `UnsupportedFeatureError("prompt_free_controls")`, before any Converse stream exists.
+
+The other `AttachedRun` controls remain deliberate typed dead ends in M2. `approve()` and
+`resolveAsk()` return `Promise<never>` and name `approve_ack_only` on HTTP versus
+`prompt_free_controls` on gRPC; neither posts to the approve route whose restart path relays an
+unbounded SSE body. `steer()` also returns `Promise<never>`, naming `http_steer` on HTTP and
+`prompt_free_controls` on gRPC, and cannot promote into a new run. These methods have no latent
+feature-enabled branch: each deferred server capability needs a later SDK release.
+
+Scenario 10's real-wire proofs live in `sdk/typescript/e2e/attach.e2e.test.ts` and
+`sdk/typescript/e2e/activity.e2e.test.ts`. The restart helper in
+`sdk/typescript/e2e/harness.ts` stops the first daemon, waits out the deliberately short local-store
+lease, then starts a new process on the same TCP listeners, workspace, and JSONL store; a replacement
+mock script supplies only the turns the new process owns. The activity proof compares the envelopes
+consumed across restart with a fresh full replay, so consumption-time checkpoint advancement,
+consume-but-do-not-yield filtering, the `sdkcur/1` cursor envelope, the derived filter set, and the
+three-arm reconnect classification are exercised together rather than as isolated fakes. The
+awaiting proof resolves the persisted ask with a direct harness `fetch` and bounded SSE drain, then
+asserts the attachment observes the resumed tool result and terminal under the unchanged run id.
+That drain remains test-only: it does not weaken the M2 decision that attached approval is unsupported.
 
 ## Live e2e — `e2e/` (see `e2e/README.md`)
 
