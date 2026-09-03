@@ -20,6 +20,7 @@ import (
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	"github.com/stacklok/mecatl/internal/adapter/mcp"
+	"github.com/stacklok/mecatl/internal/adapter/memory"
 	brokercontract "github.com/stacklok/mecatl/internal/mcpbroker"
 )
 
