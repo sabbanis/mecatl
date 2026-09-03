@@ -21,14 +21,28 @@ type mcpAuthorizationState struct {
 
 func (m Model) applyMCPAuthorization(msg client.MCPAuthorizationMsg) (tea.Model, tea.Cmd) {
 	if msg.Status != "pending" {
+		reenteredRunning := false
 		if m.authorization.authorizationID == msg.AuthorizationID {
 			m.authorization = mcpAuthorizationState{}
 			if m.phase == phaseAuthorizing {
 				m.phase = phaseRunning
+				reenteredRunning = true
 			}
 		}
 		m.conv.addNotice(mcpAuthorizationNotice(msg))
-		return m.afterEvent()
+		mm, cmd := m.afterEvent()
+		if reenteredRunning {
+			// phaseAuthorizing is not spinner-visible (model.go's spinnerVisible), so
+			// the spinner's self-perpetuating tick chain was dropped the moment the
+			// park began (update.go's spinner.TickMsg case deliberately terminates it
+			// off-phase to avoid an idle 10fps re-render). Every OTHER transition back
+			// into a visible phase explicitly re-arms it with m.sp.Tick (see
+			// submitPrompt, the model/effort/workspace restarts, approval resume) —
+			// this resume path was the one spot that didn't, leaving the spinner glyph
+			// frozen even once the run was genuinely progressing again.
+			cmd = tea.Batch(cmd, m.sp.Tick)
+		}
+		return mm, cmd
 	}
 	m.authorization = mcpAuthorizationState{authorizationID: msg.AuthorizationID, backend: msg.Backend, callID: msg.CallID}
 	m.phase = phaseAuthorizing

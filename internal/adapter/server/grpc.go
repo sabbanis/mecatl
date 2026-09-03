@@ -1341,7 +1341,22 @@ func (h *HarnessServer) relayMCPAuthorizationControl(req *mecatlv1.MCPAuthorizat
 		return status.Error(codes.InvalidArgument, ErrInvalidArgument.Error())
 	}
 	id := session.SessionID(req.GetSessionId())
-	result, err := h.svc.ControlMCPAuthorization(stream.Context(), id, MCPAuthorizationControl{SessionID: id, AuthorizationID: req.GetAuthorizationId()}, cancel)
+	// The run this may start/resume must outlive the RecheckMCPAuthorization/
+	// CancelMCPAuthorization stream itself: it is a one-shot recheck RPC, not a
+	// connection the client holds open for the run's whole lifetime (unlike
+	// Converse). A proxy/tunnel between the client and this server (kubectl
+	// port-forward, ngrok, ...) can silently drop an idle stream like this one
+	// after a gap far shorter than the resumed run takes to finish. Because a
+	// run's context is a CHILD of whatever context starts it (prepareRun),
+	// passing stream.Context() here let that drop implicitly cancel the run
+	// mid-turn with no client disconnect and no explicit Cancel() call — the
+	// run then died silently, its own terminal-state save failed with
+	// "context canceled" (using that same dead context), and the session was
+	// left wedged at StateRunning until the 30-minute stale-session sweep.
+	// Detach so only an explicit Run.Cancel() below (on a real Send failure)
+	// can end it early.
+	runCtx := context.WithoutCancel(stream.Context())
+	result, err := h.svc.ControlMCPAuthorization(runCtx, id, MCPAuthorizationControl{SessionID: id, AuthorizationID: req.GetAuthorizationId()}, cancel)
 	if err != nil {
 		return toStatus(err)
 	}

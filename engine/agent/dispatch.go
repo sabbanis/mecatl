@@ -648,6 +648,14 @@ func (e *Engine) runOne(ctx context.Context, r *Run, sess *session.Session, env 
 // postPreToolUse is the sole tail after a call has passed PreToolUse. It is
 // shared by the ordinary dispatch path and approval continuations: approving a
 // policy or guardrail gate is never authority to skip broker authorization.
+//
+// The presentation gate is checked BEFORE RequestAuthorization, deliberately: an
+// unattended/child run must never even PROBE the broker for this tool (pinned by
+// TestInvariant_unattended_runs_never_park_for_mcp_authorization and the parking
+// matrix) — not merely be refused a park after asking. Reordering this to only
+// gate a required==true result (so an already-connected backend's call isn't
+// needlessly refused) was tried and reverted: it makes RequestAuthorization fire
+// unconditionally, which is exactly the touch those invariants forbid.
 func (e *Engine) postPreToolUse(ctx context.Context, r *Run, sess *session.Session, env tool.Environment, turnIdx int, c session.ToolCall, t tool.Tool, enqueue time.Time) (session.ToolResult, *dispatchPark, bool) {
 	if requester, ok := t.(tool.AuthorizationRequester); ok {
 		if !r.req.AuthorizationPresentation || e.deps.Role != "" {

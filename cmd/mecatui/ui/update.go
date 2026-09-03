@@ -245,6 +245,28 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case liveMsg:
 		return m.updateLiveMsg(msg)
 
+	// The MCP-authorization recheck/cancel stream (armed by controlMCPAuthorizationCmd
+	// on the 'r'/'c' keys) delivers these three raw message types directly, not
+	// wrapped in streamMsg/liveMsg. They used to reach a handler ONLY via the /mcp
+	// panel's modal surface (mcpState.HandleMsg, gated on m.modal != nil in
+	// dispatchSurfaceMsg) — but the MCP-authorization UI is phase-driven
+	// (renderMCPAuthorization fires straight off m.phase == phaseAuthorizing, see
+	// view.go), not modal-driven, so m.modal is nil for the entire flow and every
+	// event on this stream — including the run's terminal result — was silently
+	// dropped. Handle them unconditionally here so delivery never depends on an
+	// unrelated modal happening to be open.
+	case mcpAuthorizationEventMsg:
+		model, cmd, _, _ := m.applyMCPSurfaceIntent(mcpAuthorizationEventIntent(msg))
+		return model, cmd
+
+	case mcpAuthorizationStreamClosedMsg:
+		model, cmd, _, _ := m.applyMCPSurfaceIntent(mcpAuthorizationStreamClosedIntent{})
+		return model, cmd
+
+	case mcpAuthorizationStreamMsg:
+		model, cmd, _, _ := m.applyMCPSurfaceIntent(mcpAuthorizationStreamIntent{msg: msg})
+		return model, cmd
+
 	case tea.WindowSizeMsg:
 		return m.onResize(msg)
 
@@ -753,6 +775,18 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			mm, drainCmd := m.drainQueue("closed")
 			return mm, tea.Batch(m.refreshCmd(), modeCmd, drainCmd, liveCmd), true
 		}
+		// A close that arrives while parked (phaseAuthorizing: the run's Converse
+		// stream ends cleanly because the run parked mid-turn for MCP
+		// authorization, not because the turn finished) is expected — but
+		// m.streamCh still references that now-dead channel. Left uncleared, the
+		// NEXT afterEvent() (e.g. applyMCPAuthorization's "connected" resolution
+		// restoring phaseRunning) re-arms a read on it, which returns immediately
+		// with a synthetic StreamClosedMsg and instantly mis-closes the
+		// freshly-resumed run ("closed" status + a stuck server-side run the
+		// client no longer thinks is active).
+		m.stream = nil
+		m.streamCh = nil
+		m.streamGen++
 		return m, nil, true
 	case client.CommandsMsg:
 		// Slash-command discovery landed: store the set (a failure degrades quietly

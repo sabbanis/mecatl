@@ -1140,8 +1140,18 @@ func (p *PreparedRun) Start() *Run {
 
 // PrepareMCPAuthorizationContinuation prepares an already durably claimed
 // continuation without executing it. The caller must register Run before Start.
+//
+// AuthorizationPresentation is always true, for the SAME reason documented on
+// PrepareAfterMCPAuthorization below: this continuation's sole production
+// caller (ControlMCPAuthorization's connected branch) is reached only via the
+// authenticated Service boundary (RecheckMCPAuthorization/CancelMCPAuthorization).
+// f2b1f8b51 fixed the sibling PrepareAfterMCPAuthorization but missed this one —
+// the pending call itself executes directly (line ~1160, bypassing dispatch's
+// gate entirely), which is why THAT call always succeeded regardless of this
+// flag, but every subsequent protected call in the SAME continued run (via
+// runLoop below) dispatches normally and hits dispatch.go's presentation gate.
 func (e *Engine) PrepareMCPAuthorizationContinuation(ctx context.Context, sess *session.Session, env tool.Environment, pending session.PendingMCPAuthorization) *PreparedRun {
-	return e.prepareRun(ctx, sess, RunRequest{}, func(ctx context.Context, r *Run) {
+	return e.prepareRun(ctx, sess, RunRequest{AuthorizationPresentation: true}, func(ctx context.Context, r *Run) {
 		toolToRun, ok := e.deps.Catalog.Lookup(pending.Call.Name)
 		if !ok {
 			results := []session.ToolResult{session.NewToolError(pending.Call.ID, "broker authorization continuation tool is unavailable")}
@@ -3020,11 +3030,21 @@ func (e *Engine) saveRequired(ctx context.Context, sess *session.Session) error 
 // save best-effort persists ordinary session progress. A failure is WARNed once
 // per run and never aborts a turn; no session.Event reports persistence failure,
 // so the correlated diagnostic is the operator-visible signal.
+//
+// The Store.Save call is cancel-detached (context.WithoutCancel), mirroring the
+// durable-log Append precedent: a run whose own ctx died (a caller's context —
+// e.g. a stream this run should never have inherited cancellation from —
+// cancelled mid-turn) MUST still be able to durably record its terminal state.
+// Without this, terminate/terminateComplete call save with the ALREADY-DEAD
+// ctx, Store.Save fails immediately with "context canceled", and the session's
+// last durably-saved snapshot is stuck at whatever it was before termination
+// (typically StateRunning) until the stale-session sweep's age horizon elapses.
 func (e *Engine) save(ctx context.Context, r *Run, sess *session.Session) {
 	if e.deps.Store == nil {
 		return
 	}
-	if err := e.deps.Store.Save(ctx, sess); err != nil && !r.saveWarned {
+	saveCtx := context.WithoutCancel(ctx)
+	if err := e.deps.Store.Save(saveCtx, sess); err != nil && !r.saveWarned {
 		r.saveWarned = true
 		r.diag.Log(ctx, port.LevelWarn,
 			"session persistence failed; this session may not be resumable after a restart",
