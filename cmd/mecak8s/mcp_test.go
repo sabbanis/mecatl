@@ -9,10 +9,29 @@ import (
 
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/port"
+	"github.com/stacklok/mecatl/internal/adapter/mcpauthority"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
 	"github.com/stacklok/mecatl/internal/app"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
+
+func TestMecak8sMCPAuthorityDefault(t *testing.T) {
+	cfg, err := parseFlags(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := appConfig(cfg, port.NopDiagnostics{}, observability{}).MCPAuthorityDefault; got != mcpauthority.Broker {
+		t.Fatalf("MCPAuthorityDefault = %q, want broker", got)
+	}
+
+	cfg, err = parseFlags([]string{"--mcp-server", "public=https://mcp.example/mcp"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := appConfig(cfg, port.NopDiagnostics{}, observability{}).MCPAuthorityDefault; got != mcpauthority.Global {
+		t.Fatalf("legacy --mcp-server MCPAuthorityDefault = %q, want global", got)
+	}
+}
 
 func TestMecak8sBuildDiscoversOperatorMCPSettings(t *testing.T) {
 	xdg := t.TempDir()
