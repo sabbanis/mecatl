@@ -3,12 +3,53 @@ package ui
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"charm.land/bubbles/v2/key"
 	tea "charm.land/bubbletea/v2"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
 )
+
+// mcpAuthorizationPollInterval is how often a still-pending per-call broker
+// authorization is silently rechecked while waiting for the browser-consent
+// callback to land server-side. Nothing pushes that callback's arrival to
+// THIS client on its own — RecheckMCPAuthorization only observes a Connected
+// transition when it happens to be called again, and this client is the only
+// production caller (mirrors workspace_enrollment.go's identical rationale
+// for workspaceEnrollmentPollInterval) — so something has to keep asking.
+// This replaces the former manual-only "[r] Recheck" keybinding: the client
+// now checks in the background instead of requiring the user to press a key.
+const mcpAuthorizationPollInterval = 3 * time.Second
+
+// mcpAuthorizationPollTickMsg drives the poll above. authorizationID pins it
+// to the authorization it was scheduled for, so a tick from a
+// superseded/resolved authorization is silently dropped instead of
+// restarting a chain nothing is waiting on.
+type mcpAuthorizationPollTickMsg struct{ authorizationID string }
+
+func mcpAuthorizationPollTickCmd(authorizationID string) tea.Cmd {
+	return tea.Tick(mcpAuthorizationPollInterval, func(time.Time) tea.Msg {
+		return mcpAuthorizationPollTickMsg{authorizationID: authorizationID}
+	})
+}
+
+// applyMCPAuthorizationPollTick fires a silent recheck for the still-pending
+// authorization the tick was scheduled for; applyMCPAuthorization's own
+// "still pending" branch reschedules the next tick, so the chain runs until
+// the authorization resolves or is superseded. It never overlaps a recheck
+// already in flight (m.authorization.busy) — that call's own response
+// reschedules (or ends) the chain.
+func (m Model) applyMCPAuthorizationPollTick(msg mcpAuthorizationPollTickMsg) (tea.Model, tea.Cmd) {
+	if m.authorization.authorizationID == "" || m.authorization.authorizationID != msg.authorizationID || m.deps.MCPAuthorization == nil {
+		return m, nil
+	}
+	if m.authorization.busy {
+		return m, nil
+	}
+	m.authorization.busy = true
+	return m, controlMCPAuthorizationCmd(m.deps.Ctx, m.deps.MCPAuthorization, m.sessionID, msg.authorizationID, false)
+}
 
 // mcpAuthorizationState is intentionally distinct from permission approval.
 // It holds correlation only; presentation URLs are fetched on demand and never
@@ -17,6 +58,7 @@ type mcpAuthorizationState struct {
 	authorizationID string
 	backend         string
 	callID          string
+	busy            bool // a recheck for this authorization is already in flight
 }
 
 func (m Model) applyMCPAuthorization(msg client.MCPAuthorizationMsg) (tea.Model, tea.Cmd) {
@@ -44,11 +86,19 @@ func (m Model) applyMCPAuthorization(msg client.MCPAuthorizationMsg) (tea.Model,
 		}
 		return mm, cmd
 	}
-	m.authorization = mcpAuthorizationState{authorizationID: msg.AuthorizationID, backend: msg.Backend, callID: msg.CallID}
+	// Still pending: this is either the initial park, or the response to our
+	// own background poll (or a stray push from another attached client)
+	// observing no change yet. Either way, keep tracking it and keep polling —
+	// busy=false unconditionally clears any in-flight-poll marker so the chain
+	// can't wedge if this pending status arrived from something other than the
+	// poll it thinks is in flight.
+	authorizationID := msg.AuthorizationID
+	m.authorization = mcpAuthorizationState{authorizationID: authorizationID, backend: msg.Backend, callID: msg.CallID}
 	m.phase = phaseAuthorizing
 	m.activeTool = ""
 	m.toolProgress = ""
-	return m.afterEvent()
+	mm, cmd := m.afterEvent()
+	return mm, tea.Batch(cmd, mcpAuthorizationPollTickCmd(authorizationID))
 }
 
 func (m Model) onMCPAuthorizationKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
@@ -75,8 +125,6 @@ func (m Model) onMCPAuthorizationKey(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 			}
 			return nil
 		}
-	case msg.String() == "r":
-		return m, controlMCPAuthorizationCmd(m.deps.Ctx, m.deps.MCPAuthorization, sessionID, id, false)
 	case msg.String() == "c":
 		return m, controlMCPAuthorizationCmd(m.deps.Ctx, m.deps.MCPAuthorization, sessionID, id, true)
 	default:
@@ -158,6 +206,6 @@ func (m Model) waitMCPAuthorizationEvent() tea.Cmd {
 }
 
 func (m Model) renderMCPAuthorization() string {
-	body := fmt.Sprintf("MCP authorization required\n\nBackend: %s\n\n[o] Open Browser   [r] Recheck   [c] Cancel", sanitizeTerminal(m.authorization.backend))
+	body := fmt.Sprintf("MCP authorization required\n\nBackend: %s\n\nWaiting for browser consent — checking automatically\n\n[o] Open Browser   [c] Cancel", sanitizeTerminal(m.authorization.backend))
 	return centerCard(m.deps.Theme, body, m.width, m.vp.Height())
 }

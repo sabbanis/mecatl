@@ -245,16 +245,17 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case liveMsg:
 		return m.updateLiveMsg(msg)
 
-	// The MCP-authorization recheck/cancel stream (armed by controlMCPAuthorizationCmd
-	// on the 'r'/'c' keys) delivers these three raw message types directly, not
-	// wrapped in streamMsg/liveMsg. They used to reach a handler ONLY via the /mcp
-	// panel's modal surface (mcpState.HandleMsg, gated on m.modal != nil in
-	// dispatchSurfaceMsg) — but the MCP-authorization UI is phase-driven
-	// (renderMCPAuthorization fires straight off m.phase == phaseAuthorizing, see
-	// view.go), not modal-driven, so m.modal is nil for the entire flow and every
-	// event on this stream — including the run's terminal result — was silently
-	// dropped. Handle them unconditionally here so delivery never depends on an
-	// unrelated modal happening to be open.
+	// The MCP-authorization recheck/cancel stream (armed by controlMCPAuthorizationCmd,
+	// now fired automatically by the background poll — see mcp_authorization.go's
+	// mcpAuthorizationPollTickCmd — as well as the manual 'c' cancel key) delivers
+	// these three raw message types directly, not wrapped in streamMsg/liveMsg. They
+	// used to reach a handler ONLY via the /mcp panel's modal surface
+	// (mcpState.HandleMsg, gated on m.modal != nil in dispatchSurfaceMsg) — but the
+	// MCP-authorization UI is phase-driven (renderMCPAuthorization fires straight off
+	// m.phase == phaseAuthorizing, see view.go), not modal-driven, so m.modal is nil
+	// for the entire flow and every event on this stream — including the run's
+	// terminal result — was silently dropped. Handle them unconditionally here so
+	// delivery never depends on an unrelated modal happening to be open.
 	case mcpAuthorizationEventMsg:
 		model, cmd, _, _ := m.applyMCPSurfaceIntent(mcpAuthorizationEventIntent(msg))
 		return model, cmd
@@ -266,6 +267,9 @@ func (m Model) update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case mcpAuthorizationStreamMsg:
 		model, cmd, _, _ := m.applyMCPSurfaceIntent(mcpAuthorizationStreamIntent{msg: msg})
 		return model, cmd
+
+	case mcpAuthorizationPollTickMsg:
+		return m.applyMCPAuthorizationPollTick(msg)
 
 	case tea.WindowSizeMsg:
 		return m.onResize(msg)
@@ -883,7 +887,7 @@ func (m Model) onRenderTick() (tea.Model, tea.Cmd) {
 
 func mcpAuthorizationNotice(msg client.MCPAuthorizationMsg) string {
 	if msg.Status == "pending" {
-		return fmt.Sprintf("MCP authorization required for %s. Open Browser, Recheck, or Cancel.", msg.Backend)
+		return fmt.Sprintf("MCP authorization required for %s. Open the browser to continue, or Cancel.", msg.Backend)
 	}
 	return fmt.Sprintf("MCP authorization for %s: %s.", msg.Backend, msg.Status)
 }
