@@ -14,6 +14,7 @@ import (
 	"github.com/stacklok/mecatl/engine/adapter/mockllm"
 	"github.com/stacklok/mecatl/engine/adapter/permpolicy"
 	"github.com/stacklok/mecatl/engine/agent"
+	"github.com/stacklok/mecatl/engine/governance"
 	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
@@ -43,6 +44,47 @@ func testBrokerRuntime(t *testing.T) *adapterbroker.Runtime {
 
 func brokerEngineResult() SessionEngineResult {
 	return SessionEngineResult{Engine: agent.NewEngine(agent.Deps{LLM: mockllm.New(mockllm.TextTurn("done")), Catalog: tool.NewCatalog(), Policy: permpolicy.NewPolicy(nil, nil)}), Close: func() error { return nil }}
+}
+
+func TestMCPBrokerCarryoverDoesNotWidenAttenuatedAuthority(t *testing.T) {
+	runtime := testBrokerRuntime(t)
+	defer runtime.Close()
+	store := memstore.New()
+	source := session.New("attenuated-source", session.ModeDefault, "/workspace", session.Limits{}, time.Now())
+	if err := source.BindAuthority(session.Authority{
+		CapabilitySet: governance.CapabilitySet{Tools: []string{"Read"}},
+		Provenance:    "derived-test",
+	}); err != nil {
+		t.Fatalf("bind source authority: %v", err)
+	}
+	if err := store.Save(t.Context(), source); err != nil {
+		t.Fatalf("save source: %v", err)
+	}
+
+	service, err := NewService(Config{
+		Engine: brokerEngineResult().Engine, Store: store,
+		Workspaces: func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		NewID:      func() session.SessionID { return "attenuated-destination" }, MCPBroker: runtime,
+		RootAuthority: func(session.SessionKind) session.Authority {
+			return session.Authority{CapabilitySet: governance.CapabilitySet{Tools: []string{"root-only"}}, Provenance: "fresh-root"}
+		},
+		SessionEngineWithTools: func(context.Context, ProviderSelector, []mcp.ServerConfig, SessionProfile, string, session.PermissionMode, []tool.Tool) (SessionEngineResult, error) {
+			return brokerEngineResult(), nil
+		},
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+
+	carried, err := service.CreateSessionWithProfile(t.Context(), "/workspace", session.ModeDefault, session.Limits{}, ProviderSelector{}, ProfileDefault, WithSourceSession(source.ID))
+	if err != nil {
+		t.Fatalf("create carryover: %v", err)
+	}
+	authority, bound := carried.BoundAuthority()
+	if !bound || len(authority.CapabilitySet.Tools) != 1 || authority.CapabilitySet.Tools[0] != "Read" {
+		t.Fatalf("carried authority = %+v, bound=%v; broker/root tools widened attenuation", authority, bound)
+	}
 }
 
 func TestMCPBrokerCanonicalAttachPersistReattachAndLocalClose(t *testing.T) {
