@@ -26,6 +26,15 @@ import (
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
 
+// brokerControlVerifiedIdentity reports whether the API verifies the caller,
+// rather than merely encrypting the connection. Server TLS authenticates only
+// the server; mTLS is caller identity only when every client certificate is
+// required and verified against the configured client CA.
+func brokerControlVerifiedIdentity(cfg config, tlsCfg *tls.Config) bool {
+	return cfg.authToken != "" || cfg.oidc.Enabled() ||
+		tlsCfg != nil && tlsCfg.ClientAuth == tls.RequireAndVerifyClientCert
+}
+
 // validateBrokerControlOwnership refuses to serve the broker's OAuth control
 // surface (authorize/token/callback — necessarily unauthenticated by the OAuth
 // dance itself) unless the deployment either verifies caller identity on its
@@ -143,13 +152,13 @@ func serve(ctx context.Context, cfg config, svc *server.Service, obs observabili
 		_, _ = w.Write([]byte("draining\n"))
 	})
 	httpMux.Handle("/", auth.Middleware(server.NewHTTPHandler(svc)))
-	// Caller identity counts as authentication: an OIDC deployment may carry no
-	// static token at all.
-	authed := cfg.authToken != "" || cfg.oidc.Enabled() || tlsCfg != nil
+	// OIDC may carry no static token, and mTLS verifies callers only when the
+	// TLS configuration requires and verifies client certificates.
+	verifiedIdentity := brokerControlVerifiedIdentity(cfg, tlsCfg)
 	// Broker routes are mounted LAST, after every other route above, so
 	// HandlerBundle.Mount's own route-conflict check is checked against the
 	// real, fully-populated mux — see mountBrokerHandlers' doc comment.
-	if err := mountBrokerHandlers(httpMux, cfg.httpAddr, authed, false, brokerHandlers, brokerCallbackPath); err != nil {
+	if err := mountBrokerHandlers(httpMux, cfg.httpAddr, verifiedIdentity, false, brokerHandlers, brokerCallbackPath); err != nil {
 		return fmt.Errorf("mount MCP broker handlers: %w", err)
 	}
 	httpSrv := &http.Server{
@@ -159,8 +168,8 @@ func serve(ctx context.Context, cfg config, svc *server.Service, obs observabili
 		TLSConfig:         tlsCfg,
 	}
 
-	warnIfNonLoopback("grpc-addr", cfg.grpcAddr, authed)
-	warnIfNonLoopback("http-addr", cfg.httpAddr, authed)
+	warnIfNonLoopback("grpc-addr", cfg.grpcAddr, verifiedIdentity)
+	warnIfNonLoopback("http-addr", cfg.httpAddr, verifiedIdentity)
 
 	grpcLis, err := net.Listen("tcp", cfg.grpcAddr)
 	if err != nil {
@@ -346,21 +355,21 @@ func buildTLSConfig(cfg config) (*tls.Config, *tlsreload.Reloader, error) {
 
 // warnIfNonLoopback logs the API trust assumption for the given bind address.
 // A k8s pod intentionally binds 0.0.0.0 (the endpoint controller probes it); a
-// non-loopback bind WITH authentication (bearer token and/or TLS) is logged at
-// info, and a non-loopback bind with NO authentication is logged as a prominent
-// WARNING (it exposes UNAUTHENTICATED command/file execution to the network —
-// rely on the NetworkPolicy/mesh, not a bare public port). It never hard-fails.
-// Mirrors cmd/mecated's warnIfNonLoopback.
-func warnIfNonLoopback(flagName, addr string, authed bool) {
+// non-loopback bind WITH verified caller identity (bearer token, OIDC, or mTLS)
+// is logged at info, and a non-loopback bind with NO caller identity is logged
+// as a prominent WARNING (it exposes UNAUTHENTICATED command/file execution to
+// the network — rely on the NetworkPolicy/mesh, not a bare public port). It
+// never hard-fails. Mirrors cmd/mecated's warnIfNonLoopback.
+func warnIfNonLoopback(flagName, addr string, verifiedIdentity bool) {
 	if cliconfig.IsLoopbackAddr(addr) {
-		slog.Info("API bound to loopback", "flag", flagName, "addr", addr, "authenticated", authed)
+		slog.Info("API bound to loopback", "flag", flagName, "addr", addr, "authenticated", verifiedIdentity)
 		return
 	}
-	if authed {
-		slog.Info("API bound to a non-loopback address WITH authentication (bearer token and/or TLS)", "flag", flagName, "addr", addr)
+	if verifiedIdentity {
+		slog.Info("API bound to a non-loopback address WITH verified caller identity", "flag", flagName, "addr", addr)
 		return
 	}
-	slog.Warn("API bound to a NON-loopback address with NO authentication: it exposes UNAUTHENTICATED command/file execution to the network — set --auth-token / --tls-cert (or front it with a trusted mesh/NetworkPolicy) before doing this", "flag", flagName, "addr", addr)
+	slog.Warn("API bound to a NON-loopback address with NO caller identity: it exposes UNAUTHENTICATED command/file execution to the network — set --auth-token, OIDC, or verified mTLS (or front it with a trusted mesh/NetworkPolicy) before doing this", "flag", flagName, "addr", addr)
 }
 
 // signalCtx returns a context cancelled on SIGINT/SIGTERM. It is the serve-time
