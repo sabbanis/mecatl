@@ -43,6 +43,7 @@ type wiredCollaborators struct {
 	Learning     bool // /learning operator-settings enum
 	DebugAsk     bool // /debug-ask — env-gated (MECATUI_DEBUG_ASK=1) fake-ask injector
 	Connect      bool // /connect — saved remote target picker
+	Workspace    bool // /tools-connect, /tools-cancel — workspace enrollment
 	DebugSession bool // dedicated target-bound debugger: hide binding-breaking actions
 }
 
@@ -64,6 +65,7 @@ func (m Model) wiredCollaborators() wiredCollaborators {
 		Learning:     m.deps.Learning != nil,
 		DebugAsk:     m.deps.DebugAsk,
 		Connect:      m.deps.Connect != nil,
+		Workspace:    m.deps.WorkspaceEnrollment != nil,
 		DebugSession: m.deps.DebugTarget != "",
 	}
 }
@@ -86,7 +88,7 @@ func (m Model) wiredCollaborators() wiredCollaborators {
 // scheduling AND a schedule lister is wired (w.Scheduling). /effort (the
 // reasoning-effort picker, ADR 0055) is gated identically to /models and sits
 // directly after it. The order is fixed (clear, help, mcp, agents, team, skills,
-// soul, usermodel, models, effort, worktrees, schedule) and locked by a test so
+// models, effort, worktrees, schedule, sessions, tools-connect, tools-cancel) and locked by a test so
 // the palette ordering is stable.
 //
 //nolint:gocyclo // capability-gated built-ins remain explicit and ordered
@@ -216,6 +218,12 @@ func builtinCommands(caps client.Capabilities, w wiredCollaborators) []builtin {
 	}
 	if w.Connect {
 		out = append(out, builtin{name: connectCommand, desc: "sign in and connect to a saved remote target", run: Model.runConnect})
+	}
+	if caps.WorkspaceEnrollment && w.Workspace {
+		out = append(out,
+			builtin{name: "tools-connect", desc: "connect the bundled protected-tool workspace services", run: Model.runToolsConnect},
+			builtin{name: "tools-cancel", desc: "cancel a pending workspace-services connection", run: Model.runToolsCancel},
+		)
 	}
 	out = appendLearningBuiltin(out, w)
 	out = appendDebugAskBuiltin(out, w)

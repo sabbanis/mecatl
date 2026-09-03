@@ -81,6 +81,13 @@ step when it is still retry-pending. Mecatui automatically retries
 preserves the textarea and queued prompts, and reports a harmless status when no
 eligible failure exists. Historical transcript replay never triggers automatic retry.
 
+When a server advertises bundled protected workspace services, `/tools-connect`
+starts or rechecks their enrollment and `/tools-cancel` cancels the pending bundle.
+The prompt remains available while consent is pending; if the server rejects a
+prompt until enrollment completes, mecatui keeps it and submits it once after a
+connected control response. These commands are absent when the server does not
+advertise enrollment support.
+
 ## mecatui remote TLS
 
 `mecatui connect ADDRESS` resolves TLS after it has the target: omitted `--tls`

@@ -7,6 +7,15 @@ title: Commands and memory
 
 These slash commands appear only when the connected server advertises the needed capability. They operate on server-side stores and policy; availability can differ between an embedded session and a remote server.
 
+## Workspace service enrollment
+
+When the connected server advertises bundled protected workspace services,
+`/tools-connect` starts or rechecks the bundle and `/tools-cancel` cancels a
+pending connection. Both commands are absent when the server does not support
+this capability. The prompt stays usable while browser consent is pending; if the
+server rejects a prompt until the bundle connects, mecatui retains it and submits
+it once after a successful control response.
+
 ## Completed-session learning
 
 `/learning` cycles the server's completed-trajectory learning mode: **Off**, **Review**, or **Auto**. `/learning-sensitivity` cycles **Conservative**, **Balanced**, or **Eager**. They change pending settings and require a restart; they do not alter a separately configured consolidation schedule.

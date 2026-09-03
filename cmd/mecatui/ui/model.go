@@ -443,14 +443,13 @@ func (s *steerState) watermarkID() string {
 type phase int
 
 const (
-	phaseConnecting          phase = iota // awaiting CreateSession
-	phaseIdle                             // ready for a prompt
-	phaseRunning                          // a Converse run is streaming
-	phaseAwaitingApproval                 // a permission modal is open
-	phaseAuthorizing                      // an MCP browser authorization is pending
-	phaseWorkspaceEnrollment              // pre-prompt workspace bundle admission
-	phaseFatal                            // connect/fatal error; input disabled
-	phaseReplay                           // a stored-session transcript replay is open (read-only; issue #245)
+	phaseConnecting       phase = iota // awaiting CreateSession
+	phaseIdle                          // ready for a prompt
+	phaseRunning                       // a Converse run is streaming
+	phaseAwaitingApproval              // a permission modal is open
+	phaseAuthorizing                   // an MCP browser authorization is pending
+	phaseFatal                         // connect/fatal error; input disabled
+	phaseReplay                        // a stored-session transcript replay is open (read-only; issue #245)
 )
 
 // spinnerVisible reports whether the footer renders the animated spinner in the
@@ -771,6 +770,11 @@ type Model struct {
 	// re-fires. Empty = no seed (the default; today's behavior).
 	pendingInitialPrompt string
 
+	// lastSubmittedPromptText is staged only for the workspace-enrollment gate:
+	// its StreamErrMsg rejection hands the text to pendingInitialPrompt, which the
+	// successful enrollment reducer submits once.
+	lastSubmittedPromptText string
+
 	// Startup-adopted chats remain protected until their first prompt reaches the
 	// server stream. A pre-SessionInit failure restores the authoritative transcript
 	// as a read-only retry/back view; no fallback session is ever created.
@@ -940,6 +944,10 @@ type Model struct {
 	// ONCE per process even across repeated ModelsMsg landings (a re-open, a live
 	// refresh). Survives the dismissal of gatewayNotice (which only clears the text).
 	gatewayNoticeShown bool
+
+	// workspaceEnrollmentNotice persists while protected workspace services are
+	// unavailable; activity does not dismiss a fact that remains true.
+	workspaceEnrollmentNotice string
 }
 
 // New builds the root model from deps. It wires the widgets but does not connect;
@@ -1104,6 +1112,8 @@ func (m Model) resetSessionDerived() Model {
 	m.authorization = mcpAuthorizationState{}
 	m.authorizationEvents = nil
 	m.enrollment = workspaceEnrollmentState{}
+	m.workspaceEnrollmentNotice = ""
+	m.lastSubmittedPromptText = ""
 	m.providerRoute = ""
 	// Drop the session title: it is session-derived (seeded from the first prompt
 	// / adopted from the stored session), so a /clear or fresh /models restart
