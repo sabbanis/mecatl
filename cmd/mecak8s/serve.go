@@ -19,11 +19,48 @@ import (
 	healthpb "google.golang.org/grpc/health/grpc_health_v1"
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
+	"github.com/stacklok/mecatl/internal/adapter/mcpbroker"
 	"github.com/stacklok/mecatl/internal/adapter/server"
 	"github.com/stacklok/mecatl/internal/adapter/telemetry"
 	"github.com/stacklok/mecatl/internal/adapter/tlsreload"
 	"github.com/stacklok/mecatl/internal/cliconfig"
 )
+
+// validateBrokerControlOwnership refuses to serve the broker's OAuth control
+// surface (authorize/token/callback — necessarily unauthenticated by the OAuth
+// dance itself) unless the deployment either verifies caller identity on its
+// OWN API surface (so at least the rest of the process is not wide open) or is
+// explicitly loopback-only. Mirrors the equivalent guard on the working
+// acc/session-vmcp-authorization branch; this branch's HandlerBundle has no
+// caller-identity concept of its own.
+func validateBrokerControlOwnership(addr string, verifiedIdentity, ownerlessLoopback bool, handlers mcpbroker.HandlerBundle) error {
+	if handlers.Empty() {
+		return nil
+	}
+	if verifiedIdentity || ownerlessLoopback && cliconfig.IsLoopbackAddr(addr) {
+		return nil
+	}
+	return errors.New("broker controls require verified caller identity unless explicitly single-user loopback")
+}
+
+// mountBrokerHandlers registers the broker's fixed HTTP surface on mux. It
+// MUST be called AFTER every other route (health/drain/API) is already
+// registered: HandlerBundle.Mount's own registeredHandlerRouteConflict check
+// rejects a broker route that would shadow an already-registered one, which is
+// this branch's answer to the reserved-path collision review-P16-FOLLOWUPS.md
+// flagged as still needing a real-mux integration proof — calling Mount last
+// on the SAME mux the rest of serve() just built IS that proof, not a second
+// hand-maintained reserved-path list.
+func mountBrokerHandlers(mux *http.ServeMux, addr string, verifiedIdentity, ownerlessLoopback bool, handlers mcpbroker.HandlerBundle, callbackPath string) error {
+	if handlers.Empty() {
+		return nil
+	}
+	if err := validateBrokerControlOwnership(addr, verifiedIdentity, ownerlessLoopback, handlers); err != nil {
+		return err
+	}
+	slog.Warn("vMCP broker mode is single-process/single-replica; a live session lease rejects non-holders without routing")
+	return handlers.Mount(mux, callbackPath)
+}
 
 // serve wires the built Service over gRPC + HTTP/SSE with k8s-native
 // operability: a DYNAMIC /readyz (drain-gated + storage-pinged via the SAME
@@ -44,7 +81,7 @@ import (
 // Service serves traffic through (Service.StorageReady type-asserts the store
 // for a Pinger). A non-Redis store (the in-memory fallback) has no ping, so
 // readiness is drain-gated only.
-func serve(ctx context.Context, cfg config, svc *server.Service, obs observability) error {
+func serve(ctx context.Context, cfg config, svc *server.Service, obs observability, brokerHandlers mcpbroker.HandlerBundle, brokerCallbackPath string) error {
 	tlsCfg, tlsLifecycle, err := buildTLSConfig(cfg)
 	if err != nil {
 		return err
@@ -106,6 +143,15 @@ func serve(ctx context.Context, cfg config, svc *server.Service, obs observabili
 		_, _ = w.Write([]byte("draining\n"))
 	})
 	httpMux.Handle("/", auth.Middleware(server.NewHTTPHandler(svc)))
+	// Caller identity counts as authentication: an OIDC deployment may carry no
+	// static token at all.
+	authed := cfg.authToken != "" || cfg.oidc.Enabled() || tlsCfg != nil
+	// Broker routes are mounted LAST, after every other route above, so
+	// HandlerBundle.Mount's own route-conflict check is checked against the
+	// real, fully-populated mux — see mountBrokerHandlers' doc comment.
+	if err := mountBrokerHandlers(httpMux, cfg.httpAddr, authed, false, brokerHandlers, brokerCallbackPath); err != nil {
+		return fmt.Errorf("mount MCP broker handlers: %w", err)
+	}
 	httpSrv := &http.Server{
 		Addr:              cfg.httpAddr,
 		Handler:           httpMux,
@@ -113,9 +159,6 @@ func serve(ctx context.Context, cfg config, svc *server.Service, obs observabili
 		TLSConfig:         tlsCfg,
 	}
 
-	// Caller identity counts as authentication: an OIDC deployment may carry no
-	// static token at all.
-	authed := cfg.authToken != "" || cfg.oidc.Enabled() || tlsCfg != nil
 	warnIfNonLoopback("grpc-addr", cfg.grpcAddr, authed)
 	warnIfNonLoopback("http-addr", cfg.httpAddr, authed)
 

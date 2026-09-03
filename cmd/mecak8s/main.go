@@ -68,5 +68,5 @@ func run() error {
 	defer built.Close()
 	defer flushTelemetry(os.Stderr, obs, cfg.otlpShutdownTimeout)
 
-	return serve(ctx, cfg, built.Service, obs)
+	return serve(ctx, cfg, built.Service, obs, built.MCPBrokerHandlers, built.MCPBrokerCallbackPath)
 }
