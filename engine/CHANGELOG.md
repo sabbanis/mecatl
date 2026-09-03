@@ -148,6 +148,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Changed
 
+- **`session.Session.ExternalBinding` is now the named `session.ExternalBinding` type** — the opaque process-external session identity can no longer be accidentally interchanged with an arbitrary runtime string or the distinct per-authorization `AuthorizationBinding`. Its JSON representation remains an unchanged string. Changed/breaking (pre-v1 a minor bump).
+
 - **`agent.Deps.EnableDurableEvidence`** — adds the explicit opt-in gate for
   debugger-only request-manifest construction/emission and sanitized network-attempt capture. The zero value preserves the allocation-sensitive
   default loop; composition enables it only alongside durable EventLog retention. Adding a field
