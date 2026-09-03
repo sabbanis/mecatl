@@ -2113,6 +2113,7 @@ func (s *Service) bindRelatedIncarnations(ctx context.Context, opts *createSessi
 	return nil
 }
 
+//nolint:gocyclo // Session creation is one ordered admission transaction: reserve identity before attachments and persistence.
 func (s *Service) createSession(ctx context.Context, workspace string, mode session.PermissionMode, limits session.Limits, sel ProviderSelector, specs []mcp.ServerConfig, profile SessionProfile, opts createSessionOpts) (*session.Session, error) {
 	if err := s.validateDebugCreate(ctx, workspace, profile, specs, opts); err != nil {
 		return nil, err
