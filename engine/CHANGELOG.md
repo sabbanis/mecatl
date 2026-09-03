@@ -13,6 +13,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
 
 ### Added
 
+- **Terminal external-authorization resolution value** — `session.AuthorizationResolution` and `session.NewAuthorizationResolution` make pending and unknown statuses unrepresentable at the continuation boundary while preserving `AuthorizationStatus` as the complete event-lifecycle vocabulary. Added (minor).
+
 - **Workspace-enrollment broker proof and atomic authority replacement** —
   `session.Session.CompleteWorkspaceEnrollment` accepts the complete pending
   correlation plus only a validated exact tool-name set, then clones the bound
@@ -147,6 +149,8 @@ The covered surface is the eight core packages (`session`, `governance`, `learni
   All four additions are **Added = minor**. `Event` and `RunRequest` gain a field, which breaks external UNKEYED struct literals — but both are already routinely constructed keyed, and `Event` is a wide event-payload struct nobody builds positionally.
 
 ### Changed
+
+- **`Engine.PrepareAuthorizationContinuation` and `Engine.PrepareAfterAuthorization` require `session.AuthorizationResolution` and return an error** — callers must construct a validated terminal outcome before preparing a continuation; pending, zero, and unknown statuses are rejected before run construction or session mutation. Changed/breaking (pre-v1 a minor bump).
 
 - **`session.Session.ExternalBinding` is now the named `session.ExternalBinding` type** — the opaque process-external session identity can no longer be accidentally interchanged with an arbitrary runtime string or the distinct per-authorization `AuthorizationBinding`. Its JSON representation remains an unchanged string. Changed/breaking (pre-v1 a minor bump).
 

@@ -62,6 +62,8 @@
     method func (Authority).Clone() Authority
     method func (Authority).Valid() bool
     method func (AuthorizationPayload).Valid() bool
+    method func (AuthorizationResolution).Status() AuthorizationStatus
+    method func (AuthorizationResolution).Valid() bool
     method func (GrantType).Valid() bool
     method func (IncarnationID).Valid() bool
     method func (Limits).WithDefaults(d Limits) Limits
@@ -245,6 +247,7 @@ func New(id SessionID, mode PermissionMode, workspace string, limits Limits, cre
 func NewAssistantMessage(text string, reasoning string, calls []ToolCall) Message
 func NewAudioContent(mime string, data []byte) (Content, error)
 func NewAudioURLContent(mime string, rawURL string) (Content, error)
+func NewAuthorizationResolution(status AuthorizationStatus) (AuthorizationResolution, error)
 func NewContent(kind MediaKind, mime string, data []byte, rawURL string) (Content, error)
 func NewDebug(id SessionID, mode PermissionMode, limits Limits, createdAt time.Time, target SessionID, targetIncarnation IncarnationID) (*Session, error)
 func NewEmbeddedResourceBlock(uri string, mimeType string, text string, blob []byte, audience []string) (Content, error)
@@ -293,6 +296,7 @@ type AskOrigin int
 type Authority struct{CapabilitySet governance.CapabilitySet "json:\"capability_set\""; Provenance string "json:\"provenance\""; DefinitionIdentity string "json:\"definition_identity,omitempty\""}
 type AuthorizationBinding string
 type AuthorizationPayload struct{AuthorizationID string; DisplayName string; Call ToolCallID; ExpiresAt time.Time; Status AuthorizationStatus}
+type AuthorizationResolution struct{}
 type AuthorizationStatus string
 type BlockKind string
 type CompactionArchivePayload struct{Replaced []Message}
