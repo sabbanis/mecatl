@@ -296,6 +296,7 @@ func ProjectAttempt(record AttemptRecord) (AttemptProjection, error)
 func ProjectInput(in Input) (Projection, error)
 func ResolveEvidence(in Input, ref EvidenceRef) error
 func ResolveEvidenceHandle(in Input, handle string) (EvidenceRef, error)
+func SkillErrorCategory(err error) string
 func SkillVersionID(bundle SkillBundle) (VersionID, error)
 func ValidAttemptTransition(from AttemptState, to AttemptState) bool
 func ValidLearnedSkillName(name string) bool

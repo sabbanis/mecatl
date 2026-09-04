@@ -16,6 +16,13 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
+func learnedSkillHydrationDiagnosticCategory(err error) string {
+	if errors.Is(err, errLearnedSkillGenerationChanged) {
+		return "generation_changed"
+	}
+	return learning.SkillErrorCategory(err)
+}
+
 func learnedSkillPartitions(ctx context.Context, workspace string, cfg Config) []learning.SkillPartition {
 	global := learning.SkillPartition{Principal: reflectionPrincipal(session.PrincipalFromContext(ctx))}
 	out := []learning.SkillPartition{global}
@@ -37,7 +44,7 @@ func hydrateLearnedSkills(ctx context.Context, cfg Config, assets catalogAssets,
 	}
 	publisher := learnedSkillPublisher{repository: assets.learnedSkills, partitions: partitions, catalog: assets.liveSkills, serial: assets.skillPublication}
 	if err := publisher.Publish(ctx); err != nil {
-		cfg.diag().Log(ctx, port.LevelWarn, "learned-skill hydration failed; caller partition quarantined", "err", err)
+		cfg.diag().Log(ctx, port.LevelWarn, "learned-skill hydration failed; caller partition quarantined", "operation", "hydrate", "category", learnedSkillHydrationDiagnosticCategory(err), "count", 1)
 	}
 }
 
@@ -104,6 +111,7 @@ func listActiveLearnedSkillsAtGeneration(ctx context.Context, repository learnin
 type learnedSkillPublication struct {
 	mu     sync.Mutex
 	active map[learning.SkillPartition]chan struct{}
+	onWait func(learning.SkillPartition)
 }
 
 func (p *learnedSkillPublication) lock(partition learning.SkillPartition) func() {
@@ -124,6 +132,9 @@ func (p *learnedSkillPublication) lock(partition learning.SkillPartition) func()
 		}
 	}
 	p.mu.Unlock()
+	if p.onWait != nil {
+		p.onWait(partition)
+	}
 	<-wait
 	return p.lock(partition)
 }
@@ -196,6 +207,39 @@ func learnedSkillInventory(ctx context.Context, repository learning.SkillReposit
 	}
 }
 
+type learnedSkillProcessResult struct {
+	receipt   skilllifecycle.Receipt
+	err       error
+	processed bool
+}
+
+func processLearnedSkill(ctx context.Context, cfg Config, assets catalogAssets, partition learning.SkillPartition, record learning.ProposalRecord, mode learning.Mode) learnedSkillProcessResult {
+	if assets.skillPublication != nil {
+		unlock := assets.skillPublication.lock(partition)
+		defer unlock()
+	}
+	inventory, err := learnedSkillInventory(ctx, assets.learnedSkills, partition, assets.skills)
+	if err != nil {
+		return learnedSkillProcessResult{err: err}
+	}
+	materialized, err := skillmaterialize.Materialize(ctx, assets.reflectionRepository, assets.learnedSkills, partition, assets.skillOwner, record, inventory, learning.Decision{Kind: learning.DecisionApprove, Actor: "skill-pipeline", At: time.Now().UTC()})
+	if err != nil {
+		return learnedSkillProcessResult{err: err}
+	}
+	var publisher skilllifecycle.Publisher
+	publishable := partition.Project == "" || (partition.Project == cfg.Workspace && projectIngestionAdmitted(cfg))
+	if publishable && assets.liveSkills != nil {
+		// The caller holds the non-reentrant partition lock.
+		publisher = learnedSkillPublisher{repository: assets.learnedSkills, partitions: []learning.SkillPartition{partition}, owner: assets.skillOwner, catalog: assets.liveSkills}
+	} else if mode == learning.Auto {
+		// A shared process catalog cannot safely expose another caller/project
+		// partition. Keep it staged until a partition-bound catalog is available.
+		mode = learning.Review
+	}
+	receipt, err := (skilllifecycle.Pipeline{Repository: assets.learnedSkills, Validator: skillvalidation.Validator{}, Evaluator: cfg.SkillEvaluator, ActivationPolicy: cfg.SkillActivationPolicy, Publisher: publisher}).Process(ctx, skilllifecycle.Candidate{Draft: materialized.Input, Inventory: inventory, Mode: mode, Automatic: true})
+	return learnedSkillProcessResult{receipt: receipt, err: err, processed: true}
+}
+
 //nolint:gocyclo // materialization, publication, telemetry, and fail-safe branches stay in one transaction flow
 func buildProcedureProcessor(cfg Config, assets catalogAssets) func(context.Context, learning.ProposalRecord, learning.Mode) error {
 	if cfg.LearningMode == learning.Off || assets.learnedSkills == nil || assets.reflectionRepository == nil {
@@ -203,72 +247,28 @@ func buildProcedureProcessor(cfg Config, assets catalogAssets) func(context.Cont
 	}
 	return func(ctx context.Context, record learning.ProposalRecord, mode learning.Mode) error {
 		partition := learning.SkillPartition{Principal: record.Partition.Principal, Project: record.Partition.Project}
-		// The partition publication lock is acquired UNCONDITIONALLY, before ANY
-		// partition-mutating call below (not only around Pipeline.Process, and
-		// not only on the publishable branch): skillmaterialize.Materialize
-		// ALSO writes assets.learnedSkills (it creates the draft version) before
-		// Pipeline.Process ever runs, so a lock scoped to only the latter still
-		// left the former's write unguarded. A reader holding the SAME
-		// assets.skillPublication lock (Service.BeginSkillPublication, acquired
-		// around ListLearnedSkills/ListSkills/mutateLearnedSkill/
-		// RollbackLearnedSkill) must be excluded across the WHOLE sequence — an
-		// unlocked write let a concurrent listActiveLearnedSkillsAtGeneration
-		// observe the partition's generation change mid-read and fail with
-		// errLearnedSkillGenerationChanged (the flaky
-		// TestUsableAutoSkillsStockBuildPolicyMatrix/untrusted_project_ignored,
-		// reproduced under `-race -count=30`; pinned deterministically by
-		// TestBuildProcedureProcessorHoldsPublicationLockForNonPublishablePartition).
-		// ponytail: this now also holds the lock across Pipeline.Process's
-		// Evaluator.Evaluate call (a possible LLM round trip), and
-		// learnedSkillPublication.lock is not ctx-aware (a bare channel wait) —
-		// so a slow evaluator now stalls any ListLearnedSkills/ListSkills/
-		// mutate/rollback call for the SAME partition for its duration, where it
-		// previously ran outside the lock. Correctness (no torn reads) outweighs
-		// this; revisit with a ctx-aware wait if evaluator latency bites.
-		if assets.skillPublication != nil {
-			unlock := assets.skillPublication.lock(partition)
-			defer unlock()
+		result := processLearnedSkill(ctx, cfg, assets, partition, record, mode)
+		if !result.processed {
+			return result.err
 		}
-		inventory, err := learnedSkillInventory(ctx, assets.learnedSkills, partition, assets.skills)
-		if err != nil {
-			return err
-		}
-		materialized, err := skillmaterialize.Materialize(ctx, assets.reflectionRepository, assets.learnedSkills, partition, assets.skillOwner, record, inventory, learning.Decision{Kind: learning.DecisionApprove, Actor: "skill-pipeline", At: time.Now().UTC()})
-		if err != nil {
-			return err
-		}
-		evaluator := cfg.SkillEvaluator
-		var publisher skilllifecycle.Publisher
-		publishable := partition.Project == "" || (partition.Project == cfg.Workspace && projectIngestionAdmitted(cfg))
-		if publishable && assets.liveSkills != nil {
-			// serial deliberately left unset on this publisher: this goroutine
-			// already holds the partition lock above, and learnedSkillPublication.lock
-			// is not reentrant — setting serial here would self-deadlock.
-			publisher = learnedSkillPublisher{repository: assets.learnedSkills, partitions: []learning.SkillPartition{partition}, owner: assets.skillOwner, catalog: assets.liveSkills}
-		} else if mode == learning.Auto {
-			// A shared process catalog cannot safely expose another caller/project
-			// partition. Keep it staged until a partition-bound catalog is available.
-			mode = learning.Review
-		}
-		receipt, processErr := (skilllifecycle.Pipeline{Repository: assets.learnedSkills, Validator: skillvalidation.Validator{}, Evaluator: evaluator, ActivationPolicy: cfg.SkillActivationPolicy, Publisher: publisher}).Process(ctx, skilllifecycle.Candidate{Draft: materialized.Input, Inventory: inventory, Mode: mode, Automatic: true})
 		if emit := cfg.LearningMetricsEmitter; emit != nil {
 			kind := learning.ActivitySkillStaged
 			reason := learning.ReasonStaged
 			switch {
-			case processErr != nil:
+			case result.err != nil:
 				kind, reason = learning.ActivityFailed, learning.ReasonReflectionFailed
-			case receipt.State == learning.SkillActive && receipt.Verdict == learning.EvaluationPass:
+			case result.receipt.State == learning.SkillActive && result.receipt.Verdict == learning.EvaluationPass:
 				kind, reason = learning.ActivitySkillActivatedEvaluated, learning.ReasonPromoted
-			case receipt.State == learning.SkillActive:
+			case result.receipt.State == learning.SkillActive:
 				kind, reason = learning.ActivitySkillActivatedValidated, learning.ReasonPromoted
-			case receipt.State == learning.SkillRejected:
+			case result.receipt.State == learning.SkillRejected:
 				kind, reason = learning.ActivitySkillRejected, learning.ReasonConflicted
 			}
 			emit(learning.Activity{Kind: kind, Reason: reason, Sensitivity: cfg.LearningSensitivity, Count: 1})
 		}
-		if processErr != nil {
+		if result.err != nil {
 			cfg.diag().Log(ctx, port.LevelWarn, "learned-skill processing failed; candidate remains inspectable", "category", "evaluation", "count", 1)
 		}
-		return processErr
+		return result.err
 	}
 }

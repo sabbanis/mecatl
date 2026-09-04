@@ -130,7 +130,8 @@ func TestUsableAutoSkillsStockBuildPolicyMatrix(t *testing.T) {
 			for time.Now().Before(deadline) {
 				listed, err = built.Service.ListLearnedSkills(ctx, &mecatlv1.ListLearnedSkillsRequest{Project: workspace})
 				if err != nil {
-					t.Fatal(err)
+					proposals, proposalErr := built.Service.ListLearningProposals(ctx, "", "", 50, workspace)
+					t.Fatalf("ListLearnedSkills failed: category=%s provider_calls=%d proposal_count=%d proposal_error_category=%s diagnostic_count=%d", learning.SkillErrorCategory(err), provider.Calls(), len(proposals.GetProposals()), learning.SkillErrorCategory(proposalErr), len(diag.capturedStrings()))
 				}
 				if tc.wantState == "" {
 					time.Sleep(100 * time.Millisecond)
@@ -151,11 +152,15 @@ func TestUsableAutoSkillsStockBuildPolicyMatrix(t *testing.T) {
 			} else {
 				if len(listed.GetSkills()) != 1 {
 					proposals, proposalErr := built.Service.ListLearningProposals(ctx, "", "", 50, workspace)
-					t.Fatalf("learned skills = %+v provider_calls=%d proposals=%+v proposal_err=%v diagnostics=%v", listed.GetSkills(), provider.Calls(), proposals, proposalErr, diag.capturedStrings())
+					t.Fatalf("learned_skill_count=%d provider_calls=%d proposal_count=%d proposal_error_category=%s diagnostic_count=%d", len(listed.GetSkills()), provider.Calls(), len(proposals.GetProposals()), learning.SkillErrorCategory(proposalErr), len(diag.capturedStrings()))
 				}
 				got := listed.GetSkills()[0]
 				if learning.SkillState(got.GetState()) != tc.wantState || len(got.GetReceipts()) == 0 || got.GetReceipts()[len(got.GetReceipts())-1].GetOperation() != tc.wantOperation {
-					t.Fatalf("skill = %+v, want state=%s operation=%s", got, tc.wantState, tc.wantOperation)
+					lastOperation := "none"
+					if receipts := got.GetReceipts(); len(receipts) > 0 {
+						lastOperation = receipts[len(receipts)-1].GetOperation()
+					}
+					t.Fatalf("skill_state=%s receipt_count=%d last_operation=%s want_state=%s want_operation=%s provider_calls=%d diagnostic_count=%d", got.GetState(), len(got.GetReceipts()), lastOperation, tc.wantState, tc.wantOperation, provider.Calls(), len(diag.capturedStrings()))
 				}
 			}
 			second, err := built.Service.CreateSession(ctx, session.ModeDefault, defaultLimits())

@@ -233,6 +233,26 @@ var (
 	ErrSkillCursor        = errors.New("learning: invalid or stale skill cursor")
 )
 
+// SkillErrorCategory returns a closed, safe-to-log category for a skill error.
+func SkillErrorCategory(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, ErrSkillNotFound):
+		return "not_found"
+	case errors.Is(err, ErrSkillConflict), errors.Is(err, ErrSkillTransition), errors.Is(err, ErrSkillNameCollision):
+		return "conflict"
+	case errors.Is(err, ErrInvalidSkill), errors.Is(err, ErrSkillOwnerMismatch), errors.Is(err, ErrSkillLimit), errors.Is(err, ErrSkillCursor):
+		return "invalid"
+	default:
+		return "backend"
+	}
+}
+
 // SkillVersionID content-addresses a body-only bundle. Provenance and lifecycle do not affect it.
 func SkillVersionID(bundle SkillBundle) (VersionID, error) {
 	if err := ValidateSkillBundle(bundle); err != nil {

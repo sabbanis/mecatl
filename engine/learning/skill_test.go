@@ -54,6 +54,25 @@ func TestSkillProvenanceAndEvaluationBounds(t *testing.T) {
 	}
 }
 
+func TestSkillErrorCategory(t *testing.T) {
+	for _, tc := range []struct {
+		err  error
+		want string
+	}{
+		{nil, "none"},
+		{context.Canceled, "cancelled"},
+		{context.DeadlineExceeded, "deadline"},
+		{learning.ErrSkillNotFound, "not_found"},
+		{learning.ErrSkillConflict, "conflict"},
+		{learning.ErrInvalidSkill, "invalid"},
+		{errors.New("backend detail"), "backend"},
+	} {
+		if got := learning.SkillErrorCategory(tc.err); got != tc.want {
+			t.Errorf("SkillErrorCategory(%v) = %q, want %q", tc.err, got, tc.want)
+		}
+	}
+}
+
 func TestExplicitLearnProcedureSignalDoesNotBroadenFactRemember(t *testing.T) {
 	input := reflectionInput(session.NewUserMessage("Learn this procedure for future code reviews."))
 	signals := learning.DetectSignals(input)
