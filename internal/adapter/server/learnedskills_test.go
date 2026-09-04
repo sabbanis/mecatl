@@ -11,7 +11,133 @@ import (
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/adapter/memskill"
 	"github.com/stacklok/mecatl/engine/learning"
+	"github.com/stacklok/mecatl/engine/port"
 )
+
+type learnedSkillListFailureRepository struct {
+	learning.SkillRepository
+	err error
+}
+
+func (r learnedSkillListFailureRepository) List(context.Context, learning.SkillPartition, learning.SkillList) (learning.SkillPage, error) {
+	return learning.SkillPage{}, r.err
+}
+
+type learnedSkillDiagnostic struct {
+	message string
+	fields  map[string]string
+}
+
+type learnedSkillDiagnostics struct{ records []learnedSkillDiagnostic }
+
+func (d *learnedSkillDiagnostics) Log(_ context.Context, _ port.Level, message string, args ...any) {
+	record := learnedSkillDiagnostic{message: message, fields: make(map[string]string, len(args)/2)}
+	for i := 0; i+1 < len(args); i += 2 {
+		key, keyOK := args[i].(string)
+		value, valueOK := args[i+1].(string)
+		if keyOK && valueOK {
+			record.fields[key] = value
+		}
+	}
+	d.records = append(d.records, record)
+}
+
+func (d *learnedSkillDiagnostics) With(...any) port.Diagnostics { return d }
+
+func TestInvariant_learned_skill_list_failures_are_generic_and_safely_diagnosed(t *testing.T) {
+	const sensitive = "/private/project/secret.skill token=credential-value skill=private-name"
+	for _, tc := range []struct {
+		name      string
+		operation string
+		service   func(*learnedSkillDiagnostics) *Service
+	}{
+		{
+			name:      "publish before list",
+			operation: "publish_before_list",
+			service: func(diag *learnedSkillDiagnostics) *Service {
+				return &Service{cfg: Config{
+					LearnedSkills:        memskill.New(),
+					PublishLearnedSkills: func(context.Context, learning.SkillPartition) error { return errors.New(sensitive) },
+					Diagnostics:          diag,
+				}}
+			},
+		},
+		{
+			name:      "repository list",
+			operation: "repository_list",
+			service: func(diag *learnedSkillDiagnostics) *Service {
+				return &Service{cfg: Config{
+					LearnedSkills: learnedSkillListFailureRepository{SkillRepository: memskill.New(), err: errors.New(sensitive)},
+					Diagnostics:   diag,
+				}}
+			},
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			diag := &learnedSkillDiagnostics{}
+			_, err := tc.service(diag).ListLearnedSkills(context.Background(), &mecatlv1.ListLearnedSkillsRequest{})
+			if got, want := err.Error(), "server: internal error: learned skill operation failed"; got != want {
+				t.Fatalf("RPC error = %q, want exactly %q", got, want)
+			}
+			if len(diag.records) != 1 {
+				t.Fatalf("diagnostics = %#v, want one record", diag.records)
+			}
+			record := diag.records[0]
+			if record.message != "learned-skill list failed" || record.fields["operation"] != tc.operation || record.fields["category"] != "backend" || len(record.fields) != 2 {
+				t.Fatalf("diagnostic = %#v, want closed operation/category fields", record)
+			}
+			rendered := record.message + record.fields["operation"] + record.fields["category"]
+			if strings.Contains(rendered, sensitive) || strings.Contains(rendered, "/private/project") || strings.Contains(rendered, "credential-value") || strings.Contains(rendered, "private-name") {
+				t.Fatalf("diagnostic leaked sensitive detail: %q", rendered)
+			}
+		})
+	}
+}
+
+func TestInvariant_learned_skill_mutation_publication_failures_are_generic_and_safely_diagnosed(t *testing.T) {
+	const sensitive = "/private/project/secret.skill token=credential-value skill=private-name"
+	repository := memskill.New()
+	partition := learning.SkillPartition{Principal: reflectionPrincipal(nil)}
+	draft, err := repository.CreateDraft(context.Background(), partition, "agent", learning.SkillBundle{Name: "review-code", Description: "Review code", Body: "Inspect changes."}, learning.SkillProvenance{Origin: learning.SkillProvenanceLegacyModel})
+	if err != nil {
+		t.Fatal(err)
+	}
+	evaluated, err := repository.RecordEvaluation(context.Background(), partition, "agent", draft.ID, draft.Version, draft.Revision, learning.SkillEvaluation{Verdict: learning.EvaluationPass, FixtureIDs: []string{"f"}, At: time.Now()})
+	if err != nil {
+		t.Fatal(err)
+	}
+	staged, err := repository.Stage(context.Background(), partition, "agent", draft.ID, draft.Version, evaluated.Revision)
+	if err != nil {
+		t.Fatal(err)
+	}
+	diag := &learnedSkillDiagnostics{}
+	response, err := (&HarnessServer{svc: &Service{cfg: Config{
+		LearnedSkills: repository,
+		PublishLearnedSkills: func(context.Context, learning.SkillPartition) error {
+			return errors.New(sensitive)
+		},
+		SkillActionAvailable: func(learning.SkillPartition, string) (bool, string) { return true, "" },
+		Diagnostics:          diag,
+	}}}).ActivateLearnedSkill(context.Background(), &mecatlv1.MutateLearnedSkillRequest{
+		OwnerAgent: "agent", Id: string(staged.ID), Version: string(staged.Version), ExpectedRevision: string(staged.Revision),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, want := response.GetPublicationError(), "learned skill publication failed"; got != want {
+		t.Fatalf("publication_error = %q, want exactly %q", got, want)
+	}
+	if strings.Contains(response.String(), sensitive) || strings.Contains(response.String(), "credential-value") {
+		t.Fatalf("mutation response leaked sensitive backend detail: %q", response)
+	}
+	if len(diag.records) != 1 {
+		t.Fatalf("diagnostics = %#v, want one record", diag.records)
+	}
+	record := diag.records[0]
+	if record.message != "learned-skill publication failed" || record.fields["operation"] != "activate" || record.fields["category"] != "backend" || len(record.fields) != 2 {
+		t.Fatalf("diagnostic = %#v, want closed operation/category fields", record)
+	}
+}
 
 func TestLearnedSkillAPIIsPartitionedCASAndPublishes(t *testing.T) {
 	repository := memskill.New()

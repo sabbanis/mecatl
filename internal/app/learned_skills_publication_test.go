@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -10,6 +11,7 @@ import (
 	"github.com/stacklok/mecatl/engine/adapter/memskill"
 	"github.com/stacklok/mecatl/engine/adapter/skillfs"
 	"github.com/stacklok/mecatl/engine/learning"
+	"github.com/stacklok/mecatl/engine/port"
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
@@ -191,6 +193,49 @@ func TestADR_0259_DelayedPublicationCannotRevokeNewerGeneration(t *testing.T) {
 	view := catalog.View(partition)
 	if len(view.Metas) != 1 || view.Metas[0].Metadata["mecatl.active_version"] != string(second.Version) || second.Version == first.Version {
 		t.Fatalf("stale publication or invalidation won: first=%s second=%s generation=%d metas=%+v", first.Version, second.Version, view.Generation, view.Metas)
+	}
+}
+
+type learnedSkillAppDiagnostic struct {
+	message string
+	fields  map[string]any
+}
+
+type learnedSkillAppDiagnostics struct{ records []learnedSkillAppDiagnostic }
+
+func (d *learnedSkillAppDiagnostics) Log(_ context.Context, _ port.Level, message string, args ...any) {
+	record := learnedSkillAppDiagnostic{message: message, fields: make(map[string]any, len(args)/2)}
+	for i := 0; i+1 < len(args); i += 2 {
+		if key, ok := args[i].(string); ok {
+			record.fields[key] = args[i+1]
+		}
+	}
+	d.records = append(d.records, record)
+}
+
+func (d *learnedSkillAppDiagnostics) With(...any) port.Diagnostics { return d }
+
+func TestLearnedSkillHydrationDiagnosticsAreCategorizedAndSafe(t *testing.T) {
+	const sensitive = "/private/project/secret.skill: credential=token-value"
+	partition := learning.SkillPartition{Principal: "principal"}
+	repository := &failingListSkillRepository{SkillRepository: memskill.New(), fail: partition, err: errors.New(sensitive)}
+	diag := &learnedSkillAppDiagnostics{}
+	hydrateLearnedSkills(context.Background(), Config{Diagnostics: diag}, catalogAssets{
+		learnedSkills:    repository,
+		liveSkills:       skillfs.NewAtomicCatalog(nil, nil, nil),
+		skillPublication: &learnedSkillPublication{},
+	}, []learning.SkillPartition{partition})
+
+	if len(diag.records) != 1 {
+		t.Fatalf("hydration diagnostics = %#v, want one record", diag.records)
+	}
+	record := diag.records[0]
+	if record.message != "learned-skill hydration failed; caller partition quarantined" || record.fields["operation"] != "hydrate" || record.fields["category"] != "backend" || record.fields["count"] != 1 || len(record.fields) != 3 {
+		t.Fatalf("hydration diagnostic = %#v, want closed operation/category/count fields", record)
+	}
+	rendered := record.message + record.fields["operation"].(string) + record.fields["category"].(string)
+	if strings.Contains(rendered, sensitive) || strings.Contains(rendered, "/private/project") || strings.Contains(rendered, "token-value") {
+		t.Fatalf("hydration diagnostic leaked sensitive backend detail: %q", rendered)
 	}
 }
 

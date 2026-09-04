@@ -37,7 +37,28 @@ func hydrateLearnedSkills(ctx context.Context, cfg Config, assets catalogAssets,
 	}
 	publisher := learnedSkillPublisher{repository: assets.learnedSkills, partitions: partitions, catalog: assets.liveSkills, serial: assets.skillPublication}
 	if err := publisher.Publish(ctx); err != nil {
-		cfg.diag().Log(ctx, port.LevelWarn, "learned-skill hydration failed; caller partition quarantined", "err", err)
+		cfg.diag().Log(ctx, port.LevelWarn, "learned-skill hydration failed; caller partition quarantined", "operation", "hydrate", "category", learnedSkillDiagnosticCategory(err), "count", 1)
+	}
+}
+
+func learnedSkillDiagnosticCategory(err error) string {
+	switch {
+	case err == nil:
+		return "none"
+	case errors.Is(err, errLearnedSkillGenerationChanged):
+		return "generation_changed"
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, learning.ErrSkillNotFound):
+		return "not_found"
+	case errors.Is(err, learning.ErrSkillConflict), errors.Is(err, learning.ErrSkillTransition), errors.Is(err, learning.ErrSkillNameCollision):
+		return "conflict"
+	case errors.Is(err, learning.ErrInvalidSkill), errors.Is(err, learning.ErrSkillOwnerMismatch), errors.Is(err, learning.ErrSkillLimit), errors.Is(err, learning.ErrSkillCursor):
+		return "invalid"
+	default:
+		return "backend"
 	}
 }
 
@@ -104,6 +125,7 @@ func listActiveLearnedSkillsAtGeneration(ctx context.Context, repository learnin
 type learnedSkillPublication struct {
 	mu     sync.Mutex
 	active map[learning.SkillPartition]chan struct{}
+	onWait func(learning.SkillPartition)
 }
 
 func (p *learnedSkillPublication) lock(partition learning.SkillPartition) func() {
@@ -124,6 +146,9 @@ func (p *learnedSkillPublication) lock(partition learning.SkillPartition) func()
 		}
 	}
 	p.mu.Unlock()
+	if p.onWait != nil {
+		p.onWait(partition)
+	}
 	<-wait
 	return p.lock(partition)
 }
@@ -203,29 +228,35 @@ func buildProcedureProcessor(cfg Config, assets catalogAssets) func(context.Cont
 	}
 	return func(ctx context.Context, record learning.ProposalRecord, mode learning.Mode) error {
 		partition := learning.SkillPartition{Principal: record.Partition.Principal, Project: record.Partition.Project}
-		inventory, err := learnedSkillInventory(ctx, assets.learnedSkills, partition, assets.skills)
-		if err != nil {
-			return err
-		}
-		materialized, err := skillmaterialize.Materialize(ctx, assets.reflectionRepository, assets.learnedSkills, partition, assets.skillOwner, record, inventory, learning.Decision{Kind: learning.DecisionApprove, Actor: "skill-pipeline", At: time.Now().UTC()})
-		if err != nil {
-			return err
-		}
-		evaluator := cfg.SkillEvaluator
-		var publisher skilllifecycle.Publisher
-		publishable := partition.Project == "" || (partition.Project == cfg.Workspace && projectIngestionAdmitted(cfg))
-		if publishable && assets.liveSkills != nil {
-			publisher = learnedSkillPublisher{repository: assets.learnedSkills, partitions: []learning.SkillPartition{partition}, owner: assets.skillOwner, catalog: assets.liveSkills}
+		receipt, processErr, processed := func() (skilllifecycle.Receipt, error, bool) {
 			if assets.skillPublication != nil {
 				unlock := assets.skillPublication.lock(partition)
 				defer unlock()
 			}
-		} else if mode == learning.Auto {
-			// A shared process catalog cannot safely expose another caller/project
-			// partition. Keep it staged until a partition-bound catalog is available.
-			mode = learning.Review
+			inventory, err := learnedSkillInventory(ctx, assets.learnedSkills, partition, assets.skills)
+			if err != nil {
+				return skilllifecycle.Receipt{}, err, false
+			}
+			materialized, err := skillmaterialize.Materialize(ctx, assets.reflectionRepository, assets.learnedSkills, partition, assets.skillOwner, record, inventory, learning.Decision{Kind: learning.DecisionApprove, Actor: "skill-pipeline", At: time.Now().UTC()})
+			if err != nil {
+				return skilllifecycle.Receipt{}, err, false
+			}
+			evaluator := cfg.SkillEvaluator
+			var publisher skilllifecycle.Publisher
+			publishable := partition.Project == "" || (partition.Project == cfg.Workspace && projectIngestionAdmitted(cfg))
+			if publishable && assets.liveSkills != nil {
+				publisher = learnedSkillPublisher{repository: assets.learnedSkills, partitions: []learning.SkillPartition{partition}, owner: assets.skillOwner, catalog: assets.liveSkills}
+			} else if mode == learning.Auto {
+				// A shared process catalog cannot safely expose another caller/project
+				// partition. Keep it staged until a partition-bound catalog is available.
+				mode = learning.Review
+			}
+			receipt, err := (skilllifecycle.Pipeline{Repository: assets.learnedSkills, Validator: skillvalidation.Validator{}, Evaluator: evaluator, ActivationPolicy: cfg.SkillActivationPolicy, Publisher: publisher}).Process(ctx, skilllifecycle.Candidate{Draft: materialized.Input, Inventory: inventory, Mode: mode, Automatic: true})
+			return receipt, err, true
+		}()
+		if !processed {
+			return processErr
 		}
-		receipt, processErr := (skilllifecycle.Pipeline{Repository: assets.learnedSkills, Validator: skillvalidation.Validator{}, Evaluator: evaluator, ActivationPolicy: cfg.SkillActivationPolicy, Publisher: publisher}).Process(ctx, skilllifecycle.Candidate{Draft: materialized.Input, Inventory: inventory, Mode: mode, Automatic: true})
 		if emit := cfg.LearningMetricsEmitter; emit != nil {
 			kind := learning.ActivitySkillStaged
 			reason := learning.ReasonStaged

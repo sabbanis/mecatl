@@ -13,6 +13,7 @@ import (
 
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 	"github.com/stacklok/mecatl/engine/learning"
+	"github.com/stacklok/mecatl/engine/port"
 )
 
 const (
@@ -31,7 +32,7 @@ func (s *Service) liveSkillGeneration(ctx context.Context, project string) uint6
 	return s.cfg.LiveSkillGeneration(partition)
 }
 
-func (s *Service) publishLearnedSkills(ctx context.Context, partition learning.SkillPartition) (string, string) {
+func (s *Service) publishLearnedSkills(ctx context.Context, partition learning.SkillPartition, operation string) (string, string) {
 	if s.cfg.PublishLearnedSkills == nil {
 		return "unavailable", "no publication target"
 	}
@@ -39,7 +40,8 @@ func (s *Service) publishLearnedSkills(ctx context.Context, partition learning.S
 	err := s.cfg.PublishLearnedSkills(publishCtx, partition)
 	cancel()
 	if err != nil {
-		return "pending_reconciliation", safeSkillText(err.Error(), 1024)
+		s.logLearnedSkillFailure(ctx, "learned-skill publication failed", operation, err)
+		return "pending_reconciliation", "learned skill publication failed"
 	}
 	return "published", ""
 }
@@ -76,6 +78,7 @@ func (s *Service) ListLearnedSkills(ctx context.Context, request *mecatlv1.ListL
 		publishErr := s.cfg.PublishLearnedSkills(publishCtx, partition)
 		cancel()
 		if publishErr != nil {
+			s.logLearnedSkillListFailure(ctx, "publish_before_list", publishErr)
 			return nil, skillServiceError(publishErr)
 		}
 	}
@@ -85,6 +88,7 @@ func (s *Service) ListLearnedSkills(ctx context.Context, request *mecatlv1.ListL
 	}
 	page, err := s.cfg.LearnedSkills.List(ctx, partition, learning.SkillList{After: learning.SkillID(request.GetCursor()), Limit: limit, State: state, OwnerAgent: request.GetOwnerAgent()})
 	if err != nil {
+		s.logLearnedSkillListFailure(ctx, "repository_list", err)
 		return nil, skillServiceError(err)
 	}
 	out := make([]*mecatlv1.LearnedSkillVersion, len(page.Versions))
@@ -172,7 +176,7 @@ func (s *Service) mutateLearnedSkill(ctx context.Context, request *mecatlv1.Muta
 	if err != nil {
 		return nil, skillServiceError(err)
 	}
-	status, publishErr := s.publishLearnedSkills(ctx, partition)
+	status, publishErr := s.publishLearnedSkills(ctx, partition, operation)
 	return &mecatlv1.MutateLearnedSkillResponse{Skill: toProtoLearnedSkill(value), Generation: s.liveSkillGeneration(ctx, request.GetProject()), Project: validLearningText(request.GetProject()), PublicationStatus: status, PublicationError: publishErr}, nil
 }
 
@@ -232,7 +236,7 @@ func (s *Service) RollbackLearnedSkill(ctx context.Context, r *mecatlv1.Rollback
 	if err != nil {
 		return nil, skillServiceError(err)
 	}
-	status, publishErr := s.publishLearnedSkills(ctx, partition)
+	status, publishErr := s.publishLearnedSkills(ctx, partition, "rollback")
 	return &mecatlv1.MutateLearnedSkillResponse{Skill: toProtoLearnedSkill(value), Generation: s.liveSkillGeneration(ctx, r.GetProject()), Project: validLearningText(r.GetProject()), PublicationStatus: status, PublicationError: publishErr}, nil
 }
 
@@ -320,6 +324,31 @@ func validStrings(values []string) []string {
 	}
 	return out
 }
+func (s *Service) logLearnedSkillListFailure(ctx context.Context, operation string, err error) {
+	s.logLearnedSkillFailure(ctx, "learned-skill list failed", operation, err)
+}
+
+func (s *Service) logLearnedSkillFailure(ctx context.Context, message, operation string, err error) {
+	s.cfg.Diagnostics.Log(ctx, port.LevelWarn, message, "operation", operation, "category", learnedSkillErrorCategory(err))
+}
+
+func learnedSkillErrorCategory(err error) string {
+	switch {
+	case errors.Is(err, context.Canceled):
+		return "cancelled"
+	case errors.Is(err, context.DeadlineExceeded):
+		return "deadline"
+	case errors.Is(err, learning.ErrSkillNotFound):
+		return "not_found"
+	case errors.Is(err, learning.ErrSkillConflict), errors.Is(err, learning.ErrSkillTransition), errors.Is(err, learning.ErrSkillNameCollision):
+		return "conflict"
+	case errors.Is(err, learning.ErrInvalidSkill), errors.Is(err, learning.ErrSkillOwnerMismatch), errors.Is(err, learning.ErrSkillLimit), errors.Is(err, learning.ErrSkillCursor):
+		return "invalid"
+	default:
+		return "backend"
+	}
+}
+
 func skillServiceError(err error) error {
 	switch {
 	case errors.Is(err, learning.ErrSkillNotFound):

@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"sync"
 	"testing"
@@ -271,6 +272,100 @@ func TestProcessReflectionOutcomeProcedureIsDeferred(t *testing.T) {
 	page, err := repository.List(context.Background(), partition, learning.ProposalList{})
 	if err != nil || len(page.Records) != 1 || page.Records[0].Status != learning.ProposalDeferredUnsupported {
 		t.Fatalf("procedure proposals = %+v err=%v", page.Records, err)
+	}
+}
+
+type blockingSkillEvaluator struct {
+	entered    chan struct{}
+	release    chan struct{}
+	evaluation learning.SkillEvaluation
+	err        error
+}
+
+func (e blockingSkillEvaluator) Evaluate(ctx context.Context, _ learning.SkillEvaluationRequest) (learning.SkillEvaluation, error) {
+	close(e.entered)
+	select {
+	case <-e.release:
+		return e.evaluation, e.err
+	case <-ctx.Done():
+		return learning.SkillEvaluation{}, ctx.Err()
+	}
+}
+
+func TestInvariant_learned_skill_partition_lifecycle_serialized(t *testing.T) {
+	infrastructureErr := errors.New("evaluator unavailable")
+	for _, tc := range []struct {
+		name       string
+		evaluation learning.SkillEvaluation
+		evalErr    error
+		wantState  learning.SkillState
+	}{
+		{name: "nonpublishable staging", evaluation: learning.SkillEvaluation{Verdict: learning.EvaluationPass, FixtureIDs: []string{"fixture-pass"}}, wantState: learning.SkillStaged},
+		{name: "evaluator failure rejection", evalErr: infrastructureErr, wantState: learning.SkillRejected},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			input, outcome, digest := reflectionOutcomeFixture(t, learning.CandidateProcedure)
+			proposals := memproposal.New()
+			repository := memskill.New()
+			catalog := skillfs.NewAtomicCatalog(nil, nil, nil)
+			waitAttempted := make(chan struct{}, 1)
+			gate := &learnedSkillPublication{onWait: func(learning.SkillPartition) { waitAttempted <- struct{}{} }}
+			evaluator := blockingSkillEvaluator{
+				entered: make(chan struct{}), release: make(chan struct{}), evaluation: tc.evaluation, err: tc.evalErr,
+			}
+			partition := learning.SkillPartition{Principal: "principal", Project: input.Trajectory.Workspace}
+			telemetryObservedActiveGate := make(chan bool, 1)
+			assets := catalogAssets{
+				reflectionRepository: proposals,
+				learnedSkills:        repository,
+				liveSkills:           catalog,
+				skillPublication:     gate,
+				skillOwner:           "reflection",
+			}
+			processor := buildProcedureProcessor(Config{
+				LearningMode:   learning.Auto,
+				SkillEvaluator: evaluator,
+				LearningMetricsEmitter: func(learning.Activity) {
+					gate.mu.Lock()
+					_, active := gate.active[partition]
+					gate.mu.Unlock()
+					telemetryObservedActiveGate <- active
+				},
+			}, assets)
+			processDone := make(chan error, 1)
+			go func() {
+				_, err := processReflectionOutcome(context.Background(), proposals, nil, memmemory.New(), "principal", input, digest, outcome, learning.DetectSignals(input), learning.Auto, true, input.Trajectory.Workspace, processor)
+				processDone <- err
+			}()
+			<-evaluator.entered
+
+			publishDone := make(chan error, 1)
+			go func() {
+				publishDone <- (learnedSkillPublisher{repository: repository, partitions: []learning.SkillPartition{partition}, catalog: catalog, serial: gate}).Publish(context.Background())
+			}()
+			<-waitAttempted
+			select {
+			case err := <-publishDone:
+				t.Fatalf("publication crossed an in-flight lifecycle transition: %v", err)
+			default:
+			}
+
+			close(evaluator.release)
+			processErr := <-processDone
+			if !errors.Is(processErr, tc.evalErr) {
+				t.Fatalf("process error = %v, want %v", processErr, tc.evalErr)
+			}
+			if active := <-telemetryObservedActiveGate; active {
+				t.Fatal("learning metrics emitter ran while the lifecycle publication gate was held")
+			}
+			if err := <-publishDone; err != nil {
+				t.Fatal(err)
+			}
+			page, err := repository.List(context.Background(), partition, learning.SkillList{})
+			if err != nil || len(page.Versions) != 1 || page.Versions[0].State != tc.wantState {
+				t.Fatalf("serialized lifecycle result = %+v, want state %s, err=%v", page.Versions, tc.wantState, err)
+			}
+		})
 	}
 }
 
