@@ -18,18 +18,37 @@ If you can mount it, `cat` it, and `curl` it, you can use Fabric.
 
 ## 1. Motivation
 
-MCP requires a purpose-built client in every agent harness — a
-JSON-RPC session, a tool-call loop, schema parsing — before an agent
-can use anything. Fabric's position is that most of what an agent needs
-from a remote service is already expressible as filesystem operations,
-and that the operations which aren't (invoking behavior, subscribing
-to change) can be modeled *as* file operations rather than as a
-separate protocol layered on top. What MCP calls a "tool call" is, in
-an agent-driven context, an ordinary `call` (§6) on a `callable` path —
-a **remote tool call** in that specific context, though `call` itself
-is deliberately not agent-specific vocabulary (see Goal 9): the same
-op serves a human via a FUSE mount, a workflow trigger, or any other
-non-agent caller identically.
+Fabric rests on one claim: **the filesystem shape is expressive enough
+to model most of what an agent needs from a remote service.** A
+hierarchical namespace of named things, each supporting a small set of
+enumerated operations, discoverable by traversal, can represent not
+just stored files but tools, queries, application state, live
+computations, subscriptions, and other agents' capabilities. Plan 9
+demonstrated this within an operating system; Fabric applies it across
+a network boundary. §3.1 states the claim in full, and §3.2 states its
+limits.
+
+Two things follow from taking that claim seriously.
+
+The first is that a Fabric server is usually a thin translation layer
+over a database, an application, an API, or another agent — not a
+from-scratch file server. Conformance is behavioral: answer the
+operations correctly and you are a Fabric server, whatever is actually
+underneath.
+
+The second is that clients need no protocol-specific machinery. MCP
+requires a purpose-built client in every agent harness — a JSON-RPC
+session, a tool-call loop, schema parsing — before an agent can use
+anything. If a service is reachable as a filesystem, an agent that
+already has generic file and shell tools can use it with no new code
+at all, and the operations which aren't natively file-shaped (invoking
+behavior, subscribing to change) are modeled *as* file operations
+rather than as a separate protocol layered on top. What MCP calls a
+"tool call" is, in an agent-driven context, an ordinary `call` (§6) on
+a `callable` path — a **remote tool call** in that specific context,
+though `call` itself is deliberately not agent-specific vocabulary
+(see Goal 9): the same op serves a human via a FUSE mount, a workflow
+trigger, or any other non-agent caller identically.
 
 ### Goals
 
@@ -92,7 +111,7 @@ non-agent caller identically.
 ## 2. Terminology
 
 - **Path** — a `/`-delimited address of a resource. Paths need not
-  correspond to stored bytes ("virtual files" — see §3.3).
+  correspond to stored bytes ("virtual files" — see §3.1).
 - **Session** — the scope established by a mount or a connection; it
   fixes exactly one **zone** (§9) for its lifetime.
 - **Flags** — a small, protocol-defined vocabulary describing what
@@ -112,13 +131,82 @@ non-agent caller identically.
 
 ## 3. Resource Model
 
-### 3.1 Everything is a path
+### 3.1 A filesystem is anything that behaves like one
 
-A path may be a plain file, a directory, a callable action, or a
-virtual/synthesized endpoint. The protocol does not distinguish these
-at the wire level — only via flags.
+Fabric's conformance is **behavioral, not structural**. A server is a
+Fabric server if it answers the operations in §4 correctly for the
+paths it exposes. Nothing in this specification requires — or lets a
+client detect — that a path corresponds to a stored byte-blob, a
+directory entry on a disk, or a filesystem in any conventional sense.
 
-### 3.2 Flags (protocol-defined, closed vocabulary)
+The backing implementation may be:
+
+- a real filesystem, local or remote;
+- a **database** — tables as directories, rows or records as paths, a
+  parameterized query as a callable path (§6);
+- an **application** — its state exposed as readable paths, its actions
+  as callable ones, its event stream as a subscription (§10);
+- a **scripting or compute layer** — paths whose `read` runs a live
+  computation and whose `call` executes it with arguments;
+- an **API gateway** over some third-party service (see §16.4 for a
+  git-forge worked example);
+- **another agent**, exposing its own capabilities and memory as paths;
+- anything else that can answer `stat`, `readdir`, and whichever of
+  the remaining operations it declares.
+
+This is not a permitted deviation from a filesystem-shaped norm. It is
+the design's central claim: **the filesystem shape — a hierarchical
+namespace of named things, each supporting a small set of enumerated
+operations, discoverable by traversal — is expressive enough to model
+most of what an agent needs from a remote service.** Plan 9
+established this in the operating-system case: `/proc`, `/net`, and
+`/dev` are synthesized from kernel logic, not storage, and are
+indistinguishable at the protocol level from files backed by disk
+blocks. Fabric applies the same principle across a network boundary,
+to services rather than kernel subsystems.
+
+The practical consequence is that a Fabric server is usually a **thin
+translation layer over something that already exists**, not a
+from-scratch implementation of a file server. Whatever the backend
+already does well — its own concurrency control, its own permission
+model, its own storage — it keeps; Fabric supplies only a uniform
+addressing and access surface in front of it.
+
+### 3.2 Where the file shape strains
+
+"Expressive enough for most of what an agent needs" is a bounded
+claim, and the bound is stated here rather than left for an
+implementer to discover. Some things do not fit this model well, and a
+server whose primary purpose is one of them is better served by a
+purpose-built interface than by Fabric:
+
+- **Set-oriented operations.** "Update every record matching X" is one
+  operation over a set, not N operations over N paths. It can be
+  expressed as a callable path, but then the path is an RPC endpoint
+  in filesystem costume and hierarchical addressing contributes
+  nothing.
+- **Multi-path transactions.** POSIX has no atomic multi-file commit,
+  and neither does Fabric v0.1. Operations are individually atomic at
+  best; a client needing "these five writes all land or none do" has
+  no protocol-level mechanism for it. This is a genuine gap, not a
+  deliberate omission (see §15 for the versioning posture on filling
+  it).
+- **Schema on data rather than on operations.** A database row has a
+  type; a file has bytes. A callable path declares an input/output
+  schema (§6), but a *readable* path declares only a content type at
+  best — every consumer parses independently, and nothing validates.
+- **Duplex streaming.** `read` and `write` are separate operations; a
+  path is not a socket. Plan 9 modeled bidirectional channels with
+  paired `ctl`/`data` files, which worked but is the least elegant
+  part of that design. Fabric inherits the same awkwardness.
+
+Recognizing these bounds matters for a specific reason: an
+abstraction that is never tested against something it fits badly is an
+untested abstraction. A backend that strains against every item above
+is evidence the file shape is being stretched past usefulness, not
+evidence that Fabric needs more features.
+
+### 3.3 Flags (protocol-defined, closed vocabulary)
 
 | Flag | Meaning |
 |---|---|
@@ -129,14 +217,27 @@ at the wire level — only via flags.
 | `exclusive` | at most one open handle at a time |
 | `watchable` | subscriptions are supported (see §10) |
 
-### 3.3 Virtual files
+### 3.4 Consequences for clients
 
-A path answering `stat`/`read`/`call` correctly need not correspond to
-stored bytes. Implementers MUST NOT assume `read()` is idempotent,
-cheap, or side-effect-free purely because a path looks like a plain
-file — that is a storage-model assumption Fabric does not make.
+Because conformance is behavioral (§3.1), a client cannot infer
+anything about a path's implementation from its shape. Specifically,
+clients MUST NOT assume that `read` on a path which looks like a plain
+file is:
 
-### 3.4 Capabilities (open, implementer-defined)
+- **idempotent** — a second `read` may return different bytes, because
+  the backend may be computing them per request;
+- **cheap** — a `read` may be a database query, a remote API call, or
+  an expensive computation;
+- **side-effect-free** — a `read` on an application-backed path may
+  legitimately change server state.
+
+A path that *is* cheap, stable, and side-effect-free may say so
+through `capabilities` (§3.5, e.g. `cache_control`), but the default
+assumption runs the other way. This is the cost of the expressiveness
+claimed in §3.1: a uniform interface over heterogeneous backends means
+the interface cannot also promise uniform performance or purity.
+
+### 3.5 Capabilities (open, implementer-defined)
 
 ```json
 {
@@ -168,7 +269,7 @@ support for basic correctness.
 | `walk` | implicit in path resolution | Servers MAY expose batch-walk for round-trip efficiency |
 
 Only `stat` and `readdir` are mandatory for every server. All others
-are declared per-path via flags (§3.2) and MAY be absent. See §11 for
+are declared per-path via flags (§3.3) and MAY be absent. See §11 for
 unsupported-vs-unauthorized semantics.
 
 ### 4.1 `readdir` is metadata-inlined
@@ -876,7 +977,7 @@ surface.
 |---|---|
 | Bundle directory tree | Ordinary paths; `readdir` traversal (§4) |
 | `index.md` progressive disclosure | Same role as `README.md` (§8.2); recognize both |
-| Frontmatter `type` field | Surfaced as `capabilities.okf_type` on `stat` (§3.4) |
+| Frontmatter `type` field | Surfaced as `capabilities.okf_type` on `stat` (§3.5) |
 | Cross-links between concepts | Ordinary path resolution |
 | `log.md` update history | Natural subscription target (§10) |
 | Declared `okf_version` | SHOULD be surfaced in `readdir`/`stat` metadata so a client can identify a bundle without first reading and parsing `index.md` |
@@ -887,7 +988,7 @@ OKF's consumption rules — do not reject a bundle for missing optional
 frontmatter, unknown `type` values, unknown additional keys, broken
 cross-links, or a missing `index.md` — are the same permissive-
 consumption principle Fabric applies to unknown envelope fields (§7.1)
-and unrecognized capabilities (§3.4). Neither spec fails closed on
+and unrecognized capabilities (§3.5). Neither spec fails closed on
 unrecognized *metadata*; both fail closed only on unrecognized
 *behavior* (§7.1's stage `type` rule).
 
@@ -908,7 +1009,7 @@ bundle itself:
   bundle root; `level` trigger mode is usually sufficient.
 - **Callable concepts** — a concept documenting an API endpoint MAY
   also be `callable` (§6), since callability is an independent flag
-  (§3.2) rather than a property of content. This is a capability OKF
+  (§3.3) rather than a property of content. This is a capability OKF
   alone does not have.
 - **Curated discovery** — `/prot/capabilities/` (§8.1) MAY be defined
   as an OKF-conformant index rather than a bespoke manifest format.
