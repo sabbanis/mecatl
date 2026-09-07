@@ -297,6 +297,10 @@ PR after verification. There is no cleanup or status-only PR.
   authenticated, independently deployed single-replica broker exposing the existing
   Stage 3 logical contract, with explicit restart interruption and no distributed/HA
   claim. Status: draft.
+- [Singleton MCP broker review remediation](singleton-mcp-broker-review-remediation.md) —
+  closes the initial broker self-review with bounded lifecycle and Execute receipts,
+  structured transport failures, fresh pre-prompt recovery, real readiness/deployment
+  assembly, and production-path acceptance proofs. Status: draft.
 
 - [Canonical Shell command tool](canonical-shell-command-tool.md) — canonical `Shell`
   and `ShellStatus` model-facing names, safe legacy `Bash` input normalization, and
