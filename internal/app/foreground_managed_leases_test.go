@@ -3,6 +3,7 @@ package app
 import (
 	"context"
 	"errors"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"strings"
@@ -70,6 +71,26 @@ func TestADR_0281_ForegroundLeaseOverlayAndMetadataPrivacy(t *testing.T) {
 	}
 }
 
+// findManagedLeaseDir walks root looking for an allocated "cmd-*"/"job-*"
+// lease directory (managedtemp.Workspace.Allocate's naming). It exists so the
+// "cancel" case below can confirm the command actually started (Allocate runs
+// synchronously in osfs's CommandRunner.run, before cmd.Start) instead of
+// racing a fixed sleep against process fork/exec under load.
+func findManagedLeaseDir(root string) (string, bool) {
+	var found string
+	_ = filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
+		if err != nil || found != "" {
+			return nil //nolint:nilerr // tolerant scan: skip races/permission churn, keep walking
+		}
+		if d.IsDir() && (strings.HasPrefix(d.Name(), "cmd-") || strings.HasPrefix(d.Name(), "job-")) {
+			found = path
+			return fs.SkipAll
+		}
+		return nil
+	})
+	return found, found != ""
+}
+
 // TestADR_0281_LeaseCleanupPreservesCommandOutcome pins that cleanup happens
 // after the command outcome is fixed, including cancellation and deadline.
 func TestADR_0281_LeaseCleanupPreservesCommandOutcome(t *testing.T) {
@@ -89,20 +110,49 @@ func TestADR_0281_LeaseCleanupPreservesCommandOutcome(t *testing.T) {
 		{name: "non-zero", ctx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) }, command: "printf %s \"$TMPDIR\"; exit 7", wantExit: 7},
 		{name: "cancel", ctx: func() (context.Context, context.CancelFunc) { return context.WithCancel(context.Background()) }, command: "printf %s \"$TMPDIR\"; sleep 30", wantErr: context.Canceled},
 		{name: "timeout", ctx: func() (context.Context, context.CancelFunc) {
-			return context.WithTimeout(context.Background(), 20*time.Millisecond)
+			// A generous margin over the default 20ms: under a loaded full-suite
+			// run, process fork/exec can occasionally exceed a razor-thin deadline
+			// before the shell even starts, making the outcome timing-dependent
+			// rather than a genuine deadline-exceeded exercise.
+			return context.WithTimeout(context.Background(), 300*time.Millisecond)
 		}, command: "printf %s \"$TMPDIR\"; sleep 30", wantErr: context.DeadlineExceeded},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ctx, cancel := tc.ctx()
 			defer cancel()
+			// leaseCh carries the REAL lease dir observed on disk while the command
+			// is still running, for the cancel case: relying on res.Stdout (the
+			// command's own "$TMPDIR" echo) races cancellation against the shell's
+			// fork/exec — a fixed sleep before cancel() could fire before the shell
+			// even started, leaving Stdout empty and lease == "." (always exists),
+			// which was the "terminal lease remains at \".\"" flake. Polling for the
+			// lease directory (created synchronously by osfs's managedLease, before
+			// cmd.Start) proves the command actually started before we cancel it.
+			leaseCh := make(chan string, 1)
 			if tc.wantErr == context.Canceled {
-				go func() { time.Sleep(20 * time.Millisecond); cancel() }()
+				go func() {
+					var dir string
+					eventually(2*time.Second, func() bool {
+						d, ok := findManagedLeaseDir(managedRoot)
+						if ok {
+							dir = d
+						}
+						return ok
+					})
+					leaseCh <- dir
+					cancel()
+				}()
 			}
 			res, err := runner.Run(ctx, tc.command)
 			if !errors.Is(err, tc.wantErr) || (tc.wantErr == nil && err != nil) || res.ExitCode != tc.wantExit {
 				t.Fatalf("Run = %+v, %v; want exit %d, err %v", res, err, tc.wantExit, tc.wantErr)
 			}
 			lease := filepath.Dir(strings.TrimSpace(res.Stdout))
+			if tc.wantErr == context.Canceled {
+				if got := <-leaseCh; got != "" {
+					lease = got
+				}
+			}
 			if _, err := os.Stat(lease); !os.IsNotExist(err) {
 				t.Fatalf("terminal lease remains at %q: %v", lease, err)
 			}
