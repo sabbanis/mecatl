@@ -16,17 +16,10 @@ See [ADR 0321](./adr/0321-canonical-user-documentation-ownership.md) for the own
 | Workspace trust | [Permissions and posture](https://mecatl.dev/docs/features/permissions-and-posture#project-trust) |
 | Skills, commands, soul, and user model | [Skills, commands, and soul](https://mecatl.dev/docs/features/skills-commands-and-soul) |
 | `mecak8s` | [Cloud-native k8s with mecak8s](https://mecatl.dev/docs/building/deployment/mecak8s) |
+| `mecabroker` | [Standalone MCP broker](https://mecatl.dev/docs/building/deployment/mecabroker) |
 | gRPC API | [gRPC API reference](https://mecatl.dev/docs/reference/grpc-api) |
 | HTTP and SSE API | [HTTP and SSE API reference](https://mecatl.dev/docs/reference/http-sse-api) |
 | Configuration | [Configure Mecatl](https://mecatl.dev/docs/building/deployment/settings) |
 | Hooks | [Hook system](https://mecatl.dev/docs/building/what-you-get/hooks) |
 | `mecatequi` CI | [Single-shot CI with mecatequi](https://mecatl.dev/docs/building/deployment/mecatequi) |
 | Troubleshooting | [Mecatl documentation](https://mecatl.dev/docs/) |
-
-## Plan approval
-
-See [Permissions and guardrails](https://mecatl.dev/docs/building/what-you-get/permissions#plan-mode).
-
-## ToolHive LLM gateway
-
-See [Run mecated standalone](https://mecatl.dev/docs/building/deployment/mecated#the-toolhive-llm-gateway-no-api-key-needed).
