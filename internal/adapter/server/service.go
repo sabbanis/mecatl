@@ -544,6 +544,12 @@ type Config struct {
 	MCPBroker brokercontract.Service
 	// MCPConnectorInspector exposes local-only inventory for the bundled broker.
 	MCPConnectorInspector brokercontract.ConnectorInspector
+	// MCPBrokerFactory creates a replacement process-local client after confirmed
+	// broker state loss. It is consulted only by the pre-prompt recovery seam.
+	MCPBrokerFactory func(context.Context) (brokercontract.Service, func() error, error)
+	// MCPBrokerClose transfers ownership of the initially composed remote client
+	// to Service so replacement and shutdown each close one client once.
+	MCPBrokerClose func() error
 	// WorkspaceEnrollment advertises the optional pre-prompt enrollment capability.
 	// It must be true only when MCPBroker attachments implement the enrollment boundary.
 	WorkspaceEnrollment bool
@@ -849,7 +855,9 @@ var engineCloseTimeout = 10 * time.Second
 // Approve/Cancel that finds the session only in the store — with no live run —
 // returns ErrNoActiveRun rather than silently succeeding.
 type Service struct {
-	cfg Config
+	cfg                 Config
+	brokerFactoryClose  func() error
+	brokerReplacementMu sync.Mutex
 
 	// placementBinder is the sole creation/successor placement binding seam.
 	// It is nil only for legacy hand-built configurations that have not migrated.
@@ -1371,6 +1379,7 @@ func NewServiceContext(ctx context.Context, cfg Config) (*Service, error) {
 	_, shutdownCancel := context.WithCancel(context.Background())
 	svc := &Service{
 		cfg:                 cfg,
+		brokerFactoryClose:  cfg.MCPBrokerClose,
 		placementBinder:     placementBinder,
 		shutdownCancel:      shutdownCancel,
 		runs:                make(map[session.SessionID]*runState),
@@ -3038,6 +3047,10 @@ func (s *Service) Drain() {
 		if sch := m.scheduler.Load(); sch != nil {
 			sch.Drain()
 		}
+	}
+	if s.brokerFactoryClose != nil {
+		_ = s.brokerFactoryClose()
+		s.brokerFactoryClose = nil
 	}
 }
 

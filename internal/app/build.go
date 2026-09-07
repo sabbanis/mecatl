@@ -2587,6 +2587,10 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	}
 	if brokerService != nil {
 		svcCfg.MCPBroker = brokerService
+		if cfg.MCPBrokerFactory != nil {
+			svcCfg.MCPBrokerFactory = cfg.MCPBrokerFactory
+			svcCfg.MCPBrokerClose = brokerRemoteClose
+		}
 	}
 	// Workspace enrollment (pre-prompt authenticate-then-discover) applies to the
 	// bundled ToolHive Process path and to a remote broker service. A Compile-only
@@ -2614,6 +2618,10 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		storeClose()
 		commandConnClose()
 		return nil, fmt.Errorf("build service: %w", err)
+	}
+	if cfg.MCPBrokerFactory != nil {
+		// Service now owns the initial remote client close and any replacements.
+		brokerRemoteClose = nil
 	}
 
 	// LIVE model listing: Build seeded svcCfg.Models with the EMBEDDED snapshot
