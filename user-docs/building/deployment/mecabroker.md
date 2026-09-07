@@ -53,10 +53,6 @@ termination grace contains that budget.
 
 ## Network policy
 
-Set `networkPolicy.mecak8sFrom` and `browserCallbackFrom` to exact namespace/pod peers.
-Set `operatorEgress` to cluster DNS plus concrete CIDR, namespace, and pod rules for the
-OIDC/JWKS, upstream OAuth, and MCP destinations. Kubernetes NetworkPolicy does not match
-external DNS names. If endpoints change addresses dynamically, maintain the ranges or use
-an operator-provided policy controller; the chart does not claim hostname enforcement.
+Set `networkPolicy.publicFrom` to one union of exact namespace, pod, and CIDR peers for the multiplexed public listener. Vanilla NetworkPolicy cannot distinguish gRPC from browser callbacks on the shared port. Set `operatorEgress` to cluster DNS plus concrete destination rules for OIDC/JWKS, upstream OAuth, and MCP; external DNS names are not enforced.
 
 For the complete resource-lifecycle boundary, see [ADR 0305](https://github.com/stacklok/mecatl/blob/main/docs/adr/0305-single-replica-mcp-broker-topology.md).
