@@ -896,6 +896,12 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 			}
 			return target, client.DialConfig{}, noop, &client.AuthError{Reason: client.AuthStorageUnavailable}
 		}
+		registry, regErr := clientauth.OpenExistingRegistry(filepath.Join(xdg.ConfigHome, "mecatl"))
+		if regErr == nil {
+			if conn, findErr := registry.Find(cfg.connectAddress); findErr == nil {
+				applySavedServerCA(cfg, conn, &dial)
+			}
+		}
 		return cfg.connectAddress, dial, noop, nil
 	}
 
