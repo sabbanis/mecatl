@@ -833,6 +833,7 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 			if findErr == nil {
 				target = conn.Identity.Target
 				dial.Server = target
+				applySavedServerCA(cfg, conn, &dial)
 				if err := applySavedRemoteTLSPolicy(cfg, &dial); err != nil {
 					return target, client.DialConfig{}, noop, err
 				}
