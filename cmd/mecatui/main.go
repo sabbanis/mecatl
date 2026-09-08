@@ -900,6 +900,9 @@ func resolveTransport(ctx context.Context, cfg config) (target string, dial clie
 		if regErr == nil {
 			if conn, findErr := registry.Find(cfg.connectAddress); findErr == nil {
 				applySavedServerCA(cfg, conn, &dial)
+				if err := applySavedRemoteTLSPolicy(cfg, &dial); err != nil {
+					return cfg.connectAddress, client.DialConfig{}, noop, err
+				}
 			}
 		}
 		return cfg.connectAddress, dial, noop, nil
