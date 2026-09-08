@@ -22,6 +22,14 @@ default and is purpose-built for no-PVC pod deployments.
 
 ## Quick start
 
+On Apple Silicon, each root `v*` GitHub Release provides a versioned archive
+containing only `mecated` and `mecatui`, plus a SHA-256 file and keyless Cosign
+bundle. Verify the checksum and the bundle's GitHub release-workflow identity
+before extracting; the exact commands and trust constraints are in the
+[install guide](https://github.com/stacklok/mecatl/blob/main/docs/usage/install.md#native-apple-silicon-release).
+The binaries are stamped with that exact release tag. The archive is not an
+Apple-notarized installer.
+
 The canonical invocation is `mecated serve`:
 
 ```sh

@@ -464,6 +464,12 @@ jobs:
           cache-dependency-path: |
             go.sum
             engine/go.sum
+      - uses: go-task/setup-task@a00fbb05ce67b35648be3c78cbc9fd85354c757e # v2.2.0
+      - name: Smoke-test Darwin release binaries
+        run: |
+          BUILD_ID=ci-darwin-smoke task build:darwin-release OUTPUT_DIR="$RUNNER_TEMP/mecatl-darwin-smoke"
+          test "$("$RUNNER_TEMP/mecatl-darwin-smoke/mecated" --version)" = "mecated ci-darwin-smoke"
+          test "$("$RUNNER_TEMP/mecatl-darwin-smoke/mecatui" --version)" = "mecatui ci-darwin-smoke"
       - name: Run managed temporary storage tests
         run: |
           go test ./internal/adapter/managedtemp -count=1
@@ -772,6 +778,7 @@ jobs:
           bash .github/actions/mecatequi-extract-prompt/extract-prompt_test.sh
           bash .github/actions/mecatequi-publish/publish_test.sh
           bash .github/actions/action-wrappers_test.sh
+          bash .github/scripts/darwin-release-workflow_test.sh
           bash .github/scripts/lint-vet-workflow_test.sh
 
   # Keep cmd/vet authoritative and complete without serializing its cold root-module

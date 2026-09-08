@@ -102,6 +102,10 @@ PR after verification. There is no cleanup or status-only PR.
 
 ## Plans
 
+- [Signed Darwin arm64 release archive](darwin-release-archives.md) — exact-tag
+  native `mecated`/`mecatui` builds, deterministic versioned packaging, SHA-256,
+  and keyless Cosign material verified before least-privilege GitHub Release
+  publication. Status: landed in this Combined candidate; authoritative on merge.
 - [Human-reviewed development contracts](human-reviewed-development-contracts.md) —
   plan/interface review before autonomous implementation, with exact interface
   declarations, run-local orchestration state, and a final human code-review gate.

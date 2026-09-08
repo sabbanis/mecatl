@@ -78,6 +78,19 @@ tasks:
       - cd provider/openai && go build ./...
       - cd provider/openaichat && go build ./...
 
+  build:darwin-release:
+    desc: Build only the Darwin arm64 GitHub Release binaries
+    vars:
+      OUTPUT_DIR: '{{default ".scratch/release/darwin-arm64" .OUTPUT_DIR}}'
+    env:
+      GOOS: darwin
+      GOARCH: arm64
+      CGO_ENABLED: '0'
+    cmds:
+      - mkdir -p '{{.OUTPUT_DIR}}'
+      - go build -trimpath -ldflags "{{.BUILD_LDFLAGS}}" -o '{{.OUTPUT_DIR}}/mecated' ./cmd/mecated
+      - go build -trimpath -ldflags "{{.BUILD_LDFLAGS}}" -o '{{.OUTPUT_DIR}}/mecatui' ./cmd/mecatui
+
   install:
     desc: Install mecated and mecatui into GOBIN/GOPATH/bin
     cmds:
@@ -325,6 +338,7 @@ tasks:
       - bash .github/actions/mecatequi-extract-prompt/extract-prompt_test.sh
       - bash .github/actions/mecatequi-publish/publish_test.sh
       - bash .github/actions/action-wrappers_test.sh
+      - bash .github/scripts/darwin-release-workflow_test.sh
 
   e2e:
     desc: |

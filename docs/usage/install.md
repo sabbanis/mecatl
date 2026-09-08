@@ -70,6 +70,30 @@ the offline demo.
 The default `mecated` build is CGO-free and statically linkable (the ko image
 builds it with `CGO_ENABLED=0`).
 
+### Native Apple Silicon release
+
+Root `v*` GitHub Releases include `mecatl-<version>-darwin-arm64.tar.gz`, which
+contains only native `mecated` and `mecatui` under a versioned directory. Both
+binaries report the exact release tag from `--version`. Download the archive,
+its `.sha256`, and its `.bundle` from the same release, then verify before
+extracting:
+
+```console
+$ VERSION=vX.Y.Z
+$ shasum -a 256 -c "mecatl-${VERSION}-darwin-arm64.tar.gz.sha256"
+$ cosign verify-blob "mecatl-${VERSION}-darwin-arm64.tar.gz" \
+    --bundle "mecatl-${VERSION}-darwin-arm64.tar.gz.bundle" \
+    --certificate-identity-regexp '^https://github.com/stacklok/mecatl/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9].*)$' \
+    --certificate-oidc-issuer https://token.actions.githubusercontent.com
+$ tar -xzf "mecatl-${VERSION}-darwin-arm64.tar.gz"
+```
+
+The Cosign bundle carries the keyless certificate and transparency-log proof;
+constraining both its workflow identity and GitHub OIDC issuer is part of the
+verification contract. This archive targets Apple Silicon only. It is not an
+Apple-notarized installer and does not include `mecademo`, `mecatequi`, or
+`mecak8s`. See [ADR 0310](../adr/0310-signed-darwin-release-archives.md).
+
 ### Consuming `engine` as a library
 
 The importable core is its own Go module,
