@@ -41,15 +41,125 @@ has no drain route. The Service intentionally exposes only gRPC and HTTP, not po
 operators must restrict direct access to port 8082 with NetworkPolicy, mesh policy, or
 equivalent controls.
 
-## Try mecak8s locally
+## Try mecak8s locally with Kind
 
-The repository includes a disposable local Kind environment with Redis and two
-`mecak8s` replicas. Follow
-[Try Mecatl on Kubernetes](/building/getting-started/kubernetes.md) to create the
-cluster and connect with `mecatui`.
+Mecatl includes a disposable Kind fixture for local exploration of mecak8s. It is
+intended for local use, not production deployment. The fixture recreates a disposable
+cluster and uses a fixture-specific kubeconfig; it does not use your ambient
+kubeconfig. Do not run it against a cluster containing work you want to keep.
 
-For the optional Keycloak qualification flow and implementation details, see the
-[local Kind README](https://github.com/stacklok/mecatl/blob/main/deploy/mecak8s-kind/README.md).
+### Prerequisites
+
+Install these tools and ensure they are on `PATH`:
+
+- [Kind](https://kind.sigs.k8s.io/), `kubectl`, and [Helm](https://helm.sh/);
+- [Task](https://taskfile.dev/); and
+- [ko](https://ko.build/) plus Docker or Podman, for building and loading the local
+  mecak8s image.
+
+The fixture uses the mock provider by default, so it does not make provider requests
+or use provider credentials.
+
+### Basic local fixture
+
+From a clone of the Mecatl repository:
+
+```sh
+task mecak8s:kind-setup
+task mecak8s:kind-status
+```
+
+Setup creates the `mecatl-dev` Kind cluster, builds and loads `mecak8s`, installs the
+local chart and Redis, and selects the mock provider. Kind's static
+`extraPortMappings` expose fixture NodePorts directly on loopback: gRPC is at
+`127.0.0.1:18080` and HTTP is at `http://127.0.0.1:18081`. Keycloak, when enabled,
+is at `127.0.0.1:8443`. These host mappings are installed only at cluster creation;
+the shared `values-kind.yaml` and bare chart defaults remain `ClusterIP`, while
+`kind-nodeports.yaml` supplies the fixture-only NodePort values. Only the host
+binding is loopback-only: the NodePorts are also open on the Kind node itself,
+reachable from the Docker network. That is fine for a disposable local cluster
+and is not a production isolation claim. Use the normal
+gRPC/HTTP clients described in [Drive via gRPC / HTTP](grpc-http.md) to send a
+request.
+
+When finished, remove the cluster and fixture-owned local state:
+
+```sh
+task mecak8s:kind-destroy
+```
+
+To make one intentional, billable OpenRouter request, export `OPENROUTER_API_KEY`
+only for setup:
+
+```sh
+OPENROUTER_API_KEY='...' task mecak8s:kind-setup
+```
+
+The task sends the value to `kubectl` over standard input and projects it through a
+fixture-owned Secret; it is not placed in Helm values or command-line arguments.
+Running setup without the variable returns the fixture to mock mode and removes that
+Secret. Treat this as a real provider deployment: choose the client request
+intentionally and never commit or log the key.
+
+### Optional local Keycloak layer
+
+To try authenticated mecak8s requests, recreate the basic fixture with its optional
+private Keycloak and TLS layer:
+
+```sh
+task mecak8s:kind-keycloak-setup
+task mecak8s:kind-hosts-add
+```
+
+For the recommended quickstart, run the readiness and CA-export helper:
+
+```sh
+task mecak8s:kind-keycloak-demo
+```
+
+It waits for the direct loopback mappings (8443, 18080, and 18081), writes the fixture CA under `.scratch/`, and prints ready-to-copy `mecatui login` and `mecatui connect` commands. It deliberately does not rerun setup or invoke `sudo`; it exits after readiness checks.
+
+The Keycloak issuer is available at `https://keycloak.mecatl.svc.cluster.local:8443`;
+the mecak8s API remains at `https://localhost:18081` (gRPC at `localhost:18080`).
+Keep TLS verification enabled and trust the fixture CA; do not disable certificate
+verification. The normal login flow is Authorization Code + PKCE with the public
+`mecatui-kind` client. Request the optional `mecak8s:access` scope for an audience
+that includes `mecak8s`, and request optional `offline_access` deliberately when
+refresh-token qualification is needed. The fixture's password grant users are only a
+test helper for non-browser validation.
+
+Remove the temporary hostname entry after the journey, then destroy the fixture:
+
+```sh
+task mecak8s:kind-hosts-remove
+task mecak8s:kind-destroy
+```
+
+---
+
+## Local ToolHive-free Kind profile
+
+For a disposable Kind-only mecak8s baseline, use `task mecak8s:kind-setup`. It installs the local Helm chart with the explicit `values-kind.yaml` profile, which is the sole profile permitted to use the locally loaded `ko.local` image and plaintext fixture Redis. It does **not** install ToolHive, create integration resources, resolve releases, or contact GitHub. Setup recreates the named `mecatl-dev` cluster and its `.scratch/kind/mecatl-dev` state. Status uses only the dedicated kubeconfig/context, never the ambient kubeconfig. Host access is through Kind `extraPortMappings`, which bind the fixture NodePorts to `127.0.0.1` only (18080/18081; Keycloak 8443). The local workflow above is the recommended user path; it makes no production network-isolation claim and has no general NetworkPolicy.
+
+### Optional local Keycloak validation
+
+`task mecak8s:kind-keycloak-setup` adds the fixture's private Keycloak and TLS
+layer to that base. The fixture-only NodePort overlay is mapped by Kind to loopback;
+the shared `values-kind.yaml` profile and bare chart defaults remain `ClusterIP`.
+The authenticated workflow above covers the issuer mapping, hostname mapping, PKCE
+client, and TLS requirements.
+
+For an interactive remote client after setup, add the fixture host aliases, run
+`mecatui login ADDRESS … --tls-ca ISSUER_CA --private-issuer --scopes openid,profile,mecak8s:access,offline_access`,
+then run `mecatui connect ADDRESS --tls --tls-ca SERVER_CA`. Supply `--tls` in
+these mecak8s connection commands even though a non-loopback target would select
+verified TLS automatically: the explicit flag documents the required secure
+fixture transport. The fixture may publish
+the same public CA bundle for both roles, but they remain separate trust inputs. The
+client uses the `mecatui-kind` public OIDC client; there is no implicit browser flow in
+`connect`. This host-alias flow is available for live qualification, but is not part of
+ordinary offline tests. See the [fixture's setup and CA instructions](https://github.com/stacklok/mecatl/blob/main/deploy/mecak8s-kind/README.md).
+
 
 ---
 
@@ -96,7 +206,7 @@ To give sessions a real filesystem, mount a volume into the pod and point
 `--workspace` at it (for example a PVC mounted at `/workspace`). A configured
 root turns mecak8s into a **server-assigned filesystem deployment** rooted
 there: every session is assigned that single root, the filesystem tools and
-Shell operate on it, and clients have no field with which to select another root.
+Bash operate on it, and clients have no field with which to select another root.
 The path must be absolute and clean; a relative value is refused at startup.
 
 This does not change mecak8s's storage-free posture: harness and session state
@@ -117,7 +227,7 @@ namespace. The persisted placement is revalidated on every run. Redis failures,
 missing namespace markers, and corrupt records fail closed rather than appearing
 as an empty filesystem.
 
-This mode is deliberately file-lite: it has no Shell, executable-file semantics,
+This mode is deliberately file-lite: it has no Bash, executable-file semantics,
 git worktrees, or filesystem branch/merge workflow. It is mutually exclusive with
 `workspace`. Set `redis.readLedger.enabled=true` independently to persist each
 session's read-before-write evidence; deleting a session deletes that ledger but
@@ -155,69 +265,6 @@ Or the explicit unsafe bypass.
 Setting both in-pod TLS and the upstream attestation is valid.
 The bypass annotates the pod as unsafe; a secure upstream attestation is annotated as TLS-terminated-upstream, and neither annotation can be set through `podAnnotations`.
 
-### Installation telemetry identity
-
-The chart owns a non-secret ConfigMap containing one `installation-id`. With the
-default `telemetry.installationID: ""`, the first **live Helm install** generates a
-canonical UUID. An ordinary live Helm upgrade uses `lookup` to preserve the value
-already in that ConfigMap. If the stored value is malformed, rendering fails clearly
-instead of propagating an invalid identity; set an explicit canonical lowercase UUID
-to repair it. An uninstall removes the ConfigMap, so a later reinstall generates a
-new identity.
-
-> **GitOps requirement:** empty auto-generation is safe only for live Helm
-> install/upgrade. Offline `helm template` and template-based GitOps renderers cannot
-> use `lookup`; `uuidv4` therefore produces a different value on every render. Set
-> `telemetry.installationID` explicitly for every such workflow. Otherwise separately
-> rendered resources or reconciliations can disagree, including replicas reporting
-> mixed installation IDs.
-
-Set an explicit canonical UUID when manifests must render deterministically or when
-identity must survive an uninstall/reinstall:
-
-```yaml
-telemetry:
-  installationID: 123e4567-e89b-12d3-a456-426614174000
-```
-
-Changing that explicit value deliberately rotates the identity and rolls the
-Deployment. To rotate an installation currently using the generated default, create
-a fresh canonical UUID and make it explicit on the next upgrade:
-
-```sh
-NEW_ID="$(uuidgen | tr '[:upper:]' '[:lower:]')"
-helm upgrade RELEASE CHART --namespace NAMESPACE \
-  --reuse-values --set-string telemetry.installationID="$NEW_ID"
-```
-
-Use the release's normal chart reference and upgrade options in place of `CHART`.
-Removing an explicit override on a live release preserves the stored ConfigMap value,
-but removes the explicit-value pod annotation and therefore causes one rollout.
-Inspect the live value without depending on the release's generated resource name:
-
-```sh
-kubectl get configmaps --namespace NAMESPACE \
-  --selector 'app.kubernetes.io/instance=RELEASE,app.kubernetes.io/part-of=mecak8s' \
-  --output go-template='{{range .items}}{{with index .data "installation-id"}}{{.}}{{"\n"}}{{end}}{{end}}'
-```
-
-Helm rollback has different semantics from upgrade: it reapplies the stored historical
-manifest and does not execute `lookup`. A rollback across an intentional identity
-rotation restores the older ID; a rollback between revisions carrying the same ID
-preserves it. Rolling back to a chart revision from before this feature removes the
-chart-owned ConfigMap. Review the target revision before rollback when identity
-continuity matters.
-
-The ID is not a credential and does not belong in a Secret, but it is a stable
-deployment identifier; apply your normal telemetry-data handling policy to it.
-
-The Deployment projects the ConfigMap key as `MECATL_INSTALLATION_ID`.
-`mecak8s` uses it as the default for `--telemetry-installation-id` and, when
-telemetry is enabled, exports it as the OTel resource attribute
-`mecatl.installation.id`. It is not `service.instance.id` and is not added as a
-per-measurement metric label. Outside the chart, leaving the environment variable
-and flag empty preserves the prior behavior and omits the resource attribute.
-
 Understand what edge mode costs before choosing it.
 On an h2c backend the caller's `Authorization: Bearer` token crosses the pod network in cleartext.
 Any workload that can reach the Service ClusterIP can read that token and replay it as the caller.
@@ -251,15 +298,13 @@ extraVolumeMounts:
     readOnly: true
 ```
 
-`mecak8s` reads the file before every OpenAI request, so token rotation is
-automatic. Bearer-file mode requires an explicit, nonempty
-`--openai-base-url` and never defaults to `api.openai.com`. The base URL must
-use HTTPS unless it targets loopback development, and redirects are refused.
-`--openai-bearer-token-file` is mutually exclusive with `OPENAI_API_KEY`.
-
-Choose the gateway's exact audience instead of the default Kubernetes API
-audience. Configure the gateway to trust the cluster issuer, that audience, and
-the exact `system:serviceaccount:<namespace>:<serviceaccount>` subject.
+Mecak8s reads the file on
+every OpenAI request, so token rotation is automatic. Bearer-file mode never defaults
+to api.openai.com. Choose the gateway's exact
+audience—not the default Kubernetes API audience—and configure the gateway to trust
+the cluster issuer, that audience, and the exact
+`system:serviceaccount:<namespace>:<serviceaccount>` subject. See the
+[`mecak8s` operator guide](https://github.com/stacklok/mecatl/blob/main/docs/usage/mecak8s.md) for the complete values example and transport restrictions.
 
 ### Session affinity is an infrastructure contract
 
@@ -376,8 +421,9 @@ fetches presentation URLs live.
 
 For the remote broker chart profile, set `remoteBroker.address`, `caSecret`, `caKey`,
 `serverName`, `tokenAudience`, and (optionally) the bounded `tokenLifetimeSeconds` together;
-the chart rejects partial configuration. It disables automatic service-account-token mounting,
-projects a read-only token at `/var/run/secrets/mecatl-broker/token`, and passes only file
+the chart rejects partial configuration. It retains the standard Kubernetes service-account
+credential for the `SessionLease` API client and separately projects the read-only,
+audience-bound broker token at `/var/run/secrets/mecatl-broker/token`. It passes only file
 paths and the expected DNS name to the process. The token file is reread for every RPC, so
 atomic projected-token rotation does not require a pod restart.
 
@@ -390,69 +436,15 @@ ToolHive drives their sequential browser flow, owns callback state and refresh, 
 each upstream token only into its configured backend. Mecatl exposes one opaque enrollment,
 not per-backend controls or OAuth material.
 
-Set `mcp.broker.callbackURL` to ToolHive's final public HTTPS redirect to mecatl. Your ingress
-or gateway must also route the complete fixed `/v1/mcp/broker/` prefix, including ToolHive's
-upstream callback, to the mecak8s HTTP listener. Helm rejects an OAuth server without the final
-callback URL and the runtime rejects an invalid URL. Protected static declarations are
-published as declared broker catalogue rows; protected connectors without admitted tools
-remain hidden until enrollment succeeds. Live discovery then freezes the complete catalogue.
-A failed enrollment admits no partial protected tools. OAuth broker mode also requires the chart's OIDC caller identity
-(`oidc.enabled: true`, issuer, and audience), so broker authorization controls have verified
-callers. The broker profile and server metadata are non-secret ConfigMap data. A preregistered
-client secret remains a `SecretKeyRef` projection only—never a values field or ConfigMap entry;
-the browser authorizes the broker for that session rather than Helm accepting a credential-record
-value. With `mcp.servers: []`, Helm explicitly
-writes `mcp.mode: global`; a no-auth or static-bearer-only list keeps the existing
-global route behavior.
+Configure the final callback URL, fixed `/v1/mcp/broker/` callback prefix, OAuth profiles,
+and singleton lifecycle on the standalone `mecabroker` chart. Its ingress or gateway routes
+those browser paths to the broker Service, never to the mecak8s HTTP listener. mecak8s only
+holds opaque enrollment references and authenticates to the broker with its separate projected
+workload token. The standalone broker is one `Recreate` replica with no HA or zero-downtime
+rollout; this limitation does not require changing the scalable mecak8s Deployment.
 
-:::caution Process-local broker limitation
-Broker sessions and OAuth state are process-local. The chart schema now enforces
-`replicaCount: 1` whenever `mcp.broker.callbackURL` is set, and renders a
-`Recreate` rollout strategy instead of the default rolling update — there is no
-high availability or zero-downtime rollout for OAuth broker mode until an
-affinity or durable-broker decision lands.
-:::
-
-For a preregistered OAuth client, add this shape to the server entry:
-
-```yaml
-auth:
-  mode: oauth
-  oauth:
-    issuer: https://issuer.example
-    client:
-      mode: preregistered
-      preregistered:
-        id: mecak8s
-        secretKeyRef: {name: mecak8s-mcp-oauth, key: client-secret}
-    scopes: [mcp.read]
-    requestRefreshToken: true
-    network:
-      additionalOrigins: []
-      privateOrigins: []
-      maxRedirects: 0
-```
-
-Set `client.mode: cimd` with `cimd.documentURL` for client ID metadata, or
-`client.mode: dcr` with an HTTPS RFC 8414 discovery URL for dynamic client
-registration. A plain OAuth2 upstream uses explicit `authorizationEndpoint`
-and `tokenEndpoint` values instead of `issuer`.
-
-### Inspect the broker catalogue in mecatui
-
-On a broker-only `mecak8s` connection, `/mcp` shows the owned session's local
-broker catalogue: enrollment state, connector names, catalogue state, and tool
-counts. Opening and refresh read only that local state; they do not probe an upstream,
-refresh credentials, or enroll connectors. In a fresh idle chat with empty history
-and available enrollment controls, `/mcp` (or Ctrl+O) offers `c connect tools`.
-Pending setup shows “Setup in progress” and `x cancel setup`; the existing browser
-flow continues without a reopen-browser action. Connect is hidden for used,
-resumed/unknown, busy, or locally completed sessions. Setup is bundle-wide;
-`/tools-connect` and `/tools-cancel` remain unchanged shortcuts. Declared static tools and lazily
-discovered enrolled tools are distinct states. The display is not a health check
-or proof that the server installed or persisted the catalogue, or that a prompt
-is ready. A restarted pod can report broker state unavailable; do not switch to
-global MCP as a workaround. The panel requires the existing authenticated verified principal and a matching owned session; it has no separate listener toggle. Broker and direct MCP are mutually exclusive supported compositions, so broker-only sessions do not offer direct resources, prompts, or groups.
+See the [standalone MCP broker deployment guide](/building/deployment/mecabroker.md)
+for the broker chart and callback deployment.
 
 Keep MCP and OAuth endpoints on HTTPS and configure the chart's default-deny `networkPolicy.operatorEgress` (or a mesh) for them. The explicit
 `insecureHTTP: true` acknowledgement is accepted by the runtime only for
@@ -464,25 +456,22 @@ OAuth profile changes alter a pod-template checksum and trigger a rollout.
 Secret-backed environment variables do not rotate inside a running pod, so roll
 the Deployment after replacing a static bearer or OAuth client secret. Keep old
 and new credentials valid during the rollout.
-`extraArgs` and `extraEnv` remain available, but chart-owned environment names are
-reserved: `MECATL_INSTALLATION_ID`, `MECATL_DRIVER_AUTH_TOKEN`, and authentication
-names generated by `mcp.servers`. Rendering fails when `extraEnv` collides with one.
+`extraArgs` and `extraEnv` remain available, but `extraEnv` cannot collide with
+environment names generated by `mcp.servers`.
 
 ### Mount trusted skills, agents, and rules
 
-The chart exposes the process logging threshold separately from metrics and OTLP:
+The chart's `extraEnv`, `extraArgs`, `extraVolumes`, and `extraVolumeMounts`
+values can project an immutable ConfigMap as XDG configuration. For example,
+set the shared logging threshold without changing the container image:
 
 ```yaml
-logging:
-  level: debug
+extraArgs:
+  - --log-level=debug
 ```
 
-This renders `--log-level=debug`, including the embedded ToolHive/authserver/vMCP
-`slog` records in the mecak8s container logs. The default empty value preserves the
-binary's `INFO` default. Supported values are `debug`, `info`, `warn`, and `error`.
-`extraArgs` remains available for flags that are not modeled by the chart; if it also
-contains `--log-level`, its later argument takes precedence.
-
+`extraArgs` is appended to the `mecak8s` command line, so the same exact values
+(`debug`, `info`, `warn`, `error`) and fail-soft invalid-value behavior apply.
 Set `XDG_CONFIG_HOME` to the mount root, put files below
 `<root>/mecatl/{skills,agents,rules}`, and set `skills.autoDiscover: true`
 (default `false`) to discover skills from the standard XDG locations
@@ -578,35 +567,9 @@ only that mecak8s discovered the artifact metadata. Drive a real coding session
 with `/oci-skill-demo` and check the SSE stream instead. A complete proof shows
 the `Skill` tool returning instructions from the artifact, the agent using
 `Write` to make the skill's uniquely named file, `Read` returning its unique
-marker, and a clean terminal result reporting the verified path.
-
-For example, package an `oci-skill-demo/SKILL.md` file with these instructions:
-
-```markdown
----
-name: oci-skill-demo
-description: Creates and verifies a proof file from an OCI-mounted skill.
----
-
-Use Write to create `oci-skill-proof.txt` containing `OCI_SKILL_MOUNT_OK`.
-Use Read to verify the file, then report the verified path and marker.
-```
-
-After starting `mecak8s` with a real provider, create a session and invoke the
-mounted skill through the HTTP API:
-
-```sh
-session_id=$(curl -fsS -X POST http://127.0.0.1:8081/v1/sessions \
-  -H 'Content-Type: application/json' -d '{}' | jq -r .session_id)
-
-curl -fsS -N -X POST \
-  "http://127.0.0.1:8081/v1/sessions/${session_id}/prompt" \
-  -H 'Content-Type: application/json' \
-  -d '{"text":"/oci-skill-demo Execute the mounted skill and verify the resulting file."}'
-```
-
-The stream must show `Skill`, `Write`, and `Read` tool calls in that order,
-followed by a clean terminal result containing the verified marker.
+marker, and a clean terminal result reporting the verified path. The full
+command sequence and expected events are in the
+[`mecak8s` operator guide](https://github.com/stacklok/mecatl/blob/main/docs/usage/mecak8s.md#prove-the-skill-in-a-coding-run).
 
 Use Helm 3.16 or newer when adding an image volume to an existing release.
 Older clients can render the YAML but may not know the `image` field when they
@@ -734,7 +697,6 @@ production install:
 |---|---|
 | `rbac.yaml` | ServiceAccount + Role (lease verbs only) + RoleBinding |
 | `deployment.yaml` | Agent Deployment — `replicas: 2` by default (one is supported), no PVC, storage-free |
-| `telemetry-configmap.yaml` | Chart-owned, non-secret installation UUID projected into the agent for OTel resource identity |
 | `service.yaml` | ClusterIP Service exposing gRPC (8080) and HTTP/SSE (8081) |
 | `pdb.yaml` | PodDisruptionBudget (`minAvailable: 1`) when `replicaCount >= 2`; omitted for one replica |
 | `networkpolicy.yaml` | Default-deny ingress and egress; operators provide Service peers plus DNS, Redis/provider/MCP, and remote-broker egress peers |
@@ -1039,7 +1001,7 @@ For a development port-forward, bearer traffic stays on loopback:
 ```sh
 kubectl port-forward -n mecatl service/mecak8s-agent 8080:8080 &
 export MECATL_AUTH_TOKEN="$(your-oidc-cli print-access-token)"
-mecatui connect 127.0.0.1:8080 --auth-token "$MECATL_AUTH_TOKEN"
+bin/mecatui connect 127.0.0.1:8080 --auth-token "$MECATL_AUTH_TOKEN"
 ```
 
 To prove that the token is actually required, remove the environment fallback and
@@ -1047,7 +1009,7 @@ submit a prompt in a separate TUI session:
 
 ```sh
 env -u MECATL_AUTH_TOKEN \
-  mecatui connect 127.0.0.1:8080
+  bin/mecatui connect 127.0.0.1:8080
 ```
 
 A gRPC dial can succeed before credentials are checked; the unauthenticated
@@ -1196,11 +1158,7 @@ Codex OAuth entry and assume the binary will accept it. See [ADR
 | JSONL on-disk session store | Yes (`--store-dir`) | No — Redis only |
 | Single-replica without external state | Yes (in-memory or JSONL) | No — Redis is required |
 
-If you need the `perf-mcp` diagnostics subcommand, the `skills promote` or
-`config` subcommands, or an interactive TUI client, run `mecated` instead.
-`mecak8s` exposes opt-in telemetry through `--metrics-addr` and `--otlp-*`; see
-[Observability and resilience](/building/what-you-get/observability.md). It is
-also the only binary that exposes `--redis-url` for Redis-backed state.
+If you need the `perf-mcp` diagnostics subcommand, the `skills promote` / `config` subcommands, or an interactive TUI client, run `mecated` instead. `mecak8s` now offers OPT-IN telemetry (`--metrics-addr` loopback scrape + `--otlp-*` push, see [ADR 0098](https://github.com/stacklok/mecatl/blob/main/docs/adr/0098-headless-telemetry.md) and the [`mecak8s` flag reference](https://github.com/stacklok/mecatl/blob/main/docs/usage/mecak8s.md)); for multi-replica deployments with `mecated` and Redis-backed state you would need to wire `--redis-url` — but that flag does not exist on `mecated`. `mecak8s` is the only binary that exposes it.
 
 ---
 
