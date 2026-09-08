@@ -35,6 +35,7 @@ import (
 	"github.com/stacklok/mecatl/engine/session"
 	"github.com/stacklok/mecatl/engine/tool"
 	mcpadapter "github.com/stacklok/mecatl/internal/adapter/mcp"
+	contract "github.com/stacklok/mecatl/internal/mcpbroker"
 )
 
 const (
@@ -135,7 +136,7 @@ func newToolHiveProcess(ctx context.Context, config ToolHiveConfig, options tool
 	runtimeOptions := append([]Option(nil), options.runtimeOptions...)
 	runtimeOptions = append(runtimeOptions,
 		withDiagnostics(diag),
-		WithAuthorizedCaller(toolHiveProtectedCaller(issuer+"/mcp", options.brokerHTTPClient, diag)),
+		WithAuthorizedCaller(toolHiveProtectedCaller(issuer+"/mcp", options.brokerHTTPClient, diag, nil)),
 		WithQueryCaller(toolHiveQueryCaller(construction.anonymous, issuer+"/mcp", options.brokerHTTPClient)),
 	)
 	if protectedTarget != nil {
@@ -149,17 +150,18 @@ func newToolHiveProcess(ctx context.Context, config ToolHiveConfig, options tool
 	if err != nil {
 		return nil, err
 	}
-	if options.brokerHTTPClient == nil && runtime.oauth.allowLoopback {
+	client := options.brokerHTTPClient
+	if client == nil && runtime.oauth.allowLoopback {
 		// The loopback-only OAuth option may also supply the trusted client for
 		// the in-process TLS vMCP endpoint. Production callers cannot enable this
 		// path because WithOAuthLoopbackForTest requires a test helper.
-		client := runtime.oauth.testBrokerHTTPClient
+		client = runtime.oauth.testBrokerHTTPClient
 		if client == nil {
 			client = runtime.oauth.httpClient
 		}
-		runtime.authorizedCaller = toolHiveProtectedCaller(issuer+"/mcp", client, diag)
-		runtime.queryCaller = toolHiveQueryCaller(construction.anonymous, issuer+"/mcp", client)
 	}
+	runtime.authorizedCaller = toolHiveProtectedCaller(issuer+"/mcp", client, diag, runtime)
+	runtime.queryCaller = toolHiveQueryCaller(construction.anonymous, issuer+"/mcp", client)
 
 	processCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 	process := &Process{Runtime: runtime, ctx: processCtx, cancel: cancel, construction: construction, protectedTarget: protectedTarget, occupied: append([]string(nil), config.Occupied...), diag: diag}
@@ -420,7 +422,22 @@ func newToolHiveProtectedTarget(issuer, callbackURL string, required bool) (*oau
 	}, nil
 }
 
-func toolHiveProtectedCaller(endpoint string, client *http.Client, diag port.Diagnostics) AuthorizedCaller {
+func (r *Runtime) revokeBrokerCredential(ref SessionRef) {
+	r.mu.RLock()
+	logical := r.sessions[ref.id]
+	r.mu.RUnlock()
+	if logical == nil {
+		return
+	}
+	logical.mu.Lock()
+	defer logical.mu.Unlock()
+	if logical.ref == ref && logical.brokerCredential != nil {
+		clearGrantToken(logical.brokerCredential)
+		logical.brokerCredential = nil
+	}
+}
+
+func toolHiveProtectedCaller(endpoint string, client *http.Client, diag port.Diagnostics, runtime *Runtime) AuthorizedCaller {
 	return func(ctx context.Context, ref SessionRef, backend string, call session.ToolCall, tokens oauth2.TokenSource) (session.ToolResult, error) {
 		if endpoint == "" || backend == "" {
 			return session.ToolResult{}, fmt.Errorf("%w: protected ToolHive target is not configured", ErrInvalidCatalogue)
@@ -441,6 +458,10 @@ func toolHiveProtectedCaller(endpoint string, client *http.Client, diag port.Dia
 		diag.Log(ctx, port.LevelDebug, "MCP broker: protected connection completed",
 			"session", string(ref.SessionID()), "backend", backend, "duration", time.Since(started), "success", err == nil)
 		if err != nil {
+			if strings.HasSuffix(err.Error(), `sending "initialize": Unauthorized`) && runtime != nil {
+				runtime.revokeBrokerCredential(ref)
+				return session.ToolResult{}, contract.ErrAuthorizationNotFound
+			}
 			return session.ToolResult{}, fmt.Errorf("mcpbroker: connect protected ToolHive target: %w", err)
 		}
 		defer func() { _ = upstream.Close() }()
