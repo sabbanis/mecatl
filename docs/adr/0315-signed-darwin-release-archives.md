@@ -1,4 +1,4 @@
-# ADR 0310 — Signed native Darwin release archives
+# ADR 0315 — Signed native Darwin release archives
 
 - Status: Accepted
 - Date: 2026-09-08

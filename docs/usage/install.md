@@ -92,7 +92,7 @@ The Cosign bundle carries the keyless certificate and transparency-log proof;
 constraining both its workflow identity and GitHub OIDC issuer is part of the
 verification contract. This archive targets Apple Silicon only. It is not an
 Apple-notarized installer and does not include `mecademo`, `mecatequi`, or
-`mecak8s`. See [ADR 0310](../adr/0310-signed-darwin-release-archives.md).
+`mecak8s`. See [ADR 0315](../adr/0315-signed-darwin-release-archives.md).
 
 ### Consuming `engine` as a library
 

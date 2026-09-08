@@ -3,7 +3,7 @@
 **Phase:** focused distribution capability
 **Status:** landed in this Combined candidate; authoritative on merge
 **Issue:** [stacklok/mecatl#891](https://github.com/stacklok/mecatl/issues/891)
-**ADR:** [ADR-0310](../adr/0310-signed-darwin-release-archives.md)
+**ADR:** [ADR-0315](../adr/0315-signed-darwin-release-archives.md)
 **Contract:** human-reviewed/v1
 **Delivery:** Combined
 **Expected tasks:** 1
@@ -20,7 +20,7 @@ additional binaries, and changes to existing OCI or Helm publication.
 
 ### Scenario 1 — A macOS operator verifies and runs the tagged binaries
 
-Under [ADR-0310](../adr/0310-signed-darwin-release-archives.md), a root `v*` release builds only native `mecated` and `mecatui`, stamps both with the exact tag, packages them under a stable versioned archive name, emits a SHA-256 and keyless Cosign bundle, verifies both before upload, and publishes with narrowly scoped authority. The existing macOS CI job smoke-tests the same build target.
+Under [ADR-0315](../adr/0315-signed-darwin-release-archives.md), a root `v*` release builds only native `mecated` and `mecatui`, stamps both with the exact tag, packages them under a stable versioned archive name, emits a SHA-256 and keyless Cosign bundle, verifies both before upload, and publishes with narrowly scoped authority. The existing macOS CI job smoke-tests the same build target.
 
 **Acceptance:**
 
@@ -40,7 +40,7 @@ Under [ADR-0310](../adr/0310-signed-darwin-release-archives.md), a root `v*` rel
 - **Tool schemas:** None — no model-facing tool changes.
 - **CLI / config:** None — existing `--version` output is smoke-tested without adding flags.
 - **Events / persistence:** None — release artifacts do not affect runtime state.
-- **Security / authority:** None — no runtime security or authority interface changes; the workflow-only least-privilege and signing contract is pinned by ADR-0310 and the offline test.
+- **Security / authority:** None — no runtime security or authority interface changes; the workflow-only least-privilege and signing contract is pinned by ADR-0315 and the offline test.
 - **Compatibility / migration:** Additive Darwin arm64 GitHub Release assets; OCI and Helm jobs are unchanged, and source builds remain supported.
 
 ## Definition of done
