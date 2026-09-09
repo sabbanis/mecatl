@@ -6,8 +6,8 @@
 # then their dependency trees are pruned before only runtime artifacts are copied.
 #
 # Chainguard's free Node images expose moving latest tags, so both stages are
-# pinned to multi-architecture digests, matching the convention in .ko.yaml.
-FROM cgr.dev/chainguard/node:latest-dev@sha256:dcb7cf99cf3eaf95bad12812e4233a2b534e464a277611287c3392d2171d662c AS builder
+# pinned by multi-architecture digest, matching the convention in .ko.yaml.
+FROM cgr.dev/chainguard/node@sha256:dcb7cf99cf3eaf95bad12812e4233a2b534e464a277611287c3392d2171d662c AS builder
 
 WORKDIR /home/node/src
 COPY --chown=65532:65532 . .
