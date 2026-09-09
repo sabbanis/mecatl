@@ -4474,22 +4474,30 @@ func (s *Service) StartDetachedRunContent(ctx context.Context, id session.Sessio
 	// EvResult, then FinishRun. The goroutine joins on Service.Close (which
 	// cancels all in-flight runs).
 	//
-	// Every event routes through relayEvent (the SAME single projection the wire
-	// relays use) — NOT bare recorder.Observe — so the detached run inherits the
-	// relay's full EvPermissionAsk contract: Persist-on-ask (the durable
-	// StateAwaiting snapshot that is the cross-process resume point, ADR 0027
-	// Phase 2) and the awaiting-flag lifecycle. autoApprove=false: a detached
-	// run has NO auto-approve source — the drain goroutine is a recorder, never
-	// an approver (a plan-ask is still the operator's call via the control-only
-	// stream; PlanModeAutoApprove remains the only auto path and it lives in the
-	// same composition the wire relays use).
+	// Non-ask events route through relayEvent (the SAME single projection the wire
+	// relays use). Permission asks preserve that projection's Persist-on-ask and
+	// recorder behavior but deliberately order them as Persist then Observe: the
+	// durable log is itself an observation channel for detached runs, so publishing
+	// the ask first could let a watcher approve while persistence still reads the
+	// live aggregate. autoApprove remains false: the drain is a recorder, never an
+	// approver.
 	logCtx := context.WithoutCancel(ctx)
 	recorder := NewRunEventRecorder(logCtx, s, id)
 	go func() {
 		defer stopTimer()
 		defer release()
 		for ev := range run.Events() {
-			s.relayEvent(logCtx, id, ev, false, recorder)
+			// Persist an awaiting snapshot before publishing the ask to the durable
+			// event log. Unlike an attached relay, a detached run has no client send
+			// after relayEvent's Persist call to order a later approval; the log is
+			// itself an observation channel. Publishing first lets a watcher approve
+			// while persistRun is still reading the live aggregate.
+			if ev.Type == session.EvPermissionAsk {
+				s.Persist(logCtx, id)
+				recorder.Observe(ev)
+			} else {
+				s.relayEvent(logCtx, id, ev, false, recorder)
+			}
 			if ev.Type == session.EvResult && ev.Result != nil {
 				break
 			}
@@ -6293,6 +6301,11 @@ func (s *Service) Persist(ctx context.Context, id session.SessionID) {
 }
 
 func (s *Service) persistRun(ctx context.Context, id session.SessionID, st *runState) {
+	// Capture whether this is the awaiting handoff before Save makes that snapshot
+	// observable. The engine is parked at this point. Once Save publishes it, an
+	// approver may resume the aggregate immediately, so the awaiting path must not
+	// read the live session again after Save returns.
+	awaiting := st.sess.State == session.StateAwaiting
 	// Save FIRST, then mark awaiting on success (H1 ordering): the flag must be
 	// set only after the durable StateAwaiting snapshot has actually landed, so
 	// Close (which skips cancelling awaiting runs) never skips a run whose
@@ -6307,8 +6320,9 @@ func (s *Service) persistRun(ctx context.Context, id session.SessionID, st *runS
 		_ = err
 		return
 	}
-	if st.sess.State == session.StateAwaiting {
+	if awaiting {
 		st.awaiting.Store(true)
+		return
 	}
 	if st.sess.TitleRevision != st.titleRevision {
 		s.publishTitle(context.WithoutCancel(ctx), st.sess)
