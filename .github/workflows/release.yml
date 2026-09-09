@@ -20,11 +20,10 @@ on:
 permissions:
   contents: read
 
-# Never run two releases for the same resolved tag concurrently. Do NOT cancel in
-# progress — a half-signed release is worse than a slow one. A job output is not
-# available here, so select the same candidate that validate-release-tag verifies.
+# Never run two releases for the same tag concurrently. Do NOT cancel in
+# progress — a half-signed release is worse than a slow one.
 concurrency:
-  group: release-${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
+  group: release-${{ github.ref }}
   cancel-in-progress: false
 
 env:
@@ -32,26 +31,8 @@ env:
   GOFLAGS: -mod=readonly
 
 jobs:
-  validate-release-tag:
-    name: Validate release tag
-    runs-on: ubuntu-24.04
-    outputs:
-      tag: ${{ steps.release_tag.outputs.tag }}
-    steps:
-      - id: release_tag
-        env:
-          CANDIDATE_TAG: ${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}
-        run: |
-          set -euo pipefail
-          if [[ ! "${CANDIDATE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
-            echo "invalid release tag: ${CANDIDATE_TAG}" >&2
-            exit 1
-          fi
-          printf 'tag=%s\n' "${CANDIDATE_TAG}" >> "$GITHUB_OUTPUT"
-
   publish:
     name: Build, publish, sign, attest
-    needs: validate-release-tag
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -65,7 +46,7 @@ jobs:
       KO_DOCKER_REPO: ghcr.io/${{ github.repository }}
       # On workflow_dispatch github.ref_name is the default branch, so prefer
       # the explicit input; on a tag push github.ref_name is the tag.
-      VERSION: ${{ needs.validate-release-tag.outputs.tag }}
+      VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -78,7 +59,7 @@ jobs:
       # do not match this release tag.
       - name: Check reusable-workflow pins match the release tag
         env:
-          RELEASE_TAG: ${{ needs.validate-release-tag.outputs.tag }}
+          RELEASE_TAG: ${{ inputs.tag || github.ref_name }}
         run: EXPECTED_TAG="${RELEASE_TAG}" bash .github/actions/check-reusable-pins.sh
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
@@ -179,7 +160,6 @@ jobs:
   # support and identifies it with the org.stacklok.broodbox.agent OCI label.
   publish-mecatui:
     name: Build, publish, sign, attest mecatui
-    needs: validate-release-tag
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -194,7 +174,7 @@ jobs:
       KO_DOCKER_REPO: ghcr.io/${{ github.repository }}/mecatui
       # On workflow_dispatch github.ref_name is the default branch, so prefer
       # the explicit input; on a tag push github.ref_name is the tag.
-      VERSION: ${{ needs.validate-release-tag.outputs.tag }}
+      VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -301,7 +281,6 @@ jobs:
 
   publish-mecak8s:
     name: Build, publish, sign, attest mecak8s
-    needs: validate-release-tag
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -316,7 +295,7 @@ jobs:
       KO_DOCKER_REPO: ghcr.io/${{ github.repository }}/mecak8s
       # On workflow_dispatch github.ref_name is the default branch, so prefer
       # the explicit input; on a tag push github.ref_name is the tag.
-      VERSION: ${{ needs.validate-release-tag.outputs.tag }}
+      VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -426,7 +405,6 @@ jobs:
   # image is released, from the same v* tag as mecated/mecatui/mecak8s.
   publish-slack-bot:
     name: Build, publish, sign, attest Slack bot example image
-    needs: validate-release-tag
     runs-on: ubuntu-24.04
     timeout-minutes: 20
     permissions:
@@ -438,7 +416,7 @@ jobs:
       IMAGE: ghcr.io/${{ github.repository }}/slack-bot
       # On workflow_dispatch github.ref_name is the default branch, so prefer
       # the explicit input; on a tag push github.ref_name is the tag.
-      VERSION: ${{ needs.validate-release-tag.outputs.tag }}
+      VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -510,7 +488,7 @@ jobs:
   # Publish the chart only after its default image tag exists.
   publish-helm-chart:
     name: Package, publish, sign Helm chart
-    needs: [validate-release-tag, publish-mecak8s]
+    needs: publish-mecak8s
     runs-on: ubuntu-24.04
     timeout-minutes: 10
     permissions:
@@ -523,7 +501,7 @@ jobs:
       CHART_PATH: deploy/helm/mecak8s
       # On workflow_dispatch github.ref_name is the default branch, so prefer
       # the explicit input; on a tag push github.ref_name is the tag.
-      VERSION: ${{ needs.validate-release-tag.outputs.tag }}
+      VERSION: ${{ inputs.tag || github.ref_name }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
@@ -635,20 +613,29 @@ jobs:
   # only the operator-facing daemon and TUI are packaged for Apple Silicon.
   publish-darwin-arm64:
     name: Publish Darwin arm64 archive
-    needs: validate-release-tag
     runs-on: macos-14
     timeout-minutes: 20
     permissions:
       contents: write # create/upload GitHub Release assets
       id-token: write # Cosign keyless blob signing
-    env:
-      VERSION: ${{ needs.validate-release-tag.outputs.tag }}
     steps:
+      - id: release_tag
+        env:
+          CANDIDATE_TAG: ${{ inputs.tag || github.ref_name }}
+        run: |
+          set -euo pipefail
+          if [[ ! "${CANDIDATE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then
+            echo "invalid release tag: ${CANDIDATE_TAG}" >&2
+            exit 1
+          fi
+          printf 'VERSION=%s\n' "${CANDIDATE_TAG}" >> "$GITHUB_ENV"
+          printf 'tag=%s\n' "${CANDIDATE_TAG}" >> "$GITHUB_OUTPUT"
+
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
           fetch-depth: 1
-          ref: ${{ env.VERSION }}
+          ref: ${{ steps.release_tag.outputs.tag }}
 
       - uses: actions/setup-go@b7ad1dad31e06c5925ef5d2fc7ad053ef454303e # v7.0.0
         with:
@@ -691,7 +678,7 @@ jobs:
         run: |
           cosign verify-blob "${ARCHIVE}" \
             --bundle "${ARCHIVE}.bundle" \
-            --certificate-identity-regexp '^https://github.com/stacklok/mecatl/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9].*)$' \
+            --certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/${VERSION}" \
             --certificate-oidc-issuer https://token.actions.githubusercontent.com
           (cd "$(dirname "${ARCHIVE}")" && shasum -a 256 -c "$(basename "${ARCHIVE}").sha256")
 
@@ -704,7 +691,7 @@ jobs:
           if ! gh release view "${VERSION}" >/dev/null 2>&1; then
             gh release create "${VERSION}" --verify-tag --generate-notes --title "${VERSION}"
           fi
-          gh release upload "${VERSION}" \
+          gh release upload "${VERSION}" --clobber \
             "${ARCHIVE}" \
             "${ARCHIVE}.sha256" \
             "${ARCHIVE}.bundle"

@@ -1,4 +1,4 @@
-# ADR 0315 — Signed native Darwin release archives
+# ADR 0318 — Signed native Darwin release archives
 
 - Status: Accepted
 - Date: 2026-09-08
@@ -16,7 +16,7 @@ The existing root `v*` release workflow already uses GitHub OIDC and pinned Cosi
 
 For each root `v*` release, build only `mecated` and `mecatui` as CGO-free Darwin arm64 binaries on a macOS runner. Stamp both binaries' `internal/buildinfo.BuildID` with the exact release tag and smoke-test their `--version` output before packaging.
 
-Publish one stable `mecatl-<version>-darwin-arm64.tar.gz` GitHub Release asset containing a versioned top-level directory and those two executables. Publish its SHA-256 file and a Cosign keyless bundle beside it. Sign the archive with the release workflow's GitHub OIDC identity, then verify both the Cosign bundle and checksum before creating or updating the GitHub Release.
+Publish one stable `mecatl-<version>-darwin-arm64.tar.gz` GitHub Release asset containing a versioned top-level directory and those two executables. Publish its SHA-256 file and a Cosign keyless bundle beside it. Sign the archive with the release workflow's GitHub OIDC identity, then verify its checksum and bundle against that workflow at the exact release tag ref before creating or updating the GitHub Release.
 
 Give the native publisher only `contents: write` and `id-token: write`. Keep the existing OCI image and Helm jobs, dependencies, and permissions unchanged. Re-running a release may replace the three version-addressed assets after verification.
 

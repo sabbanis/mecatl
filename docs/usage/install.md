@@ -83,7 +83,7 @@ $ VERSION=vX.Y.Z
 $ shasum -a 256 -c "mecatl-${VERSION}-darwin-arm64.tar.gz.sha256"
 $ cosign verify-blob "mecatl-${VERSION}-darwin-arm64.tar.gz" \
     --bundle "mecatl-${VERSION}-darwin-arm64.tar.gz.bundle" \
-    --certificate-identity-regexp '^https://github.com/stacklok/mecatl/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9].*)$' \
+    --certificate-identity "https://github.com/stacklok/mecatl/.github/workflows/release.yml@refs/tags/${VERSION}" \
     --certificate-oidc-issuer https://token.actions.githubusercontent.com
 $ tar -xzf "mecatl-${VERSION}-darwin-arm64.tar.gz"
 ```
@@ -92,7 +92,7 @@ The Cosign bundle carries the keyless certificate and transparency-log proof;
 constraining both its workflow identity and GitHub OIDC issuer is part of the
 verification contract. This archive targets Apple Silicon only. It is not an
 Apple-notarized installer and does not include `mecademo`, `mecatequi`, or
-`mecak8s`. See [ADR 0315](../adr/0315-signed-darwin-release-archives.md).
+`mecak8s`. See [ADR 0318](../adr/0318-signed-darwin-release-archives.md).
 
 ### Consuming `engine` as a library
 

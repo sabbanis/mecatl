@@ -73,44 +73,30 @@ require_once() {
   }
 }
 
-validation_block="$(job_block validate-release-tag)"
-[[ -n "$validation_block" ]] || { echo 'FAIL: release-tag validation job is missing' >&2; exit 1; }
-for contract in \
-  'CANDIDATE_TAG: ${{ github.event_name == '\''workflow_dispatch'\'' && inputs.tag || github.ref_name }}' \
-  'if [[ ! "${CANDIDATE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then' \
-  "printf 'tag=%s\\n' \"\${CANDIDATE_TAG}\" >> \"\$GITHUB_OUTPUT\""; do
-  require_once "$validation_block" "$contract"
-done
-require_once "$(<"$workflow")" "group: release-\${{ github.event_name == 'workflow_dispatch' && inputs.tag || github.ref_name }}"
-[[ "$(grep -Fc 'VERSION: ${{ needs.validate-release-tag.outputs.tag }}' "$workflow")" -eq 6 ]] || {
-  echo 'FAIL: every publisher must use the validated release-tag output' >&2
-  exit 1
-}
-
 job_block="$(job_block publish-darwin-arm64)"
 [[ -n "$job_block" ]] || { echo 'FAIL: Darwin publisher job is missing' >&2; exit 1; }
 for contract in \
-  'needs: validate-release-tag' \
   'runs-on: macos-14' \
   'contents: write' \
   'id-token: write' \
-  'VERSION: ${{ needs.validate-release-tag.outputs.tag }}' \
-  'ref: ${{ env.VERSION }}' \
+  'CANDIDATE_TAG: ${{ inputs.tag || github.ref_name }}' \
+  'if [[ ! "${CANDIDATE_TAG}" =~ ^v[0-9]+\.[0-9]+\.[0-9]+([.-][0-9A-Za-z.-]+)?$ ]]; then' \
+  "printf 'VERSION=%s\\n' \"\${CANDIDATE_TAG}\" >> \"\$GITHUB_ENV\"" \
+  "printf 'tag=%s\\n' \"\${CANDIDATE_TAG}\" >> \"\$GITHUB_OUTPUT\"" \
+  'ref: ${{ steps.release_tag.outputs.tag }}' \
   'BUILD_ID="${VERSION}" task build:darwin-release' \
+  'test "$("${BIN_DIR}/mecated" --version)" = "mecated ${VERSION}"' \
+  'test "$("${BIN_DIR}/mecatui" --version)" = "mecatui ${VERSION}"' \
   'cosign sign-blob --yes --bundle "${ARCHIVE}.bundle" "${ARCHIVE}"' \
   'cosign verify-blob "${ARCHIVE}"' \
-  "--certificate-identity-regexp '^https://github.com/stacklok/mecatl/.github/workflows/release.yml@refs/(heads/main|tags/v[0-9].*)\$'" \
+  '--certificate-identity "https://github.com/${{ github.repository }}/.github/workflows/release.yml@refs/tags/${VERSION}"' \
   '--certificate-oidc-issuer https://token.actions.githubusercontent.com' \
   'gh release create "${VERSION}" --verify-tag --generate-notes --title "${VERSION}"' \
-  'gh release upload "${VERSION}"'; do
+  'gh release upload "${VERSION}" --clobber'; do
   require_once "$job_block" "$contract"
 done
-[[ "$job_block" != *'inputs.tag || github.ref_name'* ]] || {
-  echo 'FAIL: Darwin publisher uses an unvalidated tag source' >&2
-  exit 1
-}
-[[ "$job_block" != *'--clobber'* ]] || {
-  echo 'FAIL: Darwin publisher may overwrite existing release assets' >&2
+[[ "$(<"$workflow")" != *'validate-release-tag'* ]] || {
+  echo 'FAIL: Darwin tag validation must not couple existing publishers' >&2
   exit 1
 }
 permission_keys="$(awk '
@@ -135,10 +121,7 @@ require_once "$publish_step" 'GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}'
 for asset in '"${ARCHIVE}"' '"${ARCHIVE}.sha256"' '"${ARCHIVE}.bundle"'; do
   require_once "$publish_step" "$asset"
 done
-[[ "$publish_step" != *'--clobber'* ]] || {
-  echo 'FAIL: release upload may overwrite existing assets' >&2
-  exit 1
-}
+require_once "$publish_step" '--clobber'
 [[ "$(grep -Fc 'GH_TOKEN:' <<<"$job_block")" -eq 1 ]] || {
   echo 'FAIL: GH_TOKEN must be scoped only to the release publication step' >&2
   exit 1

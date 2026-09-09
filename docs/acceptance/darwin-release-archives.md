@@ -3,7 +3,7 @@
 **Phase:** focused distribution capability
 **Status:** landed in this Combined candidate; authoritative on merge
 **Issue:** [stacklok/mecatl#891](https://github.com/stacklok/mecatl/issues/891)
-**ADR:** [ADR-0315](../adr/0315-signed-darwin-release-archives.md)
+**ADR:** [ADR-0318](../adr/0318-signed-darwin-release-archives.md)
 **Contract:** human-reviewed/v1
 **Delivery:** Combined
 **Expected tasks:** 1
@@ -20,7 +20,7 @@ additional binaries, and changes to existing OCI or Helm publication.
 
 ### Scenario 1 — A macOS operator verifies and runs the tagged binaries
 
-Under [ADR-0315](../adr/0315-signed-darwin-release-archives.md), a root `v*` release builds only native `mecated` and `mecatui`, stamps both with the exact tag, packages them under a stable versioned archive name, emits a SHA-256 and keyless Cosign bundle, verifies both before upload, and publishes with narrowly scoped authority. The existing macOS CI job smoke-tests the same build target.
+Under [ADR-0318](../adr/0318-signed-darwin-release-archives.md), a root `v*` release builds only native `mecated` and `mecatui`, stamps both with the exact tag, packages them under a stable versioned archive name, emits a SHA-256 and keyless Cosign bundle, verifies both before upload, and publishes with narrowly scoped authority. The existing macOS CI job smoke-tests the same build target.
 
 **Acceptance:**
 
