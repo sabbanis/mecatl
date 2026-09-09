@@ -11,7 +11,8 @@ document names its scope and cites the ADRs / [architecture](../architecture.md)
 Plans are authored by `/to-acceptance-plan`, human-reviewed as behavioral and
 interface contracts, and implemented by `/plan-orchestrate` only after the applicable
 checkpoint. New plans must be linked from this README; the matlatl gate (`task docs`)
-fails on an unreachable doc.
+fails on an unreachable doc. Explicitly requested exploratory/spike work, and any request the
+directing human explicitly waives the spine for, need none of this.
 
 ## The verification contract
 
@@ -89,7 +90,10 @@ A plan moves `draft → proposed → approved → in-progress → landed`:
 - `draft`: material behavior or interface judgments may remain as unchecked Human decisions.
 - `proposed`: every human decision needed to implement the contract is resolved and recorded;
   the plan is validated and ready for human plan/interface review.
-- `approved`: the human-reviewed plan PR was merged; the contract is approved, not shipped.
+- `approved`: the plan PR merged into the target branch — merging is the approval
+  event; the contract is approved, not shipped. `/plan-orchestrate` proves this by git
+  ancestry, not by the literal status word, and corrects the label to `approved` on entry if
+  a merged plan still reads `proposed`.
 - `in-progress`: autonomous implementation is underway against the recorded baseline.
 - `landed`: after all verification passes, the implementation/Combined candidate carries
   the proposed transition in its PR diff; it becomes authoritative only when that PR
@@ -224,6 +228,9 @@ PR after verification. There is no cleanup or status-only PR.
   filesystem-path authority: composition binds default/no-FS/remote environments;
   alternate worktrees use fresh source-scoped opaque selectors only on clear/fork.
   Status: landed.
+- [InspectSession scoped read isolation](inspect-session-read-isolation.md) — proposed
+  bounded direct-edge lineage reads, self-routing opaque handles, and targeted maintenance that
+  keep debugger inspection from blocking unrelated session operations. Status: in-progress.
 - [Listener-scoped workspace authority](listener-scoped-workspace-authority.md) — historical
   draft superseded by ADR 0291's path-free contract; retained for context and excluded from
   strict traceability. Status: draft.
