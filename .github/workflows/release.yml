@@ -23,7 +23,7 @@ permissions:
 # Never run two releases for the same tag concurrently. Do NOT cancel in
 # progress — a half-signed release is worse than a slow one.
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.tag || github.ref_name }}
   cancel-in-progress: false
 
 env:

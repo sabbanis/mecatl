@@ -75,6 +75,7 @@ require_once() {
 
 job_block="$(job_block publish-darwin-arm64)"
 [[ -n "$job_block" ]] || { echo 'FAIL: Darwin publisher job is missing' >&2; exit 1; }
+require_once "$(<"$workflow")" 'group: release-${{ inputs.tag || github.ref_name }}'
 for contract in \
   'runs-on: macos-14' \
   'contents: write' \
