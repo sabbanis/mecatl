@@ -129,6 +129,20 @@ the session; the model cannot change it. See
 and no-filesystem placement, and [Engine and session model](engine-and-session.md)
 for session creation.
 
+### Execution placement providers
+
+`microvm-local` is a trusted deployment default selected only by a local composition root
+with `--default-placement microvm-local`. Ordinary session creation then uses that default;
+clients cannot submit a placement alias, workspace path, or exact environment ref. Public
+session data contains bounded `PlacementMetadata` only. `profile: "no-fs"` remains the one
+client-selected attenuation. The daemon owns image, resource, egress, lifecycle, and
+attestation policy, and unavailable placement fails without host fallback.
+
+Guest IPv4 is permissive by default, with external IPv6 unrouted. Local composition-root
+flags may tighten it: `--microvm-guest-egress=deny-all`, or `allowlist` with repeatable
+`--microvm-guest-allow=HOST:PORT/tcp|udp`. HTTP/gRPC requests and project config cannot
+select or weaken placement or egress policy.
+
 ---
 
 ## Memory tools

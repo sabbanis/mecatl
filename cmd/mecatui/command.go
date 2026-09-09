@@ -40,6 +40,7 @@ const (
 	providerActionAdd                      = "add"
 	providerActionSetDefault               = "set-default"
 	providerActionRemove                   = "remove"
+	helpLongFlag                           = "--help"
 	toolHiveEndpointID                     = "toolhive"
 	// modeProviderSetup guides a newcomer through an existing provider setup flow.
 	modeProviderSetup transportMode = "provider-setup"
@@ -59,6 +60,7 @@ const (
 	// modeRemoteLogin is the reserved remote-login route. It stays distinct from
 	// provider login so an address can never invoke local provider enrollment.
 	modeRemoteLogin transportMode = "remote-login"
+	modeMicroVM     transportMode = "microvm"
 )
 
 // topLevelCommand is the single catalog for named entry points. Resolution,
@@ -112,6 +114,14 @@ var topLevelCommands = []topLevelCommand{
 		purpose:  "inspect and manage embedded provider configuration and locally managed credentials",
 		resolve:  resolveProvidersCommand,
 	},
+	{
+		name:     "microvm",
+		synopsis: "microvm doctor|status|delete",
+		purpose:  "inspect or delete owner-scoped microVM state on this host",
+		resolve: func(args []string) invocationResolution {
+			return invocationResolution{mode: modeMicroVM, remaining: args}
+		},
+	},
 }
 
 // invocationResolution is the pure classification of a complete CLI invocation:
@@ -160,7 +170,7 @@ func resolveInvocation(argv []string) invocationResolution {
 	first := args[1]
 
 	if strings.HasPrefix(first, "-") {
-		if first == "--help" || first == "-h" {
+		if first == helpLongFlag || first == "-h" {
 			if len(args) != 2 {
 				return invocationResolution{err: helpUsageError("help does not accept additional operands")}
 			}
@@ -170,7 +180,7 @@ func resolveInvocation(argv []string) invocationResolution {
 			return invocationResolution{err: helpUsageError("help does not accept additional operands")}
 		}
 		for _, arg := range args[2:] {
-			if arg == "--help" || arg == "-h" {
+			if arg == helpLongFlag || arg == "-h" {
 				return invocationResolution{helpIndex: true}
 			}
 		}
@@ -210,7 +220,7 @@ func resolveHelpCommand(args []string) invocationResolution {
 	}
 	for _, command := range topLevelCommands {
 		if args[0] == command.name {
-			return command.resolve([]string{"--help"})
+			return command.resolve([]string{helpLongFlag})
 		}
 	}
 	return invocationResolution{err: helpUsageError(fmt.Sprintf("unknown help target %q", args[0]))}
@@ -402,7 +412,7 @@ func resolveDebugCommand(mode transportMode, address string, args []string) invo
 // --help` renders help instead of failing on the missing ADDRESS.
 func isHelpMetaFlag(arg string) bool {
 	switch arg {
-	case "--help", "-h", "--help-all":
+	case helpLongFlag, "-h", "--help-all":
 		return true
 	}
 	return false
