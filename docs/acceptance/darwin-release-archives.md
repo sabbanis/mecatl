@@ -40,7 +40,7 @@ Under [ADR-0318](../adr/0318-signed-darwin-release-archives.md), a root `v*` rel
 - **Tool schemas:** None — no model-facing tool changes.
 - **CLI / config:** None — existing `--version` output is smoke-tested without adding flags.
 - **Events / persistence:** None — release artifacts do not affect runtime state.
-- **Security / authority:** None — no runtime security or authority interface changes; the workflow-only least-privilege and signing contract is pinned by ADR-0315 and the offline test.
+- **Security / authority:** None — no runtime security or authority interface changes; the workflow-only least-privilege and signing contract is pinned by ADR-0318 and the offline test.
 - **Compatibility / migration:** Additive Darwin arm64 GitHub Release assets; OCI and Helm jobs are unchanged, and source builds remain supported.
 
 ## Definition of done

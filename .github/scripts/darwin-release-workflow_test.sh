@@ -5,7 +5,7 @@ set -euo pipefail
 root="$(cd "$(dirname "${BASH_SOURCE[0]}")/../.." && pwd)"
 workflow="$root/.github/workflows/release.yml"
 archive="mecatl-v1.2.3-darwin-arm64.tar.gz"
-work="$root/.scratch/darwin-release-contract-test-${BASHPID}-${RANDOM}"
+work="$root/.scratch/darwin-release-contract-test-$$-${RANDOM}"
 if ! mkdir "$work"; then
   echo "FAIL: could not create unique test workspace: $work" >&2
   exit 1
