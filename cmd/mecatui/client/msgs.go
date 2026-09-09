@@ -597,7 +597,7 @@ const (
 
 const resultStopError = "error"
 
-// RunDetachedMsg is the detached-run ack (ADR 0321 Scenario 4): a Prompt sent
+// RunDetachedMsg is the detached-run ack (ADR 0322 Scenario 4): a Prompt sent
 // with detach:true received the server's single `run.detached` ack — the run is
 // now server-owned (a drain goroutine owns it) and continues after this stream
 // closes. The ui FOLLOWS it via WatchSessionEvents (phaseFollowing) rather than

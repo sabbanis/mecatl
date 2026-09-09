@@ -13,7 +13,7 @@ import (
 	mecatlv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/v1"
 )
 
-// The durable watch surface (ADR 0250, ADR 0321 Scenario 3): the
+// The durable watch surface (ADR 0250, ADR 0322 Scenario 3): the
 // replay-then-follow stream a reconnecting mecatui consumes to reattach to a
 // server-owned detached run. It is the WatchSessionEvents analogue of the
 // LiveStreamCmd/ReconnectLiveCmd pair: WatchCmd opens the stream synchronously

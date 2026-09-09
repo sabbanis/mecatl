@@ -660,7 +660,7 @@ export type ServerCapabilities = Message<"mecatl.v1.ServerCapabilities"> & {
 
   /**
    * detached_runs is true when the operator has enabled detached runs
-   * (mecated --detached-runs, ADR 0321): a `Prompt` with `detach: true` starts
+   * (mecated --detached-runs, ADR 0322): a `Prompt` with `detach: true` starts
    * a server-owned run that continues after the Converse stream closes, and the
    * server accepts control-only Converse streams (a first frame of `cancel` /
    * `resume_approval`). When false (the default, and an older server), a client

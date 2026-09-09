@@ -333,7 +333,7 @@ func writeStateFile(path string, tempPrefix string, data []byte) error {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
-// sessions.yaml — the per-server-target last-session pointer (ADR 0321 Scenario 3)
+// sessions.yaml — the per-server-target last-session pointer (ADR 0322 Scenario 3)
 // ─────────────────────────────────────────────────────────────────────────────
 //
 // The detached-runs last-session pointer: a persisted record of the last session
@@ -344,7 +344,7 @@ func writeStateFile(path string, tempPrefix string, data []byte) error {
 // infrastructure: fail-soft read (a missing/oversized/malformed file ⇒ no pointer,
 // never an error that aborts launch), atomic write (0o600, O_NOFOLLOW symlink
 // guard), the maxStateBytes cap. The user never types a flag, never remembers a
-// session id — the tool remembers, the user forgets (ADR 0321 decision 4).
+// session id — the tool remembers, the user forgets (ADR 0322 decision 4).
 //
 // # Format: per-target map
 //

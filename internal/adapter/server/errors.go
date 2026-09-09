@@ -116,14 +116,14 @@ var (
 	// ErrTooManyDetachedRuns is returned by StartDetachedRunContent when the
 	// server-wide detached-run concurrency gate is full (Config.MaxDetachedRuns).
 	// It prevents resource exhaustion from an operator leaving unbounded detached
-	// runs running unattended (ADR 0321 decision 6): each detached run holds an
+	// runs running unattended (ADR 0322 decision 6): each detached run holds an
 	// in-flight engine run + an LLM slot + a drain goroutine for its whole wall-
 	// clock lifetime, so the cap is a server-wide bound acquired at detached-run
 	// start and released when the drain goroutine finishes. Adapters map it to
 	// ResourceExhausted / HTTP 429, mirroring ErrTooManySessionEngines.
 	ErrTooManyDetachedRuns = errors.New("server: too many concurrent detached runs")
 	// ErrDetachedRunsRefused is returned by StartDetachedRunContent under posture
-	// yolo (Config.DetachedRunsRefused, ADR 0321 decision 6): a yolo run implicitly
+	// yolo (Config.DetachedRunsRefused, ADR 0322 decision 6): a yolo run implicitly
 	// assumes a human is watching, and a detached run removes that last human
 	// checkpoint. It is a loud REFUSAL (the ADR's "WARN or refuse", fail-closed) —
 	// the Converse detach arm surfaces FailedPrecondition and the client falls back

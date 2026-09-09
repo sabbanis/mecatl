@@ -27,7 +27,7 @@ import (
 // refuseDetached turns ON the detached-runs gate AND the posture-derived refusal
 // — the same pair composition derives under posture yolo (applyPosture →
 // cfg.DetachedRunsRefused → server.Config.DetachedRunsRefused). A yolo server
-// refuses detached runs outright (ADR 0321 decision 6: "WARN or refuse", refuse,
+// refuses detached runs outright (ADR 0322 decision 6: "WARN or refuse", refuse,
 // fail-closed) because a detached run removes the last human checkpoint the yolo
 // contract implicitly assumes is present.
 func refuseDetached(cfg *server.Config) {

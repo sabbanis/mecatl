@@ -1361,7 +1361,7 @@ type ServerCapabilities struct {
 	// admitted as one complete bundle before the first prompt.
 	WorkspaceEnrollment bool `protobuf:"varint,28,opt,name=workspace_enrollment,json=workspaceEnrollment,proto3" json:"workspace_enrollment,omitempty"`
 	// detached_runs is true when the operator has enabled detached runs
-	// (mecated --detached-runs, ADR 0321): a `Prompt` with `detach: true` starts
+	// (mecated --detached-runs, ADR 0322): a `Prompt` with `detach: true` starts
 	// a server-owned run that continues after the Converse stream closes, and the
 	// server accepts control-only Converse streams (a first frame of `cancel` /
 	// `resume_approval`). When false (the default, and an older server), a client

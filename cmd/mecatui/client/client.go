@@ -297,7 +297,7 @@ func (c *Client) CompatibilityInfo(ctx context.Context) (Capabilities, error) {
 }
 
 // CancelDetachedRun sends a control-only Converse `cancel` frame for the session
-// (ADR 0321 Scenario 4, the task-02 control-only Converse first-frame): a FRESH
+// (ADR 0322 Scenario 4, the task-02 control-only Converse first-frame): a FRESH
 // Converse stream whose first frame is Cancel{SessionId}, then the client closes
 // its send side and drains to the server's `run.cancelled` ack. Best-effort: the
 // caller (the signal handler's second Ctrl+C) exits regardless, and the server

@@ -83,7 +83,7 @@ type SelectionStore interface {
 	SaveGlobalDefault(sel client.ModelSelection) error
 }
 
-// SessionStateStore persists the per-target last-session pointer (ADR 0321
+// SessionStateStore persists the per-target last-session pointer (ADR 0322
 // Scenario 3) so a reconnecting `mecatui connect ADDRESS` with no flags
 // auto-branches on the persisted id. It is satisfied by a main-owned concrete
 // type backed by an XDG state file (sibling to models.yaml); nil cleanly disables
@@ -176,7 +176,7 @@ type Deps struct {
 	// tests. nil disables the live bridge (the ui still renders deliveries via the
 	// replay on a session switch/reload, just not live). *Client satisfies it.
 	LiveStream client.LiveStreamer
-	// Watch is the durable replay-then-follow watch surface (ADR 0250, ADR 0321
+	// Watch is the durable replay-then-follow watch surface (ADR 0250, ADR 0322
 	// Scenario 3): a reattach to a running server-owned detached run arms a
 	// WatchSessionEvents stream (replay from cursor, then follow live) via this.
 	// The ui holds the interface (not a *Client) so it is injectable with a fake
@@ -189,9 +189,9 @@ type Deps struct {
 	// so the operator sees what they missed then follows live. nil preserves the
 	// new-session / resume default. Set by main from the no-flag pointer path or
 	// --resume <id> when the session is running and the server supports detached
-	// runs (ADR 0321 Scenario 3).
+	// runs (ADR 0322 Scenario 3).
 	Reattach *client.ReattachSelection
-	// SessionStateStore persists the per-target last-session pointer (ADR 0321
+	// SessionStateStore persists the per-target last-session pointer (ADR 0322
 	// Scenario 3) so a reconnecting `mecatui connect ADDRESS` with no flags
 	// auto-branches on the persisted id. nil disables persistence (the pointer is
 	// never written; the no-flag path falls through to the listing). Lives in the
@@ -209,7 +209,7 @@ type Deps struct {
 	OpenURL func(context.Context, string) error
 	// DetachSignal is the main-owned state the ui flips on entering/leaving
 	// phaseFollowing so the process signal handler can decide detach-vs-cancel on
-	// OS Ctrl+C (ADR 0321 Scenario 4). Set when a detached run is followed
+	// OS Ctrl+C (ADR 0322 Scenario 4). Set when a detached run is followed
 	// (applyDetachedAck), cleared on terminal/reset. nil disables the
 	// signal-handler detach affordance entirely.
 	DetachSignal *DetachSignalState
@@ -482,7 +482,7 @@ const (
 	phaseAuthorizing                   // an MCP browser authorization is pending
 	phaseFatal                         // connect/fatal error; input disabled
 	phaseReplay                        // a stored-session transcript replay is open (read-only; issue #245)
-	phaseFollowing                     // following a server-owned detached run via WatchSessionEvents (read-only live view; ADR 0321)
+	phaseFollowing                     // following a server-owned detached run via WatchSessionEvents (read-only live view; ADR 0322)
 )
 
 // spinnerVisible reports whether the footer renders the animated spinner in the
@@ -939,7 +939,7 @@ type Model struct {
 	liveContinuityAttempt int
 	liveReconnectErr      string
 
-	// ── Detached-run reattach (ADR 0321 Scenario 3) ────────────────────────
+	// ── Detached-run reattach (ADR 0322 Scenario 3) ────────────────────────
 	// The watch feed (WatchSessionEvents replay-then-follow) + the
 	// phaseFollowing read-only live view. Parallel to the live-feed fields
 	// (liveCh/liveGen/liveStop/liveArmed) but threaded through a CURSOR so a
@@ -966,7 +966,7 @@ type Model struct {
 	watchReplayCount      int  // events replayed so far in the current replay phase
 	watchReplaying        bool // true while in the WatchPhaseReplay phase
 	detached              bool // true while following a server-owned detached run
-	// pendingDetachedSubmit marks an in-flight detached submit (ADR 0321
+	// pendingDetachedSubmit marks an in-flight detached submit (ADR 0322
 	// Scenario 4): the prompt was sent with detach:true, and the stream's
 	// `run.detached` ack (or a defensive close) flips the ui into
 	// phaseFollowing (the watch feed owns the view) rather than calling endRun.
@@ -1161,7 +1161,7 @@ func New(deps Deps) Model {
 		m.statusMsg = "continuing chat " + sanitizeTerminal(resume.Row.Title) + " — type to add a turn"
 		m.refreshView()
 	}
-	// A reattach (ADR 0321 Scenario 3): the no-flag pointer (or --resume <id>)
+	// A reattach (ADR 0322 Scenario 3): the no-flag pointer (or --resume <id>)
 	// named a RUNNING server-owned detached run. Bind the session id + snapshot
 	// (running) + capabilities, mark detached, transition to phaseFollowing (the
 	// read-only live view), and arm the watch (WatchSessionEvents replay-then-

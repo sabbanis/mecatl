@@ -615,7 +615,7 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		mm, cmd := m.updateReconnectMsg(msg)
 		return mm, cmd, true
 	case watchMsg:
-		// Watch-feed msgs (ADR 0321 Scenario 3): a reattach arms a
+		// Watch-feed msgs (ADR 0322 Scenario 3): a reattach arms a
 		// WatchSessionEvents replay-then-follow stream; its envelopes (replay
 		// events, the phase-only live boundary, live events) and lifecycle
 		// markers ride the watch channel. Handled here (a lifecycle/transport
@@ -900,7 +900,7 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 			}
 			return m, m.refreshCmd(), true
 		}
-		// Clean close on a pending DETACH path (ADR 0321 Scenario 4): the
+		// Clean close on a pending DETACH path (ADR 0322 Scenario 4): the
 		// `run.detached` ack was lost (stream closed before the projection
 		// landed), so don't call endRun — transition to phaseFollowing via
 		// applyDetachedAck exactly as the ack reducer would.
@@ -1167,7 +1167,7 @@ func (m Model) applyDeliveryNote(msg client.DeliveryNoteMsg) (tea.Model, tea.Cmd
 	return m.afterEvent()
 }
 
-// applyDetachedAck reduces the `run.detached` ack (ADR 0321 Scenario 4): the
+// applyDetachedAck reduces the `run.detached` ack (ADR 0322 Scenario 4): the
 // pending detached submit is confirmed server-owned, so the ui transitions from
 // the in-flight phaseRunning view into phaseFollowing — the read-only live view
 // — and arms the watch from the beginning of the log (the operator wants what
@@ -1228,7 +1228,7 @@ func (m Model) updateStreamSecondary(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case client.MCPAuthorizationMsg:
 		return m.applyMCPAuthorization(msg)
 	case client.RunDetachedMsg:
-		// Detached-run ack (ADR 0321 Scenario 4): the server confirmed the
+		// Detached-run ack (ADR 0322 Scenario 4): the server confirmed the
 		// detached submit; flip into phaseFollowing. Like delegation events, it
 		// isn't the big happy path — keep it in the second branch.
 		return m.applyDetachedAck()
@@ -2301,7 +2301,7 @@ func (m Model) applySessionsSurfaceIntent(intent surfaceIntent) (model tea.Model
 		mm, cmd, stopSurfaceDispatch := m.adoptAuthoritativeTranscript(intent.row, intent.transcript)
 		return mm, cmd, true, stopSurfaceDispatch
 	case sessionsReattachIntent:
-		// `enter` on a RUNNING row in the sessions browser (ADR 0321 Scenario 3):
+		// `enter` on a RUNNING row in the sessions browser (ADR 0322 Scenario 3):
 		// reattach via WatchSessionEvents. The row's state is re-verified via
 		// GetSession (a row whose state lagged to terminal degrades to a transcript
 		// adoption); a running state transitions to phaseFollowing + arms the watch.
@@ -3370,7 +3370,7 @@ func (m Model) submitPrompt() (tea.Model, tea.Cmd) {
 	m.statusMsg = "running…"
 	m.refreshView()
 
-	// Detached-run fork (ADR 0321 Scenario 4): in connect mode against a server
+	// Detached-run fork (ADR 0322 Scenario 4): in connect mode against a server
 	// that advertised detached_runs, the prompt rides the detached Converse path
 	// (Prompt.detach=true) — the server owns the drain goroutine and acks
 	// `run.detached`; the ui then FOLLOWS the run via WatchSessionEvents rather
@@ -3387,7 +3387,7 @@ func (m Model) submitPrompt() (tea.Model, tea.Cmd) {
 }
 
 // detachedSubmitEnabled reports whether the NEXT prompt should ride the detached
-// Converse path (ADR 0321 Scenario 4). Connect mode ONLY (an embedded server dies
+// Converse path (ADR 0322 Scenario 4). Connect mode ONLY (an embedded server dies
 // with the process, so detach is meaningless there) and ONLY when the server
 // advertised ServerCapabilities.detached_runs at session-ready. Older servers and
 // --detached-runs-off deployments stay on the attached path — byte-identical to
@@ -3828,7 +3828,7 @@ func (m *Model) disarmLiveFeed() {
 	m.liveGen++ // invalidate any stale reader
 	m.liveArmed = ""
 	m.disarmReconnect()
-	// A session switch / reset ALSO tears down the watch feed (ADR 0321): a
+	// A session switch / reset ALSO tears down the watch feed (ADR 0322): a
 	// reattach's watch is abandoned with the live feed, and the gen bump
 	// invalidates any stale watch reader so it cannot route into the fresh
 	// session. detach is cleared so the fresh session drives its own run, and
@@ -3841,7 +3841,7 @@ func (m *Model) disarmLiveFeed() {
 	}
 }
 
-// ── Watch feed (WatchSessionEvents) — detached-run reattach (ADR 0321 Scenario 3)
+// ── Watch feed (WatchSessionEvents) — detached-run reattach (ADR 0322 Scenario 3)
 //
 // The watch reducers mirror the live-feed pair (armLiveFeed/disarmLiveFeed/
 // updateLiveMsg/updateReconnectMsg) but over WatchSessionEvents, the durable
@@ -4004,7 +4004,7 @@ func (m *Model) startWatchReconnect(prevErr error) tea.Cmd {
 	// m.watchCursor is threaded in as the initial cursor and advanced ONLY by
 	// the Update goroutine (updateWatchMsg/updateWatchReconnectMsg); the
 	// reconnect loop advances its own goroutine-local cursor, so no model field
-	// is ever written from a watch goroutine (ADR 0321 repair, panel-review
+	// is ever written from a watch goroutine (ADR 0322 repair, panel-review
 	// High -race on the watch reconnect path).
 	ch, stop := client.ReconnectWatchCmd(m.deps.Ctx, m.deps.Watch, m.sessionID, cursor)
 	m.watchReconCh = ch

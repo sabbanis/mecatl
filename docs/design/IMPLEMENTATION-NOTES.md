@@ -7062,13 +7062,13 @@ allocates are `0027-cloud-native.md` List 1 rows 65–66.
   implement the cursor seam, which is a deployment fact reported by
   `watch_unsupported`.
 
-### Detached runs (ADR 0321)
+### Detached runs (ADR 0322)
 
 The CONNECT-AND-LEAVE-RUNNING channel: a `Prompt{detach:true}` first frame
 starts a run the server owns end-to-end, acks once, and closes the stream — the
 run continues after the client disconnects, is observed via
 `WatchSessionEvents`, and is controlled via a control-only Converse stream
-(ADR 0321 decision 1; the acceptance plan is `docs/acceptance/detached-runs.md`).
+(ADR 0322 decision 1; the acceptance plan is `docs/acceptance/detached-runs.md`).
 The resources it allocates are `0027-cloud-native.md` List 1 rows 67–69.
 
 - **The detach channel is a field, not an RPC.** `Prompt.detach` is additive on
@@ -7090,7 +7090,7 @@ The resources it allocates are `0027-cloud-native.md` List 1 rows 67–69.
   `FinishRun` — the drain goroutine is the run's authoritative owner, and its
   `defer` stack also stops the deadline timer and releases the concurrency-gate
   slot. The whole lifecycle — including Close reaping an AWAITING detached run —
-  is ADR 0321 decision 3 + ADR 0027 List 1 row 73.
+  is ADR 0322 decision 3 + ADR 0027 List 1 row 73.
 - **A control-only Converse stream is the cancel/approve surface.** A first
   frame of `cancel` or `resume_approval` (with a `session_id`) resolves a
   detached run without a prompt. The `resume_approval` arm reuses the EXISTING

@@ -10,7 +10,7 @@ import (
 )
 
 // TestDetachedRunFlagGatesAttachIsByteIdentical asserts the --detached-runs gate
-// (ADR 0321 Scenario 4): when the flag is OFF, a server IGNORES the
+// (ADR 0322 Scenario 4): when the flag is OFF, a server IGNORES the
 // Prompt{Detach:true} field — it takes the ATTACHED Converse path, byte-identical
 // to a client that never sent the field (run relays normally and cancels on
 // stream close). The ServerCapabilities.detached_runs bit is likewise NOT

@@ -1,4 +1,4 @@
-# ADR 0321 — Detached runs: connect-and-leave-running for mecatui ↔ remote mecated
+# ADR 0322 — Detached runs: connect-and-leave-running for mecatui ↔ remote mecated
 
 - Status: Proposed
 - Date: 2026-09-01

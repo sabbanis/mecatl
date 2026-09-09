@@ -521,7 +521,7 @@ func (h *HarnessServer) Converse(stream mecatlv1.HarnessService_ConverseServer) 
 }
 
 // runStartDispatch resolves the Converse stream's first frame into the run to
-// relay (ADR 0321). A control-only or detached first frame finishes the stream
+// relay (ADR 0322). A control-only or detached first frame finishes the stream
 // here and reports handled=true; otherwise the caller relays the returned run.
 func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_ConverseServer, first *mecatlv1.ConverseRequest) (id session.SessionID, run *agent.Run, retrying bool, handled bool, err error) {
 	ctx := stream.Context()
@@ -543,7 +543,7 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 		run, err = h.svc.RetryFailedRun(ctx, id)
 		return id, run, true, false, errToStatus(err)
 	case first.GetCancel() != nil:
-		// Control-only stream (ADR 0321): cancel an in-flight run. No run starts.
+		// Control-only stream (ADR 0322): cancel an in-flight run. No run starts.
 		cancel := first.GetCancel()
 		if cancel.GetSessionId() == "" {
 			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: cancel session_id is required on a control-only stream"))
@@ -556,7 +556,7 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 		}
 		return "", nil, false, true, errToStatus(stream.Send(detachedAck("run.cancelled", "cancelled")))
 	case first.GetResumeApproval() != nil:
-		// Control-only stream (ADR 0321): resolve a paused ask from a detached
+		// Control-only stream (ADR 0322): resolve a paused ask from a detached
 		// client. No run starts unless the rehydrate path returns one to relay.
 		resume := first.GetResumeApproval()
 		if resume.GetSessionId() == "" {

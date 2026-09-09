@@ -37,7 +37,7 @@ type ResumeSelection struct {
 }
 
 // ReattachSelection is a startup reattach to a RUNNING server-owned detached run
-// (ADR 0321 Scenario 3). Unlike a ResumeSelection (which adopts a terminal
+// (ADR 0322 Scenario 3). Unlike a ResumeSelection (which adopts a terminal
 // transcript), a reattach arms a WatchSessionEvents stream (replay-then-follow) so
 // the operator sees what they missed then follows live — the session is still
 // running server-side, so there is NO transcript to adopt (the authoritative
