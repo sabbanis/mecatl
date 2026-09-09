@@ -81,12 +81,21 @@ func TestDetachedRun_Scenario2_ControlOnlyCancel(t *testing.T) {
 		t.Fatalf("ack stop = %q, want cancelled", ack.GetResult().GetStop())
 	}
 
-	// The session should be in a terminal state (cancelled).
-	sess, err := client.GetSession(ctx, &mecatlv1.GetSessionRequest{SessionId: cs.GetSessionId()})
-	if err != nil {
-		t.Fatalf("GetSession: %v", err)
+	// Cancellation is asynchronous: the ack confirms that the signal was accepted,
+	// while the detached drain owns terminal persistence.
+	deadline := time.Now().Add(5 * time.Second)
+	var state string
+	for time.Now().Before(deadline) {
+		sess, err := client.GetSession(ctx, &mecatlv1.GetSessionRequest{SessionId: cs.GetSessionId()})
+		if err != nil {
+			t.Fatalf("GetSession: %v", err)
+		}
+		state = sess.GetSession().GetState()
+		if state == "cancelled" || state == "completed" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
 	}
-	state := sess.GetSession().GetState()
 	if state != "cancelled" && state != "completed" {
 		t.Fatalf("session state = %q, want cancelled or completed", state)
 	}

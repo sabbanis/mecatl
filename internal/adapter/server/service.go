@@ -1420,18 +1420,16 @@ func NewService(cfg Config) (*Service, error) {
 	return NewServiceContext(context.Background(), cfg)
 }
 
-// NewServiceContext validates cfg and constructs a Service. ctx bounds and
-// propagates trusted startup context to configured placement providers.
-func NewServiceContext(ctx context.Context, cfg Config) (*Service, error) {
+func prepareServiceConfig(ctx context.Context, cfg Config) (Config, *PlacementBinder, error) {
 	if cfg.Engine == nil {
-		return nil, fmt.Errorf("%w: Engine is required", ErrConfig)
+		return Config{}, nil, fmt.Errorf("%w: Engine is required", ErrConfig)
 	}
 	if cfg.Store == nil {
-		return nil, fmt.Errorf("%w: Store is required", ErrConfig)
+		return Config{}, nil, fmt.Errorf("%w: Store is required", ErrConfig)
 	}
 	placementBinder, err := configuredPlacementBinder(ctx, cfg)
 	if err != nil {
-		return nil, err
+		return Config{}, nil, err
 	}
 	cfg.ServerImplementation = normalizeServerImplementation(cfg.ServerImplementation)
 	if cfg.DefaultMode == "" {
@@ -1469,6 +1467,16 @@ func NewServiceContext(ctx context.Context, cfg Config) (*Service, error) {
 		if cfg.LeaseRenewInterval <= 0 {
 			cfg.LeaseRenewInterval = cfg.LeaseTTL // tiny-TTL guard: never a zero ticker.
 		}
+	}
+	return cfg, placementBinder, nil
+}
+
+// NewServiceContext validates cfg and constructs a Service. ctx bounds and
+// propagates trusted startup context to configured placement providers.
+func NewServiceContext(ctx context.Context, cfg Config) (*Service, error) {
+	cfg, placementBinder, err := prepareServiceConfig(ctx, cfg)
+	if err != nil {
+		return nil, err
 	}
 	var cleanupTokenKey [32]byte
 	if _, err := rand.Read(cleanupTokenKey[:]); err != nil {

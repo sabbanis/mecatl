@@ -1136,10 +1136,6 @@ func EventToMsg(ev *mecatlv1.Event) tea.Msg {
 			Tool:     h.GetTool(),
 			Decision: hookDecisionFrom(h.GetDecision()),
 		}
-	case "run.detached":
-		// The detached-run ack (ADR 0321 Scenario 4): a detach:true prompt's
-		// single terminal ack, which the server sends then closes the stream.
-		return RunDetachedMsg{}
 	case "result":
 		return resultMsg(ev.GetResult())
 	case "approval":
@@ -1201,6 +1197,10 @@ func advisoryEventToMsg(ev *mecatlv1.Event) tea.Msg {
 		return NoProgressMsg{Text: ev.GetText()}
 	case "provider.route":
 		return ProviderRouteMsg{Text: ev.GetText()}
+	case "run.detached":
+		// A detach:true prompt's single terminal ack; the server closes the
+		// stream immediately after sending it.
+		return RunDetachedMsg{}
 	case "steer":
 		// The steer-inbox DRAIN echo (committed text) + the authoritative
 		// steer.outcome ack ride this dispatcher (not EventToMsg's main switch) to

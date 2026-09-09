@@ -530,37 +530,7 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 	// handled=true with a nil error when the frame was fully consumed.
 	switch {
 	case first.GetPrompt() != nil:
-		prompt := first.GetPrompt()
-		if prompt.GetSessionId() == "" {
-			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: prompt session_id is required"))
-		}
-		if prompt.GetText() == "" && len(prompt.GetParts()) == 0 {
-			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: prompt text or parts is required"))
-		}
-		parts, perr := contentFromProto(prompt.GetParts())
-		if perr != nil {
-			return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, perr.Error()))
-		}
-		id = session.SessionID(prompt.GetSessionId())
-		if aerr := validateGRPCSessionAffinity(ctx, string(id)); aerr != nil {
-			return "", nil, false, false, aerr
-		}
-		// The detach affordance is OPERATOR-GATED (mecated --detached-runs,
-		// default OFF): when the feature is disabled the server ignores the
-		// detach field and preserves attached behaviour.
-		if prompt.GetDetach() && h.svc.DetachedRuns() {
-			// Detached run (ADR 0321): the server-owned drain goroutine takes
-			// ownership; this stream only acks and closes.
-			if _, derr := h.svc.StartDetachedRunContent(ctx, id, prompt.GetText(), parts); derr != nil {
-				return "", nil, false, false, errToStatus(derr)
-			}
-			if serr := stream.Send(detachedAck("run.detached", "detached")); serr != nil {
-				return "", nil, false, false, errToStatus(serr)
-			}
-			return "", nil, false, true, nil
-		}
-		run, err = h.svc.StartInteractiveRunContent(ctx, id, prompt.GetText(), parts)
-		return id, run, false, false, errToStatus(err)
+		return h.runPromptStart(stream, first.GetPrompt())
 	case first.GetRetry() != nil:
 		retry := first.GetRetry()
 		if retry.GetSessionId() == "" {
@@ -610,6 +580,36 @@ func (h *HarnessServer) runStartDispatch(stream mecatlv1.HarnessService_Converse
 	default:
 		return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: first frame must be a prompt, retry, cancel, or resume_approval"))
 	}
+}
+
+func (h *HarnessServer) runPromptStart(stream mecatlv1.HarnessService_ConverseServer, prompt *mecatlv1.Prompt) (session.SessionID, *agent.Run, bool, bool, error) {
+	if prompt.GetSessionId() == "" {
+		return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: prompt session_id is required"))
+	}
+	if prompt.GetText() == "" && len(prompt.GetParts()) == 0 {
+		return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, "converse: prompt text or parts is required"))
+	}
+	parts, err := contentFromProto(prompt.GetParts())
+	if err != nil {
+		return "", nil, false, false, errToStatus(status.Error(codes.InvalidArgument, err.Error()))
+	}
+	id := session.SessionID(prompt.GetSessionId())
+	if err := validateGRPCSessionAffinity(stream.Context(), string(id)); err != nil {
+		return "", nil, false, false, err
+	}
+	// When the operator gate is disabled, detach is ignored and the prompt keeps
+	// the attached behavior used before detached runs were introduced.
+	if !prompt.GetDetach() || !h.svc.DetachedRuns() {
+		run, err := h.svc.StartInteractiveRunContent(stream.Context(), id, prompt.GetText(), parts)
+		return id, run, false, false, errToStatus(err)
+	}
+	if _, err := h.svc.StartDetachedRunContent(stream.Context(), id, prompt.GetText(), parts); err != nil {
+		return "", nil, false, false, errToStatus(err)
+	}
+	if err := stream.Send(detachedAck("run.detached", "detached")); err != nil {
+		return "", nil, false, false, errToStatus(err)
+	}
+	return "", nil, false, true, nil
 }
 
 // detachedAck is the single terminal ack a control-only or detached stream
