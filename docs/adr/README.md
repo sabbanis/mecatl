@@ -55,7 +55,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0113 — Operator MCP authentication profiles and explicit login](./0113-operator-mcp-auth-profiles.md)
 - [0223 — Pin MCP transport-error semantics that do not replay rejected calls](./0223-mcp-sdk-transport-error-semantics.md) *(superseded by 0309)*
 - [0309 — MCP closed-idle POST failures are ambiguous and never replayed](./0309-mcp-ambiguous-closed-idle-post.md)
-- [0318 — Signed native Darwin release archives](./0318-signed-darwin-release-archives.md)
+- [0319 — Signed native Darwin release archives](./0319-signed-darwin-release-archives.md)
 - [0232 — Steer-while-running: inject a user message into an in-flight run](./0232-steer-while-running.md)
 - [0251 — Multimodal steer preserves prompt content](./0251-multimodal-steer.md)
 - [0252 — HTTP steer endpoint: `POST /v1/sessions/{id}/steer`](./0252-http-steer-endpoint.md)

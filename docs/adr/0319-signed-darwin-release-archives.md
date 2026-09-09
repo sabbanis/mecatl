@@ -1,4 +1,4 @@
-# ADR 0318 — Signed native Darwin release archives
+# ADR 0319 — Signed native Darwin release archives
 
 - Status: Accepted
 - Date: 2026-09-08
