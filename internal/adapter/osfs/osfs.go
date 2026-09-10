@@ -1297,10 +1297,9 @@ type CommandRunner struct {
 	// inherited git danger is REMOVED, not merely overridden. osfs stays free of
 	// git-specific knowledge — it just sets whatever complete env it is handed.
 	env []string
-	// managedWorkspace owns foreground command and background-job leases. It is
-	// nil for system temporary storage and for runners that cannot make the managed
-	// guarantee.
-	managedWorkspace *managedtemp.Workspace
+	// allocateManagedLease supplies foreground command and background-job leases.
+	// It is nil only when managed temporary storage is not configured.
+	allocateManagedLease func(string) (*managedtemp.Lease, error)
 	// systemTempDir is the configured/inherited host temporary directory applied
 	// only when the trusted caller selects the system scope.
 	systemTempDir string
@@ -1338,7 +1337,16 @@ func WithCommandEnvList(env []string) CommandRunnerOption {
 // after the runner's already-scrubbed base environment; callers cannot supply
 // lease paths through shell text or tool arguments.
 func WithManagedTemporaryWorkspace(workspace *managedtemp.Workspace) CommandRunnerOption {
-	return func(r *CommandRunner) { r.managedWorkspace = workspace }
+	if workspace == nil {
+		return WithManagedTemporaryAllocator(nil)
+	}
+	return WithManagedTemporaryAllocator(workspace.Allocate)
+}
+
+// WithManagedTemporaryAllocator resolves a fresh managed lease for each command
+// or background job. The allocator owns recovery and the lease owns its handles.
+func WithManagedTemporaryAllocator(allocate func(string) (*managedtemp.Lease, error)) CommandRunnerOption {
+	return func(r *CommandRunner) { r.allocateManagedLease = allocate }
 }
 
 // WithSystemTemporaryDirectory sets the configured/inherited system temporary
@@ -1419,7 +1427,7 @@ func (r *CommandRunner) Run(ctx context.Context, command string) (tool.CommandRe
 func (r *CommandRunner) RunWithTemporaryScope(ctx context.Context, command string, scope tool.TemporaryScope) (tool.CommandResult, error) {
 	overlay := tool.CommandEnvironmentOverlay{}
 	managed := scope == tool.TemporaryScopeManaged
-	if scope == tool.TemporaryScopeSystem || r.managedWorkspace == nil {
+	if scope == tool.TemporaryScopeSystem || r.allocateManagedLease == nil {
 		managed = false
 		if r.systemTempDir != "" {
 			overlay.TempDir = r.systemTempDir
@@ -1466,7 +1474,7 @@ func (r *CommandRunner) RunStreaming(ctx context.Context, command string, out io
 func (r *CommandRunner) RunStreamingWithTemporaryScope(ctx context.Context, command string, scope tool.TemporaryScope, out io.Writer) (int, error) {
 	overlay := tool.CommandEnvironmentOverlay{}
 	managed := scope == tool.TemporaryScopeManaged
-	if scope == tool.TemporaryScopeSystem || r.managedWorkspace == nil {
+	if scope == tool.TemporaryScopeSystem || r.allocateManagedLease == nil {
 		managed = false
 		if r.systemTempDir != "" {
 			overlay.TempDir = r.systemTempDir
@@ -1505,6 +1513,7 @@ func (r *CommandRunner) run(ctx context.Context, command string, overlay tool.Co
 	if leaseErr != nil {
 		return 0, leaseErr
 	}
+	defer func() { _ = lease.Close() }()
 
 	cmd := exec.CommandContext(ctx, r.shell, "-c", command)
 	cmd.Dir = r.root
@@ -1577,10 +1586,10 @@ func (r *CommandRunner) run(ctx context.Context, command string, overlay tool.Co
 }
 
 func (r *CommandRunner) managedLease(managed bool, kind string, overlay tool.CommandEnvironmentOverlay) (*managedtemp.Lease, tool.CommandEnvironmentOverlay, error) {
-	if !managed || r.managedWorkspace == nil {
+	if !managed || r.allocateManagedLease == nil {
 		return nil, overlay, nil
 	}
-	lease, err := r.managedWorkspace.Allocate(kind)
+	lease, err := r.allocateManagedLease(kind)
 	if err != nil {
 		return nil, overlay, fmt.Errorf("osfs: allocate managed command lease: %w", err)
 	}

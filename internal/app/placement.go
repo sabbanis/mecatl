@@ -2,6 +2,7 @@ package app
 
 import (
 	"context"
+	"fmt"
 
 	"github.com/stacklok/mecatl/engine/adapter/memledger"
 	"github.com/stacklok/mecatl/engine/adapter/nofs"
@@ -25,7 +26,7 @@ type localPlacementProvider struct {
 	scope         server.PlacementScope
 	root          string
 	workspace     server.WorkspaceFactory
-	runnerForRoot func(string) tool.CommandRunner
+	runnerForRoot func(string) (tool.CommandRunner, error)
 	worktrees     server.WorktreeLister
 	selectors     *server.WorktreeSelectorIssuer
 }
@@ -154,7 +155,11 @@ func (p *localPlacementProvider) bindWorktree(choice server.Worktree) (server.Pl
 	}
 	var runner tool.CommandRunner
 	if p.runnerForRoot != nil {
-		runner = p.runnerForRoot(ws.Root())
+		var err error
+		runner, err = p.runnerForRoot(ws.Root())
+		if err != nil {
+			return server.PlacementBinding{}, fmt.Errorf("%w: %w", server.ErrPlacementUnavailable, err)
+		}
 	}
 	env, err := tool.NewEnvironment(ref, ws, memledger.New(), runner)
 	if err != nil {
@@ -182,7 +187,11 @@ func (p *localPlacementProvider) bindLocal() (server.PlacementBinding, error) {
 	ref := configuredLocalPlacementRef(p.root)
 	var runner tool.CommandRunner
 	if p.runnerForRoot != nil {
-		runner = p.runnerForRoot(ws.Root())
+		var err error
+		runner, err = p.runnerForRoot(ws.Root())
+		if err != nil {
+			return server.PlacementBinding{}, fmt.Errorf("%w: %w", server.ErrPlacementUnavailable, err)
+		}
 	}
 	env, err := tool.NewEnvironment(ref, ws, memledger.New(), runner)
 	if err != nil {

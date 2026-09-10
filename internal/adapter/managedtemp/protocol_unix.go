@@ -48,13 +48,14 @@ type sweepCompletion struct {
 
 // Lease is one locked command or job allocation. Its path is adapter-internal.
 type Lease struct {
-	path   string
-	name   string
-	id     string
-	kind   string
-	root   *os.Root
-	lock   *os.File
-	parent *Workspace
+	path       string
+	name       string
+	id         string
+	kind       string
+	root       *os.Root
+	lock       *os.File
+	parent     *Workspace
+	ownsParent bool
 }
 
 // ID returns the opaque 96-bit random allocation ID.
@@ -167,7 +168,26 @@ func (l *Lease) Close() error {
 			err = closeErr
 		}
 	}
+	if l.ownsParent {
+		err = errors.Join(err, l.parent.Close())
+	}
 	return err
+}
+
+// AllocateWorkspace recovers the namespace at allocation time. The lease owns
+// its independent workspace handle and releases it on Close, not at process exit.
+func (n *Namespace) AllocateWorkspace(backend, identity, canonicalPath, kind string) (*Lease, error) {
+	w, err := n.OpenWorkspace(backend, identity, canonicalPath)
+	if err != nil {
+		return nil, err
+	}
+	lease, err := w.Allocate(kind)
+	if err != nil {
+		_ = w.Close()
+		return nil, err
+	}
+	lease.ownsParent = true
+	return lease, nil
 }
 
 // Allocate creates and locks a private cmd or job lease before publishing its manifest.
@@ -249,10 +269,16 @@ func (l *Lease) Remove() error {
 
 // ReadSweepCompletion reads the durable sweep record without changing it.
 func (n *Namespace) ReadSweepCompletion() (time.Time, error) {
-	if n == nil || n.root == nil {
-		return time.Time{}, errors.New("managedtemp: namespace is closed")
+	root, err := n.openRoot()
+	if err != nil {
+		return time.Time{}, err
 	}
-	data, err := readPrivateFile(n.root, "last-successful-sweep.json")
+	defer func() { _ = root.Close() }()
+	return readSweepCompletion(root)
+}
+
+func readSweepCompletion(root *os.Root) (time.Time, error) {
+	data, err := readPrivateFile(root, "last-successful-sweep.json")
 	if err != nil {
 		return time.Time{}, err
 	}
@@ -305,10 +331,41 @@ func replacePrivateFile(root *os.Root, name string, data []byte) error {
 }
 
 func validateWorkspace(w *Workspace) error {
+	if err := validateVisibleWorkspace(w); err != nil {
+		return err
+	}
 	if err := validatePrivateDir(w.root, "."); err != nil {
 		return err
 	}
 	return validateWorkspaceManifest(w.root, filepath.Base(w.path))
+}
+
+func validateVisibleWorkspace(w *Workspace) error {
+	// Reject a replaced namespace even for runners holding an older workspace.
+	// These are exactly the three private components: root/workspaces/key.
+	path := w.path
+	for range 3 {
+		info, err := os.Lstat(path)
+		if err != nil {
+			return err
+		}
+		if err := validatePrivateDirInfo(info); err != nil {
+			return err
+		}
+		path = filepath.Dir(path)
+	}
+	visible, err := os.Lstat(w.path)
+	if err != nil {
+		return err
+	}
+	opened, err := w.root.Stat(".")
+	if err != nil {
+		return err
+	}
+	if !os.SameFile(visible, opened) {
+		return errors.New("managedtemp: workspace replaced")
+	}
+	return nil
 }
 
 func validateLease(l *Lease) error {

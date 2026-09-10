@@ -52,6 +52,49 @@ func (l *scriptedWorktreeLister) List(context.Context, string) ([]server.Worktre
 	return out, nil
 }
 
+func TestLocalPlacementPropagatesRunnerErrors(t *testing.T) {
+	failure := errors.New("configured runner failed")
+	root := t.TempDir()
+	choice := server.Worktree{Path: t.TempDir(), Branch: "feature", Head: "head"}
+	issuer, err := server.NewWorktreeSelectorIssuer(make([]byte, 32))
+	if err != nil {
+		t.Fatal(err)
+	}
+	provider := &localPlacementProvider{
+		scope: "test", root: root, selectors: issuer,
+		workspace:     func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
+		worktrees:     &scriptedWorktreeLister{responses: [][]server.Worktree{{choice}}},
+		runnerForRoot: func(string) (tool.CommandRunner, error) { return nil, failure },
+	}
+	ctx := context.Background()
+	sourceRef := configuredLocalPlacementRef(root)
+	choices, err := provider.ListWorktrees(ctx, server.PlacementDiscoveryRequest{Source: "source", SourceRef: sourceRef, Scope: "test"})
+	if err != nil || len(choices) != 1 {
+		t.Fatalf("worktree choices: %v, %v", choices, err)
+	}
+	for name, bind := range map[string]func() (server.PlacementBinding, error){
+		"Bind default": func() (server.PlacementBinding, error) {
+			return provider.Bind(ctx, server.PlacementBindRequest{Selector: server.DefaultPlacement(), Scope: "test"})
+		},
+		"Reattach default": func() (server.PlacementBinding, error) {
+			return provider.Reattach(ctx, server.PlacementReattachRequest{Ref: sourceRef, Scope: "test"})
+		},
+		"Bind worktree": func() (server.PlacementBinding, error) {
+			return provider.Bind(ctx, server.PlacementBindRequest{Selector: server.SelectWorktree("source", sourceRef, choices[0].Selector), Scope: "test"})
+		},
+		"Reattach worktree": func() (server.PlacementBinding, error) {
+			return provider.Reattach(ctx, server.PlacementReattachRequest{Ref: session.EnvironmentRef{Kind: session.EnvKindLocal, ID: choice.Path, Revision: choice.Head}, Scope: "test"})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			binding, err := bind()
+			if !errors.Is(err, failure) || !errors.Is(err, server.ErrPlacementUnavailable) || binding.Ref != (session.EnvironmentRef{}) {
+				t.Fatalf("runner error became a binding or lost its cause: %+v, %v", binding, err)
+			}
+		})
+	}
+}
+
 func TestInvariant_local_placement_identity_and_atomic_worktree_binding(t *testing.T) {
 	rootA, rootB := t.TempDir(), t.TempDir()
 	providerA := &localPlacementProvider{scope: "test", root: rootA, workspace: func(root string) tool.Workspace { return memfs.NewWorkspace(root) }}

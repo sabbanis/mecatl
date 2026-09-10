@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"syscall"
 )
 
@@ -29,6 +30,7 @@ const (
 
 // Namespace is a private managed root. Every mutation is relative to root.
 type Namespace struct {
+	mu   sync.Mutex // serializes root recovery, handle pinning, and Close
 	path string
 	root *os.Root
 }
@@ -54,9 +56,19 @@ func Open(path string) (*Namespace, error) {
 	if err := ensurePrivateDir(parent, name); err != nil {
 		return nil, fmt.Errorf("managedtemp: managed root: %w", err)
 	}
+	info, err := parent.Lstat(name)
+	if err != nil {
+		return nil, err
+	}
 	root, err := parent.OpenRoot(name)
 	if err != nil {
 		return nil, fmt.Errorf("managedtemp: open managed root: %w", err)
+	}
+	opened, statErr := root.Stat(".")
+	visible, visibleErr := parent.Lstat(name)
+	if statErr != nil || visibleErr != nil || !os.SameFile(info, opened) || !os.SameFile(opened, visible) {
+		_ = root.Close()
+		return nil, errors.New("managedtemp: managed root replaced while opening")
 	}
 	if err := validatePrivateDir(root, "."); err != nil {
 		_ = root.Close()
@@ -71,15 +83,61 @@ func Open(path string) (*Namespace, error) {
 }
 
 func (n *Namespace) initialize() error {
+	// Validate existing protocol objects before creating anything in an adopted root.
+	if err := validatePrivateDir(n.root, "workspaces"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	if err := validatePrivateFile(n.root, "gc.lock"); err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
 	if err := ensurePrivateDir(n.root, "workspaces"); err != nil {
 		return err
 	}
 	return ensurePrivateFile(n.root, "gc.lock")
 }
 
+// openRoot pins an independent handle for one operation. Recovery is serialized,
+// but a long sweep must not block workspace opens. Existing workspace and lease
+// handles remain independently owned, never closed or rehomed by recovery.
+func (n *Namespace) openRoot() (*os.Root, error) {
+	if n == nil {
+		return nil, errors.New("managedtemp: namespace is closed")
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if err := n.refreshLocked(); err != nil {
+		return nil, err
+	}
+	return n.root.OpenRoot(".")
+}
+
+// refreshLocked reopens the exact configured path using the same checks as Open.
+func (n *Namespace) refreshLocked() error {
+	if n.root == nil {
+		return errors.New("managedtemp: namespace is closed")
+	}
+	current, err := Open(n.path)
+	if err != nil {
+		return fmt.Errorf("managedtemp: reopen namespace: %w", err)
+	}
+	oldInfo, oldErr := n.root.Stat(".")
+	newInfo, newErr := current.root.Stat(".")
+	if oldErr == nil && newErr == nil && os.SameFile(oldInfo, newInfo) {
+		return current.Close()
+	}
+	old := n.root
+	n.root = current.root
+	return old.Close()
+}
+
 // Close releases the root handle. It does not delete managed data.
 func (n *Namespace) Close() error {
-	if n == nil || n.root == nil {
+	if n == nil {
+		return nil
+	}
+	n.mu.Lock()
+	defer n.mu.Unlock()
+	if n.root == nil {
 		return nil
 	}
 	err := n.root.Close()
@@ -94,9 +152,6 @@ func (n *Namespace) Path() string { return n.path }
 // identity. The digest key, never the raw identity, is used in the path. canonicalPath
 // is retained only in the owner-readable manifest for operator diagnosis.
 func (n *Namespace) OpenWorkspace(backend, identity, canonicalPath string) (*Workspace, error) {
-	if n == nil || n.root == nil {
-		return nil, errors.New("managedtemp: namespace is closed")
-	}
 	if backend == "" || identity == "" {
 		return nil, errors.New("managedtemp: workspace backend and identity are required")
 	}
@@ -104,10 +159,15 @@ func (n *Namespace) OpenWorkspace(backend, identity, canonicalPath string) (*Wor
 		return nil, errors.New("managedtemp: canonical workspace path is required")
 	}
 	key := workspaceKey(backend, identity)
-	if err := validatePrivateDir(n.root, "workspaces"); err != nil {
+	namespaceRoot, err := n.openRoot()
+	if err != nil {
+		return nil, err
+	}
+	defer func() { _ = namespaceRoot.Close() }()
+	if err := validatePrivateDir(namespaceRoot, "workspaces"); err != nil {
 		return nil, fmt.Errorf("managedtemp: workspaces: %w", err)
 	}
-	workspaces, err := n.root.OpenRoot("workspaces")
+	workspaces, err := namespaceRoot.OpenRoot("workspaces")
 	if err != nil {
 		return nil, fmt.Errorf("managedtemp: open workspaces: %w", err)
 	}
@@ -148,7 +208,7 @@ func (n *Namespace) OpenWorkspace(backend, identity, canonicalPath string) (*Wor
 		_ = root.Close()
 		return nil, err
 	}
-	if err := validateWorkspaceManifest(root, key); err != nil {
+	if err := validateWorkspace(w); err != nil {
 		_ = root.Close()
 		return nil, err
 	}
@@ -192,10 +252,12 @@ func (w *Workspace) WritePrivateFile(name string, data []byte) error {
 
 // WritePrivateFile creates a private root-level protocol record atomically.
 func (n *Namespace) WritePrivateFile(name string, data []byte) error {
-	if n == nil || n.root == nil {
-		return errors.New("managedtemp: namespace is closed")
+	root, err := n.openRoot()
+	if err != nil {
+		return err
 	}
-	return writePrivateFile(n.root, name, data)
+	defer func() { _ = root.Close() }()
+	return writePrivateFile(root, name, data)
 }
 
 func workspaceManifestJSON(key, canonicalPath string) ([]byte, error) {
@@ -203,6 +265,9 @@ func workspaceManifestJSON(key, canonicalPath string) ([]byte, error) {
 }
 
 func (w *Workspace) writeWorkspaceManifest(manifest []byte, canonicalPath string) error {
+	if err := validateVisibleWorkspace(w); err != nil {
+		return err
+	}
 	info, err := w.root.Lstat("workspace.manifest")
 	if errors.Is(err, fs.ErrNotExist) {
 		return writePrivateFile(w.root, "workspace.manifest", manifest)

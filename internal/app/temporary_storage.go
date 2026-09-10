@@ -5,11 +5,11 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sync"
 	"time"
 
 	"github.com/stacklok/mecatl/internal/adapter/managedtemp"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
+	"github.com/stacklok/mecatl/internal/adapter/server"
 )
 
 type temporaryStorageMode string
@@ -32,9 +32,7 @@ type temporaryStorageConfig struct {
 }
 
 type managedTemporaryStorage struct {
-	namespace  *managedtemp.Namespace
-	mu         sync.Mutex
-	workspaces []*managedtemp.Workspace
+	namespace *managedtemp.Namespace
 }
 
 func openManagedTemporaryStorage(cfg temporaryStorageConfig) (*managedTemporaryStorage, error) {
@@ -48,10 +46,7 @@ func openManagedTemporaryStorage(cfg temporaryStorageConfig) (*managedTemporaryS
 	return &managedTemporaryStorage{namespace: namespace}, nil
 }
 
-func (s *managedTemporaryStorage) workspace(root string) (*managedtemp.Workspace, error) {
-	if s == nil {
-		return nil, nil
-	}
+func (s *managedTemporaryStorage) allocator(root string) (func(string) (*managedtemp.Lease, error), error) {
 	identity, err := managedWorkspaceIdentity(root)
 	if err != nil {
 		return nil, err
@@ -60,22 +55,22 @@ func (s *managedTemporaryStorage) workspace(root string) (*managedtemp.Workspace
 	if err != nil {
 		return nil, err
 	}
-	s.mu.Lock()
-	s.workspaces = append(s.workspaces, workspace)
-	s.mu.Unlock()
-	return workspace, nil
+	if err := workspace.Close(); err != nil {
+		return nil, err
+	}
+	return func(kind string) (*managedtemp.Lease, error) {
+		lease, err := s.namespace.AllocateWorkspace("osfs", identity, identity, kind)
+		if err != nil {
+			return nil, server.ErrManagedTemporaryStorageUnavailable
+		}
+		return lease, nil
+	}, nil
 }
 
 func (s *managedTemporaryStorage) close() {
 	if s == nil {
 		return
 	}
-	s.mu.Lock()
-	for _, workspace := range s.workspaces {
-		_ = workspace.Close()
-	}
-	s.workspaces = nil
-	s.mu.Unlock()
 	_ = s.namespace.Close()
 }
 
