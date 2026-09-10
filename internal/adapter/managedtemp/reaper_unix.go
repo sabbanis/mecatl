@@ -32,16 +32,18 @@ type SweepResult struct {
 // Sweep performs one non-blocking, root-coordinated recovery pass. It never
 // waits for an active command's lease lock and only removes validated leases.
 func (n *Namespace) Sweep(ctx context.Context, opts SweepOptions) (SweepResult, error) {
-	if n == nil || n.root == nil {
-		return SweepResult{}, errors.New("managedtemp: namespace is closed")
-	}
 	if err := ctx.Err(); err != nil {
 		return SweepResult{}, err
 	}
 	if opts.Now.IsZero() || opts.Interval <= 0 || opts.CommandReapAfter <= 0 {
 		return SweepResult{}, errors.New("managedtemp: invalid sweep options")
 	}
-	lock, err := n.root.OpenFile("gc.lock", os.O_RDWR, 0)
+	root, err := n.openRoot()
+	if err != nil {
+		return SweepResult{}, err
+	}
+	defer func() { _ = root.Close() }()
+	lock, err := root.OpenFile("gc.lock", os.O_RDWR, 0)
 	if err != nil {
 		return SweepResult{}, err
 	}
@@ -54,14 +56,14 @@ func (n *Namespace) Sweep(ctx context.Context, opts SweepOptions) (SweepResult, 
 	}
 	defer func() { _ = unlockClose(lock) }()
 
-	completed, err := n.ReadSweepCompletion()
+	completed, err := readSweepCompletion(root)
 	if err == nil && opts.Now.Sub(completed) < opts.Interval {
 		return SweepResult{}, nil
 	}
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return SweepResult{}, err
 	}
-	deleted, err := n.sweepWorkspaces(ctx, opts)
+	deleted, err := sweepWorkspaces(ctx, root, opts)
 	if err != nil {
 		return SweepResult{Scanned: true, Deleted: deleted}, err
 	}
@@ -73,10 +75,10 @@ func (n *Namespace) Sweep(ctx context.Context, opts SweepOptions) (SweepResult, 
 		return SweepResult{Scanned: true, Deleted: deleted}, err
 	}
 	var completionErr error
-	if _, statErr := n.root.Lstat("last-successful-sweep.json"); errors.Is(statErr, fs.ErrNotExist) {
-		completionErr = writePrivateFile(n.root, "last-successful-sweep.json", data)
+	if _, statErr := root.Lstat("last-successful-sweep.json"); errors.Is(statErr, fs.ErrNotExist) {
+		completionErr = writePrivateFile(root, "last-successful-sweep.json", data)
 	} else if statErr == nil {
-		completionErr = replacePrivateFile(n.root, "last-successful-sweep.json", data)
+		completionErr = replacePrivateFile(root, "last-successful-sweep.json", data)
 	} else {
 		completionErr = statErr
 	}
@@ -86,11 +88,11 @@ func (n *Namespace) Sweep(ctx context.Context, opts SweepOptions) (SweepResult, 
 	return SweepResult{Scanned: true, Deleted: deleted}, nil
 }
 
-func (n *Namespace) sweepWorkspaces(ctx context.Context, opts SweepOptions) (int, error) {
-	if err := validatePrivateDir(n.root, "workspaces"); err != nil {
+func sweepWorkspaces(ctx context.Context, root *os.Root, opts SweepOptions) (int, error) {
+	if err := validatePrivateDir(root, "workspaces"); err != nil {
 		return 0, err
 	}
-	workspaces, err := n.root.OpenRoot("workspaces")
+	workspaces, err := root.OpenRoot("workspaces")
 	if err != nil {
 		return 0, err
 	}

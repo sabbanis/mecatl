@@ -290,22 +290,22 @@ func TestReadOnlyMemberRunsGitInWorktreeEndToEnd(t *testing.T) {
 	// builder applies the SAME hardening buildSandboxedCommandRunner/
 	// buildForceCopyRunner do — trust-gated for the read-only worktree forker,
 	// ungated for the force-copy mutating forker.
-	sandboxedRunnerBuilder := func(childRoot string) tool.CommandRunner {
+	sandboxedRunnerBuilder := func(childRoot string) (tool.CommandRunner, error) {
 		if cfg.NoShell || cfg.Shell == "" || !cfg.TrustProject {
-			return nil
+			return nil, nil
 		}
 		return newHardenedRunnerForRoot(cfg, childRoot)
 	}
-	forceCopyRunnerBuilder := func(childRoot string) tool.CommandRunner {
+	forceCopyRunnerBuilder := func(childRoot string) (tool.CommandRunner, error) {
 		if cfg.NoShell || cfg.Shell == "" {
-			return nil
+			return nil, nil
 		}
 		return newHardenedRunnerForRoot(cfg, childRoot)
 	}
 	roFk := forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) },
-		forker.WithTempBase(worktreeBase), forker.WithRunner(sandboxedRunnerBuilder))
+		forker.WithTempBase(worktreeBase), forker.WithRunnerError(sandboxedRunnerBuilder))
 	mutatingFk := forker.New(func(root string) (tool.Workspace, error) { return osfs.NewWorkspace(root) },
-		forker.WithForceCopy(), forker.WithRunner(forceCopyRunnerBuilder))
+		forker.WithForceCopy(), forker.WithRunnerError(forceCopyRunnerBuilder))
 	runner := buildSandboxedCommandRunner(cfg)
 	if runner == nil {
 		t.Fatal("precondition: expected a non-nil sandboxed runner")

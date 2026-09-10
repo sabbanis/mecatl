@@ -408,9 +408,9 @@ func registerParallelTool(ctx context.Context, cfg Config, cat *tool.Catalog, re
 	// buildForceCopyRunner does (force-copy forks do no fork-time git, so the
 	// trust gate does not apply — see the comment above).
 	fk := forker.New(newForkWorkspace(), forker.WithForceCopy(),
-		forker.WithRunner(func(childRoot string) tool.CommandRunner {
+		forker.WithRunnerError(func(childRoot string) (tool.CommandRunner, error) {
 			if !forceCopyShellAvailable(cfg) {
-				return nil
+				return nil, nil
 			}
 			return newHardenedRunnerForRoot(cfg, childRoot)
 		}))

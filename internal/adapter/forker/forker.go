@@ -136,7 +136,7 @@ type Forker struct {
 	// or nil when the child namespace has no shell. nil (the field) means the
 	// forker was constructed without a runner builder, so EVERY forked child is
 	// shell-less (the composition root wires the builder only when Shell is on).
-	newRunner childRunner
+	newRunner func(string) (tool.CommandRunner, error)
 	// tmpBase is the parent directory under which child directories are created.
 	// Empty means os.MkdirTemp's default (os.TempDir()).
 	tmpBase string
@@ -224,6 +224,17 @@ func WithDirtyOverlay() Option {
 // called once per Fork with the isolated child directory; it returns nil when the
 // child namespace should have no shell (e.g. the trust gate withheld it).
 func WithRunner(r childRunner) Option {
+	return func(f *Forker) {
+		f.newRunner = nil
+		if r != nil {
+			f.newRunner = func(root string) (tool.CommandRunner, error) { return r(root), nil }
+		}
+	}
+}
+
+// WithRunnerError preserves configured-shell construction failures as fork errors.
+// A nil runner with no error still means intentionally shell-less.
+func WithRunnerError(r func(string) (tool.CommandRunner, error)) Option {
 	return func(f *Forker) { f.newRunner = r }
 }
 
@@ -349,7 +360,11 @@ func (f *Forker) childEnv(base tool.Environment, ws tool.Workspace) (tool.Enviro
 	root := ws.Root()
 	var runner tool.CommandRunner
 	if f.newRunner != nil {
-		runner = f.newRunner(root)
+		var err error
+		runner, err = f.newRunner(root)
+		if err != nil {
+			return tool.Environment{}, fmt.Errorf("forker: configured child command runner: %w", err)
+		}
 	}
 	ref := session.EnvironmentRef{Kind: base.Ref().Kind, ID: root, Revision: base.Ref().Revision}
 	return tool.NewEnvironment(ref, ws, memledger.New(), runner)

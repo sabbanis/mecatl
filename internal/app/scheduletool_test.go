@@ -164,7 +164,7 @@ func newScheduleTestService(t *testing.T, store port.SessionStore, llm *mockllm.
 		PlacementProvider: &localPlacementProvider{
 			scope: defaultPlacementScope, root: workspace,
 			workspace:     func(root string) tool.Workspace { return memfs.NewWorkspace(root) },
-			runnerForRoot: func(string) tool.CommandRunner { return nil },
+			runnerForRoot: func(string) (tool.CommandRunner, error) { return nil, nil },
 		},
 		PlacementScope: defaultPlacementScope,
 	})

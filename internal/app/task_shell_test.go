@@ -525,9 +525,9 @@ func newSubagentToolForTestOpts(t *testing.T, cfg Config, childProvider *mockllm
 	roFk := forker.New(func(root string) (tool.Workspace, error) {
 		return osfs.NewWorkspace(root)
 	},
-		append(opts, forker.WithRunner(func(childRoot string) tool.CommandRunner {
+		append(opts, forker.WithRunnerError(func(childRoot string) (tool.CommandRunner, error) {
 			if cfg.NoShell || cfg.Shell == "" || !cfg.TrustProject {
-				return nil
+				return nil, nil
 			}
 			return newHardenedRunnerForRoot(cfg, childRoot)
 		}))...)

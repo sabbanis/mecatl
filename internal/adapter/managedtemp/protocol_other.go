@@ -19,6 +19,9 @@ func (*Namespace) Close() error       { return nil }
 func (*Namespace) OpenWorkspace(string, string, string) (*Workspace, error) {
 	return nil, errUnsupported
 }
+func (*Namespace) AllocateWorkspace(string, string, string, string) (*Lease, error) {
+	return nil, errUnsupported
+}
 func (*Workspace) Close() error                    { return nil }
 func (*Workspace) Allocate(string) (*Lease, error) { return nil, errUnsupported }
 func (*Lease) Path() string                        { return "" }

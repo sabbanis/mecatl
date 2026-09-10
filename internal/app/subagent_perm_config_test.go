@@ -60,9 +60,9 @@ func runSubagentShell(t *testing.T, cfg Config, command string) session.ToolResu
 
 	rf := &recordingForker{inner: forker.New(func(root string) (tool.Workspace, error) {
 		return osfs.NewWorkspace(root)
-	}, forker.WithRunner(func(childRoot string) tool.CommandRunner {
+	}, forker.WithRunnerError(func(childRoot string) (tool.CommandRunner, error) {
 		if cfg.NoShell || cfg.Shell == "" || !cfg.TrustProject {
-			return nil
+			return nil, nil
 		}
 		return newHardenedRunnerForRoot(cfg, childRoot)
 	}))}

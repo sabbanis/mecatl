@@ -2100,8 +2100,8 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		}
 		placementProvider = &localPlacementProvider{
 			scope: placementScope, root: cfg.Workspace, workspace: workspaceFactory,
-			runnerForRoot: func(root string) tool.CommandRunner {
-				return buildCommandRunnerForRoot(cfg, root)
+			runnerForRoot: func(root string) (tool.CommandRunner, error) {
+				return commandRunnerForRoot(cfg, root)
 			},
 			worktrees: worktreeLister, selectors: selectorIssuer,
 		}
@@ -5231,6 +5231,8 @@ func registerCoreTools(cfg Config, cat *tool.Catalog, log, noFS bool, searchProv
 	}
 	cat.MustRegister(tools.NewWebSearchTool(searchProvider))
 	if runner := buildCommandRunner(cfg); runner != nil {
+		// Catalog availability follows configuration; placement constructs the runner
+		// and fails explicitly if it cannot supply the configured shell.
 		// The AGENT-loop Shell tool (not the fstools one): foreground byte-identical,
 		// plus the `background: true` detach over the run's child registry. Its
 		// companion ShellStatus — the SOLE status/collect/cancel channel for those
@@ -6137,16 +6139,23 @@ func buildCommandRunner(cfg Config) tool.CommandRunner {
 	return buildCommandRunnerForRoot(cfg, cfg.Workspace)
 }
 
-// buildCommandRunnerForRoot is the ONE implementation of the no-bash/shell
-// gate + envscrub.Scrub(os.Environ()) + osfs constructor, parameterised by the
-// root the runner is bound to. The main runner and the placement provider's
-// private environment construction both route through here, so secret scrubbing
-// cannot drift between default-root and alternate-root paths (security review
-// "Finding B"). It returns nil when command execution is disabled
-// (NoShell or an empty Shell); on a construction error it WARNs and returns nil.
+// buildCommandRunnerForRoot delegates to the same gated, secret-scrubbed
+// constructor as placement. Disabled execution returns nil; failed construction
+// retains an error marker so catalog assembly cannot silently remove Bash.
+// The actual placement/fork bind propagates the construction error.
 func buildCommandRunnerForRoot(cfg Config, root string) tool.CommandRunner {
+	runner, err := commandRunnerForRoot(cfg, root)
+	if err != nil {
+		return failedCommandRunner{err: err}
+	}
+	return runner
+}
+
+// commandRunnerForRoot keeps disabled shells distinct from failed construction.
+// Placement must propagate the latter rather than silently attenuating Bash.
+func commandRunnerForRoot(cfg Config, root string) (tool.CommandRunner, error) {
 	if cfg.NoShell || cfg.Shell == "" {
-		return nil
+		return nil, nil
 	}
 	// SECRET SCRUB (security review "Finding B"): the main-session Shell child must
 	// NOT see the harness's provider/auth credentials, or under posture auto/yolo a
@@ -6158,28 +6167,26 @@ func buildCommandRunnerForRoot(cfg Config, root string) tool.CommandRunner {
 	// (gitenv) — the operator's own hooks/pager are honoured here, only the secrets
 	// are removed.
 	env := envscrub.Scrub(os.Environ())
-	return newCommandRunnerForRoot(cfg, root, env, "could not build command runner; Shell tool disabled")
+	return newCommandRunnerForRoot(cfg, root, env)
 }
 
-func newCommandRunnerForRoot(cfg Config, root string, env []string, failure string) tool.CommandRunner {
+func newCommandRunnerForRoot(cfg Config, root string, env []string) (tool.CommandRunner, error) {
 	opts := []osfs.CommandRunnerOption{
 		osfs.WithCommandEnvList(env),
 		osfs.WithSystemTemporaryDirectory(cfg.temporaryStorage.SystemTempDir),
 	}
 	if cfg.managedTemp != nil {
-		workspace, err := cfg.managedTemp.workspace(root)
+		allocate, err := cfg.managedTemp.allocator(root)
 		if err != nil {
-			cfg.diag().Log(context.Background(), port.LevelWarn, failure, "workspace", root, "err", err)
-			return nil
+			return nil, server.ErrManagedTemporaryStorageUnavailable
 		}
-		opts = append(opts, osfs.WithManagedTemporaryWorkspace(workspace))
+		opts = append(opts, osfs.WithManagedTemporaryAllocator(allocate))
 	}
 	runner, err := osfs.NewCommandRunnerShell(root, cfg.Shell, opts...)
 	if err != nil {
-		cfg.diag().Log(context.Background(), port.LevelWarn, failure, "workspace", root, "err", err)
-		return nil
+		return nil, fmt.Errorf("configured command runner unavailable; ask the operator to restore the workspace and shell, then retry")
 	}
-	return runner
+	return runner, nil
 }
 
 // buildSandboxedCommandRunner builds the command runner team MEMBERS' Shell executes
@@ -6301,7 +6308,11 @@ func buildForceCopyRunner(cfg Config) tool.CommandRunner {
 // hardening rationale). It assumes the caller already applied the NoShell/empty-shell
 // (and, where applicable, trust) gates. The runner is bound to cfg.Workspace.
 func newHardenedCommandRunner(cfg Config) tool.CommandRunner {
-	return newHardenedRunnerForRoot(cfg, cfg.Workspace)
+	runner, err := newHardenedRunnerForRoot(cfg, cfg.Workspace)
+	if err != nil {
+		return failedCommandRunner{err: err}
+	}
+	return runner
 }
 
 // newHardenedRunnerForRoot constructs an env-scrubbed runner bound to root (an
@@ -6309,21 +6320,15 @@ func newHardenedCommandRunner(cfg Config) tool.CommandRunner {
 // hardening as newHardenedCommandRunner. It is the forker's bound-runner
 // builder (issue #462): a forked child's Shell observes the SAME child namespace
 // its Read/Write do, never the parent base. It assumes the caller already
-// applied the NoShell/empty-shell (and, where applicable, trust) gates; on a
-// construction error it returns nil (the child degrades to shell-less, matching
-// newHardenedCommandRunner's WARN-then-nil shape, but a per-child builder has no
-// session-correlated diagnostics handle, so it returns nil silently — the
-// member/subagent catalog already gated Shell registration on the parent runner
-// being non-nil, so a nil here only ever reaches a child whose catalog has Shell
-// but whose isolated namespace could not open a shell, a rare FS-permission
-// case the child's Shell surfaces as ErrNoShell).
-func newHardenedRunnerForRoot(cfg Config, root string) tool.CommandRunner {
+// applied the NoShell/empty-shell (and, where applicable, trust) gates. Construction
+// failures propagate through the forker; they never attenuate a configured shell.
+func newHardenedRunnerForRoot(cfg Config, root string) (tool.CommandRunner, error) {
 	// SECRET SCRUB then GIT NEUTRALISE: drop the harness credentials first
 	// (envscrub — "Finding B"; gitenv only ever removed GIT_*/PAGER, never secrets),
 	// then layer the git-neutralising env on the secret-free base so a sandboxed
 	// child sees neither the operator's secrets nor an untrusted repo's git hooks.
 	env := gitenv.Scrub(envscrub.Scrub(os.Environ()))
-	return newCommandRunnerForRoot(cfg, root, env, "could not build sandboxed member command runner; team-member Shell disabled")
+	return newCommandRunnerForRoot(cfg, root, env)
 }
 
 // subagentShellUntrustedReason returns the model/operator-facing reason the
@@ -6780,7 +6785,7 @@ func buildWritableSubagentChildEngine(cfg Config, provReg *providerRegistry, pro
 // with childWindowFor for the factory — the buildParallelEngineFactory discipline).
 func writableExplorerDeps(cfg Config, provider port.LLMProvider, model, role string, windowFn func() int, runner tool.CommandRunner) agent.Deps {
 	childCat := writableExplorerCatalog(runner, "writable subagent tool catalog")
-	return childEngineDepsForProvider(cfg, role, provider, model, windowFn,
+	return childEngineDepsForProvider(cfg, role, guardWritableRunner(cfg, provider), model, windowFn,
 		childCat, promptConfig(modelCfgFor(cfg, model), cfg.gitStatus), nil)
 }
 
@@ -7134,9 +7139,9 @@ func buildSubagentTool(ctx context.Context, cfg Config, provReg *providerRegistr
 		// gate passed at build time; the per-child builder re-checks it so a future
 		// per-session trust change cannot hand a shell to an untrusted child).
 		taskForker := forker.New(newForkWorkspace(), forker.WithDirtyOverlay(),
-			forker.WithRunner(func(childRoot string) tool.CommandRunner {
+			forker.WithRunnerError(func(childRoot string) (tool.CommandRunner, error) {
 				if !sandboxedShellAvailable(cfg) {
-					return nil
+					return nil, nil
 				}
 				return newHardenedRunnerForRoot(cfg, childRoot)
 			}))
@@ -7428,7 +7433,7 @@ func buildAgentWritableEngineFactories(ctx context.Context, cfg Config, provReg 
 			role += ":model=" + model
 		}
 
-		eng, mcpClose, names, _, skillCount := buildAgentDefEngine(ctx, cfg, def, role, reg.Detail(def.Name), childProvider, model, windowFn,
+		eng, mcpClose, names, _, skillCount := buildAgentDefEngine(ctx, cfg, def, role, reg.Detail(def.Name), guardWritableRunner(cfg, childProvider), model, windowFn,
 			baseSubagentTools(cfg), true /*allowMutating*/, mainRunner != nil /*allowShell*/, skillIdx, defaultHooks, mainRunner, mainMgr)
 		if mcpClose != nil {
 			if err := mcpClose(); err != nil {
@@ -7546,20 +7551,20 @@ func buildTeamWiring(_ context.Context, cfg Config, provReg *providerRegistry, p
 	// when the gate withholds the shell (Shell disabled / untrusted workspace for
 	// roFk), so the child Environment is shell-less and its Shell surfaces ErrNoShell
 	// honestly — matching the historical shell-less degrade.
-	roRunnerBuilder := func(childRoot string) tool.CommandRunner {
+	roRunnerBuilder := func(childRoot string) (tool.CommandRunner, error) {
 		if !sandboxedShellAvailable(cfg) {
-			return nil
+			return nil, nil
 		}
 		return newHardenedRunnerForRoot(cfg, childRoot)
 	}
-	fkRunnerBuilder := func(childRoot string) tool.CommandRunner {
+	fkRunnerBuilder := func(childRoot string) (tool.CommandRunner, error) {
 		if !forceCopyShellAvailable(cfg) {
-			return nil
+			return nil, nil
 		}
 		return newHardenedRunnerForRoot(cfg, childRoot)
 	}
-	fk := forker.New(newForkWorkspace(), forker.WithForceCopy(), forker.WithRunner(fkRunnerBuilder))
-	roFk := forker.New(newForkWorkspace(), forker.WithDirtyOverlay(), forker.WithRunner(roRunnerBuilder))
+	fk := forker.New(newForkWorkspace(), forker.WithForceCopy(), forker.WithRunnerError(fkRunnerBuilder))
+	roFk := forker.New(newForkWorkspace(), forker.WithDirtyOverlay(), forker.WithRunnerError(roRunnerBuilder))
 	memberRunner := buildSandboxedCommandRunner(cfg)
 	mutatingRunner := buildForceCopyRunner(cfg)
 	roIsolationAvailable := memberRunner != nil && roFk != nil

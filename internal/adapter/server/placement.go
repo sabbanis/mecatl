@@ -22,6 +22,8 @@ var (
 	ErrPlacementStale = errors.New("server: placement selector is stale")
 	// ErrPlacementUnavailable reports a known, authorized placement whose backend is unavailable.
 	ErrPlacementUnavailable = errors.New("server: placement unavailable")
+	// ErrManagedTemporaryStorageUnavailable is a path-free, actionable placement cause.
+	ErrManagedTemporaryStorageUnavailable = fmt.Errorf("%w: managed temporary storage unavailable; retry after the operator restores a real, owner-only managed root and its parent directory; do not use a symlink or relax permissions", ErrPlacementUnavailable)
 	// ErrPlacementChanged reports an inventory revision race during Bind.
 	ErrPlacementChanged = errors.New("server: placement changed during bind")
 	// ErrInvalidPlacementBinding reports unsafe or internally inconsistent provider output.
@@ -183,7 +185,7 @@ func sanitizePlacementProviderError(err error) error {
 	public := ErrPlacementUnavailable
 	for _, candidate := range []error{
 		ErrInvalidPlacementSelection, ErrPlacementNotFound, ErrPlacementStale,
-		ErrPlacementUnavailable, ErrPlacementChanged, ErrInvalidPlacementBinding,
+		ErrManagedTemporaryStorageUnavailable, ErrPlacementUnavailable, ErrPlacementChanged, ErrInvalidPlacementBinding,
 	} {
 		if errors.Is(err, candidate) {
 			public = candidate

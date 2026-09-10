@@ -90,6 +90,24 @@ TTL. It never sweeps arbitrary system temporary files and never blocks command
 allocation. The lifecycle is available on Linux and macOS; other platforms must
 use system mode.
 
+If the managed root disappears while the harness is running, the next session
+attachment, command allocation, or maintenance pass automatically recreates it.
+An existing replacement is used only if it is a real directory owned by the
+harness user with private permissions and a valid managed layout. Recovery does
+not restore deleted files or move temporary leases for commands already running;
+a command interrupted by removal can still fail. Retry that command or continue
+the session after recovery.
+
+An unsafe root is never repaired by weakening its security checks, and a session
+configured for Bash must not silently continue without its shell. If you see
+**managed temporary storage unavailable**, inspect the operator-configured
+`managed_root` and its parent: restore the missing parent, resolve any unexpected
+file or symlink, and ensure the managed root is owned by the harness user with
+mode `0700` (protocol files use `0600`). Inspect unexpected contents before making
+changes; do not point the root at another user's directory or make it broadly
+writable. Then retry the session or delegation. Intentional `--no-bash` and
+`no-fs` sessions do not require managed-shell recovery.
+
 An operator can set `temporary_storage.mode: system` in user-global
 `~/.config/mecatl/settings.yaml` to restore system temporary storage. This rollback
 mode creates no new managed leases, runs no reaper, and leaves existing managed

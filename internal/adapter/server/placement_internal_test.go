@@ -11,6 +11,18 @@ import (
 	"github.com/stacklok/mecatl/engine/tool"
 )
 
+func TestManagedTemporaryPlacementErrorRemainsActionableAndRedacted(t *testing.T) {
+	private := errors.New("private root /srv/secret with token=do-not-disclose")
+	err := sanitizePlacementProviderError(errors.Join(ErrManagedTemporaryStorageUnavailable, private))
+	if err.Error() != ErrManagedTemporaryStorageUnavailable.Error() || !errors.Is(err, ErrPlacementUnavailable) {
+		t.Fatalf("managed storage cause lost or private detail exposed: %v", err)
+	}
+	generic := sanitizePlacementProviderError(private)
+	if generic.Error() != ErrPlacementUnavailable.Error() {
+		t.Fatalf("unclassified provider error escaped redaction: %v", generic)
+	}
+}
+
 type exactPlacementProvider struct {
 	binding PlacementBinding
 	err     error
