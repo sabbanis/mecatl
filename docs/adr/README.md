@@ -197,9 +197,9 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0312 — Confidential ToolHive broker client credentials](./0312-confidential-toolhive-broker-client.md)
 - [0314 — Dynamic Client Registration for MCP broker upstreams](./0314-mcp-broker-dcr-client.md)
 - [0325 — Durable Dynamic Client Registration for direct MCP profiles](./0325-direct-mcp-dcr.md) *(proposed)*
-- [0316 — Process-bound remote MCP broker attachments](./0316-process-bound-remote-mcp-broker.md)
-- [0317 — Single-replica production topology for the MCP broker](./0317-single-replica-mcp-broker-topology.md)
-- [0318 — Bounded singleton MCP broker correctness](./0318-bounded-singleton-mcp-broker-correctness.md)
+- [0326 — Process-bound remote MCP broker attachments](./0326-process-bound-remote-mcp-broker.md)
+- [0327 — Single-replica production topology for the MCP broker](./0327-single-replica-mcp-broker-topology.md)
+- [0328 — Bounded singleton MCP broker correctness](./0328-bounded-singleton-mcp-broker-correctness.md)
 
 ### Performance & diagnostics
 - [0018 — Perf observability](./0018-perf-observability.md)

@@ -67,4 +67,4 @@ cannot dispatch it later after capacity recovers.
 
 Set `networkPolicy.publicFrom` to one union of exact namespace, pod, and CIDR peers for the multiplexed public listener. Vanilla NetworkPolicy cannot distinguish gRPC from browser callbacks on the shared port. Set `operatorEgress` to cluster DNS plus concrete destination rules for OIDC/JWKS, upstream OAuth, and MCP; external DNS names are not enforced.
 
-For the complete resource-lifecycle boundary, see [ADR 0316](https://github.com/stacklok/mecatl/blob/main/docs/adr/0316-single-replica-mcp-broker-topology.md).
+For the complete resource-lifecycle boundary, see [ADR 0327](https://github.com/stacklok/mecatl/blob/main/docs/adr/0327-single-replica-mcp-broker-topology.md).
