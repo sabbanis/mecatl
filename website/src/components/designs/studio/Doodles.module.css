@@ -1,0 +1,293 @@
+/* ═══════════════════════════════════════════════════════════════════════════
+   STUDIO doodles — band edges, hand-drawn strokes, stickers, stamps.
+   Tokens (--ink, --gold, --teal, --paper, --display, --spring, --band-bg,
+   --wave-h) cascade from the page root; every value has a fallback.
+   Entrance states key off two global hooks set by the page:
+     .mec-js  — JS has mounted (SSR/no-JS stays fully drawn and visible)
+     .mec-in  — the enclosing Reveal has scrolled into view
+   ═══════════════════════════════════════════════════════════════════════════ */
+
+/* ─── band top edge ────────────────────────────────────────────────────────── */
+
+.wave {
+  position: absolute;
+  left: 0;
+  top: calc(1px - var(--wave-h, 44px));
+  width: 100%;
+  height: var(--wave-h, 44px);
+  display: block;
+  fill: var(--band-bg, #fff);
+  pointer-events: none;
+}
+
+/* ─── hand-drawn strokes ───────────────────────────────────────────────────── */
+
+.stroke {
+  display: block;
+  overflow: visible;
+  color: var(--ink, #3b3735);
+}
+
+.ink {
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 3;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+  vector-effect: non-scaling-stroke;
+}
+
+:global(.mec-js) .path {
+  stroke-dasharray: 1;
+  stroke-dashoffset: 1;
+}
+
+:global(.mec-js) :global(.mec-in) .path {
+  animation: draw 0.9s cubic-bezier(0.4, 0, 0.2, 1) forwards;
+  animation-delay: var(--dd, 0.25s);
+}
+
+:global(.mec-js) :global(.mec-in) .late {
+  animation-delay: calc(var(--dd, 0.25s) + 0.55s);
+}
+
+@keyframes draw {
+  to {
+    stroke-dashoffset: 0;
+  }
+}
+
+/* ─── sparkles ─────────────────────────────────────────────────────────────── */
+
+.sparkles {
+  display: block;
+  overflow: visible;
+}
+
+.spark {
+  transform-box: fill-box;
+  transform-origin: center;
+  fill: var(--gold, #ffcf6b);
+  stroke: var(--ink, #3b3735);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
+}
+
+:global(.mec-js) .spark {
+  opacity: 0;
+  transform: scale(0);
+}
+
+:global(.mec-js) :global(.mec-in) .spark {
+  animation: popIn 0.7s var(--spring, cubic-bezier(0.34, 1.56, 0.64, 1)) forwards;
+  animation-delay: var(--dd, 0.5s);
+}
+
+@keyframes popIn {
+  to {
+    opacity: 1;
+    transform: scale(1);
+  }
+}
+
+/* ─── small filled star (the Copied glyph) ─────────────────────────────────── */
+
+.star {
+  display: inline-block;
+  width: 1em;
+  height: 1em;
+  margin-left: 0.35em;
+  vertical-align: -0.12em;
+  fill: var(--gold, #ffcf6b);
+  stroke: var(--ink, #3b3735);
+  stroke-width: 1.5;
+  stroke-linejoin: round;
+  paint-order: stroke fill;
+  transform-origin: center;
+  animation: starIn 0.6s var(--spring, cubic-bezier(0.34, 1.56, 0.64, 1)) both;
+}
+
+@keyframes starIn {
+  from {
+    opacity: 0;
+    transform: scale(0) rotate(-90deg);
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(0deg);
+  }
+}
+
+/* ─── stickers ─────────────────────────────────────────────────────────────── */
+
+.sticker {
+  --rot: -4deg;
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  width: max-content;
+  padding: 7px 11px;
+  border: 2px solid var(--ink, #3b3735);
+  border-radius: 8px;
+  background: var(--gold, #ffcf6b);
+  color: var(--ink, #3b3735);
+  font-family: var(--display, system-ui, sans-serif);
+  font-weight: 800;
+  font-size: 0.74rem;
+  line-height: 1;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  white-space: nowrap;
+  box-shadow: 3px 3px 0 var(--ink, #3b3735);
+  transform: rotate(var(--rot));
+}
+
+.lower {
+  text-transform: none;
+  letter-spacing: -0.01em;
+  font-size: 0.84rem;
+}
+
+.teal {
+  background: var(--teal, #3dbdad);
+}
+
+.paper {
+  background: var(--paper, #fff);
+}
+
+.tangerine {
+  background: var(--tangerine, #f4a261);
+}
+
+.inkTone {
+  background: var(--ink, #3b3735);
+  color: var(--gold, #ffcf6b);
+  box-shadow: 3px 3px 0 var(--gold, #ffcf6b);
+}
+
+/* ─── starburst ────────────────────────────────────────────────────────────── */
+
+/* size (width/height) and text size (font-size) are overridable per placement — the
+   entrance animation owns `transform`, so a caller scales the burst via its box instead */
+.burst {
+  --rot: -8deg;
+  position: relative;
+  display: inline-grid;
+  place-items: center;
+  width: 124px;
+  height: 124px;
+  color: var(--ink, #3b3735);
+  font-size: 0.98rem;
+  transform: rotate(var(--rot));
+}
+
+.burst svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  fill: var(--gold, #ffcf6b);
+  stroke: var(--ink, #3b3735);
+  stroke-width: 2;
+  stroke-linejoin: round;
+  overflow: visible;
+}
+
+.burstText {
+  position: relative;
+  max-width: 68%;
+  font-family: var(--display, system-ui, sans-serif);
+  font-weight: 800;
+  font-size: 1em;
+  line-height: 1.05;
+  letter-spacing: -0.01em;
+  text-align: center;
+}
+
+/* sticker + starburst entrance (spring pop) */
+
+:global(.mec-js) .sticker,
+:global(.mec-js) .burst {
+  opacity: 0;
+}
+
+:global(.mec-js) :global(.mec-in) .sticker,
+:global(.mec-js) :global(.mec-in) .burst {
+  animation: stickerIn 0.75s var(--spring, cubic-bezier(0.34, 1.56, 0.64, 1)) forwards;
+  animation-delay: var(--dd, 0.5s);
+}
+
+@keyframes stickerIn {
+  from {
+    opacity: 0;
+    transform: scale(0.3) rotate(calc(var(--rot) - 25deg));
+  }
+
+  to {
+    opacity: 1;
+    transform: scale(1) rotate(var(--rot));
+  }
+}
+
+/* ─── ring stamp (slow spin, paused unless .run) ───────────────────────────── */
+
+.stamp {
+  display: block;
+  overflow: visible;
+  animation: spin 32s linear infinite;
+  animation-play-state: paused;
+  will-change: transform;
+}
+
+.run {
+  animation-play-state: running;
+}
+
+.stampText {
+  font-family: var(--display, system-ui, sans-serif);
+  font-weight: 800;
+  font-size: 14.5px;
+  letter-spacing: 0.18em;
+  fill: var(--ink, #3b3735);
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}
+
+/* ─── reduced motion: everything static, drawn and visible ─────────────────── */
+
+@media (prefers-reduced-motion: reduce) {
+  :global(.mec-js) .path,
+  :global(.mec-js) :global(.mec-in) .path {
+    animation: none;
+    stroke-dasharray: none;
+    stroke-dashoffset: 0;
+  }
+
+  :global(.mec-js) .spark,
+  :global(.mec-js) :global(.mec-in) .spark {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+
+  :global(.mec-js) .sticker,
+  :global(.mec-js) .burst,
+  :global(.mec-js) :global(.mec-in) .sticker,
+  :global(.mec-js) :global(.mec-in) .burst {
+    animation: none;
+    opacity: 1;
+    transform: rotate(var(--rot));
+  }
+
+  .star,
+  .stamp {
+    animation: none;
+  }
+}

@@ -1,0 +1,45 @@
+/* Paper burst from the Copy button — transform/opacity only; pieces remove themselves. */
+
+.layer {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  width: 0;
+  height: 0;
+  pointer-events: none;
+  z-index: 6;
+}
+
+.piece {
+  position: absolute;
+  left: -5px;
+  top: -5px;
+  width: 10px;
+  height: 10px;
+  border-radius: 2px;
+  background: var(--c, #ffcf6b);
+  opacity: 0;
+  will-change: transform, opacity;
+  animation: fly 1.05s cubic-bezier(0.18, 0.72, 0.3, 1) forwards;
+}
+
+.round {
+  border-radius: 50%;
+}
+
+@keyframes fly {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) rotate(0deg) scale(0.6);
+  }
+
+  55% {
+    opacity: 1;
+    transform: translate(calc(var(--dx) * 0.85), var(--dy)) rotate(calc(var(--rot) * 0.6)) scale(1);
+  }
+
+  100% {
+    opacity: 0;
+    transform: translate(var(--dx), calc(var(--dy) + 170px)) rotate(var(--rot)) scale(0.9);
+  }
+}
