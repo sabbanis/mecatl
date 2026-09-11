@@ -1,4 +1,4 @@
-# ADR 0326 — Persist saved mecatui gRPC server CA references
+# ADR 0327 — Persist saved mecatui gRPC server CA references
 
 - Status: Accepted
 - Date: 2026-09-08
