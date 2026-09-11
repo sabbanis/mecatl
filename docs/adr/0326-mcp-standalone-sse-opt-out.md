@@ -93,4 +93,4 @@ other servers their list-changed notifications.
   this ADR makes per-server optional.
 - [ADR 0082](./0082-factory-mcp-wiring.md) — the shared `--mcp-server` flag +
   `MCP_<NAME>_*` env convention the opt-out rides.
-- `user-docs/what-you-get/mcp-client.md` — the operator-facing documentation.
+- `user-docs/building/what-you-get/mcp-client.md` — the operator-facing documentation.

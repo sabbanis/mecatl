@@ -174,4 +174,4 @@ runtime, from outside the SDK — no operator action required.
   whose next dial is what actually applies this ADR's verdict.
 - `docs/adr/0027-cloud-native.md` List 1, row 28 addendum — why
   `sseHealthTracker` needs no new resource row.
-- `user-docs/what-you-get/mcp-client.md` — the operator-facing documentation.
+- `user-docs/building/what-you-get/mcp-client.md` — the operator-facing documentation.
