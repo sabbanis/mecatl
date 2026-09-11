@@ -256,7 +256,7 @@ func writeTopLevelCommands(out io.Writer) {
 	_, _ = fmt.Fprintf(out, "  mcp list                 list configured MCP profiles without network or prompts\n")
 	_, _ = fmt.Fprintf(out, "  mcp login SERVER [flags] authorize a configured OAuth MCP server\n")
 	_, _ = fmt.Fprintf(out, "  mcp remove NAME          remove a configured direct OAuth MCP server\n")
-	_, _ = fmt.Fprintf(out, "  microvm doctor|status|delete administer local microVM state (offline)\n")
+	_, _ = fmt.Fprintf(out, "  microvm doctor|status|delete inspect and administer local microVM attachments\n")
 	_, _ = fmt.Fprintf(out, "  import                  import a Codex or Claude Code session, skills, and workspace files\n")
 	_, _ = fmt.Fprintf(out, "  config init             write or print an operator settings.yaml template\n")
 	_, _ = fmt.Fprintf(out, "  config validate         validate operator settings.yaml without writing\n")
