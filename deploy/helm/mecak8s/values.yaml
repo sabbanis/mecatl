@@ -61,14 +61,15 @@ mcp:
   servers: []
 
 # Optional authenticated remote singleton broker. All fields are required together;
-# the projected token is read by mecak8s for every RPC.
+# the projected workload JWT is read by mecak8s for every RPC.
 remoteBroker:
   address: ""
   caSecret: ""
   caKey: ""
   serverName: ""
-  tokenAudience: ""
-  tokenLifetimeSeconds: 600
+  workloadJWT:
+    audience: ""
+    lifetimeSeconds: 600
 
 # and tokenKey are set, the chart projects it only as MECATL_DRIVER_AUTH_TOKEN. TLS
 # verifies the driver with the supplied CA, and mTLS is optional.

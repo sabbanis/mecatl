@@ -412,52 +412,53 @@ mcp:
 
 The static token is projected as `MCP_GITHUB_TOKEN`; it never appears in Helm
 values, arguments, or a ConfigMap. For broker-mode OAuth, mecak8s connects to a separately
-hosted internal broker rather than embedding ToolHive. Supply `--mcp-broker-address`,
-`--mcp-broker-token-file`, `--mcp-broker-tls-ca`, and `--mcp-broker-server-name` together.
-The projected workload token is read for every broker RPC; TLS verification and bearer
-authentication cannot be disabled or partially configured. The broker owns ToolHive and its
-callback routes, while mecak8s retains only opaque enrollment/authorization references and
-fetches presentation URLs live.
+hosted internal broker rather than embedding ToolHive. The chart's typed `remoteBroker`
+values require `address`, `caSecret`, `caKey`, `serverName`, and
+`workloadJWT.audience`/`lifetimeSeconds` together. They render the equivalent of
+`--mcp-broker-address`, `--mcp-broker-token-file`, `--mcp-broker-tls-ca`, and
+`--mcp-broker-server-name`; there is no broker `extraEnv` escape hatch.
 
-For the remote broker chart profile, set `remoteBroker.address`, `caSecret`, `caKey`,
-`serverName`, `tokenAudience`, and (optionally) the bounded `tokenLifetimeSeconds` together;
-the chart rejects partial configuration. It retains the standard Kubernetes service-account
-credential for the `SessionLease` API client and separately projects the read-only,
-audience-bound broker token at `/var/run/secrets/mecatl-broker/token`. It passes only file
-paths and the expected DNS name to the process. The token file is reread for every RPC, so
-atomic projected-token rotation does not require a pod restart.
+The credential used from mecak8s to the broker is a **workload JWT**: a projected,
+read-only Kubernetes ServiceAccount token at `/var/run/secrets/mecatl-broker/token`,
+with the configured audience and lifetime. It is separate from the standard
+ServiceAccount credential used by mecak8s for the Kubernetes Lease API. The token file
+is reread for every broker RPC, so projected-token rotation does not require a pod
+restart. This terminology does not rename or replace inbound caller OIDC: the mecak8s
+`oidc.*` values still describe OIDC validation of clients calling mecak8s.
 
-token; for a GitHub OAuth App's real browser consent flow, use `auth.mode:
-oauth` with `upstream: {mode: oauth2, oauth2: {authorizationEndpoint,
-tokenEndpoint}}` instead of `issuer` — GitHub has no OIDC discovery endpoint —
-and optionally a static `tools` catalogue. OAuth selects the session MCP broker instead
-of global routing. One session enrollment can cover multiple configured protected upstreams:
-ToolHive drives their sequential browser flow, owns callback state and refresh, and injects
-each upstream token only into its configured backend. Mecatl exposes one opaque enrollment,
-not per-backend controls or OAuth material.
+For a GitHub OAuth App's browser consent flow, use `auth.mode: oauth` with
+`upstream: {mode: oauth2, oauth2: {authorizationEndpoint, tokenEndpoint}}` instead of
+`issuer`—GitHub has no OIDC discovery endpoint—and optionally a static `tools` catalogue.
+OAuth selects the session MCP broker instead of global routing. One enrollment can cover
+multiple protected upstreams: ToolHive drives their sequential browser flow, owns callback
+state and refresh, and injects each upstream token only into its configured backend.
+Mecatl exposes one opaque enrollment, not per-backend controls or OAuth material.
 
-Configure the final callback URL, fixed `/v1/mcp/broker/` callback prefix, OAuth profiles,
-and singleton lifecycle on the standalone `mecabroker` chart. Its ingress or gateway routes
-those browser paths to the broker Service, never to the mecak8s HTTP listener. mecak8s only
-holds opaque enrollment references and authenticates to the broker with its separate projected
-workload token. The standalone broker is one `Recreate` replica with no HA or zero-downtime
-rollout; this limitation does not require changing the scalable mecak8s Deployment.
+Configure `mcp.broker.callbackURL`, the fixed `/v1/mcp/broker/` callback prefix, OAuth
+profiles, and singleton lifecycle on the standalone `mecabroker` chart. One
+operator-owned public TLS/HTTP2 endpoint must route gRPC, `/v1/mcp/broker/`, and the
+final callback URL to the broker Service; do not route those browser paths to the
+mecak8s HTTP listener. mecak8s holds only opaque enrollment references and authenticates
+to the broker with its projected workload JWT. The standalone broker is one `Recreate`
+replica with no HA or zero-downtime rollout.
 
-See the [standalone MCP broker deployment guide](/building/deployment/mecabroker.md)
-for the broker chart and callback deployment.
+The names have different meanings: the broker certificate **SAN** must match the TLS
+`serverName` used by mecak8s; `remoteBroker.address` is the Kubernetes Service endpoint
+for outbound gRPC; `mcp.broker.callbackURL` has the public callback host used by the
+browser; and the broker's `listener.publicAddress` is only its local bind address. None
+of these values is inferred from another. See the [standalone MCP broker deployment
+guide](/building/deployment/mecabroker.md) for the typed broker chart configuration.
 
-Keep MCP and OAuth endpoints on HTTPS and configure the chart's default-deny `networkPolicy.operatorEgress` (or a mesh) for them. The explicit
-`insecureHTTP: true` acknowledgement is accepted by the runtime only for
-non-loopback, non-OAuth plain-HTTP servers and means a bearer may cross the pod
-network in cleartext. Loopback HTTP is already accepted; a stale acknowledgement
-makes startup fail. Use it only for a tightly isolated in-cluster endpoint.
+Keep MCP and OAuth endpoints on HTTPS and configure the chart's default-deny
+`networkPolicy.operatorEgress` (or a mesh) for them. NetworkPolicy supplies only L3/L4
+peer and port controls; it cannot enforce the broker HTTP callback path, TLS identity,
+OAuth identity, or a hostname. Empty peer lists remain deny-all.
 
-OAuth profile changes alter a pod-template checksum and trigger a rollout.
-Secret-backed environment variables do not rotate inside a running pod, so roll
-the Deployment after replacing a static bearer or OAuth client secret. Keep old
-and new credentials valid during the rollout.
-`extraArgs` and `extraEnv` remain available, but `extraEnv` cannot collide with
-environment names generated by `mcp.servers`.
+A broker TLS, workload-JWT CA, or upstream OAuth Secret rotation is deliberately
+operator-controlled: update `rollout.restartToken` in the mecabroker release to trigger
+its singleton restart. Keep old and new credentials valid during the cutover where the
+upstream permits it. Changes to mecak8s Secret-backed environment variables likewise
+require a Deployment rollout.
 
 ### Mount trusted skills, agents, and rules
 

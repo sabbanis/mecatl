@@ -143,7 +143,7 @@ type config struct {
 	// optional. Threaded onto app.Config.MCPServers in appConfig.
 	mcpServers *cliconfig.MCPServerList
 	// A production mecak8s broker is an authenticated, CA-verified remote service.
-	// The projected workload token is read for every RPC so rotation needs no pod
+	// The projected workload JWT is read for every RPC so rotation needs no pod
 	// restart; the expected DNS name is never inferred from an address.
 	mcpBrokerAddress    string
 	mcpBrokerTokenFile  string

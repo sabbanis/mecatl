@@ -226,12 +226,6 @@ spec:
             - name: {{ printf "MCP_%s_TOKEN" (upper $server.name) }}
               valueFrom:
                 secretKeyRef: {{- toYaml $server.auth.staticBearer.secretKeyRef | nindent 18 }}
-            {{- else if eq $server.auth.mode "oauth" }}
-            {{- if eq $server.auth.oauth.client.mode "preregistered" }}
-            - name: {{ printf "MECATL_MCP_%s_CLIENT_SECRET" (upper $server.name) }}
-              valueFrom:
-                secretKeyRef: {{- toYaml $server.auth.oauth.client.preregistered.secretKeyRef | nindent 18 }}
-            {{- end }}
             {{- end }}
             {{- end }}
             {{- with .Values.extraEnv }}
@@ -296,6 +290,11 @@ spec:
             {{- if $mcpSettings }}
             - {name: mcp-profile, mountPath: /etc/mecatl-mcp, readOnly: true}
             {{- end }}
+            {{- range $index, $server := .Values.mcp.servers }}
+            {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") }}
+            - {name: mcp-oauth-client-secret-{{ $index }}, mountPath: /var/run/secrets/mecatl-mcp/oauth/{{ $index }}, readOnly: true}
+            {{- end }}
+            {{- end }}
             {{- with .Values.extraVolumeMounts }}
             {{- toYaml . | nindent 12 }}
             {{- end }}
@@ -307,8 +306,8 @@ spec:
             sources:
               - serviceAccountToken:
                   path: token
-                  audience: {{ .Values.remoteBroker.tokenAudience | quote }}
-                  expirationSeconds: {{ .Values.remoteBroker.tokenLifetimeSeconds }}
+                  audience: {{ .Values.remoteBroker.workloadJWT.audience | quote }}
+                  expirationSeconds: {{ .Values.remoteBroker.workloadJWT.lifetimeSeconds }}
               - secret:
                   name: {{ .Values.remoteBroker.caSecret | quote }}
                   items:
@@ -373,6 +372,16 @@ spec:
             defaultMode: 0444
             items:
               - {key: settings.yaml, path: settings.yaml}
+        {{- end }}
+        {{- range $index, $server := .Values.mcp.servers }}
+        {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") }}
+        - name: mcp-oauth-client-secret-{{ $index }}
+          secret:
+            secretName: {{ $server.auth.oauth.client.preregistered.secretKeyRef.name | quote }}
+            defaultMode: 0440
+            items:
+              - {key: {{ $server.auth.oauth.client.preregistered.secretKeyRef.key | quote }}, path: client-secret}
+        {{- end }}
         {{- end }}
         {{- with .Values.extraVolumes }}
         {{- toYaml . | nindent 8 }}

@@ -191,7 +191,7 @@ func TransmitMascot(cols, rows int) string {
 	// rides the escape, base64+chunked) — no temp file, no os/exec.
 	opts := &kitty.Options{
 		Action:           kitty.TransmitAndPut,
-		Quite:            2, // q=2 — upstream x/ansi's (typo'd) field name for quiet mode
+		Quiet:            2, // q=2 suppresses terminal responses from the image protocol.
 		Format:           kitty.PNG,
 		Transmission:     kitty.Direct,
 		ID:               MascotImageID,

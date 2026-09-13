@@ -107,11 +107,11 @@ func (a *Attachment) BeginWorkspaceEnrollment(ctx context.Context) (contract.Wor
 
 	// Secret resolution is potentially slow and must NOT run while holding
 	// logical.mu: see the identical rationale on RequestAuthorization. Delegates
-	// to the shared resolveClientSecret (rather than re-deriving it here) so the
+	// to the shared resolveClientSecret (rather than re-reading it here) so the
 	// already-populated raw target.clientSecret (the confidential embedded
 	// broker's own client secret, set once at construction) is never bypassed
-	// in favor of a secretEnv lookup that a target like this one never has.
-	secret, err := target.resolveClientSecret(opCtx, a.runtime.oauth.resolveSecret)
+	// in favor of a secret-file read that a target like this one never has.
+	secret, err := target.resolveClientSecret(opCtx, a.runtime.oauth.readSecretFile)
 	if err != nil {
 		return contract.WorkspaceEnrollmentPresentation{}, err
 	}

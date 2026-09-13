@@ -233,7 +233,7 @@ func newToolHiveProcess(ctx context.Context, config ToolHiveConfig, options tool
 		reader := upstreamtoken.NewInProcessService(auth.IDPTokenStorage(), auth.UpstreamTokenRefresher())
 		incoming, _, authInfo, err = factory.NewIncomingAuthMiddleware(processCtx, &vmcpconfig.IncomingAuthConfig{
 			Type: "oidc", OIDC: &vmcpconfig.OIDCConfig{Issuer: issuer, Audience: issuer, Resource: issuer, JWKSURL: issuer + "/.well-known/jwks.json"},
-		}, "mecatl-broker", nil, reader, authKeyProvider)
+		}, "mecatl-broker", nil, reader, authKeyProvider, issuer)
 		if err != nil {
 			return rollback(fmt.Errorf("mcpbroker: create incoming auth: %w", err))
 		}

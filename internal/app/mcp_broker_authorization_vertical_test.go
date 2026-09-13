@@ -76,9 +76,11 @@ func TestSingletonBrokerRemediation_Scenario5_RestartBoundary(t *testing.T) {
 	roots := x509.NewCertPool()
 	roots.AddCert(certificateSource.Certificate())
 	fixture.mcpClient = fixture.clientWithRoots(roots)
-	t.Setenv("MECATL_RESTART_CLIENT_SECRET", "restart-secret")
-
 	credentialDir := t.TempDir()
+	clientSecretFile := filepath.Join(credentialDir, "client-secret")
+	if err := os.WriteFile(clientSecretFile, []byte("restart-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	caFile := filepath.Join(credentialDir, "broker-ca.pem")
 	tokenFile := filepath.Join(credentialDir, "broker-token")
 	if err := os.WriteFile(caFile, pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: certificateSource.Certificate().Raw}), 0o600); err != nil {
@@ -92,12 +94,12 @@ func TestSingletonBrokerRemediation_Scenario5_RestartBoundary(t *testing.T) {
 			PublicAddress: address, AdminAddress: "127.0.0.1:0",
 			TLSConfig:       &tls.Config{Certificates: certificateSource.TLS.Certificates, MinVersion: tls.VersionTLS12},
 			OIDC:            mcpbrokerserver.OIDCConfig{Issuer: identity.server.URL, JWKSURI: identity.server.URL + "/keys", Audience: "mecak8s", AllowedSubjects: []string{"mecak8s"}, TrustedCAPEM: identity.caPEM(), MaxJWKSStaleness: time.Minute},
-			ToolHive:        mcpbroker.ToolHiveConfig{CallbackURL: callbackURL, Profiles: []mcpbroker.ToolHiveProfile{{Name: "github", URL: fixture.mcp.URL, Auth: "oauth", OAuth: &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token", ClientID: "restart-client", ClientSecretEnv: "MECATL_RESTART_CLIENT_SECRET", Scopes: []string{"read"}, RequestRefreshToken: true}, Static: []mcpbroker.StaticTool{{Name: "protected", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}}}}},
-			ToolHiveOptions: []mcpbroker.Option{mcpbroker.WithOAuthLoopbackForTest(t, roots), mcpbroker.WithBrokerHTTPClientForTest(t, fixture.clientWithRoots(roots)), mcpbroker.WithOAuthSecretResolver(func(context.Context, string) (string, error) { return "restart-secret", nil })},
+			ToolHive:        mcpbroker.ToolHiveConfig{CallbackURL: callbackURL, Profiles: []mcpbroker.ToolHiveProfile{{Name: "github", URL: fixture.mcp.URL, Auth: "oauth", OAuth: &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token", ClientID: "restart-client", ClientSecretFile: clientSecretFile, Scopes: []string{"read"}, RequestRefreshToken: true}, Static: []mcpbroker.StaticTool{{Name: "protected", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}}}}},
+			ToolHiveOptions: []mcpbroker.Option{mcpbroker.WithOAuthLoopbackForTest(t, roots), mcpbroker.WithBrokerHTTPClientForTest(t, fixture.clientWithRoots(roots))},
 			PropagationWait: time.Millisecond, DrainTimeout: time.Second,
 		}
 	}
-	declaration := mcpauthority.NewBroker(mcpauthority.BrokerConfig{CallbackURL: callbackURL, Routes: []permconfig.MCPServerProfile{{Name: "github", URL: fixture.mcp.URL, Auth: permconfig.MCPAuthProfile{Mode: "oauth", OAuth: &permconfig.MCPOAuthProfile{Upstream: &permconfig.MCPOAuthUpstreamProfile{Mode: "oauth2", OAuth2: &permconfig.MCPOAuth2UpstreamProfile{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token"}}, Client: permconfig.MCPOAuthClientProfile{Mode: "preregistered", Preregistered: &permconfig.MCPPreregisteredClientProfile{ID: "restart-client", SecretEnv: "MECATL_RESTART_CLIENT_SECRET"}}, Scopes: []string{"read"}, RequestRefreshToken: true}}}}})
+	declaration := mcpauthority.NewBroker(mcpauthority.BrokerConfig{CallbackURL: callbackURL, Routes: []permconfig.MCPServerProfile{{Name: "github", URL: fixture.mcp.URL, Auth: permconfig.MCPAuthProfile{Mode: "oauth", OAuth: &permconfig.MCPOAuthProfile{Upstream: &permconfig.MCPOAuthUpstreamProfile{Mode: "oauth2", OAuth2: &permconfig.MCPOAuth2UpstreamProfile{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token"}}, Client: permconfig.MCPOAuthClientProfile{Mode: "preregistered", Preregistered: &permconfig.MCPPreregisteredClientProfile{ID: "restart-client", SecretFile: clientSecretFile}}, Scopes: []string{"read"}, RequestRefreshToken: true}}}}})
 	remoteConfig := mcpbrokergrpc.RemoteFactoryConfig{Target: address, CAFile: caFile, ServerName: "example.com", TokenFile: tokenFile, Transport: mcpbrokergrpc.DefaultConfig()}
 	remoteFactory := mcpbrokergrpc.NewRemoteFactory(remoteConfig)
 	storeDir := t.TempDir()
@@ -193,7 +195,10 @@ func TestSingletonBrokerRemediation_Scenario5_CallbackCorrelationReplayAndNonDis
 	roots := x509.NewCertPool()
 	roots.AddCert(certificateSource.Certificate())
 	fixture.mcpClient = fixture.clientWithRoots(roots)
-	t.Setenv("MECATL_CALLBACK_CLIENT_SECRET", "callback-secret")
+	clientSecretFile := filepath.Join(t.TempDir(), "client-secret")
+	if err := os.WriteFile(clientSecretFile, []byte("callback-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 
 	lifecycle, err := mcpbrokerserver.NewProduction(ctx, mcpbrokerserver.ProductionConfig{
 		PublicAddress: address, AdminAddress: "127.0.0.1:0",
@@ -201,14 +206,13 @@ func TestSingletonBrokerRemediation_Scenario5_CallbackCorrelationReplayAndNonDis
 		OIDC:      mcpbrokerserver.OIDCConfig{Issuer: identity.server.URL, JWKSURI: identity.server.URL + "/keys", Audience: "mecak8s", AllowedSubjects: []string{"mecak8s"}, TrustedCAPEM: identity.caPEM(), MaxJWKSStaleness: time.Minute},
 		ToolHive: mcpbroker.ToolHiveConfig{CallbackURL: callbackURL, Profiles: []mcpbroker.ToolHiveProfile{{
 			Name: "github", URL: fixture.mcp.URL, Auth: "oauth",
-			OAuth:  &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token", ClientID: "callback-client", ClientSecretEnv: "MECATL_CALLBACK_CLIENT_SECRET", Scopes: []string{"read"}},
+			OAuth:  &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token", ClientID: "callback-client", ClientSecretFile: clientSecretFile, Scopes: []string{"read"}},
 			Static: []mcpbroker.StaticTool{{Name: "protected", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}},
 		}}},
 		ToolHiveOptions: []mcpbroker.Option{
 			mcpbroker.WithOAuthLoopbackForTest(t, roots),
 			mcpbroker.WithBrokerHTTPClientForTest(t, fixture.clientWithRoots(roots)),
 			mcpbroker.WithOAuthLimits(300*time.Millisecond, time.Second),
-			mcpbroker.WithOAuthSecretResolver(func(context.Context, string) (string, error) { return "callback-secret", nil }),
 		},
 		PropagationWait: time.Millisecond, DrainTimeout: time.Second,
 	})
@@ -583,18 +587,21 @@ func runSingletonBrokerStage3RemoteVertical(t *testing.T) *stage3Evidence {
 	roots.AddCert(certificateSource.Certificate())
 	fixture.mcpClient = fixture.clientWithRoots(roots)
 
+	secretFile := filepath.Join(t.TempDir(), "client-secret")
+	if err := os.WriteFile(secretFile, []byte("vertical-secret\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	declaration := mcpauthority.NewBroker(mcpauthority.BrokerConfig{
 		CallbackURL: callbackURL,
 		Routes: []permconfig.MCPServerProfile{{
 			Name: "github", URL: fixture.mcp.URL,
 			Auth: permconfig.MCPAuthProfile{Mode: "oauth", OAuth: &permconfig.MCPOAuthProfile{
 				Upstream: &permconfig.MCPOAuthUpstreamProfile{Mode: "oauth2", OAuth2: &permconfig.MCPOAuth2UpstreamProfile{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token"}},
-				Client:   permconfig.MCPOAuthClientProfile{Mode: "preregistered", Preregistered: &permconfig.MCPPreregisteredClientProfile{ID: "vertical-client", SecretEnv: "MECATL_VERTICAL_CLIENT_SECRET"}},
+				Client:   permconfig.MCPOAuthClientProfile{Mode: "preregistered", Preregistered: &permconfig.MCPPreregisteredClientProfile{ID: "vertical-client", SecretFile: secretFile}},
 				Scopes:   []string{"read"}, RequestRefreshToken: true,
 			}},
 		}},
 	})
-	t.Setenv("MECATL_VERTICAL_CLIENT_SECRET", "vertical-secret")
 	brokerHTTPClient := fixture.clientWithRoots(roots)
 	diagnostics := &captureDiagnostics{}
 	metrics := &captureMetrics{}
@@ -603,8 +610,8 @@ func runSingletonBrokerStage3RemoteVertical(t *testing.T) *stage3Evidence {
 		TLSConfig:       &tls.Config{Certificates: certificateSource.TLS.Certificates, MinVersion: tls.VersionTLS12},
 		OIDC:            mcpbrokerserver.OIDCConfig{Issuer: identity.server.URL, JWKSURI: identity.server.URL + "/keys", Audience: "mecak8s", AllowedSubjects: []string{"mecak8s"}, TrustedCAPEM: identity.caPEM(), MaxJWKSStaleness: time.Minute},
 		Diagnostics:     diagnostics,
-		ToolHive:        mcpbroker.ToolHiveConfig{CallbackURL: callbackURL, Profiles: []mcpbroker.ToolHiveProfile{{Name: "github", URL: fixture.mcp.URL, Auth: "oauth", OAuth: &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token", ClientID: "vertical-client", ClientSecretEnv: "MECATL_VERTICAL_CLIENT_SECRET", Scopes: []string{"read"}, RequestRefreshToken: true}, Static: []mcpbroker.StaticTool{{Name: "protected", Description: "read protected data", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}}}}},
-		ToolHiveOptions: []mcpbroker.Option{mcpbroker.WithOAuthLoopbackForTest(t, roots), mcpbroker.WithBrokerHTTPClientForTest(t, brokerHTTPClient), mcpbroker.WithOAuthLimits(2*time.Minute, 3*time.Second), mcpbroker.WithOAuthSecretResolver(func(context.Context, string) (string, error) { return "vertical-secret", nil })},
+		ToolHive:        mcpbroker.ToolHiveConfig{CallbackURL: callbackURL, Profiles: []mcpbroker.ToolHiveProfile{{Name: "github", URL: fixture.mcp.URL, Auth: "oauth", OAuth: &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token", ClientID: "vertical-client", ClientSecretFile: secretFile, Scopes: []string{"read"}, RequestRefreshToken: true}, Static: []mcpbroker.StaticTool{{Name: "protected", Description: "read protected data", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}}}}},
+		ToolHiveOptions: []mcpbroker.Option{mcpbroker.WithOAuthLoopbackForTest(t, roots), mcpbroker.WithBrokerHTTPClientForTest(t, brokerHTTPClient), mcpbroker.WithOAuthLimits(2*time.Minute, 3*time.Second)},
 		PropagationWait: time.Millisecond, DrainTimeout: time.Second,
 	})
 	if err != nil {

@@ -2,31 +2,708 @@
   "$schema": "https://json-schema.org/draft-07/schema#",
   "type": "object",
   "additionalProperties": false,
-  "required": ["image", "tls", "workloadIdentity", "brokerConfig", "extraEnv", "resources", "service", "terminationGracePeriodSeconds", "drain", "transport", "runtime", "networkPolicy"],
+  "required": [
+    "image",
+    "listener",
+    "workloadJWT",
+    "callbackURL",
+    "profiles",
+    "resources",
+    "service",
+    "terminationGracePeriodSeconds",
+    "drain",
+    "transport",
+    "runtime",
+    "rollout",
+    "networkPolicy"
+  ],
   "properties": {
-    "nameOverride": {"type":"string"}, "fullnameOverride": {"type":"string"},
-    "image": {"type":"object", "additionalProperties":false, "required":["repository","tag","digest","pullPolicy"], "properties": {
-      "repository":{"type":"string","minLength":1}, "tag":{"type":"string","maxLength":0},
-      "digest":{"type":"string","pattern":"^sha256:[0-9a-f]{64}$"}, "pullPolicy":{"type":"string","enum":["Always","IfNotPresent","Never"]}
-    }},
-    "imagePullSecrets":{"type":"array","items":{"type":"object","required":["name"],"properties":{"name":{"type":"string","minLength":1}},"additionalProperties":false}},
-    "tls":{"type":"object","additionalProperties":false,"required":["secretName","certKey","keyKey"],"properties":{"secretName":{"type":"string","minLength":1},"certKey":{"type":"string","minLength":1},"keyKey":{"type":"string","minLength":1}}},
-    "workloadIdentity":{"type":"object","additionalProperties":false,"required":["issuer","jwksURI","audience","subject","caSecret","caKey","maxJWKSStaleness"],"properties":{"issuer":{"type":"string","minLength":1},"jwksURI":{"type":"string","minLength":1},"audience":{"type":"string","minLength":1},"subject":{"type":"string","minLength":1},"caSecret":{"type":"string","minLength":1},"caKey":{"type":"string","minLength":1},"maxJWKSStaleness":{"type":"string","minLength":1}}},
-    "brokerConfig":{"type":"string","minLength":1}, "extraEnv":{"type":"array","items":{"type":"object"}},
-    "resources":{"type":"object"}, "service":{"type":"object","additionalProperties":false,"required":["port"],"properties":{"port":{"type":"integer","minimum":1,"maximum":65535}}},
-    "terminationGracePeriodSeconds":{"type":"integer","minimum":1},
-    "drain":{"type":"object","additionalProperties":false,"required":["propagationDelaySeconds","timeoutSeconds"],"properties":{"propagationDelaySeconds":{"type":"integer","minimum":0},"timeoutSeconds":{"type":"integer","minimum":1}}},
-    "transport":{"type":"object","additionalProperties":false,"required":["dialTimeoutSeconds","rpcDeadlineSeconds","executeDeadlineSeconds","handleIdleTimeoutSeconds","sweepIntervalSeconds","cleanupTimeoutSeconds","maxHandles","maxOwners","maxReceipts","maxReceiptBytes","maxPendingControls","maxActiveExecutes"],"properties":{"dialTimeoutSeconds":{"type":"integer","minimum":1},"rpcDeadlineSeconds":{"type":"integer","minimum":1},"executeDeadlineSeconds":{"type":"integer","minimum":1},"handleIdleTimeoutSeconds":{"type":"integer","minimum":1},"sweepIntervalSeconds":{"type":"integer","minimum":1},"cleanupTimeoutSeconds":{"type":"integer","minimum":1},"maxHandles":{"type":"integer","minimum":1},"maxOwners":{"type":"integer","minimum":1},"maxReceipts":{"type":"integer","minimum":1},"maxReceiptBytes":{"type":"integer","minimum":1},"maxPendingControls":{"type":"integer","minimum":1},"maxActiveExecutes":{"type":"integer","minimum":1}}},
-    "runtime":{"type":"object","additionalProperties":false,"required":["maxLogicalSessions","logicalRetentionSeconds","maxPendingAuthStates"],"properties":{"maxLogicalSessions":{"type":"integer","minimum":1},"logicalRetentionSeconds":{"type":"integer","minimum":1},"maxPendingAuthStates":{"type":"integer","minimum":1}}},
-    "networkPolicy":{"type":"object","additionalProperties":false,"required":["enabled","publicFrom","operatorEgress"],"properties":{"enabled":{"type":"boolean"},"publicFrom":{"type":"array","items":{"$ref":"#/definitions/networkPeer"}},"operatorEgress":{"type":"array","items":{"$ref":"#/definitions/networkEgressRule"}}}}
-  },
-  "definitions": {
-    "networkPeer": {"oneOf":[
-      {"type":"object","additionalProperties":false,"required":["ipBlock"],"properties":{"ipBlock":{"type":"object","additionalProperties":false,"required":["cidr"],"properties":{"cidr":{"type":"string","minLength":1},"except":{"type":"array","items":{"type":"string","minLength":1}}}}}},
-      {"type":"object","additionalProperties":false,"required":["namespaceSelector"],"properties":{"namespaceSelector":{"type":"object","minProperties":1},"podSelector":{"type":"object","minProperties":1}}},
-      {"type":"object","additionalProperties":false,"required":["podSelector"],"properties":{"podSelector":{"type":"object","minProperties":1}}}
-    ]},
-    "networkPort": {"type":"object","additionalProperties":false,"required":["protocol","port"],"properties":{"protocol":{"type":"string","enum":["TCP","UDP","SCTP"]},"port":{"type":"integer","minimum":1,"maximum":65535}}},
-    "networkEgressRule": {"type":"object","additionalProperties":false,"required":["to","ports"],"properties":{"to":{"type":"array","minItems":1,"items":{"$ref":"#/definitions/networkPeer"}},"ports":{"type":"array","minItems":1,"items":{"$ref":"#/definitions/networkPort"}}}}
+    "nameOverride": {
+      "type": "string"
+    },
+    "fullnameOverride": {
+      "type": "string"
+    },
+    "image": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "repository",
+        "tag",
+        "digest",
+        "pullPolicy"
+      ],
+      "properties": {
+        "repository": {
+          "type": "string",
+          "minLength": 1
+        },
+        "tag": {
+          "type": "string",
+          "maxLength": 0
+        },
+        "digest": {
+          "type": "string",
+          "pattern": "^sha256:[0-9a-f]{64}$"
+        },
+        "pullPolicy": {
+          "type": "string",
+          "enum": [
+            "Always",
+            "IfNotPresent",
+            "Never"
+          ]
+        }
+      }
+    },
+    "imagePullSecrets": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          }
+        }
+      }
+    },
+    "listener": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "publicAddress",
+        "tls"
+      ],
+      "properties": {
+        "publicAddress": {
+          "type": "string",
+          "enum": [
+            "0.0.0.0:8443"
+          ]
+        },
+        "tls": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "secretName",
+            "certKey",
+            "keyKey"
+          ],
+          "properties": {
+            "secretName": {
+              "type": "string",
+              "minLength": 1
+            },
+            "certKey": {
+              "type": "string",
+              "minLength": 1
+            },
+            "keyKey": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        }
+      }
+    },
+    "workloadJWT": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "issuer",
+        "jwksURI",
+        "audience",
+        "subject",
+        "trustBundle",
+        "maxJWKSStalenessSeconds"
+      ],
+      "properties": {
+        "issuer": {
+          "type": "string",
+          "minLength": 1
+        },
+        "jwksURI": {
+          "type": "string",
+          "minLength": 1
+        },
+        "audience": {
+          "type": "string",
+          "minLength": 1
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1
+        },
+        "trustBundle": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": [
+            "secretName",
+            "key"
+          ],
+          "properties": {
+            "secretName": {
+              "type": "string",
+              "minLength": 1
+            },
+            "key": {
+              "type": "string",
+              "minLength": 1
+            }
+          }
+        },
+        "maxJWKSStalenessSeconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "callbackURL": {
+      "type": "string",
+      "minLength": 1
+    },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "additionalProperties": false,
+        "required": [
+          "name",
+          "url",
+          "auth"
+        ],
+        "properties": {
+          "name": {
+            "type": "string",
+            "minLength": 1
+          },
+          "url": {
+            "type": "string",
+            "minLength": 1
+          },
+          "auth": {
+            "type": "string",
+            "enum": [
+              "none",
+              "oauth"
+            ]
+          },
+          "oauth": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "clientID",
+              "clientSecret",
+              "scopes",
+              "requestRefreshToken"
+            ],
+            "properties": {
+              "issuer": {
+                "type": "string"
+              },
+              "authorizationEndpoint": {
+                "type": "string"
+              },
+              "tokenEndpoint": {
+                "type": "string"
+              },
+              "clientID": {
+                "type": "string",
+                "minLength": 1
+              },
+              "clientSecret": {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "secretName",
+                  "key"
+                ],
+                "properties": {
+                  "secretName": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "key": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              },
+              "scopes": {
+                "type": "array",
+                "items": {
+                  "type": "string",
+                  "minLength": 1
+                }
+              },
+              "requestRefreshToken": {
+                "type": "boolean"
+              }
+            },
+            "anyOf": [
+              {
+                "properties": {
+                  "issuer": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                },
+                "required": [
+                  "issuer"
+                ]
+              },
+              {
+                "required": [
+                  "authorizationEndpoint",
+                  "tokenEndpoint"
+                ],
+                "properties": {
+                  "authorizationEndpoint": {
+                    "type": "string",
+                    "minLength": 1
+                  },
+                  "tokenEndpoint": {
+                    "type": "string",
+                    "minLength": 1
+                  }
+                }
+              }
+            ]
+          },
+          "tools": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": [
+                "name",
+                "schema",
+                "readOnly"
+              ],
+              "properties": {
+                "name": {
+                  "type": "string",
+                  "minLength": 1
+                },
+                "description": {
+                  "type": "string"
+                },
+                "schema": {
+                  "type": "object"
+                },
+                "readOnly": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
+        },
+        "allOf": [
+          {
+            "if": {
+              "properties": {
+                "auth": {
+                  "const": "oauth"
+                }
+              }
+            },
+            "then": {
+              "required": [
+                "oauth"
+              ]
+            }
+          },
+          {
+            "if": {
+              "properties": {
+                "auth": {
+                  "const": "none"
+                }
+              }
+            },
+            "then": {
+              "not": {
+                "anyOf": [
+                  {
+                    "required": [
+                      "oauth"
+                    ]
+                  },
+                  {
+                    "required": [
+                      "tools"
+                    ]
+                  }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    },
+    "resources": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "requests",
+        "limits"
+      ],
+      "properties": {
+        "requests": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required": [
+            "cpu",
+            "memory"
+          ]
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "string",
+            "minLength": 1
+          },
+          "required": [
+            "cpu",
+            "memory"
+          ]
+        }
+      }
+    },
+    "service": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "port"
+      ],
+      "properties": {
+        "port": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 65535
+        }
+      }
+    },
+    "terminationGracePeriodSeconds": {
+      "type": "integer",
+      "minimum": 1
+    },
+    "drain": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "propagationDelaySeconds",
+        "timeoutSeconds",
+        "listenerShutdownTimeoutSeconds"
+      ],
+      "properties": {
+        "propagationDelaySeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "timeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "listenerShutdownTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "transport": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "rpcDeadlineSeconds",
+        "executeDeadlineSeconds",
+        "handleIdleTimeoutSeconds",
+        "sweepIntervalSeconds",
+        "cleanupTimeoutSeconds",
+        "maxHandles",
+        "maxOwners",
+        "maxReceipts",
+        "maxReceiptBytes",
+        "maxPendingControls",
+        "maxActiveExecutes"
+      ],
+      "properties": {
+        "rpcDeadlineSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "executeDeadlineSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "handleIdleTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "sweepIntervalSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "cleanupTimeoutSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxHandles": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxOwners": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxReceipts": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxReceiptBytes": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxPendingControls": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxActiveExecutes": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "runtime": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "maxLogicalSessions",
+        "logicalRetentionSeconds",
+        "maxPendingAuthStates"
+      ],
+      "properties": {
+        "maxLogicalSessions": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "logicalRetentionSeconds": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "maxPendingAuthStates": {
+          "type": "integer",
+          "minimum": 1
+        }
+      }
+    },
+    "rollout": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "restartToken"
+      ],
+      "properties": {
+        "restartToken": {
+          "type": "string"
+        }
+      }
+    },
+    "networkPolicy": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "enabled",
+        "publicFrom",
+        "operatorEgress"
+      ],
+      "properties": {
+        "enabled": {
+          "type": "boolean"
+        },
+        "publicFrom": {
+          "type": "array",
+          "items": {
+            "oneOf": [
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "ipBlock"
+                ],
+                "properties": {
+                  "ipBlock": {
+                    "type": "object",
+                    "additionalProperties": false,
+                    "required": [
+                      "cidr"
+                    ],
+                    "properties": {
+                      "cidr": {
+                        "type": "string",
+                        "minLength": 1
+                      },
+                      "except": {
+                        "type": "array",
+                        "items": {
+                          "type": "string",
+                          "minLength": 1
+                        }
+                      }
+                    }
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "namespaceSelector"
+                ],
+                "properties": {
+                  "namespaceSelector": {
+                    "type": "object",
+                    "minProperties": 1
+                  },
+                  "podSelector": {
+                    "type": "object",
+                    "minProperties": 1
+                  }
+                }
+              },
+              {
+                "type": "object",
+                "additionalProperties": false,
+                "required": [
+                  "podSelector"
+                ],
+                "properties": {
+                  "podSelector": {
+                    "type": "object",
+                    "minProperties": 1
+                  }
+                }
+              }
+            ]
+          }
+        },
+        "operatorEgress": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "additionalProperties": false,
+            "required": [
+              "to",
+              "ports"
+            ],
+            "properties": {
+              "to": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "oneOf": [
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "ipBlock"
+                      ],
+                      "properties": {
+                        "ipBlock": {
+                          "type": "object",
+                          "additionalProperties": false,
+                          "required": [
+                            "cidr"
+                          ],
+                          "properties": {
+                            "cidr": {
+                              "type": "string",
+                              "minLength": 1
+                            },
+                            "except": {
+                              "type": "array",
+                              "items": {
+                                "type": "string",
+                                "minLength": 1
+                              }
+                            }
+                          }
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "namespaceSelector"
+                      ],
+                      "properties": {
+                        "namespaceSelector": {
+                          "type": "object",
+                          "minProperties": 1
+                        },
+                        "podSelector": {
+                          "type": "object",
+                          "minProperties": 1
+                        }
+                      }
+                    },
+                    {
+                      "type": "object",
+                      "additionalProperties": false,
+                      "required": [
+                        "podSelector"
+                      ],
+                      "properties": {
+                        "podSelector": {
+                          "type": "object",
+                          "minProperties": 1
+                        }
+                      }
+                    }
+                  ]
+                }
+              },
+              "ports": {
+                "type": "array",
+                "minItems": 1,
+                "items": {
+                  "type": "object",
+                  "additionalProperties": false,
+                  "required": [
+                    "protocol",
+                    "port"
+                  ],
+                  "properties": {
+                    "protocol": {
+                      "type": "string",
+                      "enum": [
+                        "TCP",
+                        "UDP",
+                        "SCTP"
+                      ]
+                    },
+                    "port": {
+                      "type": "integer",
+                      "minimum": 1,
+                      "maximum": 65535
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      }
+    }
   }
 }

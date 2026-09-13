@@ -20,7 +20,7 @@ import (
 
 func TestSingletonBrokerRemediation_Scenario3_ProductionReadinessUsesRealDependencies(t *testing.T) {
 	issuer := newIdentityFixture(t)
-	t.Setenv("MECATL_READINESS_SECRET", "offline-secret")
+	t.Setenv("../mcpbroker/testdata/client-secret", "offline-secret")
 	var process *mcpbroker.Process
 	srv, err := New(t.Context(), Config{
 		OIDC: productionOIDC(issuer, time.Minute),
@@ -32,7 +32,7 @@ func TestSingletonBrokerRemediation_Scenario3_ProductionReadinessUsesRealDepende
 					Name: "github", URL: "https://mcp.example/mcp", Auth: "oauth",
 					OAuth: &mcpbroker.ToolHiveOAuth{
 						AuthorizationEndpoint: "https://identity.example/authorize", TokenEndpoint: "https://identity.example/token",
-						ClientID: "readiness-client", ClientSecretEnv: "MECATL_READINESS_SECRET",
+						ClientID: "readiness-client", ClientSecretFile: "../mcpbroker/testdata/client-secret",
 					},
 					Static: []mcpbroker.StaticTool{{Name: "mcp__github__read", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}},
 				}},
@@ -65,7 +65,7 @@ func TestSingletonBrokerRemediation_Scenario3_ProductionReadinessUsesRealDepende
 
 func TestSingletonBrokerRemediation_Scenario3_ProductionDrainAndCleanup(t *testing.T) {
 	issuer := newIdentityFixture(t)
-	t.Setenv("MECATL_DRAIN_SECRET", "offline-secret")
+	t.Setenv("../mcpbroker/testdata/client-secret", "offline-secret")
 	entered := make(chan struct{})
 	operationDone := make(chan struct{})
 	var processClosed atomic.Bool
@@ -76,7 +76,7 @@ func TestSingletonBrokerRemediation_Scenario3_ProductionDrainAndCleanup(t *testi
 				CallbackURL: "https://broker.example/callback",
 				Profiles: []mcpbroker.ToolHiveProfile{{
 					Name: "github", URL: "https://mcp.example/mcp", Auth: "oauth",
-					OAuth:  &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: "https://identity.example/authorize", TokenEndpoint: "https://identity.example/token", ClientID: "drain-client", ClientSecretEnv: "MECATL_DRAIN_SECRET"},
+					OAuth:  &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: "https://identity.example/authorize", TokenEndpoint: "https://identity.example/token", ClientID: "drain-client", ClientSecretFile: "../mcpbroker/testdata/client-secret"},
 					Static: []mcpbroker.StaticTool{{Name: "mcp__github__read", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}},
 				}},
 			})

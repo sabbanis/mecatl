@@ -92,7 +92,7 @@ func (d *recordingBrokerDiagnostics) String() string {
 }
 
 func TestNewToolHiveProcessUsesConfiguredAuthStorage(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	profile := protectedToolHiveProfile("private")
 	profile.Static = []StaticTool{{Name: "echo", Description: "echo", Schema: json.RawMessage(`{"type":"object"}`)}}
 	spy := newRegisterClientSpy()
@@ -109,7 +109,7 @@ func TestNewToolHiveProcessUsesConfiguredAuthStorage(t *testing.T) {
 }
 
 func TestToolHiveProductionHandlerAndAttachmentPath(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	profile := protectedToolHiveProfile("proof")
 	profile.Static = []StaticTool{{Name: "echo", Schema: json.RawMessage(`{"type":"object"}`)}}
 	process, err := NewToolHiveProcess(t.Context(), ToolHiveConfig{
@@ -143,7 +143,7 @@ func TestToolHiveProtectedClientIsConfidential(t *testing.T) {
 
 func assertToolHiveProtectedClientIsConfidential(t *testing.T) {
 	t.Helper()
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	profile := protectedToolHiveProfile("private")
 	profile.Static = []StaticTool{{Name: "echo", Description: "echo", Schema: json.RawMessage(`{"type":"object"}`)}}
 	spy := newRegisterClientSpy()
@@ -215,7 +215,7 @@ func assertToolHiveProtectedClientIsConfidential(t *testing.T) {
 }
 
 func TestADR_0299_BrokerClientSecretNeverCrossesPublicBoundary(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	profile := protectedToolHiveProfile("private")
 	profile.Static = []StaticTool{{Name: "echo", Description: "echo", Schema: json.RawMessage(`{"type":"object"}`)}}
 	process, err := NewToolHiveProcess(t.Context(), ToolHiveConfig{
@@ -247,7 +247,7 @@ func TestADR_0299_BrokerClientSecretNeverCrossesPublicBoundary(t *testing.T) {
 }
 
 func TestNewToolHiveProcessFallsBackToMemoryStorageWhenUnconfigured(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	profile := protectedToolHiveProfile("private")
 	profile.Static = []StaticTool{{Name: "echo", Description: "echo", Schema: json.RawMessage(`{"type":"object"}`)}}
 	process, err := NewToolHiveProcess(t.Context(), ToolHiveConfig{
@@ -278,7 +278,7 @@ func TestAnonymousOnlyProcessPublishesNoVMCPRoute(t *testing.T) {
 }
 
 func TestProtectedBrokerVMCPEndpointRejectsAnonymousOverNetwork(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	var requests atomic.Int32
 	anonymous := toolHiveDiscoveryServer(t, "get_status", &requests)
 	protected := protectedToolHiveProfile("private")
@@ -404,7 +404,7 @@ func TestToolHiveConstructionRejectsInvalidProfiles(t *testing.T) {
 }
 
 func TestADR_0298_ToolHiveConstructionMapsEveryProtectedProfileInOrder(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	first := protectedToolHiveProfile("GitHub_Cloud")
 	first.Static = []StaticTool{{Name: "reviewed", Schema: json.RawMessage(`{"type":"object"}`)}}
 	profiles := []ToolHiveProfile{
@@ -503,7 +503,7 @@ func admitStaticForGenericAuthorizationTest(t *testing.T, process *Process) {
 }
 
 func TestToolHiveProcessAllowsUnambiguousUnderscoreRoutingKeys(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	var anonymousRequests atomic.Int32
 	anonymous := toolHiveDiscoveryServer(t, "enterprise_create_issue", &anonymousRequests)
 	protected := protectedToolHiveProfile("github_enterprise")
@@ -537,14 +537,14 @@ func TestToolHiveProcessAllowsUnambiguousUnderscoreRoutingKeys(t *testing.T) {
 }
 
 func TestGenericStaticProtectedOIDCAndCIMDUseToolHiveTarget(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	issuer := toolHiveOIDCIssuer(t)
 	for _, test := range []struct {
 		name     string
 		clientID string
 		secret   string
 	}{
-		{name: "OIDC", clientID: "registered-client", secret: "MECATL_TEST_CLIENT_SECRET"},
+		{name: "OIDC", clientID: "registered-client", secret: "testdata/client-secret"},
 		{name: "CIMD", clientID: "https://client.example/oauth-client.json"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
@@ -553,7 +553,7 @@ func TestGenericStaticProtectedOIDCAndCIMDUseToolHiveTarget(t *testing.T) {
 			profile.OAuth.AuthorizationEndpoint = ""
 			profile.OAuth.TokenEndpoint = ""
 			profile.OAuth.ClientID = test.clientID
-			profile.OAuth.ClientSecretEnv = test.secret
+			profile.OAuth.ClientSecretFile = test.secret
 			profile.Static = []StaticTool{{Name: "read", Description: "read", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}}
 
 			process, err := NewToolHiveProcess(t.Context(), ToolHiveConfig{
@@ -597,7 +597,7 @@ func TestGenericStaticProtectedOIDCAndCIMDUseToolHiveTarget(t *testing.T) {
 }
 
 func TestToolHiveStaticToolAuthorizationStartsBundle(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	first := protectedToolHiveProfile("github")
 	first.Static = []StaticTool{{Name: "get_me", Schema: json.RawMessage(`{"type":"object"}`)}}
 	second := protectedToolHiveProfile("calendar")
@@ -658,7 +658,7 @@ func TestToolHiveStaticToolAuthorizationStartsBundle(t *testing.T) {
 }
 
 func TestADR_0298_StaticProtectedToolsAreVisibleBeforeEnrollment(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	var anonymousRequests, protectedRequests atomic.Int32
 	anonymous := toolHiveDiscoveryServer(t, "status", &anonymousRequests)
 	protected := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
@@ -714,7 +714,7 @@ func TestADR_0298_ToolHiveEnrollmentUsesRealIdentityMiddleware(t *testing.T) {
 		{name: "CIMD document", mode: "cimd"},
 	} {
 		t.Run(test.name, func(t *testing.T) {
-			t.Setenv("MECATL_TEST_CLIENT_SECRET", "client-secret")
+			t.Setenv("testdata/client-secret", "client-secret")
 			mux := http.NewServeMux()
 			gateway := httptest.NewUnstartedServer(mux)
 			gateway.StartTLS()
@@ -836,7 +836,7 @@ func TestADR_0298_ToolHiveEnrollmentUsesRealIdentityMiddleware(t *testing.T) {
 
 			oauth := &ToolHiveOAuth{Scopes: []string{"openid"}}
 			if test.mode == "oidc" {
-				oauth.Issuer, oauth.ClientID, oauth.ClientSecretEnv = upstreamOAuth.URL, "registered-client", "MECATL_TEST_CLIENT_SECRET"
+				oauth.Issuer, oauth.ClientID, oauth.ClientSecretFile = upstreamOAuth.URL, "registered-client", "testdata/client-secret"
 			} else {
 				oauth.AuthorizationEndpoint, oauth.TokenEndpoint = upstreamOAuth.URL+"/authorize", upstreamOAuth.URL+"/token"
 				oauth.ClientID = upstreamOAuth.URL + "/client-metadata.json"
@@ -1030,7 +1030,7 @@ func TestGenericStaticOAuth2AuthorizationCallbackAndExactExecution(t *testing.T)
 }
 
 func TestNewToolHiveProcessWiresDefaultProtectedTransport(t *testing.T) {
-	t.Setenv("MECATL_TEST_CLIENT_SECRET", "construction-only-secret")
+	t.Setenv("testdata/client-secret", "construction-only-secret")
 	server := mcpsdk.NewServer(&mcpsdk.Implementation{Name: "protected", Version: "v1"}, nil)
 	mcpsdk.AddTool(server, &mcpsdk.Tool{Name: "private.echo", Description: "echoes input"}, func(_ context.Context, _ *mcpsdk.CallToolRequest, input struct {
 		Text string `json:"text"`
@@ -1105,7 +1105,7 @@ func TestStaticProtectedRouteCallbackResumesExactCall(t *testing.T) {
 	profile.Static = []StaticTool{{Name: "create", Description: "create item", Schema: json.RawMessage(`{"type":"object"}`)}}
 	target := &oauthRoute{
 		authorizationEndpoint: "https://accounts.example/authorize", tokenEndpoint: tokenServer.URL,
-		callbackURL: "https://client.example/oauth/callback", clientID: "client-id", secretEnv: "MECATL_TEST_CLIENT_SECRET", scopes: []string{"openid"},
+		callbackURL: "https://client.example/oauth/callback", clientID: "client-id", secretFile: "testdata/client-secret", scopes: []string{"openid"},
 	}
 	construction, err := compileToolHiveConstruction([]ToolHiveProfile{profile}, "https://broker.example"+toolHiveBasePath)
 	if err != nil {
@@ -1131,7 +1131,7 @@ func TestStaticProtectedRouteCallbackResumesExactCall(t *testing.T) {
 		}
 		calls++
 		return session.NewToolResult(call.ID, "created"), nil
-	}), WithOAuthLoopbackForTest(t, roots), WithOAuthSecretResolver(func(context.Context, string) (string, error) {
+	}), WithOAuthLoopbackForTest(t, roots), WithOAuthSecretFileReader(func(context.Context, string) (string, error) {
 		return "client-secret", nil
 	}))
 	if err != nil {
@@ -1349,7 +1349,7 @@ func toolHiveOIDCIssuer(t *testing.T) *httptest.Server {
 func TestADR_0314_ToolHiveConstructionCarriesDCRConfig(t *testing.T) {
 	profile := protectedToolHiveProfile("private")
 	profile.OAuth.ClientID = ""
-	profile.OAuth.ClientSecretEnv = ""
+	profile.OAuth.ClientSecretFile = ""
 	profile.OAuth.DCRDiscoveryURL = "https://auth.example/.well-known/oauth-authorization-server"
 	construction, err := compileToolHiveConstruction([]ToolHiveProfile{profile}, "https://broker.example")
 	if err != nil {
@@ -1364,7 +1364,7 @@ func TestADR_0314_ToolHiveConstructionCarriesDCRConfig(t *testing.T) {
 func TestADR_0314_DCRRequiresExplicitOAuth2Upstream(t *testing.T) {
 	profile := protectedToolHiveProfile("private")
 	profile.OAuth.ClientID = ""
-	profile.OAuth.ClientSecretEnv = ""
+	profile.OAuth.ClientSecretFile = ""
 	profile.OAuth.AuthorizationEndpoint = ""
 	profile.OAuth.TokenEndpoint = ""
 	profile.OAuth.DCRDiscoveryURL = "https://auth.example/discovery"
@@ -1643,7 +1643,7 @@ func protectedToolHiveProfile(name string) ToolHiveProfile {
 		AuthorizationEndpoint: "https://issuer.example/authorize",
 		TokenEndpoint:         "https://issuer.example/token",
 		ClientID:              name + "-client",
-		ClientSecretEnv:       "MECATL_TEST_CLIENT_SECRET",
+		ClientSecretFile:      "testdata/client-secret",
 		Scopes:                []string{"openid"},
 	}}
 }

@@ -38,7 +38,7 @@ func TestExpiredCallbackStatesReleaseCapacityBeforeLogicalRetention(t *testing.T
 		WithAuthorizedCaller(func(_ context.Context, _ SessionRef, _ string, call session.ToolCall, _ oauth2.TokenSource) (session.ToolResult, error) {
 			return session.NewToolResult(call.ID, "ok"), nil
 		}),
-		WithOAuthSecretResolver(func(context.Context, string) (string, error) { return "secret", nil }),
+		WithOAuthSecretFileReader(func(context.Context, string) (string, error) { return "secret", nil }),
 		WithOAuthLimits(15*time.Millisecond, time.Second),
 		WithLimits(Limits{MaxPendingStates: 1, SweepInterval: time.Millisecond, LogicalRetention: time.Hour}),
 	)
@@ -181,7 +181,7 @@ func protectedConfig(tokenURL string) mcpauthority.BrokerConfig {
 				Upstream: &permconfig.MCPOAuthUpstreamProfile{Mode: "oauth2", OAuth2: &permconfig.MCPOAuth2UpstreamProfile{
 					AuthorizationEndpoint: "https://accounts.example/authorize", TokenEndpoint: tokenURL,
 				}},
-				Client: permconfig.MCPOAuthClientProfile{Mode: "preregistered", Preregistered: &permconfig.MCPPreregisteredClientProfile{ID: "client-id", SecretEnv: "MECATL_TEST_CLIENT_SECRET"}},
+				Client: permconfig.MCPOAuthClientProfile{Mode: "preregistered", Preregistered: &permconfig.MCPPreregisteredClientProfile{ID: "client-id", SecretFile: "testdata/client-secret"}},
 				Scopes: []string{"issues:write"}, RequestRefreshToken: true,
 			}},
 		}},
@@ -222,7 +222,7 @@ func newProtectedHarness(t *testing.T, tokenServer *httptest.Server) *protectedH
 		},
 		WithAuthorizedCaller(authorized),
 		WithOAuthLoopbackForTest(t, roots),
-		WithOAuthSecretResolver(func(context.Context, string) (string, error) { return "client-secret", nil }),
+		WithOAuthSecretFileReader(func(context.Context, string) (string, error) { return "client-secret", nil }),
 	)
 	if err != nil {
 		t.Fatal(err)
@@ -438,15 +438,15 @@ func assertToolHiveRedisPreservesOnlyInnerPendingState(t *testing.T) {
 	t.Cleanup(tokenServer.Close)
 	roots := x509.NewCertPool()
 	roots.AddCert(tokenServer.Certificate())
-	t.Setenv("MECATL_REDIS_CUSTODY_SECRET", "upstream-secret")
+	t.Setenv("testdata/client-secret", "upstream-secret")
 	config := ToolHiveConfig{
 		CallbackURL: "https://broker.example/oauth/callback", AuthRedisClient: redisClient,
 		Profiles: []ToolHiveProfile{{Name: "github", URL: "https://mcp.example/mcp", Auth: "oauth", OAuth: &ToolHiveOAuth{
 			AuthorizationEndpoint: "https://identity.example/authorize", TokenEndpoint: tokenServer.URL + "/token",
-			ClientID: "redis-custody", ClientSecretEnv: "MECATL_REDIS_CUSTODY_SECRET", Scopes: []string{"read"},
+			ClientID: "redis-custody", ClientSecretFile: "testdata/client-secret", Scopes: []string{"read"},
 		}, Static: []StaticTool{{Name: "create", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}}}},
 	}
-	options := []Option{WithOAuthLoopbackForTest(t, roots), WithOAuthSecretResolver(func(context.Context, string) (string, error) { return "upstream-secret", nil })}
+	options := []Option{WithOAuthLoopbackForTest(t, roots), WithOAuthSecretFileReader(func(context.Context, string) (string, error) { return "upstream-secret", nil })}
 	first, err := NewToolHiveProcess(t.Context(), config, options...)
 	if err != nil {
 		t.Fatalf("construct Redis-backed ToolHive process: %v", err)
@@ -859,7 +859,7 @@ func TestAttachmentCloseWaitsForRequestAuthorization(t *testing.T) {
 		WithAuthorizedCaller(func(context.Context, SessionRef, string, session.ToolCall, oauth2.TokenSource) (session.ToolResult, error) {
 			return session.ToolResult{}, nil
 		}),
-		WithOAuthSecretResolver(func(ctx context.Context, _ string) (string, error) {
+		WithOAuthSecretFileReader(func(ctx context.Context, _ string) (string, error) {
 			close(entered)
 			select {
 			case <-release:
@@ -934,7 +934,7 @@ func TestRuntimeCloseAndDrainWaitsForActiveOperations(t *testing.T) {
 		WithAuthorizedCaller(func(context.Context, SessionRef, string, session.ToolCall, oauth2.TokenSource) (session.ToolResult, error) {
 			return session.ToolResult{}, nil
 		}),
-		WithOAuthSecretResolver(func(_ context.Context, _ string) (string, error) {
+		WithOAuthSecretFileReader(func(_ context.Context, _ string) (string, error) {
 			close(entered)
 			<-release
 			return "client-secret", nil
@@ -1001,7 +1001,7 @@ func TestRuntimeCloseAndDrainIsBoundedWhenOperationHangs(t *testing.T) {
 		WithAuthorizedCaller(func(context.Context, SessionRef, string, session.ToolCall, oauth2.TokenSource) (session.ToolResult, error) {
 			return session.ToolResult{}, nil
 		}),
-		WithOAuthSecretResolver(func(_ context.Context, _ string) (string, error) {
+		WithOAuthSecretFileReader(func(_ context.Context, _ string) (string, error) {
 			close(entered)
 			<-hang // ignores ctx cancellation on purpose: a genuinely wedged op
 			return "client-secret", nil

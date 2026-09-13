@@ -30,8 +30,9 @@ needed.
 
 ## Configure a profile
 
-Put the profile in the operator-tier `settings.yaml`. Secret-bearing fields are
-environment-variable names, not secret values. A minimal shape is:
+Put the profile in the operator-tier `settings.yaml`. Preregistered client
+secrets are file paths, not secret values or environment-variable names. Mount or
+create the file with owner-only permissions. A minimal shape is:
 
 ```yaml
 mcp:
@@ -42,7 +43,7 @@ mcp:
         mode: oauth
         issuer: https://idp.example/realms/operators
         client_id: mecatl
-        client_secret_env: MECATL_MCP_CLIENT_SECRET
+        client_secret_file: /run/secrets/mecatl/github-client-secret
         scopes: [repo]
         credentials:
           local:

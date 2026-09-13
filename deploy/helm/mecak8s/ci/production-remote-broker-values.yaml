@@ -20,8 +20,9 @@ remoteBroker:
   caSecret: mecabroker-ca
   caKey: ca.pem
   serverName: mecabroker.mecatl.svc
-  tokenAudience: mecabroker
-  tokenLifetimeSeconds: 600
+  workloadJWT:
+    audience: mecabroker
+    lifetimeSeconds: 600
 extraEnv:
   - name: OPENROUTER_API_KEY
     valueFrom:

@@ -16,7 +16,8 @@ spec:
     metadata:
       labels: {{- include "mecabroker.labels" . | nindent 8 }}
       annotations:
-        checksum/broker-config: {{ .Values.brokerConfig | sha256sum }}
+        checksum/broker-config: {{ include "mecabroker.brokerConfig" . | sha256sum }}
+        rollout/restart-token: {{ .Values.rollout.restartToken | quote }}
     spec:
       serviceAccountName: {{ include "mecabroker.fullname" . }}
       automountServiceAccountToken: false
@@ -34,38 +35,7 @@ spec:
         - name: broker
           image: {{ if .Values.image.digest }}{{ .Values.image.repository }}@{{ .Values.image.digest }}{{ else }}{{ .Values.image.repository }}:{{ default (printf "v%s" .Chart.Version) .Values.image.tag }}{{ end }}
           imagePullPolicy: {{ .Values.image.pullPolicy }}
-          args:
-            - --listen-addr=0.0.0.0:8443
-            - --admin-addr=127.0.0.1:8081
-            - --tls-cert=/var/run/secrets/tls/{{ .Values.tls.certKey }}
-            - --tls-key=/var/run/secrets/tls/{{ .Values.tls.keyKey }}
-            - --oidc-issuer={{ required "workloadIdentity.issuer is required" .Values.workloadIdentity.issuer }}
-            - --oidc-jwks-uri={{ required "workloadIdentity.jwksURI is required" .Values.workloadIdentity.jwksURI }}
-            - --oidc-audience={{ required "workloadIdentity.audience is required" .Values.workloadIdentity.audience }}
-            - --oidc-subject={{ required "workloadIdentity.subject is required" .Values.workloadIdentity.subject }}
-            - --oidc-ca=/var/run/secrets/workload-identity/{{ .Values.workloadIdentity.caKey }}
-            - --oidc-max-jwks-staleness={{ .Values.workloadIdentity.maxJWKSStaleness }}
-            - --config=/etc/mecabroker/broker.json
-            - --drain-propagation-delay={{ .Values.drain.propagationDelaySeconds }}s
-            - --drain-timeout={{ .Values.drain.timeoutSeconds }}s
-            - --broker-dial-timeout={{ .Values.transport.dialTimeoutSeconds }}s
-            - --broker-rpc-deadline={{ .Values.transport.rpcDeadlineSeconds }}s
-            - --broker-execute-deadline={{ .Values.transport.executeDeadlineSeconds }}s
-            - --broker-handle-idle-timeout={{ .Values.transport.handleIdleTimeoutSeconds }}s
-            - --broker-sweep-interval={{ .Values.transport.sweepIntervalSeconds }}s
-            - --broker-cleanup-timeout={{ .Values.transport.cleanupTimeoutSeconds }}s
-            - --broker-max-handles={{ .Values.transport.maxHandles }}
-            - --broker-max-owners={{ .Values.transport.maxOwners }}
-            - --broker-max-logical-sessions={{ .Values.runtime.maxLogicalSessions }}
-            - --broker-logical-retention={{ .Values.runtime.logicalRetentionSeconds }}s
-            - --broker-max-pending-auth-states={{ .Values.runtime.maxPendingAuthStates }}
-            - --broker-max-receipts={{ .Values.transport.maxReceipts }}
-            - --broker-max-receipt-bytes={{ .Values.transport.maxReceiptBytes }}
-            - --broker-max-pending-controls={{ .Values.transport.maxPendingControls }}
-            - --broker-max-active-executes={{ .Values.transport.maxActiveExecutes }}
-          {{- with .Values.extraEnv }}
-          env: {{- toYaml . | nindent 12 }}
-          {{- end }}
+          args: ["--config=/etc/mecabroker/broker.json"]
           ports:
             - {name: public, containerPort: 8443}
             - {name: admin, containerPort: 8081}
@@ -92,27 +62,42 @@ spec:
             capabilities: {drop: ["ALL"]}
             seccompProfile: {type: RuntimeDefault}
           volumeMounts:
-            - {name: tls, mountPath: /var/run/secrets/tls, readOnly: true}
-            - {name: workload-identity, mountPath: /var/run/secrets/workload-identity, readOnly: true}
+            - {name: tls, mountPath: /var/run/mecabroker/tls, readOnly: true}
+            - {name: workload-jwt, mountPath: /var/run/mecabroker/workload-jwt, readOnly: true}
             - {name: broker-config, mountPath: /etc/mecabroker, readOnly: true}
+{{- range $index, $profile := .Values.profiles }}
+{{- if eq $profile.auth "oauth" }}
+            - {name: oauth-client-secret-{{ $index }}, mountPath: /var/run/mecabroker/oauth/{{ $index }}, readOnly: true}
+{{- end }}
+{{- end }}
             - {name: tmp, mountPath: /tmp}
       volumes:
         - name: tls
           secret:
-            secretName: {{ required "tls.secretName is required" .Values.tls.secretName }}
+            secretName: {{ required "listener.tls.secretName is required" .Values.listener.tls.secretName }}
             defaultMode: 0440
             items:
-              - {key: {{ .Values.tls.certKey }}, path: {{ .Values.tls.certKey }}}
-              - {key: {{ .Values.tls.keyKey }}, path: {{ .Values.tls.keyKey }}}
-        - name: workload-identity
+              - {key: {{ .Values.listener.tls.certKey }}, path: {{ .Values.listener.tls.certKey }}}
+              - {key: {{ .Values.listener.tls.keyKey }}, path: {{ .Values.listener.tls.keyKey }}}
+        - name: workload-jwt
           secret:
-            secretName: {{ required "workloadIdentity.caSecret is required" .Values.workloadIdentity.caSecret }}
+            secretName: {{ required "workloadJWT.trustBundle.secretName is required" .Values.workloadJWT.trustBundle.secretName }}
             defaultMode: 0440
             items:
-              - {key: {{ .Values.workloadIdentity.caKey }}, path: {{ .Values.workloadIdentity.caKey }}}
+              - {key: {{ .Values.workloadJWT.trustBundle.key }}, path: {{ .Values.workloadJWT.trustBundle.key }}}
         - name: broker-config
           configMap:
             name: {{ include "mecabroker.fullname" . }}-config
             defaultMode: 0444
+{{- range $index, $profile := .Values.profiles }}
+{{- if eq $profile.auth "oauth" }}
+        - name: oauth-client-secret-{{ $index }}
+          secret:
+            secretName: {{ required (printf "profiles[%d].oauth.clientSecret.secretName is required" $index) $profile.oauth.clientSecret.secretName }}
+            defaultMode: 0440
+            items:
+              - {key: {{ $profile.oauth.clientSecret.key }}, path: client-secret}
+{{- end }}
+{{- end }}
         - name: tmp
           emptyDir: {sizeLimit: 64Mi}

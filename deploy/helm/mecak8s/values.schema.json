@@ -220,11 +220,18 @@
     },
     "remoteBroker": {
       "type": "object", "additionalProperties": false,
-      "required": ["address", "caSecret", "caKey", "serverName", "tokenAudience", "tokenLifetimeSeconds"],
+      "required": ["address", "caSecret", "caKey", "serverName", "workloadJWT"],
       "properties": {
         "address": {"type": "string"}, "caSecret": {"type": "string"}, "caKey": {"type": "string"},
-        "serverName": {"type": "string"}, "tokenAudience": {"type": "string"},
-        "tokenLifetimeSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+        "serverName": {"type": "string"},
+        "workloadJWT": {
+          "type": "object", "additionalProperties": false,
+          "required": ["audience", "lifetimeSeconds"],
+          "properties": {
+            "audience": {"type": "string"},
+            "lifetimeSeconds": {"type": "integer", "minimum": 1, "maximum": 3600}
+          }
+        }
       }
     },
     "learning": {

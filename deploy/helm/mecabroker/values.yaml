@@ -8,28 +8,30 @@ image:
   pullPolicy: IfNotPresent
 imagePullSecrets: []
 
-# The listener pair is TLS-only. The Secret must contain tls.crt and tls.key.
-tls:
-  secretName: mecabroker-tls
-  certKey: tls.crt
-  keyKey: tls.key
+# The public listener is TLS-only. The Secret must contain the selected keys.
+listener:
+  publicAddress: 0.0.0.0:8443
+  tls:
+    secretName: mecabroker-tls
+    certKey: tls.crt
+    keyKey: tls.key
 
-# Workload identity verifies every mecak8s gRPC call. caSecret must contain ca.pem.
-workloadIdentity:
+# Workload JWT verification protects every mecak8s gRPC call.
+workloadJWT:
   issuer: ""
   jwksURI: ""
   audience: mecabroker
   # Exact subject of the sole workload allowed to own broker sessions/handles.
   subject: ""
-  caSecret: mecabroker-workload-identity
-  caKey: ca.pem
-  maxJWKSStaleness: 15m
+  trustBundle:
+    secretName: mecabroker-workload-jwt
+    key: ca.pem
+  maxJWKSStalenessSeconds: 900
 
-# Config is mounted read-only. OAuth client secrets named by client_secret_env
-# are supplied with extraEnv valueFrom.secretKeyRef, never inline here.
-brokerConfig: |
-  {"callback_url":"https://broker.invalid/callback","profiles":[]}
-extraEnv: []
+callbackURL: https://broker.invalid/callback
+# Upstream profiles. OAuth client secrets are referenced by exact Secret key and
+# mounted privately; their content is never a chart value or Pod environment.
+profiles: []
 
 resources:
   requests: {cpu: 100m, memory: 128Mi}
@@ -40,16 +42,15 @@ service:
   port: 8443
 
 terminationGracePeriodSeconds: 70
-# Numeric seconds let the chart prove that Kubernetes has enough time for the
-# preStop drain: propagationDelaySeconds + timeoutSeconds + 5s resource close.
+# Numeric seconds render into the strict process-config duration fields.
 drain:
   propagationDelaySeconds: 2
   timeoutSeconds: 55
+  listenerShutdownTimeoutSeconds: 5
 
 # Every broker transport, retention, and capacity bound is explicit so an
 # operator can tune a singleton without relying on unreviewable extraArgs.
 transport:
-  dialTimeoutSeconds: 5
   rpcDeadlineSeconds: 10
   executeDeadlineSeconds: 120
   handleIdleTimeoutSeconds: 300
@@ -69,11 +70,15 @@ runtime:
   logicalRetentionSeconds: 86400
   maxPendingAuthStates: 1024
 
+# Change after externally managed TLS, trust bundle, or OAuth Secret rotation
+# to trigger a controlled singleton restart.
+rollout:
+  restartToken: ""
+
 networkPolicy:
   enabled: true
   # publicFrom reaches the multiplexed TLS gRPC and callback listener.
   publicFrom: []
   # Operator-owned NetworkPolicyEgressRule entries for DNS plus concrete
-  # OIDC/JWKS, upstream OAuth, and MCP destination CIDRs/selectors. Dynamic
-  # destinations must be maintained by the operator or an external policy system.
+  # workload JWT/JWKS, upstream OAuth, and MCP destination CIDRs/selectors.
   operatorEgress: []

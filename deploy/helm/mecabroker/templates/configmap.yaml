@@ -5,4 +5,4 @@ metadata:
   labels: {{- include "mecabroker.labels" . | nindent 4 }}
 data:
   broker.json: |
-{{ .Values.brokerConfig | indent 4 }}
+{{ include "mecabroker.brokerConfig" . | indent 4 }}

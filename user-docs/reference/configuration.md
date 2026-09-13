@@ -250,7 +250,7 @@ OPERATOR-TIER OpenRouter downstream-provider routing (issue #480): a per-model p
 
 Tier: **operator**
 
-Strict OPERATOR-TIER Streamable HTTP MCP authority configuration. Mode selects one mutually exclusive global or session-broker authority; broker mode carries its callback configuration and neutral route declarations. Authentication is a closed none/static_bearer/oauth union. Broker OAuth may use trusted explicit OAuth2 endpoints; all secret-shaped values are MECATL_* environment references, never values in YAML. Project mcp blocks are ignored with a value-free warning.
+Strict OPERATOR-TIER Streamable HTTP MCP authority configuration. Mode selects one mutually exclusive global or session-broker authority; broker mode carries its callback configuration and neutral route declarations. Authentication is a closed none/static_bearer/oauth union. Broker OAuth may use trusted explicit OAuth2 endpoints; client secrets are file references, never values in YAML. Other secret-shaped values remain MECATL_* environment references. Project mcp blocks are ignored with a value-free warning.
 
 | Key | Type | Default | Description |
 | --- | --- | --- | --- |
@@ -277,7 +277,7 @@ Strict OPERATOR-TIER Streamable HTTP MCP authority configuration. Mode selects o
 | `mcp.servers[].auth.oauth.client.mode` | `string` | `(empty)` | Mode is exactly preregistered, cimd, or dcr. |
 | `mcp.servers[].auth.oauth.client.preregistered` | `mcppreregisteredclientprofile` | `(absent)` | Preregistered declares a confidential client registered with the issuer. |
 | `mcp.servers[].auth.oauth.client.preregistered.id` | `string` | `(empty)` | ID is the required preregistered OAuth client identifier. |
-| `mcp.servers[].auth.oauth.client.preregistered.secret_env` | `string` | `(empty)` | SecretEnv is a MECATL_* environment variable name containing the client secret. |
+| `mcp.servers[].auth.oauth.client.preregistered.secret_file` | `string` | `(empty)` | SecretFile is the path to a file containing the client secret. |
 | `mcp.servers[].auth.oauth.client.cimd` | `mcpcimdclientprofile` | `(absent)` | CIMD declares an HTTPS client-id metadata document URL. |
 | `mcp.servers[].auth.oauth.client.cimd.document_url` | `string` | `(empty)` | DocumentURL is the required HTTPS metadata-document URL. |
 | `mcp.servers[].auth.oauth.client.dcr` | `mcpdcrclientprofile` | `(absent)` | DCR declares an RFC 8414 metadata URL for RFC 7591 registration. |

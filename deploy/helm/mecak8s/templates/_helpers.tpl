@@ -141,10 +141,11 @@ mounted
 {{- end -}}
 {{- define "mecak8s.validateRemoteBroker" -}}
 {{- $r := .Values.remoteBroker -}}
-{{- $any := or $r.address $r.caSecret $r.caKey $r.serverName $r.tokenAudience (and $r.tokenLifetimeSeconds (ne (int $r.tokenLifetimeSeconds) 600)) -}}
+{{- $jwt := $r.workloadJWT -}}
+{{- $any := or $r.address $r.caSecret $r.caKey $r.serverName $jwt.audience (and $jwt.lifetimeSeconds (ne (int $jwt.lifetimeSeconds) 600)) -}}
 {{- if $any -}}
-{{- if or (not $r.address) (not $r.caSecret) (not $r.caKey) (not $r.serverName) (not $r.tokenAudience) (not $r.tokenLifetimeSeconds) -}}
-{{- fail "remoteBroker.address, caSecret, caKey, serverName, tokenAudience, and tokenLifetimeSeconds must be configured together" -}}
+{{- if or (not $r.address) (not $r.caSecret) (not $r.caKey) (not $r.serverName) (not $jwt.audience) (not $jwt.lifetimeSeconds) -}}
+{{- fail "remoteBroker.address, caSecret, caKey, serverName, workloadJWT.audience, and workloadJWT.lifetimeSeconds must be configured together" -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -185,7 +186,6 @@ mounted
 {{- if eq $server.auth.oauth.client.mode "preregistered" -}}
 {{- $clientID := $server.auth.oauth.client.preregistered.id -}}
 {{- if or (eq (trim $clientID) "") (regexMatch "[\x00-\x1f\x7f]" $clientID) -}}{{ fail (printf "mcp.servers[%s].auth.oauth.client.preregistered.id must be non-blank and contain no control characters" $server.name) }}{{- end -}}
-{{- $_ := set $ownedEnv (printf "MECATL_MCP_%s_CLIENT_SECRET" $envBase) true -}}
 {{- end -}}
 {{- end -}}
 {{- end -}}
@@ -213,7 +213,7 @@ mcp:
     callback_url: {{ .Values.mcp.broker.callbackURL | quote }}
 {{- end }}
   servers:
-{{- range $server := .Values.mcp.servers }}
+{{- range $index, $server := .Values.mcp.servers }}
 {{- if or (eq $server.auth.mode "oauth") (eq $server.auth.mode "none") }}
     - name: {{ $server.name | quote }}
       url: {{ $server.url | quote }}
@@ -238,7 +238,7 @@ mcp:
 {{- if eq $server.auth.oauth.client.mode "preregistered" }}
             preregistered:
               id: {{ $server.auth.oauth.client.preregistered.id | quote }}
-              secret_env: {{ printf "MECATL_MCP_%s_CLIENT_SECRET" (upper $server.name) }}
+              secret_file: {{ printf "/var/run/secrets/mecatl-mcp/oauth/%d/client-secret" $index | quote }}
 {{- else if eq $server.auth.oauth.client.mode "cimd" }}
             cimd:
               document_url: {{ $server.auth.oauth.client.cimd.documentURL | quote }}

@@ -1,30 +1,30 @@
 image:
   digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
   tag: ""
-workloadIdentity:
+listener:
+  tls:
+    secretName: mecabroker-tls
+workloadJWT:
   issuer: https://identity.example.invalid
   jwksURI: https://identity.example.invalid/keys
   subject: mecak8s
-brokerConfig: |
-  {
-    "callback_url": "https://broker.example.invalid/oauth/complete",
-    "profiles": [{
-      "name": "issues",
-      "url": "https://mcp.example.invalid/mcp",
-      "auth": "oauth",
-      "oauth": {
-        "issuer": "https://identity.example.invalid",
-        "client_id": "replace-me",
-        "client_secret_env": "MECATL_MCP_ISSUES_CLIENT_SECRET",
-        "scopes": ["openid"]
-      },
-      "tools": [{"name":"list_issues","schema":{"type":"object"},"read_only":true}]
-    }]
-  }
-extraEnv:
-  - name: MECATL_MCP_ISSUES_CLIENT_SECRET
-    valueFrom:
-      secretKeyRef: {name: mecabroker-upstream, key: client-secret}
+callbackURL: https://broker.example.invalid/oauth/complete
+profiles:
+  - name: issues
+    url: https://mcp.example.invalid/mcp
+    auth: oauth
+    oauth:
+      issuer: https://identity.example.invalid
+      clientID: replace-me
+      clientSecret:
+        secretName: mecabroker-upstream
+        key: client-secret
+      scopes: [openid]
+      requestRefreshToken: false
+    tools:
+      - name: list_issues
+        schema: {type: object}
+        readOnly: true
 networkPolicy:
   publicFrom:
     - namespaceSelector:

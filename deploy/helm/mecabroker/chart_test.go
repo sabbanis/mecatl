@@ -1,6 +1,7 @@
 package mecabroker_test
 
 import (
+	"encoding/json"
 	"os"
 	"os/exec"
 	"regexp"
@@ -45,6 +46,30 @@ func networkPolicyFromRender(t *testing.T, rendered string) networkingv1.Network
 	}
 	t.Fatal("rendered chart has no NetworkPolicy")
 	return networkingv1.NetworkPolicy{}
+}
+
+func configMapFromRender(t *testing.T, rendered string) corev1.ConfigMap {
+	t.Helper()
+	for _, document := range strings.Split(rendered, "\n---") {
+		var configMap corev1.ConfigMap
+		if yaml.Unmarshal([]byte(document), &configMap) == nil && configMap.Kind == "ConfigMap" {
+			return configMap
+		}
+	}
+	t.Fatal("rendered chart has no ConfigMap")
+	return corev1.ConfigMap{}
+}
+
+func deploymentFromRender(t *testing.T, rendered string) appsv1.Deployment {
+	t.Helper()
+	for _, document := range strings.Split(rendered, "\n---") {
+		var deployment appsv1.Deployment
+		if yaml.Unmarshal([]byte(document), &deployment) == nil && deployment.Kind == "Deployment" {
+			return deployment
+		}
+	}
+	t.Fatal("rendered chart has no Deployment")
+	return appsv1.Deployment{}
 }
 
 func TestSingletonBrokerRemediation_Scenario4_NetworkPolicyValuesRenderExactly(t *testing.T) {
@@ -149,11 +174,13 @@ func TestSingletonBrokerRemediation_Scenario4_SingletonTopologyAndExposure(t *te
 		t.Fatalf("broker containers = %d, want 1", len(pod.Containers))
 	}
 	container := pod.Containers[0]
-	if !slices.Contains(container.Args, "--listen-addr=0.0.0.0:8443") || len(container.Ports) < 1 || container.Ports[0].Name != "public" || container.Ports[0].ContainerPort != 8443 {
-		t.Fatalf("public listener/container port is not 8443: args=%q ports=%#v", container.Args, container.Ports)
+	if !slices.Equal(container.Args, []string{"--config=/etc/mecabroker/broker.json"}) || len(container.Ports) < 1 || container.Ports[0].Name != "public" || container.Ports[0].ContainerPort != 8443 {
+		t.Fatalf("broker must use only its canonical config argument: args=%q ports=%#v", container.Args, container.Ports)
 	}
-	if !slices.Contains(container.Args, "--admin-addr=127.0.0.1:8081") {
-		t.Fatalf("administration listener does not match local subcommand address: %q", container.Args)
+	for _, arg := range container.Args {
+		if strings.HasPrefix(arg, "--admin-addr=") {
+			t.Fatalf("administration listener must use the fixed local endpoint, not an argument: %q", container.Args)
+		}
 	}
 	if pod.AutomountServiceAccountToken == nil || *pod.AutomountServiceAccountToken || pod.SecurityContext == nil || pod.SecurityContext.RunAsNonRoot == nil || !*pod.SecurityContext.RunAsNonRoot || pod.SecurityContext.SeccompProfile == nil {
 		t.Fatalf("restrictive pod security = token:%v context:%#v", pod.AutomountServiceAccountToken, pod.SecurityContext)
@@ -380,11 +407,13 @@ func TestMecabrokerChart_DeploymentSecurityAndShutdownBudget(t *testing.T) {
 		t.Fatalf("pod security context = %#v", pod.SecurityContext)
 	}
 	container := pod.Containers[0]
-	if !slices.Contains(container.Args, "--listen-addr=0.0.0.0:8443") || len(container.Ports) < 1 || container.Ports[0].Name != "public" || container.Ports[0].ContainerPort != 8443 {
-		t.Fatalf("public listener/container port is not 8443: args=%q ports=%#v", container.Args, container.Ports)
+	if !slices.Equal(container.Args, []string{"--config=/etc/mecabroker/broker.json"}) || len(container.Ports) < 1 || container.Ports[0].Name != "public" || container.Ports[0].ContainerPort != 8443 {
+		t.Fatalf("broker must use only its canonical config argument: args=%q ports=%#v", container.Args, container.Ports)
 	}
-	if !slices.Contains(container.Args, "--admin-addr=127.0.0.1:8081") {
-		t.Fatalf("admin listener does not use local command endpoint: %q", container.Args)
+	for _, arg := range container.Args {
+		if strings.HasPrefix(arg, "--admin-addr=") {
+			t.Fatalf("admin listener must use the fixed local endpoint, not an argument: %q", container.Args)
+		}
 	}
 	for name, probe := range map[string]*corev1.Probe{
 		"startup":   container.StartupProbe,
@@ -419,13 +448,15 @@ func TestMecabrokerChart_DeploymentSecurityAndShutdownBudget(t *testing.T) {
 	if pod.TerminationGracePeriodSeconds == nil || *pod.TerminationGracePeriodSeconds <= 62 {
 		t.Fatalf("grace = %v, want > 62", pod.TerminationGracePeriodSeconds)
 	}
-	for _, want := range []string{"--broker-dial-timeout=5s", "--broker-max-handles=128", "--broker-max-receipts=4096", "--broker-max-active-executes=64", "--broker-max-logical-sessions=1024", "--broker-logical-retention=86400s", "--broker-max-pending-auth-states=1024"} {
-		if !strings.Contains(strings.Join(container.Args, "\n"), want) {
-			t.Fatalf("missing runtime bound %q", want)
+	config := configMapFromRender(t, rendered).Data["broker.json"]
+	for _, want := range []string{`"api_version": "mecabroker.mecatl.dev/v1"`, `"max_handles": 128`, `"max_receipts": 4096`, `"max_active_executes": 64`, `"max_logical_sessions": 1024`, `"logical_retention": "86400s"`, `"max_pending_auth_states": 1024`} {
+		if !strings.Contains(config, want) {
+			t.Fatalf("config document missing runtime bound %q: %s", want, config)
 		}
 	}
 	for _, args := range [][]string{
 		{"template", "production", ".", "-f", "ci/production-values.yaml", "--set", "terminationGracePeriodSeconds=62"},
+		{"template", "production", ".", "-f", "ci/production-values.yaml", "--set", "transport.dialTimeoutSeconds=5"},
 		{"template", "production", ".", "-f", "ci/production-values.yaml", "--set-json", `networkPolicy.operatorEgress=[{}]`},
 		{"template", "production", ".", "-f", "ci/production-values.yaml", "--set-json", `networkPolicy.operatorEgress=[{"to":[{"ipBlock":{"cidr":"192.0.2.0/24"}}]}]`},
 	} {
@@ -443,5 +474,99 @@ func TestMecabrokerChart_ExplicitEgressAndDigestRender(t *testing.T) {
 	}
 	if !strings.Contains(rendered, "ghcr.io/stacklok/mecatl/mecabroker@sha256:") {
 		t.Fatal("image did not render repository@digest")
+	}
+}
+
+func TestMecabrokerChart_CanonicalConfigAndSecretCustody(t *testing.T) {
+	rendered := renderChart(t, "template", "production", ".", "-f", "ci/production-values.yaml")
+	configMap := configMapFromRender(t, rendered)
+	var config map[string]any
+	if err := json.Unmarshal([]byte(configMap.Data["broker.json"]), &config); err != nil {
+		t.Fatalf("broker.json is not JSON: %v", err)
+	}
+	for _, field := range []string{"api_version", "listener", "workload_jwt", "callback_url", "profiles", "drain", "transport", "runtime"} {
+		if _, ok := config[field]; !ok {
+			t.Fatalf("canonical config omits %q: %#v", field, config)
+		}
+	}
+	if config["api_version"] != "mecabroker.mecatl.dev/v1" {
+		t.Fatalf("config API version = %v", config["api_version"])
+	}
+	profiles := config["profiles"].([]any)
+	oauth := profiles[0].(map[string]any)["oauth"].(map[string]any)
+	if oauth["client_secret_file"] != "/var/run/mecabroker/oauth/0/client-secret" {
+		t.Fatalf("OAuth secret file = %v", oauth["client_secret_file"])
+	}
+	tools := profiles[0].(map[string]any)["tools"].([]any)
+	if tools[0].(map[string]any)["read_only"] != true {
+		t.Fatalf("static tool did not render file-config field spelling: %#v", tools[0])
+	}
+	if strings.Contains(configMap.Data["broker.json"], "mecabroker-upstream") {
+		t.Fatalf("config map contains OAuth Secret reference or content: %s", configMap.Data["broker.json"])
+	}
+
+	deployment := deploymentFromRender(t, rendered)
+	container := deployment.Spec.Template.Spec.Containers[0]
+	if !slices.Equal(container.Args, []string{"--config=/etc/mecabroker/broker.json"}) || len(container.Env) != 0 {
+		t.Fatalf("broker args/env = %q/%#v", container.Args, container.Env)
+	}
+	volumes := map[string]corev1.Volume{}
+	for _, volume := range deployment.Spec.Template.Spec.Volumes {
+		volumes[volume.Name] = volume
+	}
+	tls := volumes["tls"].Secret
+	if tls == nil || tls.SecretName != "mecabroker-tls" || len(tls.Items) != 2 || tls.Items[0].Key != "tls.crt" || tls.Items[0].Path != "tls.crt" || tls.Items[1].Key != "tls.key" || tls.Items[1].Path != "tls.key" {
+		t.Fatalf("TLS Secret volume must select its exact certificate and key: %#v", tls)
+	}
+	var tlsMounted bool
+	for _, mount := range container.VolumeMounts {
+		if mount.Name == "tls" && mount.MountPath == "/var/run/mecabroker/tls" && mount.ReadOnly {
+			tlsMounted = true
+		}
+	}
+	if !tlsMounted {
+		t.Fatalf("TLS Secret is not privately mounted read-only: %#v", container.VolumeMounts)
+	}
+	for _, want := range []struct {
+		volume, secretName, key, path, mountPath string
+	}{
+		{"workload-jwt", "mecabroker-workload-jwt", "ca.pem", "ca.pem", "/var/run/mecabroker/workload-jwt"},
+		{"oauth-client-secret-0", "mecabroker-upstream", "client-secret", "client-secret", "/var/run/mecabroker/oauth/0"},
+	} {
+		secret := volumes[want.volume].Secret
+		if secret == nil || secret.SecretName != want.secretName || len(secret.Items) != 1 || secret.Items[0].Key != want.key || secret.Items[0].Path != want.path {
+			t.Fatalf("%s Secret volume must select its exact key: %#v", want.volume, secret)
+		}
+		var mounted bool
+		for _, mount := range container.VolumeMounts {
+			if mount.Name == want.volume && mount.MountPath == want.mountPath && mount.ReadOnly {
+				mounted = true
+			}
+		}
+		if !mounted {
+			t.Fatalf("%s Secret is not privately mounted read-only: %#v", want.volume, container.VolumeMounts)
+		}
+	}
+}
+
+func TestMecabrokerChart_SchemaAndRolloutRejectEscapes(t *testing.T) {
+	for _, args := range [][]string{
+		{"template", "production", ".", "-f", "ci/production-values.yaml", "--set", "brokerConfig={}"},
+		{"template", "production", ".", "-f", "ci/production-values.yaml", "--set-json", `extraEnv=[]`},
+		{"template", "production", ".", "-f", "ci/production-values.yaml", "--set-json", `profiles=[{"name":"issues","url":"https://mcp.example.invalid/mcp","auth":"oauth","oauth":{"issuer":"https://identity.example.invalid","clientID":"id","clientSecret":"inline","scopes":[],"requestRefreshToken":false},"tools":[]}]`},
+		{"template", "production", ".", "-f", "ci/production-values.yaml", "--set-json", `profiles=[{"name":"issues","url":"https://mcp.example.invalid/mcp","auth":"oauth","tools":[]}]`},
+	} {
+		if output, err := exec.Command("helm", args...).CombinedOutput(); err == nil {
+			t.Fatalf("accepted schema-bypassing values %q: %s", args, output)
+		}
+	}
+	before := deploymentFromRender(t, renderChart(t, "template", "production", ".", "-f", "ci/production-values.yaml"))
+	after := deploymentFromRender(t, renderChart(t, "template", "production", ".", "-f", "ci/production-values.yaml", "--set", "rollout.restartToken=rotated-20260912"))
+	if before.Spec.Template.Annotations["rollout/restart-token"] != "" || after.Spec.Template.Annotations["rollout/restart-token"] != "rotated-20260912" {
+		t.Fatalf("restart token annotations = before:%#v after:%#v", before.Spec.Template.Annotations, after.Spec.Template.Annotations)
+	}
+	changedConfig := deploymentFromRender(t, renderChart(t, "template", "production", ".", "-f", "ci/production-values.yaml", "--set", "callbackURL=https://broker.example.invalid/rotated"))
+	if before.Spec.Template.Annotations["checksum/broker-config"] == changedConfig.Spec.Template.Annotations["checksum/broker-config"] {
+		t.Fatal("config document change did not update pod template checksum")
 	}
 }

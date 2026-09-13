@@ -205,7 +205,7 @@ func pdbFromRender(t *testing.T, rendered string) *policyv1.PodDisruptionBudget 
 }
 
 func TestSingletonBrokerRemediation_Scenario4_Mecak8sRemoteBrokerProjection(t *testing.T) {
-	rendered, err := helm(t, "template", "production", ".", "-f", "ci/production-values.yaml", "--set", "remoteBroker.address=mecabroker.mecatl.svc:8443,remoteBroker.caSecret=mecabroker-ca,remoteBroker.caKey=ca.pem,remoteBroker.serverName=mecabroker.mecatl.svc,remoteBroker.tokenAudience=mecabroker,remoteBroker.tokenLifetimeSeconds=600")
+	rendered, err := helm(t, "template", "production", ".", "-f", "ci/production-values.yaml", "--set", "remoteBroker.address=mecabroker.mecatl.svc:8443,remoteBroker.caSecret=mecabroker-ca,remoteBroker.caKey=ca.pem,remoteBroker.serverName=mecabroker.mecatl.svc,remoteBroker.workloadJWT.audience=mecabroker,remoteBroker.workloadJWT.lifetimeSeconds=600")
 	if err != nil {
 		t.Fatal(err, rendered)
 	}
@@ -2225,18 +2225,33 @@ mcp:
 	if slices.ContainsFunc(container.Args, func(arg string) bool { return strings.HasPrefix(arg, "--mcp-server=") }) {
 		t.Fatal("broker routes must not be duplicated as legacy global flags")
 	}
-	env := workloadEnv(container)
-	if len(env) != 1 || env[0].Name != "MECATL_MCP_OAUTH_REGISTERED_CLIENT_SECRET" || env[0].ValueFrom == nil || env[0].ValueFrom.SecretKeyRef == nil || env[0].ValueFrom.SecretKeyRef.Name != "oauth-registered" || env[0].ValueFrom.SecretKeyRef.Key != "client-secret" {
-		t.Fatalf("OAuth environment is not SecretKeyRef-only: %#v", env)
+	if env := workloadEnv(container); len(env) != 0 {
+		t.Fatalf("OAuth client secret must not be injected as an environment variable: %#v", env)
+	}
+	const secretPath = "/var/run/secrets/mecatl-mcp/oauth/1/client-secret"
+	if !slices.ContainsFunc(container.VolumeMounts, func(mount corev1.VolumeMount) bool {
+		return mount.Name == "mcp-oauth-client-secret-1" && mount.MountPath == "/var/run/secrets/mecatl-mcp/oauth/1" && mount.ReadOnly
+	}) {
+		t.Fatalf("OAuth client secret volume mount = %#v, want read-only %q", container.VolumeMounts, secretPath)
+	}
+	if !slices.ContainsFunc(deployment.Spec.Template.Spec.Volumes, func(volume corev1.Volume) bool {
+		return volume.Name == "mcp-oauth-client-secret-1" && volume.Secret != nil && volume.Secret.SecretName == "oauth-registered" &&
+			volume.Secret.DefaultMode != nil && *volume.Secret.DefaultMode == 0o440 &&
+			len(volume.Secret.Items) == 1 && volume.Secret.Items[0].Key == "client-secret" && volume.Secret.Items[0].Path == "client-secret"
+	}) {
+		t.Fatalf("OAuth client secret volume does not project exactly the configured key: %#v", deployment.Spec.Template.Spec.Volumes)
 	}
 	cm := configMapFromRender(t, rendered, "production-mecak8s-mcp")
 	profile := cm.Data["settings.yaml"]
+	if !strings.Contains(profile, `secret_file: "/var/run/secrets/mecatl-mcp/oauth/1/client-secret"`) || strings.Contains(profile, "secret_env:") {
+		t.Fatalf("OAuth profile must use the mounted client-secret file:\n%s", profile)
+	}
 	authority := runtimeMCPAuthorityFromConfigMap(t, profile)
 	broker, ok := authority.Broker()
 	if authority.Mode() != mcpauthority.Broker || !ok || broker.CallbackURL != "https://agent.example/mcp/authorization/callback" || len(broker.Routes) != 2 || broker.Routes[0].Name != "public" || broker.Routes[1].Name != "oauth_registered" {
 		t.Fatalf("runtime broker authority = %#v, want callback and both broker routes", authority)
 	}
-	for _, forbidden := range []string{"client-secret", "credential-record", "credentials:", "profile:", "principal:"} {
+	for _, forbidden := range []string{"credential-record", "credentials:", "profile:", "principal:"} {
 		if strings.Contains(profile, forbidden) {
 			t.Fatalf("broker profile leaks or enables forbidden field %q:\n%s", forbidden, profile)
 		}

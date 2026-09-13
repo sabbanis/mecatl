@@ -4,6 +4,7 @@
 package main
 
 import (
+	"bytes"
 	"context"
 	"crypto/tls"
 	"encoding/json"
@@ -11,10 +12,10 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 
@@ -26,11 +27,12 @@ import (
 )
 
 const (
-	shutdownTimeout        = 5 * time.Second
-	defaultPropagationWait = 2 * time.Second
-	defaultDrainTimeout    = 55 * time.Second
-	defaultPublicAddress   = ":8443"
-	defaultAdminAddress    = "127.0.0.1:8081"
+	brokerAPIVersion    = "mecabroker.mecatl.dev/v1"
+	defaultConfigFile   = "/etc/mecabroker/broker.json"
+	defaultAdminAddress = "127.0.0.1:8081"
+	maxConfigBytes      = 1 << 20
+	maxJWKSStaleness    = 24 * time.Hour
+	adminCheckTimeout   = 5 * time.Second
 )
 
 type brokerLifecycle interface {
@@ -42,29 +44,63 @@ var newProduction = func(ctx context.Context, cfg mcpbrokerserver.ProductionConf
 	return mcpbrokerserver.NewProduction(ctx, cfg)
 }
 
-type config struct {
-	publicAddress    string
-	adminAddress     string
-	tlsCertFile      string
-	tlsKeyFile       string
-	oidcIssuer       string
-	oidcJWKSURI      string
-	oidcAudience     string
-	oidcSubject      string
-	oidcCAFile       string
-	maxJWKSStaleness time.Duration
-	brokerConfigFile string
-	propagationWait  time.Duration
-	drainTimeout     time.Duration
-	transport        mcpbrokergrpc.Config
-	runtimeLimits    mcpbroker.Limits
+type duration time.Duration
+
+func (d *duration) UnmarshalJSON(raw []byte) error {
+	var value string
+	if err := json.Unmarshal(raw, &value); err != nil {
+		return errors.New("duration must be a string")
+	}
+	parsed, err := time.ParseDuration(value)
+	if err != nil {
+		return errors.New("duration is invalid")
+	}
+	*d = duration(parsed)
+	return nil
 }
+func (d duration) value() time.Duration { return time.Duration(d) }
 
 type fileConfig struct {
+	APIVersion string `json:"api_version"`
+	Listener   struct {
+		PublicAddress string `json:"public_address"`
+		TLSCertFile   string `json:"tls_cert_file"`
+		TLSKeyFile    string `json:"tls_key_file"`
+	} `json:"listener"`
+	WorkloadJWT struct {
+		Issuer           string   `json:"issuer"`
+		JWKSURI          string   `json:"jwks_uri"`
+		Audience         string   `json:"audience"`
+		Subject          string   `json:"subject"`
+		TrustBundleFile  string   `json:"trust_bundle_file"`
+		MaxJWKSStaleness duration `json:"max_jwks_staleness"`
+	} `json:"workload_jwt"`
 	CallbackURL string        `json:"callback_url"`
 	Profiles    []fileProfile `json:"profiles"`
+	Drain       struct {
+		PropagationDelay        duration `json:"propagation_delay"`
+		Timeout                 duration `json:"timeout"`
+		ListenerShutdownTimeout duration `json:"listener_shutdown_timeout"`
+	} `json:"drain"`
+	Transport struct {
+		RPCDeadline        duration `json:"rpc_deadline"`
+		ExecuteDeadline    duration `json:"execute_deadline"`
+		HandleIdleTimeout  duration `json:"handle_idle_timeout"`
+		SweepInterval      duration `json:"sweep_interval"`
+		CleanupTimeout     duration `json:"cleanup_timeout"`
+		MaxHandles         int      `json:"max_handles"`
+		MaxOwners          int      `json:"max_owners"`
+		MaxReceipts        int      `json:"max_receipts"`
+		MaxReceiptBytes    int      `json:"max_receipt_bytes"`
+		MaxPendingControls int      `json:"max_pending_controls"`
+		MaxActiveExecutes  int      `json:"max_active_executes"`
+	} `json:"transport"`
+	Runtime struct {
+		MaxLogicalSessions   int      `json:"max_logical_sessions"`
+		LogicalRetention     duration `json:"logical_retention"`
+		MaxPendingAuthStates int      `json:"max_pending_auth_states"`
+	} `json:"runtime"`
 }
-
 type fileProfile struct {
 	Name   string       `json:"name"`
 	URL    string       `json:"url"`
@@ -72,17 +108,15 @@ type fileProfile struct {
 	OAuth  *fileOAuth   `json:"oauth,omitempty"`
 	Static []fileStatic `json:"tools,omitempty"`
 }
-
 type fileOAuth struct {
 	Issuer                string   `json:"issuer,omitempty"`
 	AuthorizationEndpoint string   `json:"authorization_endpoint,omitempty"`
 	TokenEndpoint         string   `json:"token_endpoint,omitempty"`
 	ClientID              string   `json:"client_id"`
-	ClientSecretEnv       string   `json:"client_secret_env"`
+	ClientSecretFile      string   `json:"client_secret_file"`
 	Scopes                []string `json:"scopes"`
 	RequestRefreshToken   bool     `json:"request_refresh_token,omitempty"`
 }
-
 type fileStatic struct {
 	Name        string          `json:"name"`
 	Description string          `json:"description,omitempty"`
@@ -95,110 +129,75 @@ func main() {
 		var err error
 		switch os.Args[1] {
 		case "health":
-			err = requestLocalAdmin(http.MethodGet, "/healthz", shutdownTimeout)
+			err = requestLocalAdmin(http.MethodGet, "/healthz", adminCheckTimeout)
 		case "ready":
-			err = requestLocalAdmin(http.MethodGet, "/readyz", shutdownTimeout)
+			err = requestLocalAdmin(http.MethodGet, "/readyz", adminCheckTimeout)
 		case "drain":
-			err = requestLocalAdmin(http.MethodGet, "/drain", defaultPropagationWait+shutdownTimeout)
+			cfg, configErr := readConfig(defaultConfigFile)
+			if configErr != nil {
+				err = configErr
+			} else {
+				err = requestLocalAdmin(http.MethodGet, "/drain", cfg.drainRequestTimeout())
+			}
 		default:
+			goto serve
 		}
 		if err != nil {
 			_, _ = fmt.Fprintln(os.Stderr, "mecabroker: local administration failed")
 			os.Exit(1)
 		}
-		if os.Args[1] == "health" || os.Args[1] == "ready" || os.Args[1] == "drain" {
-			return
-		}
+		return
 	}
-	cfg := parseFlags()
+serve:
+	cfg, err := parseFlags()
+	if err != nil {
+		_, _ = fmt.Fprintln(os.Stderr, "mecabroker: startup or serving failed")
+		os.Exit(1)
+	}
 	ctx, stop := signal.NotifyContext(context.Background(), syscall.SIGINT, syscall.SIGTERM)
 	defer stop()
 	if err := run(ctx, cfg, slogdiag.NewText(os.Stderr)); err != nil {
-		// Startup errors can originate in secret-bearing dependency stacks. Keep the
-		// process boundary closed rather than reflecting those values to stderr.
 		_, _ = fmt.Fprintln(os.Stderr, "mecabroker: startup or serving failed")
 		os.Exit(1)
 	}
 }
 
-func parseFlags() config {
-	var cfg config
-	cfg.transport = mcpbrokergrpc.DefaultConfig()
-	flag.StringVar(&cfg.publicAddress, "listen-addr", defaultPublicAddress, "TLS gRPC and browser callback listen address")
-	flag.StringVar(&cfg.adminAddress, "admin-addr", defaultAdminAddress, "loopback-only health, readiness, and drain listen address")
-	flag.StringVar(&cfg.tlsCertFile, "tls-cert", "", "PEM public listener server certificate (required)")
-	flag.StringVar(&cfg.tlsKeyFile, "tls-key", "", "PEM server private key")
-	flag.StringVar(&cfg.oidcIssuer, "oidc-issuer", "", "exact HTTPS workload-token issuer")
-	flag.StringVar(&cfg.oidcJWKSURI, "oidc-jwks-uri", "", "explicit HTTPS JWKS endpoint")
-	flag.StringVar(&cfg.oidcAudience, "oidc-audience", "", "exact workload-token audience")
-	flag.StringVar(&cfg.oidcSubject, "oidc-subject", "", "exact authorized workload-token subject")
-	flag.StringVar(&cfg.oidcCAFile, "oidc-ca", "", "PEM trust bundle for issuer and JWKS TLS")
-	flag.DurationVar(&cfg.maxJWKSStaleness, "oidc-max-jwks-staleness", 15*time.Minute, "maximum cached-JWKS age during issuer outage")
-	flag.StringVar(&cfg.brokerConfigFile, "config", "", "strict JSON ToolHive broker configuration")
-	flag.DurationVar(&cfg.propagationWait, "drain-propagation-delay", defaultPropagationWait, "delay after closing admission before waiting for active work")
-	flag.DurationVar(&cfg.drainTimeout, "drain-timeout", defaultDrainTimeout, "finite deadline for active broker work during shutdown")
-	flag.DurationVar(&cfg.transport.DialTimeout, "broker-dial-timeout", cfg.transport.DialTimeout, "finite broker client connection deadline")
-	flag.DurationVar(&cfg.transport.RPCDeadline, "broker-rpc-deadline", cfg.transport.RPCDeadline, "finite non-Execute broker RPC deadline")
-	flag.DurationVar(&cfg.transport.ExecuteDeadline, "broker-execute-deadline", cfg.transport.ExecuteDeadline, "finite broker Execute deadline")
-	flag.DurationVar(&cfg.transport.HandleIdleTimeout, "broker-handle-idle-timeout", cfg.transport.HandleIdleTimeout, "absolute idle lease for broker attachment handles")
-	flag.DurationVar(&cfg.transport.SweepInterval, "broker-sweep-interval", cfg.transport.SweepInterval, "broker retention sweep interval")
-	flag.DurationVar(&cfg.transport.CleanupTimeout, "broker-cleanup-timeout", cfg.transport.CleanupTimeout, "bounded broker attachment cleanup deadline")
-	flag.IntVar(&cfg.transport.MaxHandles, "broker-max-handles", cfg.transport.MaxHandles, "maximum retained broker attachment handles")
-	flag.IntVar(&cfg.transport.MaxOwners, "broker-max-owners", cfg.transport.MaxOwners, "maximum retained authenticated logical-session owners")
-	flag.IntVar(&cfg.runtimeLimits.MaxLogicalSessions, "broker-max-logical-sessions", 1024, "maximum broker runtime logical sessions")
-	flag.DurationVar(&cfg.runtimeLimits.LogicalRetention, "broker-logical-retention", 24*time.Hour, "idle retention for broker runtime logical sessions")
-	flag.IntVar(&cfg.runtimeLimits.MaxPendingStates, "broker-max-pending-auth-states", 1024, "maximum pending broker runtime authorization states")
-	flag.IntVar(&cfg.transport.MaxReceipts, "broker-max-receipts", cfg.transport.MaxReceipts, "maximum retained Execute receipts per attachment")
-	flag.IntVar(&cfg.transport.MaxReceiptBytes, "broker-max-receipt-bytes", cfg.transport.MaxReceiptBytes, "maximum aggregate retained Execute receipt bytes per attachment")
-	flag.IntVar(&cfg.transport.MaxPendingControls, "broker-max-pending-controls", cfg.transport.MaxPendingControls, "maximum concurrent broker lifecycle controls")
-	flag.IntVar(&cfg.transport.MaxActiveExecutes, "broker-max-active-executes", cfg.transport.MaxActiveExecutes, "maximum concurrent upstream tool executions")
-	flag.Parse()
-	return cfg
+func parseFlags() (fileConfig, error) { return parseConfigFlag(flag.CommandLine) }
+
+func parseConfigFlag(flags *flag.FlagSet) (fileConfig, error) {
+	var path string
+	flags.StringVar(&path, "config", "", "strict JSON broker configuration (required)")
+	if err := flags.Parse(os.Args[1:]); err != nil {
+		return fileConfig{}, err
+	}
+	if path == "" {
+		return fileConfig{}, errors.New("--config is required")
+	}
+	if flags.NArg() != 0 {
+		return fileConfig{}, errors.New("serving accepts only --config")
+	}
+	return readConfig(path)
 }
 
-//nolint:gocyclo // composition root keeps file/flag validation separate from the shared lifecycle.
-func run(ctx context.Context, cfg config, diagnostics port.Diagnostics) error {
-	if cfg.brokerConfigFile == "" || cfg.oidcCAFile == "" {
-		return errors.New("required broker configuration is absent")
-	}
-	if cfg.propagationWait < 0 || cfg.drainTimeout <= 0 {
-		return errors.New("broker drain bounds are invalid")
-	}
-	if cfg.runtimeLimits.MaxLogicalSessions <= 0 || cfg.runtimeLimits.LogicalRetention <= 0 || cfg.runtimeLimits.MaxPendingStates <= 0 {
-		return errors.New("broker runtime limits are invalid")
-	}
-	if (cfg.tlsCertFile == "") != (cfg.tlsKeyFile == "") {
-		return errors.New("TLS certificate and key must be configured together")
-	}
-	if cfg.tlsCertFile == "" {
-		return errors.New("broker public TLS certificate and key are required")
-	}
-	certificate, err := tls.LoadX509KeyPair(cfg.tlsCertFile, cfg.tlsKeyFile)
+func run(ctx context.Context, cfg fileConfig, diagnostics port.Diagnostics) error {
+	certificate, err := tls.LoadX509KeyPair(cfg.Listener.TLSCertFile, cfg.Listener.TLSKeyFile)
 	if err != nil {
 		return errors.New("load server identity")
 	}
-	caPEM, err := os.ReadFile(cfg.oidcCAFile)
+	caPEM, err := os.ReadFile(cfg.WorkloadJWT.TrustBundleFile)
 	if err != nil {
-		return errors.New("read OIDC trust bundle")
+		return errors.New("read workload-JWT trust bundle")
 	}
-	declaration, err := readConfig(cfg.brokerConfigFile)
-	if err != nil {
-		return err
-	}
-	bounds := mcpbrokerserver.DefaultPublicListenerConfig()
 	lifecycle, err := newProduction(ctx, mcpbrokerserver.ProductionConfig{
-		PublicAddress: cfg.publicAddress, AdminAddress: cfg.adminAddress,
-		TLSConfig: &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12},
-		OIDC:      mcpbrokerserver.OIDCConfig{Issuer: cfg.oidcIssuer, JWKSURI: cfg.oidcJWKSURI, Audience: cfg.oidcAudience, AllowedSubjects: []string{cfg.oidcSubject}, TrustedCAPEM: caPEM, MaxJWKSStaleness: cfg.maxJWKSStaleness},
-		ToolHive:  declaration.toolHive(), Diagnostics: diagnostics, PropagationWait: cfg.propagationWait,
-		DrainTimeout: cfg.drainTimeout, ShutdownTimeout: shutdownTimeout, PublicBounds: bounds, Transport: cfg.transport,
-		RuntimeLimits: cfg.runtimeLimits,
+		PublicAddress: cfg.Listener.PublicAddress, AdminAddress: defaultAdminAddress, TLSConfig: &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12},
+		OIDC:     mcpbrokerserver.OIDCConfig{Issuer: cfg.WorkloadJWT.Issuer, JWKSURI: cfg.WorkloadJWT.JWKSURI, Audience: cfg.WorkloadJWT.Audience, AllowedSubjects: []string{cfg.WorkloadJWT.Subject}, TrustedCAPEM: caPEM, MaxJWKSStaleness: cfg.WorkloadJWT.MaxJWKSStaleness.value()},
+		ToolHive: cfg.toolHive(), Diagnostics: diagnostics, PropagationWait: cfg.Drain.PropagationDelay.value(), DrainTimeout: cfg.Drain.Timeout.value(), ShutdownTimeout: cfg.Drain.ListenerShutdownTimeout.value(), PublicBounds: mcpbrokerserver.DefaultPublicListenerConfig(), Transport: cfg.transport(), RuntimeLimits: cfg.runtimeLimits(),
 	})
 	if err != nil {
 		return err
 	}
 	defer func() {
-		closeCtx, cancel := context.WithTimeout(context.Background(), shutdownTimeout)
+		closeCtx, cancel := context.WithTimeout(context.Background(), cfg.Drain.ListenerShutdownTimeout.value())
 		defer cancel()
 		_ = lifecycle.Close(closeCtx)
 	}()
@@ -234,7 +233,11 @@ func readConfig(path string) (fileConfig, error) {
 		return fileConfig{}, errors.New("open broker configuration")
 	}
 	defer func() { _ = file.Close() }()
-	decoder := json.NewDecoder(io.LimitReader(file, 1<<20))
+	data, err := io.ReadAll(io.LimitReader(file, maxConfigBytes+1))
+	if err != nil || len(data) > maxConfigBytes {
+		return fileConfig{}, errors.New("broker configuration exceeds size limit")
+	}
+	decoder := json.NewDecoder(bytes.NewReader(data))
 	decoder.DisallowUnknownFields()
 	var cfg fileConfig
 	if err := decoder.Decode(&cfg); err != nil {
@@ -243,38 +246,144 @@ func readConfig(path string) (fileConfig, error) {
 	if err := decoder.Decode(&struct{}{}); !errors.Is(err, io.EOF) {
 		return fileConfig{}, errors.New("broker configuration has trailing data")
 	}
-	if cfg.CallbackURL == "" || len(cfg.Profiles) == 0 {
-		return fileConfig{}, errors.New("broker callback and profiles are required")
-	}
-	if err := mcpbroker.ValidateProtectedURL(cfg.CallbackURL, "broker callback"); err != nil {
+	if err := cfg.validate(); err != nil {
 		return fileConfig{}, err
-	}
-	for _, profile := range cfg.Profiles {
-		if strings.EqualFold(profile.Auth, "oauth") {
-			if err := mcpbroker.ValidateProtectedURL(profile.URL, "protected upstream URL"); err != nil {
-				return fileConfig{}, err
-			}
-			if profile.OAuth == nil {
-				return fileConfig{}, errors.New("protected profile OAuth configuration is required")
-			}
-			for label, endpoint := range map[string]string{"issuer": profile.OAuth.Issuer, "authorization endpoint": profile.OAuth.AuthorizationEndpoint, "token endpoint": profile.OAuth.TokenEndpoint} {
-				if endpoint != "" {
-					if err := mcpbroker.ValidateProtectedURL(endpoint, label); err != nil {
-						return fileConfig{}, err
-					}
-				}
-			}
-		}
 	}
 	return cfg, nil
 }
 
+const maxClientSecretBytes = 64 << 10
+
+// validateConfiguredSecretFile bounds secret handling at configuration admission.
+// ToolHive reads the path only while constructing its upstream client.
+func validateConfiguredSecretFile(path string) error {
+	if path == "" {
+		return nil
+	}
+	file, err := os.Open(path)
+	if err != nil {
+		return err
+	}
+	defer func() { _ = file.Close() }()
+	secret, err := io.ReadAll(io.LimitReader(file, maxClientSecretBytes+1))
+	if err != nil || len(secret) > maxClientSecretBytes || len(bytes.TrimSpace(secret)) == 0 {
+		return errors.New("invalid")
+	}
+	return nil
+}
+
+//nolint:gocyclo // configuration admission keeps cross-field policy together.
+func (cfg fileConfig) validate() error {
+	if cfg.APIVersion != brokerAPIVersion {
+		return errors.New("broker configuration API version is required and unsupported versions are rejected")
+	}
+	if cfg.Listener.PublicAddress == "" || cfg.Listener.TLSCertFile == "" || cfg.Listener.TLSKeyFile == "" {
+		return errors.New("complete public listener configuration is required")
+	}
+	if _, _, err := net.SplitHostPort(cfg.Listener.PublicAddress); err != nil {
+		return errors.New("public listener address is invalid")
+	}
+	if cfg.WorkloadJWT.Issuer == "" || cfg.WorkloadJWT.JWKSURI == "" || cfg.WorkloadJWT.Audience == "" || cfg.WorkloadJWT.Subject == "" || cfg.WorkloadJWT.TrustBundleFile == "" {
+		return errors.New("complete workload-JWT configuration is required")
+	}
+	if err := mcpbroker.ValidateProtectedURL(cfg.WorkloadJWT.Issuer, "workload-JWT issuer"); err != nil {
+		return err
+	}
+	if err := mcpbroker.ValidateProtectedURL(cfg.WorkloadJWT.JWKSURI, "workload-JWT JWKS URI"); err != nil {
+		return err
+	}
+	if cfg.WorkloadJWT.MaxJWKSStaleness.value() <= 0 || cfg.WorkloadJWT.MaxJWKSStaleness.value() > maxJWKSStaleness {
+		return errors.New("workload-JWT JWKS staleness is invalid")
+	}
+	if err := mcpbroker.ValidateProtectedURL(cfg.CallbackURL, "broker callback"); err != nil {
+		return err
+	}
+	if len(cfg.Profiles) == 0 {
+		return errors.New("broker profiles are required")
+	}
+	for _, d := range []duration{cfg.Drain.PropagationDelay, cfg.Drain.Timeout, cfg.Drain.ListenerShutdownTimeout, cfg.Transport.RPCDeadline, cfg.Transport.ExecuteDeadline, cfg.Transport.HandleIdleTimeout, cfg.Transport.SweepInterval, cfg.Transport.CleanupTimeout, cfg.Runtime.LogicalRetention} {
+		if d.value() <= 0 {
+			return errors.New("broker duration bounds must be positive")
+		}
+	}
+	for _, n := range []int{cfg.Transport.MaxHandles, cfg.Transport.MaxOwners, cfg.Transport.MaxReceipts, cfg.Transport.MaxReceiptBytes, cfg.Transport.MaxPendingControls, cfg.Transport.MaxActiveExecutes, cfg.Runtime.MaxLogicalSessions, cfg.Runtime.MaxPendingAuthStates} {
+		if n <= 0 {
+			return errors.New("broker capacity bounds must be positive")
+		}
+	}
+	for _, profile := range cfg.Profiles {
+		if profile.Name == "" || profile.URL == "" {
+			return errors.New("profile name and URL are required")
+		}
+		switch profile.Auth {
+		case "none":
+			if profile.OAuth != nil || len(profile.Static) != 0 {
+				return errors.New("anonymous profile contains protected configuration")
+			}
+		case "oauth":
+			if profile.OAuth == nil || profile.OAuth.ClientID == "" || profile.OAuth.ClientSecretFile == "" {
+				return errors.New("protected profile OAuth client configuration is required")
+			}
+			if err := validateConfiguredSecretFile(profile.OAuth.ClientSecretFile); err != nil {
+				return errors.New("protected profile OAuth client secret file is invalid")
+			}
+			if err := mcpbroker.ValidateProtectedURL(profile.URL, "protected upstream URL"); err != nil {
+				return err
+			}
+			for label, endpoint := range map[string]string{"issuer": profile.OAuth.Issuer, "authorization endpoint": profile.OAuth.AuthorizationEndpoint, "token endpoint": profile.OAuth.TokenEndpoint} {
+				if endpoint != "" {
+					if err := mcpbroker.ValidateProtectedURL(endpoint, label); err != nil {
+						return err
+					}
+				}
+			}
+			if (profile.OAuth.AuthorizationEndpoint == "") != (profile.OAuth.TokenEndpoint == "") {
+				return errors.New("protected profile has partial OAuth endpoints")
+			}
+			if profile.OAuth.Issuer == "" && profile.OAuth.AuthorizationEndpoint == "" {
+				return errors.New("protected profile OAuth issuer or endpoints are required")
+			}
+			for _, static := range profile.Static {
+				if static.Name == "" || len(static.Schema) == 0 || !json.Valid(static.Schema) || static.Schema[0] != '{' {
+					return errors.New("protected profile static tool is invalid")
+				}
+			}
+		default:
+			return errors.New("profile auth mode is invalid")
+		}
+	}
+	return nil
+}
+
+func (cfg fileConfig) drainRequestTimeout() time.Duration {
+	return cfg.Drain.PropagationDelay.value() + cfg.Drain.Timeout.value() + cfg.Drain.ListenerShutdownTimeout.value()
+}
+func (cfg fileConfig) transport() mcpbrokergrpc.Config {
+	// DialTimeout is a remote-client concern. Keep the adapter's finite default;
+	// serving configuration owns only the broker's server-side bounds.
+	out := mcpbrokergrpc.DefaultConfig()
+	out.RPCDeadline = cfg.Transport.RPCDeadline.value()
+	out.ExecuteDeadline = cfg.Transport.ExecuteDeadline.value()
+	out.HandleIdleTimeout = cfg.Transport.HandleIdleTimeout.value()
+	out.SweepInterval = cfg.Transport.SweepInterval.value()
+	out.CleanupTimeout = cfg.Transport.CleanupTimeout.value()
+	out.MaxHandles = cfg.Transport.MaxHandles
+	out.MaxOwners = cfg.Transport.MaxOwners
+	out.MaxReceipts = cfg.Transport.MaxReceipts
+	out.MaxReceiptBytes = cfg.Transport.MaxReceiptBytes
+	out.MaxPendingControls = cfg.Transport.MaxPendingControls
+	out.MaxActiveExecutes = cfg.Transport.MaxActiveExecutes
+	return out
+}
+func (cfg fileConfig) runtimeLimits() mcpbroker.Limits {
+	return mcpbroker.Limits{MaxLogicalSessions: cfg.Runtime.MaxLogicalSessions, LogicalRetention: cfg.Runtime.LogicalRetention.value(), SweepInterval: cfg.Transport.SweepInterval.value(), MaxPendingStates: cfg.Runtime.MaxPendingAuthStates}
+}
 func (cfg fileConfig) toolHive() mcpbroker.ToolHiveConfig {
 	profiles := make([]mcpbroker.ToolHiveProfile, len(cfg.Profiles))
 	for i, profile := range cfg.Profiles {
 		converted := mcpbroker.ToolHiveProfile{Name: profile.Name, URL: profile.URL, Auth: profile.Auth}
 		if profile.OAuth != nil {
-			converted.OAuth = &mcpbroker.ToolHiveOAuth{Issuer: profile.OAuth.Issuer, AuthorizationEndpoint: profile.OAuth.AuthorizationEndpoint, TokenEndpoint: profile.OAuth.TokenEndpoint, ClientID: profile.OAuth.ClientID, ClientSecretEnv: profile.OAuth.ClientSecretEnv, Scopes: append([]string(nil), profile.OAuth.Scopes...), RequestRefreshToken: profile.OAuth.RequestRefreshToken}
+			converted.OAuth = &mcpbroker.ToolHiveOAuth{Issuer: profile.OAuth.Issuer, AuthorizationEndpoint: profile.OAuth.AuthorizationEndpoint, TokenEndpoint: profile.OAuth.TokenEndpoint, ClientID: profile.OAuth.ClientID, ClientSecretFile: profile.OAuth.ClientSecretFile, Scopes: append([]string(nil), profile.OAuth.Scopes...), RequestRefreshToken: profile.OAuth.RequestRefreshToken}
 		}
 		converted.Static = make([]mcpbroker.StaticTool, len(profile.Static))
 		for j, spec := range profile.Static {
