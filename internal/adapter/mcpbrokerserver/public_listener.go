@@ -18,14 +18,25 @@ const (
 
 // PublicListenerConfig contains the finite production bounds for the multiplexed TLS HTTP/2 gRPC and browser callback listener.
 type PublicListenerConfig struct {
+	// ReadHeaderTimeout bounds reading an HTTP request header before the connection is rejected.
 	ReadHeaderTimeout time.Duration
-	ReadTimeout       time.Duration
-	WriteTimeout      time.Duration
-	IdleTimeout       time.Duration
-	CallbackTimeout   time.Duration
-	MaxHeaderBytes    int
-	MaxCallbackBytes  int64
-	ExecuteDeadline   time.Duration
+	// ReadTimeout bounds reading a complete HTTP request. It must include ExecuteDeadline plus
+	// the required five-second margin.
+	ReadTimeout time.Duration
+	// WriteTimeout bounds writing an HTTP response. It must include ExecuteDeadline plus the
+	// required five-second margin.
+	WriteTimeout time.Duration
+	// IdleTimeout bounds how long an inactive keep-alive connection remains open.
+	IdleTimeout time.Duration
+	// CallbackTimeout bounds each non-gRPC browser callback request, including body reading.
+	CallbackTimeout time.Duration
+	// MaxHeaderBytes limits request headers on both the public and local administration listeners.
+	MaxHeaderBytes int
+	// MaxCallbackBytes limits a non-gRPC callback request body in bytes, including streamed bodies.
+	MaxCallbackBytes int64
+	// ExecuteDeadline is the RPC execution limit used to verify ReadTimeout and WriteTimeout
+	// have enough headroom. Zero derives it from the broker transport; it is not an unbounded limit.
+	ExecuteDeadline time.Duration
 }
 
 // DefaultPublicListenerConfig returns the production public-listener bounds.

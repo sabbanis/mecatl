@@ -17,19 +17,41 @@ const defaultShutdownTimeout = 5 * time.Second
 
 // ProductionConfig is the complete process-local broker assembly.
 type ProductionConfig struct {
-	PublicAddress   string
-	AdminAddress    string
-	TLSConfig       *tls.Config
-	WorkloadJWT     WorkloadJWTConfig
-	ToolHive        mcpbroker.ToolHiveConfig
+	// PublicAddress is the TCP endpoint for authenticated broker RPC and browser callbacks.
+	// A non-loopback address requires TLS.
+	PublicAddress string
+	// AdminAddress is the required loopback-only TCP endpoint for health, readiness, and drain control.
+	AdminAddress string
+	// TLSConfig supplies the public listener's server identity. It is cloned before use; nil
+	// permits plaintext only on a loopback PublicAddress.
+	TLSConfig *tls.Config
+	// WorkloadJWT configures authentication for every broker gRPC request.
+	WorkloadJWT WorkloadJWTConfig
+	// ToolHive configures the process-owned upstream runtime, which Lifecycle closes during shutdown.
+	ToolHive mcpbroker.ToolHiveConfig
+	// ToolHiveOptions are copied and passed to the process-owned upstream runtime at construction.
 	ToolHiveOptions []mcpbroker.Option
-	Diagnostics     port.Diagnostics
+	// Diagnostics receives broker operational events; nil selects no-op diagnostics.
+	Diagnostics port.Diagnostics
+	// PropagationWait delays draining admitted work after admission closes, allowing endpoint
+	// removal to propagate. Zero drains immediately; negative values are rejected.
 	PropagationWait time.Duration
-	DrainTimeout    time.Duration
+	// DrainTimeout bounds waiting for already admitted work after propagation; expiry cancels
+	// that work. It must be positive.
+	DrainTimeout time.Duration
+	// ShutdownTimeout bounds listener, RPC, verifier, and runtime shutdown after draining.
+	// Zero or a negative value selects the five-second default.
 	ShutdownTimeout time.Duration
-	PublicBounds    PublicListenerConfig
-	Transport       mcpbrokergrpc.Config
-	RuntimeLimits   mcpbroker.Limits
+	// PublicBounds sets public-listener HTTP limits. An entirely zero value selects
+	// DefaultPublicListenerConfig; a partially specified value must be valid.
+	PublicBounds PublicListenerConfig
+	// Transport configures the broker RPC adapter. An entirely zero value selects its defaults.
+	// A positive RuntimeLimits.LogicalRetention overrides its OwnerRetention so ownership state
+	// outlives each retained logical session.
+	Transport mcpbrokergrpc.Config
+	// RuntimeLimits bound process-owned logical sessions and pending authorization state. Their
+	// zero values select mcpbroker defaults; positive LogicalRetention also sets Transport owner retention.
+	RuntimeLimits mcpbroker.Limits
 }
 
 // NewProduction constructs the only production broker assembly.

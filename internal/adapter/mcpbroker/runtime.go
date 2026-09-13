@@ -209,10 +209,15 @@ func (c *Catalogue) Specs() []tool.ToolSpec {
 
 // Limits bounds broker-owned logical state. Zero values select safe defaults.
 type Limits struct {
+	// MaxLogicalSessions caps logical sessions retained by the process, independent of handles.
 	MaxLogicalSessions int
-	LogicalRetention   time.Duration
-	SweepInterval      time.Duration
-	MaxPendingStates   int
+	// LogicalRetention keeps a session and its ownership state after its last attachment closes.
+	// It is the broker's local retention window, not a client-visible lease duration.
+	LogicalRetention time.Duration
+	// SweepInterval controls how often expired sessions and callback transactions are reclaimed.
+	SweepInterval time.Duration
+	// MaxPendingStates caps callback/authorization states that have not reached a terminal outcome.
+	MaxPendingStates int
 }
 
 const (

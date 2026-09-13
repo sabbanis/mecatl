@@ -41,19 +41,34 @@ const (
 
 // Config bounds transport calls and server-side attachment retention.
 type Config struct {
-	DialTimeout        time.Duration
-	RPCDeadline        time.Duration
-	ExecuteDeadline    time.Duration
-	HandleIdleTimeout  time.Duration
-	OwnerRetention     time.Duration
-	SweepInterval      time.Duration
-	CleanupTimeout     time.Duration
-	MaxHandles         int
-	MaxOwners          int
-	MaxReceipts        int
-	MaxReceiptBytes    int
+	// DialTimeout bounds the initial wait for a remote broker connection to become ready.
+	DialTimeout time.Duration
+	// RPCDeadline is the default deadline applied to non-execution RPCs by clients.
+	RPCDeadline time.Duration
+	// ExecuteDeadline bounds one tool execution, including the server-side work it starts.
+	ExecuteDeadline time.Duration
+	// HandleIdleTimeout expires an attachment handle after inactivity; polling or other
+	// use does not extend the absolute lifetime of an individual execution receipt.
+	HandleIdleTimeout time.Duration
+	// OwnerRetention keeps logical-session ownership after its last handle closes, so
+	// a short-lived attachment does not immediately make the session adoptable.
+	OwnerRetention time.Duration
+	// SweepInterval controls how often expired handles, owners, and receipts are reclaimed.
+	SweepInterval time.Duration
+	// CleanupTimeout bounds best-effort cleanup of an expired or orphaned remote handle.
+	CleanupTimeout time.Duration
+	// MaxHandles limits concurrently retained process-local attachment handles.
+	MaxHandles int
+	// MaxOwners limits retained logical-session owners; refusal never evicts an owner.
+	MaxOwners int
+	// MaxReceipts limits terminal execution receipts retained for idempotent polling/replay.
+	MaxReceipts int
+	// MaxReceiptBytes limits the aggregate bytes retained by execution receipts.
+	MaxReceiptBytes int
+	// MaxPendingControls limits authorization and other control operations awaiting settlement.
 	MaxPendingControls int
-	MaxActiveExecutes  int
+	// MaxActiveExecutes limits tool executions running concurrently on this server.
+	MaxActiveExecutes int
 }
 
 // DefaultConfig returns finite production defaults for the initial single-process broker.

@@ -129,9 +129,13 @@ func (s WorkspaceEnrollmentStatus) Valid() bool {
 // broker-owned enrollment. It contains no URL, credential, backend selection, or
 // discovered definition.
 type WorkspaceEnrollmentRef struct {
-	ID               session.WorkspaceEnrollmentID
+	// ID identifies the enrollment transaction without exposing its process-local state.
+	ID session.WorkspaceEnrollmentID
+	// RequiredServices records how many broker services must be connected before the
+	// enrollment may publish a complete catalogue.
 	RequiredServices uint32
-	ExpiresAt        time.Time
+	// ExpiresAt is the broker's absolute expiry for this enrollment reference.
+	ExpiresAt time.Time
 }
 
 // Valid reports whether r is a complete enrollment reference.
@@ -142,7 +146,9 @@ func (r WorkspaceEnrollmentRef) Valid() bool {
 // WorkspaceEnrollmentPresentation is the ephemeral browser presentation for an
 // enrollment. URL deliberately exists only on this non-durable value.
 type WorkspaceEnrollmentPresentation struct {
+	// Ref is the exact enrollment transaction the browser flow must complete.
 	Ref WorkspaceEnrollmentRef
+	// URL is a short-lived presentation address; callers must not persist it as authority.
 	URL string
 }
 
@@ -318,8 +324,12 @@ func (r WorkspaceEnrollmentResult) Valid() bool {
 // Attachment. Callers may begin, observe, or cancel broker-owned state, but can
 // never submit status, discovered definitions, authority, or success.
 type WorkspaceEnrollmentAttachment interface {
+	// BeginWorkspaceEnrollment creates a broker-owned enrollment and returns a
+	// short-lived browser presentation for it.
 	BeginWorkspaceEnrollment(context.Context) (WorkspaceEnrollmentPresentation, error)
+	// ObserveWorkspaceEnrollment returns the broker's current result for this exact ref.
 	ObserveWorkspaceEnrollment(context.Context, WorkspaceEnrollmentRef) (WorkspaceEnrollmentResult, error)
+	// CancelWorkspaceEnrollment settles this exact enrollment as cancelled when possible.
 	CancelWorkspaceEnrollment(context.Context, WorkspaceEnrollmentRef) (WorkspaceEnrollmentResult, error)
 }
 
@@ -328,11 +338,13 @@ type WorkspaceEnrollmentAttachment interface {
 // attachments may refer to the same logical state. DeleteSession, unlike Close,
 // durably and idempotently destroys that logical state.
 type Service interface {
+	// AttachSession opens a local handle to the session's current incarnation,
+	// creating logical state when necessary.
 	AttachSession(context.Context, session.SessionID) (Attachment, AttachOutcome, error)
 	// DeleteSession durably invalidates every attachment to the deleted logical
 	// session incarnation. A later AttachSession with the same SessionID creates a
 	// new incarnation; stale attachments must return ErrStateUnavailable. Any
-	// generation or fencing mechanism used to enforce this remains implementation-private.
+	// generation or fencing mechanism used to enforce this remains private.
 	DeleteSession(context.Context, session.SessionID) (DeleteOutcome, error)
 }
 

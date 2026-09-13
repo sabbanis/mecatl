@@ -25,11 +25,20 @@ const maxJWKSStaleness = 24 * time.Hour
 // WorkloadJWTConfig is the production workload-identity policy. There is intentionally
 // no insecure HTTP, private-address, or TLS-verification escape hatch.
 type WorkloadJWTConfig struct {
-	Issuer           string
-	JWKSURI          string
-	Audience         string
-	AllowedSubjects  []string
-	TrustedCAPEM     []byte
+	// Issuer is the required HTTPS OIDC issuer URL that tokens must claim as iss.
+	Issuer string
+	// JWKSURI is the explicit HTTPS endpoint whose keys verify issuer signatures.
+	JWKSURI string
+	// Audience is the required token aud value for this broker.
+	Audience string
+	// AllowedSubjects is the closed allowlist of workload subject claims; authentication
+	// succeeds only after the token is valid and its subject is in this set.
+	AllowedSubjects []string
+	// TrustedCAPEM is the operator-supplied trust bundle used for issuer and JWKS TLS.
+	// It is copied during verifier construction and is never returned in diagnostics.
+	TrustedCAPEM []byte
+	// MaxJWKSStaleness is the maximum age of cached verification keys accepted while
+	// the JWKS endpoint is unavailable. It must be positive and no greater than 24 hours.
 	MaxJWKSStaleness time.Duration
 }
 

@@ -22,11 +22,16 @@ const maxProjectedCredentialBytes = 1 << 20
 // The CA and workload token are reread for every factory generation/RPC so
 // rotation and pre-prompt replacement never reuse stale credentials.
 type RemoteFactoryConfig struct {
-	Target     string
-	CAFile     string
+	// Target is the remote broker address. Empty disables construction by returning nil.
+	Target string
+	// CAFile names the operator-managed PEM bundle used to authenticate the broker server.
+	CAFile string
+	// ServerName is the TLS name checked against the broker certificate.
 	ServerName string
-	TokenFile  string
-	Transport  Config
+	// TokenFile names the projected workload token reread for each RPC.
+	TokenFile string
+	// Transport supplies RPC deadlines and retention/capacity bounds; zero selects defaults.
+	Transport Config
 }
 
 // NewRemoteFactory returns the composition-owned remote broker factory used by
