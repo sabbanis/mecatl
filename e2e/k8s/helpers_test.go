@@ -241,73 +241,7 @@ func helmInstallMecak8sChart() {
 		"--wait", "--timeout=4m")
 	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
 		"helm upgrade --install mecak8s failed\n--- output ---\n%s", installOut)
-
-	kubectlApplyStdin(ctx, []byte(agentBaselineEgressNetworkPolicy))
 }
-
-// agentBaselineEgressNetworkPolicy re-homes, into the e2e fixture, the three
-// egress rules deploy/mecak8s/networkpolicy.yaml used to provide before the
-// kustomize→Helm convergence (the chart itself now ships no NetworkPolicy by
-// design — network isolation is left to the cluster). It is REQUIRED here for
-// a structural reason, not belt-and-suspenders: the OIDC specs' own
-// mecak8s-agent-allow-dex-egress / -jwks-proxy-egress policies (in
-// oidc_helpers_test.go) select the agent pod with an Egress policyType, and
-// Kubernetes NetworkPolicy semantics mean the FIRST policy of a given
-// policyType that selects a pod flips that pod from unrestricted to
-// deny-except-explicitly-listed for that direction — additively unioned
-// across every policy that also selects it. Without this baseline, applying
-// the Dex fixture's policies leaves the agent pod able to reach ONLY Dex and
-// the JWKS proxy, and loses DNS, the k8s API (Lease coordination), and Redis
-// — which is exactly what broke when the agent pod's labels were corrected
-// from the stale kustomize-era `mecatl` to the chart's actual `mecak8s` (see
-// the fix in oidc_helpers_test.go): the label fix made those two Egress
-// policies start matching the real agent pod, which then had no baseline
-// allow-rule to union with.
-//
-// Applied unconditionally in helmInstallMecak8sChart — even before any OIDC
-// spec runs — because it must be in place BEFORE the Dex fixture's own
-// policies are applied for a later spec to have any chance of correct union
-// semantics, and applying it early costs nothing (the same DNS/API/Redis
-// egress every spec, OIDC or not, already needs).
-const agentBaselineEgressNetworkPolicy = `
-apiVersion: networking.k8s.io/v1
-kind: NetworkPolicy
-metadata:
-  name: mecak8s-agent-baseline-egress
-  namespace: mecatl
-spec:
-  podSelector:
-    matchLabels:
-      app.kubernetes.io/name: mecak8s
-      app.kubernetes.io/component: agent
-  policyTypes: ["Egress"]
-  egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
-        - protocol: UDP
-          port: 53
-        - protocol: TCP
-          port: 53
-    # No 'to' selector = any destination IP on 443: the k8s API server
-    # (Lease coordination) and, when the live provider is enabled, the
-    # external LLM endpoint. Same rationale as the deleted kustomize policy.
-    - ports:
-        - protocol: TCP
-          port: 443
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: redis
-      ports:
-        - protocol: TCP
-          port: 6379
-`
 
 // waitPodsReady waits for both agent replicas AND the Redis pod to be Ready.
 // The two waits are SEPARATE label selectors, not one part-of=mecak8s query:

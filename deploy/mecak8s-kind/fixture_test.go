@@ -68,7 +68,7 @@ func TestMecak8sKindFixture_Scenario1_DocumentationBoundaries(t *testing.T) {
 	text := string(body)
 	baseDocs, _, _ := strings.Cut(text, "\n## Optional Keycloak login journey")
 	for _, want := range []string{
-		"operator-run", "deploy/helm/mecak8s/", "e2e/k8s/", "no general NetworkPolicy",
+		"operator-run", "deploy/helm/mecak8s/", "e2e/k8s/", "default-deny NetworkPolicy",
 		"127.0.0.1", "NodePort", "extraPortMappings",
 	} {
 		if !strings.Contains(text, want) {

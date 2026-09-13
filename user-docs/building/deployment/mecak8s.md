@@ -158,7 +158,7 @@ fixture transport. The fixture may publish
 the same public CA bundle for both roles, but they remain separate trust inputs. The
 client uses the `mecatui-kind` public OIDC client; there is no implicit browser flow in
 `connect`. This host-alias flow is available for live qualification, but is not part of
-ordinary offline tests. See the [fixture's setup and CA instructions](https://github.com/stacklok/mecatl/blob/main/deploy/mecak8s-kind/README.md).
+ordinary offline tests. See the [fixture's setup and CA instructions](https://github.com/stacklok/mecatl/blob/main/deploy/mecak8s-kind/README.md) and the [Kubernetes deployment guide](/building/getting-started/kubernetes.md).
 
 
 ---
@@ -268,7 +268,14 @@ The bypass annotates the pod as unsafe; a secure upstream attestation is annotat
 Understand what edge mode costs before choosing it.
 On an h2c backend the caller's `Authorization: Bearer` token crosses the pod network in cleartext.
 Any workload that can reach the Service ClusterIP can read that token and replay it as the caller.
-The chart renders a default-deny ingress and egress NetworkPolicy. Configure `networkPolicy.publicFrom` for the gateway/workload peers that may use the Service, and `networkPolicy.operatorEgress` with standard Kubernetes peers for cluster DNS plus the external Redis, provider, MCP, and `remoteBroker` destinations. Empty lists remain deny-all; the chart cannot infer dynamic external endpoints. The explicit unsafe posture is still a development/trusted-mesh exception, not a bypass of digest enforcement when `remoteBroker` is configured.
+The chart renders a default-deny ingress policy and a bounded baseline egress
+policy: DNS to CoreDNS, TCP/443 for the Kubernetes API and HTTPS compatibility,
+and TCP/6379 to chart-local Redis when enabled. Configure
+`networkPolicy.publicFrom` for gateway/workload peers. Configure
+`networkPolicy.operatorEgress` for external Redis, non-HTTPS provider, MCP, and
+`remoteBroker` destinations; the chart cannot infer dynamic external endpoints.
+The explicit unsafe posture is still a development/trusted-mesh exception, not
+a bypass of digest enforcement when `remoteBroker` is configured.
 The upstream value is an attestation, not chart enforcement: nothing in the chart verifies gateway TLS, reachability, or token forwarding.
 The gateway must forward the original bearer token rather than use forwarded-identity authentication, and publish a `GRPCRoute` only—never public-route `/drain`, `/healthz`, or `/readyz`.
 The chart creates no Gateway, Route, or Certificate either; use an operator-owned `BackendTLSPolicy` or in-pod TLS for gateway-to-pod re-encryption.

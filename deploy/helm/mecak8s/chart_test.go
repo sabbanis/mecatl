@@ -17,6 +17,7 @@ import (
 	"github.com/google/jsonschema-go/jsonschema"
 	appsv1 "k8s.io/api/apps/v1"
 	corev1 "k8s.io/api/core/v1"
+	networkingv1 "k8s.io/api/networking/v1"
 	policyv1 "k8s.io/api/policy/v1"
 	"sigs.k8s.io/yaml"
 
@@ -274,6 +275,86 @@ func TestADR_0294_TerminationGracePeriodIsConfigurableAndFitsDefaults(t *testing
 	// preStop 3s + drain 15s + gRPC 10s + HTTP 5s + close 5s + telemetry 5s.
 	if budget := int64(3 + 15 + 10 + 5 + 5 + 5); budget >= 60 {
 		t.Fatalf("documented default shutdown budget = %ds, want < 60s", budget)
+	}
+}
+
+func networkPolicyFromRender(t *testing.T, rendered string) *networkingv1.NetworkPolicy {
+	t.Helper()
+	for _, document := range strings.Split(rendered, "\n---") {
+		var meta struct {
+			Kind string `yaml:"kind"`
+		}
+		if err := yaml.Unmarshal([]byte(document), &meta); err != nil || meta.Kind != "NetworkPolicy" {
+			continue
+		}
+		var policy networkingv1.NetworkPolicy
+		if err := yaml.Unmarshal([]byte(document), &policy); err != nil {
+			t.Fatal(err)
+		}
+		if policy.Name == "" || strings.HasSuffix(policy.Name, "-raw-driver") {
+			continue
+		}
+		return &policy
+	}
+	t.Fatal("rendered chart has no mecak8s NetworkPolicy")
+	return nil
+}
+
+func TestMecak8sHelmChart_NetworkPolicyBaseline(t *testing.T) {
+	rendered, err := helm(t, productionArgs()...)
+	if err != nil {
+		t.Fatal(err, rendered)
+	}
+	policy := networkPolicyFromRender(t, rendered)
+	if len(policy.Spec.Egress) != 2 {
+		t.Fatalf("external-Redis baseline egress rules = %d, want DNS and HTTPS", len(policy.Spec.Egress))
+	}
+	dns := policy.Spec.Egress[0]
+	if len(dns.To) != 1 || dns.To[0].NamespaceSelector == nil || dns.To[0].PodSelector == nil ||
+		dns.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "kube-system" ||
+		dns.To[0].PodSelector.MatchLabels["k8s-app"] != "kube-dns" {
+		t.Fatalf("DNS peer = %#v", dns.To)
+	}
+	if len(dns.Ports) != 2 || dns.Ports[0].Port.IntValue() != 53 || dns.Ports[1].Port.IntValue() != 53 ||
+		dns.Ports[0].Protocol == nil || *dns.Ports[0].Protocol != corev1.ProtocolUDP ||
+		dns.Ports[1].Protocol == nil || *dns.Ports[1].Protocol != corev1.ProtocolTCP {
+		t.Fatalf("DNS ports = %#v", dns.Ports)
+	}
+	https := policy.Spec.Egress[1]
+	if len(https.To) != 0 || len(https.Ports) != 1 || https.Ports[0].Protocol == nil || *https.Ports[0].Protocol != corev1.ProtocolTCP || https.Ports[0].Port.IntValue() != 443 {
+		t.Fatalf("HTTPS baseline = %#v", https)
+	}
+
+	rendered, err = helm(t, kindFixtureArgs()...)
+	if err != nil {
+		t.Fatal(err, rendered)
+	}
+	policy = networkPolicyFromRender(t, rendered)
+	if len(policy.Spec.Egress) != 3 {
+		t.Fatalf("local-Redis baseline egress rules = %d, want DNS, HTTPS, and Redis", len(policy.Spec.Egress))
+	}
+	redis := policy.Spec.Egress[2]
+	if len(redis.To) != 1 || redis.To[0].PodSelector == nil ||
+		redis.To[0].PodSelector.MatchLabels["app.kubernetes.io/name"] != "redis" ||
+		redis.To[0].PodSelector.MatchLabels["app.kubernetes.io/instance"] != "kind" ||
+		len(redis.Ports) != 1 || redis.Ports[0].Protocol == nil || *redis.Ports[0].Protocol != corev1.ProtocolTCP || redis.Ports[0].Port.IntValue() != 6379 {
+		t.Fatalf("local Redis baseline = %#v", redis)
+	}
+}
+
+func TestMecak8sHelmChart_NetworkPolicyOperatorEgressIsAdditive(t *testing.T) {
+	rendered, err := helm(t, append(productionArgs(), "--set-json", `networkPolicy.operatorEgress=[{"to":[{"ipBlock":{"cidr":"192.0.2.0/24"}}],"ports":[{"protocol":"TCP","port":8443}]}]`)...)
+	if err != nil {
+		t.Fatal(err, rendered)
+	}
+	policy := networkPolicyFromRender(t, rendered)
+	if len(policy.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want two built-in plus one operator rule", len(policy.Spec.Egress))
+	}
+	custom := policy.Spec.Egress[2]
+	if len(custom.To) != 1 || custom.To[0].IPBlock == nil || custom.To[0].IPBlock.CIDR != "192.0.2.0/24" ||
+		len(custom.Ports) != 1 || custom.Ports[0].Port.IntValue() != 8443 {
+		t.Fatalf("operator egress = %#v", custom)
 	}
 }
 
