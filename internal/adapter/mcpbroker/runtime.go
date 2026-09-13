@@ -122,9 +122,9 @@ type Catalogue struct {
 }
 
 // Compile validates anonymous P07 declarations and neutral discovery results.
-// occupied contains names already visible to the model; collisions are rejected
+// reservedToolNames contains names already visible to the model; collisions are rejected
 // before any session attachment is created.
-func Compile(config mcpauthority.BrokerConfig, discovered []ToolDefinition, occupied []string) (*Catalogue, error) {
+func Compile(config mcpauthority.BrokerConfig, discovered []ToolDefinition, reservedToolNames []string) (*Catalogue, error) {
 	backends := make(map[string]permconfig.MCPServerProfile, len(config.Routes))
 	for _, declaration := range config.Routes {
 		key := strings.ToLower(declaration.Name)
@@ -148,10 +148,10 @@ func Compile(config mcpauthority.BrokerConfig, discovered []ToolDefinition, occu
 		backends[key] = declaration
 	}
 
-	seen := make(map[string]struct{}, len(occupied)+len(discovered))
-	for _, name := range occupied {
+	seen := make(map[string]struct{}, len(reservedToolNames)+len(discovered))
+	for _, name := range reservedToolNames {
 		if name == "" {
-			return nil, fmt.Errorf("%w: occupied tool name is empty", ErrInvalidCatalogue)
+			return nil, fmt.Errorf("%w: reserved tool name is empty", ErrInvalidCatalogue)
 		}
 		seen[name] = struct{}{}
 	}

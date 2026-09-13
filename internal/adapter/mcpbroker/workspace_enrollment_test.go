@@ -54,7 +54,7 @@ func newWorkspaceEnrollmentRuntime(t *testing.T, tokenServer *httptest.Server, q
 		construction:       toolHiveConstruction{protectedBackends: backends},
 		protectedTarget:    target,
 		queryAuthenticated: queries.query,
-		occupied:           []string{"Read"},
+		reservedToolNames:  []string{"Read"},
 		ctx:                context.Background(),
 		cancel:             func() {},
 	}

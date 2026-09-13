@@ -466,13 +466,13 @@ func TestADR_0298_ToolHiveConstructionRejectsCollidingProviderKeys(t *testing.T)
 func TestStaticProtectedRoutesRejectInvalidDeclarationsAndCollisions(t *testing.T) {
 	valid := StaticTool{Name: "read", Schema: json.RawMessage(`{"type":"object"}`)}
 	for _, test := range []struct {
-		name     string
-		tools    []StaticTool
-		occupied []string
+		name              string
+		tools             []StaticTool
+		reservedToolNames []string
 	}{
 		{name: "invalid schema", tools: []StaticTool{{Name: "read", Schema: json.RawMessage(`[]`)}}},
 		{name: "duplicate declaration", tools: []StaticTool{valid, valid}},
-		{name: "occupied name", tools: []StaticTool{valid}, occupied: []string{"mcp__private__read"}},
+		{name: "reservedToolNames name", tools: []StaticTool{valid}, reservedToolNames: []string{"mcp__private__read"}},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			profile := protectedToolHiveProfile("private")
@@ -481,7 +481,7 @@ func TestStaticProtectedRoutesRejectInvalidDeclarationsAndCollisions(t *testing.
 			if err != nil {
 				t.Fatalf("compileToolHiveConstruction: %v", err)
 			}
-			if _, err := compileStaticProtectedRoutes(construction, &oauthRoute{}, nil, test.occupied); !errors.Is(err, ErrInvalidCatalogue) {
+			if _, err := compileStaticProtectedRoutes(construction, &oauthRoute{}, nil, test.reservedToolNames); !errors.Is(err, ErrInvalidCatalogue) {
 				t.Fatalf("compileStaticProtectedRoutes error = %v, want ErrInvalidCatalogue", err)
 			}
 		})
@@ -492,7 +492,7 @@ func TestStaticProtectedRoutesRejectInvalidDeclarationsAndCollisions(t *testing.
 // route for Runtime-only tests. NewToolHiveProcess itself publishes broker routes.
 func admitStaticForGenericAuthorizationTest(t *testing.T, process *Process) {
 	t.Helper()
-	routes, err := compileStaticProtectedRoutes(process.construction, process.protectedTarget, nil, process.occupied)
+	routes, err := compileStaticProtectedRoutes(process.construction, process.protectedTarget, nil, process.reservedToolNames)
 	if err != nil {
 		t.Fatalf("compile generic static routes: %v", err)
 	}

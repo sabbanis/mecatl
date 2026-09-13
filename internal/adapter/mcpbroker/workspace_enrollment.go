@@ -249,8 +249,8 @@ func (a *Attachment) ObserveWorkspaceEnrollment(ctx context.Context, ref contrac
 	if process == nil {
 		return a.failWorkspaceTransaction(logical, transaction), nil
 	}
-	occupied := append([]string(nil), process.occupied...)
-	catalogue, candidate, err := a.freezeAuthenticatedCatalogue(opCtx, ref, process, &brokerTokenSource{runtime: a.runtime, logical: logical, ctx: opCtx}, occupied, false)
+	reservedToolNames := append([]string(nil), process.reservedToolNames...)
+	catalogue, candidate, err := a.freezeAuthenticatedCatalogue(opCtx, ref, process, &brokerTokenSource{runtime: a.runtime, logical: logical, ctx: opCtx}, reservedToolNames, false)
 	if err != nil {
 		if callerErr := ctx.Err(); callerErr != nil {
 			// Discovery was interrupted by this observer, not rejected by the

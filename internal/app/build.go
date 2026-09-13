@@ -1986,10 +1986,10 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 			commandConnClose()
 			return nil, errors.New("remote MCP broker is required for this deployment")
 		}
-		occupied := make([]string, 0)
+		reservedToolNames := make([]string, 0)
 		if assets.rootCatalog != nil {
 			for _, registered := range assets.rootCatalog.Tools() {
-				occupied = append(occupied, registered.Spec().Name)
+				reservedToolNames = append(reservedToolNames, registered.Spec().Name)
 			}
 		}
 		if cfg.MCPBrokerFactory != nil {
@@ -2020,7 +2020,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 				commandConnClose()
 				return nil, fmt.Errorf("build bundled MCP broker: %w", err)
 			}
-			brokerProcess, err = mcpbroker.NewToolHiveProcess(ctx, toolHiveBrokerConfig(brokerDeclaration.Routes, brokerDeclaration.CallbackURL, occupied, authRedisClient, cfg.diag()))
+			brokerProcess, err = mcpbroker.NewToolHiveProcess(ctx, toolHiveBrokerConfig(brokerDeclaration.Routes, brokerDeclaration.CallbackURL, reservedToolNames, authRedisClient, cfg.diag()))
 			if err != nil {
 				authStorageClose()
 				childLiveness.Close()
@@ -2033,7 +2033,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 			brokerRuntime = brokerProcess.Runtime
 			brokerHandlers = brokerProcess.Handlers
 		} else {
-			catalogue, compileErr := mcpbroker.Compile(brokerDeclaration, cfg.MCPBrokerDiscovered, occupied)
+			catalogue, compileErr := mcpbroker.Compile(brokerDeclaration, cfg.MCPBrokerDiscovered, reservedToolNames)
 			if compileErr != nil {
 				childLiveness.Close()
 				mcpClose()

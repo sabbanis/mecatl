@@ -103,12 +103,12 @@ func (c *attachmentCatalogue) Tools() []tool.Tool {
 
 // FreezeAuthenticatedCatalogue stages the configured protected backends in
 // their configured order and publishes one immutable attachment catalogue only
-// after every backend has supplied valid live metadata. occupied is the complete
+// after every backend has supplied valid live metadata. reservedToolNames is the complete
 // model-visible name set outside this attachment catalogue (core/global tools).
 // brokerCredential is opaque and is passed only through ToolHive's incoming
 // identity middleware.
-func (a *Attachment) FreezeAuthenticatedCatalogue(ctx context.Context, ref contract.WorkspaceEnrollmentRef, process *Process, brokerCredential oauth2.TokenSource, occupied []string) (contract.WorkspaceCatalogue, error) {
-	frozen, _, err := a.freezeAuthenticatedCatalogue(ctx, ref, process, brokerCredential, occupied, true)
+func (a *Attachment) FreezeAuthenticatedCatalogue(ctx context.Context, ref contract.WorkspaceEnrollmentRef, process *Process, brokerCredential oauth2.TokenSource, reservedToolNames []string) (contract.WorkspaceCatalogue, error) {
+	frozen, _, err := a.freezeAuthenticatedCatalogue(ctx, ref, process, brokerCredential, reservedToolNames, true)
 	return frozen, err
 }
 
@@ -116,7 +116,7 @@ func (a *Attachment) FreezeAuthenticatedCatalogue(ctx context.Context, ref contr
 // uses publish=false so the catalogue remains private until its logical commit.
 //
 //nolint:gocyclo // every early-return guards a distinct precondition (closed, stale ref, process authority, publish race); splitting would scatter the single freeze/publish invariant
-func (a *Attachment) freezeAuthenticatedCatalogue(ctx context.Context, ref contract.WorkspaceEnrollmentRef, process *Process, brokerCredential oauth2.TokenSource, occupied []string, publish bool) (contract.WorkspaceCatalogue, *attachmentCatalogue, error) {
+func (a *Attachment) freezeAuthenticatedCatalogue(ctx context.Context, ref contract.WorkspaceEnrollmentRef, process *Process, brokerCredential oauth2.TokenSource, reservedToolNames []string, publish bool) (contract.WorkspaceCatalogue, *attachmentCatalogue, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, nil, err
 	}
@@ -148,7 +148,7 @@ func (a *Attachment) freezeAuthenticatedCatalogue(ctx context.Context, ref contr
 		return nil, nil, ErrAuthenticatedDiscovery
 	}
 
-	stagedRoutes, err := stageAuthenticatedRoutes(ctx, process, brokerCredential, backends, base, occupied)
+	stagedRoutes, err := stageAuthenticatedRoutes(ctx, process, brokerCredential, backends, base, reservedToolNames)
 	if err != nil {
 		reason := diagnosticReasonDiscoveryFailed
 		if errors.Is(err, ErrInvalidCatalogue) {
@@ -201,12 +201,12 @@ func (a *Attachment) stateErrorLocked() error {
 	return nil
 }
 
-func stageAuthenticatedRoutes(ctx context.Context, process *Process, brokerCredential oauth2.TokenSource, backends []string, base *attachmentCatalogue, occupied []string) ([]route, error) {
+func stageAuthenticatedRoutes(ctx context.Context, process *Process, brokerCredential oauth2.TokenSource, backends []string, base *attachmentCatalogue, reservedToolNames []string) ([]route, error) {
 	// The attachment lock remains held by FreezeAuthenticatedCatalogue throughout
 	// this work. Cancel/close races have one winner, and Tools cannot expose a
 	// partly staged catalogue.
-	seen := make(map[string]struct{}, len(occupied)+len(base.routes))
-	for _, name := range occupied {
+	seen := make(map[string]struct{}, len(reservedToolNames)+len(base.routes))
+	for _, name := range reservedToolNames {
 		if name == "" {
 			return nil, ErrInvalidCatalogue
 		}

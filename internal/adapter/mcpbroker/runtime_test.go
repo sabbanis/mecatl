@@ -78,20 +78,20 @@ func TestADR_0298_CompileAdmitsMultipleOAuthRoutes(t *testing.T) {
 
 func TestCompileRejectsCollisionsAndNonAnonymousDeclarations(t *testing.T) {
 	tests := []struct {
-		name       string
-		config     mcpauthority.BrokerConfig
-		discovered []ToolDefinition
-		occupied   []string
-		want       error
+		name              string
+		config            mcpauthority.BrokerConfig
+		discovered        []ToolDefinition
+		reservedToolNames []string
+		want              error
 	}{
-		{name: "core collision", config: anonymousConfig(), discovered: []ToolDefinition{{Backend: "calendar", Name: "Read"}}, occupied: []string{"Read"}, want: ErrInvalidCatalogue},
+		{name: "core collision", config: anonymousConfig(), discovered: []ToolDefinition{{Backend: "calendar", Name: "Read"}}, reservedToolNames: []string{"Read"}, want: ErrInvalidCatalogue},
 		{name: "route collision", config: anonymousConfig(), discovered: []ToolDefinition{{Backend: "calendar", Name: "same"}, {Backend: "search", Name: "same"}}, want: ErrInvalidCatalogue},
 		{name: "unknown backend", config: anonymousConfig(), discovered: []ToolDefinition{{Backend: "private", Name: "mcp__private__get"}}, want: ErrInvalidCatalogue},
 		{name: "protected deferred", config: mcpauthority.BrokerConfig{Routes: []permconfig.MCPServerProfile{{Name: "github", Auth: permconfig.MCPAuthProfile{Mode: "oauth"}}}}, want: ErrProtectedRouteUnsupported},
 	}
 	for _, test := range tests {
 		t.Run(test.name, func(t *testing.T) {
-			_, err := Compile(test.config, test.discovered, test.occupied)
+			_, err := Compile(test.config, test.discovered, test.reservedToolNames)
 			if !errors.Is(err, test.want) {
 				t.Fatalf("Compile error = %v, want %v", err, test.want)
 			}

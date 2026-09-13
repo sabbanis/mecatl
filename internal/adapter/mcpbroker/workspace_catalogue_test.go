@@ -108,7 +108,7 @@ func TestADR_0298_FreezeAuthenticatedCatalogueStagesStaticAndLiveDefinitions(t *
 
 	other := testAttachment(t, runtime)
 	if _, err := other.FreezeAuthenticatedCatalogue(t.Context(), testEnrollmentRef(), process, staticTokenSource("opaque-broker-token"), []string{"mcp__first__live"}); !errors.Is(err, ErrInvalidCatalogue) {
-		t.Fatalf("occupied collision error = %v, want invalid catalogue", err)
+		t.Fatalf("reserved name collision error = %v, want invalid catalogue", err)
 	}
 	if got := toolNames(other.Tools()); !reflect.DeepEqual(got, []string{"mcp__anonymous__status"}) {
 		t.Fatalf("collision published protected tools: %v", got)

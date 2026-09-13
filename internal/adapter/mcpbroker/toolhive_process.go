@@ -64,10 +64,10 @@ type Process struct {
 	construction    toolHiveConstruction
 	discovery       *authenticatedDiscovery
 	protectedTarget *oauthRoute
-	// occupied is the immutable model-visible name set outside this Process's
+	// reservedToolNames is the immutable model-visible name set outside this Process's
 	// broker catalogue (core/global tools), captured once at construction so a
 	// later workspace-enrollment freeze can reuse it without re-deriving it.
-	occupied           []string
+	reservedToolNames  []string
 	queryAuthenticated func(context.Context, oauth2.TokenSource, string) (AuthenticatedCapabilities, error)
 	resources          []ownedResource
 	closeOnce          sync.Once
@@ -117,7 +117,7 @@ func newToolHiveProcess(ctx context.Context, config ToolHiveConfig, options tool
 			}
 		}
 	}
-	routes, err := discoverAnonymous(ctx, construction.anonymous, config.Occupied)
+	routes, err := discoverAnonymous(ctx, construction.anonymous, config.ReservedToolNames)
 	if err != nil {
 		return nil, err
 	}
@@ -125,7 +125,7 @@ func newToolHiveProcess(ctx context.Context, config ToolHiveConfig, options tool
 	if err != nil {
 		return nil, err
 	}
-	staticRoutes, err := compileStaticProtectedRoutes(construction, protectedTarget, routes, config.Occupied)
+	staticRoutes, err := compileStaticProtectedRoutes(construction, protectedTarget, routes, config.ReservedToolNames)
 	if err != nil {
 		return nil, err
 	}
@@ -167,7 +167,7 @@ func newToolHiveProcess(ctx context.Context, config ToolHiveConfig, options tool
 	runtime.queryCaller = toolHiveQueryCaller(construction.anonymous, issuer+"/mcp", client)
 
 	processCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
-	process := &Process{Runtime: runtime, ctx: processCtx, cancel: cancel, construction: construction, protectedTarget: protectedTarget, occupied: append([]string(nil), config.Occupied...), diag: diag}
+	process := &Process{Runtime: runtime, ctx: processCtx, cancel: cancel, construction: construction, protectedTarget: protectedTarget, reservedToolNames: append([]string(nil), config.ReservedToolNames...), diag: diag}
 	runtime.process = process
 	process.resources = append(process.resources, ownedResource{name: "process-context", close: func() error { cancel(); return nil }})
 	rollback := func(cause error) (*Process, error) {
@@ -313,7 +313,7 @@ func newToolHiveAuthServer(
 	return embedded, embedded.KeyProvider(), nil
 }
 
-func discoverAnonymous(ctx context.Context, profiles []ToolHiveProfile, occupied []string) ([]route, error) {
+func discoverAnonymous(ctx context.Context, profiles []ToolHiveProfile, reservedToolNames []string) ([]route, error) {
 	configs := make([]mcpadapter.ServerConfig, len(profiles))
 	for i, profile := range profiles {
 		configs[i] = mcpadapter.ServerConfig{Name: profile.Name, URL: profile.URL}
@@ -341,10 +341,10 @@ func discoverAnonymous(ctx context.Context, profiles []ToolHiveProfile, occupied
 	for _, profile := range declarations {
 		backends[strings.ToLower(profile.Name)] = profile
 	}
-	seen := make(map[string]struct{}, len(occupied)+len(definitions))
-	for _, name := range occupied {
+	seen := make(map[string]struct{}, len(reservedToolNames)+len(definitions))
+	for _, name := range reservedToolNames {
 		if name == "" {
-			return nil, fmt.Errorf("%w: occupied tool name is empty", ErrInvalidCatalogue)
+			return nil, fmt.Errorf("%w: reserved tool name is empty", ErrInvalidCatalogue)
 		}
 		seen[name] = struct{}{}
 	}
@@ -364,11 +364,11 @@ func discoverAnonymous(ctx context.Context, profiles []ToolHiveProfile, occupied
 	return routes, nil
 }
 
-func compileStaticProtectedRoutes(construction toolHiveConstruction, protectedTarget *oauthRoute, base []route, occupied []string) ([]route, error) {
-	seen := make(map[string]struct{}, len(occupied)+len(base))
-	for _, name := range occupied {
+func compileStaticProtectedRoutes(construction toolHiveConstruction, protectedTarget *oauthRoute, base []route, reservedToolNames []string) ([]route, error) {
+	seen := make(map[string]struct{}, len(reservedToolNames)+len(base))
+	for _, name := range reservedToolNames {
 		if name == "" {
-			return nil, fmt.Errorf("%w: occupied tool name is empty", ErrInvalidCatalogue)
+			return nil, fmt.Errorf("%w: reserved tool name is empty", ErrInvalidCatalogue)
 		}
 		seen[name] = struct{}{}
 	}
