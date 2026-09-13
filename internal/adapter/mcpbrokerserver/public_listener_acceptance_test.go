@@ -25,7 +25,6 @@ import (
 	"github.com/stacklok/mecatl/internal/adapter/mcpbroker"
 	"github.com/stacklok/mecatl/internal/adapter/mcpbrokergrpc"
 	"github.com/stacklok/mecatl/internal/adapter/permconfig"
-	contract "github.com/stacklok/mecatl/internal/mcpbroker"
 )
 
 func TestSingletonBrokerRemediation_Scenario3_PublicListenerBoundsRejectBeforeCallbackSideEffects(t *testing.T) {
@@ -50,13 +49,13 @@ func TestSingletonBrokerRemediation_Scenario3_PublicListenerBoundsRejectBeforeCa
 	}
 	transport := mcpbrokergrpc.DefaultConfig()
 	transport.ExecuteDeadline = 250 * time.Millisecond
-	server, err := New(t.Context(), Config{
-		OIDC: productionOIDC(issuer, time.Minute), Transport: transport,
-		Factory: func(context.Context) (contract.Service, mcpbroker.HandlerBundle, string, func() error, error) {
-			return runtime, mcpbroker.HandlerBundle{Callback: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	server, err := newBrokerHost(t.Context(), hostConfig{
+		WorkloadJWT: productionOIDC(issuer, time.Minute), Transport: transport,
+		Runtime: func(context.Context) (brokerRuntime, error) {
+			return brokerRuntime{Service: runtime, Handlers: mcpbroker.HandlerBundle{Callback: http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 				callbacks.Add(1)
 				w.WriteHeader(http.StatusNoContent)
-			})}, "/callback", runtime.Close, nil
+			})}, CallbackPath: "/callback", Close: runtime.Close}, nil
 		},
 	})
 	if err != nil {
@@ -74,7 +73,7 @@ func TestSingletonBrokerRemediation_Scenario3_PublicListenerBoundsRejectBeforeCa
 	bounds.CallbackTimeout = 80 * time.Millisecond
 	bounds.MaxHeaderBytes = 1024
 	bounds.MaxCallbackBytes = 32
-	public, err := NewPublicListener(listener, server, &tls.Config{Certificates: []tls.Certificate{fCertificate(t, productionOIDC(issuer, time.Minute))}, MinVersion: tls.VersionTLS13}, bounds)
+	public, err := newPublicListener(listener, server, &tls.Config{Certificates: []tls.Certificate{fCertificate(t, productionOIDC(issuer, time.Minute))}, MinVersion: tls.VersionTLS13}, bounds)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +82,7 @@ func TestSingletonBrokerRemediation_Scenario3_PublicListenerBoundsRejectBeforeCa
 		ctx, cancel := context.WithTimeout(context.Background(), time.Second)
 		defer cancel()
 		_ = public.Shutdown(ctx)
-		_ = server.Close(ctx)
+		_ = server.close(ctx)
 	})
 
 	roots := x509.NewCertPool()
@@ -143,7 +142,7 @@ func TestSingletonBrokerRemediation_Scenario3_PublicListenerBoundsRejectBeforeCa
 
 func TestPublicHandlerRejectsBodyCompletingAfterCallbackDeadline(t *testing.T) {
 	var callbacks atomic.Int32
-	handler := PublicHandler(http.NotFoundHandler(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := publicHandler(http.NotFoundHandler(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		callbacks.Add(1)
 		w.WriteHeader(http.StatusNoContent)
 	}), PublicListenerConfig{CallbackTimeout: 20 * time.Millisecond, MaxCallbackBytes: 1024})

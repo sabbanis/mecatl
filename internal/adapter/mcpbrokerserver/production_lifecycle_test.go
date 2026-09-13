@@ -20,8 +20,8 @@ func TestSingletonBrokerRemediation_Scenario5_ProductionLifecycleUsesSharedFacto
 	t.Setenv("../mcpbroker/testdata/client-secret", "offline-secret")
 	lifecycle, err := NewProduction(t.Context(), ProductionConfig{
 		PublicAddress: "127.0.0.1:0", AdminAddress: "127.0.0.1:0",
-		TLSConfig: &tls.Config{Certificates: issuer.server.TLS.Certificates, MinVersion: tls.VersionTLS12},
-		OIDC:      productionOIDC(issuer, time.Minute),
+		TLSConfig:   &tls.Config{Certificates: issuer.server.TLS.Certificates, MinVersion: tls.VersionTLS12},
+		WorkloadJWT: productionOIDC(issuer, time.Minute),
 		ToolHive: mcpbroker.ToolHiveConfig{CallbackURL: "https://broker.example/callback", Profiles: []mcpbroker.ToolHiveProfile{{
 			Name: "github", URL: "https://mcp.example/mcp", Auth: "oauth",
 			OAuth:  &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: "https://identity.example/authorize", TokenEndpoint: "https://identity.example/token", ClientID: "lifecycle-client", ClientSecretFile: "../mcpbroker/testdata/client-secret"},

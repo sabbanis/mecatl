@@ -97,33 +97,33 @@ func (f *identityFixture) tokenWithSubject(t *testing.T, issuer, audience, subje
 	return input + "." + base64.RawURLEncoding.EncodeToString(sig)
 }
 
-func productionOIDC(f *identityFixture, staleness time.Duration) OIDCConfig {
-	return OIDCConfig{Issuer: f.server.URL, JWKSURI: f.server.URL + "/keys", Audience: testAudience, AllowedSubjects: []string{"workload-secret-identity"}, TrustedCAPEM: f.caPEM(), MaxJWKSStaleness: staleness}
+func productionOIDC(f *identityFixture, staleness time.Duration) WorkloadJWTConfig {
+	return WorkloadJWTConfig{Issuer: f.server.URL, JWKSURI: f.server.URL + "/keys", Audience: testAudience, AllowedSubjects: []string{"workload-secret-identity"}, TrustedCAPEM: f.caPEM(), MaxJWKSStaleness: staleness}
 }
 
 func TestSingletonBrokerRemediation_Scenario3_ReadinessDoesNotLaunderStaleKeys(t *testing.T) {
 	issuer := newIdentityFixture(t)
 	const staleness = 300 * time.Millisecond
-	srv, err := New(t.Context(), Config{Service: &countingService{}, OIDC: productionOIDC(issuer, staleness), ReadinessTimeout: time.Second})
+	srv, err := newBrokerHost(t.Context(), hostConfig{Service: &countingService{}, WorkloadJWT: productionOIDC(issuer, staleness), ReadinessTimeout: time.Second})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	defer func() { _ = srv.Close(context.Background()) }()
+	defer func() { _ = srv.close(context.Background()) }()
 	token := issuer.token(t, issuer.server.URL, testAudience, time.Now().Add(time.Minute), nil)
-	if _, err := srv.validator.Validate(t.Context(), token); err != nil {
+	if _, err := srv.verifier.Validate(t.Context(), token); err != nil {
 		t.Fatalf("initial validation: %v", err)
 	}
 
 	time.Sleep(200 * time.Millisecond)
-	if !srv.Ready(t.Context()) {
+	if !srv.ready(t.Context()) {
 		t.Fatal("healthy JWKS dependency did not pass readiness")
 	}
 	issuer.available.Store(false)
 	time.Sleep(150 * time.Millisecond)
-	if _, err := srv.validator.Validate(t.Context(), token); !errors.Is(err, oidcadapter.ErrIdentityUnavailable) {
+	if _, err := srv.verifier.Validate(t.Context(), token); !errors.Is(err, oidcadapter.ErrIdentityUnavailable) {
 		t.Fatalf("token remained valid after the original JWKS staleness bound: %v", err)
 	}
-	if srv.Ready(t.Context()) {
+	if srv.ready(t.Context()) {
 		t.Fatal("readiness stayed open after JWKS became unavailable")
 	}
 }
@@ -158,20 +158,20 @@ func (*emptyAttachment) CancelAuthorization(context.Context, session.ExternalAut
 	return "", contract.ErrAuthorizationNotFound
 }
 
-func startAuthenticatedBroker(t *testing.T, service contract.Service, oidc OIDCConfig, diag port.Diagnostics, observe func(string, string)) (brokerv1.BrokerServiceClient, *grpc.ClientConn, string) {
+func startAuthenticatedBroker(t *testing.T, service contract.Service, oidc WorkloadJWTConfig, diag port.Diagnostics, observe func(string, string)) (brokerv1.BrokerServiceClient, *grpc.ClientConn, string) {
 	t.Helper()
-	srv, err := New(t.Context(), Config{Service: service, OIDC: oidc, Diagnostics: diag, Observe: observe})
+	srv, err := newBrokerHost(t.Context(), hostConfig{Service: service, WorkloadJWT: oidc, Diagnostics: diag, Observe: observe})
 	if err != nil {
 		t.Fatalf("New: %v", err)
 	}
-	t.Cleanup(func() { _ = srv.Close(context.Background()) })
+	t.Cleanup(func() { _ = srv.close(context.Background()) })
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
 	}
-	grpcServer, err := srv.NewGRPCServer(&tls.Config{Certificates: []tls.Certificate{fCertificate(t, oidc)}, MinVersion: tls.VersionTLS13})
+	grpcServer, err := srv.newGRPCServer(&tls.Config{Certificates: []tls.Certificate{fCertificate(t, oidc)}, MinVersion: tls.VersionTLS13})
 	if err != nil {
-		t.Fatalf("NewGRPCServer: %v", err)
+		t.Fatalf("newGRPCServer: %v", err)
 	}
 	go func() { _ = grpcServer.Serve(listener) }()
 	t.Cleanup(grpcServer.Stop)
@@ -185,7 +185,7 @@ func startAuthenticatedBroker(t *testing.T, service contract.Service, oidc OIDCC
 	return brokerv1.NewBrokerServiceClient(conn), conn, listener.Addr().String()
 }
 
-func fCertificate(t *testing.T, oidc OIDCConfig) tls.Certificate {
+func fCertificate(t *testing.T, oidc WorkloadJWTConfig) tls.Certificate {
 	t.Helper()
 	// Tests use the identity fixture's httptest certificate as the broker leaf.
 	block, _ := pem.Decode(oidc.TrustedCAPEM)
@@ -334,21 +334,21 @@ func TestInitialProductionMCPBroker_Scenario2_RejectsInvalidIdentity(t *testing.
 	if service.reads.Load() != 0 {
 		t.Fatal("invalid workload identity reached broker state")
 	}
-	if err := ValidateTransport("0.0.0.0:8443", nil); err == nil {
+	if err := validateTransport("0.0.0.0:8443", nil); err == nil {
 		t.Fatal("plaintext non-loopback listener was accepted")
 	}
 	var factoryCalls atomic.Int32
-	badOIDC := Config{OIDC: OIDCConfig{Issuer: "http://issuer.example", Audience: testAudience, TrustedCAPEM: issuer.caPEM(), MaxJWKSStaleness: time.Minute}, Factory: func(context.Context) (contract.Service, mcpbroker.HandlerBundle, string, func() error, error) {
+	badOIDC := hostConfig{WorkloadJWT: WorkloadJWTConfig{Issuer: "http://issuer.example", Audience: testAudience, TrustedCAPEM: issuer.caPEM(), MaxJWKSStaleness: time.Minute}, Runtime: func(context.Context) (brokerRuntime, error) {
 		factoryCalls.Add(1)
-		return &countingService{}, mcpbroker.HandlerBundle{}, "", nil, nil
+		return brokerRuntime{Service: &countingService{}}, nil
 	}}
-	if _, err := New(t.Context(), badOIDC); err == nil {
+	if _, err := newBrokerHost(t.Context(), badOIDC); err == nil {
 		t.Fatal("production accepted an HTTP issuer")
 	}
 	if factoryCalls.Load() != 0 {
 		t.Fatal("broker state was constructed before identity configuration admission")
 	}
-	if _, err := New(t.Context(), Config{Service: &countingService{}, OIDC: productionOIDC(issuer, 0)}); err == nil {
+	if _, err := newBrokerHost(t.Context(), hostConfig{Service: &countingService{}, WorkloadJWT: productionOIDC(issuer, 0)}); err == nil {
 		t.Fatal("production accepted unbounded JWKS staleness")
 	}
 	for _, tlsConfig := range []*tls.Config{
@@ -431,14 +431,14 @@ func TestInvariant_initial_broker_callback_cannot_supply_authority(t *testing.T)
 	})
 	bundle := mcpbroker.HandlerBundle{Authorization: handler, Token: handler, UpstreamCallback: handler, Discovery: handler, JWKS: handler, ProtectedResource: handler, VMCP: handler, Callback: handler}
 	issuer := newIdentityFixture(t)
-	srv, err := New(t.Context(), Config{Service: &countingService{}, OIDC: productionOIDC(issuer, time.Minute), Handlers: bundle, CallbackPath: "/complete"})
+	srv, err := newBrokerHost(t.Context(), hostConfig{Service: &countingService{}, WorkloadJWT: productionOIDC(issuer, time.Minute), Handlers: bundle, CallbackPath: "/complete"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { _ = srv.Close(context.Background()) })
+	t.Cleanup(func() { _ = srv.close(context.Background()) })
 	for _, path := range []string{"/v1/mcp/broker/oauth/authorize", "/v1/mcp/broker/oauth/token", "/v1/mcp/broker/oauth/callback", "/v1/mcp/broker/.well-known/openid-configuration", "/v1/mcp/broker/.well-known/jwks.json", "/v1/mcp/broker/.well-known/oauth-protected-resource", "/v1/mcp/broker/mcp", "/complete?state=opaque&code=code"} {
 		recorder := httptest.NewRecorder()
-		srv.HTTPHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
+		srv.httpHandler().ServeHTTP(recorder, httptest.NewRequest(http.MethodGet, path, nil))
 		if recorder.Code != http.StatusNoContent {
 			t.Fatalf("route %s status=%d", path, recorder.Code)
 		}
@@ -496,7 +496,7 @@ func TestInitialProductionMCPBroker_Scenario2_JWKSFailureIsBounded(t *testing.T)
 		t.Fatalf("outage downgraded to anonymous access: %v", err)
 	}
 	cfg := productionOIDC(issuer, maxJWKSStaleness+time.Second)
-	if _, err := New(t.Context(), Config{Service: &countingService{}, OIDC: cfg}); err == nil {
+	if _, err := newBrokerHost(t.Context(), hostConfig{Service: &countingService{}, WorkloadJWT: cfg}); err == nil {
 		t.Fatal("excessive JWKS staleness was accepted")
 	}
 }

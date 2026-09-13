@@ -265,7 +265,7 @@ func (cfg fileConfig) productionConfig(certificate tls.Certificate, caPEM []byte
 		PublicAddress: cfg.Listener.PublicAddress,
 		AdminAddress:  defaultAdminAddress,
 		TLSConfig:     &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12},
-		OIDC: mcpbrokerserver.OIDCConfig{
+		WorkloadJWT: mcpbrokerserver.WorkloadJWTConfig{
 			Issuer: cfg.WorkloadJWT.Issuer, JWKSURI: cfg.WorkloadJWT.JWKSURI,
 			Audience: cfg.WorkloadJWT.Audience, AllowedSubjects: []string{cfg.WorkloadJWT.Subject},
 			TrustedCAPEM: caPEM, MaxJWKSStaleness: cfg.WorkloadJWT.MaxJWKSStaleness.value(),

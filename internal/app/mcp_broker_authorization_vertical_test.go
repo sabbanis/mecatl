@@ -92,8 +92,11 @@ func TestSingletonBrokerRemediation_Scenario5_RestartBoundary(t *testing.T) {
 	productionConfig := func() mcpbrokerserver.ProductionConfig {
 		return mcpbrokerserver.ProductionConfig{
 			PublicAddress: address, AdminAddress: "127.0.0.1:0",
-			TLSConfig:       &tls.Config{Certificates: certificateSource.TLS.Certificates, MinVersion: tls.VersionTLS12},
-			OIDC:            mcpbrokerserver.OIDCConfig{Issuer: identity.server.URL, JWKSURI: identity.server.URL + "/keys", Audience: "mecak8s", AllowedSubjects: []string{"mecak8s"}, TrustedCAPEM: identity.caPEM(), MaxJWKSStaleness: time.Minute},
+			TLSConfig: &tls.Config{Certificates: certificateSource.TLS.Certificates, MinVersion: tls.VersionTLS12},
+			WorkloadJWT: mcpbrokerserver.WorkloadJWTConfig{
+				Issuer: identity.server.URL, JWKSURI: identity.server.URL + "/keys", Audience: "mecak8s",
+				AllowedSubjects: []string{"mecak8s"}, TrustedCAPEM: identity.caPEM(), MaxJWKSStaleness: time.Minute,
+			},
 			ToolHive:        mcpbroker.ToolHiveConfig{CallbackURL: callbackURL, Profiles: []mcpbroker.ToolHiveProfile{{Name: "github", URL: fixture.mcp.URL, Auth: "oauth", OAuth: &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token", ClientID: "restart-client", ClientSecretFile: clientSecretFile, Scopes: []string{"read"}, RequestRefreshToken: true}, Static: []mcpbroker.StaticTool{{Name: "protected", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}}}}},
 			ToolHiveOptions: []mcpbroker.Option{mcpbroker.WithOAuthLoopbackForTest(t, roots), mcpbroker.WithBrokerHTTPClientForTest(t, fixture.clientWithRoots(roots))},
 			PropagationWait: time.Millisecond, DrainTimeout: time.Second,
@@ -202,8 +205,8 @@ func TestSingletonBrokerRemediation_Scenario5_CallbackCorrelationReplayAndNonDis
 
 	lifecycle, err := mcpbrokerserver.NewProduction(ctx, mcpbrokerserver.ProductionConfig{
 		PublicAddress: address, AdminAddress: "127.0.0.1:0",
-		TLSConfig: &tls.Config{Certificates: certificateSource.TLS.Certificates, MinVersion: tls.VersionTLS12},
-		OIDC:      mcpbrokerserver.OIDCConfig{Issuer: identity.server.URL, JWKSURI: identity.server.URL + "/keys", Audience: "mecak8s", AllowedSubjects: []string{"mecak8s"}, TrustedCAPEM: identity.caPEM(), MaxJWKSStaleness: time.Minute},
+		TLSConfig:   &tls.Config{Certificates: certificateSource.TLS.Certificates, MinVersion: tls.VersionTLS12},
+		WorkloadJWT: mcpbrokerserver.WorkloadJWTConfig{Issuer: identity.server.URL, JWKSURI: identity.server.URL + "/keys", Audience: "mecak8s", AllowedSubjects: []string{"mecak8s"}, TrustedCAPEM: identity.caPEM(), MaxJWKSStaleness: time.Minute},
 		ToolHive: mcpbroker.ToolHiveConfig{CallbackURL: callbackURL, Profiles: []mcpbroker.ToolHiveProfile{{
 			Name: "github", URL: fixture.mcp.URL, Auth: "oauth",
 			OAuth:  &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token", ClientID: "callback-client", ClientSecretFile: clientSecretFile, Scopes: []string{"read"}},
@@ -608,7 +611,7 @@ func runSingletonBrokerStage3RemoteVertical(t *testing.T) *stage3Evidence {
 	lifecycle, err := mcpbrokerserver.NewProduction(ctx, mcpbrokerserver.ProductionConfig{
 		PublicAddress: callbackAddress, AdminAddress: "127.0.0.1:0",
 		TLSConfig:       &tls.Config{Certificates: certificateSource.TLS.Certificates, MinVersion: tls.VersionTLS12},
-		OIDC:            mcpbrokerserver.OIDCConfig{Issuer: identity.server.URL, JWKSURI: identity.server.URL + "/keys", Audience: "mecak8s", AllowedSubjects: []string{"mecak8s"}, TrustedCAPEM: identity.caPEM(), MaxJWKSStaleness: time.Minute},
+		WorkloadJWT:     mcpbrokerserver.WorkloadJWTConfig{Issuer: identity.server.URL, JWKSURI: identity.server.URL + "/keys", Audience: "mecak8s", AllowedSubjects: []string{"mecak8s"}, TrustedCAPEM: identity.caPEM(), MaxJWKSStaleness: time.Minute},
 		Diagnostics:     diagnostics,
 		ToolHive:        mcpbroker.ToolHiveConfig{CallbackURL: callbackURL, Profiles: []mcpbroker.ToolHiveProfile{{Name: "github", URL: fixture.mcp.URL, Auth: "oauth", OAuth: &mcpbroker.ToolHiveOAuth{AuthorizationEndpoint: fixture.oauth.URL + "/authorize", TokenEndpoint: fixture.oauth.URL + "/token", ClientID: "vertical-client", ClientSecretFile: secretFile, Scopes: []string{"read"}, RequestRefreshToken: true}, Static: []mcpbroker.StaticTool{{Name: "protected", Description: "read protected data", Schema: json.RawMessage(`{"type":"object"}`), ReadOnly: true}}}}},
 		ToolHiveOptions: []mcpbroker.Option{mcpbroker.WithOAuthLoopbackForTest(t, roots), mcpbroker.WithBrokerHTTPClientForTest(t, brokerHTTPClient), mcpbroker.WithOAuthLimits(2*time.Minute, 3*time.Second)},

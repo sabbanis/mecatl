@@ -15,16 +15,15 @@ import (
 	"google.golang.org/grpc/status"
 
 	"github.com/stacklok/mecatl/internal/adapter/mcpbroker"
-	contract "github.com/stacklok/mecatl/internal/mcpbroker"
 )
 
 func TestSingletonBrokerRemediation_Scenario3_ProductionReadinessUsesRealDependencies(t *testing.T) {
 	issuer := newIdentityFixture(t)
 	t.Setenv("../mcpbroker/testdata/client-secret", "offline-secret")
 	var process *mcpbroker.Process
-	srv, err := New(t.Context(), Config{
-		OIDC: productionOIDC(issuer, time.Minute),
-		Factory: func(ctx context.Context) (contract.Service, mcpbroker.HandlerBundle, string, func() error, error) {
+	srv, err := newBrokerHost(t.Context(), hostConfig{
+		WorkloadJWT: productionOIDC(issuer, time.Minute),
+		Runtime: func(ctx context.Context) (brokerRuntime, error) {
 			var buildErr error
 			process, buildErr = mcpbroker.NewToolHiveProcess(ctx, mcpbroker.ToolHiveConfig{
 				CallbackURL: "https://broker.example/callback",
@@ -38,27 +37,27 @@ func TestSingletonBrokerRemediation_Scenario3_ProductionReadinessUsesRealDepende
 				}},
 			})
 			if buildErr != nil {
-				return nil, mcpbroker.HandlerBundle{}, "", nil, buildErr
+				return brokerRuntime{}, buildErr
 			}
-			return process.Runtime, process.Handlers, "/callback", process.Close, nil
+			return brokerRuntime{Service: process.Runtime, Handlers: process.Handlers, CallbackPath: "/callback", Close: process.Close}, nil
 		},
 		ReadinessTimeout: time.Second,
 	})
 	if err != nil {
 		t.Fatalf("production New: %v", err)
 	}
-	defer func() { _ = srv.Close(context.Background()) }()
-	if process == nil || !srv.Ready(t.Context()) {
+	defer func() { _ = srv.close(context.Background()) }()
+	if process == nil || !srv.ready(t.Context()) {
 		t.Fatal("production OIDC and ToolHive dependencies did not open readiness")
 	}
 	if err := process.Close(); err != nil {
 		t.Fatalf("close ToolHive dependency: %v", err)
 	}
-	if srv.Ready(t.Context()) {
+	if srv.ready(t.Context()) {
 		t.Fatal("readiness stayed open after the production ToolHive process failed")
 	}
-	srv.BeginDrain()
-	if srv.Ready(t.Context()) {
+	srv.beginDrain()
+	if srv.ready(t.Context()) {
 		t.Fatal("readiness stayed open after admission closed")
 	}
 }
@@ -69,9 +68,9 @@ func TestSingletonBrokerRemediation_Scenario3_ProductionDrainAndCleanup(t *testi
 	entered := make(chan struct{})
 	operationDone := make(chan struct{})
 	var processClosed atomic.Bool
-	srv, err := New(t.Context(), Config{
-		OIDC: productionOIDC(issuer, time.Minute),
-		Factory: func(ctx context.Context) (contract.Service, mcpbroker.HandlerBundle, string, func() error, error) {
+	srv, err := newBrokerHost(t.Context(), hostConfig{
+		WorkloadJWT: productionOIDC(issuer, time.Minute),
+		Runtime: func(ctx context.Context) (brokerRuntime, error) {
 			process, buildErr := mcpbroker.NewToolHiveProcess(ctx, mcpbroker.ToolHiveConfig{
 				CallbackURL: "https://broker.example/callback",
 				Profiles: []mcpbroker.ToolHiveProfile{{
@@ -81,7 +80,7 @@ func TestSingletonBrokerRemediation_Scenario3_ProductionDrainAndCleanup(t *testi
 				}},
 			})
 			if buildErr != nil {
-				return nil, mcpbroker.HandlerBundle{}, "", nil, buildErr
+				return brokerRuntime{}, buildErr
 			}
 			handlers := process.Handlers
 			realCallback := handlers.Callback
@@ -100,7 +99,7 @@ func TestSingletonBrokerRemediation_Scenario3_ProductionDrainAndCleanup(t *testi
 				processClosed.Store(true)
 				return process.Close()
 			}
-			return process.Runtime, handlers, "/callback", closeProcess, nil
+			return brokerRuntime{Service: process.Runtime, Handlers: handlers, CallbackPath: "/callback", Close: closeProcess}, nil
 		},
 		ReadinessTimeout: time.Second,
 	})
@@ -110,17 +109,17 @@ func TestSingletonBrokerRemediation_Scenario3_ProductionDrainAndCleanup(t *testi
 	callbackDone := make(chan struct{})
 	go func() {
 		defer close(callbackDone)
-		srv.HTTPHandler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/callback", nil))
+		srv.httpHandler().ServeHTTP(httptest.NewRecorder(), httptest.NewRequest(http.MethodGet, "/callback", nil))
 	}()
 	<-entered
 
-	srv.BeginDrain()
+	srv.beginDrain()
 	late := httptest.NewRecorder()
-	srv.HTTPHandler().ServeHTTP(late, httptest.NewRequest(http.MethodGet, "/callback", nil))
+	srv.httpHandler().ServeHTTP(late, httptest.NewRequest(http.MethodGet, "/callback", nil))
 	if late.Code != http.StatusServiceUnavailable {
 		t.Fatalf("new callback after drain = %d, want 503", late.Code)
 	}
-	_, grpcErr := srv.coordinator.UnaryInterceptor(t.Context(), nil, &grpc.UnaryServerInfo{}, func(context.Context, any) (any, error) {
+	_, grpcErr := srv.admission.UnaryInterceptor(t.Context(), nil, &grpc.UnaryServerInfo{}, func(context.Context, any) (any, error) {
 		t.Fatal("new gRPC work reached handler after drain")
 		return nil, nil
 	})
@@ -129,7 +128,7 @@ func TestSingletonBrokerRemediation_Scenario3_ProductionDrainAndCleanup(t *testi
 	}
 
 	drainCtx, cancel := context.WithTimeout(t.Context(), 30*time.Millisecond)
-	if err := srv.Drain(drainCtx, 0); !errors.Is(err, context.DeadlineExceeded) {
+	if err := srv.drain(drainCtx, 0); !errors.Is(err, context.DeadlineExceeded) {
 		t.Fatalf("Drain with active work = %v, want deadline exceeded", err)
 	}
 	cancel()
@@ -141,7 +140,7 @@ func TestSingletonBrokerRemediation_Scenario3_ProductionDrainAndCleanup(t *testi
 	if processClosed.Load() {
 		t.Fatal("drain closed ToolHive before lifecycle shutdown")
 	}
-	if err := srv.Close(t.Context()); err != nil {
+	if err := srv.close(t.Context()); err != nil {
 		t.Fatalf("Close: %v", err)
 	}
 	if !processClosed.Load() {

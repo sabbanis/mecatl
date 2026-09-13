@@ -12,13 +12,13 @@ import (
 	"google.golang.org/grpc/status"
 )
 
-// ReadinessCheck verifies one bounded, side-effect-free serving prerequisite.
-type ReadinessCheck func(context.Context) error
+// readinessCheck verifies one bounded, side-effect-free serving prerequisite.
+type readinessCheck func(context.Context) error
 
-// Coordinator is the shared admission and drain boundary for broker gRPC and
+// admissionGate is the shared admission and drain boundary for broker gRPC and
 // browser callback work. It is process-local by design and is not an ownership
 // or stale-worker fence.
-type Coordinator struct {
+type admissionGate struct {
 	mu           sync.Mutex
 	open         bool
 	drained      bool
@@ -26,23 +26,23 @@ type Coordinator struct {
 	next         uint64
 	idle         chan struct{}
 	readyTimeout time.Duration
-	checks       []ReadinessCheck
+	checks       []readinessCheck
 }
 
-// NewCoordinator constructs a closed gate. Open must be called only after all
+// newAdmissionGate constructs a closed gate. Open must be called only after all
 // startup construction and static validation has completed.
-func NewCoordinator(readyTimeout time.Duration, checks ...ReadinessCheck) (*Coordinator, error) {
+func newAdmissionGate(readyTimeout time.Duration, checks ...readinessCheck) (*admissionGate, error) {
 	if readyTimeout <= 0 {
 		return nil, errors.New("mcpbrokerserver: readiness timeout must be positive")
 	}
 	idle := make(chan struct{})
 	close(idle)
-	return &Coordinator{active: make(map[uint64]context.CancelFunc), idle: idle, readyTimeout: readyTimeout, checks: append([]ReadinessCheck(nil), checks...)}, nil
+	return &admissionGate{active: make(map[uint64]context.CancelFunc), idle: idle, readyTimeout: readyTimeout, checks: append([]readinessCheck(nil), checks...)}, nil
 }
 
 // Open admits work. It is intentionally one-way in production: BeginDrain
 // closes admission permanently for this process incarnation.
-func (c *Coordinator) Open() {
+func (c *admissionGate) Open() {
 	c.mu.Lock()
 	if !c.drained {
 		c.open = true
@@ -51,7 +51,7 @@ func (c *Coordinator) Open() {
 }
 
 // Ready checks every configured serving prerequisite under one finite bound.
-func (c *Coordinator) Ready(parent context.Context) bool {
+func (c *admissionGate) Ready(parent context.Context) bool {
 	c.mu.Lock()
 	open := c.open
 	c.mu.Unlock()
@@ -71,14 +71,14 @@ func (c *Coordinator) Ready(parent context.Context) bool {
 }
 
 // BeginDrain atomically closes admission to both public transports.
-func (c *Coordinator) BeginDrain() {
+func (c *admissionGate) BeginDrain() {
 	c.mu.Lock()
 	c.open = false
 	c.drained = true
 	c.mu.Unlock()
 }
 
-func (c *Coordinator) begin(parent context.Context) (context.Context, func(), bool) {
+func (c *admissionGate) begin(parent context.Context) (context.Context, func(), bool) {
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if !c.open {
@@ -94,7 +94,7 @@ func (c *Coordinator) begin(parent context.Context) (context.Context, func(), bo
 	return ctx, func() { c.end(id) }, true
 }
 
-func (c *Coordinator) end(id uint64) {
+func (c *admissionGate) end(id uint64) {
 	c.mu.Lock()
 	cancel, ok := c.active[id]
 	if ok {
@@ -108,7 +108,7 @@ func (c *Coordinator) end(id uint64) {
 }
 
 // HTTP applies the shared admission gate to callback and ToolHive routes.
-func (c *Coordinator) HTTP(next http.Handler) http.Handler {
+func (c *admissionGate) HTTP(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ctx, done, ok := c.begin(r.Context())
 		if !ok {
@@ -121,7 +121,7 @@ func (c *Coordinator) HTTP(next http.Handler) http.Handler {
 }
 
 // UnaryInterceptor applies the same gate to broker gRPC work.
-func (c *Coordinator) UnaryInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
+func (c *admissionGate) UnaryInterceptor(ctx context.Context, req any, _ *grpc.UnaryServerInfo, handler grpc.UnaryHandler) (any, error) {
 	opCtx, done, ok := c.begin(ctx)
 	if !ok {
 		return nil, status.Error(codes.Unavailable, "broker draining")
@@ -133,7 +133,7 @@ func (c *Coordinator) UnaryInterceptor(ctx context.Context, req any, _ *grpc.Una
 // Drain closes admission, waits the endpoint propagation interval, then waits
 // for admitted work until the caller's finite deadline. At the deadline all
 // remaining operation contexts are cancelled so teardown can settle them.
-func (c *Coordinator) Drain(ctx context.Context, propagation time.Duration) error {
+func (c *admissionGate) Drain(ctx context.Context, propagation time.Duration) error {
 	if propagation < 0 {
 		return errors.New("mcpbrokerserver: drain propagation interval must be non-negative")
 	}
@@ -160,7 +160,7 @@ func (c *Coordinator) Drain(ctx context.Context, propagation time.Duration) erro
 	}
 }
 
-func (c *Coordinator) cancelActive() {
+func (c *admissionGate) cancelActive() {
 	c.mu.Lock()
 	cancels := make([]context.CancelFunc, 0, len(c.active))
 	for _, cancel := range c.active {

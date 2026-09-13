@@ -10,7 +10,7 @@ import (
 
 func TestPublicHandlerAllowsFixedToolHiveProtocolRoutes(t *testing.T) {
 	called := false
-	handler := PublicHandler(http.NotFoundHandler(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := publicHandler(http.NotFoundHandler(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		called = true
 		w.WriteHeader(http.StatusNoContent)
 	}), DefaultPublicListenerConfig())
@@ -25,7 +25,7 @@ func TestPublicHandlerAllowsFixedToolHiveProtocolRoutes(t *testing.T) {
 
 func TestPublicHandlerBoundsEveryToolHiveRouteBeforeDelegation(t *testing.T) {
 	var calls int
-	handler := PublicHandler(http.NotFoundHandler(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+	handler := publicHandler(http.NotFoundHandler(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		calls++
 		w.WriteHeader(http.StatusNoContent)
 	}), DefaultPublicListenerConfig())
@@ -58,6 +58,30 @@ func TestPublicHandlerBoundsEveryToolHiveRouteBeforeDelegation(t *testing.T) {
 	}
 	if calls != 4 {
 		t.Fatalf("delegated calls = %d, want 4", calls)
+	}
+}
+
+func TestPublicHandlerParsesContentTypeParametersAndCase(t *testing.T) {
+	for _, tc := range []struct {
+		contentType string
+		want        int
+	}{
+		{"Application/JSON; charset=utf-8", http.StatusNoContent},
+		{"application/problem+json; charset=utf-8", http.StatusNoContent},
+		{"Application/X-WWW-Form-Urlencoded; charset=utf-8", http.StatusNoContent},
+		{"application/json; broken", http.StatusUnsupportedMediaType},
+	} {
+		handler := publicHandler(http.NotFoundHandler(), http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(http.StatusNoContent) }), DefaultPublicListenerConfig())
+		request := httptest.NewRequest(http.MethodPost, "https://broker.example/v1/mcp/broker/mcp", strings.NewReader(`{}`))
+		if strings.Contains(strings.ToLower(tc.contentType), "form") {
+			request = httptest.NewRequest(http.MethodPost, "https://broker.example/v1/mcp/broker/oauth/token", strings.NewReader("code=x"))
+		}
+		request.Header.Set("Content-Type", tc.contentType)
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+		if response.Code != tc.want {
+			t.Errorf("Content-Type %q: status = %d, want %d", tc.contentType, response.Code, tc.want)
+		}
 	}
 }
 

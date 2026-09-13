@@ -54,8 +54,9 @@ type ownedResource struct {
 // Process is the single owner of a valid broker Runtime and all bundled
 // ToolHive resources. ToolHive values never cross the neutral broker boundary.
 type Process struct {
-	Runtime  *Runtime
-	Handlers HandlerBundle
+	Runtime      *Runtime
+	Handlers     HandlerBundle
+	CallbackPath string
 
 	ctx             context.Context
 	cancel          context.CancelFunc
@@ -287,11 +288,12 @@ func newToolHiveProcess(ctx context.Context, config ToolHiveConfig, options tool
 		process.Handlers.ProtectedResource = authInfo
 	}
 	if config.CallbackURL != "" {
-		callbackHandlers, _, handlerErr := runtime.Handlers(config.CallbackURL)
+		callbackHandlers, callbackPath, handlerErr := runtime.Handlers(config.CallbackURL)
 		if handlerErr != nil {
 			return rollback(handlerErr)
 		}
 		process.Handlers.Callback = callbackHandlers.Callback
+		process.CallbackPath = callbackPath
 	}
 	return process, nil
 }
