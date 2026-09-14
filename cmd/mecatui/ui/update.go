@@ -488,7 +488,6 @@ func (m Model) applySessionReady(msg client.SessionReadyMsg) (tea.Model, tea.Cmd
 		m.activeMode = client.ModeString(client.ModeFromString(msg.Mode))
 	}
 	m.restartFailed = false // a session is (re)established; any prior failure clears
-	m.restartFailedForkID = ""
 	m.phase = phaseIdle
 	// A model switch arms a transient "switched to <model> — conversation kept" note
 	// (chooseModel); surface it on the rebind instead of the bare "connected", then
@@ -611,6 +610,37 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		// under the cyclomatic cap.
 		mm, cmd := m.updateReconnectMsg(msg)
 		return mm, cmd, true
+	case effortHandoffReadyMsg:
+		if msg.token != m.modelSwitchRequestToken || m.phase != phaseConnecting || m.sessionID != msg.sourceID {
+			return m, m.closeSessionCmd(msg.targetID), true
+		}
+		caps := msg.snapshot.Capabilities
+		if caps == (client.Capabilities{}) {
+			caps = m.caps
+		}
+		ready := client.SessionReadyMsg{SessionID: msg.targetID, Capabilities: caps,
+			ResolvedModel: msg.snapshot.ResolvedModel, Mode: msg.snapshot.Mode}
+		mm, cmd, handled := m.applySessionReady(ready)
+		m = mm.(Model)
+		m.sessionState = msg.snapshot.State
+		m.sessionCreatedAt = msg.snapshot.CreatedAt
+		m.activePlacement = msg.snapshot.Placement
+		m.resolvedSessionModel = msg.snapshot.ResolvedModel
+		m.sessionTitle = msg.snapshot.Title
+		m.sessionTitleProvenance = msg.snapshot.TitleProvenance
+		m.sessionTitleRevision = msg.snapshot.TitleRevision
+		m.refreshView()
+		return m, tea.Batch(cmd, m.closeSessionCmd(msg.sourceID)), handled
+	case effortHandoffFailedMsg:
+		if msg.token != m.modelSwitchRequestToken || m.phase != phaseConnecting || m.sessionID != msg.sourceID {
+			return m, nil, true
+		}
+		m.phase = phaseIdle
+		m.statusMsg = m.deps.Theme.Style("errorText").Render(
+			"could not switch to effort " + effortLabel(msg.sel.ReasoningEffort) + ": " + sanitizeTerminal(msg.err.Error()))
+		focusCmd := m.prompt.Focus()
+		m.refreshView()
+		return m, tea.Batch(focusCmd, (&m).armLiveFeed()), true
 	case modelSwitchReadyMsg:
 		// The target's authoritative transcript is already complete and correlated.
 		// Only now may we discard the source projection or arm target interaction.
@@ -774,31 +804,12 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m.fatalErr = msg.Err.Error()
 		return m, nil, true
 	case restartFailedMsg:
-		// A /models restart-now re-create (or a /worktrees re-create, or an /effort
-		// fork) failed. Unlike ConnectErrMsg this is NOT terminal: we deliberately
-		// destroyed a working session (or attempted a fork), so leave the app
-		// RECOVERABLE (idle, no session) with a loud status naming the failed model and
-		// enter-to-retry armed (the selection still lives in m.createModelSelection). On the
-		// /models + /worktrees paths the transcript is gone, but the app stays usable;
-		// on the /effort path the source session (and transcript) SURVIVES — see
-		// restartFailedForkID.
+		// A restart-now re-create failed. Unlike ConnectErrMsg this is NOT terminal:
+		// leave the app recoverable (idle, no session) with enter-to-retry armed.
 		m.phase = phaseIdle
 		m = m.bindSessionID("")
 		m.restartFailed = true
-		// A carryover create's failure means enter-to-retry re-fires a FRESH
-		// (non-carryover) create (see onIdleSubmit), so the note armed by
-		// chooseModel for the ORIGINAL attempt would otherwise survive to falsely
-		// claim "conversation kept" on the retry's SessionReadyMsg.
 		m.pendingModelSwitchNote = ""
-		// Record the retry origin: an /effort fork failure (msg.viaFork) re-forks from
-		// the SURVIVING source session on retry — m.sessionID is "" by now, so the
-		// source id must ride its own field. A non-fork failure clears it so a stale
-		// origin from an earlier failed fork can't leak into a create retry.
-		if msg.viaFork {
-			m.restartFailedForkID = msg.sourceID
-		} else {
-			m.restartFailedForkID = ""
-		}
 		m.statusMsg = m.deps.Theme.Style("errorText").Render(
 			"could not switch to " + sanitizeTerminal(msg.model) + ": " +
 				sanitizeTerminal(msg.err.Error()) + " — press " + firstKey(m.keys.Submit, "enter") + " to retry")
@@ -3042,9 +3053,6 @@ func (m Model) onIdleSubmit() (tea.Model, tea.Cmd) {
 		m.refreshView()
 		// m.sp.Tick re-arms the spinner for the idle→connecting transition (the
 		// phase-gated TickMsg handler dropped the chain at idle).
-		if m.restartFailedForkID != "" {
-			return m, tea.Batch(m.switchEffortCmd(m.restartFailedForkID, m.createModelSelection), m.sp.Tick)
-		}
 		return m, tea.Batch(m.restartOnModelCmd("", m.createModelSelection), m.sp.Tick)
 	}
 	if m.queuePaused != "" && len(m.queued) > 0 && empty {
