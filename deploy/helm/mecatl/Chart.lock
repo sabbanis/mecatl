@@ -1,0 +1,9 @@
+dependencies:
+- name: mecak8s
+  repository: file://../mecak8s
+  version: 0.5.0
+- name: mecabroker
+  repository: file://../mecabroker
+  version: 0.1.0
+digest: sha256:09ea63fcf8cbcbabbcaef76084db89b74b9505aea3f1a234d1f47514344619ae
+generated: "2026-09-14T12:35:44.629471+02:00"

@@ -18,6 +18,7 @@
     "networkPolicy"
   ],
   "properties": {
+    "global": {"type": "object"},
     "nameOverride": {
       "type": "string"
     },

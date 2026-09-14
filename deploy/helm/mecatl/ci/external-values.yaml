@@ -1,0 +1,15 @@
+mode: external
+global:
+  mecatl:
+    mode: external
+    broker:
+      tls: {caSecret: "", caKey: "", serverName: ""}
+      workloadJWT: {issuer: "", jwksURI: "", audience: "", lifetimeSeconds: 600, trustBundleSecret: "", trustBundleKey: ca.pem}
+    mcp:
+      broker: {callbackURL: ""}
+      servers: []
+mecak8s:
+  mockProvider: true
+  redis: {local: {enabled: true}}
+mecabroker:
+  image: {digest: sha256:0000000000000000000000000000000000000000000000000000000000000000}

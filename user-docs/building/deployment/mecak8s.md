@@ -32,7 +32,33 @@ retains the exact private EnvironmentRef needed for reattachment. Schedule fires
 that stored placement, and delegation cannot upgrade no-FS. A future remote filesystem
 provider can implement the same private Bind/Reattach contract without changing clients.
 
-## Drain endpoint isolation
+## Umbrella installation (Phase 0)
+
+For a single release that owns the workloads, install the OCI-publishable `mecatl`
+umbrella chart. Its default `mode: managed` renders separate `mecak8s` and singleton
+`mecabroker` Deployments; the broker remains `Recreate` with one replica and the
+mecak8s ingress/network policy is unchanged. Set `mode: external` to render only
+mecak8s when the broker is operated by another release:
+
+```sh
+helm install mecatl oci://ghcr.io/stacklok/mecatl/charts/mecatl \
+  --set mode=external
+```
+
+The parent owns the MCP input at `mcp.broker.callbackURL` and `mcp.servers` under
+`global.mecatl` (the values file is the chart's single input path). OAuth entries
+are rendered only into the managed broker; `none` and `staticBearer` entries stay
+with mecak8s. Secret references are passed through, never materialized as Helm
+values. Do not repeat MCP entries under either child chart. External mode rejects
+brokered OAuth and callback configuration because this Phase-0 chart does not
+adopt another release or transfer live OAuth state. Switching releases/modes is an
+operator migration: existing grants and in-flight authorizations remain owned by
+their original broker process.
+
+The `mecak8s` and `mecabroker` charts remain supported as standalone installation
+APIs. Pin image digests and provide the existing TLS/JWT and operator egress values
+for production; the umbrella does not weaken those validations.
+
 
 The chart runs a plaintext, Pod-only drain listener on port 8082. Kubernetes calls
 `GET /drain` there during preStop; normal HTTP/SSE API traffic, including TLS traffic,

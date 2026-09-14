@@ -1,0 +1,16 @@
+apiVersion: v2
+name: mecatl
+description: OCI-publishable mecatl installation with mecak8s and an optional singleton mecabroker.
+type: application
+version: 0.1.0
+appVersion: "dev"
+
+# Local dependencies are deliberately pinned by Chart.lock. The component charts
+# remain installable on their own.
+dependencies:
+  - name: mecak8s
+    version: 0.5.0
+    repository: file://../mecak8s
+  - name: mecabroker
+    version: 0.1.0
+    repository: file://../mecabroker

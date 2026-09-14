@@ -1,7 +1,15 @@
+{{- define "mecabroker.workloadIssuer" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "issuer" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.issuer }}{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadJWKS" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "jwksURI" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.jwksURI }}{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadAudience" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "audience" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.audience }}{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadSubject" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-mecak8s{{- else -}}{{ .Values.workloadJWT.subject }}{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadTrustBundle" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "trustBundleSecret" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.trustBundle.secretName }}{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadTrustBundleKey" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "trustBundleKey" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.trustBundle.key }}{{- end -}}{{- end -}}
+
 {{- define "mecabroker.validateImage" -}}
 {{- if not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.image.digest) -}}{{ fail "image.digest must be a lowercase sha256 digest" }}{{- end -}}
 {{- if .Values.image.tag -}}{{ fail "image.tag is not permitted; use image.digest" }}{{- end -}}
 {{- end -}}
+
 
 {{- define "mecabroker.validateShutdownBudget" -}}
 {{- $required := add (add (add (int .Values.drain.propagationDelaySeconds) (int .Values.drain.timeoutSeconds)) (int .Values.drain.listenerShutdownTimeoutSeconds)) 5 -}}
@@ -9,22 +17,23 @@
 {{- end -}}
 
 {{- define "mecabroker.validateMCP" -}}
-{{- if and .Values.mcp.servers (not .Values.mcp.broker.callbackURL) -}}{{ fail "mcp.broker.callbackURL is required whenever mcp.servers is non-empty; top-level callbackURL is not used" }}{{- end -}}
-{{- if and .Values.mcp.broker.callbackURL .Values.profiles }}{{ fail "mcp.broker.callbackURL conflicts with legacy profiles; choose one callback/profile source" }}{{- end -}}
-{{- if and .Values.mcp.servers .Values.profiles -}}{{ fail "mcp.servers and legacy profiles cannot be combined; choose one broker profile source" }}{{- end -}}
-{{- if and .Values.mcp.servers .Values.mcp.broker.callbackURL (ne .Values.callbackURL "https://broker.invalid/callback") }}{{ fail "mcp.broker.callbackURL conflicts with the legacy top-level callbackURL; set only the mcp callback" }}{{- end -}}
+{{- if and (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) (not (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global)))) -}}{{ fail "mcp.broker.callbackURL is required whenever mcp.servers is non-empty; top-level callbackURL is not used" }}{{- end -}}
+{{- if and (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) .Values.profiles }}{{ fail "mcp.broker.callbackURL conflicts with legacy profiles; choose one callback/profile source" }}{{- end -}}
+{{- if and (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) .Values.profiles -}}{{ fail "mcp.servers and legacy profiles cannot be combined; choose one broker profile source" }}{{- end -}}
+{{- if and (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) (ne .Values.callbackURL "https://broker.invalid/callback") }}{{ fail "mcp.broker.callbackURL conflicts with the legacy top-level callbackURL; set only the mcp callback" }}{{- end -}}
 {{- $seen := dict -}}
 {{- range $index, $profile := .Values.profiles -}}
 {{- $key := lower $profile.name -}}{{- if hasKey $seen $key }}{{ fail (printf "duplicate broker profile name %q" $profile.name) }}{{- end }}{{- $_ := set $seen $key true -}}
 {{- end -}}
-{{- range $index, $server := .Values.mcp.servers -}}
+{{- range $index, $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) -}}
 {{- $key := lower $server.name -}}{{- if hasKey $seen $key }}{{ fail (printf "duplicate broker profile name %q" $server.name) }}{{- end }}{{- $_ := set $seen $key true -}}
-{{- if ne $server.auth.mode "oauth" }}{{ fail (printf "mcp.servers[%d] must use auth.mode oauth; direct entries remain owned by mecak8s" $index) }}{{- end -}}
+{{- if eq $server.auth.mode "oauth" }}
 {{- if not $server.auth.oauth.client.mode }}{{ fail (printf "mcp.servers[%d].auth.oauth.client.mode is required" $index) }}{{- end -}}
 {{- if or (gt (len $server.auth.oauth.network.additionalOrigins) 0) (gt (len $server.auth.oauth.network.privateOrigins) 0) (ne (int $server.auth.oauth.network.maxRedirects) 0) }}{{ fail (printf "mcp.servers[%d].auth.oauth.network is unsupported by mecabroker; use mecak8s or remove network settings" $index) }}{{- end -}}
 {{- if eq $server.auth.oauth.client.mode "cimd" -}}{{ fail "CIMD OAuth client_mode is unsupported by mecabroker; use preregistered or dcr" }}{{- end -}}
 {{- if eq $server.auth.oauth.client.mode "dcr" -}}{{- if or (not $server.auth.oauth.upstream) (ne $server.auth.oauth.upstream.mode "oauth2") (not $server.auth.oauth.upstream.oauth2.authorizationEndpoint) (not $server.auth.oauth.upstream.oauth2.tokenEndpoint) }}{{ fail (printf "mcp.servers[%d] DCR requires explicit OAuth2 authorizationEndpoint and tokenEndpoint" $index) }}{{- end -}}{{- end -}}
 {{- if eq $server.auth.oauth.client.mode "preregistered" }}{{- if not $server.auth.oauth.client.preregistered.secretKeyRef.name }}{{ fail (printf "mcp.servers[%d] preregistered Secret reference is required" $index) }}{{- end -}}{{- end -}}
+{{- end -}}
 {{- end -}}
 {{- end -}}
 
@@ -48,9 +57,8 @@
 {{- end -}}
 {{- $profiles = append $profiles $rendered -}}
 {{- end -}}
-{{- range $index, $server := .Values.mcp.servers -}}
-{{- if ne $server.auth.mode "oauth" -}}{{ fail (printf "mcp.servers[%d] must use auth.mode oauth; direct none/staticBearer entries remain owned by mecak8s" $index) }}{{- end -}}
-{{- $oauth := dict "scopes" $server.auth.oauth.scopes "request_refresh_token" (default false $server.auth.oauth.requestRefreshToken) -}}
+{{- range $index, $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) -}}
+{{- if eq $server.auth.mode "oauth" -}}{{- $oauth := dict "scopes" $server.auth.oauth.scopes "request_refresh_token" (default false $server.auth.oauth.requestRefreshToken) -}}
 {{- if eq $server.auth.oauth.client.mode "dcr" -}}
 {{- if or (not $server.auth.oauth.upstream) (ne $server.auth.oauth.upstream.mode "oauth2") -}}{{ fail (printf "mcp.servers[%d] DCR requires explicit OAuth2 authorizationEndpoint and tokenEndpoint" $index) }}{{- end -}}
 {{- if or (not $server.auth.oauth.upstream.oauth2.authorizationEndpoint) (not $server.auth.oauth.upstream.oauth2.tokenEndpoint) -}}{{ fail (printf "mcp.servers[%d] DCR requires explicit OAuth2 authorizationEndpoint and tokenEndpoint" $index) }}{{- end -}}
@@ -72,11 +80,12 @@
 {{- if $server.auth.oauth.tools }}{{- $tools := list -}}{{- range $tool := $server.auth.oauth.tools }}{{- $tools = append $tools (dict "name" $tool.name "description" $tool.description "schema" $tool.inputSchema "read_only" (default false $tool.readOnly)) -}}{{- end -}}{{- $_ := set $rendered "tools" $tools -}}{{- end -}}
 {{- $profiles = append $profiles $rendered -}}
 {{- end -}}
-{{- $callback := .Values.callbackURL -}}{{- if .Values.mcp.servers }}{{- $callback = .Values.mcp.broker.callbackURL -}}{{- else if .Values.mcp.broker.callbackURL }}{{- $callback = .Values.mcp.broker.callbackURL -}}{{- end -}}
+{{- end -}}
+{{- $callback := .Values.callbackURL -}}{{- if (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}{{- $callback = (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) -}}{{- else if (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) }}{{- $callback = (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) -}}{{- end -}}
 {{- $config := dict
   "api_version" "mecabroker.mecatl.dev/v1"
   "listener" (dict "public_address" .Values.listener.publicAddress "tls_cert_file" (printf "/var/run/mecabroker/tls/%s" .Values.listener.tls.certKey) "tls_key_file" (printf "/var/run/mecabroker/tls/%s" .Values.listener.tls.keyKey))
-  "workload_jwt" (dict "issuer" .Values.workloadJWT.issuer "jwks_uri" .Values.workloadJWT.jwksURI "audience" .Values.workloadJWT.audience "subject" .Values.workloadJWT.subject "trust_bundle_file" (printf "/var/run/mecabroker/workload-jwt/%s" .Values.workloadJWT.trustBundle.key) "max_jwks_staleness" (printf "%ds" (int .Values.workloadJWT.maxJWKSStalenessSeconds)))
+  "workload_jwt" (dict "issuer" (include "mecabroker.workloadIssuer" .) "jwks_uri" (include "mecabroker.workloadJWKS" .) "audience" (include "mecabroker.workloadAudience" .) "subject" (include "mecabroker.workloadSubject" .) "trust_bundle_file" (printf "/var/run/mecabroker/workload-jwt/%s" (include "mecabroker.workloadTrustBundleKey" .)) "max_jwks_staleness" (printf "%ds" (int .Values.workloadJWT.maxJWKSStalenessSeconds)))
   "callback_url" $callback
   "profiles" $profiles
   "drain" (dict "propagation_delay" (printf "%ds" (int .Values.drain.propagationDelaySeconds)) "timeout" (printf "%ds" (int .Values.drain.timeoutSeconds)) "listener_shutdown_timeout" (printf "%ds" (int .Values.drain.listenerShutdownTimeoutSeconds)))

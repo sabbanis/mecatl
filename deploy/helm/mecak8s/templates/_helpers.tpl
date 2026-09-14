@@ -1,6 +1,16 @@
 {{- define "mecak8s.name" -}}
 {{- default .Chart.Name .Values.nameOverride | trunc 63 | trimSuffix "-" }}
 {{- end }}
+
+{{- define "mecak8s.remoteBrokerAddress" -}}
+{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ printf "%s-mecabroker:8443" .Release.Name }}{{- else -}}{{ .Values.remoteBroker.address }}{{- end -}}
+{{- end -}}
+{{- define "mecak8s.remoteBrokerCASecret" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "tls" "caSecret" "" (default dict .Values.global) }}{{- else -}}{{ .Values.remoteBroker.caSecret }}{{- end -}}{{- end -}}
+{{- define "mecak8s.remoteBrokerCAKey" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "tls" "caKey" "" (default dict .Values.global) }}{{- else -}}{{ .Values.remoteBroker.caKey }}{{- end -}}{{- end -}}
+{{- define "mecak8s.remoteBrokerServerName" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ default (printf "%s-mecabroker" .Release.Name) (dig "mecatl" "broker" "tls" "serverName" "" (default dict .Values.global)) }}{{- else -}}{{ .Values.remoteBroker.serverName }}{{- end -}}{{- end -}}
+{{- define "mecak8s.remoteBrokerAudience" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "audience" "" (default dict .Values.global) }}{{- else -}}{{ .Values.remoteBroker.workloadJWT.audience }}{{- end -}}{{- end -}}
+{{- define "mecak8s.remoteBrokerLifetime" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "lifetimeSeconds" 0 (default dict .Values.global) }}{{- else -}}{{ .Values.remoteBroker.workloadJWT.lifetimeSeconds }}{{- end -}}{{- end -}}
+
 {{- define "mecak8s.fullname" -}}
 {{- if .Values.fullnameOverride }}{{ .Values.fullnameOverride | trunc 63 | trimSuffix "-" }}{{ else }}{{ printf "%s-%s" .Release.Name (include "mecak8s.name" .) | trunc 63 | trimSuffix "-" }}{{ end }}
 {{- end }}
@@ -141,10 +151,20 @@ mounted
 {{- end -}}
 {{- define "mecak8s.validateRemoteBroker" -}}
 {{- $r := .Values.remoteBroker -}}
+{{- $address := include "mecak8s.remoteBrokerAddress" . -}}
+{{- $caSecret := include "mecak8s.remoteBrokerCASecret" . -}}
+{{- $caKey := include "mecak8s.remoteBrokerCAKey" . -}}
+{{- $serverName := include "mecak8s.remoteBrokerServerName" . -}}
+{{- $audience := include "mecak8s.remoteBrokerAudience" . -}}
+{{- $lifetime := include "mecak8s.remoteBrokerLifetime" . -}}
 {{- $jwt := $r.workloadJWT -}}
-{{- $any := or $r.address $r.caSecret $r.caKey $r.serverName $jwt.audience (and $jwt.lifetimeSeconds (ne (int $jwt.lifetimeSeconds) 600)) -}}
+{{- $managed := and (hasKey (default dict .Values.global) "mecatl") (eq (default "managed" (dig "mecatl" "mode" "managed" (default dict .Values.global))) "managed") -}}
+{{- if $managed -}}
+{{- if or (not $address) (not $caSecret) (not $caKey) (not $serverName) (not $audience) (not $lifetime) -}}{{ fail "managed broker linkage requires explicit global.mecatl.broker TLS CA, workload JWT issuer/JWKS/audience/lifetime, and derived service identity" }}{{- end -}}
+{{- end -}}
+{{- $any := or $address $caSecret $caKey $serverName $audience (and $lifetime (ne (int $lifetime) 600)) -}}
 {{- if $any -}}
-{{- if or (not $r.address) (not $r.caSecret) (not $r.caKey) (not $r.serverName) (not $jwt.audience) (not $jwt.lifetimeSeconds) -}}
+{{- if or (not $address) (not $caSecret) (not $caKey) (not $serverName) (not $audience) (not $lifetime) -}}
 {{- fail "remoteBroker.address, caSecret, caKey, serverName, workloadJWT.audience, and workloadJWT.lifetimeSeconds must be configured together" -}}
 {{- end -}}
 {{- end -}}
@@ -174,7 +194,7 @@ mounted
 {{- $oauthCount := 0 -}}
 {{- $staticCount := 0 -}}
 {{- $noneCount := 0 -}}
-{{- range $server := .Values.mcp.servers -}}
+{{- range $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) -}}
 {{- $folded := lower $server.name -}}
 {{- if hasKey $seen $folded -}}{{ fail (printf "mcp.servers name %q is duplicated case-insensitively" $server.name) }}{{- end -}}
 {{- $_ := set $seen $folded true -}}
@@ -191,13 +211,13 @@ mounted
 {{- end -}}
 {{- end -}}
 {{- end -}}
-{{- if and (gt $oauthCount 0) (gt $staticCount 0) -}}{{ fail "mcp.servers staticBearer is unsupported with broker OAuth" }}{{- end -}}
-{{- $callbackURL := trim .Values.mcp.broker.callbackURL -}}
+{{- if and (not (dig "mecatl" "mode" "" (default dict .Values.global))) (gt $oauthCount 0) (gt $staticCount 0) -}}{{ fail "mcp.servers staticBearer is unsupported with broker OAuth" }}{{- end -}}
+{{- $callbackURL := trim (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) -}}
 {{- $remoteBroker := .Values.remoteBroker.address -}}
 {{- if and $remoteBroker (or (gt $noneCount 0) (gt $staticCount 0)) -}}{{ fail "remoteBroker cannot be combined with auth.mode none or staticBearer; remove the direct server or omit remoteBroker (direct servers cannot use broker mode)" }}{{- end -}}
 {{- if and (gt $oauthCount 0) (not $remoteBroker) (not .Values.oidc.enabled) -}}{{ fail "mcp OAuth embedded broker requires oidc.enabled=true for verified broker-control caller identity" }}{{- end -}}
 {{- if and (gt $oauthCount 0) (not $remoteBroker) (eq $callbackURL "") -}}{{ fail "mcp.broker.callbackURL is required with an embedded OAuth MCP server" }}{{- end -}}
-{{- if and (ne $callbackURL "") (eq $oauthCount 0) -}}{{ fail "mcp.broker.callbackURL requires at least one OAuth MCP server" }}{{- end -}}
+{{- if and (ne (default "managed" (dig "mecatl" "mode" "managed" (default dict .Values.global))) "external") (ne $callbackURL "") (eq $oauthCount 0) -}}{{ fail "mcp.broker.callbackURL requires at least one OAuth MCP server" }}{{- end -}}
 {{- if and $remoteBroker (ne $callbackURL "") -}}{{ fail "mcp.broker.callbackURL is owned by the broker release when remoteBroker is configured" }}{{- end -}}
 {{- range $env := .Values.extraEnv -}}
 {{- if and (hasKey $env "name") (hasKey $ownedEnv $env.name) -}}{{ fail (printf "extraEnv name %q collides with an MCP authentication environment variable owned by the chart" $env.name) }}{{- end -}}
@@ -207,14 +227,14 @@ mounted
 {{/* Strict runtime operator profile. OAuth routes select broker authority; an empty
 server list explicitly selects global mode. */}}
 {{- define "mecak8s.mcpOAuthSettings" -}}
-{{- if not .Values.mcp.servers -}}
+{{- if not (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) -}}
 mcp:
   mode: global
 {{- else if .Values.remoteBroker.address }}
 mcp:
   mode: broker
   servers:
-{{- range $server := .Values.mcp.servers }}
+{{- range $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
 {{- if eq $server.auth.mode "none" }}
     - name: {{ $server.name | quote }}
       url: {{ $server.url | quote }}
@@ -224,13 +244,13 @@ mcp:
 {{- end }}
 {{- else }}
 mcp:
-{{- if .Values.mcp.broker.callbackURL }}
+{{- if (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) }}
   mode: broker
   broker:
-    callback_url: {{ .Values.mcp.broker.callbackURL | quote }}
+    callback_url: {{ (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) | quote }}
 {{- end }}
   servers:
-{{- range $index, $server := .Values.mcp.servers }}
+{{- range $index, $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
 {{- if or (eq $server.auth.mode "oauth") (eq $server.auth.mode "none") }}
     - name: {{ $server.name | quote }}
       url: {{ $server.url | quote }}

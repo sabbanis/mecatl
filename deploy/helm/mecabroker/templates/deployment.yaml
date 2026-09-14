@@ -1,3 +1,4 @@
+{{- if ne (default "managed" (dig "mecatl" "mode" "managed" (default dict .Values.global))) "external" }}
 {{- include "mecabroker.validateMCP" . -}}
 {{- include "mecabroker.validateImage" . -}}
 {{- include "mecabroker.validateShutdownBudget" . -}}
@@ -72,7 +73,7 @@ spec:
             - {name: oauth-client-secret-{{ $index }}, mountPath: /var/run/mecabroker/oauth/{{ $index }}, readOnly: true}
 {{- end }}
 {{- end }}
-{{- range $index, $server := .Values.mcp.servers }}
+{{- range $index, $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
 {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") }}
             - {name: mcp-oauth-client-secret-{{ $index }}, mountPath: /var/run/mecabroker/mcp-oauth/{{ $index }}, readOnly: true}
 {{- end }}
@@ -87,10 +88,10 @@ spec:
               - {key: {{ .Values.listener.tls.keyKey }}, path: {{ .Values.listener.tls.keyKey }}}
         - name: workload-jwt
           secret:
-            secretName: {{ required "workloadJWT.trustBundle.secretName is required" .Values.workloadJWT.trustBundle.secretName }}
+            secretName: {{ include "mecabroker.workloadTrustBundle" . }}
             defaultMode: 0440
             items:
-              - {key: {{ .Values.workloadJWT.trustBundle.key }}, path: {{ .Values.workloadJWT.trustBundle.key }}}
+              - {key: {{ include "mecabroker.workloadTrustBundleKey" . }}, path: {{ include "mecabroker.workloadTrustBundleKey" . }}}
         - name: broker-config
           configMap:
             name: {{ include "mecabroker.fullname" . }}-config
@@ -105,7 +106,7 @@ spec:
               - {key: {{ $profile.oauth.clientSecret.key }}, path: client-secret}
 {{- end }}
 {{- end }}
-{{- range $index, $server := .Values.mcp.servers }}
+{{- range $index, $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
 {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") }}
         - name: mcp-oauth-client-secret-{{ $index }}
           secret:
@@ -117,3 +118,4 @@ spec:
 {{- end }}
         - name: tmp
           emptyDir: {sizeLimit: 64Mi}
+{{- end }}

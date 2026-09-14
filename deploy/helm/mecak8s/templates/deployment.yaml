@@ -5,12 +5,20 @@
 {{- include "mecak8s.validateLearningStore" . -}}
 {{- include "mecak8s.validateProviderSecurity" . -}}
 {{- include "mecak8s.validateRemoteBroker" . -}}
+{{- $remoteAddress := include "mecak8s.remoteBrokerAddress" . -}}
+{{- $remoteCASecret := include "mecak8s.remoteBrokerCASecret" . -}}
+{{- $remoteCAKey := include "mecak8s.remoteBrokerCAKey" . -}}
+{{- $remoteServerName := include "mecak8s.remoteBrokerServerName" . -}}
+{{- $remoteAudience := include "mecak8s.remoteBrokerAudience" . -}}
+{{- $remoteLifetime := include "mecak8s.remoteBrokerLifetime" . -}}
 {{- $learningStoreEnabled := ne .Values.learning.store.endpoint "" -}}
 {{- $learningStoreTokenConfigured := and .Values.learning.store.tokenSecret .Values.learning.store.tokenKey -}}
+
+
 {{- include "mecak8s.validateMCP" . -}}
 {{- $mcpOAuth := false -}}
-{{- range .Values.mcp.servers -}}{{- if eq .auth.mode "oauth" -}}{{- $mcpOAuth = true -}}{{- end -}}{{- end -}}
-{{- $mcpSettings := or $mcpOAuth (not .Values.mcp.servers) -}}
+{{- range (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) -}}{{- if eq .auth.mode "oauth" -}}{{- $mcpOAuth = true -}}{{- end -}}{{- end -}}
+{{- $mcpSettings := or $mcpOAuth (not (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global)))) -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -126,11 +134,11 @@ spec:
             {{- if ne .Values.maxTeamTokens nil }}
             - {{ printf "--max-team-tokens=%v" .Values.maxTeamTokens | quote }}
             {{- end }}
-            {{- if .Values.remoteBroker.address }}
-            - {{ printf "--mcp-broker-address=%s" .Values.remoteBroker.address | quote }}
+            {{- if $remoteAddress }}
+            - {{ printf "--mcp-broker-address=%s" $remoteAddress | quote }}
             - --mcp-broker-token-file=/var/run/secrets/mecatl-broker/token
-            - {{ printf "--mcp-broker-tls-ca=/var/run/secrets/mecatl-broker/%s" .Values.remoteBroker.caKey | quote }}
-            - {{ printf "--mcp-broker-server-name=%s" .Values.remoteBroker.serverName | quote }}
+            - {{ printf "--mcp-broker-tls-ca=/var/run/secrets/mecatl-broker/%s" $remoteCAKey | quote }}
+            - {{ printf "--mcp-broker-server-name=%s" $remoteServerName | quote }}
             {{- end }}
             {{- if .Values.workspace }}
             - {{ printf "--workspace=%s" .Values.workspace | quote }}
@@ -194,7 +202,7 @@ spec:
             {{- if .Values.skills.autoDiscover }}
             - --skills-conventional=true
             {{- end }}
-            {{- range $server := .Values.mcp.servers }}
+            {{- range $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
             {{- if ne $server.auth.mode "oauth" }}
             - {{ printf "--mcp-server=%s=%s" $server.name $server.url | quote }}
             {{- if $server.insecureHTTP }}
@@ -221,7 +229,7 @@ spec:
                   name: {{ .Values.learning.store.tokenSecret | quote }}
                   key: {{ .Values.learning.store.tokenKey | quote }}
             {{- end }}
-            {{- range $server := .Values.mcp.servers }}
+            {{- range $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
             {{- if eq $server.auth.mode "staticBearer" }}
             - name: {{ printf "MCP_%s_TOKEN" (upper $server.name) }}
               valueFrom:
@@ -268,7 +276,7 @@ spec:
                 port: drain
           resources: {{- toYaml .Values.resources | nindent 12 }}
           volumeMounts:
-            {{- if .Values.remoteBroker.address }}
+            {{- if $remoteAddress }}
             - {name: mecatl-broker, mountPath: /var/run/secrets/mecatl-broker, readOnly: true}
             {{- end }}
             - {name: tmp, mountPath: /tmp}
@@ -290,9 +298,9 @@ spec:
             {{- if $mcpSettings }}
             - {name: mcp-profile, mountPath: /etc/mecatl-mcp, readOnly: true}
             {{- end }}
-            {{- range $index, $server := .Values.mcp.servers }}
+            {{- range $index, $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
             {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") }}
-{{- if and $mcpOAuth (not $.Values.remoteBroker.address) }}
+{{- if and $mcpOAuth (not $remoteAddress) }}
             - {name: mcp-oauth-client-secret-{{ $index }}, mountPath: /var/run/secrets/mecatl-mcp/oauth/{{ $index }}, readOnly: true}
 {{- end }}
             {{- end }}
@@ -301,19 +309,19 @@ spec:
             {{- toYaml . | nindent 12 }}
             {{- end }}
       volumes:
-        {{- if .Values.remoteBroker.address }}
+        {{- if $remoteAddress }}
         - name: mecatl-broker
           projected:
             defaultMode: 0440
             sources:
               - serviceAccountToken:
                   path: token
-                  audience: {{ .Values.remoteBroker.workloadJWT.audience | quote }}
-                  expirationSeconds: {{ .Values.remoteBroker.workloadJWT.lifetimeSeconds }}
+                  audience: {{ $remoteAudience | quote }}
+                  expirationSeconds: {{ $remoteLifetime }}
               - secret:
-                  name: {{ .Values.remoteBroker.caSecret | quote }}
+                  name: {{ $remoteCASecret | quote }}
                   items:
-                    - {key: {{ .Values.remoteBroker.caKey | quote }}, path: {{ .Values.remoteBroker.caKey | quote }}}
+                    - {key: {{ $remoteCAKey | quote }}, path: {{ $remoteCAKey | quote }}}
         {{- end }}
         - name: tmp
           emptyDir: {sizeLimit: 256Mi}
@@ -375,8 +383,8 @@ spec:
             items:
               - {key: settings.yaml, path: settings.yaml}
         {{- end }}
-        {{- range $index, $server := .Values.mcp.servers }}
-        {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") (not $.Values.remoteBroker.address) }}
+        {{- range $index, $server := (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}
+        {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") (not $remoteAddress) }}
         - name: mcp-oauth-client-secret-{{ $index }}
           secret:
             secretName: {{ $server.auth.oauth.client.preregistered.secretKeyRef.name | quote }}
