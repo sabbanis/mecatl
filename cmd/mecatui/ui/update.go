@@ -626,6 +626,10 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		m = m.resetSessionDerived()
 		mm, cmd, handled := m.applySessionReady(ready)
 		m = mm.(Model)
+		// setResolvedSessionModel's merge is model-ID-keyed: a same-model update only
+		// raises the known context window and leaves ReasoningEffort untouched, but an
+		// effort switch's whole point is a new ReasoningEffort at the SAME model — so
+		// the fork's resolved snapshot must be applied verbatim here, not merged.
 		m.resolvedSessionModel = resolved
 		m.sessionState = msg.snapshot.State
 		m.sessionCreatedAt = msg.snapshot.CreatedAt
@@ -3049,12 +3053,6 @@ func (m Model) onIdleDoubleEscape(msg tea.KeyPressMsg) (tea.Model, tea.Cmd) {
 //     the resolving msg owns its lifecycle (SessionReadyMsg clears it on success;
 //     restartFailedMsg re-sets it on a re-failure). The in-flight phaseConnecting
 //     window swallows idle keys, so the un-cleared flag can't misfire meanwhile.
-//   - RETRY a failed /effort FORK (restartFailedForkID != ""): re-fire the FORK from
-//     the surviving source session (switchEffortCmd), NOT restartOnModelCmd — the
-//     source session is still open, and re-forking PRESERVES the transcript where a
-//     create-fresh retry would wipe it (the exact thing the fork-resume switch exists
-//     to prevent). The effort rides m.createModelSelection (the switch applied it
-//     synchronously before the fork failed).
 //   - RESUME a paused queue: enter on an EMPTY line fires the next staged prompt.
 //   - otherwise a normal submitPrompt (a no-op on an empty sessionID).
 func (m Model) onIdleSubmit() (tea.Model, tea.Cmd) {

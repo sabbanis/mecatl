@@ -18,33 +18,68 @@ func effortHandoffPick(t *testing.T, m Model) (Model, tea.Cmd) {
 	return mm.(Model), cmd
 }
 
+func assertEffortSourceLiveRearmed(t *testing.T, m Model, live *fakeLiveStreamer) {
+	t.Helper()
+	if m.liveArmed != "sess-test-0001" || m.liveCh == nil || live.calls != 1 || live.lastID != "sess-test-0001" {
+		t.Fatalf("source live feed not rearmed: liveArmed=%q liveCh=%v calls=%d lastID=%q", m.liveArmed, m.liveCh, live.calls, live.lastID)
+	}
+}
+
+// driveEffortHandoffFailure runs the fork/hydrate leaf of an effort-pick command
+// and applies its resulting effortHandoffFailedMsg, without draining the
+// reducer's own follow-up commands. armLiveFeed re-arms the source synchronously
+// before returning its tea.Cmd, so the assertion needs no further draining — and
+// must not get any, since a wired fakeLiveStreamer's wait command never
+// terminates (mirrors the sibling modelSwitchFailedMsg test's feedModelSwitchBusiness).
+func driveEffortHandoffFailure(t *testing.T, m Model, cmd tea.Cmd) Model {
+	t.Helper()
+	batch, ok := runCmd(cmd).(tea.BatchMsg)
+	if !ok || len(batch) != 3 {
+		t.Fatalf("effort handoff command = %#v, want the 3-leaf switchEffort/save/spinner batch", batch)
+	}
+	msg := runCmd(batch[0])
+	if _, ok := msg.(effortHandoffFailedMsg); !ok {
+		t.Fatalf("effort handoff leaf message = %T, want effortHandoffFailedMsg", msg)
+	}
+	mm, followup := m.Update(msg)
+	m = mm.(Model)
+	if followup == nil {
+		t.Fatal("effort handoff failure returned no focus/rearm follow-up")
+	}
+	return m
+}
+
 func TestMecatuiEffortHandoffRecovery_Scenario1_FailuresRetainUsableSource(t *testing.T) {
 	m := newModelsModel(t, sampleModels(), &fakeStore{}, modelsCaps(), client.ModelSelection{})
 	conv := m.deps.Session.(*fakeConv)
 	conv.forkErr = context.DeadlineExceeded
+	live := wireModelSwitchLiveFeed(&m)
 	beforeBlocks := len(m.conv.blocks)
 	m, cmd := effortHandoffPick(t, m)
-	m = feedCmd(t, m, cmd)
+	m = driveEffortHandoffFailure(t, m, cmd)
 	if m.sessionID != "sess-test-0001" || m.phase != phaseIdle || len(m.conv.blocks) != beforeBlocks || !m.prompt.Focused() {
 		t.Fatalf("fork failure lost source usability: id=%q phase=%v blocks=%d focused=%v", m.sessionID, m.phase, len(m.conv.blocks), m.prompt.Focused())
 	}
 	if m.restartFailed || len(conv.closed()) != 0 {
 		t.Fatalf("fork failure armed obsolete retry or closed source: restartFailed=%v closed=%v", m.restartFailed, conv.closed())
 	}
+	assertEffortSourceLiveRearmed(t, m, live)
 }
 
 func TestMecatuiEffortHandoffRecovery_Scenario1_HydrationFailureCleansExactTarget(t *testing.T) {
 	m := newModelsModel(t, sampleModels(), &fakeStore{}, modelsCaps(), client.ModelSelection{})
 	conv := m.deps.Session.(*fakeConv)
 	conv.getSessionErr = errors.New("hydrate")
+	live := wireModelSwitchLiveFeed(&m)
 	m, cmd := effortHandoffPick(t, m)
-	m = feedCmd(t, m, cmd)
+	m = driveEffortHandoffFailure(t, m, cmd)
 	if m.sessionID != "sess-test-0001" || m.phase != phaseIdle || !m.prompt.Focused() {
 		t.Fatalf("hydration failure did not restore source: id=%q phase=%v focused=%v", m.sessionID, m.phase, m.prompt.Focused())
 	}
 	if got := conv.closed(); len(got) != 1 || got[0] != "sess-fork-1" {
 		t.Fatalf("closed=%v, want only exact target", got)
 	}
+	assertEffortSourceLiveRearmed(t, m, live)
 }
 
 func TestMecatuiEffortHandoffRecovery_Scenario1_AdoptsTargetBeforeClosingSource(t *testing.T) {
