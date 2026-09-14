@@ -1,4 +1,8 @@
+<<<<<<<< HEAD:docs/adr/0350-contextual-investigative-guardrails.md
 # ADR 0350 — Contextual investigative guardrails
+========
+# ADR 0342 — Contextual investigative guardrails
+>>>>>>>> 5b5236be5 (feat: checkpoint contextual guardrail action review):docs/adr/0342-contextual-investigative-guardrails.md
 
 - Status: Proposed
 - Date: 2026-09-14
