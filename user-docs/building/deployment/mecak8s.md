@@ -269,11 +269,11 @@ Understand what edge mode costs before choosing it.
 On an h2c backend the caller's `Authorization: Bearer` token crosses the pod network in cleartext.
 Any workload that can reach the Service ClusterIP can read that token and replay it as the caller.
 The chart renders a default-deny ingress policy and a bounded baseline egress
-policy: DNS to CoreDNS, TCP/443 for the Kubernetes API and HTTPS compatibility,
-and TCP/6379 to chart-local Redis when enabled. Configure
-`networkPolicy.publicFrom` for gateway/workload peers. Configure
-`networkPolicy.operatorEgress` for external Redis, non-HTTPS provider, MCP, and
-`remoteBroker` destinations; the chart cannot infer dynamic external endpoints.
+policy: destination-unrestricted DNS on UDP/TCP port 53, and TCP/6379 to
+chart-local Redis when enabled. Configure `networkPolicy.publicFrom` for
+gateway/workload peers. Configure `networkPolicy.operatorEgress` for HTTPS,
+external Redis, providers, MCP, remoteBroker, and other operator-selected
+destinations; the chart cannot infer dynamic external endpoints.
 The explicit unsafe posture is still a development/trusted-mesh exception, not
 a bypass of digest enforcement when `remoteBroker` is configured.
 The upstream value is an attestation, not chart enforcement: nothing in the chart verifies gateway TLS, reachability, or token forwarding.
@@ -417,10 +417,15 @@ mcp:
           secretKeyRef: {name: mecak8s-mcp, key: github-token}
 ```
 
-The static token is projected as `MCP_GITHUB_TOKEN`; it never appears in Helm
-values, arguments, or a ConfigMap. For broker-mode OAuth, mecak8s connects to a separately
-hosted internal broker rather than embedding ToolHive. The chart's typed `remoteBroker`
-values require `address`, `caSecret`, `caKey`, `serverName`, and
+When `remoteBroker` is configured, `mcp.servers` must contain only brokered OAuth entries. Direct
+`auth.mode: none` entries are rejected at Helm render time rather than being emitted as
+`--mcp-server` flags alongside generated `mcp.mode: broker`; remove the direct entry or omit
+`remoteBroker`. There is no combined authority mode, and direct entries are never silently dropped.
+OAuth route metadata in `mcp.servers` is consumed by the standalone broker release and is not
+rendered into the mecak8s operator profile. The chart does not mount OAuth client secrets or
+start an embedded OAuth authority. The remote transport derives brokered OAuth tools through the
+broker, so do not copy those OAuth routes into mecak8s's generated `settings.yaml`. The chart's
+typed `remoteBroker` values require `address`, `caSecret`, `caKey`, `serverName`, and
 `workloadJWT.audience`/`lifetimeSeconds` together. They render the equivalent of
 `--mcp-broker-address`, `--mcp-broker-token-file`, `--mcp-broker-tls-ca`, and
 `--mcp-broker-server-name`; there is no broker `extraEnv` escape hatch.
@@ -707,7 +712,7 @@ production install:
 | `deployment.yaml` | Agent Deployment — `replicas: 2` by default (one is supported), no PVC, storage-free |
 | `service.yaml` | ClusterIP Service exposing gRPC (8080) and HTTP/SSE (8081) |
 | `pdb.yaml` | PodDisruptionBudget (`minAvailable: 1`) when `replicaCount >= 2`; omitted for one replica |
-| `networkpolicy.yaml` | Default-deny ingress and egress; operators provide Service peers plus DNS, Redis/provider/MCP, and remote-broker egress peers |
+| `networkpolicy.yaml` | Default-deny ingress; baseline destination-unrestricted DNS egress plus release-scoped local Redis when enabled; operators provide Service peers and other egress peers |
 | `raw-driver-networkpolicy.yaml` | Rendered only when `oidc.enabled` — scopes ingress on `app.kubernetes.io/component: raw-driver` pods to the agent pod only |
 | `redis-local.yaml` | Rendered only under the disposable `values-kind.yaml` profile (`redis.local.enabled`) — an in-cluster Redis StatefulSet + Service for Kind/offline use, never for production |
 

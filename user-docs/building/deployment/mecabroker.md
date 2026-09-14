@@ -30,12 +30,17 @@ keys.
 | `listener.publicAddress` and `listener.tls.{secretName,certKey,keyKey}` | The TLS public bind address and the exact certificate/key Secret keys. The default bind is `0.0.0.0:8443`. |
 | `workloadJWT.{issuer,jwksURI,audience,subject,maxJWKSStalenessSeconds}` | Verification of the mecak8s workload credential. `workloadJWT.trustBundle.{secretName,key}` supplies the read-only trust bundle. |
 | `callbackURL` | The externally reachable final browser callback URL. It must route to this broker. |
-| `profiles[]` | Typed upstream profiles: `name`, `url`, `auth: none|oauth`, and, for OAuth, `oauth.clientID`, `oauth.clientSecret.{secretName,key}`, endpoints/issuer, scopes, and `requestRefreshToken`. OAuth profiles may also declare typed `tools`. |
+| `profiles[]` | Typed upstream profiles: `name`, `url`, `auth: none|oauth`, and, for OAuth, a strict `oauth.client_mode` union: `preregistered` requires `client_id` plus `client_secret_file`, and `dcr` requires `dcr_discovery_url`; CIMD is rejected because mecabroker has no CIMD construction support; each mode rejects the other modes' fields. OAuth profiles may also declare typed `tools`. |
 | `drain.{propagationDelaySeconds,timeoutSeconds,listenerShutdownTimeoutSeconds}` | Bounded singleton shutdown timing. |
 | `transport.*` and `runtime.*` | Explicit RPC, handle, owner, receipt, execute, logical-session, retention, and pending-authorization bounds. |
 | `service.port` | The Service port for the multiplexed public listener. |
 | `rollout.restartToken` | An operator-controlled pod-template change used to restart after external secret rotation. |
-| `networkPolicy.{publicFrom,operatorEgress}` | Standard Kubernetes L3/L4 peers for the public listener and outbound destinations. |
+| `networkPolicy.{publicFrom,operatorEgress}` | Standard Kubernetes L3/L4 peers for the public listener and outbound destinations. The broker chart does not add broad outbound allowances. |
+
+The broker process does not implement the legacy OAuth `network` controls (`additionalOrigins`,
+`privateOrigins`, or `maxRedirects`). The chart rejects those fields during rendering and the
+binary rejects them during configuration admission; use the mecak8s in-process MCP client for
+that contract instead of silently assuming the broker enforces it.
 
 For an OAuth profile, the chart mounts only the exact `profiles[i].oauth.clientSecret`
 Secret key as `/var/run/mecabroker/oauth/i/client-secret`. It is read-only, is not an
@@ -70,6 +75,59 @@ profiles:
 
 The chart requires the configured `profiles` and all required typed fields to be
 complete. It passes paths and non-secret settings to the process, never secret values.
+
+The standalone chart can also consume the brokered profile shape directly. This is the
+recommended cutover form when `mecak8s` remains a separately managed release:
+
+```yaml
+mcp:
+  broker:
+    callbackURL: https://mcp.example.com/oauth/complete
+  servers:
+    - name: github
+      url: https://github.example/mcp
+      auth:
+        mode: oauth
+        oauth:
+          upstream:
+            mode: oauth2
+            oauth2:
+              authorizationEndpoint: https://github.example/login/oauth/authorize
+              tokenEndpoint: https://github.example/login/oauth/access_token
+          client:
+            mode: preregistered
+            preregistered:
+              id: mecatl-broker
+              secretKeyRef: {name: github-oauth, key: client-secret}
+          scopes: [repo]
+          requestRefreshToken: true
+          network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
+```
+
+Only `auth.mode: oauth` entries belong in this broker chart's `mcp.servers`; direct
+`none` and `staticBearer` entries remain in the mecak8s release. When
+`remoteBroker` is configured, however, neither direct mode is accepted: all MCP
+routes must use broker authority. `mcp.servers` and legacy
+`profiles` are mutually exclusive, and the nested `mcp.broker.callbackURL` must be the only
+callback source for that migration form. The broker projects
+Secret references read-only and never puts secret bytes in Helm values or its ConfigMap.
+For a separately managed broker, configure `mecak8s.remoteBroker` with the broker
+Service address, serving CA, SNI name, and projected-token audience/lifetime. Those
+routine links can be selected from the broker Service, but JWT issuer/JWKS/trust,
+the listener client trust bundle, and the public `mcp.callbackURL` are explicit trust
+inputs. The callback URL is never inferred from a Kubernetes Service name. A single
+values file cannot derive values across two independent Helm releases; use a release
+bundle or keep these two values files as an explicit interface.
+
+When `remoteBroker` is set, mecak8s renders only route metadata for brokered OAuth
+entries and does not mount or configure their OAuth client secrets. The broker release
+owns the callback, OAuth routes, refresh state, network controls, and static tool
+catalogue. Deploy either this external mode or an embedded broker mode, not both.
+
+Cutover is a maintenance boundary: planned singleton replacement can interrupt active
+attachments and browser callbacks. No in-flight OAuth grant, callback, or authorization
+state is migrated between the old embedded and new standalone broker; start a fresh
+enrollment after the cutover.
 
 ## Endpoint and name meanings
 

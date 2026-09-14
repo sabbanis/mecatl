@@ -29,9 +29,13 @@ workloadJWT:
   maxJWKSStalenessSeconds: 900
 
 callbackURL: https://broker.invalid/callback
-# Upstream profiles. OAuth client secrets are referenced by exact Secret key and
-# mounted privately; their content is never a chart value or Pod environment.
+# Legacy broker-owned profiles remain supported. New installations should use mcp.servers
+# for the same brokered OAuth contract used by mecak8s.
 profiles: []
+mcp:
+  broker:
+    callbackURL: ""
+  servers: []
 
 resources:
   requests: {cpu: 100m, memory: 128Mi}

@@ -20,22 +20,12 @@ spec:
 {{- else }}
     []
 {{- end }}
-  # DNS and HTTPS are chart-owned baseline dependencies. The HTTPS rule is
-  # intentionally destination-broad: vanilla NetworkPolicy cannot select the
-  # Kubernetes API endpoint or arbitrary external HTTPS hosts portably.
+  # DNS is the only chart-owned egress baseline. Other destinations, including
+  # HTTPS, Redis, providers, and MCP endpoints, are operator supplied.
   egress:
-    - to:
-        - namespaceSelector:
-            matchLabels:
-              kubernetes.io/metadata.name: kube-system
-          podSelector:
-            matchLabels:
-              k8s-app: kube-dns
-      ports:
+    - ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
-    - ports:
-        - {protocol: TCP, port: 443}
 {{- if .Values.redis.local.enabled }}
     # The selector is release-scoped so another Redis workload in the namespace
     # does not inherit this chart's local dependency allowance.

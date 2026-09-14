@@ -173,11 +173,13 @@ mounted
 {{- $ownedEnv := dict -}}
 {{- $oauthCount := 0 -}}
 {{- $staticCount := 0 -}}
+{{- $noneCount := 0 -}}
 {{- range $server := .Values.mcp.servers -}}
 {{- $folded := lower $server.name -}}
 {{- if hasKey $seen $folded -}}{{ fail (printf "mcp.servers name %q is duplicated case-insensitively" $server.name) }}{{- end -}}
 {{- $_ := set $seen $folded true -}}
 {{- $envBase := upper $server.name -}}
+{{- if eq $server.auth.mode "none" -}}{{- $noneCount = add1 $noneCount -}}{{- end -}}
 {{- if eq $server.auth.mode "staticBearer" -}}{{- $_ := set $ownedEnv (printf "MCP_%s_TOKEN" $envBase) true -}}{{- $staticCount = add1 $staticCount -}}{{- end -}}
 {{- if eq $server.auth.mode "oauth" -}}
 {{- $oauthCount = add1 $oauthCount -}}
@@ -191,9 +193,12 @@ mounted
 {{- end -}}
 {{- if and (gt $oauthCount 0) (gt $staticCount 0) -}}{{ fail "mcp.servers staticBearer is unsupported with broker OAuth" }}{{- end -}}
 {{- $callbackURL := trim .Values.mcp.broker.callbackURL -}}
-{{- if and (gt $oauthCount 0) (not .Values.oidc.enabled) -}}{{ fail "mcp OAuth broker requires oidc.enabled=true for verified broker-control caller identity" }}{{- end -}}
-{{- if and (gt $oauthCount 0) (eq $callbackURL "") -}}{{ fail "mcp.broker.callbackURL is required with an OAuth MCP server" }}{{- end -}}
+{{- $remoteBroker := .Values.remoteBroker.address -}}
+{{- if and $remoteBroker (or (gt $noneCount 0) (gt $staticCount 0)) -}}{{ fail "remoteBroker cannot be combined with auth.mode none or staticBearer; remove the direct server or omit remoteBroker (direct servers cannot use broker mode)" }}{{- end -}}
+{{- if and (gt $oauthCount 0) (not $remoteBroker) (not .Values.oidc.enabled) -}}{{ fail "mcp OAuth embedded broker requires oidc.enabled=true for verified broker-control caller identity" }}{{- end -}}
+{{- if and (gt $oauthCount 0) (not $remoteBroker) (eq $callbackURL "") -}}{{ fail "mcp.broker.callbackURL is required with an embedded OAuth MCP server" }}{{- end -}}
 {{- if and (ne $callbackURL "") (eq $oauthCount 0) -}}{{ fail "mcp.broker.callbackURL requires at least one OAuth MCP server" }}{{- end -}}
+{{- if and $remoteBroker (ne $callbackURL "") -}}{{ fail "mcp.broker.callbackURL is owned by the broker release when remoteBroker is configured" }}{{- end -}}
 {{- range $env := .Values.extraEnv -}}
 {{- if and (hasKey $env "name") (hasKey $ownedEnv $env.name) -}}{{ fail (printf "extraEnv name %q collides with an MCP authentication environment variable owned by the chart" $env.name) }}{{- end -}}
 {{- end -}}
@@ -205,6 +210,18 @@ server list explicitly selects global mode. */}}
 {{- if not .Values.mcp.servers -}}
 mcp:
   mode: global
+{{- else if .Values.remoteBroker.address }}
+mcp:
+  mode: broker
+  servers:
+{{- range $server := .Values.mcp.servers }}
+{{- if eq $server.auth.mode "none" }}
+    - name: {{ $server.name | quote }}
+      url: {{ $server.url | quote }}
+      auth:
+        mode: none
+{{- end }}
+{{- end }}
 {{- else }}
 mcp:
 {{- if .Values.mcp.broker.callbackURL }}

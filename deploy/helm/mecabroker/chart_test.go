@@ -72,6 +72,16 @@ func deploymentFromRender(t *testing.T, rendered string) appsv1.Deployment {
 	return appsv1.Deployment{}
 }
 
+func TestManagedMCPDCRRequiresExplicitOAuth2Endpoints(t *testing.T) {
+	args := []string{"template", "production", ".", "-f", "ci/managed-mcp-values.yaml",
+		"--set", "mcp.servers[0].auth.oauth.client.mode=dcr",
+		"--set", "mcp.servers[0].auth.oauth.client.dcr.discoveryURL=https://github.example/register",
+		"--set", "mcp.servers[0].auth.oauth.upstream.mode=oidc",
+	}
+	if output, err := exec.Command("helm", args...).CombinedOutput(); err == nil {
+		t.Fatalf("accepted issuer-only DCR render:\n%s", output)
+	}
+}
 func TestSingletonBrokerRemediation_Scenario4_NetworkPolicyValuesRenderExactly(t *testing.T) {
 	rendered := renderChart(t, "template", "production", ".", "-f", "ci/production-values.yaml", "--set-json", `networkPolicy.publicFrom=[{"ipBlock":{"cidr":"192.0.2.0/24"}}]`)
 	policy := networkPolicyFromRender(t, rendered)

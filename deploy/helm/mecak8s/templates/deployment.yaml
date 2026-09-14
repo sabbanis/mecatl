@@ -195,11 +195,11 @@ spec:
             - --skills-conventional=true
             {{- end }}
             {{- range $server := .Values.mcp.servers }}
-            {{- if and (ne $server.auth.mode "oauth") (not (and $mcpOAuth (eq $server.auth.mode "none"))) }}
+            {{- if ne $server.auth.mode "oauth" }}
             - {{ printf "--mcp-server=%s=%s" $server.name $server.url | quote }}
-            {{- end }}
             {{- if $server.insecureHTTP }}
             - {{ printf "--mcp-server-insecure-http=%s" $server.name | quote }}
+            {{- end }}
             {{- end }}
             {{- end }}
             {{- with .Values.extraArgs }}
@@ -292,7 +292,9 @@ spec:
             {{- end }}
             {{- range $index, $server := .Values.mcp.servers }}
             {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") }}
+{{- if and $mcpOAuth (not $.Values.remoteBroker.address) }}
             - {name: mcp-oauth-client-secret-{{ $index }}, mountPath: /var/run/secrets/mecatl-mcp/oauth/{{ $index }}, readOnly: true}
+{{- end }}
             {{- end }}
             {{- end }}
             {{- with .Values.extraVolumeMounts }}
@@ -374,7 +376,7 @@ spec:
               - {key: settings.yaml, path: settings.yaml}
         {{- end }}
         {{- range $index, $server := .Values.mcp.servers }}
-        {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") }}
+        {{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") (not $.Values.remoteBroker.address) }}
         - name: mcp-oauth-client-secret-{{ $index }}
           secret:
             secretName: {{ $server.auth.oauth.client.preregistered.secretKeyRef.name | quote }}

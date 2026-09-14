@@ -306,23 +306,20 @@ func TestMecak8sHelmChart_NetworkPolicyBaseline(t *testing.T) {
 		t.Fatal(err, rendered)
 	}
 	policy := networkPolicyFromRender(t, rendered)
-	if len(policy.Spec.Egress) != 2 {
-		t.Fatalf("external-Redis baseline egress rules = %d, want DNS and HTTPS", len(policy.Spec.Egress))
+	if len(policy.Spec.Egress) != 1 {
+		t.Fatalf("external-Redis baseline egress rules = %d, want DNS only", len(policy.Spec.Egress))
 	}
 	dns := policy.Spec.Egress[0]
-	if len(dns.To) != 1 || dns.To[0].NamespaceSelector == nil || dns.To[0].PodSelector == nil ||
-		dns.To[0].NamespaceSelector.MatchLabels["kubernetes.io/metadata.name"] != "kube-system" ||
-		dns.To[0].PodSelector.MatchLabels["k8s-app"] != "kube-dns" {
-		t.Fatalf("DNS peer = %#v", dns.To)
+	if len(dns.To) != 0 {
+		t.Fatalf("DNS is destination-unrestricted, peers = %#v", dns.To)
 	}
 	if len(dns.Ports) != 2 || dns.Ports[0].Port.IntValue() != 53 || dns.Ports[1].Port.IntValue() != 53 ||
 		dns.Ports[0].Protocol == nil || *dns.Ports[0].Protocol != corev1.ProtocolUDP ||
 		dns.Ports[1].Protocol == nil || *dns.Ports[1].Protocol != corev1.ProtocolTCP {
 		t.Fatalf("DNS ports = %#v", dns.Ports)
 	}
-	https := policy.Spec.Egress[1]
-	if len(https.To) != 0 || len(https.Ports) != 1 || https.Ports[0].Protocol == nil || *https.Ports[0].Protocol != corev1.ProtocolTCP || https.Ports[0].Port.IntValue() != 443 {
-		t.Fatalf("HTTPS baseline = %#v", https)
+	if len(policy.Spec.Ingress) != 0 {
+		t.Fatalf("default ingress = %#v, want default deny", policy.Spec.Ingress)
 	}
 
 	rendered, err = helm(t, kindFixtureArgs()...)
@@ -330,10 +327,10 @@ func TestMecak8sHelmChart_NetworkPolicyBaseline(t *testing.T) {
 		t.Fatal(err, rendered)
 	}
 	policy = networkPolicyFromRender(t, rendered)
-	if len(policy.Spec.Egress) != 3 {
-		t.Fatalf("local-Redis baseline egress rules = %d, want DNS, HTTPS, and Redis", len(policy.Spec.Egress))
+	if len(policy.Spec.Egress) != 2 {
+		t.Fatalf("local-Redis baseline egress rules = %d, want DNS and Redis", len(policy.Spec.Egress))
 	}
-	redis := policy.Spec.Egress[2]
+	redis := policy.Spec.Egress[1]
 	if len(redis.To) != 1 || redis.To[0].PodSelector == nil ||
 		redis.To[0].PodSelector.MatchLabels["app.kubernetes.io/name"] != "redis" ||
 		redis.To[0].PodSelector.MatchLabels["app.kubernetes.io/instance"] != "kind" ||
@@ -348,10 +345,10 @@ func TestMecak8sHelmChart_NetworkPolicyOperatorEgressIsAdditive(t *testing.T) {
 		t.Fatal(err, rendered)
 	}
 	policy := networkPolicyFromRender(t, rendered)
-	if len(policy.Spec.Egress) != 3 {
-		t.Fatalf("egress rules = %d, want two built-in plus one operator rule", len(policy.Spec.Egress))
+	if len(policy.Spec.Egress) != 2 {
+		t.Fatalf("egress rules = %d, want DNS plus one operator rule", len(policy.Spec.Egress))
 	}
-	custom := policy.Spec.Egress[2]
+	custom := policy.Spec.Egress[1]
 	if len(custom.To) != 1 || custom.To[0].IPBlock == nil || custom.To[0].IPBlock.CIDR != "192.0.2.0/24" ||
 		len(custom.Ports) != 1 || custom.Ports[0].Port.IntValue() != 8443 {
 		t.Fatalf("operator egress = %#v", custom)
@@ -2271,6 +2268,38 @@ func runtimeMCPAuthorityFromConfigMap(t *testing.T, profile string) *mcpauthorit
 	return result
 }
 
+func TestMecak8sHelmChart_RemoteBrokerRejectsMixedDirectRoutes(t *testing.T) {
+	_, err := renderMCPValuesWithArgs(t, append(productionArgs(), "--set", "image.digest=sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa,image.tag="), `
+remoteBroker:
+  address: mecabroker.mecatl.svc:8443
+  caSecret: mecabroker-ca
+  caKey: ca.pem
+  serverName: mecabroker.mecatl.svc
+  workloadJWT: {audience: mecabroker, lifetimeSeconds: 600}
+mcp:
+  servers:
+    - name: local_public
+      url: https://public.example/mcp
+      auth: {mode: none}
+    - name: brokered_oauth
+      url: https://oauth.example/mcp
+      auth:
+        mode: oauth
+        oauth:
+          issuer: https://issuer.example
+          client:
+            mode: preregistered
+            preregistered:
+              id: client
+              secretKeyRef: {name: oauth-client, key: secret}
+          scopes: [mcp.read]
+          network: {additionalOrigins: [], privateOrigins: [], maxRedirects: 0}
+`)
+	if err == nil {
+		t.Fatal("remote broker accepted a mixed direct route")
+	}
+}
+
 func TestMecak8sHelmChart_MCPOAuthProfileUsesBrokerAuthority(t *testing.T) {
 	rendered, err := renderOAuthMCPValues(t, `
 mcp:
@@ -2303,8 +2332,8 @@ mcp:
 	if !slices.Contains(container.Args, "--permission-config=/etc/mecatl-mcp/settings.yaml") {
 		t.Fatal("OAuth render missing chart-managed --permission-config")
 	}
-	if slices.ContainsFunc(container.Args, func(arg string) bool { return strings.HasPrefix(arg, "--mcp-server=") }) {
-		t.Fatal("broker routes must not be duplicated as legacy global flags")
+	if !slices.ContainsFunc(container.Args, func(arg string) bool { return arg == "--mcp-server=public=https://public.example/mcp" }) {
+		t.Fatalf("direct route must remain a local legacy MCP flag: %#v", container.Args)
 	}
 	if env := workloadEnv(container); len(env) != 0 {
 		t.Fatalf("OAuth client secret must not be injected as an environment variable: %#v", env)

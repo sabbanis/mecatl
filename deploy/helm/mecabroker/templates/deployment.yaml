@@ -1,3 +1,4 @@
+{{- include "mecabroker.validateMCP" . -}}
 {{- include "mecabroker.validateImage" . -}}
 {{- include "mecabroker.validateShutdownBudget" . -}}
 apiVersion: apps/v1
@@ -65,12 +66,17 @@ spec:
             - {name: tls, mountPath: /var/run/mecabroker/tls, readOnly: true}
             - {name: workload-jwt, mountPath: /var/run/mecabroker/workload-jwt, readOnly: true}
             - {name: broker-config, mountPath: /etc/mecabroker, readOnly: true}
+            - {name: tmp, mountPath: /tmp}
 {{- range $index, $profile := .Values.profiles }}
 {{- if eq $profile.auth "oauth" }}
             - {name: oauth-client-secret-{{ $index }}, mountPath: /var/run/mecabroker/oauth/{{ $index }}, readOnly: true}
 {{- end }}
 {{- end }}
-            - {name: tmp, mountPath: /tmp}
+{{- range $index, $server := .Values.mcp.servers }}
+{{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") }}
+            - {name: mcp-oauth-client-secret-{{ $index }}, mountPath: /var/run/mecabroker/mcp-oauth/{{ $index }}, readOnly: true}
+{{- end }}
+{{- end }}
       volumes:
         - name: tls
           secret:
@@ -97,6 +103,16 @@ spec:
             defaultMode: 0440
             items:
               - {key: {{ $profile.oauth.clientSecret.key }}, path: client-secret}
+{{- end }}
+{{- end }}
+{{- range $index, $server := .Values.mcp.servers }}
+{{- if and (eq $server.auth.mode "oauth") (eq $server.auth.oauth.client.mode "preregistered") }}
+        - name: mcp-oauth-client-secret-{{ $index }}
+          secret:
+            secretName: {{ required (printf "mcp.servers[%d].auth.oauth.client.preregistered.secretKeyRef.name is required" $index) $server.auth.oauth.client.preregistered.secretKeyRef.name }}
+            defaultMode: 0440
+            items:
+              - {key: {{ $server.auth.oauth.client.preregistered.secretKeyRef.key }}, path: client-secret}
 {{- end }}
 {{- end }}
         - name: tmp

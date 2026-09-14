@@ -6,9 +6,11 @@ import (
 	"encoding/json"
 	"errors"
 	"flag"
+	"fmt"
 	"io"
 	"net"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/stacklok/mecatl/engine/port"
@@ -18,9 +20,10 @@ import (
 )
 
 const (
-	brokerAPIVersion = "mecabroker.mecatl.dev/v1"
-	maxConfigBytes   = 1 << 20
-	maxJWKSStaleness = 24 * time.Hour
+	brokerAPIVersion     = "mecabroker.mecatl.dev/v1"
+	maxConfigBytes       = 1 << 20
+	maxJWKSStaleness     = 24 * time.Hour
+	unsupportedCIMDError = "CIMD OAuth client_mode is unsupported by mecabroker; use preregistered or dcr"
 )
 
 type duration time.Duration
@@ -88,13 +91,22 @@ type fileProfile struct {
 	Static []fileStatic `json:"tools,omitempty"`
 }
 type fileOAuth struct {
-	Issuer                string   `json:"issuer,omitempty"`
-	AuthorizationEndpoint string   `json:"authorization_endpoint,omitempty"`
-	TokenEndpoint         string   `json:"token_endpoint,omitempty"`
-	ClientID              string   `json:"client_id"`
-	ClientSecretFile      string   `json:"client_secret_file"`
-	Scopes                []string `json:"scopes"`
-	RequestRefreshToken   bool     `json:"request_refresh_token,omitempty"`
+	Issuer                string            `json:"issuer,omitempty"`
+	AuthorizationEndpoint string            `json:"authorization_endpoint,omitempty"`
+	TokenEndpoint         string            `json:"token_endpoint,omitempty"`
+	ClientMode            string            `json:"client_mode,omitempty"`
+	CIMDDocumentURL       string            `json:"cimd_document_url,omitempty"`
+	DCRDiscoveryURL       string            `json:"dcr_discovery_url,omitempty"`
+	ClientID              string            `json:"client_id,omitempty"`
+	ClientSecretFile      string            `json:"client_secret_file,omitempty"`
+	Scopes                []string          `json:"scopes"`
+	RequestRefreshToken   bool              `json:"request_refresh_token,omitempty"`
+	Network               *fileOAuthNetwork `json:"network,omitempty"`
+}
+type fileOAuthNetwork struct {
+	AdditionalOrigins []string `json:"additional_origins"`
+	PrivateOrigins    []string `json:"private_origins"`
+	MaxRedirects      int      `json:"max_redirects"`
 }
 type fileStatic struct {
 	Name        string          `json:"name"`
@@ -204,7 +216,13 @@ func (cfg fileConfig) validate() error {
 			return errors.New("broker capacity bounds must be positive")
 		}
 	}
+	seenProfiles := make(map[string]struct{}, len(cfg.Profiles))
 	for _, profile := range cfg.Profiles {
+		profileKey := strings.ToLower(profile.Name)
+		if _, exists := seenProfiles[profileKey]; exists {
+			return fmt.Errorf("duplicate broker profile name %q", profile.Name)
+		}
+		seenProfiles[profileKey] = struct{}{}
 		if profile.Name == "" || profile.URL == "" {
 			return errors.New("profile name and URL are required")
 		}
@@ -214,11 +232,54 @@ func (cfg fileConfig) validate() error {
 				return errors.New("anonymous profile contains protected configuration")
 			}
 		case "oauth":
-			if profile.OAuth == nil || profile.OAuth.ClientID == "" || profile.OAuth.ClientSecretFile == "" {
-				return errors.New("protected profile OAuth client configuration is required")
+			if profile.OAuth == nil {
+				return errors.New("protected profile OAuth configuration is required")
 			}
-			if err := validateConfiguredSecretFile(profile.OAuth.ClientSecretFile); err != nil {
-				return errors.New("protected profile OAuth client secret file is invalid")
+			if profile.OAuth.Network != nil && (len(profile.OAuth.Network.AdditionalOrigins) != 0 || len(profile.OAuth.Network.PrivateOrigins) != 0 || profile.OAuth.Network.MaxRedirects != 0) {
+				return errors.New("OAuth network settings are unsupported by mecabroker; use mecak8s or remove oauth.network before starting the broker")
+			}
+			if profile.OAuth.ClientMode != "preregistered" && profile.OAuth.ClientMode != "cimd" && profile.OAuth.ClientMode != "dcr" {
+				return errors.New("protected profile OAuth client_mode must be preregistered, cimd, or dcr")
+			}
+			mode := profile.OAuth.ClientMode
+			if mode == "cimd" {
+				return errors.New(unsupportedCIMDError)
+			}
+			switch mode {
+			case "preregistered":
+				if profile.OAuth.ClientID == "" || profile.OAuth.ClientSecretFile == "" {
+					return errors.New("preregistered OAuth client_mode requires client_id and client_secret_file")
+				}
+				if profile.OAuth.CIMDDocumentURL != "" || profile.OAuth.DCRDiscoveryURL != "" {
+					return errors.New("preregistered OAuth client_mode cannot include CIMD or DCR configuration")
+				}
+			case "dcr":
+				if profile.OAuth.DCRDiscoveryURL == "" {
+					return errors.New("dcr OAuth client_mode requires dcr_discovery_url")
+				}
+				if profile.OAuth.AuthorizationEndpoint == "" || profile.OAuth.TokenEndpoint == "" {
+					return errors.New("dcr OAuth client_mode requires explicit authorization_endpoint and token_endpoint")
+				}
+				if profile.OAuth.ClientID != "" || profile.OAuth.ClientSecretFile != "" || profile.OAuth.CIMDDocumentURL != "" {
+					return errors.New("dcr OAuth client_mode cannot include client credentials or CIMD configuration")
+				}
+			default:
+				return errors.New("protected profile OAuth client_mode must be preregistered, cimd, or dcr")
+			}
+			if profile.OAuth.CIMDDocumentURL != "" {
+				if err := mcpbroker.ValidateProtectedURL(profile.OAuth.CIMDDocumentURL, "CIMD document URL"); err != nil {
+					return err
+				}
+			}
+			if profile.OAuth.DCRDiscoveryURL != "" {
+				if err := mcpbroker.ValidateProtectedURL(profile.OAuth.DCRDiscoveryURL, "DCR discovery URL"); err != nil {
+					return err
+				}
+			}
+			if mode == "preregistered" {
+				if err := validateConfiguredSecretFile(profile.OAuth.ClientSecretFile); err != nil {
+					return errors.New("protected profile OAuth client secret file is invalid")
+				}
 			}
 			if err := mcpbroker.ValidateProtectedURL(profile.URL, "protected upstream URL"); err != nil {
 				return err
@@ -306,7 +367,10 @@ func (cfg fileConfig) toolHive() mcpbroker.ToolHiveConfig {
 	for i, profile := range cfg.Profiles {
 		converted := mcpbroker.ToolHiveProfile{Name: profile.Name, URL: profile.URL, Auth: profile.Auth}
 		if profile.OAuth != nil {
-			converted.OAuth = &mcpbroker.ToolHiveOAuth{Issuer: profile.OAuth.Issuer, AuthorizationEndpoint: profile.OAuth.AuthorizationEndpoint, TokenEndpoint: profile.OAuth.TokenEndpoint, ClientID: profile.OAuth.ClientID, ClientSecretFile: profile.OAuth.ClientSecretFile, Scopes: append([]string(nil), profile.OAuth.Scopes...), RequestRefreshToken: profile.OAuth.RequestRefreshToken}
+			converted.OAuth = &mcpbroker.ToolHiveOAuth{Issuer: profile.OAuth.Issuer, AuthorizationEndpoint: profile.OAuth.AuthorizationEndpoint, TokenEndpoint: profile.OAuth.TokenEndpoint, ClientID: profile.OAuth.ClientID, ClientSecretFile: profile.OAuth.ClientSecretFile, DCRDiscoveryURL: profile.OAuth.DCRDiscoveryURL, Scopes: append([]string(nil), profile.OAuth.Scopes...), RequestRefreshToken: profile.OAuth.RequestRefreshToken}
+			if profile.OAuth.CIMDDocumentURL != "" {
+				converted.OAuth.ClientID = profile.OAuth.CIMDDocumentURL
+			}
 		}
 		converted.Static = make([]mcpbroker.StaticTool, len(profile.Static))
 		for j, spec := range profile.Static {
