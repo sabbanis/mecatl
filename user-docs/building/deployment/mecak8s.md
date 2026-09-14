@@ -268,12 +268,9 @@ The bypass annotates the pod as unsafe; a secure upstream attestation is annotat
 Understand what edge mode costs before choosing it.
 On an h2c backend the caller's `Authorization: Bearer` token crosses the pod network in cleartext.
 Any workload that can reach the Service ClusterIP can read that token and replay it as the caller.
-The chart renders a default-deny ingress policy and a bounded baseline egress
-policy: destination-unrestricted DNS on UDP/TCP port 53, and TCP/6379 to
-chart-local Redis when enabled. Configure `networkPolicy.publicFrom` for
-gateway/workload peers. Configure `networkPolicy.operatorEgress` for HTTPS,
-external Redis, providers, MCP, remoteBroker, and other operator-selected
-destinations; the chart cannot infer dynamic external endpoints.
+The chart renders a default-deny ingress policy. Configure `networkPolicy.publicFrom`
+for gateway/workload peers. Egress restriction is deployment/platform-owned (CNI,
+service mesh, or egress gateway), not inferred or enforced by this chart.
 The explicit unsafe posture is still a development/trusted-mesh exception, not
 a bypass of digest enforcement when `remoteBroker` is configured.
 The upstream value is an attestation, not chart enforcement: nothing in the chart verifies gateway TLS, reachability, or token forwarding.
@@ -281,7 +278,9 @@ The gateway must forward the original bearer token rather than use forwarded-ide
 The chart creates no Gateway, Route, or Certificate either; use an operator-owned `BackendTLSPolicy` or in-pod TLS for gateway-to-pod re-encryption.
 Change an existing pod-TLS release to h2c through a blue-green or maintenance cutover, not an assumed-safe rolling update.
 The chart retains two replicas, a PDB, rolling updates, restricted pod security, bounded resources, dynamic probes, and namespaced Lease RBAC.
-The chart creates no agent PVC. Its general NetworkPolicy is default-deny and must be configured with the operator's concrete ingress and egress peers. The `oidc.*` values add a narrow raw-driver NetworkPolicy when caller identity is enabled.
+The chart creates no agent PVC. Its general NetworkPolicy is default-deny ingress
+only; egress restriction is deployment/platform-owned. The `oidc.*` values add a
+narrow raw-driver NetworkPolicy when caller identity is enabled.
 
 For an OpenAI-compatible gateway that trusts Kubernetes workload identity, use the
 chart's existing `extraArgs`, `extraVolumes`, and `extraVolumeMounts` to project a
@@ -461,10 +460,10 @@ browser; and the broker's `listener.publicAddress` is only its local bind addres
 of these values is inferred from another. See the [standalone MCP broker deployment
 guide](/building/deployment/mecabroker.md) for the typed broker chart configuration.
 
-Keep MCP and OAuth endpoints on HTTPS and configure the chart's default-deny
-`networkPolicy.operatorEgress` (or a mesh) for them. NetworkPolicy supplies only L3/L4
-peer and port controls; it cannot enforce the broker HTTP callback path, TLS identity,
-OAuth identity, or a hostname. Empty peer lists remain deny-all.
+Keep MCP and OAuth endpoints on HTTPS and enforce their egress through the
+platform (CNI, mesh, or egress gateway). The chart's NetworkPolicy supplies
+only ingress isolation; it cannot enforce the broker HTTP callback path, TLS
+identity, OAuth identity, or a hostname.
 
 A broker TLS, workload-JWT CA, or upstream OAuth Secret rotation is deliberately
 operator-controlled: update `rollout.restartToken` in the mecabroker release to trigger
@@ -712,11 +711,13 @@ production install:
 | `deployment.yaml` | Agent Deployment — `replicas: 2` by default (one is supported), no PVC, storage-free |
 | `service.yaml` | ClusterIP Service exposing gRPC (8080) and HTTP/SSE (8081) |
 | `pdb.yaml` | PodDisruptionBudget (`minAvailable: 1`) when `replicaCount >= 2`; omitted for one replica |
-| `networkpolicy.yaml` | Default-deny ingress; baseline destination-unrestricted DNS egress plus release-scoped local Redis when enabled; operators provide Service peers and other egress peers |
+| `networkpolicy.yaml` | Default-deny ingress; egress restriction is deployment/platform-owned (CNI, mesh, or egress gateway) |
 | `raw-driver-networkpolicy.yaml` | Rendered only when `oidc.enabled` — scopes ingress on `app.kubernetes.io/component: raw-driver` pods to the agent pod only |
 | `redis-local.yaml` | Rendered only under the disposable `values-kind.yaml` profile (`redis.local.enabled`) — an in-cluster Redis StatefulSet + Service for Kind/offline use, never for production |
 
-The chart renders `networkpolicy.yaml` as default-deny; it intentionally does not infer a namespace, provider, Redis, MCP, or remote-broker endpoint. Configure its standard peer entries in `networkPolicy.publicFrom` and `networkPolicy.operatorEgress`.
+The chart renders `networkpolicy.yaml` as default-deny ingress and intentionally
+leaves egress restriction to the deployment platform (CNI, mesh, or egress
+gateway). Configure ingress peers in `networkPolicy.publicFrom`.
 
 Key details from `deployment.yaml`:
 
@@ -997,7 +998,9 @@ keep it off any Service, Ingress, or tenant-facing NetworkPolicy. A tenant
 workload must reach mecak8s through the authenticated public Service, never a
 raw driver endpoint directly.
 
-The chart's general NetworkPolicy is default-deny. Configure `networkPolicy.operatorEgress` for the IdP/JWKS, Redis, provider/MCP, and remote-broker peers actually used by the deployment; enabling caller identity does not create an implicit egress allow.
+The chart's general NetworkPolicy is default-deny ingress only. Egress restriction
+for the IdP/JWKS, Redis, provider/MCP, and remote-broker peers is deployment/platform-owned;
+enabling caller identity does not change that boundary.
 
 ### Use it from the TUI
 

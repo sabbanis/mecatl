@@ -8,16 +8,6 @@
 mockProvider: false
 security:
   allowUnsafeRealProvider: true
-# Real-provider opt-in: OpenRouter uses HTTPS. Keep this explicit even though
-# the chart baseline also permits destination-unrestricted TCP/443: this overlay
-# documents that enabling a real provider opts into the provider egress rule.
-networkPolicy:
-  operatorEgress:
-    - to:
-        - ipBlock:
-            cidr: 0.0.0.0/0
-      ports:
-        - {protocol: TCP, port: 443}
 extraEnv:
   - name: OPENROUTER_API_KEY
     valueFrom:

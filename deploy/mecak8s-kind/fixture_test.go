@@ -68,7 +68,7 @@ func TestMecak8sKindFixture_Scenario1_DocumentationBoundaries(t *testing.T) {
 	text := string(body)
 	baseDocs, _, _ := strings.Cut(text, "\n## Optional Keycloak login journey")
 	for _, want := range []string{
-		"operator-run", "deploy/helm/mecak8s/", "e2e/k8s/", "default-deny NetworkPolicy",
+		"operator-run", "deploy/helm/mecak8s/", "e2e/k8s/", "default-deny ingress NetworkPolicy",
 		"127.0.0.1", "NodePort", "extraPortMappings",
 	} {
 		if !strings.Contains(text, want) {
@@ -119,24 +119,6 @@ func TestMecak8sKindFixture_Scenario2_MockDefault(t *testing.T) {
 		if strings.Contains(string(rendered), forbidden) {
 			t.Fatalf("mock fixture render retains provider Secret projection %q", forbidden)
 		}
-	}
-}
-
-// TestMecak8sKindFixture_Scenario2_RealProviderNetworkPolicy pins the explicit
-// provider overlay without changing the mock/default chart profile.
-func TestMecak8sKindFixture_Scenario2_RealProviderNetworkPolicy(t *testing.T) {
-	if _, err := exec.LookPath("helm"); err != nil {
-		t.Skip("helm is required to render the real-provider fixture")
-	}
-	cmd := exec.Command("helm", "template", "kind", ".", "-f", "values-kind.yaml", "-f", "../../mecak8s-kind/kind-provider-real.yaml")
-	cmd.Dir = "../helm/mecak8s"
-	rendered, err := cmd.CombinedOutput()
-	if err != nil {
-		t.Fatalf("render real-provider fixture: %v\n%s", err, rendered)
-	}
-	text := string(rendered)
-	if !strings.Contains(text, "cidr: 0.0.0.0/0") || !strings.Contains(text, "port: 443") {
-		t.Fatalf("real-provider fixture omits its explicit OpenRouter HTTPS egress rule:\n%s", text)
 	}
 }
 

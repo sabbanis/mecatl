@@ -300,84 +300,20 @@ func networkPolicyFromRender(t *testing.T, rendered string) *networkingv1.Networ
 	return nil
 }
 
-func TestMecak8sHelmChart_NetworkPolicyBaseline(t *testing.T) {
+func TestMecak8sHelmChart_NetworkPolicyIsIngressOnly(t *testing.T) {
 	rendered, err := helm(t, productionArgs()...)
 	if err != nil {
 		t.Fatal(err, rendered)
 	}
 	policy := networkPolicyFromRender(t, rendered)
-	if len(policy.Spec.Egress) != 2 {
-		t.Fatalf("external-Redis baseline egress rules = %d, want DNS and HTTPS", len(policy.Spec.Egress))
+	if !slices.Equal(policy.Spec.PolicyTypes, []networkingv1.PolicyType{networkingv1.PolicyTypeIngress}) {
+		t.Fatalf("policy types = %v, want ingress only", policy.Spec.PolicyTypes)
 	}
-	dns := policy.Spec.Egress[0]
-	if len(dns.To) != 0 {
-		t.Fatalf("DNS is destination-unrestricted, peers = %#v", dns.To)
-	}
-	if len(dns.Ports) != 2 || dns.Ports[0].Port.IntValue() != 53 || dns.Ports[1].Port.IntValue() != 53 ||
-		dns.Ports[0].Protocol == nil || *dns.Ports[0].Protocol != corev1.ProtocolUDP ||
-		dns.Ports[1].Protocol == nil || *dns.Ports[1].Protocol != corev1.ProtocolTCP {
-		t.Fatalf("DNS ports = %#v", dns.Ports)
-	}
-	https := policy.Spec.Egress[1]
-	if len(https.To) != 0 || len(https.Ports) != 1 || https.Ports[0].Protocol == nil ||
-		*https.Ports[0].Protocol != corev1.ProtocolTCP || https.Ports[0].Port.IntValue() != 443 {
-		t.Fatalf("HTTPS baseline = %#v", https)
+	if len(policy.Spec.Egress) != 0 {
+		t.Fatalf("egress rules = %#v, want none", policy.Spec.Egress)
 	}
 	if len(policy.Spec.Ingress) != 0 {
 		t.Fatalf("default ingress = %#v, want default deny", policy.Spec.Ingress)
-	}
-
-	rendered, err = helm(t, kindFixtureArgs()...)
-	if err != nil {
-		t.Fatal(err, rendered)
-	}
-	policy = networkPolicyFromRender(t, rendered)
-	if len(policy.Spec.Egress) != 3 {
-		t.Fatalf("local-Redis baseline egress rules = %d, want DNS, HTTPS, and Redis", len(policy.Spec.Egress))
-	}
-	redis := policy.Spec.Egress[2]
-	if len(redis.To) != 1 || redis.To[0].PodSelector == nil ||
-		redis.To[0].PodSelector.MatchLabels["app.kubernetes.io/name"] != "redis" ||
-		redis.To[0].PodSelector.MatchLabels["app.kubernetes.io/instance"] != "kind" ||
-		len(redis.Ports) != 1 || redis.Ports[0].Protocol == nil || *redis.Ports[0].Protocol != corev1.ProtocolTCP || redis.Ports[0].Port.IntValue() != 6379 {
-		t.Fatalf("local Redis baseline = %#v", redis)
-	}
-}
-
-func TestMecak8sHelmChart_NetworkPolicyOperatorEgressIsAdditive(t *testing.T) {
-	rendered, err := helm(t, append(productionArgs(), "--set-json", `networkPolicy.operatorEgress=[{"to":[{"ipBlock":{"cidr":"192.0.2.0/24"}}],"ports":[{"protocol":"TCP","port":8443}]}]`)...)
-	if err != nil {
-		t.Fatal(err, rendered)
-	}
-	policy := networkPolicyFromRender(t, rendered)
-	if len(policy.Spec.Egress) != 3 {
-		t.Fatalf("egress rules = %d, want DNS, HTTPS, plus one operator rule", len(policy.Spec.Egress))
-	}
-	custom := policy.Spec.Egress[2]
-	if len(custom.To) != 1 || custom.To[0].IPBlock == nil || custom.To[0].IPBlock.CIDR != "192.0.2.0/24" ||
-		len(custom.Ports) != 1 || custom.Ports[0].Port.IntValue() != 8443 {
-		t.Fatalf("operator egress = %#v", custom)
-	}
-}
-
-func TestMecak8sHelmChart_OperatorEgressRequiresExplicitPeersAndPorts(t *testing.T) {
-	for _, values := range []string{
-		`networkPolicy.operatorEgress=[{}]`,
-		`networkPolicy.operatorEgress=[{"to":[{"ipBlock":{"cidr":"192.0.2.0/24"}}]}]`,
-		`networkPolicy.operatorEgress=[{"to":[{}],"ports":[{"protocol":"TCP","port":443}]}]`,
-		`networkPolicy.operatorEgress=[{"to":[{"ipBlock":{"cidr":"192.0.2.0/24"}}],"ports":[{"protocol":"TCP","port":70000}]}]`,
-	} {
-		args := append(productionArgs(), "--set-json", values)
-		if rendered, err := helm(t, args...); err == nil {
-			t.Fatalf("accepted broad or invalid egress %s:\n%s", values, rendered)
-		}
-	}
-	rendered, err := helm(t, append(productionArgs(), "--set-json", `networkPolicy.operatorEgress=[{"to":[{"ipBlock":{"cidr":"192.0.2.0/24"}}],"ports":[{"protocol":"TCP","port":443}]}]`)...)
-	if err != nil {
-		t.Fatal(err, rendered)
-	}
-	if !strings.Contains(rendered, "cidr: 192.0.2.0/24") || !strings.Contains(rendered, "port: 443") {
-		t.Fatalf("explicit egress did not render: %s", rendered)
 	}
 }
 

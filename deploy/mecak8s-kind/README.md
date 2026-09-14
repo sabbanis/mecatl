@@ -226,9 +226,7 @@ production settings, use `deploy/helm/mecak8s/` with an externally managed
 Redis endpoint and its required credentials.
 
 This convenience fixture makes no production network-isolation claim. The chart
-still renders its default-deny NetworkPolicy, including the chart-owned
-destination-unrestricted DNS (UDP/TCP 53) and TCP/443 baseline plus local-Redis
-baseline. The real-provider opt-in additionally carries an explicit
-OpenRouter HTTPS `operatorEgress` rule; the disposable Kind setup is not
-production enforcement evidence. Use production authentication and network
+still renders its default-deny ingress NetworkPolicy; egress restriction is
+owned by the deployment platform (CNI, service mesh, or egress gateway), not
+this disposable Kind fixture. Use production authentication and network
 controls when exposing a service outside the local loopback workflow.

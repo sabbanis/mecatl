@@ -7,7 +7,7 @@ metadata:
 spec:
   podSelector:
     matchLabels: {{- include "mecak8s.selectorLabels" . | nindent 6 }}
-  policyTypes: [Ingress, Egress]
+  policyTypes: [Ingress]
   # The public service multiplexes gRPC and HTTP; route separation is not
   # expressible in vanilla NetworkPolicy. Operators must list its peers.
   ingress:
@@ -19,28 +19,5 @@ spec:
         - {protocol: TCP, port: http}
 {{- else }}
     []
-{{- end }}
-  # DNS and HTTPS are destination-unrestricted chart-owned egress. HTTPS is
-  # required because mecak8s unconditionally uses in-cluster Kubernetes API
-  # leases; operatorEgress remains available for additional destinations.
-  egress:
-    - ports:
-        - {protocol: UDP, port: 53}
-        - {protocol: TCP, port: 53}
-    - ports:
-        - {protocol: TCP, port: 443}
-{{- if .Values.redis.local.enabled }}
-    # The selector is release-scoped so another Redis workload in the namespace
-    # does not inherit this chart's local dependency allowance.
-    - to:
-        - podSelector:
-            matchLabels:
-              app.kubernetes.io/name: redis
-              app.kubernetes.io/instance: {{ .Release.Name }}
-      ports:
-        - {protocol: TCP, port: 6379}
-{{- end }}
-{{- if .Values.networkPolicy.operatorEgress }}
-{{ toYaml .Values.networkPolicy.operatorEgress | indent 4 }}
 {{- end }}
 {{- end }}

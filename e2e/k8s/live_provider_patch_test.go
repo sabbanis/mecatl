@@ -80,38 +80,6 @@ func TestLiveProviderPatchPreservesRenderedArgsAndLocatesAgent(t *testing.T) {
 	}
 }
 
-func TestLiveProviderNetworkPolicyPatchAddsExplicitOpenRouterHTTPS(t *testing.T) {
-	t.Parallel()
-	policy := []byte(`{"spec":{"egress":[{"ports":[{"protocol":"UDP","port":53},{"protocol":"TCP","port":53},{"protocol":"TCP","port":443}]}]}}`)
-	patchJSON, err := liveProviderNetworkPolicyPatch(policy)
-	if err != nil {
-		t.Fatalf("liveProviderNetworkPolicyPatch: %v", err)
-	}
-	var patch []struct {
-		Op    string `json:"op"`
-		Path  string `json:"path"`
-		Value struct {
-			To []struct {
-				IPBlock struct {
-					CIDR string `json:"cidr"`
-				} `json:"ipBlock"`
-			} `json:"to"`
-			Ports []struct {
-				Protocol string `json:"protocol"`
-				Port     int    `json:"port"`
-			} `json:"ports"`
-		} `json:"value"`
-	}
-	if err := json.Unmarshal(patchJSON, &patch); err != nil {
-		t.Fatalf("decode network policy patch: %v", err)
-	}
-	if len(patch) != 1 || patch[0].Op != "add" || patch[0].Path != "/spec/egress/-" ||
-		len(patch[0].Value.To) != 1 || patch[0].Value.To[0].IPBlock.CIDR != "0.0.0.0/0" ||
-		len(patch[0].Value.Ports) != 1 || patch[0].Value.Ports[0].Protocol != "TCP" || patch[0].Value.Ports[0].Port != 443 {
-		t.Fatalf("network policy patch = %s", patchJSON)
-	}
-}
-
 func TestLiveProviderPatchAddsMissingEnvField(t *testing.T) {
 	t.Parallel()
 	deployment := []byte(`{"spec":{"template":{"spec":{"containers":[{"name":"agent","args":["--mock"]}]}}}}`)
