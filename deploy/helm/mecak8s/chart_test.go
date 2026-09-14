@@ -306,8 +306,8 @@ func TestMecak8sHelmChart_NetworkPolicyBaseline(t *testing.T) {
 		t.Fatal(err, rendered)
 	}
 	policy := networkPolicyFromRender(t, rendered)
-	if len(policy.Spec.Egress) != 1 {
-		t.Fatalf("external-Redis baseline egress rules = %d, want DNS only", len(policy.Spec.Egress))
+	if len(policy.Spec.Egress) != 2 {
+		t.Fatalf("external-Redis baseline egress rules = %d, want DNS and HTTPS", len(policy.Spec.Egress))
 	}
 	dns := policy.Spec.Egress[0]
 	if len(dns.To) != 0 {
@@ -318,6 +318,11 @@ func TestMecak8sHelmChart_NetworkPolicyBaseline(t *testing.T) {
 		dns.Ports[1].Protocol == nil || *dns.Ports[1].Protocol != corev1.ProtocolTCP {
 		t.Fatalf("DNS ports = %#v", dns.Ports)
 	}
+	https := policy.Spec.Egress[1]
+	if len(https.To) != 0 || len(https.Ports) != 1 || https.Ports[0].Protocol == nil ||
+		*https.Ports[0].Protocol != corev1.ProtocolTCP || https.Ports[0].Port.IntValue() != 443 {
+		t.Fatalf("HTTPS baseline = %#v", https)
+	}
 	if len(policy.Spec.Ingress) != 0 {
 		t.Fatalf("default ingress = %#v, want default deny", policy.Spec.Ingress)
 	}
@@ -327,10 +332,10 @@ func TestMecak8sHelmChart_NetworkPolicyBaseline(t *testing.T) {
 		t.Fatal(err, rendered)
 	}
 	policy = networkPolicyFromRender(t, rendered)
-	if len(policy.Spec.Egress) != 2 {
-		t.Fatalf("local-Redis baseline egress rules = %d, want DNS and Redis", len(policy.Spec.Egress))
+	if len(policy.Spec.Egress) != 3 {
+		t.Fatalf("local-Redis baseline egress rules = %d, want DNS, HTTPS, and Redis", len(policy.Spec.Egress))
 	}
-	redis := policy.Spec.Egress[1]
+	redis := policy.Spec.Egress[2]
 	if len(redis.To) != 1 || redis.To[0].PodSelector == nil ||
 		redis.To[0].PodSelector.MatchLabels["app.kubernetes.io/name"] != "redis" ||
 		redis.To[0].PodSelector.MatchLabels["app.kubernetes.io/instance"] != "kind" ||
@@ -345,10 +350,10 @@ func TestMecak8sHelmChart_NetworkPolicyOperatorEgressIsAdditive(t *testing.T) {
 		t.Fatal(err, rendered)
 	}
 	policy := networkPolicyFromRender(t, rendered)
-	if len(policy.Spec.Egress) != 2 {
-		t.Fatalf("egress rules = %d, want DNS plus one operator rule", len(policy.Spec.Egress))
+	if len(policy.Spec.Egress) != 3 {
+		t.Fatalf("egress rules = %d, want DNS, HTTPS, plus one operator rule", len(policy.Spec.Egress))
 	}
-	custom := policy.Spec.Egress[1]
+	custom := policy.Spec.Egress[2]
 	if len(custom.To) != 1 || custom.To[0].IPBlock == nil || custom.To[0].IPBlock.CIDR != "192.0.2.0/24" ||
 		len(custom.Ports) != 1 || custom.Ports[0].Port.IntValue() != 8443 {
 		t.Fatalf("operator egress = %#v", custom)

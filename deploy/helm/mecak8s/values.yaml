@@ -142,10 +142,11 @@ security:
 # mecak8s drain, gRPC, HTTP, resource-close, and telemetry bounds.
 terminationGracePeriodSeconds: 60
 
-# NetworkPolicy is enabled and default-deny for ingress. Its only chart-owned
-# egress baseline is destination-unrestricted DNS (UDP/TCP 53); local Redis is
-# permitted when redis.local.enabled. Supply operatorEgress for HTTPS, external
-# Redis, providers, MCP, remoteBroker, and other operator-selected destinations.
+# NetworkPolicy is enabled and default-deny for ingress. Its chart-owned egress
+# baseline is destination-unrestricted DNS (UDP/TCP 53) and HTTPS (TCP 443),
+# which mecak8s requires for its in-cluster Kubernetes API leases and provider
+# access. Local Redis is permitted when redis.local.enabled. Supply operatorEgress
+# for external Redis, MCP, remoteBroker, and other operator-selected destinations.
 networkPolicy:
   enabled: true
   publicFrom: []

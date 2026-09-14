@@ -959,6 +959,28 @@ func liveProviderPatch(deploymentJSON []byte) ([]byte, error) {
 	return json.Marshal(patch)
 }
 
+// liveProviderNetworkPolicyPatch adds the real-provider OpenRouter HTTPS rule
+// without replacing the chart-owned baseline or any operator rules.
+func liveProviderNetworkPolicyPatch(policyJSON []byte) ([]byte, error) {
+	var policy struct {
+		Spec struct {
+			Egress []json.RawMessage `json:"egress"`
+		} `json:"spec"`
+	}
+	if err := json.Unmarshal(policyJSON, &policy); err != nil {
+		return nil, fmt.Errorf("decode agent NetworkPolicy: %w", err)
+	}
+	if policy.Spec.Egress == nil {
+		return nil, fmt.Errorf("agent NetworkPolicy has no egress baseline")
+	}
+	return json.Marshal([]map[string]any{{
+		"op": "add", "path": "/spec/egress/-", "value": map[string]any{
+			"to":    []map[string]any{{"ipBlock": map[string]any{"cidr": "0.0.0.0/0"}}},
+			"ports": []map[string]any{{"protocol": "TCP", "port": 443}},
+		},
+	}})
+}
+
 func liveProviderArgs(current []string) []string {
 	args := make([]string, 0, len(current)+2)
 	for i := 0; i < len(current); i++ {
@@ -1113,7 +1135,25 @@ func enableLiveProvider(key string) {
 	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
 		"kubectl patch deployment to live provider failed\n--- output ---\n%s", patchOut)
 
-	// 3. Wait for the rollout: the RollingUpdate (maxSurge:1, maxUnavailable:0)
+	// 3. Add the explicit real-provider NetworkPolicy allowance alongside the
+	//    Deployment patch. The chart baseline already permits TCP/443; retaining
+	//    this operator rule makes the live-provider opt-in explicit and keeps the
+	//    path correct if the baseline is tightened later.
+	ginkgo.By("patching mecak8s NetworkPolicy for OpenRouter HTTPS")
+	policyJSON, err := exec.CommandContext(ctx, "kubectl", "get",
+		"networkpolicy/mecak8s-agent", "-n", k8sNamespace, "-o", "json").Output()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"kubectl get NetworkPolicy before live-provider patch failed")
+	policyPatch, err := liveProviderNetworkPolicyPatch(policyJSON)
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"build live-provider NetworkPolicy patch")
+	policyPatchOut, err := exec.CommandContext(ctx, "kubectl", "patch",
+		"networkpolicy/mecak8s-agent", "-n", k8sNamespace,
+		"--type=json", "-p", string(policyPatch)).CombinedOutput()
+	gomega.ExpectWithOffset(1, err).NotTo(gomega.HaveOccurred(),
+		"kubectl patch NetworkPolicy for live provider failed\n--- output ---\n%s", policyPatchOut)
+
+	// 4. Wait for the rollout: the RollingUpdate (maxSurge:1, maxUnavailable:0)
 	//    spins a new pod first, so readiness gates on the live provider's startup
 	//    (the openrouter adapter is construction-time only; no network at startup,
 	//    but the startupProbe still must clear).

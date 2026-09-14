@@ -122,7 +122,24 @@ func TestMecak8sKindFixture_Scenario2_MockDefault(t *testing.T) {
 	}
 }
 
-// TestMecak8sKindFixture_Scenario2_KeycloakRetainsProviderOverlay pins that
+// TestMecak8sKindFixture_Scenario2_RealProviderNetworkPolicy pins the explicit
+// provider overlay without changing the mock/default chart profile.
+func TestMecak8sKindFixture_Scenario2_RealProviderNetworkPolicy(t *testing.T) {
+	if _, err := exec.LookPath("helm"); err != nil {
+		t.Skip("helm is required to render the real-provider fixture")
+	}
+	cmd := exec.Command("helm", "template", "kind", ".", "-f", "values-kind.yaml", "-f", "../../mecak8s-kind/kind-provider-real.yaml")
+	cmd.Dir = "../helm/mecak8s"
+	rendered, err := cmd.CombinedOutput()
+	if err != nil {
+		t.Fatalf("render real-provider fixture: %v\n%s", err, rendered)
+	}
+	text := string(rendered)
+	if !strings.Contains(text, "cidr: 0.0.0.0/0") || !strings.Contains(text, "port: 443") {
+		t.Fatalf("real-provider fixture omits its explicit OpenRouter HTTPS egress rule:\n%s", text)
+	}
+}
+
 // Keycloak's Helm layer cannot reset a real-provider setup to the mock overlay.
 func TestMecak8sKindFixture_Scenario2_KeycloakRetainsProviderOverlay(t *testing.T) {
 	text := fixtureTaskClosure(t, "chart-keycloak-apply")

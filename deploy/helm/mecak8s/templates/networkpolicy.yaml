@@ -20,12 +20,15 @@ spec:
 {{- else }}
     []
 {{- end }}
-  # DNS is the only chart-owned egress baseline. Other destinations, including
-  # HTTPS, Redis, providers, and MCP endpoints, are operator supplied.
+  # DNS and HTTPS are destination-unrestricted chart-owned egress. HTTPS is
+  # required because mecak8s unconditionally uses in-cluster Kubernetes API
+  # leases; operatorEgress remains available for additional destinations.
   egress:
     - ports:
         - {protocol: UDP, port: 53}
         - {protocol: TCP, port: 53}
+    - ports:
+        - {protocol: TCP, port: 443}
 {{- if .Values.redis.local.enabled }}
     # The selector is release-scoped so another Redis workload in the namespace
     # does not inherit this chart's local dependency allowance.
