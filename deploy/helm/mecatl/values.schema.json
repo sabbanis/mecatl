@@ -19,7 +19,7 @@
               "required": ["tls", "workloadJWT"],
               "properties": {
                 "tls": {"type": "object", "additionalProperties": false, "required": ["caSecret", "caKey", "serverName"], "properties": {"caSecret": {"type": "string"}, "caKey": {"type": "string"}, "serverName": {"type": "string"}}},
-                "workloadJWT": {"type": "object", "additionalProperties": false, "required": ["issuer", "jwksURI", "audience", "lifetimeSeconds"], "properties": {"issuer": {"type": "string"}, "jwksURI": {"type": "string"}, "audience": {"type": "string"}, "lifetimeSeconds": {"type": "integer", "minimum": 1}, "trustBundleSecret": {"type": "string"}, "trustBundleKey": {"type": "string"}}}
+                "workloadJWT": {"type": "object", "additionalProperties": false, "required": ["issuer", "jwksURI", "audience", "lifetimeSeconds", "kubernetesBootstrap"], "properties": {"issuer": {"type": "string"}, "jwksURI": {"type": "string"}, "audience": {"type": "string"}, "lifetimeSeconds": {"type": "integer", "minimum": 1}, "trustBundleSecret": {"type": "string"}, "trustBundleKey": {"type": "string"}, "kubernetesBootstrap": {"type": "object", "additionalProperties": false, "required": ["createRBAC"], "properties": {"createRBAC": {"type": "boolean"}, "apiAudience": {"type": "string"}}}}}
               }
             },
             "mcp": {

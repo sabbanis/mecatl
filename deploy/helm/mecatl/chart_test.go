@@ -19,8 +19,20 @@ func render(t *testing.T, args ...string) string {
 	return string(out)
 }
 
+func renderedResource(out, source string) string {
+	start := strings.Index(out, "# Source: "+source)
+	if start < 0 {
+		return ""
+	}
+	resource := out[start:]
+	if end := strings.Index(resource, "\n---"); end >= 0 {
+		return resource[:end]
+	}
+	return resource
+}
+
 func TestManagedOwnsBothSeparateWorkloads(t *testing.T) {
-	mecatl := render(t, "template", "mecatl", ".", "--set", "global.mecatl.broker.tls.caSecret=broker-workload-ca", "--set", "global.mecatl.broker.tls.caKey=ca.pem", "--set", "global.mecatl.broker.workloadJWT.issuer=https://issuer.example", "--set", "global.mecatl.broker.workloadJWT.jwksURI=https://issuer.example/jwks", "--set", "global.mecatl.broker.workloadJWT.audience=mecabroker", "--set", "global.mecatl.broker.workloadJWT.trustBundleSecret=broker-workload-ca")
+	mecatl := render(t, "template", "mecatl", ".", "--set", "global.mecatl.broker.tls.caSecret=broker-workload-ca", "--set", "global.mecatl.broker.tls.caKey=ca.pem", "--set", "global.mecatl.broker.tls.serverName=", "--set", "global.mecatl.broker.workloadJWT.audience=mecabroker", "--set", "global.mecatl.broker.workloadJWT.lifetimeSeconds=600")
 	out := mecatl
 	if strings.Count(out, "kind: Deployment") != 2 {
 		t.Fatalf("managed render deployments = %d, want 2", strings.Count(out, "kind: Deployment"))
@@ -30,29 +42,80 @@ func TestManagedOwnsBothSeparateWorkloads(t *testing.T) {
 	}
 }
 
-func TestManagedUsesGlobalBrokerTrustAndDerivedIdentity(t *testing.T) {
+func TestManagedUsesKubernetesWorkloadJWTBootstrapByDefault(t *testing.T) {
 	out := render(t, "template", "managed", ".", "-f", "ci/managed-mcp-values.yaml")
+	for _, want := range []string{
+		`"discovery_url": "https://kubernetes.default.svc/.well-known/openid-configuration"`,
+		`"jwks_uri": "https://kubernetes.default.svc/openid/v1/jwks"`,
+		`"token_file": "/var/run/mecabroker/workload-jwt/token"`,
+		`"subject": "system:serviceaccount:default:managed-mecak8s"`,
+		`name: kube-root-ca.crt`,
+		`serviceAccountToken:`,
+		`nonResourceURLs:`,
+		`- /.well-known/openid-configuration`,
+		`- /openid/v1/jwks`,
+		`automountServiceAccountToken: false`,
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("managed bootstrap render missing %q", want)
+		}
+	}
+	bundle := renderedResource(out, "mecatl/charts/mecabroker/templates/deployment.yaml")
+	serviceAccountToken := bundle[strings.Index(bundle, "serviceAccountToken:"):]
+	if strings.Contains(strings.Split(serviceAccountToken, "expirationSeconds:")[0], "audience:") {
+		t.Fatal("managed bootstrap default unexpectedly rendered a token audience")
+	}
+	brokerConfig := renderedResource(out, "mecatl/charts/mecabroker/templates/configmap.yaml")
+	workloadJWT := brokerConfig[strings.Index(brokerConfig, `"workload_jwt":`):]
+	if strings.Contains(workloadJWT, `"issuer":`) {
+		t.Fatal("managed bootstrap broker config contains an explicit workload JWT issuer")
+	}
+}
+
+func TestManagedKubernetesBootstrapAcceptsExplicitAPIAudience(t *testing.T) {
+	out := render(t, "template", "managed", ".", "-f", "ci/managed-mcp-values.yaml", "--set", "global.mecatl.broker.workloadJWT.kubernetesBootstrap.apiAudience=https://api.example")
+	bundle := renderedResource(out, "mecatl/charts/mecabroker/templates/deployment.yaml")
+	serviceAccountToken := bundle[strings.Index(bundle, "serviceAccountToken:"):]
+	if !strings.Contains(strings.Split(serviceAccountToken, "expirationSeconds:")[0], `audience: "https://api.example"`) {
+		t.Fatal("managed bootstrap did not render the explicit API token audience")
+	}
+}
+func TestManagedUsesCompleteExternalWorkloadJWTTrust(t *testing.T) {
+	out := render(t, "template", "managed", ".", "-f", "ci/managed-external-workload-jwt-values.yaml")
 	for _, want := range []string{
 		`"issuer": "https://issuer.example"`,
 		`"jwks_uri": "https://issuer.example/jwks"`,
 		`"subject": "system:serviceaccount:default:managed-mecak8s"`,
 		`"trust_bundle_file": "/var/run/mecabroker/workload-jwt/ca.pem"`,
+		`secretName: broker-workload-ca`,
 		`--mcp-broker-address=managed-mecabroker:8443`,
 		`--mcp-broker-server-name=managed-mecabroker`,
 	} {
 		if !strings.Contains(out, want) {
-			t.Fatalf("managed render missing %q", want)
+			t.Fatalf("managed external trust render missing %q", want)
 		}
 	}
-	if strings.Contains(out, "https://issuer.invalid") || strings.Contains(out, "subject: placeholder") {
-		t.Fatal("managed render used child workload JWT fallback")
+	brokerConfig := renderedResource(out, "mecatl/charts/mecabroker/templates/configmap.yaml")
+	brokerDeployment := renderedResource(out, "mecatl/charts/mecabroker/templates/deployment.yaml")
+	if strings.Contains(brokerConfig, `"kubernetes_bootstrap":`) || strings.Contains(brokerDeployment, `serviceAccountToken:`) || renderedResource(out, "mecatl/charts/mecabroker/templates/kubernetes-bootstrap-rbac.yaml") != "" {
+		t.Fatal("managed external trust render contains bootstrap artifact")
 	}
 }
 
-func TestManagedRequiresGlobalIssuer(t *testing.T) {
-	cmd := exec.Command("helm", "template", "managed", ".", "-f", "ci/managed-mcp-values.yaml", "--set", "global.mecatl.broker.workloadJWT.issuer=")
-	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "workloadJWT issuer") {
-		t.Fatalf("managed render accepted a missing global issuer: %s", out)
+func TestManagedRejectsPartialExternalWorkloadJWTTrust(t *testing.T) {
+	cmd := exec.Command("helm", "template", "managed", ".", "-f", "ci/managed-mcp-values.yaml", "--set", "global.mecatl.broker.workloadJWT.issuer=https://issuer.example")
+	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "external trust requires issuer, jwksURI, and trustBundleSecret together") {
+		t.Fatalf("managed render accepted partial global workload JWT trust: %s", out)
+	}
+}
+
+func TestManagedBootstrapCanUsePreprovisionedRBAC(t *testing.T) {
+	out := render(t, "template", "managed", ".", "-f", "ci/managed-mcp-values.yaml", "--set", "global.mecatl.broker.workloadJWT.kubernetesBootstrap.createRBAC=false")
+	if strings.Contains(out, "kind: ClusterRole") || strings.Contains(out, "kind: ClusterRoleBinding") {
+		t.Fatal("managed bootstrap rendered chart-owned RBAC when createRBAC=false")
+	}
+	if !strings.Contains(out, "serviceAccountToken:") || !strings.Contains(out, "name: kube-root-ca.crt") {
+		t.Fatal("managed bootstrap omitted token or API CA when createRBAC=false")
 	}
 }
 
@@ -98,7 +161,7 @@ func TestExternalOmitsBrokerResources(t *testing.T) {
 }
 
 func TestMCPInputRejectsExternalOAuth(t *testing.T) {
-	cmd := exec.Command("helm", "template", "mecatl", ".", "--set", "mode=external", "--set", "global.mecatl.mode=external", "--set", "global.mecatl.mcp.broker.callbackURL=https://broker.example/callback")
+	cmd := exec.Command("helm", "template", "mecatl", ".", "-f", "ci/external-values.yaml", "--set", "global.mecatl.mcp.broker.callbackURL=https://broker.example/callback")
 	if out, err := cmd.CombinedOutput(); err == nil || !strings.Contains(string(out), "external mode") {
 		t.Fatalf("external OAuth/callback was accepted: %s", out)
 	}

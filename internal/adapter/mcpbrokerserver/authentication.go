@@ -40,6 +40,17 @@ type WorkloadJWTConfig struct {
 	// MaxJWKSStaleness is the maximum age of cached verification keys accepted while
 	// the JWKS endpoint is unavailable. It must be positive and no greater than 24 hours.
 	MaxJWKSStaleness time.Duration
+	// KubernetesBootstrap derives the issuer from the broker's projected Kubernetes
+	// API token while keeping every discovery and JWKS destination configured.
+	KubernetesBootstrap *KubernetesBootstrapConfig
+}
+
+// KubernetesBootstrapConfig configures authenticated Kubernetes API discovery.
+// TokenSource must read the projected token afresh for every request.
+type KubernetesBootstrapConfig struct {
+	DiscoveryURL string
+	JWKSURI      string
+	TokenSource  func() ([]byte, error)
 }
 
 type workloadVerifier interface {
@@ -49,14 +60,29 @@ type workloadVerifier interface {
 }
 
 func newWorkloadJWTVerifier(ctx context.Context, cfg WorkloadJWTConfig) (workloadVerifier, error) {
-	if err := mcpbroker.ValidateProtectedURL(cfg.Issuer, "OIDC issuer"); err != nil {
-		return nil, fmt.Errorf("mcpbrokerserver: %w", err)
-	}
-	if cfg.JWKSURI == "" {
-		return nil, errors.New("mcpbrokerserver: an explicit HTTPS JWKS URI is required")
-	}
-	if err := mcpbroker.ValidateProtectedURL(cfg.JWKSURI, "JWKS URI"); err != nil {
-		return nil, fmt.Errorf("mcpbrokerserver: %w", err)
+	if cfg.KubernetesBootstrap == nil {
+		if err := mcpbroker.ValidateProtectedURL(cfg.Issuer, "OIDC issuer"); err != nil {
+			return nil, fmt.Errorf("mcpbrokerserver: %w", err)
+		}
+		if cfg.JWKSURI == "" {
+			return nil, errors.New("mcpbrokerserver: an explicit HTTPS JWKS URI is required")
+		}
+		if err := mcpbroker.ValidateProtectedURL(cfg.JWKSURI, "JWKS URI"); err != nil {
+			return nil, fmt.Errorf("mcpbrokerserver: %w", err)
+		}
+	} else {
+		if cfg.Issuer != "" || cfg.JWKSURI != "" {
+			return nil, errors.New("mcpbrokerserver: explicit OIDC issuer/JWKS and Kubernetes bootstrap are mutually exclusive")
+		}
+		if err := mcpbroker.ValidateProtectedURL(cfg.KubernetesBootstrap.DiscoveryURL, "Kubernetes discovery URL"); err != nil {
+			return nil, fmt.Errorf("mcpbrokerserver: %w", err)
+		}
+		if err := mcpbroker.ValidateProtectedURL(cfg.KubernetesBootstrap.JWKSURI, "Kubernetes JWKS URI"); err != nil {
+			return nil, fmt.Errorf("mcpbrokerserver: %w", err)
+		}
+		if cfg.KubernetesBootstrap.TokenSource == nil {
+			return nil, errors.New("mcpbrokerserver: projected Kubernetes token source is required")
+		}
 	}
 	if cfg.Audience == "" {
 		return nil, errors.New("mcpbrokerserver: OIDC audience is required")
@@ -75,7 +101,14 @@ func newWorkloadJWTVerifier(ctx context.Context, cfg WorkloadJWTConfig) (workloa
 	if cfg.MaxJWKSStaleness <= 0 || cfg.MaxJWKSStaleness > maxJWKSStaleness {
 		return nil, fmt.Errorf("mcpbrokerserver: JWKS staleness must be in (0,%s]", maxJWKSStaleness)
 	}
-	validator, err := oidcadapter.NewValidator(ctx, oidcadapter.Config{Issuer: cfg.Issuer, JWKSURI: cfg.JWKSURI, Audience: cfg.Audience, MaxJWKSStaleness: cfg.MaxJWKSStaleness, AllowPrivateHTTPSIssuer: true, TrustedCAFile: "operator-supplied-ca.pem", TrustedCAPEM: append([]byte(nil), cfg.TrustedCAPEM...)})
+	oidcConfig := oidcadapter.Config{Issuer: cfg.Issuer, JWKSURI: cfg.JWKSURI, Audience: cfg.Audience, MaxJWKSStaleness: cfg.MaxJWKSStaleness, AllowPrivateHTTPSIssuer: true, TrustedCAFile: "operator-supplied-ca.pem", TrustedCAPEM: append([]byte(nil), cfg.TrustedCAPEM...)}
+	var validator *oidcadapter.Validator
+	var err error
+	if bootstrap := cfg.KubernetesBootstrap; bootstrap != nil {
+		validator, err = oidcadapter.NewKubernetesValidator(ctx, oidcConfig, oidcadapter.KubernetesBootstrapConfig{DiscoveryURL: bootstrap.DiscoveryURL, JWKSURI: bootstrap.JWKSURI, TokenSource: bootstrap.TokenSource})
+	} else {
+		validator, err = oidcadapter.NewValidator(ctx, oidcConfig)
+	}
 	if err != nil {
 		return nil, fmt.Errorf("mcpbrokerserver: initialize workload identity: %w", err)
 	}

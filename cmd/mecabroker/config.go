@@ -50,12 +50,13 @@ type fileConfig struct {
 		TLSKeyFile    string `json:"tls_key_file"`
 	} `json:"listener"`
 	WorkloadJWT struct {
-		Issuer           string   `json:"issuer"`
-		JWKSURI          string   `json:"jwks_uri"`
-		Audience         string   `json:"audience"`
-		Subject          string   `json:"subject"`
-		TrustBundleFile  string   `json:"trust_bundle_file"`
-		MaxJWKSStaleness duration `json:"max_jwks_staleness"`
+		Issuer              string                   `json:"issuer"`
+		JWKSURI             string                   `json:"jwks_uri"`
+		Audience            string                   `json:"audience"`
+		Subject             string                   `json:"subject"`
+		TrustBundleFile     string                   `json:"trust_bundle_file"`
+		MaxJWKSStaleness    duration                 `json:"max_jwks_staleness"`
+		KubernetesBootstrap *fileKubernetesBootstrap `json:"kubernetes_bootstrap,omitempty"`
 	} `json:"workload_jwt"`
 	CallbackURL string        `json:"callback_url"`
 	Profiles    []fileProfile `json:"profiles"`
@@ -83,6 +84,12 @@ type fileConfig struct {
 		MaxPendingAuthStates int      `json:"max_pending_auth_states"`
 	} `json:"runtime"`
 }
+type fileKubernetesBootstrap struct {
+	DiscoveryURL string `json:"discovery_url"`
+	JWKSURI      string `json:"jwks_uri"`
+	TokenFile    string `json:"token_file"`
+}
+
 type fileProfile struct {
 	Name   string       `json:"name"`
 	URL    string       `json:"url"`
@@ -188,14 +195,30 @@ func (cfg fileConfig) validate() error {
 	if _, _, err := net.SplitHostPort(cfg.Listener.PublicAddress); err != nil {
 		return errors.New("public listener address is invalid")
 	}
-	if cfg.WorkloadJWT.Issuer == "" || cfg.WorkloadJWT.JWKSURI == "" || cfg.WorkloadJWT.Audience == "" || cfg.WorkloadJWT.Subject == "" || cfg.WorkloadJWT.TrustBundleFile == "" {
+	bootstrap := cfg.WorkloadJWT.KubernetesBootstrap
+	if cfg.WorkloadJWT.Audience == "" || cfg.WorkloadJWT.Subject == "" || cfg.WorkloadJWT.TrustBundleFile == "" {
 		return errors.New("complete workload-JWT configuration is required")
 	}
-	if err := mcpbroker.ValidateProtectedURL(cfg.WorkloadJWT.Issuer, "workload-JWT issuer"); err != nil {
-		return err
+	if bootstrap == nil && (cfg.WorkloadJWT.Issuer == "" || cfg.WorkloadJWT.JWKSURI == "") {
+		return errors.New("complete workload-JWT configuration is required")
 	}
-	if err := mcpbroker.ValidateProtectedURL(cfg.WorkloadJWT.JWKSURI, "workload-JWT JWKS URI"); err != nil {
-		return err
+	if bootstrap != nil && (cfg.WorkloadJWT.Issuer != "" || cfg.WorkloadJWT.JWKSURI != "" || bootstrap.DiscoveryURL == "" || bootstrap.JWKSURI == "" || bootstrap.TokenFile == "") {
+		return errors.New("Kubernetes workload-JWT bootstrap configuration is incomplete or conflicts with explicit issuer/JWKS")
+	}
+	if bootstrap == nil {
+		if err := mcpbroker.ValidateProtectedURL(cfg.WorkloadJWT.Issuer, "workload-JWT issuer"); err != nil {
+			return err
+		}
+		if err := mcpbroker.ValidateProtectedURL(cfg.WorkloadJWT.JWKSURI, "workload-JWT JWKS URI"); err != nil {
+			return err
+		}
+	} else {
+		if err := mcpbroker.ValidateProtectedURL(bootstrap.DiscoveryURL, "Kubernetes discovery URL"); err != nil {
+			return err
+		}
+		if err := mcpbroker.ValidateProtectedURL(bootstrap.JWKSURI, "Kubernetes JWKS URI"); err != nil {
+			return err
+		}
 	}
 	if cfg.WorkloadJWT.MaxJWKSStaleness.value() <= 0 || cfg.WorkloadJWT.MaxJWKSStaleness.value() > maxJWKSStaleness {
 		return errors.New("workload-JWT JWKS staleness is invalid")
@@ -326,16 +349,39 @@ func (cfg fileConfig) productionConfig(certificate tls.Certificate, caPEM []byte
 		PublicAddress: cfg.Listener.PublicAddress,
 		AdminAddress:  defaultAdminAddress,
 		TLSConfig:     &tls.Config{Certificates: []tls.Certificate{certificate}, MinVersion: tls.VersionTLS12},
-		WorkloadJWT: mcpbrokerserver.WorkloadJWTConfig{
-			Issuer: cfg.WorkloadJWT.Issuer, JWKSURI: cfg.WorkloadJWT.JWKSURI,
-			Audience: cfg.WorkloadJWT.Audience, AllowedSubjects: []string{cfg.WorkloadJWT.Subject},
-			TrustedCAPEM: caPEM, MaxJWKSStaleness: cfg.WorkloadJWT.MaxJWKSStaleness.value(),
-		},
-		ToolHive: cfg.toolHive(), Diagnostics: diagnostics,
+		WorkloadJWT:   cfg.workloadJWTConfig(caPEM),
+		ToolHive:      cfg.toolHive(), Diagnostics: diagnostics,
 		PropagationWait: cfg.Drain.PropagationDelay.value(), DrainTimeout: cfg.Drain.Timeout.value(),
 		ShutdownTimeout: cfg.Drain.ListenerShutdownTimeout.value(),
 		PublicBounds:    mcpbrokerserver.DefaultPublicListenerConfig(),
 		Transport:       cfg.transport(), RuntimeLimits: cfg.runtimeLimits(),
+	}
+}
+
+func (cfg fileConfig) workloadJWTConfig(caPEM []byte) mcpbrokerserver.WorkloadJWTConfig {
+	out := mcpbrokerserver.WorkloadJWTConfig{
+		Issuer: cfg.WorkloadJWT.Issuer, JWKSURI: cfg.WorkloadJWT.JWKSURI,
+		Audience: cfg.WorkloadJWT.Audience, AllowedSubjects: []string{cfg.WorkloadJWT.Subject},
+		TrustedCAPEM: caPEM, MaxJWKSStaleness: cfg.WorkloadJWT.MaxJWKSStaleness.value(),
+	}
+	if bootstrap := cfg.WorkloadJWT.KubernetesBootstrap; bootstrap != nil {
+		out.KubernetesBootstrap = &mcpbrokerserver.KubernetesBootstrapConfig{DiscoveryURL: bootstrap.DiscoveryURL, JWKSURI: bootstrap.JWKSURI, TokenSource: projectedTokenSource(bootstrap.TokenFile)}
+	}
+	return out
+}
+
+func projectedTokenSource(path string) func() ([]byte, error) {
+	return func() ([]byte, error) {
+		file, err := os.Open(path)
+		if err != nil {
+			return nil, errors.New("open projected Kubernetes token")
+		}
+		defer func() { _ = file.Close() }()
+		data, err := io.ReadAll(io.LimitReader(file, maxClientSecretBytes+1))
+		if err != nil || len(data) > maxClientSecretBytes {
+			return nil, errors.New("read projected Kubernetes token")
+		}
+		return data, nil
 	}
 }
 

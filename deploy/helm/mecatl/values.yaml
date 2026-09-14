@@ -6,12 +6,13 @@ global:
   mecatl:
     mode: managed
     broker:
-      # Managed mode requires the operator to provide the broker's JWT trust
-      # inputs. The service address and mecak8s subject are derived below.
       tls:
         caSecret: ""
         caKey: ""
         serverName: ""
+      # Managed mode defaults to Kubernetes API discovery when issuer, JWKS URI,
+      # and trust bundle Secret are all omitted. Set all three to use an external
+      # workload JWT issuer instead.
       workloadJWT:
         issuer: ""
         jwksURI: ""
@@ -19,6 +20,9 @@ global:
         lifetimeSeconds: 600
         trustBundleSecret: ""
         trustBundleKey: ca.pem
+        kubernetesBootstrap:
+          createRBAC: true
+          apiAudience: ""
     mcp:
       broker:
         callbackURL: ""

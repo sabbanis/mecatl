@@ -54,6 +54,9 @@ type Config struct {
 	// the validator's hardened client. When set, the caller is responsible for
 	// preserving equivalent redirect and private-address protections.
 	HTTPClient *http.Client
+	// kubernetesBootstrap permits the internally constructed, endpoint-confined
+	// bearer client used only by NewKubernetesValidator.
+	kubernetesBootstrap bool
 }
 
 // ErrInvalidToken identifies a malformed, invalid, or otherwise inadmissible
@@ -93,12 +96,15 @@ func NewValidator(ctx context.Context, cfg Config) (*Validator, error) {
 	if cfg.AllowPrivateHTTPSIssuer && cfg.TrustedCAFile == "" {
 		return nil, fmt.Errorf("%w: trusted CA file is empty when private HTTPS issuer mode is enabled", ErrInvalidConfig)
 	}
-	if cfg.AllowPrivateHTTPSIssuer && cfg.HTTPClient != nil {
+	if cfg.AllowPrivateHTTPSIssuer && cfg.HTTPClient != nil && !cfg.kubernetesBootstrap {
 		return nil, fmt.Errorf("%w: custom HTTP client is not allowed with private HTTPS issuer mode", ErrInvalidConfig)
 	}
 	toolhiveConfig := authnConfig(cfg)
 	var internalClient *http.Client
-	if cfg.AllowPrivateHTTPSIssuer {
+	if cfg.AllowPrivateHTTPSIssuer && cfg.kubernetesBootstrap {
+		internalClient = cfg.HTTPClient
+		toolhiveConfig.HTTPClient = internalClient
+	} else if cfg.AllowPrivateHTTPSIssuer {
 		client, err := newPrivateHTTPSClient(ctx, cfg)
 		if err != nil {
 			return nil, fmt.Errorf("%w: %v", ErrInvalidConfig, err)

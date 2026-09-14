@@ -70,6 +70,28 @@ func validBrokerConfig() fileConfig {
 	return cfg
 }
 
+func TestKubernetesWorkloadJWTBootstrapConfiguration(t *testing.T) {
+	cfg := validBrokerConfig()
+	cfg.Profiles = []fileProfile{{Name: "public", URL: "https://mcp.example", Auth: "none"}}
+	cfg.WorkloadJWT.Issuer, cfg.WorkloadJWT.JWKSURI = "", ""
+	cfg.WorkloadJWT.KubernetesBootstrap = &fileKubernetesBootstrap{
+		DiscoveryURL: "https://kubernetes.default.svc/.well-known/openid-configuration",
+		JWKSURI:      "https://kubernetes.default.svc/openid/v1/jwks",
+		TokenFile:    "/var/run/secrets/kubernetes.io/serviceaccount/token",
+	}
+	if err := cfg.validate(); err != nil {
+		t.Fatalf("bootstrap configuration rejected: %v", err)
+	}
+	production := cfg.workloadJWTConfig([]byte("ca"))
+	if production.Issuer != "" || production.JWKSURI != "" || production.KubernetesBootstrap == nil || production.KubernetesBootstrap.DiscoveryURL != cfg.WorkloadJWT.KubernetesBootstrap.DiscoveryURL {
+		t.Fatalf("bootstrap production mapping = %#v", production)
+	}
+	cfg.WorkloadJWT.Issuer = "https://issuer.example"
+	if err := cfg.validate(); err == nil {
+		t.Fatal("bootstrap and explicit issuer were accepted together")
+	}
+}
+
 func TestToolHiveRejectsCIMDConfiguration(t *testing.T) {
 	const cimd = "https://client.example/metadata.json"
 	cfg := validBrokerConfig()

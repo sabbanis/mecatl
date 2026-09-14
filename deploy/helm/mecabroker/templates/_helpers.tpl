@@ -1,9 +1,18 @@
-{{- define "mecabroker.workloadIssuer" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "issuer" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.issuer }}{{- end -}}{{- end -}}
-{{- define "mecabroker.workloadJWKS" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "jwksURI" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.jwksURI }}{{- end -}}{{- end -}}
-{{- define "mecabroker.workloadAudience" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "audience" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.audience }}{{- end -}}{{- end -}}
-{{- define "mecabroker.workloadSubject" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}system:serviceaccount:{{ .Release.Namespace }}:{{ .Release.Name }}-mecak8s{{- else -}}{{ .Values.workloadJWT.subject }}{{- end -}}{{- end -}}
-{{- define "mecabroker.workloadTrustBundle" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "trustBundleSecret" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.trustBundle.secretName }}{{- end -}}{{- end -}}
-{{- define "mecabroker.workloadTrustBundleKey" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") -}}{{ dig "mecatl" "broker" "workloadJWT" "trustBundleKey" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.trustBundle.key }}{{- end -}}{{- end -}}
+{{- define "mecabroker.managed" -}}{{- if and (hasKey (default dict .Values.global) "mecatl") (eq (dig "mecatl" "mode" "" (default dict .Values.global)) "managed") }}true{{- end -}}{{- end -}}
+{{- define "mecabroker.kubernetesBootstrap" -}}
+{{- if include "mecabroker.managed" . -}}
+{{- $jwt := dig "mecatl" "broker" "workloadJWT" (dict) (default dict .Values.global) -}}
+{{- if and (not $jwt.issuer) (not $jwt.jwksURI) (not $jwt.trustBundleSecret) }}true{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- define "mecabroker.workloadIssuer" -}}{{- if include "mecabroker.managed" . -}}{{ dig "mecatl" "broker" "workloadJWT" "issuer" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.issuer }}{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadJWKS" -}}{{- if include "mecabroker.kubernetesBootstrap" . -}}https://kubernetes.default.svc/openid/v1/jwks{{- else if include "mecabroker.managed" . -}}{{ dig "mecatl" "broker" "workloadJWT" "jwksURI" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.jwksURI }}{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadAudience" -}}{{- if include "mecabroker.managed" . -}}{{ dig "mecatl" "broker" "workloadJWT" "audience" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.audience }}{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadBootstrapAPIAudience" -}}{{- if include "mecabroker.managed" . -}}{{ dig "mecatl" "broker" "workloadJWT" "kubernetesBootstrap" "apiAudience" "" (default dict .Values.global) }}{{- else -}}https://kubernetes.default.svc{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadSubject" -}}{{- if include "mecabroker.managed" . -}}system:serviceaccount:{{ .Release.Namespace }}:{{ include "mecak8s.fullname" (dict "Chart" (dict "Name" "mecak8s") "Values" (dict "nameOverride" "" "fullnameOverride" "") "Release" .Release) }}{{- else -}}{{ .Values.workloadJWT.subject }}{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadTrustBundle" -}}{{- if include "mecabroker.kubernetesBootstrap" . -}}kube-root-ca.crt{{- else if include "mecabroker.managed" . -}}{{ dig "mecatl" "broker" "workloadJWT" "trustBundleSecret" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.trustBundle.secretName }}{{- end -}}{{- end -}}
+{{- define "mecabroker.workloadTrustBundleKey" -}}{{- if include "mecabroker.kubernetesBootstrap" . -}}ca.pem{{- else if include "mecabroker.managed" . -}}{{ dig "mecatl" "broker" "workloadJWT" "trustBundleKey" "" (default dict .Values.global) }}{{- else -}}{{ .Values.workloadJWT.trustBundle.key }}{{- end -}}{{- end -}}
+{{- define "mecabroker.kubernetesBootstrapRBACName" -}}{{- printf "%s-kubernetes-discovery-%s" (include "mecabroker.fullname" . | trunc 45 | trimSuffix "-") (printf "%s/%s" .Release.Namespace .Release.Name | sha256sum | trunc 12) | trunc 63 | trimSuffix "-" -}}{{- end -}}
 
 {{- define "mecabroker.validateImage" -}}
 {{- if not (regexMatch "^sha256:[0-9a-f]{64}$" .Values.image.digest) -}}{{ fail "image.digest must be a lowercase sha256 digest" }}{{- end -}}
@@ -82,10 +91,17 @@
 {{- end -}}
 {{- end -}}
 {{- $callback := .Values.callbackURL -}}{{- if (default .Values.mcp.servers (dig "mecatl" "mcp" "servers" nil (default dict .Values.global))) }}{{- $callback = (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) -}}{{- else if (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) }}{{- $callback = (default .Values.mcp.broker.callbackURL (dig "mecatl" "mcp" "broker" "callbackURL" "" (default dict .Values.global))) -}}{{- end -}}
+{{- $workloadJWT := dict "audience" (include "mecabroker.workloadAudience" .) "subject" (include "mecabroker.workloadSubject" .) "trust_bundle_file" (printf "/var/run/mecabroker/workload-jwt/%s" (include "mecabroker.workloadTrustBundleKey" .)) "max_jwks_staleness" (printf "%ds" (int .Values.workloadJWT.maxJWKSStalenessSeconds)) -}}
+{{- if include "mecabroker.kubernetesBootstrap" . -}}
+{{- $_ := set $workloadJWT "kubernetes_bootstrap" (dict "discovery_url" "https://kubernetes.default.svc/.well-known/openid-configuration" "jwks_uri" (include "mecabroker.workloadJWKS" .) "token_file" "/var/run/mecabroker/workload-jwt/token") -}}
+{{- else -}}
+{{- $_ := set $workloadJWT "issuer" (include "mecabroker.workloadIssuer" .) -}}
+{{- $_ := set $workloadJWT "jwks_uri" (include "mecabroker.workloadJWKS" .) -}}
+{{- end -}}
 {{- $config := dict
   "api_version" "mecabroker.mecatl.dev/v1"
   "listener" (dict "public_address" .Values.listener.publicAddress "tls_cert_file" (printf "/var/run/mecabroker/tls/%s" .Values.listener.tls.certKey) "tls_key_file" (printf "/var/run/mecabroker/tls/%s" .Values.listener.tls.keyKey))
-  "workload_jwt" (dict "issuer" (include "mecabroker.workloadIssuer" .) "jwks_uri" (include "mecabroker.workloadJWKS" .) "audience" (include "mecabroker.workloadAudience" .) "subject" (include "mecabroker.workloadSubject" .) "trust_bundle_file" (printf "/var/run/mecabroker/workload-jwt/%s" (include "mecabroker.workloadTrustBundleKey" .)) "max_jwks_staleness" (printf "%ds" (int .Values.workloadJWT.maxJWKSStalenessSeconds)))
+  "workload_jwt" $workloadJWT
   "callback_url" $callback
   "profiles" $profiles
   "drain" (dict "propagation_delay" (printf "%ds" (int .Values.drain.propagationDelaySeconds)) "timeout" (printf "%ds" (int .Values.drain.timeoutSeconds)) "listener_shutdown_timeout" (printf "%ds" (int .Values.drain.listenerShutdownTimeoutSeconds)))

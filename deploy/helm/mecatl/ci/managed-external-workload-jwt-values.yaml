@@ -4,7 +4,7 @@ global:
     mode: managed
     broker:
       tls: {caSecret: broker-workload-ca, caKey: ca.pem, serverName: ""}
-      workloadJWT: {audience: mecabroker, lifetimeSeconds: 600, kubernetesBootstrap: {createRBAC: true}}
+      workloadJWT: {issuer: https://issuer.example, jwksURI: https://issuer.example/jwks, audience: mecabroker, lifetimeSeconds: 600, trustBundleSecret: broker-workload-ca, trustBundleKey: ca.pem}
     mcp:
       broker:
         callbackURL: https://broker.example/callback

@@ -10,6 +10,66 @@ Use `cmd/mecabroker` when `mecak8s` needs a remote ToolHive authorization bounda
 ships as `ghcr.io/stacklok/mecatl/mecabroker` and has its own
 `deploy/helm/mecabroker/` chart; it is not part of the mecak8s chart.
 
+## Managed umbrella workload-JWT bootstrap
+
+The managed umbrella chart, `deploy/helm/mecatl`, includes `mecak8s` and a
+singleton broker. By default, when
+`global.mecatl.broker.workloadJWT.issuer`, `jwksURI`, and `trustBundleSecret` are
+all omitted, the broker uses Kubernetes authenticated discovery and JWKS
+bootstrap. It receives a broker-specific projected ServiceAccount token and
+mounts the expected `kube-root-ca.crt` trust bundle. The chart-owned RBAC grants
+that broker ServiceAccount only these non-resource `GET` permissions:
+
+- `/.well-known/openid-configuration`
+- `/openid/v1/jwks`
+
+The chart does not create anonymous RBAC. Keep the default `NetworkPolicy`
+configuration in mind: egress remains platform-owned and default-deny unless
+`networkPolicy.operatorEgress` is configured. If egress policy is enforced, the
+operator must allow DNS and the Kubernetes API/discovery traffic needed by the
+bootstrap, as well as any other configured destinations.
+
+For an external issuer, set the complete trust tuple. All three values are
+required together; a partial configuration fails Helm rendering:
+
+```yaml
+global:
+  mecatl:
+    broker:
+      workloadJWT:
+        issuer: https://issuer.example
+        jwksURI: https://issuer.example/jwks
+        trustBundleSecret: broker-workload-ca
+        trustBundleKey: ca.pem
+```
+
+With all three values present, the umbrella selects the external trust path and
+does not render the Kubernetes discovery/JWKS bootstrap resources. Most managed
+clusters leave `kubernetesBootstrap.apiAudience` empty so the projected token
+uses the API server's default audience. Set it only when the API server requires
+a distinct configured audience.
+
+To pre-provision the discovery permissions instead, set
+`global.mecatl.broker.workloadJWT.kubernetesBootstrap.createRBAC: false`. The
+pre-provisioned role must grant the broker ServiceAccount the two exact
+non-resource `GET` permissions listed above; the chart still renders the
+projected token and trust-bundle mounts.
+
+```yaml
+global:
+  mecatl:
+    broker:
+      workloadJWT:
+        kubernetesBootstrap:
+          createRBAC: false
+```
+
+```sh
+helm template mecatl deploy/helm/mecatl -f values.yaml
+```
+
+For the standalone chart:
+
 ```sh
 task ko:build:broker
 helm template broker deploy/helm/mecabroker \
@@ -28,7 +88,7 @@ keys.
 | Values | Purpose |
 |---|---|
 | `listener.publicAddress` and `listener.tls.{secretName,certKey,keyKey}` | The TLS public bind address and the exact certificate/key Secret keys. The default bind is `0.0.0.0:8443`. |
-| `workloadJWT.{issuer,jwksURI,audience,subject,maxJWKSStalenessSeconds}` | Verification of the mecak8s workload credential. `workloadJWT.trustBundle.{secretName,key}` supplies the read-only trust bundle. |
+| `workloadJWT.{issuer,jwksURI,audience,subject,maxJWKSStalenessSeconds}` | Verification of the mecak8s workload credential. `workloadJWT.trustBundle.{secretName,key}` supplies the read-only trust bundle. In the managed umbrella, omit external issuer/JWKS/trust inputs for Kubernetes bootstrap; `global.mecatl.broker.workloadJWT.kubernetesBootstrap.{createRBAC,apiAudience}` controls pre-provisioned RBAC and a custom Kubernetes API token audience. |
 | `callbackURL` | The externally reachable final browser callback URL. It must route to this broker. |
 | `profiles[]` | Typed upstream profiles: `name`, `url`, `auth: none|oauth`, and, for OAuth, a strict `oauth.client_mode` union: `preregistered` requires `client_id` plus `client_secret_file`, and `dcr` requires `dcr_discovery_url`; CIMD is rejected because mecabroker has no CIMD construction support; each mode rejects the other modes' fields. OAuth profiles may also declare typed `tools`. |
 | `drain.{propagationDelaySeconds,timeoutSeconds,listenerShutdownTimeoutSeconds}` | Bounded singleton shutdown timing. |

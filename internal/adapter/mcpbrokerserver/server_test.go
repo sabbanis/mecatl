@@ -57,6 +57,9 @@ func newIdentityFixture(t *testing.T) *identityFixture {
 	f := &identityFixture{key: key}
 	f.available.Store(true)
 	mux := http.NewServeMux()
+	mux.HandleFunc("/.well-known/openid-configuration", func(w http.ResponseWriter, _ *http.Request) {
+		_ = json.NewEncoder(w).Encode(map[string]string{"issuer": f.server.URL, "jwks_uri": f.server.URL + "/keys"})
+	})
 	mux.HandleFunc("/keys", func(w http.ResponseWriter, _ *http.Request) {
 		if !f.available.Load() {
 			http.Error(w, "down", http.StatusServiceUnavailable)

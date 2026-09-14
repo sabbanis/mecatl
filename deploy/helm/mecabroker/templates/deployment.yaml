@@ -2,6 +2,7 @@
 {{- include "mecabroker.validateMCP" . -}}
 {{- include "mecabroker.validateImage" . -}}
 {{- include "mecabroker.validateShutdownBudget" . -}}
+{{- $bootstrapAPIAudience := include "mecabroker.workloadBootstrapAPIAudience" . -}}
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -65,7 +66,12 @@ spec:
             seccompProfile: {type: RuntimeDefault}
           volumeMounts:
             - {name: tls, mountPath: /var/run/mecabroker/tls, readOnly: true}
+{{- if include "mecabroker.kubernetesBootstrap" . }}
+            - {name: workload-jwt-ca, mountPath: /var/run/mecabroker/workload-jwt/ca.pem, subPath: ca.pem, readOnly: true}
+            - {name: workload-jwt-token, mountPath: /var/run/mecabroker/workload-jwt, readOnly: true}
+{{- else }}
             - {name: workload-jwt, mountPath: /var/run/mecabroker/workload-jwt, readOnly: true}
+{{- end }}
             - {name: broker-config, mountPath: /etc/mecabroker, readOnly: true}
             - {name: tmp, mountPath: /tmp}
 {{- range $index, $profile := .Values.profiles }}
@@ -86,12 +92,31 @@ spec:
             items:
               - {key: {{ .Values.listener.tls.certKey }}, path: {{ .Values.listener.tls.certKey }}}
               - {key: {{ .Values.listener.tls.keyKey }}, path: {{ .Values.listener.tls.keyKey }}}
+{{- if include "mecabroker.kubernetesBootstrap" . }}
+        - name: workload-jwt-ca
+          configMap:
+            name: kube-root-ca.crt
+            defaultMode: 0440
+            items:
+              - {key: ca.crt, path: ca.pem}
+        - name: workload-jwt-token
+          projected:
+            defaultMode: 0440
+            sources:
+              - serviceAccountToken:
+                  path: token
+                  {{ if $bootstrapAPIAudience }}
+                  audience: {{ $bootstrapAPIAudience | quote }}
+                  {{ end }}
+                  expirationSeconds: 600
+{{- else }}
         - name: workload-jwt
           secret:
             secretName: {{ include "mecabroker.workloadTrustBundle" . }}
             defaultMode: 0440
             items:
               - {key: {{ include "mecabroker.workloadTrustBundleKey" . }}, path: {{ include "mecabroker.workloadTrustBundleKey" . }}}
+{{- end }}
         - name: broker-config
           configMap:
             name: {{ include "mecabroker.fullname" . }}-config

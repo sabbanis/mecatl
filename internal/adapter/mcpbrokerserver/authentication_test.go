@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 
 	brokerv1 "github.com/stacklok/mecatl/contracts/gen/go/mecatl/broker/v1"
 	"github.com/stacklok/mecatl/engine/session"
@@ -19,6 +20,43 @@ func (*completeVerifierFake) Validate(context.Context, string) (*session.Princip
 }
 func (f *completeVerifierFake) Ready(context.Context) error { return f.readyErr }
 func (f *completeVerifierFake) Close() error                { f.closed = true; return nil }
+
+func TestWorkloadJWTVerifierKubernetesBootstrap(t *testing.T) {
+	fixture := newIdentityFixture(t)
+	projected := fixture.token(t, fixture.server.URL, testAudience, time.Now().Add(time.Minute), nil)
+	cfg := WorkloadJWTConfig{
+		Audience:         testAudience,
+		AllowedSubjects:  []string{"workload-secret-identity"},
+		TrustedCAPEM:     fixture.caPEM(),
+		MaxJWKSStaleness: time.Minute,
+		KubernetesBootstrap: &KubernetesBootstrapConfig{
+			DiscoveryURL: fixture.server.URL + "/.well-known/openid-configuration",
+			JWKSURI:      fixture.server.URL + "/keys",
+			TokenSource:  func() ([]byte, error) { return []byte(projected), nil },
+		},
+	}
+	verifier, err := newWorkloadJWTVerifier(t.Context(), cfg)
+	if err != nil {
+		t.Fatalf("newWorkloadJWTVerifier: %v", err)
+	}
+	t.Cleanup(func() { _ = verifier.Close() })
+
+	principal, err := verifier.Validate(t.Context(), projected)
+	if err != nil {
+		t.Fatalf("Validate: %v", err)
+	}
+	if principal.Subject != "workload-secret-identity" {
+		t.Fatalf("subject = %q, want workload-secret-identity", principal.Subject)
+	}
+
+	cfg.KubernetesBootstrap.TokenSource = func() ([]byte, error) {
+		return []byte(fixture.token(t, "https://wrong-issuer.example", testAudience, time.Now().Add(time.Minute), nil)), nil
+	}
+	if verifier, err := newWorkloadJWTVerifier(t.Context(), cfg); err == nil {
+		_ = verifier.Close()
+		t.Fatal("newWorkloadJWTVerifier accepted a projected token whose issuer differs from discovery")
+	}
+}
 
 func TestBrokerHostUsesCompleteVerifierForReadinessAndClose(t *testing.T) {
 	verifier := &completeVerifierFake{}
