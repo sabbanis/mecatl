@@ -614,18 +614,22 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 		if msg.token != m.modelSwitchRequestToken || m.phase != phaseConnecting || m.sessionID != msg.sourceID {
 			return m, m.closeSessionCmd(msg.targetID), true
 		}
-		caps := msg.snapshot.Capabilities
-		if caps == (client.Capabilities{}) {
-			caps = m.caps
+		caps := mergeSessionCapabilities(m.caps, msg.snapshot.Capabilities)
+		resolved := msg.snapshot.ResolvedModel
+		if resolved == (client.ResolvedModel{}) {
+			resolved = m.resolvedSessionModel
 		}
 		ready := client.SessionReadyMsg{SessionID: msg.targetID, Capabilities: caps,
-			ResolvedModel: msg.snapshot.ResolvedModel, Mode: msg.snapshot.Mode}
+			ResolvedModel: resolved, Mode: msg.snapshot.Mode}
+		// The successor has a fresh aggregate, but its transcript is already present
+		// in the local projection. Reset only state derived from the old session.
+		m = m.resetSessionDerived()
 		mm, cmd, handled := m.applySessionReady(ready)
 		m = mm.(Model)
+		m.resolvedSessionModel = resolved
 		m.sessionState = msg.snapshot.State
 		m.sessionCreatedAt = msg.snapshot.CreatedAt
 		m.activePlacement = msg.snapshot.Placement
-		m.resolvedSessionModel = msg.snapshot.ResolvedModel
 		m.sessionTitle = msg.snapshot.Title
 		m.sessionTitleProvenance = msg.snapshot.TitleProvenance
 		m.sessionTitleRevision = msg.snapshot.TitleRevision
@@ -942,6 +946,29 @@ func (m Model) updateLifecycle(msg tea.Msg) (tea.Model, tea.Cmd, bool) {
 	}
 }
 
+// mergeSessionCapabilities preserves the known server-wide capability snapshot when
+// a compatible response contains only the selected session's media capabilities.
+func mergeSessionCapabilities(current, incoming client.Capabilities) client.Capabilities {
+	if incoming == (client.Capabilities{}) {
+		return current
+	}
+	mediaOnly := incoming.SessionMediaPresent
+	image, audio := incoming.Image, incoming.Audio
+	incoming.SessionMediaPresent = false
+	incoming.Image = false
+	incoming.Audio = false
+	if mediaOnly && incoming == (client.Capabilities{}) {
+		current.Image = image
+		current.Audio = audio
+		current.SessionMediaPresent = true
+		return current
+	}
+	incoming.Image = image
+	incoming.Audio = audio
+	incoming.SessionMediaPresent = mediaOnly
+	return incoming
+}
+
 // onResolvedModelMsg handles the ResolvedModelMsg from a GetSession refetch
 // (footer context-meter heal, issue #66) and the plan-approval mode+model
 // refresh (issue #206). Extracted from updateLifecycle to keep its cyclomatic
@@ -964,22 +991,7 @@ func (m Model) onResolvedModelMsg(msg client.ResolvedModelMsg) (Model, tea.Cmd, 
 	if msg.Err != nil || msg.SessionID != m.sessionID {
 		return m, nil, true
 	}
-	// A present SessionCapabilities message is authoritative even when both media
-	// values are false. If it is the only populated wire capability, overlay just
-	// media so an older server's absent global feature snapshot does not erase the
-	// already-known global bits.
-	incomingCaps := msg.Capabilities
-	mediaOnly := incomingCaps.SessionMediaPresent
-	incomingCaps.SessionMediaPresent = false
-	incomingCaps.Image = false
-	incomingCaps.Audio = false
-	if mediaOnly && incomingCaps == (client.Capabilities{}) {
-		m.caps.Image = msg.Capabilities.Image
-		m.caps.Audio = msg.Capabilities.Audio
-		m.caps.SessionMediaPresent = true
-	} else if msg.Capabilities != (client.Capabilities{}) {
-		m.caps = msg.Capabilities
-	}
+	m.caps = mergeSessionCapabilities(m.caps, msg.Capabilities)
 	// The snapshot is authoritative after reconnect/session adoption, so unlike the
 	// old first-prompt seed it may replace a local title.
 	m, _ = m.adoptTitle(msg.Title, msg.TitleProvenance, msg.TitleRevision)

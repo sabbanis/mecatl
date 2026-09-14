@@ -62,6 +62,53 @@ func TestMecatuiEffortHandoffRecovery_Scenario1_AdoptsTargetBeforeClosingSource(
 	if m.caps.ManualCompaction != true || len(conv.closed()) != 1 || conv.closed()[0] != "sess-test-0001" {
 		t.Fatalf("target metadata/source retirement mismatch: caps=%+v closed=%v", m.caps, conv.closed())
 	}
+	conv.mu.Lock()
+	gotIDs := append([]string(nil), conv.getSessionIDs...)
+	conv.mu.Unlock()
+	if len(gotIDs) == 0 {
+		t.Fatalf("GetSession IDs = %v, want the returned fork target", gotIDs)
+	}
+	for _, id := range gotIDs {
+		if id != "sess-fork-1" {
+			t.Fatalf("GetSession IDs = %v, want every hydration to use returned fork target", gotIDs)
+		}
+	}
+}
+
+func TestMecatuiEffortHandoffOverlaysSessionMediaAndResetsDerivedState(t *testing.T) {
+	m := newModelsModel(t, sampleModels(), &fakeStore{}, modelsCaps(), client.ModelSelection{})
+	conv := m.deps.Session.(*fakeConv)
+	m.usage = client.Usage{InputTokens: 11, OutputTokens: 7}
+	m.contextTokens = 42
+	m.providerRoute = "old-downstream"
+	m.caps = client.Capabilities{ModelSelection: true, Teams: true, Image: true, Audio: true}
+	oldResolved := m.resolvedSessionModel
+	conv.getSessionCaps = client.Capabilities{SessionMediaPresent: true}
+	conv.resolvedModel = client.ResolvedModel{}
+
+	m, cmd := effortHandoffPick(t, m)
+	m = feedCmd(t, m, cmd)
+
+	if m.caps.ModelSelection != true || m.caps.Teams != true || m.caps.Image || m.caps.Audio || !m.caps.SessionMediaPresent {
+		t.Fatalf("session media-only target did not preserve global caps and overlay text-only media: %+v", m.caps)
+	}
+	if m.resolvedSessionModel != oldResolved {
+		t.Fatalf("empty target resolved model = %+v, want source fallback %+v", m.resolvedSessionModel, oldResolved)
+	}
+	if m.usage != (client.Usage{}) || m.contextTokens != 0 || m.providerRoute != "" {
+		t.Fatalf("successor-derived state was not reset: usage=%+v context=%d route=%q", m.usage, m.contextTokens, m.providerRoute)
+	}
+	conv.mu.Lock()
+	gotIDs := append([]string(nil), conv.getSessionIDs...)
+	conv.mu.Unlock()
+	if len(gotIDs) == 0 {
+		t.Fatalf("GetSession IDs = %v, want returned target ID", gotIDs)
+	}
+	for _, id := range gotIDs {
+		if id != "sess-fork-1" {
+			t.Fatalf("GetSession IDs = %v, want every hydration to use returned target ID", gotIDs)
+		}
+	}
 }
 
 func TestMecatuiEffortHandoffRecovery_Scenario1_StaleReadyCleansTargetAndStaleFailureIsInert(t *testing.T) {
