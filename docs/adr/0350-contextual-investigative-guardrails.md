@@ -1,13 +1,9 @@
-<<<<<<<< HEAD:docs/adr/0350-contextual-investigative-guardrails.md
 # ADR 0350 — Contextual investigative guardrails
-========
-# ADR 0342 — Contextual investigative guardrails
->>>>>>>> 5b5236be5 (feat: checkpoint contextual guardrail action review):docs/adr/0342-contextual-investigative-guardrails.md
 
 - Status: Proposed
 - Date: 2026-09-14
 - Scope: contextual action/inbound review, exact effective-call ordering, live repeat grants and result release, main/worker trajectory, checker routing, and safe status
-- Proposed supersession: ADR 0021's one-payload/tool-less classifier architecture; ADR 0051's generic advisory projection; ADR 0060's narrow default coverage; ADR 0062's waiver identity and approval-origin behavior
+- Proposed supersession: ADR 0021's one-payload/tool-less classifier architecture; ADR 0051's generic advisory projection; ADR 0060's narrow default coverage; ADR 0062's waiver identity and approval-origin behavior; ADR 0304's exact gRPC-only exception set, adding the owner-authorized coverage and live-detail RPCs
 - Superseded by: —
 
 ## Context

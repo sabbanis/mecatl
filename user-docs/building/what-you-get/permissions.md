@@ -375,38 +375,44 @@ Guardrails use a separate, tool-less model to inspect matched tool content:
 - `PostToolUse` checks inbound results for prompt injection before the agent
   reads them.
 
-### Verdicts: block, sanitize, advisory
+### Assessments and enforcement
 
-|Mode|Behavior|
-|-|-|
-|`block`|Stops a pre-tool call or replaces a post-tool result with an error.|
-|`sanitize`|Replaces arguments or results with the checker's `sanitized_content`. Invalid or oversized replacements become blocks.|
-|`advisory`|Logs and displays a finding without changing what the tool or model receives.|
+The contextual reviewer returns **acceptable**, **prohibited**, or **unresolved**.
+Inspection health is separate: an operational checker failure is an outage, not proof
+that content is unsafe. Each rule has one of two modes:
 
-Use `sanitize` only with a checker you trust because its output replaces the
-original content. A rewritten result includes the
-`[guardrail: redacted unsafe content]` marker.
+- **`block`** enforces. Before execution, an action finding can stop or ask. After
+  execution, a result finding is held privately before it reaches history, events,
+  the client, or the working model.
+- **`advisory`** leaves the call/result unchanged and shows the completed finding or
+  unresolved inspection to the operator.
 
-### PostToolUse block rewrites, it does not veto
+Sanitization and checker-authored replacement actions are not supported. Missing
+evidence can make an assessment unresolved, but does not itself make the action or
+content intrinsically unsafe.
 
-A `PostToolUse` check runs after the tool, so it cannot undo the operation. A
-block replaces the result with `is_error: true`. Recorded history, client
-events, and the model all receive that replacement. Only a `PreToolUse` block
-prevents execution.
+### Human choices: action versus result release
 
-### Recovering from a block: approve-once
+For an enforcing **action** review, Mecatui offers:
 
-A `PreToolUse` block creates the same interactive approval flow as a permission
-ask:
+- **Run once** — execute this exact effective call once;
+- **Don't ask again** — only when the exact action, target, environment revision,
+  and relevant dependencies can be version-bound; the grant is guardrail-only,
+  session/process-local, and invalidates on a material change; or
+- **Cancel** — do not run the tool.
 
-- **Deny:** the call never runs; the model receives the block reason and adapts.
-- **Allow once:** the call runs this time only.
-- **Allow and don't ask again** runs the call and creates an in-memory,
-  session-scoped waiver for the exact tool and normalized arguments. It does not
-  survive restart.
+For an enforcing **inbound result** review, Mecatui offers only **Release once** or
+**Cancel**. The tool has already run. Release consumes the exact privately-held result
+and runs no tool, hook, reviewer, or side effect again. It allows the model to read the
+content; embedded instructions remain untrusted and no later action is approved.
+Loss, timeout, disconnect, unattended enforcement, or restart safely withholds the
+result; there is no re-execution recovery.
 
-A pending approval can resume after restart. A headless deployment resolves an
-unanswered block as a terminal block.
+`/guardrails` shows the checker route and effective action/inbound rules for the active
+session's assembled tool catalog. Review cards distinguish a prohibited finding, a
+completed unresolved inspection, and an operational checker outage. Human rationale is
+bounded live-only detail: it is owner-authorized, never persisted in session events or
+snapshots, and disappears when the root run is cleaned up.
 
 Under `yolo`, all guardrail rules become advisory. `strict`, `trusted`, and
 `auto` retain enforcement.
@@ -416,19 +422,47 @@ Under `yolo`, all guardrail rules become advisory. `strict`, `trusted`, and
 Guardrails remain off until you configure a checker model. With a model and no
 explicit rules, Mecatl uses this block ruleset:
 
-|Tool matcher|Phases|Mode|
-|-|-|-|
-|`WebSearch`|pre + post|block|
-|`WebFetch`|post|block|
-|`mcp__*` (all MCP tools)|pre + post|block|
-|`Shell`|pre|block (read-only commands skip the checker)|
+|Tool matcher|Action review|Inbound review|Default mode|
+|-|-|-|-|
+|`Shell`|yes|yes|block|
+|`Edit`, `Write`, `Copy`, `Move`, `Remove`|yes|no|block|
+|`Read`, `ListDir`, `Grep`, `Glob`|no|yes|block|
+|`WebSearch`, `WebFetch`|yes|yes|block|
+|`mcp__*`, `CallMcpWithQuery`|yes|yes|block|
+|`FetchMcpResource`|no|yes|block|
+|`Subagent`, `Parallel`, `Team`|yes|no|block|
 
-Local filesystem tools are not matched by default. The `Shell` matcher skips
-commands that Mecatl can classify as read-only and inspects everything else. Its
-rubric checks for data exfiltration, remote-code execution, irreversible remote
-actions, destructive local actions, and persistence through credentials or
-startup files. Ordinary source edits, builds, tests, and local file operations
-are considered safe.
+The same applicable defaults bind worker calls. A rule still resolves against the
+actual tool catalog assembled for that session; `/guardrails` is the authoritative
+status view. The implementation does not claim that protocol tests prove a chosen
+checker model detects every prompt injection, secret, or dynamic Shell dependency.
+Use release-validation evidence before making an efficacy claim.
+
+Inspecting every shell command would be an unacceptable latency/cost tax on the
+`ls` / `grep` / `git status` traffic that dominates a session, so the default
+`Shell` rule carries a **read-only pre-filter**: a command that is confidently
+read-only (the same classifiers Layer 1's rule engine uses) skips the checker
+entirely — zero LLM calls. Anything else — a mutating or outward command, an
+unrecognized verb, or a substitution it can't prove read-only — falls through to
+inspection; ambiguity always fails toward inspecting, never skipping.
+
+The default `Shell` rule also swaps in a **Shell-specific rubric** in place of
+the generic exfiltration prompt used for the network/MCP rules — the generic
+rubric's "if uncertain, judge unsafe" false-positives badly on ordinary shell
+work (a write to a sibling repo never leaves the machine, so it isn't
+exfiltration). The Shell rubric instead judges a command **safe unless it names
+one of five concrete danger categories**: (1) sending data off the machine to a
+network destination, especially secrets; (2) fetching and executing remote code
+(`curl … | sh`); (3) an irreversible action against a remote you may not control
+(force-push, push/merge, `gh pr merge`, publishing a release, deleting a remote
+branch/repo); (4) a destructive, hard-to- reverse local operation (recursive
+deletion, overwriting a disk device, mass recursive chmod/chown); (5) a
+local-persistence write to a credential, SSH key, shell-startup file, scheduler
+entry, or git hook — a write that never leaves the machine but grants later
+off-machine access or persistent code execution. Ordinary local writes (source,
+config, build output, notes — including to sibling repos), builds, tests, local
+file moves/copies, and routine origin-remote git operations are explicitly
+judged safe.
 
 Set `defaultMode: advisory` to start the default set in observe-only mode and
 tune up from there.
@@ -446,14 +480,17 @@ guardrails:
       mode: advisory # observe first, tune later
     - match: 'Shell' # outbound exfil in shell args
       phases: ['pre']
-      mode: sanitize # use only with a trusted checker
-      failClosed: true # a checker outage treats the content as UNSAFE (default is fail-OPEN)
+      mode: block
+      failClosed: true # explicit per-rule override; checker outage is fail-closed by default
 ```
 
-A matcher uses the tool name. Exact matches outrank `prefix*`, which outranks
-`*`. A tool without a matching rule is unchecked. Checker errors fail open by
-default and produce a warning; set `failClosed: true` to treat an error as
-unsafe.
+A matcher keys on the tool **name** only (exact > `prefix*` > `*`, most-specific
+wins); a tool with no matching rule is unchecked. Checker outage is fail-closed
+by default: bounded recovery is followed by a human boundary when interactive,
+or action denial/result withholding when unattended. Explicit
+`onCheckerDown: warn` continues with a visible operational warning; it never
+relabels the outage as a prohibited finding. A completed acceptable verdict
+passes.
 
 Unlike the headless-only ask reviewer, guardrails fire on the main loop
 regardless of `--headless`.

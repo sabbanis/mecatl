@@ -56,15 +56,8 @@ func TestSDKTypescriptRelease_Scenario1_RPCTransportCatalogParity(t *testing.T) 
 		t.Fatalf("stale generated mecatl.v1 service catalog/exclusion decision: %v", missing)
 	}
 
-	wantCounts := map[string]int{"HarnessService": 76, "ScheduleService": 10}
-	// Task 1 declares these RPCs additively, but their owner-authorized Service/HTTP
-	// implementations belong to Task 5. Keep them generated-only and unimplemented
-	// rather than projecting unsafe placeholder handlers into the public SDK catalog.
-	generatedOnly := stringSet(
-		"HarnessService.ListGuardrailCoverage",
-		"HarnessService.GetGuardrailReviewDetail",
-	)
-	wantKeys := make(map[string]struct{}, 84)
+	wantCounts := map[string]int{"HarnessService": 80, "ScheduleService": 10}
+	wantKeys := make(map[string]struct{}, 90)
 	for service := range targetServices {
 		methods := descriptorsByService[service]
 		if len(methods) != wantCounts[service] {
@@ -72,15 +65,8 @@ func TestSDKTypescriptRelease_Scenario1_RPCTransportCatalogParity(t *testing.T) 
 		}
 		for method := range methods {
 			key := service + "." + method
-			if _, pending := generatedOnly[key]; pending {
-				delete(generatedOnly, key)
-				continue
-			}
 			wantKeys[key] = struct{}{}
 		}
-	}
-	if len(generatedOnly) != 0 {
-		t.Fatalf("stale generated-only RPC decisions: %v", generatedOnly)
 	}
 
 	gotKeys := make(map[string]struct{}, len(rows))
@@ -123,7 +109,7 @@ func TestADR_0304_ExactGRPCOnlySet(t *testing.T) {
 			routeFamily[row.method] = struct{}{}
 		}
 	}
-	assertSDKStringSetsEqual(t, "ADR 0304 gRPC-only methods", stringSet("StreamSessionLive"), grpcOnly)
+	assertSDKStringSetsEqual(t, "ADR 0304 gRPC-only methods", stringSet("StreamSessionLive", "ListGuardrailCoverage", "GetGuardrailReviewDetail"), grpcOnly)
 	assertSDKStringSetsEqual(t, "ADR 0304 route-family methods", stringSet("Converse"), routeFamily)
 	assertSDKRPCManifest(t, source, "MECATL_RPC_ROUTE_FAMILIES", stringSet("Converse"))
 	assertSDKRPCManifest(
@@ -241,6 +227,7 @@ func TestSDKTypescriptRelease_Scenario1_PublicServiceProjectionParity(t *testing
 		"LoadSession",
 		"LoadSessionWithMCP",
 		"LookupRun",
+		"LostOwnershipCandidates",
 		"MaintenanceMutationAvailable",
 		"ManualDreamCapabilities",
 		"MaybeAutoApprovePlan",
@@ -251,6 +238,7 @@ func TestSDKTypescriptRelease_Scenario1_PublicServiceProjectionParity(t *testing
 		"PublishSessionEvent",
 		"ReattachPlacement",
 		"ReattachPlacementInScope",
+		"ReconcileLeaseLossTombstone",
 		"RecoverNotice",
 		"ResolvedModel",
 		"RetryFailedRun",
