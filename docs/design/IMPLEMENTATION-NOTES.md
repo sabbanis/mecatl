@@ -83,7 +83,7 @@ a future Kubernetes Secret `resourceVersion` CAS backend. See
 [ADR 0218](../adr/0218-credential-store.md) and
 [ADR 0221](../adr/0221-read-only-credential-source.md).
 
-## Local microVM redesign contract (ADR 0334)
+## Local microVM redesign contract (ADR 0345)
 
 Tasks 59–65 complete ordinary `microvm-local` readiness, immutable Brood admission with
 in-process `toolhive-core/container/verifier`, the one-shot rootfs materializer,
@@ -165,7 +165,7 @@ signing, independent refresh channels, per-session fairness/quotas, dashboards, 
 exhaustive cache-poisoning controls. The historical subsection below records the superseded
 accumulator implementation only; it is not target architecture.
 
-### Local microVM development release activation (ADR 0334)
+### Local microVM development release activation (ADR 0345)
 
 The unsupported source workflow is compile-time absent unless both local roots are built with
 `microvm_dev`. Those tagged roots alone register the descriptor and acknowledgement flags;
@@ -4996,7 +4996,7 @@ isolated-child runner oracles prove provider credentials do not enter command-ru
 environments. Residual boundary: a same-UID Shell process can read a known plaintext
 `auth.yaml` path; mode `0600` is not privilege separation.
 
-### `openaicompat` + `toolhivellm` — ToolHive protocol providers (issue #262, ADR 0064, ADR 0334)
+### `openaicompat` + `toolhivellm` — ToolHive protocol providers (issue #262, ADR 0064, ADR 0345)
 
 One detected ToolHive gateway identity registers TWO protocol-specific entries.
 `toolhive` is unchanged: `openaicompat` discovers `/v1/models` and
@@ -6548,14 +6548,14 @@ the scoped WRITE path is deferred** (see below).
   constructs `AgentDef`s from wire metadata — `Memory` is **NOT** carried on the wire in v1 (no proto
   change); a driver-served def stays cold-start.
 
-### Historical environment placement implementation (superseded by ADR 0334 redesign)
+### Historical environment placement implementation (superseded by ADR 0345 redesign)
 
 This subsection describes the existing accumulator code and its test seams. Its
 session-per-VM lifecycle, derived image, deny-default networking, explicit init/recover,
 `--microvm`, external cosign, mode widening, and per-generation rootfs clone are removal
 inputs, not target decisions. The authoritative target is the redesign contract under
-[Local microVM redesign contract](#local-microvm-redesign-contract-adr-0334), the living
-[architecture](../architecture/microvm-environments.md), and ADR 0334.
+[Local microVM redesign contract](#local-microvm-redesign-contract-adr-0345), the living
+[architecture](../architecture/microvm-environments.md), and ADR 0345.
 
 `environment_profile` is independent from the existing tool-surface `profile`. The
 request carries only an alias resolved against `permconfig.Resolver`'s operator-only
