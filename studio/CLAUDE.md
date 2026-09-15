@@ -101,6 +101,13 @@ Each rule is backed by a test; break the rule and its test names you.
   + a mkfifo lifetime pipe — Node's stdio "pipe" is a socketpair mecated
   rejects); `/status` reports the ready doc's `apiMajor`/`features`/
   `deployment`.
+- `package-lock.json` cannot be regenerated from scratch while the
+  `file:../sdk/typescript` link is present: both npm 10 and npm 11 crash in
+  arborist (`Cannot read properties of null (reading 'edgesOut')`) walking the
+  SDK's pnpm-managed `node_modules`. Keep the committed lock and install
+  INCREMENTALLY (`npx -y npm@10.9.4 install`); bump a transitive family that
+  peer-pins itself to one exact version (tiptap) through `overrides`, never by
+  deleting the lock. `npm audit fix` hits the same crash — bump by hand.
 - FireNow (`POST /v1/schedules/{name}/fire`) is synchronous — the request lasts
   the whole agent run.
 - Live re-attach to a running session rides the durable watch
