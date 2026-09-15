@@ -13,7 +13,6 @@ import (
 	"charm.land/lipgloss/v2"
 
 	"github.com/stacklok/mecatl/cmd/mecatui/client"
-	"github.com/stacklok/mecatl/cmd/mecatui/theme"
 )
 
 // modelsView is the active /models overlay.
@@ -22,7 +21,6 @@ type modelsView int
 const (
 	modelsNone modelsView = iota
 	modelsPanel
-	modelsMinRows = 3
 )
 
 // modelsState owns the dynamic /models picker. Durable catalog state remains on Model.
@@ -237,15 +235,7 @@ func (s *modelsState) syncList(width, height int) bool {
 func (s *modelsState) moveCursor(move boundedMove) {
 	s.revealCursor = true
 	if s.list.viewport.valid() {
-		if move == boundedPageUp || move == boundedPageDown {
-			delta := max(1, s.rowBudget)
-			if move == boundedPageUp {
-				delta = -delta
-			}
-			s.list.setCursor(s.cursor + delta)
-		} else {
-			s.list.move(move)
-		}
+		s.list.move(move)
 		s.cursor = s.list.cursor
 		return
 	}
@@ -330,13 +320,20 @@ func modelsFixedLines(picker modelsState, prov string) (prefix, suffix []string)
 	} else if len(picker.filtered) == 0 {
 		prefix = append(prefix, picker.deps.theme.Style("muted").Render("no models match "+strconv.Quote(picker.filter.Value())+" — "+picker.deps.marks.closeOnly+" to clear"))
 	}
-	for _, status := range renderProviderStatusLines(picker.catalog.statuses, len(picker.catalog.models) == 0) {
+	statuses := renderProviderStatusLines(picker.catalog.statuses, len(picker.catalog.models) == 0)
+	if len(statuses) > 0 && !picker.loading && picker.err == nil && len(picker.catalog.models) > 0 && len(picker.filtered) > 0 {
+		suffix = append(suffix, "")
+	}
+	for _, status := range statuses {
 		suffix = append(suffix, picker.deps.theme.Style("errorText").Render(sanitizeTerminal(status)))
 	}
 	suffix = append(suffix, "",
 		picker.deps.theme.Style("muted").Render("type to filter · ↑/↓/"+picker.deps.marks.scrollUp+" move · "+picker.deps.marks.choose+" use · "+picker.deps.marks.setGlobalDefault+" set global default · "+picker.deps.marks.closeOnly+" clear filter / close"),
 		picker.deps.theme.Style("muted").Render("● current  ★ global default"),
 		picker.deps.theme.Style("muted").Render("reason = emits reasoning · set its effort tier with /effort"))
+	if anyUncachedModel(picker.catalog.models) {
+		suffix = append(suffix, picker.deps.theme.Style("muted").Render("no-cache = no prompt-cache breakpoint sent; costly for Claude models"))
+	}
 	return prefix, suffix
 }
 
@@ -477,66 +474,6 @@ func renderProviderStatusLines(statuses []client.ProviderStatus, inventoryEmpty 
 	return lines
 }
 
-func renderModelsPanel(th theme.Theme, catalog modelCatalog, picker modelsState, caps client.Capabilities, prov string, hk helpKeys, rowBudget int, widths ...int) string {
-	width := 0
-	if len(widths) > 0 {
-		width = widths[0]
-	}
-	var b strings.Builder
-	title := "Models"
-	if !picker.loading && picker.err == nil && len(picker.filtered) > 0 {
-		start, end := scrollWindow(picker.cursor, len(picker.filtered), rowBudget)
-		title += "  " + modelsPositionLabel(start, end, len(picker.filtered))
-	}
-	b.WriteString(th.Style("askTitle").Render(title) + "\n")
-	if prov != "" {
-		b.WriteString(renderToolCardText(th.Style("muted"), prov, width) + "\n")
-	}
-	b.WriteString(picker.filter.View() + "\n\n")
-	b.WriteString(th.Style("warning").Render(modelSwitchDisclosure) + "\n\n")
-	switch {
-	case picker.loading:
-		b.WriteString(th.Style("muted").Render("loading…") + "\n")
-	case picker.err != nil:
-		b.WriteString(th.Style("errorText").Render("✗ list models: "+sanitizeTerminal(picker.err.Error())) + "\n")
-		b.WriteString(th.Style("muted").Render(modelsErrorHint) + "\n")
-	case len(catalog.models) == 0:
-		b.WriteString(th.Style("muted").Render(modelsEmptyCopy(caps, catalog.statuses)) + "\n")
-	case len(picker.filtered) == 0:
-		b.WriteString(th.Style("muted").Render("no models match "+strconv.Quote(picker.filter.Value())+" — "+hk.closeOnly+" to clear") + "\n")
-	default:
-		start, end := scrollWindow(picker.cursor, len(picker.filtered), rowBudget)
-		for i := start; i < end; i++ {
-			mi := picker.filtered[i]
-			b.WriteString(renderRow(th, modelRowText(catalog.active, catalog.globalDefault, catalog.configProvenanceProviderIDs, mi), i == picker.cursor, width) + "\n")
-		}
-	}
-	if picker.err == nil {
-		statuses := renderProviderStatusLines(catalog.statuses, len(catalog.models) == 0)
-		if modelsRowsRendered(picker) && len(statuses) > 0 {
-			b.WriteString("\n")
-		}
-		for _, line := range statuses {
-			b.WriteString(renderToolCardText(th.Style("errorText"), sanitizeTerminal(line), width) + "\n")
-		}
-	}
-	b.WriteString("\n" + th.Style("muted").Render("type to filter · ↑/↓/"+hk.scrollUp+" move · "+hk.choose+" use · "+hk.setGlobalDefault+" set global default · "+hk.closeOnly+" clear filter / close"))
-	b.WriteString("\n" + th.Style("muted").Render("● current  ★ global default"))
-	b.WriteString("\n" + th.Style("muted").Render("reason = emits reasoning · set its effort tier with /effort"))
-	// The no-cache legend is CONDITIONAL: explaining a marker nobody can see is
-	// noise, and a deployment where everything caches should read clean.
-	if anyUncachedModel(catalog.models) {
-		b.WriteString("\n" + th.Style("muted").Render("no-cache = no prompt-cache breakpoint sent; costly for Claude models"))
-	}
-	return b.String()
-}
-
-func modelsPositionLabel(start, end, total int) string {
-	if end-start >= total {
-		return "(" + strconv.Itoa(total) + ")"
-	}
-	return "(" + strconv.Itoa(start+1) + "–" + strconv.Itoa(end) + " of " + strconv.Itoa(total) + ")"
-}
 func modelRowText(active, globalDefault client.ModelSelection, configProvenanceProviderIDs map[string]bool, mi client.ModelInfo) string {
 	activeMark := " "
 	if active.Matches(mi) {
