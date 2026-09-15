@@ -2,7 +2,7 @@ package agent
 
 import (
 	"context"
-	"errors"
+	"fmt"
 	"sync"
 
 	"github.com/stacklok/mecatl/engine/session"
@@ -101,7 +101,7 @@ func (r *askRegistry) resolveChecked(askID string, a approval, check func(sessio
 	ask := r.scopes[askID]
 	if !ok {
 		r.mu.Unlock()
-		return errors.New("approval ask is unknown, stale, or already resolved")
+		return fmt.Errorf("%w: ask is unknown, stale, or already resolved", ErrApprovalNotPending)
 	}
 	if check != nil {
 		if err := check(ask); err != nil {
