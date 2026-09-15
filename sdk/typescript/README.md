@@ -69,7 +69,7 @@ run through `expected_run_id`, so one that outlives its run is refused as
 server's `accepted`, `appended`, or `too_late` outcome (the caller keeps the text on
 `too_late`) and takes a client-minted `messageId` that the run's later `steer` event
 echoes as the drained bundle's watermark; `cancelSteer` retracts the pending bundle.
-`client.compatibility()` reports whether the server advertises the `http_steer` feature
+`client.server.compatibility()` reports whether the server advertises the `http_steer` feature
 these two controls require.
 
 ## Node and Bun local daemon

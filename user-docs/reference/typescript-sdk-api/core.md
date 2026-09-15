@@ -33,7 +33,6 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`ClientDiagnosticsOptions`](#api-clientdiagnosticsoptions-interface) | Interface |
 | [`Commands`](#api-commands-interface) | Interface |
 | [`CompactionArchiveEventPayload`](#api-compactionarchiveeventpayload-interface) | Interface |
-| [`CompatibilityInfo`](#api-compatibilityinfo-interface) | Interface |
 | [`connect`](#api-connect-function) | Function |
 | [`ConnectionStatus`](#api-connectionstatus-typealias) | Type alias |
 | [`ConnectionStatusListener`](#api-connectionstatuslistener-typealias) | Type alias |
@@ -124,11 +123,17 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`Schedules`](#api-schedules-interface) | Interface |
 | [`SdkCursor`](#api-sdkcursor-typealias) | Type alias |
 | [`SDKErrorCode`](#api-sdkerrorcode-typealias) | Type alias |
+| [`Server`](#api-server-interface) | Interface |
 | [`ServerCapabilities`](#api-servercapabilities-interface) | Interface |
+| [`ServerCompatibility`](#api-servercompatibility-interface) | Interface |
 | [`ServerError`](#api-servererror-class) | Class |
 | [`ServerErrorCode`](#api-servererrorcode-typealias) | Type alias |
+| [`ServerFeature`](#api-serverfeature-typealias) | Type alias |
+| [`ServerFeature`](#api-serverfeature-variable) | Variable |
 | [`ServerInfo`](#api-serverinfo-interface) | Interface |
 | [`ServerInfoOptions`](#api-serverinfooptions-interface) | Interface |
+| [`ServerPosture`](#api-serverposture-typealias) | Type alias |
+| [`ServerPosture`](#api-serverposture-variable) | Variable |
 | [`Session`](#api-session-interface) | Interface |
 | [`SESSION_ID_HEADER_NAME`](#api-session-id-header-name-variable) | Variable |
 | [`SessionActivity`](#api-sessionactivity-interface) | Interface |
@@ -193,6 +198,7 @@ This reference describes the declarations exported by `@stacklok-oss/mecatl-sdk`
 | [`UnsupportedFeatureError`](#api-unsupportedfeatureerror-class) | Class |
 | [`UserModel`](#api-usermodel-interface) | Interface |
 | [`UserPromptEventPayload`](#api-userprompteventpayload-interface) | Interface |
+| [`WATCH_SESSION_EVENTS_FEATURE`](#api-watch-session-events-feature-variable) | Variable |
 | [`WatchBoundaryEnvelope`](#api-watchboundaryenvelope-interface) | Interface |
 | [`WatchEnvelope`](#api-watchenvelope-typealias) | Type alias |
 | [`WatchEventEnvelope`](#api-watcheventenvelope-interface) | Interface |
@@ -1098,7 +1104,7 @@ The high-level Mecatl client.
 export interface Client
 ```
 
-Callable members: [`[Symbol.asyncDispose]()`](#api-client-symbol-asyncdispose-methodsignature), [`close()`](#api-client-close-methodsignature), [`compatibility()`](#api-client-compatibility-methodsignature), [`serverInfo()`](#api-client-serverinfo-methodsignature)
+Callable members: [`[Symbol.asyncDispose]()`](#api-client-symbol-asyncdispose-methodsignature), [`close()`](#api-client-close-methodsignature)
 
 <Heading as="h4" id="api-client-symbol-asyncdispose-methodsignature"><code>Client[Symbol.asyncDispose]</code></Heading>
 
@@ -1131,22 +1137,6 @@ Returns: `Promise<void>`
 ```ts
 readonly commands: Commands;
 ```
-
-<Heading as="h4" id="api-client-compatibility-methodsignature"><code>Client.compatibility</code></Heading>
-
-Reads the server's compatibility document.
-
-```ts
-compatibility(options?: RequestOptions): Promise<CompatibilityInfo>;
-```
-
-Parameters:
-
-- `options` (`RequestOptions`, optional): Request headers, cancellation signal, and deadline.
-
-Returns: `Promise<CompatibilityInfo>`: The API major, server capabilities, and feature registry.
-
-Throws: `IncompatibleServerError` when the API major is unsupported.
 
 <Heading as="h4" id="api-client-dreamplans-propertysignature"><code>Client.dreamPlans</code></Heading>
 
@@ -1196,19 +1186,11 @@ readonly reflection: Reflection;
 readonly schedules: Schedules;
 ```
 
-<Heading as="h4" id="api-client-serverinfo-methodsignature"><code>Client.serverInfo</code></Heading>
-
-Reads the safe server identity probe.
+<Heading as="h4" id="api-client-server-propertysignature"><code>Client.server</code></Heading>
 
 ```ts
-serverInfo(options?: ServerInfoOptions): Promise<ServerInfo>;
+readonly server: Server;
 ```
-
-Parameters:
-
-- `options` (`ServerInfoOptions`, optional): Optional provider selector plus request options.
-
-Returns: `Promise<ServerInfo>`: The build id, composition family, and provider endpoint projection.
 
 <Heading as="h4" id="api-client-sessions-propertysignature"><code>Client.sessions</code></Heading>
 
@@ -1311,38 +1293,6 @@ export interface CompactionArchiveEventPayload
 
 ```ts
 readonly replaced: readonly ArchivedConversationMessage[];
-```
-
-<Heading as="h3" id="api-compatibilityinfo-interface"><code>CompatibilityInfo</code></Heading>
-
-The server's compatibility document: API floor, capabilities, and feature registry.
-
-```ts
-export interface CompatibilityInfo
-```
-
-<Heading as="h4" id="api-compatibilityinfo-apimajor-propertysignature"><code>CompatibilityInfo.apiMajor</code></Heading>
-
-The server's API major version.
-
-```ts
-readonly apiMajor: number;
-```
-
-<Heading as="h4" id="api-compatibilityinfo-capabilities-propertysignature"><code>CompatibilityInfo.capabilities</code></Heading>
-
-Operator-enabled server capabilities; absent when the server omitted them.
-
-```ts
-readonly capabilities?: ServerCapabilities;
-```
-
-<Heading as="h4" id="api-compatibilityinfo-features-propertysignature"><code>CompatibilityInfo.features</code></Heading>
-
-The open feature registry clients gate optional routes on.
-
-```ts
-readonly features: readonly string[];
 ```
 
 <Heading as="h3" id="api-connectionstatusstore-interface"><code>ConnectionStatusStore</code></Heading>
@@ -3634,6 +3584,45 @@ Parameters:
 
 Returns: `Promise<UpdateScheduleResponse>`
 
+<Heading as="h3" id="api-server-interface"><code>Server</code></Heading>
+
+Pre-session compatibility and safe server-identity operations.
+
+```ts
+export interface Server
+```
+
+Callable members: [`compatibility()`](#api-server-compatibility-methodsignature), [`info()`](#api-server-info-methodsignature)
+
+<Heading as="h4" id="api-server-compatibility-methodsignature"><code>Server.compatibility</code></Heading>
+
+Starts a fresh compatibility negotiation and makes it the generation shared by subsequent ordinary operations.
+
+```ts
+compatibility(options?: RequestOptions): Promise<ServerCompatibility>;
+```
+
+Parameters:
+
+- `options` (`RequestOptions`, optional): Request headers, cancellation signal, and deadline.
+
+Returns: `Promise<ServerCompatibility>`: A detached compatibility projection.
+
+<Heading as="h4" id="api-server-info-methodsignature"><code>Server.info</code></Heading>
+
+Reads safe server identity after an ordinary cached compatibility preflight.
+
+```ts
+info(options?: ServerInfoOptions, requestOptions?: RequestOptions): Promise<ServerInfo>;
+```
+
+Parameters:
+
+- `options` (`ServerInfoOptions`, optional): Optional exact provider selector.
+- `requestOptions` (`RequestOptions`, optional): Request headers, cancellation signal, and deadline.
+
+Returns: `Promise<ServerInfo>`: Detached display-only server identity.
+
 <Heading as="h3" id="api-servercapabilities-interface"><code>ServerCapabilities</code></Heading>
 
 Optional server features captured with a session snapshot.
@@ -3810,9 +3799,49 @@ readonly workspaceEnrollment: boolean;
 readonly worktrees: boolean;
 ```
 
+<Heading as="h3" id="api-servercompatibility-interface"><code>ServerCompatibility</code></Heading>
+
+A detached view of one server compatibility negotiation.
+
+```ts
+export interface ServerCompatibility
+```
+
+<Heading as="h4" id="api-servercompatibility-apimajor-propertysignature"><code>ServerCompatibility.apiMajor</code></Heading>
+
+The wire-contract major supported by this SDK.
+
+```ts
+readonly apiMajor: typeof SUPPORTED_API_MAJOR;
+```
+
+<Heading as="h4" id="api-servercompatibility-capabilities-propertysignature"><code>ServerCompatibility.capabilities</code></Heading>
+
+Deployment capabilities currently enabled by the operator.
+
+```ts
+readonly capabilities: ServerCapabilities;
+```
+
+<Heading as="h4" id="api-servercompatibility-deployment-propertysignature"><code>ServerCompatibility.deployment</code></Heading>
+
+Optional operator-authored deployment label.
+
+```ts
+readonly deployment?: string;
+```
+
+<Heading as="h4" id="api-servercompatibility-features-propertysignature"><code>ServerCompatibility.features</code></Heading>
+
+Open build-feature identifiers advertised on this listener.
+
+```ts
+readonly features: ReadonlySet<string>;
+```
+
 <Heading as="h3" id="api-serverinfo-interface"><code>ServerInfo</code></Heading>
 
-The safe, state-free server identity probe.
+Safe, display-only identity information for the connected server.
 
 ```ts
 export interface ServerInfo
@@ -3820,7 +3849,7 @@ export interface ServerInfo
 
 <Heading as="h4" id="api-serverinfo-buildid-propertysignature"><code>ServerInfo.buildId</code></Heading>
 
-Opaque linker-stamped build identity (`dev` in an unstamped build).
+Linker-stamped server build identity.
 
 ```ts
 readonly buildId: string;
@@ -3828,15 +3857,15 @@ readonly buildId: string;
 
 <Heading as="h4" id="api-serverinfo-llmproviderdisplayendpoint-propertysignature"><code>ServerInfo.llmProviderDisplayEndpoint</code></Heading>
 
-A sanitized display projection of the named provider's endpoint, "" when unavailable.
+Sanitized provider endpoint for diagnostics, never connection configuration.
 
 ```ts
-readonly llmProviderDisplayEndpoint: string;
+readonly llmProviderDisplayEndpoint?: string;
 ```
 
 <Heading as="h4" id="api-serverinfo-serverimplementation-propertysignature"><code>ServerInfo.serverImplementation</code></Heading>
 
-The stable composition family (`mecated`, `mecak8s`, `mecatui`), or `unknown`.
+Stable server composition family, or `unknown`.
 
 ```ts
 readonly serverImplementation: string;
@@ -3844,18 +3873,18 @@ readonly serverImplementation: string;
 
 <Heading as="h3" id="api-serverinfooptions-interface"><code>ServerInfoOptions</code></Heading>
 
-Options accepted by Client.serverInfo().
+Selector accepted by `Server.info`.
 
 ```ts
-export interface ServerInfoOptions extends RequestOptions
+export interface ServerInfoOptions
 ```
 
 <Heading as="h4" id="api-serverinfooptions-providerid-propertysignature"><code>ServerInfoOptions.providerId</code></Heading>
 
-The caller's already-known active provider, for the endpoint projection.
+Already-known provider ID to select for the diagnostic endpoint projection.
 
 ```ts
-providerId?: string;
+readonly providerId?: string;
 ```
 
 <Heading as="h3" id="api-session-interface"><code>Session</code></Heading>
@@ -6351,6 +6380,22 @@ Error codes returned by the Mecatl server, plus `unknown` for future codes.
 export type ServerErrorCode = (typeof MECATL_ERROR_CODES)[number] | "unknown";
 ```
 
+<Heading as="h3" id="api-serverfeature-typealias"><code>ServerFeature</code></Heading>
+
+One known server feature identifier.
+
+```ts
+export type ServerFeature = (typeof ServerFeature)[keyof typeof ServerFeature];
+```
+
+<Heading as="h3" id="api-serverposture-typealias"><code>ServerPosture</code></Heading>
+
+One known server posture value.
+
+```ts
+export type ServerPosture = (typeof ServerPosture)[keyof typeof ServerPosture];
+```
+
 <Heading as="h3" id="api-sessionmode-typealias"><code>SessionMode</code></Heading>
 
 One SDK permission-mode value.
@@ -6493,6 +6538,33 @@ Watch phases this SDK understands.
 MECATL_WATCH_PHASES: readonly ["gap", "live", "replay"]
 ```
 
+<Heading as="h3" id="api-serverfeature-variable"><code>ServerFeature</code></Heading>
+
+Known server feature identifiers. Unknown identifiers remain observable.
+
+```ts
+ServerFeature: {
+    readonly HttpSteer: "http_steer";
+    readonly McpServersOnCreate: "mcp_servers_on_create";
+    readonly ServerInfo: "server_info";
+    readonly SessionActivityInventory: "session_activity_inventory";
+    readonly WatchSessionEvents: "watch_session_events";
+}
+```
+
+<Heading as="h3" id="api-serverposture-variable"><code>ServerPosture</code></Heading>
+
+Known server posture values. Unknown capability values remain observable.
+
+```ts
+ServerPosture: {
+    readonly Strict: "strict";
+    readonly Trusted: "trusted";
+    readonly Auto: "auto";
+    readonly Yolo: "yolo";
+}
+```
+
 <Heading as="h3" id="api-session-id-header-name-variable"><code>SESSION_ID_HEADER_NAME</code></Heading>
 
 Canonical routing hint for session-bound Mecatl requests. It grants no authority.
@@ -6520,4 +6592,12 @@ The API major implemented by this SDK.
 
 ```ts
 SUPPORTED_API_MAJOR = 1
+```
+
+<Heading as="h3" id="api-watch-session-events-feature-variable"><code>WATCH_SESSION_EVENTS_FEATURE</code></Heading>
+
+Known watch-session-events feature identifier.
+
+```ts
+WATCH_SESSION_EVENTS_FEATURE: "watch_session_events"
 ```

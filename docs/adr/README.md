@@ -137,6 +137,7 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0259 — Cloud-native learning uses durable, authoritative attempts](./0259-cloud-native-learning.md) *(Accepted)*
 
 ### Core tools & shell
+- [0343 — Operator-configured command runners](./0343-operator-configured-command-runners.md) *(proposed)*
 - [0281 — Managed temporary command leases and deterministic reaping](./0281-managed-temporary-command-leases.md) *(proposed)*
 - [0282 — Managed workspace scratch cache](./0282-managed-workspace-scratch-cache.md) *(proposed; depends on 0281)*
 - [0201 — Background Bash commands](./0201-background-bash.md)
@@ -265,8 +266,8 @@ Documentation/citation conventions are in [`docs/design/README.md`](../design/RE
 - [0087 — Staged mecatui transport migration](./0087-mecatui-staged-transport-migration.md) *(superseded by 0089)*
 - [0088 — Explicit daemon.yaml (listener topology config)](./0088-daemon-config-file.md)
 - [0222 — mecatui: ctrl+t routes by ask type; full-screen ask-args view](./0222-mecatui-ask-args-view.md)
-- [0343 — Studio: the Atrium workspace as mecatl's daemon-only web client](./0343-studio-atrium-module.md)
-- [0344 — Studio's chat list is the daemon's session store](./0344-studio-server-backed-chats.md)
+- [0345 — Studio: the Atrium workspace as mecatl's daemon-only web client](./0345-studio-atrium-module.md)
+- [0346 — Studio's chat list is the daemon's session store](./0346-studio-server-backed-chats.md)
 - [0247 — mecatui generated status lines](./0247-mecatui-status-line.md) *(superseded by 0289)*
 - [0289 — Hardened status-command output and environment extension](./0289-hardened-status-command-boundary.md)
 - [0280 — Automatic light theme selection in mecatui](./0280-mecatui-light-theme-autodetect.md)

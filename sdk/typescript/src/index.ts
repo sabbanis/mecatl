@@ -8,7 +8,6 @@ export type { Transport } from "@connectrpc/connect";
 export type {
   ClearSessionOptions,
   Client,
-  CompatibilityInfo,
   ConnectionStatus,
   ConnectionStatusListener,
   ConnectionStatusStore,
@@ -16,8 +15,6 @@ export type {
   CreateSessionOptions,
   ForkSessionOptions,
   InjectedTransportOptions,
-  ServerInfo,
-  ServerInfoOptions,
   Session,
   SessionLimits,
   SessionMcpServer,
@@ -172,6 +169,17 @@ export type {
   RunOptions,
   RunResult,
 } from "./run.js";
+export type {
+  Server,
+  ServerCompatibility,
+  ServerInfo,
+  ServerInfoOptions,
+} from "./server.js";
+export {
+  ServerFeature,
+  ServerPosture,
+  WATCH_SESSION_EVENTS_FEATURE,
+} from "./server.js";
 export type {
   DreamTargetCapability,
   ManualDreamCapabilities,

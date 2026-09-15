@@ -47,7 +47,7 @@ export interface FetchStub {
   last(): RecordedRequest;
 }
 
-const DEFAULT_FEATURES = ["http_steer", "watch_session_events"];
+const DEFAULT_FEATURES = ["http_steer", "server_info", "watch_session_events"];
 
 export function jsonResponse(status: number, body: unknown): Response {
   return new Response(body === undefined ? null : JSON.stringify(body), {
@@ -111,7 +111,15 @@ export function stubHarnessFetch(
       const url = String(input);
       const path = url.replace(/^\/api\/mecatl/, "");
       if (path === "/v1/compatibility") {
-        return jsonResponse(200, { api_major: 1, features, ...compatibility });
+        // The SDK's server namespace requires a capabilities object on the
+        // document (an older daemon that omits it is refused), so the stub
+        // always serves one; a test may override or extend it.
+        return jsonResponse(200, {
+          api_major: 1,
+          capabilities: {},
+          features,
+          ...compatibility,
+        });
       }
       const request: RecordedRequest = {
         url,

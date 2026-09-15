@@ -94,13 +94,13 @@ export async function fetchHarnessCompatibility(
 ): Promise<HarnessCompatibility | null> {
   try {
     const doc = await harness(() =>
-      getHarnessClient().compatibility({ signal }),
+      getHarnessClient().server.compatibility({ signal }),
     );
     return {
       apiMajor: doc.apiMajor,
       features: [...doc.features],
       capabilities: toWireCapabilities(doc.capabilities),
-      deployment: "",
+      deployment: doc.deployment ?? "",
     };
   } catch (error) {
     if (isUnsupportedByDaemon(error)) return null; // pre-ADR-0248 daemon

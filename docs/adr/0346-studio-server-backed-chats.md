@@ -1,4 +1,4 @@
-# ADR 0344 — Studio's chat list is the daemon's session store
+# ADR 0346 — Studio's chat list is the daemon's session store
 
 - Status: Accepted
 - Date: 2026-08-18
@@ -92,5 +92,5 @@ The costs, stated plainly:
 
 ## See also
 
-- [ADR 0343](./0343-studio-atrium-module.md) — the Studio module and its
+- [ADR 0345](./0345-studio-atrium-module.md) — the Studio module and its
   daemon-only posture

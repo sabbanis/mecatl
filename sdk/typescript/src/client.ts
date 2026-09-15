@@ -60,16 +60,23 @@ import { createPlanResolution, type PlanApprovalVerdict, type PlanResolution } f
 import {
   createRawClient,
   invalidateRawCompatibility,
+  invalidateRawCompatibilityGeneration,
   type RawClient,
+  readRawCompatibility,
+  refreshRawCompatibility,
   registeredTransportOperations,
   sessionAffinityIfRepresentable,
 } from "./raw.js";
 import { type ConverseFrame, type Run, RunImpl, type RunOptions } from "./run.js";
 import {
-  projectServerCapabilities,
+  createServer,
+  projectServerCompatibility,
+  type Server,
+  type ServerCompatibility,
+} from "./server.js";
+import {
   projectSessionSnapshot,
   projectSessionTranscript,
-  type ServerCapabilities,
   type SessionMode,
   type SessionSnapshot,
   type SessionTranscript,
@@ -337,32 +344,6 @@ export interface Sessions {
   list(request: ListSessionsRequest, options?: RequestOptions): Promise<ListSessionsResponse>;
 }
 
-/** The server's compatibility document: API floor, capabilities, and feature registry. @public */
-export interface CompatibilityInfo {
-  /** The server's API major version. */
-  readonly apiMajor: number;
-  /** Operator-enabled server capabilities; absent when the server omitted them. */
-  readonly capabilities?: ServerCapabilities;
-  /** The open feature registry clients gate optional routes on. */
-  readonly features: readonly string[];
-}
-
-/** Options accepted by Client.serverInfo(). @public */
-export interface ServerInfoOptions extends RequestOptions {
-  /** The caller's already-known active provider, for the endpoint projection. */
-  providerId?: string;
-}
-
-/** The safe, state-free server identity probe. @public */
-export interface ServerInfo {
-  /** Opaque linker-stamped build identity (`dev` in an unstamped build). */
-  readonly buildId: string;
-  /** A sanitized display projection of the named provider's endpoint, "" when unavailable. */
-  readonly llmProviderDisplayEndpoint: string;
-  /** The stable composition family (`mecated`, `mecak8s`, `mecatui`), or `unknown`. */
-  readonly serverImplementation: string;
-}
-
 /** The high-level Mecatl client. @public */
 export interface Client {
   readonly agents: Agents;
@@ -375,6 +356,7 @@ export interface Client {
   readonly models: Models;
   readonly reflection: Reflection;
   readonly schedules: Schedules;
+  readonly server: Server;
   readonly sessions: Sessions;
   readonly skills: Skills;
   readonly soul: Soul;
@@ -383,21 +365,6 @@ export interface Client {
   readonly teams: Teams;
   readonly userModel: UserModel;
   readonly worktrees: Worktrees;
-  /**
-   * Reads the server's compatibility document.
-   *
-   * @param options - Request headers, cancellation signal, and deadline.
-   * @returns The API major, server capabilities, and feature registry.
-   * @throws `IncompatibleServerError` when the API major is unsupported.
-   */
-  compatibility(options?: RequestOptions): Promise<CompatibilityInfo>;
-  /**
-   * Reads the safe server identity probe.
-   *
-   * @param options - Optional provider selector plus request options.
-   * @returns The build id, composition family, and provider endpoint projection.
-   */
-  serverInfo(options?: ServerInfoOptions): Promise<ServerInfo>;
   /** Releases activity, transports, and resources owned by this client. */
   close(): Promise<void>;
   /** Releases the same resources as close() when used with await using. */
@@ -863,6 +830,7 @@ class ClientImpl implements Client {
   readonly models: Models;
   readonly reflection: Reflection;
   readonly schedules: Schedules;
+  readonly server: Server;
   readonly sessions: Sessions;
   readonly skills: Skills;
   readonly soul: Soul;
@@ -957,6 +925,11 @@ class ClientImpl implements Client {
       unary: (method, input, requestOptions) => this.#unary(method, input, requestOptions),
     });
     this.userModel = operational.userModel;
+    this.server = createServer({
+      compatibility: (requestOptions, refresh) => this.#compatibility(requestOptions, refresh),
+      transportKind: this.#transportKind,
+      unary: (method, input, requestOptions) => this.#unary(method, input, requestOptions),
+    });
     this.sessions = {
       create: async (input, requestOptions) => {
         const lease = this.#toolHost?.beginSessionCreate?.();
@@ -1188,52 +1161,37 @@ class ClientImpl implements Client {
     return new SessionImpl(sessionId, this.#operations, promptCapabilities);
   }
 
-  async #unary<I extends DescMessage, O extends DescMessage>(
-    method: DescMethodUnary<I, O>,
-    input: MessageInitShape<I>,
-    options?: CallOptions,
-  ): Promise<MessageShape<O>> {
-    this.#assertOpen();
+  #withClientSignal(options?: CallOptions): CallOptions {
+    return {
+      ...options,
+      signal:
+        options?.signal === undefined
+          ? this.#abort.signal
+          : AbortSignal.any([this.#abort.signal, options.signal]),
+    };
+  }
+
+  async #observeRequest<T>(request: () => Promise<T>): Promise<T> {
     if (this.#requestStatus === "offline") this.#setRequestStatus("reconnecting");
     try {
-      const response = await this.#raw.unary(method, input, {
-        ...options,
-        signal:
-          options?.signal === undefined
-            ? this.#abort.signal
-            : AbortSignal.any([this.#abort.signal, options.signal]),
-      });
+      const result = await request();
       this.#setRequestStatus("online");
-      return response;
+      return result;
     } catch (error) {
       this.#observeError(error);
       throw error;
     }
   }
 
-  async compatibility(options?: RequestOptions): Promise<CompatibilityInfo> {
-    const response = await this.#unary(HarnessService.method.getCompatibilityInfo, {}, options);
-    return {
-      apiMajor: response.apiMajor,
-      ...(response.capabilities === undefined
-        ? {}
-        : { capabilities: projectServerCapabilities(response.capabilities) }),
-      features: [...response.features],
-    };
-  }
-
-  async serverInfo(options: ServerInfoOptions = {}): Promise<ServerInfo> {
-    const { providerId = "", ...requestOptions } = options;
-    const response = await this.#unary(
-      HarnessService.method.getServerInfo,
-      { providerId },
-      requestOptions,
+  async #unary<I extends DescMessage, O extends DescMessage>(
+    method: DescMethodUnary<I, O>,
+    input: MessageInitShape<I>,
+    options?: CallOptions,
+  ): Promise<MessageShape<O>> {
+    this.#assertOpen();
+    return this.#observeRequest(() =>
+      this.#raw.unary(method, input, this.#withClientSignal(options)),
     );
-    return {
-      buildId: response.buildId,
-      llmProviderDisplayEndpoint: response.llmProviderDisplayEndpoint,
-      serverImplementation: response.serverImplementation,
-    };
   }
 
   async #control(
@@ -1279,27 +1237,35 @@ class ClientImpl implements Client {
     if (cancel === undefined) {
       throw new UnsupportedFeatureError("attached_cancel", { transport: "http" });
     }
-    if (this.#requestStatus === "offline") this.#setRequestStatus("reconnecting");
-    try {
-      await cancel(sessionId, runId, this.#abort.signal);
-      this.#setRequestStatus("online");
-    } catch (error) {
-      this.#observeError(error);
-      throw error;
-    }
+    await this.#observeRequest(() => cancel(sessionId, runId, this.#abort.signal));
   }
 
   async #features(): Promise<ReadonlySet<string>> {
     this.#assertOpen();
-    if (this.#requestStatus === "offline") this.#setRequestStatus("reconnecting");
-    try {
-      const features = await this.#raw.features({ signal: this.#abort.signal });
-      this.#setRequestStatus("online");
-      return features;
-    } catch (error) {
-      this.#observeError(error);
-      throw error;
-    }
+    return this.#observeRequest(() => this.#raw.features({ signal: this.#abort.signal }));
+  }
+
+  async #compatibility(
+    options: RequestOptions | undefined,
+    refresh: boolean,
+  ): Promise<ServerCompatibility> {
+    this.#assertOpen();
+    const requestOptions = this.#withClientSignal(options);
+    return this.#observeRequest(async () => {
+      const result = await (refresh
+        ? refreshRawCompatibility(this.#raw, requestOptions)
+        : readRawCompatibility(this.#raw, requestOptions));
+      let projection: ServerCompatibility;
+      try {
+        projection = projectServerCompatibility(result.message, this.#transportKind);
+      } catch (error) {
+        invalidateRawCompatibilityGeneration(this.#raw, result.generation);
+        throw error;
+      }
+      requestOptions.onHeader?.(result.header);
+      requestOptions.onTrailer?.(result.trailer);
+      return projection;
+    });
   }
 
   #stream<I extends DescMessage, O extends DescMessage>(
@@ -1308,13 +1274,7 @@ class ClientImpl implements Client {
     options?: CallOptions,
   ): AsyncIterable<MessageShape<O>> {
     this.#assertOpen();
-    const raw = this.#raw.stream(method, input, {
-      ...options,
-      signal:
-        options?.signal === undefined
-          ? this.#abort.signal
-          : AbortSignal.any([this.#abort.signal, options.signal]),
-    });
+    const raw = this.#raw.stream(method, input, this.#withClientSignal(options));
     const observeError = (error: unknown) => this.#observeError(error);
     const publishOnline = () => this.#setRequestStatus("online");
     return (async function* () {
@@ -1343,20 +1303,9 @@ class ClientImpl implements Client {
 
   async #probe(raw: RawClient, signal: AbortSignal = this.#abort.signal): Promise<void> {
     this.#assertOpen();
-    if (this.#requestStatus === "offline") this.#setRequestStatus("reconnecting");
-    try {
-      await raw.unary(
-        HarnessService.method.getCompatibilityInfo,
-        {},
-        {
-          signal,
-        },
-      );
-      this.#setRequestStatus("online");
-    } catch (error) {
-      this.#observeError(error);
-      throw error;
-    }
+    await this.#observeRequest(() =>
+      raw.unary(HarnessService.method.getCompatibilityInfo, {}, { signal }),
+    );
   }
 
   #observeError(error: unknown): void {

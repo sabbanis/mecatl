@@ -19,7 +19,7 @@ describe("fetchHarnessServerInfo", () => {
     const stub = stubHarnessFetch(() => ({
       build_id: "abc123",
       server_implementation: "mecated",
-      llm_provider_display_endpoint: "api.openai.com",
+      llm_provider_display_endpoint: "https://api.openai.com/v1",
     }));
     const info = await fetchHarnessServerInfo("openai");
     expect(stub.last()).toMatchObject({
@@ -29,7 +29,7 @@ describe("fetchHarnessServerInfo", () => {
     expect(info).toEqual({
       buildId: "abc123",
       serverImplementation: "mecated",
-      providerEndpoint: "api.openai.com",
+      providerEndpoint: "https://api.openai.com/v1",
     });
   });
 
@@ -37,9 +37,10 @@ describe("fetchHarnessServerInfo", () => {
     const stub = stubHarnessFetch(() => ({ build_id: "dev" }));
     const info = await fetchHarnessServerInfo();
     expect(stub.last().url).toBe("/api/mecatl/v1/info");
+    // The SDK reads a blank composition family as "unknown" (ADR 0245).
     expect(info).toEqual({
       buildId: "dev",
-      serverImplementation: "",
+      serverImplementation: "unknown",
       providerEndpoint: "",
     });
   });

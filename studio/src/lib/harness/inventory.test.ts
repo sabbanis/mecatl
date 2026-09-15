@@ -108,12 +108,6 @@ describe("fetchHarnessCompatibility", () => {
       expect(key).toBe(key.toLowerCase());
     }
   });
-
-  it("returns an empty capabilities object when the daemon omits them", async () => {
-    stubHarnessFetch(() => ({}));
-    const doc = await fetchHarnessCompatibility();
-    expect(doc?.capabilities).toEqual({});
-  });
 });
 
 describe("toWireCapabilities", () => {
