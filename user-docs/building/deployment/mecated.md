@@ -536,6 +536,11 @@ The ServiceAccount for the k8s backend needs `get,create,update,delete` on
 `leases.coordination.k8s.io` in the configured namespace. It does not need
 `list` or `watch`.
 
+This `mecated` flag selects the legacy Lease protocol. Release retains an
+expired tombstone so the per-session `leaseTransitions` fencing value remains
+monotonic. The sequenced cleanup protocol and its ConfigMap permissions belong
+to the `mecak8s` chart composition.
+
 :::warning[Remote shared stores still need an explicit lease]
 
 A local `--store-dir` automatically uses a flock lease beneath the store root,

@@ -16,8 +16,10 @@ import (
 
 	"github.com/google/jsonschema-go/jsonschema"
 	appsv1 "k8s.io/api/apps/v1"
+	batchv1 "k8s.io/api/batch/v1"
 	corev1 "k8s.io/api/core/v1"
 	policyv1 "k8s.io/api/policy/v1"
+	rbacv1 "k8s.io/api/rbac/v1"
 	"sigs.k8s.io/yaml"
 
 	mcpadapter "github.com/stacklok/mecatl/internal/adapter/mcp"
@@ -136,6 +138,18 @@ func deploymentFromRender(t *testing.T, rendered string) *appsv1.Deployment {
 		return &deployment
 	}
 	t.Fatal("rendered chart has no Deployment")
+	return nil
+}
+
+func roleFromRender(t *testing.T, rendered string) *rbacv1.Role {
+	t.Helper()
+	for _, document := range strings.Split(rendered, "\n---") {
+		var role rbacv1.Role
+		if err := yaml.Unmarshal([]byte(document), &role); err == nil && role.Kind == "Role" && strings.HasSuffix(role.Name, "-lease-holder") {
+			return &role
+		}
+	}
+	t.Fatal("rendered chart has no Role")
 	return nil
 }
 
@@ -1382,20 +1396,137 @@ func TestInvariant_mecak8s_storage_free_restricted_workload(t *testing.T) {
 	}
 }
 
+func TestMecak8sHelmChart_FencingSequenceBootstrapHook(t *testing.T) {
+	args := append(productionArgs(), "--set", "imagePullSecrets[0].name=registry-credentials")
+	rendered, err := helm(t, args...)
+	if err != nil {
+		t.Fatalf("render production values: %v", err)
+	}
+
+	const hookName = "production-mecak8s-fencing-bootstrap"
+	var serviceAccount *corev1.ServiceAccount
+	var role *rbacv1.Role
+	var roleBinding *rbacv1.RoleBinding
+	var job *batchv1.Job
+	for _, document := range strings.Split(rendered, "\n---") {
+		var meta struct {
+			Kind     string `yaml:"kind"`
+			Metadata struct {
+				Name string `yaml:"name"`
+			} `yaml:"metadata"`
+		}
+		if err := yaml.Unmarshal([]byte(document), &meta); err != nil {
+			continue
+		}
+		if meta.Kind == "ConfigMap" && meta.Metadata.Name == "mecatl-lease-fencing-sequence" {
+			t.Fatal("fencing sequence must be created by the bootstrap Job, not rendered as an ordinary ConfigMap")
+		}
+		if meta.Metadata.Name != hookName {
+			continue
+		}
+		switch meta.Kind {
+		case "ServiceAccount":
+			serviceAccount = new(corev1.ServiceAccount)
+			if err := yaml.Unmarshal([]byte(document), serviceAccount); err != nil {
+				t.Fatal(err)
+			}
+		case "Role":
+			role = new(rbacv1.Role)
+			if err := yaml.Unmarshal([]byte(document), role); err != nil {
+				t.Fatal(err)
+			}
+		case "RoleBinding":
+			roleBinding = new(rbacv1.RoleBinding)
+			if err := yaml.Unmarshal([]byte(document), roleBinding); err != nil {
+				t.Fatal(err)
+			}
+		case "Job":
+			job = new(batchv1.Job)
+			if err := yaml.Unmarshal([]byte(document), job); err != nil {
+				t.Fatal(err)
+			}
+		}
+	}
+
+	if serviceAccount == nil || role == nil || roleBinding == nil || job == nil {
+		t.Fatalf("bootstrap resources missing: ServiceAccount=%t Role=%t RoleBinding=%t Job=%t", serviceAccount != nil, role != nil, roleBinding != nil, job != nil)
+	}
+	for kind, annotations := range map[string]map[string]string{
+		"ServiceAccount": serviceAccount.Annotations,
+		"Role":           role.Annotations,
+		"RoleBinding":    roleBinding.Annotations,
+		"Job":            job.Annotations,
+	} {
+		if annotations["helm.sh/hook"] != "pre-install" || strings.Contains(annotations["helm.sh/hook"], "pre-upgrade") {
+			t.Fatalf("%s hook events = %q, want pre-install only", kind, annotations["helm.sh/hook"])
+		}
+		if annotations["helm.sh/hook-delete-policy"] != "before-hook-creation,hook-succeeded,hook-failed" {
+			t.Fatalf("%s hook delete policy = %q", kind, annotations["helm.sh/hook-delete-policy"])
+		}
+		if annotations["argocd.argoproj.io/hook"] != "Skip" {
+			t.Fatalf("%s Argo CD hook behavior = %q, want Skip to prevent recurring PreSync bootstrap", kind, annotations["argocd.argoproj.io/hook"])
+		}
+	}
+	if got := []string{serviceAccount.Annotations["helm.sh/hook-weight"], role.Annotations["helm.sh/hook-weight"], roleBinding.Annotations["helm.sh/hook-weight"], job.Annotations["helm.sh/hook-weight"]}; !reflect.DeepEqual(got, []string{"-40", "-30", "-20", "-10"}) {
+		t.Fatalf("bootstrap hook weights = %#v", got)
+	}
+	wantRules := []rbacv1.PolicyRule{
+		{APIGroups: []string{""}, Resources: []string{"configmaps"}, Verbs: []string{"create"}},
+		{APIGroups: []string{""}, Resources: []string{"configmaps"}, ResourceNames: []string{"mecatl-lease-fencing-sequence"}, Verbs: []string{"get"}},
+	}
+	if !reflect.DeepEqual(role.Rules, wantRules) {
+		t.Fatalf("bootstrap Role rules = %#v, want %#v", role.Rules, wantRules)
+	}
+	if len(roleBinding.Subjects) != 1 || roleBinding.Subjects[0].Name != hookName || roleBinding.RoleRef.Name != hookName {
+		t.Fatalf("bootstrap RoleBinding = %#v", roleBinding)
+	}
+	if job.Spec.BackoffLimit == nil || *job.Spec.BackoffLimit != 0 || job.Spec.Template.Spec.RestartPolicy != corev1.RestartPolicyNever {
+		t.Fatalf("bootstrap Job retry policy = backoffLimit %v, restartPolicy %q", job.Spec.BackoffLimit, job.Spec.Template.Spec.RestartPolicy)
+	}
+	podSpec := job.Spec.Template.Spec
+	if podSpec.ServiceAccountName != hookName || !reflect.DeepEqual(podSpec.ImagePullSecrets, []corev1.LocalObjectReference{{Name: "registry-credentials"}}) {
+		t.Fatalf("bootstrap Job pod identity/pull secrets = serviceAccount %q, pullSecrets %#v", podSpec.ServiceAccountName, podSpec.ImagePullSecrets)
+	}
+	if len(podSpec.Containers) != 1 {
+		t.Fatalf("bootstrap Job containers = %d, want 1", len(podSpec.Containers))
+	}
+	container := podSpec.Containers[0]
+	if container.Image != "ghcr.io/stacklok/mecatl/mecak8s:v0.0.0" || container.ImagePullPolicy != corev1.PullIfNotPresent {
+		t.Fatalf("bootstrap image = %q (%q)", container.Image, container.ImagePullPolicy)
+	}
+	wantArgs := []string{"--bootstrap-lease-fencing-sequence", "--session-lease-k8s-namespace=default"}
+	if !reflect.DeepEqual(container.Args, wantArgs) {
+		t.Fatalf("bootstrap args = %#v, want %#v", container.Args, wantArgs)
+	}
+	if podSpec.SecurityContext == nil || podSpec.SecurityContext.RunAsNonRoot == nil || !*podSpec.SecurityContext.RunAsNonRoot ||
+		container.SecurityContext == nil || container.SecurityContext.ReadOnlyRootFilesystem == nil || !*container.SecurityContext.ReadOnlyRootFilesystem ||
+		container.SecurityContext.AllowPrivilegeEscalation == nil || *container.SecurityContext.AllowPrivilegeEscalation {
+		t.Fatalf("bootstrap Job is missing restricted security contexts: pod=%#v container=%#v", podSpec.SecurityContext, container.SecurityContext)
+	}
+}
+
 func TestMecak8sHelmChart_Scenario1_LeastPrivilegeLease(t *testing.T) {
 	rendered, err := helm(t, productionArgs()...)
 	if err != nil {
 		t.Fatalf("render production values: %v", err)
 	}
-	for _, want := range []string{
-		"kind: Role", "apiGroups: [\"coordination.k8s.io\"]", "resources: [\"leases\"]", "verbs: [\"get\", \"create\", \"update\", \"delete\"]",
-		"kind: RoleBinding",
-	} {
-		if !strings.Contains(rendered, want) {
-			t.Fatalf("least-privilege render missing %q", want)
-		}
+	wantRules := []rbacv1.PolicyRule{
+		{
+			APIGroups: []string{"coordination.k8s.io"},
+			Resources: []string{"leases"},
+			Verbs:     []string{"get", "list", "create", "update", "delete"},
+		},
+		{
+			APIGroups:     []string{""},
+			Resources:     []string{"configmaps"},
+			ResourceNames: []string{"mecatl-lease-fencing-sequence"},
+			Verbs:         []string{"get", "update"},
+		},
 	}
-	for _, forbidden := range []string{"\"list\"", "\"watch\"", "kind: ClusterRole"} {
+	if got := roleFromRender(t, rendered).Rules; !reflect.DeepEqual(got, wantRules) {
+		t.Fatalf("least-privilege Role rules = %#v, want exactly %#v", got, wantRules)
+	}
+	for _, forbidden := range []string{"\"watch\"", "\"patch\"", "kind: ClusterRole"} {
 		if strings.Contains(rendered, forbidden) {
 			t.Fatalf("least-privilege render includes %q", forbidden)
 		}

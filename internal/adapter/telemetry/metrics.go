@@ -226,6 +226,16 @@ type Metrics struct {
 	// sessionLoadFailures counts ownership-concealed load failures by the closed
 	// store/snapshot/unknown class only.
 	sessionLoadFailures metric.Int64Counter
+	// k8sLeaseObjects is the most recent label-scoped Lease inventory observed by
+	// the Kubernetes Lease collector. Each pod reports its own last complete
+	// sweep; no session or namespace identifier becomes a metric attribute.
+	k8sLeaseObjects metric.Int64Gauge
+	// k8sLeaseGCBacklog is the most recent count of expired or abandoned Lease
+	// objects eligible for collection.
+	k8sLeaseGCBacklog metric.Int64Gauge
+	k8sLeaseGCRuns    metric.Int64Counter
+	k8sLeaseGCDeleted metric.Int64Counter
+	k8sLeaseGCErrors  metric.Int64Counter
 }
 
 // Compile-time interface checks.
@@ -363,14 +373,52 @@ func NewMetrics(mp metric.MeterProvider) (*Metrics, error) {
 	); err != nil {
 		return nil, fmt.Errorf("telemetry: learning activity counter: %w", err)
 	}
+	if err := initStorageMetrics(meter, m); err != nil {
+		return nil, err
+	}
+
+	return m, nil
+}
+
+func initStorageMetrics(meter metric.Meter, m *Metrics) error {
+	var err error
 	if m.sessionLoadFailures, err = meter.Int64Counter(
 		"mecatl.session.load_failures",
 		metric.WithDescription("Ownership-concealed session load failures, by bounded class."),
 	); err != nil {
-		return nil, fmt.Errorf("telemetry: session load failures counter: %w", err)
+		return fmt.Errorf("telemetry: session load failures counter: %w", err)
 	}
-
-	return m, nil
+	if m.k8sLeaseObjects, err = meter.Int64Gauge(
+		"mecatl.k8s_lease.objects",
+		metric.WithDescription("Kubernetes session Lease objects seen by the most recent collector sweep."),
+	); err != nil {
+		return fmt.Errorf("telemetry: kubernetes lease objects gauge: %w", err)
+	}
+	if m.k8sLeaseGCBacklog, err = meter.Int64Gauge(
+		"mecatl.k8s_lease.gc_backlog",
+		metric.WithDescription("Expired or abandoned Kubernetes session Lease objects eligible for collection."),
+	); err != nil {
+		return fmt.Errorf("telemetry: kubernetes lease GC backlog gauge: %w", err)
+	}
+	if m.k8sLeaseGCRuns, err = meter.Int64Counter(
+		"mecatl.k8s_lease.gc_runs",
+		metric.WithDescription("Kubernetes session Lease collector sweeps, by outcome."),
+	); err != nil {
+		return fmt.Errorf("telemetry: kubernetes lease GC runs counter: %w", err)
+	}
+	if m.k8sLeaseGCDeleted, err = meter.Int64Counter(
+		"mecatl.k8s_lease.gc_deleted",
+		metric.WithDescription("Kubernetes session Lease objects deleted by the collector."),
+	); err != nil {
+		return fmt.Errorf("telemetry: kubernetes lease GC deleted counter: %w", err)
+	}
+	if m.k8sLeaseGCErrors, err = meter.Int64Counter(
+		"mecatl.k8s_lease.gc_errors",
+		metric.WithDescription("Kubernetes session Lease collector object failures."),
+	); err != nil {
+		return fmt.Errorf("telemetry: kubernetes lease GC errors counter: %w", err)
+	}
+	return nil
 }
 
 // rssZeroLogOnce ensures the "RSS read returned 0 on a supported platform"
@@ -585,6 +633,31 @@ func (m *Metrics) EmitSessionLoadFailure(class port.SessionLoadFailureClass) {
 		return
 	}
 	m.sessionLoadFailures.Add(context.Background(), 1, withAttrs(nil, attribute.String(attrClass, class.String())))
+}
+
+// EmitK8sLeaseGC records one content-free collector sweep. The callback accepts
+// only aggregate counts and a closed success value, so session and namespace
+// identities cannot enter metric attributes. Nil-safe for telemetry-off builds.
+func (m *Metrics) EmitK8sLeaseGC(objects, backlog, deleted, failures int64, success bool) {
+	if m == nil {
+		return
+	}
+	ctx := context.Background()
+	outcome := "success"
+	if !success {
+		outcome = "failure"
+	} else {
+		// Preserve the last complete inventory when a later partial sweep fails.
+		m.k8sLeaseObjects.Record(ctx, objects)
+		m.k8sLeaseGCBacklog.Record(ctx, backlog)
+	}
+	m.k8sLeaseGCRuns.Add(ctx, 1, withAttrs(nil, attribute.String(attrOutcome, outcome)))
+	if deleted > 0 {
+		m.k8sLeaseGCDeleted.Add(ctx, deleted)
+	}
+	if failures > 0 {
+		m.k8sLeaseGCErrors.Add(ctx, failures)
+	}
 }
 
 // EmitLearning records only closed activity/reason/sensitivity labels.

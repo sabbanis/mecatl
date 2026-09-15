@@ -826,6 +826,50 @@ func TestMetricsThroughRealSetup(t *testing.T) {
 	assertExplicitBuckets("mecatl_tool_duration_seconds")
 }
 
+func TestMetricsK8sLeaseGCRecordsBoundedAggregates(t *testing.T) {
+	m, reader := newTestMetrics(t)
+	m.EmitK8sLeaseGC(12, 4, 3, 0, true)
+	m.EmitK8sLeaseGC(99, 99, 0, 2, false)
+
+	metrics := collect(t, reader)
+	assertGauge := func(name string, want int64) {
+		t.Helper()
+		gauge, ok := metrics[name].(metricdata.Gauge[int64])
+		if !ok || len(gauge.DataPoints) != 1 {
+			t.Fatalf("%s aggregation = %T with %d points, want one Gauge[int64] point", name, metrics[name], len(gauge.DataPoints))
+		}
+		if got := gauge.DataPoints[0].Value; got != want {
+			t.Errorf("%s = %d, want %d", name, got, want)
+		}
+		if got := gauge.DataPoints[0].Attributes.Len(); got != 0 {
+			t.Errorf("%s attributes = %d, want 0 (identity-free)", name, got)
+		}
+	}
+	assertGauge("mecatl.k8s_lease.objects", 12)
+	assertGauge("mecatl.k8s_lease.gc_backlog", 4)
+	if got := sumPoint(t, metrics["mecatl.k8s_lease.gc_runs"], attrOutcome, "failure"); got != 1 {
+		t.Errorf("failed GC runs = %d, want 1", got)
+	}
+	if got := sumPoint(t, metrics["mecatl.k8s_lease.gc_runs"], attrOutcome, "success"); got != 1 {
+		t.Errorf("successful GC runs = %d, want 1", got)
+	}
+	for name, want := range map[string]int64{
+		"mecatl.k8s_lease.gc_deleted": 3,
+		"mecatl.k8s_lease.gc_errors":  2,
+	} {
+		sum, ok := metrics[name].(metricdata.Sum[int64])
+		if !ok || len(sum.DataPoints) != 1 || sum.DataPoints[0].Value != want {
+			t.Errorf("%s aggregation = %#v, want one Sum point with value %d", name, metrics[name], want)
+		}
+		if ok && len(sum.DataPoints) == 1 && sum.DataPoints[0].Attributes.Len() != 0 {
+			t.Errorf("%s has identity-bearing attributes: %v", name, sum.DataPoints[0].Attributes)
+		}
+	}
+
+	var nilMetrics *Metrics
+	nilMetrics.EmitK8sLeaseGC(1, 1, 1, 1, true)
+}
+
 func scrape(t *testing.T, h http.Handler) string {
 	t.Helper()
 	srv := httptest.NewServer(h)

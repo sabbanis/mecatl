@@ -566,6 +566,17 @@ type Config struct {
 	// SessionLeaseRenewInterval is the renewer tick (default TTL/3).
 	SessionLeaseTTL           time.Duration
 	SessionLeaseRenewInterval time.Duration
+	// SessionLeaseK8sGCInterval enables the collectible Kubernetes Lease
+	// protocol when positive. It uses the chart-provisioned durable fencing
+	// sequencer and runs one startup sweep followed by this cadence. Zero keeps
+	// the legacy tombstone protocol for generic mecated deployments.
+	SessionLeaseK8sGCInterval time.Duration
+	// SessionLeaseK8sGCGrace is added to a Lease's expiry before the collector
+	// may delete a crash orphan or abandoned provisional.
+	SessionLeaseK8sGCGrace time.Duration
+	// SessionLeaseK8sGCMetricsEmitter receives content-free aggregate counts
+	// after each sweep. Nil disables these metrics.
+	SessionLeaseK8sGCMetricsEmitter func(objects, backlog, deleted, failures int64, success bool)
 
 	// Soul (issue #14, Phase 1): a user-scoped, agent-READ-ONLY persona fragment
 	// injected as a turn-0 user message. ON by default reading the conventional
@@ -1470,6 +1481,15 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// (the validateSkillDraftConfig precedent).
 	if err := validateDriverConfig(cfg); err != nil {
 		return nil, err
+	}
+	if cfg.SessionLeaseK8sGCInterval < 0 || cfg.SessionLeaseK8sGCGrace < 0 {
+		return nil, errors.New("kubernetes session Lease GC interval and grace must not be negative")
+	}
+	if cfg.SessionLeaseK8sGCInterval > 0 && cfg.SessionLeaseK8sNamespace == "" {
+		return nil, errors.New("kubernetes session Lease GC requires SessionLeaseK8sNamespace")
+	}
+	if cfg.SessionLeaseK8sGCInterval > 0 && (cfg.SessionLeaseURL != "" || cfg.SessionLeaseDir != "") {
+		return nil, errors.New("kubernetes session Lease GC cannot be combined with a gRPC or flock session Lease backend")
 	}
 	if (cfg.RedisFilesystem || cfg.RedisReadLedger) && cfg.RedisURL == "" {
 		return nil, errors.New("redis filesystem/read-ledger requires RedisURL")
@@ -2694,6 +2714,19 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 	// Service's process-wide truth. No worker is started when exclusion is
 	// permanently unavailable; runtime loss stickily settles health unavailable.
 	cfg.maintenanceMutationAvailable = svc.MaintenanceMutationAvailable
+	k8sLeaseGCClose, err := startK8sLeaseGC(ctx, cfg, sessionLease)
+	if err != nil {
+		schedClose()
+		refreshClose()
+		svc.Close()
+		childLiveness.Close()
+		closeBroker()
+		mcpClose()
+		agentClose()
+		storeClose()
+		commandConnClose()
+		return nil, err
+	}
 	managedTempWorkerClose := startManagedTempWorker(ctx, cfg)
 	childGCClose := startChildGC(ctx, cfg, store, svc.IsLive, svc.DeleteSessionForRetentionCandidate)
 
@@ -2715,6 +2748,7 @@ func Build(ctx context.Context, cfg Config) (*Built, error) {
 		staleSessionReconcileClose()
 		childGCClose()
 		managedTempWorkerClose()
+		k8sLeaseGCClose()
 		schedClose()
 		refreshClose()
 		svc.Close()
@@ -3510,7 +3544,11 @@ func buildSessionLease(cfg Config, store port.SessionStore) (port.SessionLease, 
 			return nil, "", nil, fmt.Errorf("build k8s clientset for session lease: %w", err)
 		}
 		cfg.diag().Log(context.Background(), port.LevelInfo, "session lease: kubernetes", "namespace", cfg.SessionLeaseK8sNamespace, "owner", owner)
-		return k8slease.New(clientset, cfg.SessionLeaseK8sNamespace, ttl, wallclock.Clock{}), owner, noop, nil
+		var options []k8slease.Option
+		if cfg.SessionLeaseK8sGCInterval > 0 {
+			options = append(options, k8slease.WithSequencer(k8slease.DefaultSequencerName))
+		}
+		return k8slease.New(clientset, cfg.SessionLeaseK8sNamespace, ttl, wallclock.Clock{}, options...), owner, noop, nil
 
 	case cfg.SessionLeaseDir != "":
 		l, err := flocklease.New(cfg.SessionLeaseDir, ttl, wallclock.Clock{})

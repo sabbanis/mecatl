@@ -204,6 +204,83 @@ API:
 |Session snapshots, retention, and cleanup|Redis|
 |Durable event log and resume cursors|Redis Streams|
 |Single-writer session lease|Kubernetes `coordination.k8s.io` Lease|
+|Lease fencing sequence|Kubernetes ConfigMap|
+
+### Operate session Lease cleanup
+
+`mecak8s` deletes a session Lease when its holder releases it. Each replica also
+runs a cleanup pass at startup and every minute. The pass removes abandoned
+provisional objects and expired Leases after the Lease TTL plus one additional
+TTL. Deletion rereads the object and supplies its UID and resource version, so a
+cleanup race cannot delete a replacement Lease.
+
+The `mecatl-lease-fencing-sequence` ConfigMap preserves the fencing sequence
+after individual Lease objects are deleted. A create-only Helm pre-install hook
+seeds `last-token` at `2147483647` on a new installation. The ConfigMap is not
+part of the release's ordinary manifests, so Helm upgrades, GitOps syncs, and
+uninstall do not reconcile or delete its live value. Keep it with your cluster
+state. Lease acquisition fails closed if it is missing, malformed, below the
+seed, exhausted, or behind an existing Lease token.
+
+The chart's namespace-scoped Role grants `get`, `list`, `create`, `update`, and
+`delete` on Leases. ConfigMap access is limited to `get` and `update` on
+`mecatl-lease-fencing-sequence`; it grants no broader ConfigMap authority. The
+pre-install hook uses a separate, short-lived identity for create-only
+bootstrap because Kubernetes cannot restrict ConfigMap `create` by resource
+name.
+
+When metrics are enabled, monitor these OpenTelemetry instruments:
+
+|Instrument|Meaning|
+|-|-|
+|`mecatl.k8s_lease.objects`|Session Lease objects seen in the latest successful sweep|
+|`mecatl.k8s_lease.gc_backlog`|Objects eligible for deletion in the latest successful sweep|
+|`mecatl.k8s_lease.gc_runs`|Cleanup passes by `success` or `failure` outcome|
+|`mecatl.k8s_lease.gc_deleted`|Objects deleted|
+|`mecatl.k8s_lease.gc_errors`|Cleanup failures|
+
+The supported operating envelope is fewer than 10,000 managed session Lease
+objects and no more than 25 deletion candidates at the start of a sweep in one
+release namespace. The candidate limit is deliberately lower: each deletion
+needs a fresh `GET` and conditional `DELETE`, the collector has a 30-second
+deadline, and client-go defaults to 5 requests per second with a burst of 10.
+These are operating limits, not API quotas. Shard deployments across namespaces
+before exceeding them.
+
+Alert when any sweep fails or `gc_errors` increases, when no successful sweep
+is recorded for more than two minutes, when backlog remains above zero for five
+minutes, when backlog exceeds 25, or when object cardinality reaches 10,000. A
+failed sweep leaves the object and backlog gauges at their last successful
+values, so always correlate those gauges with the run outcome and error
+counters.
+
+### Upgrade the Lease protocol
+
+:::warning[Quiescent upgrade required]
+
+Do not run pods that use tombstone fencing alongside pods that use the
+sequenced collectible protocol. Scale the Deployment to zero, wait one complete
+Lease TTL after the last pod terminates, then bootstrap the sequence, upgrade
+the chart, and restore the replica count. Existing releases do not run the
+pre-install hook during an upgrade. If the ConfigMap does not already exist,
+create it once while the old pods are quiescent:
+
+```sh
+kubectl -n <namespace> create configmap mecatl-lease-fencing-sequence \
+  --from-literal=last-token=2147483647
+```
+
+Do not replace an existing ConfigMap. Inspect and preserve its current value.
+Argo CD skips the Helm hook because it would otherwise reinterpret
+`pre-install` as a recurring `PreSync`. For a new Argo CD or other
+continuously-rendered installation, run the same create command once before the
+first application sync.
+
+After a sequenced pod acquires a session Lease, rolling back to a version that
+uses tombstone fencing is unsupported. Roll forward, or restore Kubernetes
+Lease and ConfigMap state from a backup taken before the upgrade.
+
+:::
 
 ### Inspect the event log
 

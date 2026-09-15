@@ -1,0 +1,34 @@
+suite: Lease and fencing-sequence RBAC
+templates:
+  - templates/rbac.yaml
+release:
+  name: unit
+  namespace: shared
+set:
+  mockProvider: true
+tests:
+  - it: grants Lease GC and exact fencing sequence access only
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: rules
+          value:
+            - apiGroups:
+                - coordination.k8s.io
+              resources:
+                - leases
+              verbs:
+                - get
+                - list
+                - create
+                - update
+                - delete
+            - apiGroups:
+                - ""
+              resources:
+                - configmaps
+              resourceNames:
+                - mecatl-lease-fencing-sequence
+              verbs:
+                - get
+                - update

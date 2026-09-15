@@ -919,6 +919,60 @@ release an unjoined owner. The modeled handoff is stream drop plus client retry 
 TTL, successor acquisition, Redis reload, and existing `Abandon` repair; it is not a
 Gateway/EndpointSlice proof or live owner forwarding.
 
+**Collectible Kubernetes session Leases (`internal/adapter/k8slease`, issue #1517).**
+The adapter has two explicit modes. `New` without options preserves the original
+`leaseTransitions` fencing token and release tombstone contract. `mecak8s` sets a positive
+one-minute `SessionLeaseK8sGCInterval`, so composition adds
+`WithSequencer(DefaultSequencerName)` and starts the collector. Generic `mecated` leaves
+the interval at zero and therefore remains in legacy mode.
+
+Sequenced mode stores the durable high-water mark in the fixed
+`mecatl-lease-fencing-sequence` ConfigMap. It is not an ordinary Helm-managed resource:
+a create-only pre-install hook uses the signed `mecak8s` image to seed
+`data.last-token=math.MaxInt32`, or validates an existing value without changing it. The
+hook has a short-lived dedicated identity because Kubernetes cannot restrict ConfigMap
+`create` by resource name. Argo CD skips the Helm hook so a recurring PreSync cannot
+silently recreate lost state; GitOps and legacy-to-v2 migrations bootstrap it explicitly
+once. The runtime identity only gets and updates the exact object. It never creates or
+deletes it. Missing data, malformed values, values below the legacy floor, and
+`math.MaxUint64` exhaustion fail token allocation closed. ConfigMap update conflicts use
+the client-go bounded retry policy; unused allocations are safe gaps in the sequence.
+
+A missing session object is first created as an ungranted provisional with complete v2
+ownership labels and no fencing token. The contender then allocates a token and grants the
+Lease through a resource-version CAS update. This create-then-allocate sequence prevents a
+delayed Create from installing an older grant after another incarnation has been created
+and collected. Granted v2 objects carry the raw session ID, the allocated decimal `uint64`
+token, and the closed managed-by, purpose, and schema labels. Reads validate that complete
+identity before mutation. A takeover allocates a fresh global token; renew and live
+same-owner reacquire retain the token. `spec.leaseTransitions` remains a saturated
+diagnostic takeover count rather than the fencing authority.
+
+Sequenced `Release` rereads the object, verifies the exact session, owner, and token, then
+deletes with UID and resource-version preconditions. NotFound and conflict are idempotent
+successes because a stale release has no authority over a successor. The background
+collector uses the same delete preconditions after a fresh read and identity recheck. Its
+passes list only managed v2 session objects through a label selector. Legacy objects stay
+as a finite migration baseline: automatically deleting one while an old writer can still
+recreate it would reset that writer's `leaseTransitions` history. Every list uses
+500-object Kubernetes pages, malformed managed objects are reported as sweep failures,
+and each sweep has a 30-second context bound.
+
+Every `mecak8s` replica runs one startup sweep followed by a sweep every minute. Separate
+leader coordination is unnecessary because UID/resource-version delete preconditions make
+concurrent collectors idempotent. An empty-holder tombstone is immediately eligible. A
+provisional or held crash orphan becomes eligible after its Lease expiry plus the GC grace;
+`mecak8s` sets that grace to the configured Lease TTL. Shutdown cancels and joins the
+worker before service and store teardown.
+
+`SessionLeaseK8sGCMetricsEmitter` receives only aggregate counts. The telemetry adapter
+publishes `mecatl.k8s_lease.objects`, `mecatl.k8s_lease.gc_backlog`,
+`mecatl.k8s_lease.gc_runs` with the closed `success` or `failure` outcome,
+`mecatl.k8s_lease.gc_deleted`, and `mecatl.k8s_lease.gc_errors`. No namespace, object, or
+session identity becomes a metric attribute. The workload Role grants
+`get,list,create,update,delete` on Leases and `get,update` on the exact fencing-sequence
+ConfigMap resource name. It grants no ConfigMap create, delete, list, watch, or patch.
+
 ## Application — `engine/agent/` (subagent workspace policy)
 
 The loop (`Engine`/`Run`), dispatch, permission pause/resume, compaction, the Subagent delegation tool,

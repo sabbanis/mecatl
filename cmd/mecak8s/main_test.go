@@ -147,6 +147,14 @@ func TestParseFlagsK8sDefaults(t *testing.T) {
 	}
 }
 
+func TestSessionLeaseK8sHelpNamesCompleteRuntimeRBAC(t *testing.T) {
+	for _, want := range []string{"get,list,create,update,delete on leases", "exact-name get,update", "mecatl-lease-fencing-sequence"} {
+		if !strings.Contains(sessionLeaseK8sNamespaceHelp, want) {
+			t.Errorf("session Lease help %q does not contain %q", sessionLeaseK8sNamespaceHelp, want)
+		}
+	}
+}
+
 func TestMockScriptFlagSelectsOfflineProvider(t *testing.T) {
 	cfg, err := parseFlags([]string{"--mock-script", "/mounted/script.json"})
 	if err != nil {
@@ -201,6 +209,15 @@ func TestAppConfigMapsK8sFields(t *testing.T) {
 	if ac.SessionLeaseK8sNamespace != "myns" {
 		t.Errorf("app.Config SessionLeaseK8sNamespace = %q, want myns", ac.SessionLeaseK8sNamespace)
 	}
+	if ac.SessionLeaseK8sGCInterval != defaultK8sLeaseGCInterval {
+		t.Errorf("app.Config SessionLeaseK8sGCInterval = %v, want %v", ac.SessionLeaseK8sGCInterval, defaultK8sLeaseGCInterval)
+	}
+	if ac.SessionLeaseK8sGCGrace != cfg.sessionLeaseTTL {
+		t.Errorf("app.Config SessionLeaseK8sGCGrace = %v, want Lease TTL %v", ac.SessionLeaseK8sGCGrace, cfg.sessionLeaseTTL)
+	}
+	if ac.SessionLeaseK8sGCMetricsEmitter == nil {
+		t.Error("app.Config SessionLeaseK8sGCMetricsEmitter = nil, want nil-safe telemetry callback")
+	}
 	if !ac.Interactive {
 		t.Error("app.Config Interactive = false with --headless=false, want true (Interactive=!headless)")
 	}
@@ -218,6 +235,18 @@ func TestAppConfigMapsK8sFields(t *testing.T) {
 	}
 	if !cfg.reasoningEffortFlagSet {
 		t.Error("reasoningEffortFlagSet = false after --reasoning-effort, want true")
+	}
+}
+
+func TestAppConfigDisablesK8sLeaseGCWithoutK8sLeasing(t *testing.T) {
+	cfg, err := parseFlags([]string{"--session-lease-k8s-namespace="})
+	if err != nil {
+		t.Fatal(err)
+	}
+	ac := appConfig(cfg, port.NopDiagnostics{}, observability{})
+	if ac.SessionLeaseK8sGCInterval != 0 || ac.SessionLeaseK8sGCGrace != 0 || ac.SessionLeaseK8sGCMetricsEmitter != nil {
+		t.Fatalf("Kubernetes Lease GC remained configured without a Kubernetes Lease backend: interval=%v grace=%v emitter-nil=%v",
+			ac.SessionLeaseK8sGCInterval, ac.SessionLeaseK8sGCGrace, ac.SessionLeaseK8sGCMetricsEmitter == nil)
 	}
 }
 

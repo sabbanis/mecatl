@@ -1,0 +1,94 @@
+{{- include "mecak8s.validateImage" . -}}
+{{- $hookName := printf "%s-fencing-bootstrap" (include "mecak8s.fullname" . | trunc 45 | trimSuffix "-") | trunc 63 | trimSuffix "-" -}}
+{{- $hookAnnotations := dict
+  "helm.sh/hook" "pre-install"
+  "helm.sh/hook-delete-policy" "before-hook-creation,hook-succeeded,hook-failed"
+  "argocd.argoproj.io/hook" "Skip"
+-}}
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "mecak8s.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml (merge (dict "helm.sh/hook-weight" "-40") $hookAnnotations) | nindent 4 }}
+automountServiceAccountToken: true
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "mecak8s.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml (merge (dict "helm.sh/hook-weight" "-30") $hookAnnotations) | nindent 4 }}
+rules:
+  # Kubernetes authorization cannot constrain create by resourceName because
+  # the object does not exist yet. This short-lived hook identity receives no
+  # other ConfigMap verbs through this rule.
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    verbs: ["create"]
+  - apiGroups: [""]
+    resources: ["configmaps"]
+    resourceNames: ["mecatl-lease-fencing-sequence"]
+    verbs: ["get"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "mecak8s.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml (merge (dict "helm.sh/hook-weight" "-20") $hookAnnotations) | nindent 4 }}
+subjects:
+  - kind: ServiceAccount
+    name: {{ $hookName }}
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ $hookName }}
+---
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ $hookName }}
+  namespace: {{ .Release.Namespace }}
+  labels: {{- include "mecak8s.labels" . | nindent 4 }}
+  annotations:
+    {{- toYaml (merge (dict "helm.sh/hook-weight" "-10") $hookAnnotations) | nindent 4 }}
+spec:
+  backoffLimit: 0
+  template:
+    metadata:
+      labels: {{- include "mecak8s.labels" . | nindent 8 }}
+    spec:
+      serviceAccountName: {{ $hookName }}
+      automountServiceAccountToken: true
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets: {{- toYaml . | nindent 8 }}
+      {{- end }}
+      restartPolicy: Never
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
+        seccompProfile: {type: RuntimeDefault}
+      containers:
+        - name: bootstrap-lease-fencing-sequence
+          image: {{ if .Values.image.digest }}{{ .Values.image.repository }}@{{ .Values.image.digest }}{{ else }}{{ .Values.image.repository }}:{{ default (printf "v%s" .Chart.Version) .Values.image.tag }}{{ end }}
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          args:
+            - --bootstrap-lease-fencing-sequence
+            - {{ printf "--session-lease-k8s-namespace=%s" .Release.Namespace | quote }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            runAsNonRoot: true
+            capabilities: {drop: ["ALL"]}
+            seccompProfile: {type: RuntimeDefault}
+          resources: {{- toYaml .Values.resources | nindent 12 }}

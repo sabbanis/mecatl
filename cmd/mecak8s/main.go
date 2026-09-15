@@ -5,11 +5,16 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"log/slog"
 	"os"
 	"time"
 
+	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/rest"
+
+	"github.com/stacklok/mecatl/internal/adapter/k8slease"
 	"github.com/stacklok/mecatl/internal/adapter/mockscript"
 	"github.com/stacklok/mecatl/internal/adapter/slogdiag"
 	"github.com/stacklok/mecatl/internal/app"
@@ -51,6 +56,15 @@ func run() error {
 	if err != nil {
 		return err
 	}
+	if cfg.bootstrapLeaseFencingSequence {
+		ctx, stop := signalCtx()
+		defer stop()
+		clientset, err := newBootstrapK8sClientset()
+		if err != nil {
+			return err
+		}
+		return bootstrapLeaseFencingSequence(ctx, clientset, cfg.sessionLeaseK8sNamespace)
+	}
 
 	if cfg.mockScript != "" {
 		cfg.mockProvider, err = mockscript.Load(cfg.mockScript)
@@ -91,4 +105,23 @@ func run() error {
 	defer flushTelemetry(os.Stderr, obs, cfg.otlpShutdownTimeout)
 
 	return serve(ctx, cfg, built.Service, obs, built.MCPBrokerHandlers, built.MCPBrokerCallbackPath)
+}
+
+func newBootstrapK8sClientset() (kubernetes.Interface, error) {
+	restCfg, err := rest.InClusterConfig()
+	if err != nil {
+		return nil, fmt.Errorf("load in-cluster Kubernetes config for fencing sequencer bootstrap: %w", err)
+	}
+	clientset, err := kubernetes.NewForConfig(restCfg)
+	if err != nil {
+		return nil, fmt.Errorf("create Kubernetes client for fencing sequencer bootstrap: %w", err)
+	}
+	return clientset, nil
+}
+
+func bootstrapLeaseFencingSequence(ctx context.Context, clientset kubernetes.Interface, namespace string) error {
+	if err := k8slease.BootstrapSequencer(ctx, clientset, namespace, k8slease.DefaultSequencerName); err != nil {
+		return fmt.Errorf("bootstrap Lease fencing sequence: %w", err)
+	}
+	return nil
 }

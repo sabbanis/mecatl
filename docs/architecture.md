@@ -1063,7 +1063,16 @@ shared assembly with **k8s-native defaults** — a **Redis** session store + dur
 `/readyz` (drain-gated + Redis-pinged), and a bounded `GracefulStop`. The agent pods are
 **storage-free**: no PVC, no `--store-dir`, no local state — every piece of state is a
 managed service the pod talks to over the network (Redis + the k8s API server). An
-optional principal-scoped Redis virtual workspace provides shell-less
+`mecak8s` composition enables the adapter's collectible Lease protocol. A retained
+namespace-scoped ConfigMap allocates monotonic `uint64` fencing tokens above the legacy
+`leaseTransitions` range. A normal release deletes the exact Lease object under
+UID/resource-version preconditions, while a startup and periodic collector removes
+expired or abandoned v2 objects. A create-only Helm pre-install bootstrap seeds the
+sequence outside ordinary reconciled chart state; later runtime access can update but
+never recreate it. Generic `mecated` Kubernetes Lease composition leaves this protocol
+disabled and retains the legacy tombstone behavior. The collector records only bounded
+aggregate telemetry and joins the `app.Build` lifecycle on close.
+An optional principal-scoped Redis virtual workspace provides shell-less
 Read/ListDir/Edit/Write/Copy/Move/Remove/Grep/Glob persistence without a volume: exact issuer/subject pairs select
 opaque namespaces, ownerless sessions share an anonymous namespace, and private placement
 refs are revalidated on reattach. It is mutually exclusive with the mounted-workspace mode.

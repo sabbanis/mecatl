@@ -50,6 +50,9 @@ func TestMecak8sBuildDiscoversOperatorMCPSettings(t *testing.T) {
 	ac.RedisURL = ""
 	ac.SchedulerEnabled = false
 	ac.SessionLeaseK8sNamespace = ""
+	ac.SessionLeaseK8sGCInterval = 0
+	ac.SessionLeaseK8sGCGrace = 0
+	ac.SessionLeaseK8sGCMetricsEmitter = nil
 	ac.Workspace = t.TempDir()
 	ac.MockProvider = mockllm.New()
 	if _, err := buildIsolated(t, context.Background(), ac); !errors.Is(err, cliconfig.ErrMCPProfileSecret) {
@@ -68,6 +71,9 @@ func TestMecak8sBuildDiscoversOperatorMCPSettings(t *testing.T) {
 	ac.RedisURL = ""
 	ac.SchedulerEnabled = false
 	ac.SessionLeaseK8sNamespace = ""
+	ac.SessionLeaseK8sGCInterval = 0
+	ac.SessionLeaseK8sGCGrace = 0
+	ac.SessionLeaseK8sGCMetricsEmitter = nil
 	ac.Workspace = t.TempDir()
 	ac.MockProvider = mockllm.New()
 	built, err := buildIsolated(t, context.Background(), ac)

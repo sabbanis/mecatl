@@ -17,16 +17,16 @@
 // RFC-1123-valid, and collision-free (one-way hash). The raw id is preserved in
 // an annotation for operators eyeballing `kubectl get leases`.
 //
-// Fencing: spec.leaseTransitions is the canonical fencing counter — it advances
-// on every takeover and is the port's Token. spec.renewTime +
-// spec.leaseDurationSeconds is the expiry; a Get-then-Update with the read
-// resourceVersion gives optimistic-concurrency CAS, so a lost race surfaces as a
-// 409 Conflict → ErrLeaseHeld.
+// Fencing: the default constructor retains the legacy leaseTransitions token
+// and tombstone behavior. WithSequencer enables collectible v2 objects: a
+// namespace-scoped ConfigMap allocates durable uint64 tokens, recorded on each
+// Lease annotation. Missing objects are first created as ungranted provisionals,
+// then granted with a CAS Update. That two-step path prevents a delayed Create
+// from resurrecting a token older than a Lease which was created and deleted
+// while the caller was stalled.
 //
-// RBAC: this adapter only ever calls Get/Create/Update/Delete (never List or
-// Watch), so it needs get,create,update,delete on `leases` in the
-// `coordination.k8s.io` API group, namespace-scoped (a Role + RoleBinding on the
-// configured namespace). See user-docs/building/deployment/mecated.md.
+// RBAC: v2 calls Get/Create/Update/Delete on Leases and Get/Update on its
+// pre-provisioned ConfigMap. It never creates or deletes sequencer state.
 package k8slease
 
 import (
@@ -35,6 +35,7 @@ import (
 	"encoding/hex"
 	"fmt"
 	"math"
+	"strconv"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -52,6 +53,18 @@ const objectNamePrefix = "mecatl-lease-"
 // rawIDAnnotation preserves the un-hashed session id for operator visibility.
 const rawIDAnnotation = "mecatl.stacklok.com/session-id"
 
+const (
+	managedByLabel         = "app.kubernetes.io/managed-by"
+	managedByValue         = "mecatl"
+	leasePurposeLabel      = "mecatl.stacklok.com/lease-purpose"
+	sessionPurposeValue    = "session"
+	leaseSchemaLabel       = "mecatl.stacklok.com/lease-schema"
+	leaseSchemaValue       = "v2"
+	fencingTokenAnnotation = "mecatl.stacklok.com/fencing-token" // #nosec G101 -- Kubernetes metadata key, not a credential.
+	provisionalAnnotation  = "mecatl.stacklok.com/provisional"
+	provisionalValue       = "true"
+)
+
 // Lease is a port.SessionLease over coordination.k8s.io Lease objects in one
 // namespace.
 type Lease struct {
@@ -59,53 +72,96 @@ type Lease struct {
 	namespace string
 	ttl       time.Duration
 	clock     port.Clock
+	sequencer *sequencer
 }
 
 // compile-time assertion that *Lease satisfies the port.
 var _ port.SessionLease = (*Lease)(nil)
 
+// Option configures an optional k8s Lease adapter capability.
+type Option func(*Lease)
+
+// WithSequencer enables the v2 collectible Lease protocol using the named,
+// pre-provisioned ConfigMap as its durable fencing-token allocator.
+func WithSequencer(name string) Option {
+	return func(l *Lease) {
+		l.sequencer = &sequencer{
+			configMaps: l.clientset.CoreV1().ConfigMaps(l.namespace),
+			name:       name,
+		}
+	}
+}
+
 // New constructs a k8s-backed lease over clientset in namespace, with the given
-// TTL and clock. A non-positive ttl defaults to 30s.
-func New(clientset kubernetes.Interface, namespace string, ttl time.Duration, clock port.Clock) *Lease {
+// TTL and clock. A non-positive ttl defaults to 30s. With no options it retains
+// the legacy leaseTransitions/tombstone protocol.
+func New(clientset kubernetes.Interface, namespace string, ttl time.Duration, clock port.Clock, options ...Option) *Lease {
 	if ttl <= 0 {
 		ttl = 30 * time.Second
 	}
-	return &Lease{clientset: clientset, namespace: namespace, ttl: ttl, clock: clock}
+	l := &Lease{
+		clientset: clientset,
+		namespace: namespace,
+		ttl:       ttl,
+		clock:     clock,
+	}
+	for _, option := range options {
+		option(l)
+	}
+	return l
 }
 
 // Acquire grants the lease when the object is absent, expired, or already held by
-// owner; otherwise ErrLeaseHeld. A takeover bumps leaseTransitions (the token)
-// and uses the read resourceVersion as a CAS guard so a concurrent takeover loses
-// with a 409 Conflict → ErrLeaseHeld.
+// owner; otherwise ErrLeaseHeld. A takeover allocates a fencing token and uses
+// the read resourceVersion as a CAS guard so a concurrent takeover loses with a
+// 409 Conflict → ErrLeaseHeld.
 func (l *Lease) Acquire(ctx context.Context, id session.SessionID, owner string) (port.Lease, error) {
+	if l.sequencer == nil {
+		return l.acquireLegacy(ctx, id, owner)
+	}
 	now := l.clock.Now()
 	leases := l.clientset.CoordinationV1().Leases(l.namespace)
 
 	cur, err := leases.Get(ctx, objectName(id), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
-		return l.createLease(ctx, id, owner, now)
+		cur, err = l.createProvisional(ctx, id, now)
+		if apierrors.IsAlreadyExists(err) {
+			return port.Lease{}, port.ErrLeaseHeld
+		}
+		if err != nil {
+			return port.Lease{}, err
+		}
 	}
 	if err != nil {
 		return port.Lease{}, fmt.Errorf("k8slease: get lease %q: %w", id, err)
 	}
 
+	state, err := inspectObject(cur, id)
+	if err != nil {
+		return port.Lease{}, err
+	}
+	if state.provisional {
+		return l.takeover(ctx, id, cur, owner, now, 1)
+	}
 	holder := derefStr(cur.Spec.HolderIdentity)
 	expired := !now.Before(expiryOf(cur))
 	if !expired && holder != owner {
 		return port.Lease{}, port.ErrLeaseHeld
 	}
-	// Free (expired) or our own lease → take over / refresh under a CAS Update.
-	token := derefInt32(cur.Spec.LeaseTransitions)
 	if expired || holder != owner {
-		token++ // a takeover advances the fencing counter.
+		return l.takeover(ctx, id, cur, owner, now, nextTransition(cur.Spec.LeaseTransitions))
 	}
-	return l.updateLease(ctx, id, cur, owner, token, now)
+	// A live same-owner re-acquire is a refresh, never a new fencing grant.
+	return l.updateLease(ctx, id, cur, owner, state.token, derefInt32(cur.Spec.LeaseTransitions), now)
 }
 
 // Renew extends a lease the caller still holds (holder + token match, unexpired),
 // keeping the token and refreshing renewTime under a CAS Update. A holder change,
 // a token mismatch, an expiry, or a 409 Conflict → ErrLeaseHeld (the loss signal).
 func (l *Lease) Renew(ctx context.Context, in port.Lease) (port.Lease, error) {
+	if l.sequencer == nil {
+		return l.renewLegacy(ctx, in)
+	}
 	now := l.clock.Now()
 	leases := l.clientset.CoordinationV1().Leases(l.namespace)
 
@@ -116,24 +172,95 @@ func (l *Lease) Renew(ctx context.Context, in port.Lease) (port.Lease, error) {
 	if err != nil {
 		return port.Lease{}, fmt.Errorf("k8slease: get lease %q: %w", in.SessionID, err)
 	}
-	holder := derefStr(cur.Spec.HolderIdentity)
-	token := derefInt32(cur.Spec.LeaseTransitions)
-	if holder != in.Owner || tokenToUint(token) != in.Token || !now.Before(expiryOf(cur)) {
+	state, err := inspectObject(cur, in.SessionID)
+	if err != nil {
+		return port.Lease{}, err
+	}
+	if state.provisional || derefStr(cur.Spec.HolderIdentity) != in.Owner || state.token != in.Token || !now.Before(expiryOf(cur)) {
 		return port.Lease{}, port.ErrLeaseHeld
 	}
-	return l.updateLease(ctx, in.SessionID, cur, in.Owner, token, now)
+	return l.updateLease(ctx, in.SessionID, cur, in.Owner, state.token, derefInt32(cur.Spec.LeaseTransitions), now)
 }
 
 // Release relinquishes a lease the caller still holds (holder + token match) by
-// writing a TOMBSTONE: the holder is cleared and the renewTime is wound back into
-// the past so the object reads as already-expired, while leaseTransitions (the
-// fencing token) is RETAINED. This keeps the per-id token monotone across release
-// — the port.SessionLease contract a successful takeover after a release returns a
-// strictly-greater token (pinned by the shared leaseconformance suite). Deleting
-// the object instead would reset leaseTransitions to 1 on the next create and
-// break that contract. Idempotent: a NotFound, a holder/token mismatch, or a
-// concurrent change is a no-op success — Release only drops the caller's OWN hold.
+// deleting that exact UID/resourceVersion. Fencing history remains in the
+// sequencer, so recreation cannot reset the token. A stale Release cannot delete
+// a successor object.
 func (l *Lease) Release(ctx context.Context, in port.Lease) error {
+	if l.sequencer == nil {
+		return l.releaseLegacy(ctx, in)
+	}
+	leases := l.clientset.CoordinationV1().Leases(l.namespace)
+	cur, err := leases.Get(ctx, objectName(in.SessionID), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return nil
+	}
+	if err != nil {
+		return fmt.Errorf("k8slease: get lease %q: %w", in.SessionID, err)
+	}
+	state, err := inspectObject(cur, in.SessionID)
+	if err != nil {
+		return err
+	}
+	if state.provisional || derefStr(cur.Spec.HolderIdentity) != in.Owner || state.token != in.Token {
+		return nil // not our hold; idempotent no-op.
+	}
+	uid := cur.UID
+	rv := cur.ResourceVersion
+	if err := leases.Delete(ctx, cur.Name, metav1.DeleteOptions{Preconditions: &metav1.Preconditions{
+		UID:             &uid,
+		ResourceVersion: &rv,
+	}}); err != nil {
+		if apierrors.IsConflict(err) || apierrors.IsNotFound(err) {
+			return nil
+		}
+		return fmt.Errorf("k8slease: delete lease %q: %w", in.SessionID, err)
+	}
+	return nil
+}
+
+// The legacy methods preserve the original no-option adapter byte-for-byte in
+// behavior: leaseTransitions is the token and Release writes a tombstone.
+func (l *Lease) acquireLegacy(ctx context.Context, id session.SessionID, owner string) (port.Lease, error) {
+	now := l.clock.Now()
+	leases := l.clientset.CoordinationV1().Leases(l.namespace)
+	cur, err := leases.Get(ctx, objectName(id), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return l.createLegacy(ctx, id, owner, now)
+	}
+	if err != nil {
+		return port.Lease{}, fmt.Errorf("k8slease: get lease %q: %w", id, err)
+	}
+	holder := derefStr(cur.Spec.HolderIdentity)
+	expired := !now.Before(expiryOf(cur))
+	if !expired && holder != owner {
+		return port.Lease{}, port.ErrLeaseHeld
+	}
+	token := derefInt32(cur.Spec.LeaseTransitions)
+	if expired || holder != owner {
+		token++
+	}
+	return l.updateLegacy(ctx, id, cur, owner, token, now)
+}
+
+func (l *Lease) renewLegacy(ctx context.Context, in port.Lease) (port.Lease, error) {
+	now := l.clock.Now()
+	leases := l.clientset.CoordinationV1().Leases(l.namespace)
+	cur, err := leases.Get(ctx, objectName(in.SessionID), metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		return port.Lease{}, port.ErrLeaseHeld
+	}
+	if err != nil {
+		return port.Lease{}, fmt.Errorf("k8slease: get lease %q: %w", in.SessionID, err)
+	}
+	token := derefInt32(cur.Spec.LeaseTransitions)
+	if derefStr(cur.Spec.HolderIdentity) != in.Owner || tokenToUint(token) != in.Token || !now.Before(expiryOf(cur)) {
+		return port.Lease{}, port.ErrLeaseHeld
+	}
+	return l.updateLegacy(ctx, in.SessionID, cur, in.Owner, token, now)
+}
+
+func (l *Lease) releaseLegacy(ctx context.Context, in port.Lease) error {
 	leases := l.clientset.CoordinationV1().Leases(l.namespace)
 	cur, err := leases.Get(ctx, objectName(in.SessionID), metav1.GetOptions{})
 	if apierrors.IsNotFound(err) {
@@ -143,12 +270,8 @@ func (l *Lease) Release(ctx context.Context, in port.Lease) error {
 		return fmt.Errorf("k8slease: get lease %q: %w", in.SessionID, err)
 	}
 	if derefStr(cur.Spec.HolderIdentity) != in.Owner || tokenToUint(derefInt32(cur.Spec.LeaseTransitions)) != in.Token {
-		return nil // not our hold; idempotent no-op.
+		return nil
 	}
-	// Write a tombstone under a CAS Update: clear the holder and set renewTime into
-	// the past so the lease reads as expired, retaining leaseTransitions. A 409
-	// Conflict (someone else took over under us) is a no-op success — we have
-	// nothing to release.
 	now := l.clock.Now()
 	token := derefInt32(cur.Spec.LeaseTransitions)
 	tomb := cur.DeepCopy()
@@ -163,16 +286,14 @@ func (l *Lease) Release(ctx context.Context, in port.Lease) error {
 	tomb.Spec.LeaseTransitions = &token
 	if _, err := leases.Update(ctx, tomb, metav1.UpdateOptions{}); err != nil {
 		if apierrors.IsConflict(err) || apierrors.IsNotFound(err) {
-			return nil // lost the CAS race or gone — nothing to release.
+			return nil
 		}
 		return fmt.Errorf("k8slease: tombstone lease %q: %w", in.SessionID, err)
 	}
 	return nil
 }
 
-// createLease creates a fresh Lease object (transitions=1) and maps a 409
-// AlreadyExists (a concurrent create won) onto ErrLeaseHeld.
-func (l *Lease) createLease(ctx context.Context, id session.SessionID, owner string, now time.Time) (port.Lease, error) {
+func (l *Lease) createLegacy(ctx context.Context, id session.SessionID, owner string, now time.Time) (port.Lease, error) {
 	micro := metav1.NewMicroTime(now)
 	dur := l.durationSeconds()
 	transitions := int32(1)
@@ -192,17 +313,15 @@ func (l *Lease) createLease(ctx context.Context, id session.SessionID, owner str
 	}
 	created, err := l.clientset.CoordinationV1().Leases(l.namespace).Create(ctx, obj, metav1.CreateOptions{})
 	if apierrors.IsAlreadyExists(err) {
-		return port.Lease{}, port.ErrLeaseHeld // a racing create won.
+		return port.Lease{}, port.ErrLeaseHeld
 	}
 	if err != nil {
 		return port.Lease{}, fmt.Errorf("k8slease: create lease %q: %w", id, err)
 	}
-	return toPort(id, created), nil
+	return toPort(id, created, tokenToUint(transitions)), nil
 }
 
-// updateLease writes holder/token/renewTime onto cur (carrying its
-// resourceVersion for the CAS) and maps a 409 Conflict onto ErrLeaseHeld.
-func (l *Lease) updateLease(ctx context.Context, id session.SessionID, cur *coordinationv1.Lease, owner string, token int32, now time.Time) (port.Lease, error) {
+func (l *Lease) updateLegacy(ctx context.Context, id session.SessionID, cur *coordinationv1.Lease, owner string, token int32, now time.Time) (port.Lease, error) {
 	micro := metav1.NewMicroTime(now)
 	dur := l.durationSeconds()
 	next := cur.DeepCopy()
@@ -219,12 +338,90 @@ func (l *Lease) updateLease(ctx context.Context, id session.SessionID, cur *coor
 	}
 	updated, err := l.clientset.CoordinationV1().Leases(l.namespace).Update(ctx, next, metav1.UpdateOptions{})
 	if apierrors.IsConflict(err) {
+		return port.Lease{}, port.ErrLeaseHeld
+	}
+	if err != nil {
+		return port.Lease{}, fmt.Errorf("k8slease: update lease %q: %w", id, err)
+	}
+	return toPort(id, updated, tokenToUint(token)), nil
+}
+
+// createProvisional establishes a Kubernetes object identity before allocating
+// a token. Granting only by Update means a delayed caller can never recreate an
+// older grant after this object has been deleted.
+func (l *Lease) createProvisional(ctx context.Context, id session.SessionID, now time.Time) (*coordinationv1.Lease, error) {
+	micro := metav1.NewMicroTime(now)
+	dur := l.durationSeconds()
+	transitions := int32(0)
+	emptyHolder := ""
+	obj := &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:        objectName(id),
+			Namespace:   l.namespace,
+			Labels:      v2Labels(),
+			Annotations: map[string]string{rawIDAnnotation: string(id), provisionalAnnotation: provisionalValue},
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &emptyHolder,
+			LeaseDurationSeconds: &dur,
+			AcquireTime:          &micro,
+			RenewTime:            &micro,
+			LeaseTransitions:     &transitions,
+		},
+	}
+	created, err := l.clientset.CoordinationV1().Leases(l.namespace).Create(ctx, obj, metav1.CreateOptions{})
+	if err != nil {
+		if apierrors.IsAlreadyExists(err) {
+			return nil, err
+		}
+		return nil, fmt.Errorf("k8slease: create provisional lease %q: %w", id, err)
+	}
+	return created, nil
+}
+
+func (l *Lease) takeover(ctx context.Context, id session.SessionID, cur *coordinationv1.Lease, owner string, now time.Time, transitions int32) (port.Lease, error) {
+	state, err := inspectObject(cur, id)
+	if err != nil {
+		return port.Lease{}, err
+	}
+	token, err := l.sequencer.next(ctx)
+	if err != nil {
+		return port.Lease{}, fmt.Errorf("k8slease: allocate fencing token for %q: %w", id, err)
+	}
+	if token <= state.token {
+		return port.Lease{}, fmt.Errorf("k8slease: allocated fencing token %d does not exceed existing token %d for %q", token, state.token, id)
+	}
+	return l.updateLease(ctx, id, cur, owner, token, transitions, now)
+}
+
+// updateLease writes holder/token/renewTime onto cur (carrying its
+// resourceVersion for the CAS) and maps a 409 Conflict onto ErrLeaseHeld.
+func (l *Lease) updateLease(ctx context.Context, id session.SessionID, cur *coordinationv1.Lease, owner string, token uint64, transitions int32, now time.Time) (port.Lease, error) {
+	micro := metav1.NewMicroTime(now)
+	dur := l.durationSeconds()
+	next := cur.DeepCopy()
+	next.Labels = applyV2Labels(next.Labels)
+	if next.Annotations == nil {
+		next.Annotations = map[string]string{}
+	}
+	next.Annotations[rawIDAnnotation] = string(id)
+	next.Annotations[fencingTokenAnnotation] = strconv.FormatUint(token, 10)
+	delete(next.Annotations, provisionalAnnotation)
+	next.Spec.HolderIdentity = &owner
+	next.Spec.LeaseDurationSeconds = &dur
+	next.Spec.RenewTime = &micro
+	next.Spec.LeaseTransitions = &transitions
+	if next.Spec.AcquireTime == nil {
+		next.Spec.AcquireTime = &micro
+	}
+	updated, err := l.clientset.CoordinationV1().Leases(l.namespace).Update(ctx, next, metav1.UpdateOptions{})
+	if apierrors.IsConflict(err) || apierrors.IsNotFound(err) {
 		return port.Lease{}, port.ErrLeaseHeld // lost the CAS race.
 	}
 	if err != nil {
 		return port.Lease{}, fmt.Errorf("k8slease: update lease %q: %w", id, err)
 	}
-	return toPort(id, updated), nil
+	return toPort(id, updated, token), nil
 }
 
 // durationSeconds renders the TTL as a clamped, non-negative int32 second count
@@ -242,13 +439,13 @@ func (l *Lease) durationSeconds() int32 {
 	return int32(secs)
 }
 
-// toPort projects a Lease object onto the port value (token = leaseTransitions,
-// expiry = renewTime + leaseDurationSeconds).
-func toPort(id session.SessionID, obj *coordinationv1.Lease) port.Lease {
+// toPort projects a Lease object and its already-validated fencing token onto
+// the port value.
+func toPort(id session.SessionID, obj *coordinationv1.Lease, token uint64) port.Lease {
 	return port.Lease{
 		SessionID: id,
 		Owner:     derefStr(obj.Spec.HolderIdentity),
-		Token:     tokenToUint(derefInt32(obj.Spec.LeaseTransitions)),
+		Token:     token,
 		Expiry:    expiryOf(obj),
 	}
 }
@@ -268,9 +465,92 @@ func expiryOf(obj *coordinationv1.Lease) time.Time {
 	return obj.Spec.RenewTime.Add(time.Duration(*obj.Spec.LeaseDurationSeconds) * time.Second)
 }
 
-// tokenToUint maps the k8s leaseTransitions counter (a non-negative *int32) onto
-// the port's uint64 fencing token. A negative value (never written by this
-// adapter) clamps to 0.
+type objectState struct {
+	token       uint64
+	provisional bool
+}
+
+func inspectObject(obj *coordinationv1.Lease, id session.SessionID) (objectState, error) {
+	if obj.Annotations[rawIDAnnotation] != string(id) {
+		return objectState{}, fmt.Errorf("k8slease: lease object %q has a missing or mismatched session identity", obj.Name)
+	}
+	managed, managedOK := obj.Labels[managedByLabel]
+	purpose, purposeOK := obj.Labels[leasePurposeLabel]
+	schema, schemaOK := obj.Labels[leaseSchemaLabel]
+	if !managedOK && !purposeOK && !schemaOK {
+		return inspectLegacyObject(obj)
+	}
+	if !managedOK || managed != managedByValue || !purposeOK || purpose != sessionPurposeValue || !schemaOK || schema != leaseSchemaValue {
+		return objectState{}, fmt.Errorf("k8slease: lease object %q has malformed ownership labels", obj.Name)
+	}
+	return inspectV2Object(obj)
+}
+
+func inspectLegacyObject(obj *coordinationv1.Lease) (objectState, error) {
+	if _, tokenOK := obj.Annotations[fencingTokenAnnotation]; tokenOK {
+		return objectState{}, fmt.Errorf("k8slease: legacy lease object %q unexpectedly has v2 state annotations", obj.Name)
+	}
+	if _, provisionalOK := obj.Annotations[provisionalAnnotation]; provisionalOK {
+		return objectState{}, fmt.Errorf("k8slease: legacy lease object %q unexpectedly has v2 state annotations", obj.Name)
+	}
+	if obj.Spec.LeaseTransitions == nil || *obj.Spec.LeaseTransitions < 0 {
+		return objectState{}, fmt.Errorf("k8slease: legacy lease object %q has an invalid leaseTransitions", obj.Name)
+	}
+	return objectState{token: uint64(*obj.Spec.LeaseTransitions)}, nil
+}
+
+func inspectV2Object(obj *coordinationv1.Lease) (objectState, error) {
+	if obj.Spec.RenewTime == nil || obj.Spec.LeaseDurationSeconds == nil || *obj.Spec.LeaseDurationSeconds <= 0 || obj.Spec.LeaseTransitions == nil || *obj.Spec.LeaseTransitions < 0 {
+		return objectState{}, fmt.Errorf("k8slease: owned lease object %q has malformed lease state", obj.Name)
+	}
+	provisional, provisionalOK := obj.Annotations[provisionalAnnotation]
+	rawToken, tokenOK := obj.Annotations[fencingTokenAnnotation]
+	if provisionalOK {
+		if provisional != provisionalValue || tokenOK || derefStr(obj.Spec.HolderIdentity) != "" || *obj.Spec.LeaseTransitions != 0 {
+			return objectState{}, fmt.Errorf("k8slease: owned lease object %q has malformed provisional state", obj.Name)
+		}
+		return objectState{provisional: true}, nil
+	}
+	if !tokenOK || derefStr(obj.Spec.HolderIdentity) == "" {
+		return objectState{}, fmt.Errorf("k8slease: owned lease object %q has malformed granted state", obj.Name)
+	}
+	if *obj.Spec.LeaseTransitions == 0 {
+		return objectState{}, fmt.Errorf("k8slease: owned lease object %q has malformed granted state", obj.Name)
+	}
+	token, err := strconv.ParseUint(rawToken, 10, 64)
+	if err != nil {
+		return objectState{}, fmt.Errorf("k8slease: owned lease object %q has malformed fencing token %q", obj.Name, rawToken)
+	}
+	if token == 0 {
+		return objectState{}, fmt.Errorf("k8slease: owned lease object %q has zero fencing token", obj.Name)
+	}
+	return objectState{token: token}, nil
+}
+
+func v2Labels() map[string]string {
+	return applyV2Labels(nil)
+}
+
+func applyV2Labels(labels map[string]string) map[string]string {
+	if labels == nil {
+		labels = make(map[string]string, 3)
+	}
+	labels[managedByLabel] = managedByValue
+	labels[leasePurposeLabel] = sessionPurposeValue
+	labels[leaseSchemaLabel] = leaseSchemaValue
+	return labels
+}
+
+func nextTransition(current *int32) int32 {
+	if current == nil || *current < 0 {
+		return 1
+	}
+	if *current == math.MaxInt32 {
+		return math.MaxInt32
+	}
+	return *current + 1
+}
+
 func tokenToUint(t int32) uint64 {
 	if t < 0 {
 		return 0

@@ -1,0 +1,134 @@
+suite: Lease fencing sequence bootstrap
+templates:
+  - templates/lease-fencing-sequence-bootstrap.yaml
+release:
+  name: unit
+  namespace: shared
+set:
+  mockProvider: true
+tests:
+  - it: renders only the four bootstrap hook resources
+    asserts:
+      - hasDocuments:
+          count: 4
+      - isKind:
+          of: ServiceAccount
+        documentIndex: 0
+      - isKind:
+          of: Role
+        documentIndex: 1
+      - isKind:
+          of: RoleBinding
+        documentIndex: 2
+      - isKind:
+          of: Job
+        documentIndex: 3
+
+  - it: orders every resource as a pre-install-only hook
+    asserts:
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-install
+        documentIndex: 0
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-40"
+        documentIndex: 0
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/hook"]
+          value: Skip
+        documentIndex: 0
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-install
+        documentIndex: 1
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-30"
+        documentIndex: 1
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/hook"]
+          value: Skip
+        documentIndex: 1
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-install
+        documentIndex: 2
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-20"
+        documentIndex: 2
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/hook"]
+          value: Skip
+        documentIndex: 2
+      - equal:
+          path: metadata.annotations["helm.sh/hook"]
+          value: pre-install
+        documentIndex: 3
+      - equal:
+          path: metadata.annotations["helm.sh/hook-weight"]
+          value: "-10"
+        documentIndex: 3
+      - equal:
+          path: metadata.annotations["argocd.argoproj.io/hook"]
+          value: Skip
+        documentIndex: 3
+
+  - it: grants the bootstrap identity create and exact-name get only
+    documentIndex: 1
+    asserts:
+      - equal:
+          path: rules
+          value:
+            - apiGroups:
+                - ""
+              resources:
+                - configmaps
+              verbs:
+                - create
+            - apiGroups:
+                - ""
+              resources:
+                - configmaps
+              resourceNames:
+                - mecatl-lease-fencing-sequence
+              verbs:
+                - get
+
+  - it: runs the signed workload image in bootstrap mode without retries
+    documentIndex: 3
+    set:
+      image.repository: registry.example/mecak8s
+      image.digest: sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      image.tag: ""
+      imagePullSecrets:
+        - name: registry-credentials
+    asserts:
+      - equal:
+          path: spec.backoffLimit
+          value: 0
+      - equal:
+          path: spec.template.spec.restartPolicy
+          value: Never
+      - equal:
+          path: spec.template.spec.serviceAccountName
+          value: unit-mecak8s-fencing-bootstrap
+      - equal:
+          path: spec.template.spec.imagePullSecrets
+          value:
+            - name: registry-credentials
+      - equal:
+          path: spec.template.spec.containers[0].image
+          value: registry.example/mecak8s@sha256:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+      - equal:
+          path: spec.template.spec.containers[0].args
+          value:
+            - --bootstrap-lease-fencing-sequence
+            - --session-lease-k8s-namespace=shared
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.readOnlyRootFilesystem
+          value: true
+      - equal:
+          path: spec.template.spec.containers[0].securityContext.allowPrivilegeEscalation
+          value: false

@@ -65,12 +65,14 @@ const defaultK8sLeaseNamespace = "mecatl"
 const drainPropagationDelay = 3 * time.Second
 
 const (
-	defaultDrainTimeout        = 15 * time.Second
-	defaultGRPCStopTimeout     = 10 * time.Second
-	defaultHTTPShutdownTimeout = 5 * time.Second
-	defaultCloseTimeout        = 5 * time.Second
-	defaultRedisFollowPoolSize = 32
-	defaultRedisMaxFollowers   = 32
+	defaultDrainTimeout          = 15 * time.Second
+	defaultGRPCStopTimeout       = 10 * time.Second
+	defaultHTTPShutdownTimeout   = 5 * time.Second
+	defaultCloseTimeout          = 5 * time.Second
+	defaultK8sLeaseGCInterval    = time.Minute
+	defaultRedisFollowPoolSize   = 32
+	defaultRedisMaxFollowers     = 32
+	sessionLeaseK8sNamespaceHelp = "Kubernetes namespace for coordination.k8s.io Lease-backed session leasing (the in-cluster multi-replica single-writer path). Uses in-cluster config; the runtime ServiceAccount needs get,list,create,update,delete on leases and exact-name get,update on the mecatl-lease-fencing-sequence ConfigMap. Empty = no leasing"
 )
 
 type positiveDurationValue struct {
@@ -179,9 +181,10 @@ type config struct {
 
 	// Session leasing: a coordination.k8s.io Lease per session in this
 	// namespace (the in-cluster multi-replica path). Defaults to "mecatl".
-	sessionLeaseK8sNamespace  string
-	sessionLeaseTTL           time.Duration
-	sessionLeaseRenewInterval time.Duration
+	bootstrapLeaseFencingSequence bool
+	sessionLeaseK8sNamespace      string
+	sessionLeaseTTL               time.Duration
+	sessionLeaseRenewInterval     time.Duration
 
 	// LLM resilience knobs (see internal/adapter/llmresilience).
 	llmMaxAttempts       int
@@ -397,8 +400,10 @@ func parseFlags(argv []string) (config, error) {
 	fs.StringVar(&cfg.driverTLSKey, "driver-tls-key", "", "PEM client private key (paired with --driver-tls-cert)")
 
 	// Session leasing: coordination.k8s.io Lease per session. DEFAULT "mecatl".
+	fs.BoolVar(&cfg.bootstrapLeaseFencingSequence, "bootstrap-lease-fencing-sequence", false,
+		"create or validate the Kubernetes Lease fencing-token sequence, then exit (Helm pre-install hook)")
 	fs.StringVar(&cfg.sessionLeaseK8sNamespace, "session-lease-k8s-namespace", defaultK8sLeaseNamespace,
-		"Kubernetes namespace for coordination.k8s.io Lease-backed session leasing (the in-cluster multi-replica single-writer path). Uses in-cluster config (or the default kubeconfig out-of-cluster); the ServiceAccount needs get,create,update,delete on leases in coordination.k8s.io for this namespace. Empty = no leasing")
+		sessionLeaseK8sNamespaceHelp)
 	fs.DurationVar(&cfg.sessionLeaseTTL, "session-lease-ttl", 30*time.Second, "session-lease lifetime: a crashed/killed holder's lease becomes claimable after this long")
 	fs.DurationVar(&cfg.sessionLeaseRenewInterval, "session-lease-renew-interval", 0, "how often the per-session renewer refreshes a held lease; 0 = --session-lease-ttl / 3")
 
@@ -630,6 +635,9 @@ func parseFlags(argv []string) (config, error) {
 	if cfg.redisMaxFollowers > cfg.redisFollowPoolSize {
 		return config{}, errors.New("--redis-max-followers must not exceed --redis-follow-pool-size")
 	}
+	if cfg.bootstrapLeaseFencingSequence && cfg.sessionLeaseK8sNamespace == "" {
+		return config{}, errors.New("--bootstrap-lease-fencing-sequence requires --session-lease-k8s-namespace")
+	}
 
 	return cfg, nil
 }
@@ -780,6 +788,11 @@ func appConfig(cfg config, diag port.Diagnostics, obs observability) app.Config 
 		ToolCallRecorder:                 productMetricsRecorder(obs),
 		MetricsRoleScoper:                obs.MetricsRoleScoper,
 		SessionLoadFailureMetricsEmitter: obs.SessionLoadFailureMetricsEmitter,
+	}
+	if cfg.sessionLeaseK8sNamespace != "" {
+		out.SessionLeaseK8sGCInterval = defaultK8sLeaseGCInterval
+		out.SessionLeaseK8sGCGrace = cfg.sessionLeaseTTL
+		out.SessionLeaseK8sGCMetricsEmitter = obs.Metrics.EmitK8sLeaseGC
 	}
 	// Project only the supported API-key credentials and parsed base URLs from
 	// the once-resolved snapshot. An OPENAI_API_KEY implies the real provider.
