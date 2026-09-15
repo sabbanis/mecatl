@@ -170,6 +170,18 @@ const routes = {
   [`POST /v1/sessions/${sessionID}/cancel-steer`]: { outcome: "retracted" },
   [`POST /v1/sessions/${sessionID}/rename`]: {},
   [`POST /v1/sessions/${sessionID}/delete`]: {},
+  [`DELETE /v1/sessions/${sessionID}`]: {},
+  // Every route the advertised capabilities make reachable from the UI must
+  // answer, or a flow under test dies on a 404 problem instead of its logic:
+  // manual compaction, the mode picker, and the six mutating schedule actions.
+  [`POST /v1/sessions/${sessionID}/compact`]: { compacted: false },
+  [`POST /v1/sessions/${sessionID}/mode`]: snapshot,
+  "POST /v1/schedules": {},
+  "PUT /v1/schedules/nightly-fixture-digest": {},
+  "POST /v1/schedules/nightly-fixture-digest/pause": {},
+  "POST /v1/schedules/nightly-fixture-digest/resume": {},
+  "POST /v1/schedules/nightly-fixture-digest/fire": {},
+  "DELETE /v1/schedules/nightly-fixture-digest": {},
 };
 
 // The prompt relay: proto-JSON events, every frame stamped with the run id
@@ -212,7 +224,12 @@ http
   .createServer((request, response) => {
     const path = new URL(request.url, "http://fixture").pathname;
     const key = `${request.method} ${path}`;
-    if (key === `POST /v1/sessions/${sessionID}/prompt`) {
+    // Retry re-drives the recorded failed step and streams exactly like a
+    // prompt (ADR 0239), so both share the relay.
+    if (
+      key === `POST /v1/sessions/${sessionID}/prompt` ||
+      key === `POST /v1/sessions/${sessionID}/retry`
+    ) {
       response.writeHead(200, { "Content-Type": "text/event-stream" });
       for (const frame of promptFrames) writeSSE(response, frame);
       response.end();

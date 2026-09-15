@@ -56,7 +56,8 @@ export interface HarnessCompatibility {
   apiMajor: number;
   features: string[];
   capabilities: Record<string, unknown>;
-  /** Not carried by the SDK's projection; always "" until it is. */
+  /** The operator's deployment label from `ServerCompatibility.deployment`;
+   *  "" when the daemon sets none. */
   deployment: string;
 }
 
