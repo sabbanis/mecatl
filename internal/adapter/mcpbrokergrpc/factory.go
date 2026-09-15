@@ -6,17 +6,15 @@ import (
 	"crypto/x509"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 
 	"google.golang.org/grpc"
 	"google.golang.org/grpc/credentials"
 
+	"github.com/stacklok/mecatl/internal/adapter/tlsreload"
 	contract "github.com/stacklok/mecatl/internal/mcpbroker"
 )
-
-const maxProjectedCredentialBytes = 1 << 20
 
 // RemoteFactoryConfig is the production remote-broker connection contract.
 // The CA and workload token are reread for every factory generation/RPC so
@@ -71,18 +69,8 @@ type ProjectedTokenCredentials struct{ Path string }
 
 // GetRequestMetadata returns a fresh bearer read from the projected token file.
 func (c ProjectedTokenCredentials) GetRequestMetadata(context.Context, ...string) (map[string]string, error) {
-	// #nosec G703 -- this is a trusted operator-configured projected-token path.
-	file, err := os.Open(c.Path)
+	body, err := tlsreload.ReadCredentialFile(c.Path)
 	if err != nil {
-		return nil, errors.New("read projected MCP broker credential")
-	}
-	defer func() { _ = file.Close() }()
-	info, err := file.Stat()
-	if err != nil || !info.Mode().IsRegular() || info.Size() <= 0 || info.Size() > maxProjectedCredentialBytes {
-		return nil, errors.New("invalid projected MCP broker credential")
-	}
-	body, err := io.ReadAll(io.LimitReader(file, maxProjectedCredentialBytes+1))
-	if err != nil || len(body) == 0 || len(body) > maxProjectedCredentialBytes {
 		return nil, errors.New("read projected MCP broker credential")
 	}
 	token := strings.TrimSpace(string(body))

@@ -39,23 +39,48 @@ const (
 //
 // For semantics around ctx use and closing/ending streaming RPCs, please refer to https://pkg.go.dev/google.golang.org/grpc/?tab=doc#ClientConn.NewStream.
 //
-// BrokerService connects a harness process to one authoritative broker process.
-// Attachment handles, receipts, and broker incarnations are process-local; this
-// protocol does not provide restart continuity or interchangeable replicas.
+// BrokerService connects a harness to one authoritative MCP broker process. A broker
+// has one random incarnation; attachment handles and all lifecycle/Execute receipts
+// are process-local, lease-bound capabilities, not restart-continuous replica state.
+// Bindings identify logical state but are opaque, sensitive, and never filesystem paths.
 type BrokerServiceClient interface {
+	// Attach creates or reattaches a caller to a logical session. First attach may omit
+	// broker_incarnation; later attaches use the pinned current incarnation. Its returned
+	// handle is required for attachment RPCs and is replayable only in this process/lease.
 	Attach(ctx context.Context, in *AttachRequest, opts ...grpc.CallOption) (*AttachResponse, error)
+	// Commit commits provisional attachment state. It needs current handle/incarnation;
+	// transport loss has an ambiguous outcome, not an Execute receipt guarantee.
 	Commit(ctx context.Context, in *CommitRequest, opts ...grpc.CallOption) (*CommitResponse, error)
+	// Abort terminally releases provisional state. Same-operation duplicates replay only
+	// during the handle lease; incompatible lifecycle operations fail.
 	Abort(ctx context.Context, in *AbortRequest, opts ...grpc.CallOption) (*AbortResponse, error)
+	// Close terminally releases a handle but preserves its logical state. Same-operation
+	// duplicate outcomes are retained only for the attachment lease.
 	Close(ctx context.Context, in *CloseRequest, opts ...grpc.CallOption) (*CloseResponse, error)
+	// Delete removes only the exact logical session and binding in the current incarnation.
+	// It is potentially ambiguous after transport loss and must not be blindly retried.
 	Delete(ctx context.Context, in *DeleteRequest, opts ...grpc.CallOption) (*DeleteResponse, error)
+	// Execute dispatches one descriptor-advertised invocation. The attachment and
+	// incarnation must be current. An identical call_id/invocation joins or replays only
+	// within its receipt lease; changed content fails before dispatch. After lost transport,
+	// retry only with exact structured DISPATCH_NOT_STARTED proof for this method.
 	Execute(ctx context.Context, in *ExecuteRequest, opts ...grpc.CallOption) (*ExecuteResponse, error)
+	// RequestAuthorization starts authorization for an exact attachment invocation using
+	// current handle/incarnation. Returned refs are opaque, attachment-bound, and expiring.
 	RequestAuthorization(ctx context.Context, in *RequestAuthorizationRequest, opts ...grpc.CallOption) (*RequestAuthorizationResponse, error)
+	// AbortAuthorization abandons an authorization ref. A lost response is ambiguous.
 	AbortAuthorization(ctx context.Context, in *AbortAuthorizationRequest, opts ...grpc.CallOption) (*AbortAuthorizationResponse, error)
+	// PresentAuthorization returns an ephemeral browser URL. Do not log or persist it.
 	PresentAuthorization(ctx context.Context, in *PresentAuthorizationRequest, opts ...grpc.CallOption) (*PresentAuthorizationResponse, error)
+	// AuthorizationStatus reads an authorization ref without renewing absolute leases.
 	AuthorizationStatus(ctx context.Context, in *AuthorizationStatusRequest, opts ...grpc.CallOption) (*AuthorizationStatusResponse, error)
+	// CancelAuthorization cancels a ref; retry/replay remains process- and lease-bound.
 	CancelAuthorization(ctx context.Context, in *CancelAuthorizationRequest, opts ...grpc.CallOption) (*CancelAuthorizationResponse, error)
+	// BeginWorkspaceEnrollment starts eligible attachment pre-prompt enrollment.
 	BeginWorkspaceEnrollment(ctx context.Context, in *BeginWorkspaceEnrollmentRequest, opts ...grpc.CallOption) (*BeginWorkspaceEnrollmentResponse, error)
+	// ObserveWorkspaceEnrollment reads an exact enrollment ref without renewing its lease.
 	ObserveWorkspaceEnrollment(ctx context.Context, in *ObserveWorkspaceEnrollmentRequest, opts ...grpc.CallOption) (*ObserveWorkspaceEnrollmentResponse, error)
+	// CancelWorkspaceEnrollment cancels an exact enrollment; loss does not prove no cancel.
 	CancelWorkspaceEnrollment(ctx context.Context, in *CancelWorkspaceEnrollmentRequest, opts ...grpc.CallOption) (*CancelWorkspaceEnrollmentResponse, error)
 }
 
@@ -211,23 +236,48 @@ func (c *brokerServiceClient) CancelWorkspaceEnrollment(ctx context.Context, in 
 // All implementations must embed UnimplementedBrokerServiceServer
 // for forward compatibility.
 //
-// BrokerService connects a harness process to one authoritative broker process.
-// Attachment handles, receipts, and broker incarnations are process-local; this
-// protocol does not provide restart continuity or interchangeable replicas.
+// BrokerService connects a harness to one authoritative MCP broker process. A broker
+// has one random incarnation; attachment handles and all lifecycle/Execute receipts
+// are process-local, lease-bound capabilities, not restart-continuous replica state.
+// Bindings identify logical state but are opaque, sensitive, and never filesystem paths.
 type BrokerServiceServer interface {
+	// Attach creates or reattaches a caller to a logical session. First attach may omit
+	// broker_incarnation; later attaches use the pinned current incarnation. Its returned
+	// handle is required for attachment RPCs and is replayable only in this process/lease.
 	Attach(context.Context, *AttachRequest) (*AttachResponse, error)
+	// Commit commits provisional attachment state. It needs current handle/incarnation;
+	// transport loss has an ambiguous outcome, not an Execute receipt guarantee.
 	Commit(context.Context, *CommitRequest) (*CommitResponse, error)
+	// Abort terminally releases provisional state. Same-operation duplicates replay only
+	// during the handle lease; incompatible lifecycle operations fail.
 	Abort(context.Context, *AbortRequest) (*AbortResponse, error)
+	// Close terminally releases a handle but preserves its logical state. Same-operation
+	// duplicate outcomes are retained only for the attachment lease.
 	Close(context.Context, *CloseRequest) (*CloseResponse, error)
+	// Delete removes only the exact logical session and binding in the current incarnation.
+	// It is potentially ambiguous after transport loss and must not be blindly retried.
 	Delete(context.Context, *DeleteRequest) (*DeleteResponse, error)
+	// Execute dispatches one descriptor-advertised invocation. The attachment and
+	// incarnation must be current. An identical call_id/invocation joins or replays only
+	// within its receipt lease; changed content fails before dispatch. After lost transport,
+	// retry only with exact structured DISPATCH_NOT_STARTED proof for this method.
 	Execute(context.Context, *ExecuteRequest) (*ExecuteResponse, error)
+	// RequestAuthorization starts authorization for an exact attachment invocation using
+	// current handle/incarnation. Returned refs are opaque, attachment-bound, and expiring.
 	RequestAuthorization(context.Context, *RequestAuthorizationRequest) (*RequestAuthorizationResponse, error)
+	// AbortAuthorization abandons an authorization ref. A lost response is ambiguous.
 	AbortAuthorization(context.Context, *AbortAuthorizationRequest) (*AbortAuthorizationResponse, error)
+	// PresentAuthorization returns an ephemeral browser URL. Do not log or persist it.
 	PresentAuthorization(context.Context, *PresentAuthorizationRequest) (*PresentAuthorizationResponse, error)
+	// AuthorizationStatus reads an authorization ref without renewing absolute leases.
 	AuthorizationStatus(context.Context, *AuthorizationStatusRequest) (*AuthorizationStatusResponse, error)
+	// CancelAuthorization cancels a ref; retry/replay remains process- and lease-bound.
 	CancelAuthorization(context.Context, *CancelAuthorizationRequest) (*CancelAuthorizationResponse, error)
+	// BeginWorkspaceEnrollment starts eligible attachment pre-prompt enrollment.
 	BeginWorkspaceEnrollment(context.Context, *BeginWorkspaceEnrollmentRequest) (*BeginWorkspaceEnrollmentResponse, error)
+	// ObserveWorkspaceEnrollment reads an exact enrollment ref without renewing its lease.
 	ObserveWorkspaceEnrollment(context.Context, *ObserveWorkspaceEnrollmentRequest) (*ObserveWorkspaceEnrollmentResponse, error)
+	// CancelWorkspaceEnrollment cancels an exact enrollment; loss does not prove no cancel.
 	CancelWorkspaceEnrollment(context.Context, *CancelWorkspaceEnrollmentRequest) (*CancelWorkspaceEnrollmentResponse, error)
 	mustEmbedUnimplementedBrokerServiceServer()
 }

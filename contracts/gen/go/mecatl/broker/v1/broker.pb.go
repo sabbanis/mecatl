@@ -22,17 +22,26 @@ const (
 	_ = protoimpl.EnforceVersion(protoimpl.MaxVersion - 20)
 )
 
-// BrokerErrorReason is a closed protocol vocabulary carried in BrokerErrorDetail.
+// BrokerErrorReason is the closed structured reason vocabulary in BrokerErrorDetail.
+// Unknown values, missing details, and status text prove no replay safety and fail closed.
 type BrokerErrorReason int32
 
 const (
-	BrokerErrorReason_BROKER_ERROR_REASON_UNSPECIFIED             BrokerErrorReason = 0
-	BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE       BrokerErrorReason = 1
-	BrokerErrorReason_BROKER_ERROR_REASON_ATTACHMENT_CLOSED       BrokerErrorReason = 2
+	// No classification: proves neither pre-dispatch failure nor replay safety.
+	BrokerErrorReason_BROKER_ERROR_REASON_UNSPECIFIED BrokerErrorReason = 0
+	// Process-local state is gone; treat as state loss, never proof Execute was not sent.
+	BrokerErrorReason_BROKER_ERROR_REASON_STATE_UNAVAILABLE BrokerErrorReason = 1
+	// Attachment closed; not proof that an earlier Execute did not dispatch.
+	BrokerErrorReason_BROKER_ERROR_REASON_ATTACHMENT_CLOSED BrokerErrorReason = 2
+	// Authorization ref absent; terminal control state, not an Execute dispatch proof.
 	BrokerErrorReason_BROKER_ERROR_REASON_AUTHORIZATION_NOT_FOUND BrokerErrorReason = 3
-	BrokerErrorReason_BROKER_ERROR_REASON_DISPATCH_NOT_STARTED    BrokerErrorReason = 4
-	BrokerErrorReason_BROKER_ERROR_REASON_CAPACITY_REACHED        BrokerErrorReason = 5
-	BrokerErrorReason_BROKER_ERROR_REASON_INCARNATION_LOST        BrokerErrorReason = 6
+	// Exact proof that dispatch_method was not started. Only exact Execute method permits
+	// ordinary pre-dispatch Execute failure handling.
+	BrokerErrorReason_BROKER_ERROR_REASON_DISPATCH_NOT_STARTED BrokerErrorReason = 4
+	// Capacity rejection. It is Execute replay-safe only with exact Execute dispatch_method.
+	BrokerErrorReason_BROKER_ERROR_REASON_CAPACITY_REACHED BrokerErrorReason = 5
+	// Client's broker incarnation is stale; recover only before a new prompt, never replay.
+	BrokerErrorReason_BROKER_ERROR_REASON_INCARNATION_LOST BrokerErrorReason = 6
 )
 
 // Enum value maps for BrokerErrorReason.
@@ -84,12 +93,14 @@ func (BrokerErrorReason) EnumDescriptor() ([]byte, []int) {
 	return file_mecatl_broker_v1_broker_proto_rawDescGZIP(), []int{0}
 }
 
-// BrokerErrorDetail gives clients stable error identity without status-text inference.
-// dispatch_method is set only for DISPATCH_NOT_STARTED and must equal the exact RPC method.
+// BrokerErrorDetail provides stable error identity without status-text inference.
 type BrokerErrorDetail struct {
-	state          protoimpl.MessageState `protogen:"open.v1"`
-	Reason         BrokerErrorReason      `protobuf:"varint,1,opt,name=reason,proto3,enum=mecatl.broker.v1.BrokerErrorReason" json:"reason,omitempty"`
-	DispatchMethod string                 `protobuf:"bytes,2,opt,name=dispatch_method,json=dispatchMethod,proto3" json:"dispatch_method,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Closed reason; unknown values are unsafe and clients must fail closed.
+	Reason BrokerErrorReason `protobuf:"varint,1,opt,name=reason,proto3,enum=mecatl.broker.v1.BrokerErrorReason" json:"reason,omitempty"`
+	// Exact fully-qualified method only for dispatch-not-started (and Execute capacity)
+	// proof; empty otherwise. Compare exactly; never guess.
+	DispatchMethod string `protobuf:"bytes,2,opt,name=dispatch_method,json=dispatchMethod,proto3" json:"dispatch_method,omitempty"`
 	unknownFields  protoimpl.UnknownFields
 	sizeCache      protoimpl.SizeCache
 }
@@ -138,10 +149,13 @@ func (x *BrokerErrorDetail) GetDispatchMethod() string {
 	return ""
 }
 
+// AttachRequest identifies logical state to attach.
 type AttachRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	SessionId         string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,2,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Opaque logical session ID, never a filesystem location or guessed path.
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Pinned process incarnation; empty only for initial attach, stale values are rejected.
+	BrokerIncarnation string `protobuf:"bytes,2,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -190,14 +204,21 @@ func (x *AttachRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// AttachResponse establishes an ephemeral attachment capability.
 type AttachResponse struct {
-	state               protoimpl.MessageState `protogen:"open.v1"`
-	Binding             string                 `protobuf:"bytes,1,opt,name=binding,proto3" json:"binding,omitempty"`
-	Handle              string                 `protobuf:"bytes,2,opt,name=handle,proto3" json:"handle,omitempty"`
-	Outcome             string                 `protobuf:"bytes,3,opt,name=outcome,proto3" json:"outcome,omitempty"`
-	Tools               []*ToolDescriptor      `protobuf:"bytes,4,rep,name=tools,proto3" json:"tools,omitempty"`
-	BrokerIncarnation   string                 `protobuf:"bytes,5,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
-	WorkspaceEnrollment bool                   `protobuf:"varint,6,opt,name=workspace_enrollment,json=workspaceEnrollment,proto3" json:"workspace_enrollment,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Durable opaque logical-incarnation identity for exact delete; sensitive, never logged.
+	Binding string `protobuf:"bytes,1,opt,name=binding,proto3" json:"binding,omitempty"`
+	// Ephemeral process-local capability for attachment RPCs; never persist it.
+	Handle string `protobuf:"bytes,2,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Validated closed attach outcome (created or reattached).
+	Outcome string `protobuf:"bytes,3,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	// Frozen descriptor capability snapshot for this attachment.
+	Tools []*ToolDescriptor `protobuf:"bytes,4,rep,name=tools,proto3" json:"tools,omitempty"`
+	// Current random broker incarnation to pin; stale values are rejected.
+	BrokerIncarnation string `protobuf:"bytes,5,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	// Whether pre-prompt workspace enrollment is supported by this attachment.
+	WorkspaceEnrollment bool `protobuf:"varint,6,opt,name=workspace_enrollment,json=workspaceEnrollment,proto3" json:"workspace_enrollment,omitempty"`
 	unknownFields       protoimpl.UnknownFields
 	sizeCache           protoimpl.SizeCache
 }
@@ -274,10 +295,13 @@ func (x *AttachResponse) GetWorkspaceEnrollment() bool {
 	return false
 }
 
+// CommitRequest targets current attachment lifecycle state.
 type CommitRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,2,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Ephemeral attachment capability, never a durable ID or path.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,2,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -326,6 +350,7 @@ func (x *CommitRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// CommitResponse confirms commit completion.
 type CommitResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -362,10 +387,13 @@ func (*CommitResponse) Descriptor() ([]byte, []int) {
 	return file_mecatl_broker_v1_broker_proto_rawDescGZIP(), []int{4}
 }
 
+// AbortRequest targets terminal attachment abort.
 type AbortRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,2,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,2,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -414,6 +442,7 @@ func (x *AbortRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// AbortResponse confirms abort; duplicate replay ends with the attachment lease.
 type AbortResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -450,10 +479,13 @@ func (*AbortResponse) Descriptor() ([]byte, []int) {
 	return file_mecatl_broker_v1_broker_proto_rawDescGZIP(), []int{6}
 }
 
+// CloseRequest targets terminal attachment close without deleting logical state.
 type CloseRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,2,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,2,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -502,9 +534,11 @@ func (x *CloseRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// CloseResponse reports validated closed/already-closed lifecycle outcome.
 type CloseResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Outcome       string                 `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Closed outcome, validated by both peers.
+	Outcome       string `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -546,11 +580,15 @@ func (x *CloseResponse) GetOutcome() string {
 	return ""
 }
 
+// DeleteRequest targets exact logical state rather than a process-local handle.
 type DeleteRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	SessionId         string                 `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
-	Binding           string                 `protobuf:"bytes,2,opt,name=binding,proto3" json:"binding,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Opaque logical session identity, never a path.
+	SessionId string `protobuf:"bytes,1,opt,name=session_id,json=sessionId,proto3" json:"session_id,omitempty"`
+	// Durable opaque binding from Attach; sensitive and never synthesized or logged.
+	Binding string `protobuf:"bytes,2,opt,name=binding,proto3" json:"binding,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -606,9 +644,11 @@ func (x *DeleteRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// DeleteResponse reports validated deleted/not-found outcome.
 type DeleteResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Outcome       string                 `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Closed delete outcome.
+	Outcome       string `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -650,14 +690,21 @@ func (x *DeleteResponse) GetOutcome() string {
 	return ""
 }
 
+// ToolDescriptor is an attachment-frozen remote tool capability advertisement.
 type ToolDescriptor struct {
-	state                protoimpl.MessageState `protogen:"open.v1"`
-	Name                 string                 `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
-	Description          string                 `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
-	Schema               []byte                 `protobuf:"bytes,3,opt,name=schema,proto3" json:"schema,omitempty"`
-	ReadOnly             bool                   `protobuf:"varint,4,opt,name=read_only,json=readOnly,proto3" json:"read_only,omitempty"`
-	DispatchSerial       bool                   `protobuf:"varint,5,opt,name=dispatch_serial,json=dispatchSerial,proto3" json:"dispatch_serial,omitempty"`
-	AuthorizationCapable bool                   `protobuf:"varint,6,opt,name=authorization_capable,json=authorizationCapable,proto3" json:"authorization_capable,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Stable advertised tool name used by invocation, not a filesystem path.
+	Name string `protobuf:"bytes,1,opt,name=name,proto3" json:"name,omitempty"`
+	// Valid UTF-8 model-visible tool description from the broker peer.
+	Description string `protobuf:"bytes,2,opt,name=description,proto3" json:"description,omitempty"`
+	// UTF-8 JSON-object schema bytes; untrusted descriptor data, never executable content.
+	Schema []byte `protobuf:"bytes,3,opt,name=schema,proto3" json:"schema,omitempty"`
+	// Read-only scheduling capability.
+	ReadOnly bool `protobuf:"varint,4,opt,name=read_only,json=readOnly,proto3" json:"read_only,omitempty"`
+	// Run-local dispatch barrier capability even when read_only.
+	DispatchSerial bool `protobuf:"varint,5,opt,name=dispatch_serial,json=dispatchSerial,proto3" json:"dispatch_serial,omitempty"`
+	// Authorization request/abort capability.
+	AuthorizationCapable bool `protobuf:"varint,6,opt,name=authorization_capable,json=authorizationCapable,proto3" json:"authorization_capable,omitempty"`
 	unknownFields        protoimpl.UnknownFields
 	sizeCache            protoimpl.SizeCache
 }
@@ -734,14 +781,21 @@ func (x *ToolDescriptor) GetAuthorizationCapable() bool {
 	return false
 }
 
+// ExecuteRequest is a receipt-protected invocation.
 type ExecuteRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	Name              string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	CallId            string                 `protobuf:"bytes,3,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
-	Args              []byte                 `protobuf:"bytes,4,opt,name=args,proto3" json:"args,omitempty"`
-	ItemId            string                 `protobuf:"bytes,5,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,6,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Exact advertised descriptor name.
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Opaque call identity; reuse requires byte-identical invocation within receipt lease.
+	CallId string `protobuf:"bytes,3,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
+	// Sensitive untrusted JSON-object args; never log, guess, or execute outside descriptor.
+	Args []byte `protobuf:"bytes,4,opt,name=args,proto3" json:"args,omitempty"`
+	// Optional opaque provider item identity.
+	ItemId string `protobuf:"bytes,5,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
+	// Current pinned broker incarnation, checked before dispatch.
+	BrokerIncarnation string `protobuf:"bytes,6,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -818,9 +872,11 @@ func (x *ExecuteRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// ExecuteResponse carries the receipt-protected result.
 type ExecuteResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Result        *ToolResult            `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Result for requested call_id; textual values are valid UTF-8.
+	Result        *ToolResult `protobuf:"bytes,1,opt,name=result,proto3" json:"result,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -862,12 +918,17 @@ func (x *ExecuteResponse) GetResult() *ToolResult {
 	return nil
 }
 
+// ToolResult is a model-visible tool completion.
 type ToolResult struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	CallId        string                 `protobuf:"bytes,1,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
-	Content       string                 `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
-	IsError       bool                   `protobuf:"varint,3,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
-	Parts         []*ResultPart          `protobuf:"bytes,4,rep,name=parts,proto3" json:"parts,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Exact opaque requested call identity.
+	CallId string `protobuf:"bytes,1,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
+	// Valid UTF-8 model-visible summary; never raw binary.
+	Content string `protobuf:"bytes,2,opt,name=content,proto3" json:"content,omitempty"`
+	// Whether content and parts represent an error.
+	IsError bool `protobuf:"varint,3,opt,name=is_error,json=isError,proto3" json:"is_error,omitempty"`
+	// Structured text, resource, and binary content blocks.
+	Parts         []*ResultPart `protobuf:"bytes,4,rep,name=parts,proto3" json:"parts,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -930,21 +991,35 @@ func (x *ToolResult) GetParts() []*ResultPart {
 	return nil
 }
 
+// ResultPart is one structured tool-result component.
 type ResultPart struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	BlockKind     string                 `protobuf:"bytes,1,opt,name=block_kind,json=blockKind,proto3" json:"block_kind,omitempty"`
-	MediaKind     string                 `protobuf:"bytes,2,opt,name=media_kind,json=mediaKind,proto3" json:"media_kind,omitempty"`
-	MimeType      string                 `protobuf:"bytes,3,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
-	Data          []byte                 `protobuf:"bytes,4,opt,name=data,proto3" json:"data,omitempty"`
-	Url           string                 `protobuf:"bytes,5,opt,name=url,proto3" json:"url,omitempty"`
-	Text          string                 `protobuf:"bytes,6,opt,name=text,proto3" json:"text,omitempty"`
-	Name          string                 `protobuf:"bytes,7,opt,name=name,proto3" json:"name,omitempty"`
-	Title         string                 `protobuf:"bytes,8,opt,name=title,proto3" json:"title,omitempty"`
-	Description   string                 `protobuf:"bytes,9,opt,name=description,proto3" json:"description,omitempty"`
-	Size          int64                  `protobuf:"varint,10,opt,name=size,proto3" json:"size,omitempty"`
-	Audience      []string               `protobuf:"bytes,11,rep,name=audience,proto3" json:"audience,omitempty"`
-	Priority      float64                `protobuf:"fixed64,12,opt,name=priority,proto3" json:"priority,omitempty"`
-	LastModified  string                 `protobuf:"bytes,13,opt,name=last_modified,json=lastModified,proto3" json:"last_modified,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Valid UTF-8 neutral content-block taxonomy.
+	BlockKind string `protobuf:"bytes,1,opt,name=block_kind,json=blockKind,proto3" json:"block_kind,omitempty"`
+	// Valid UTF-8 neutral media-kind taxonomy.
+	MediaKind string `protobuf:"bytes,2,opt,name=media_kind,json=mediaKind,proto3" json:"media_kind,omitempty"`
+	// MIME token preserved byte-exact by the neutral layer.
+	MimeType string `protobuf:"bytes,3,opt,name=mime_type,json=mimeType,proto3" json:"mime_type,omitempty"`
+	// Raw binary, not UTF-8 text; never log or coerce to text.
+	Data []byte `protobuf:"bytes,4,opt,name=data,proto3" json:"data,omitempty"`
+	// Valid UTF-8 opaque untrusted resource URL/reference, not a local path.
+	Url string `protobuf:"bytes,5,opt,name=url,proto3" json:"url,omitempty"`
+	// Valid UTF-8 text payload.
+	Text string `protobuf:"bytes,6,opt,name=text,proto3" json:"text,omitempty"`
+	// Valid UTF-8 resource/display name.
+	Name string `protobuf:"bytes,7,opt,name=name,proto3" json:"name,omitempty"`
+	// Valid UTF-8 display title.
+	Title string `protobuf:"bytes,8,opt,name=title,proto3" json:"title,omitempty"`
+	// Valid UTF-8 description.
+	Description string `protobuf:"bytes,9,opt,name=description,proto3" json:"description,omitempty"`
+	// Declared resource size when applicable.
+	Size int64 `protobuf:"varint,10,opt,name=size,proto3" json:"size,omitempty"`
+	// Valid UTF-8 audience labels.
+	Audience []string `protobuf:"bytes,11,rep,name=audience,proto3" json:"audience,omitempty"`
+	// Relative resource priority when applicable.
+	Priority float64 `protobuf:"fixed64,12,opt,name=priority,proto3" json:"priority,omitempty"`
+	// Valid UTF-8 source last-modified presentation value.
+	LastModified  string `protobuf:"bytes,13,opt,name=last_modified,json=lastModified,proto3" json:"last_modified,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1070,14 +1145,21 @@ func (x *ResultPart) GetLastModified() string {
 	return ""
 }
 
+// RequestAuthorizationRequest identifies an authorization-capable invocation.
 type RequestAuthorizationRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	Name              string                 `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
-	CallId            string                 `protobuf:"bytes,3,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
-	Args              []byte                 `protobuf:"bytes,4,opt,name=args,proto3" json:"args,omitempty"`
-	ItemId            string                 `protobuf:"bytes,5,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,6,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Exact advertised authorization-capable descriptor name.
+	Name string `protobuf:"bytes,2,opt,name=name,proto3" json:"name,omitempty"`
+	// Opaque invocation ID, digest-pinned within the receipt lease.
+	CallId string `protobuf:"bytes,3,opt,name=call_id,json=callId,proto3" json:"call_id,omitempty"`
+	// Sensitive untrusted JSON-object args; never log or guess.
+	Args []byte `protobuf:"bytes,4,opt,name=args,proto3" json:"args,omitempty"`
+	// Optional opaque provider item identity.
+	ItemId string `protobuf:"bytes,5,opt,name=item_id,json=itemId,proto3" json:"item_id,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,6,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1154,10 +1236,13 @@ func (x *RequestAuthorizationRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// RequestAuthorizationResponse says whether external authorization is required.
 type RequestAuthorizationResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Authorization *Authorization         `protobuf:"bytes,1,opt,name=authorization,proto3" json:"authorization,omitempty"`
-	Required      bool                   `protobuf:"varint,2,opt,name=required,proto3" json:"required,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Opaque attachment-bound expiring ref when required; never persist past lease/expiry.
+	Authorization *Authorization `protobuf:"bytes,1,opt,name=authorization,proto3" json:"authorization,omitempty"`
+	// False requires authorization to be absent.
+	Required      bool `protobuf:"varint,2,opt,name=required,proto3" json:"required,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1206,11 +1291,15 @@ func (x *RequestAuthorizationResponse) GetRequired() bool {
 	return false
 }
 
+// AbortAuthorizationRequest targets an opaque authorization ref.
 type AbortAuthorizationRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	Authorization     *Authorization         `protobuf:"bytes,2,opt,name=authorization,proto3" json:"authorization,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Exact opaque authorization ref.
+	Authorization *Authorization `protobuf:"bytes,2,opt,name=authorization,proto3" json:"authorization,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1266,6 +1355,7 @@ func (x *AbortAuthorizationRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// AbortAuthorizationResponse confirms abort request completion.
 type AbortAuthorizationResponse struct {
 	state         protoimpl.MessageState `protogen:"open.v1"`
 	unknownFields protoimpl.UnknownFields
@@ -1302,10 +1392,14 @@ func (*AbortAuthorizationResponse) Descriptor() ([]byte, []int) {
 	return file_mecatl_broker_v1_broker_proto_rawDescGZIP(), []int{19}
 }
 
+// Authorization identifies one expiring external authorization flow.
 type Authorization struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Id            string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	Binding       string                 `protobuf:"bytes,2,opt,name=binding,proto3" json:"binding,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Opaque sensitive authorization identity, never a location.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Opaque binding to external logical state; never log.
+	Binding string `protobuf:"bytes,2,opt,name=binding,proto3" json:"binding,omitempty"`
+	// Absolute expiry after which clients must stop using this ref.
 	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
@@ -1362,11 +1456,15 @@ func (x *Authorization) GetExpiresAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// PresentAuthorizationRequest targets authorization browser presentation.
 type PresentAuthorizationRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	Authorization     *Authorization         `protobuf:"bytes,2,opt,name=authorization,proto3" json:"authorization,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Exact opaque authorization ref.
+	Authorization *Authorization `protobuf:"bytes,2,opt,name=authorization,proto3" json:"authorization,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1422,9 +1520,11 @@ func (x *PresentAuthorizationRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// PresentAuthorizationResponse supplies short-lived browser presentation data.
 type PresentAuthorizationResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Url           string                 `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Valid UTF-8 URL; sensitive presentation data, not a credential, path, or durable ID.
+	Url           string `protobuf:"bytes,1,opt,name=url,proto3" json:"url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1466,11 +1566,15 @@ func (x *PresentAuthorizationResponse) GetUrl() string {
 	return ""
 }
 
+// AuthorizationStatusRequest reads an opaque authorization ref.
 type AuthorizationStatusRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	Authorization     *Authorization         `protobuf:"bytes,2,opt,name=authorization,proto3" json:"authorization,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Exact opaque authorization ref.
+	Authorization *Authorization `protobuf:"bytes,2,opt,name=authorization,proto3" json:"authorization,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1526,9 +1630,11 @@ func (x *AuthorizationStatusRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// AuthorizationStatusResponse carries validated closed authorization status.
 type AuthorizationStatusResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Status        string                 `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Status such as pending/granted/denied/expired/cancelled; unknown values fail closed.
+	Status        string `protobuf:"bytes,1,opt,name=status,proto3" json:"status,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1570,11 +1676,15 @@ func (x *AuthorizationStatusResponse) GetStatus() string {
 	return ""
 }
 
+// CancelAuthorizationRequest cancels an opaque authorization ref.
 type CancelAuthorizationRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	Authorization     *Authorization         `protobuf:"bytes,2,opt,name=authorization,proto3" json:"authorization,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Exact opaque authorization ref.
+	Authorization *Authorization `protobuf:"bytes,2,opt,name=authorization,proto3" json:"authorization,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1630,9 +1740,11 @@ func (x *CancelAuthorizationRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// CancelAuthorizationResponse carries validated closed cancellation outcome.
 type CancelAuthorizationResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Outcome       string                 `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Unknown outcome values fail closed.
+	Outcome       string `protobuf:"bytes,1,opt,name=outcome,proto3" json:"outcome,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1674,13 +1786,17 @@ func (x *CancelAuthorizationResponse) GetOutcome() string {
 	return ""
 }
 
+// WorkspaceRef identifies an expiring attachment-bound pre-prompt enrollment flow.
 type WorkspaceRef struct {
-	state            protoimpl.MessageState `protogen:"open.v1"`
-	Id               string                 `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
-	RequiredServices uint32                 `protobuf:"varint,2,opt,name=required_services,json=requiredServices,proto3" json:"required_services,omitempty"`
-	ExpiresAt        *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
-	unknownFields    protoimpl.UnknownFields
-	sizeCache        protoimpl.SizeCache
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Opaque sensitive enrollment identity, never a path or durable post-lease ID.
+	Id string `protobuf:"bytes,1,opt,name=id,proto3" json:"id,omitempty"`
+	// Bitset of external services needed before enrollment is connected.
+	RequiredServices uint32 `protobuf:"varint,2,opt,name=required_services,json=requiredServices,proto3" json:"required_services,omitempty"`
+	// Absolute expiry after which clients must stop using this ref.
+	ExpiresAt     *timestamppb.Timestamp `protobuf:"bytes,3,opt,name=expires_at,json=expiresAt,proto3" json:"expires_at,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *WorkspaceRef) Reset() {
@@ -1734,10 +1850,13 @@ func (x *WorkspaceRef) GetExpiresAt() *timestamppb.Timestamp {
 	return nil
 }
 
+// BeginWorkspaceEnrollmentRequest starts enrollment for an eligible attachment.
 type BeginWorkspaceEnrollmentRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,2,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,2,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1786,10 +1905,13 @@ func (x *BeginWorkspaceEnrollmentRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// BeginWorkspaceEnrollmentResponse supplies opaque ref plus browser presentation.
 type BeginWorkspaceEnrollmentResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Ref           *WorkspaceRef          `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
-	Url           string                 `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Attachment-bound opaque enrollment ref.
+	Ref *WorkspaceRef `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
+	// Valid UTF-8 sensitive browser URL, not a filesystem location.
+	Url           string `protobuf:"bytes,2,opt,name=url,proto3" json:"url,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1838,11 +1960,15 @@ func (x *BeginWorkspaceEnrollmentResponse) GetUrl() string {
 	return ""
 }
 
+// ObserveWorkspaceEnrollmentRequest reads an exact enrollment before prompting.
 type ObserveWorkspaceEnrollmentRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	Ref               *WorkspaceRef          `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Exact opaque enrollment ref.
+	Ref *WorkspaceRef `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -1898,11 +2024,15 @@ func (x *ObserveWorkspaceEnrollmentRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// ObserveWorkspaceEnrollmentResponse reports enrollment status and resulting tools.
 type ObserveWorkspaceEnrollmentResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Ref           *WorkspaceRef          `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
-	Tools         []*ToolDescriptor      `protobuf:"bytes,3,rep,name=tools,proto3" json:"tools,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Authoritative ref echo, including expiry.
+	Ref *WorkspaceRef `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
+	// Validated enrollment status; unknown values fail closed.
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// Descriptor snapshot when connected.
+	Tools         []*ToolDescriptor `protobuf:"bytes,3,rep,name=tools,proto3" json:"tools,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
@@ -1958,11 +2088,15 @@ func (x *ObserveWorkspaceEnrollmentResponse) GetTools() []*ToolDescriptor {
 	return nil
 }
 
+// CancelWorkspaceEnrollmentRequest cancels exact pre-prompt enrollment.
 type CancelWorkspaceEnrollmentRequest struct {
-	state             protoimpl.MessageState `protogen:"open.v1"`
-	Handle            string                 `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
-	Ref               *WorkspaceRef          `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
-	BrokerIncarnation string                 `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Current ephemeral attachment capability.
+	Handle string `protobuf:"bytes,1,opt,name=handle,proto3" json:"handle,omitempty"`
+	// Exact opaque enrollment ref.
+	Ref *WorkspaceRef `protobuf:"bytes,2,opt,name=ref,proto3" json:"ref,omitempty"`
+	// Current pinned broker incarnation.
+	BrokerIncarnation string `protobuf:"bytes,3,opt,name=broker_incarnation,json=brokerIncarnation,proto3" json:"broker_incarnation,omitempty"`
 	unknownFields     protoimpl.UnknownFields
 	sizeCache         protoimpl.SizeCache
 }
@@ -2018,11 +2152,15 @@ func (x *CancelWorkspaceEnrollmentRequest) GetBrokerIncarnation() string {
 	return ""
 }
 
+// CancelWorkspaceEnrollmentResponse reports final enrollment status and tools.
 type CancelWorkspaceEnrollmentResponse struct {
-	state         protoimpl.MessageState `protogen:"open.v1"`
-	Ref           *WorkspaceRef          `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
-	Status        string                 `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
-	Tools         []*ToolDescriptor      `protobuf:"bytes,3,rep,name=tools,proto3" json:"tools,omitempty"`
+	state protoimpl.MessageState `protogen:"open.v1"`
+	// Authoritative ref echo, including expiry.
+	Ref *WorkspaceRef `protobuf:"bytes,1,opt,name=ref,proto3" json:"ref,omitempty"`
+	// Validated final status; unknown values fail closed.
+	Status string `protobuf:"bytes,2,opt,name=status,proto3" json:"status,omitempty"`
+	// Descriptor snapshot if final state is connected.
+	Tools         []*ToolDescriptor `protobuf:"bytes,3,rep,name=tools,proto3" json:"tools,omitempty"`
 	unknownFields protoimpl.UnknownFields
 	sizeCache     protoimpl.SizeCache
 }
